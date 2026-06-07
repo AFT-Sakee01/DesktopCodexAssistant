@@ -1,0 +1,22 @@
+# Build outputs
+*.exe
+*.pdb
+*.obj
+*.ilk
+bin/
+obj/
+
+# Local backups and generated archives
+Backups/
+*_backup*/
+*.zip
+
+# Runtime logs and local state
+*.log
+settings.ini
+
+# Editor and OS noise
+.vs/
+.vscode/
+Thumbs.db
+Desktop.ini
