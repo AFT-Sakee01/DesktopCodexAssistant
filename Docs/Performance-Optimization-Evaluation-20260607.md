@@ -1,7 +1,7 @@
 # 性能优化评估报告
 
 日期：2026-06-07  
-对象：Codex Developer Assistant Window on WOA ARM64  
+对象：Desktop Codex Assistant ARM64
 配置：BatterySaver、AlwaysVisible、悬停透明度启用、GFW 检测 30 分钟
 
 ## 结论

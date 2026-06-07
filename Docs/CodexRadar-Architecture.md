@@ -12,7 +12,7 @@
 | `Core/WidgetForm.cs` | 创建窗口、分发设置、通知和生命周期控制 |
 | `Settings/WidgetSettings.cs` | 性能模式、窗口参数、IQ/效率基线和测试状态 |
 | `Settings/SettingsForm.cs` | Codex 设置页和测试入口 |
-| `CodexDeveloperAssistantWindowOnWOA.cs` | 程序入口、日志和进程级省电策略 |
+| `DesktopCodexAssistant.cs` | 程序入口、日志和进程级省电策略 |
 
 通用性能模式与窗口机制见：
 
@@ -112,7 +112,7 @@ flowchart LR
 额度按以下顺序读取：
 
 1. `%USERPROFILE%\.codex\sessions` 中的 `rollout-*.jsonl`
-2. `%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA\quota.ini`
+2. `%LOCALAPPDATA%\DesktopCodexAssistant\quota.ini`
 3. 无有效来源时使用默认快照并把 Codex 服务标记为不可用
 
 JSONL 中读取 `event_msg -> token_count -> rate_limits`。`primary` 通常对应 5 小时窗口，`secondary` 通常对应周窗口；如果存在 `window_minutes`，以是否小于等于 300 分钟重新判断。
@@ -328,7 +328,7 @@ Radar 的 `last_window.closed_at` 用作重置事件时间，`last_window.id` �
 去重和保护状态保存到：
 
 ```text
-%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA\quota-reset-state.ini
+%LOCALAPPDATA%\DesktopCodexAssistant\quota-reset-state.ini
 ```
 
 主要字段：
@@ -449,4 +449,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
 9. `Updated`、`Unupdated`、`Outdated` 三种日期条件正确。
 10. 各测试模式退出后恢复实时数据。
 11. 长时间运行时 GDI 对象、线程和句柄数不持续增长。
-12. `%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA\error.log` 没有新增异常。
+12. `%LOCALAPPDATA%\DesktopCodexAssistant\error.log` 没有新增异常。

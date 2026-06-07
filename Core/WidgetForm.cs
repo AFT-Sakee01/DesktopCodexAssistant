@@ -1582,7 +1582,12 @@ internal sealed class WidgetForm : Form
         if (string.Equals(metricId, WidgetSettings.MetricMemory, StringComparison.OrdinalIgnoreCase) && this.currentSettings.ShowMemory)
         {
             MetricPanel memoryPanel = new MetricPanel(
-                new string[] { "MEMORY", string.Format("MEM {0:0}%", this.snapshot.MemoryPercent), FormatGbPair(this.snapshot.MemoryUsedGb, this.snapshot.MemoryTotalGb) },
+                new string[]
+                {
+                    FormatMemoryTitleForPanel(this.snapshot.MemoryManufacturer, this.snapshot.MemorySpeedMtps),
+                    string.Format("MEM {0:0}%", this.snapshot.MemoryPercent),
+                    FormatGbPair(this.snapshot.MemoryUsedGb, this.snapshot.MemoryTotalGb)
+                },
                 new Color[] { DesignTokens.Colors.AccentAlt },
                 new List<double>[] { this.memoryHistory },
                 100.0,
@@ -1637,9 +1642,7 @@ internal sealed class WidgetForm : Form
         if (string.Equals(metricId, WidgetSettings.MetricNetwork, StringComparison.OrdinalIgnoreCase) && this.currentSettings.ShowNetwork)
         {
             MetricPanel networkPanel = new MetricPanel(
-                this.snapshot.NetworkConnected ?
-                    new string[] { this.snapshot.NetworkName, "UP " + FormatRate(this.snapshot.NetworkSentBytesPerSecond), "DL " + FormatRate(this.snapshot.NetworkReceivedBytesPerSecond) } :
-                    new string[] { "Network", "网络已断开", "" },
+                GetNetworkPanelTextLines(),
                 new Color[] { DesignTokens.Colors.Accent, DesignTokens.Colors.Danger },
                 new List<double>[] { this.networkSentHistory, this.networkReceivedHistory },
                 1.0,
@@ -1718,7 +1721,7 @@ internal sealed class WidgetForm : Form
 
         float textX = graphRect.Right + S(9);
         float textWidth = Math.Max(20, area.Right - textX);
-        // Disk has a fourth capacity line; other metrics retain their established three-line spacing.
+        // Disk capacity and Wi-Fi RSSI opt into a fourth line; other metrics keep three-line spacing.
         int textLineCount = panel.TextLines != null && panel.TextLines.Length >= 4 ? 4 : 3;
         float lineH = Math.Max(1.0f, area.Height / textLineCount);
 
@@ -2107,6 +2110,36 @@ internal sealed class WidgetForm : Form
     private static string FormatRate(double bytesPerSecond)
     {
         return NetworkRateFormatter.Format(bytesPerSecond);
+    }
+
+    private string[] GetNetworkPanelTextLines()
+    {
+        if (!this.snapshot.NetworkConnected)
+        {
+            return new string[] { "Network", "网络已断开", "" };
+        }
+
+        string up = "UP " + FormatRate(this.snapshot.NetworkSentBytesPerSecond);
+        string down = "DL " + FormatRate(this.snapshot.NetworkReceivedBytesPerSecond);
+        if (this.snapshot.NetworkIsWifi)
+        {
+            return new string[]
+            {
+                this.snapshot.NetworkName,
+                up,
+                down,
+                FormatWifiRssi(this.snapshot.NetworkRssiKnown, this.snapshot.NetworkRssiDbm)
+            };
+        }
+
+        return new string[] { this.snapshot.NetworkName, up, down };
+    }
+
+    private static string FormatWifiRssi(bool known, int rssiDbm)
+    {
+        return known
+            ? string.Format("RSSI {0}dBm", rssiDbm)
+            : "RSSI --dBm";
     }
 
     private static string FormatGbPair(double usedGb, double totalGb)

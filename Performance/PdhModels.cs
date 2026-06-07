@@ -39,6 +39,9 @@ internal sealed class NetworkState
 {
     public string Name { get; set; }
     public bool Connected { get; set; }
+    public bool IsWifi { get; set; }
+    public bool RssiKnown { get; set; }
+    public int RssiDbm { get; set; }
 }
 
 internal sealed class WifiConnectionDetails
@@ -51,6 +54,8 @@ internal sealed class WifiConnectionDetails
     public bool SecurityEnabled { get; set; }
     public bool OneXEnabled { get; set; }
     public int SignalQuality { get; set; }
+    public bool RssiKnown { get; set; }
+    public int RssiDbm { get; set; }
     public uint TxRateKbps { get; set; }
     public uint RxRateKbps { get; set; }
 
@@ -231,6 +236,8 @@ internal sealed class NetworkMonitorSnapshot
             SecurityEnabled = details.SecurityEnabled,
             OneXEnabled = details.OneXEnabled,
             SignalQuality = details.SignalQuality,
+            RssiKnown = details.RssiKnown,
+            RssiDbm = details.RssiDbm,
             TxRateKbps = details.TxRateKbps,
             RxRateKbps = details.RxRateKbps
         };
@@ -372,6 +379,9 @@ internal sealed class PerfSnapshot
     public double DiskTotalGb { get; set; }
     public string NetworkName { get; set; }
     public bool NetworkConnected { get; set; }
+    public bool NetworkIsWifi { get; set; }
+    public bool NetworkRssiKnown { get; set; }
+    public int NetworkRssiDbm { get; set; }
     public double NetworkSentBytesPerSecond { get; set; }
     public double NetworkReceivedBytesPerSecond { get; set; }
     public string GpuName { get; set; }

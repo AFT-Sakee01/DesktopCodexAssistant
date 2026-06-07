@@ -99,14 +99,14 @@ GPU Engine 在当前机器展开为 357 个计数器。昂贵查询按模式更�
 构建：
 
 ```powershell
-.\Build-Arm64.ps1 -OutputPath .\CodexDeveloperAssistantWindowOnWOA.exe
+.\Build-Arm64.ps1 -OutputPath .\DesktopCodexAssistant.exe
 ```
 
 自检：
 
 ```powershell
-.\CodexDeveloperAssistantWindowOnWOA.exe --test-logger
-.\CodexDeveloperAssistantWindowOnWOA.exe --test
+.\DesktopCodexAssistant.exe --test-logger
+.\DesktopCodexAssistant.exe --test
 ```
 
 性能回归时至少检查：

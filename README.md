@@ -1,6 +1,6 @@
-# Codex Developer Assistant Window on WOA
+# Desktop Codex Assistant
 
-UX3407N / UX3607O dedicated edition.
+UX3407N / UX3607O dedicated edition. This software was created entirely by Codex.
 
 This Windows on Arm application provides a compact developer-assistance workspace with performance, Codex monitoring, power, thermal, network, and connectivity modules.
 
@@ -32,12 +32,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
 Run:
 
 ```powershell
-.\CodexDeveloperAssistantWindowOnWOA.exe
+.\DesktopCodexAssistant.exe
 ```
 
-Logs and settings are stored under `%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA`.
+Logs and settings are stored under `%LOCALAPPDATA%\DesktopCodexAssistant`.
 
-When the renamed application starts for the first time, it migrates existing settings from `%LOCALAPPDATA%\DesktopPerfWidget-Lite` without overwriting newer files.
+When the renamed application starts for the first time, it migrates existing settings from `%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA` or `%LOCALAPPDATA%\DesktopPerfWidget-Lite` without overwriting newer files.
 
 ## Technical documentation
 

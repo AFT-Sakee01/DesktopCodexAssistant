@@ -16,9 +16,11 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-internal sealed class SettingsForm : Form
+internal sealed class SettingsForm : Form, IMessageFilter
 {
     private const int PreviewDebounceMs = 75;
+    private const int WmMouseWheel = 0x020A;
+    private const int EmSetCueBanner = 0x1501;
     private readonly WidgetForm owner;
     private readonly System.Windows.Forms.Timer previewTimer;
     private WidgetSettings baseline;
@@ -129,12 +131,30 @@ internal sealed class SettingsForm : Form
     private FlowLayoutPanel availableMetricsPanel;
     private TableLayoutPanel metricSlotsPanel;
     private Panel[] metricSlotPanels;
+    private Panel settingsContentHost;
+    private Button[] settingsNavigationButtons;
+    private Control[] settingsPages;
+    private TextBox settingsSearchBox;
+    private int selectedSettingsPageIndex;
+    private bool messageFilterRegistered;
     private string draggedMetricId;
     private int draggedSourceSlotIndex;
     private int gfwProbeManualRefreshToken;
     private int connectionCheckManualRefreshToken;
     private bool initializing;
     private bool saved;
+
+    private static readonly string[] SettingsNavigationTitles = new string[]
+    {
+        "运行",
+        "主窗口",
+        "CodexRadar",
+        "功耗模块",
+        "网络监控",
+        "连接检测",
+        "操作模块",
+        "栏目"
+    };
 
     public bool OwnerFormClosing { get; set; }
 
@@ -148,20 +168,31 @@ internal sealed class SettingsForm : Form
         this.previewTimer.Tick += OnPreviewTimerTick;
 
         this.Text = "性能小窗设置";
-        this.FormBorderStyle = FormBorderStyle.FixedDialog;
+        this.FormBorderStyle = FormBorderStyle.Sizable;
         this.StartPosition = FormStartPosition.CenterScreen;
         this.ShowInTaskbar = false;
-        this.MaximizeBox = false;
+        this.MaximizeBox = true;
         this.MinimizeBox = false;
         this.AutoScroll = false;
         this.AutoScrollMinSize = GetDesiredClientSize();
         this.ClientSize = FitClientSizeToScreen(GetDesiredClientSize());
+        this.MinimumSize = new Size(920, 620);
         this.Font = DesignTokens.CreateUIFont(10.0f);
-        this.BackColor = DesignTokens.Colors.Window;
+        this.BackColor = DesignTokens.Colors.AppBackground;
         this.ForeColor = DesignTokens.Colors.Text;
 
         BuildControls();
         LoadControls(this.baseline);
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        if (!this.messageFilterRegistered)
+        {
+            Application.AddMessageFilter(this);
+            this.messageFilterRegistered = true;
+        }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -177,9 +208,53 @@ internal sealed class SettingsForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        if (this.messageFilterRegistered)
+        {
+            Application.RemoveMessageFilter(this);
+            this.messageFilterRegistered = false;
+        }
+
         this.previewTimer.Tick -= OnPreviewTimerTick;
         this.previewTimer.Dispose();
         base.OnFormClosed(e);
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (this.IsHandleCreated)
+        {
+            UpdateResponsiveLayout();
+        }
+    }
+
+    public bool PreFilterMessage(ref Message m)
+    {
+        if (m.Msg != WmMouseWheel || !this.Visible || this.WindowState == FormWindowState.Minimized)
+        {
+            return false;
+        }
+
+        Point cursor = Cursor.Position;
+        if (!this.Bounds.Contains(cursor))
+        {
+            return false;
+        }
+
+        int delta = unchecked((short)((long)m.WParam >> 16));
+        SettingsPagePanel page = GetSelectedSettingsPage();
+        if (page != null && page.ScrollByMouseWheelDelta(delta))
+        {
+            return true;
+        }
+
+        SettingsNavigationPanel navigation = GetNavigationPanelAt(cursor);
+        if (navigation != null && navigation.ScrollByMouseWheelDelta(delta))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     private void BuildControls()
@@ -190,39 +265,267 @@ internal sealed class SettingsForm : Form
 
         TableLayoutPanel root = new TableLayoutPanel();
         root.Dock = DockStyle.Fill;
-        root.Padding = new Padding(DesignTokens.Spacing.SettingsRootX, DesignTokens.Spacing.SettingsRootY, DesignTokens.Spacing.SettingsRootX, DesignTokens.Spacing.SettingsRootY);
-        root.BackColor = DesignTokens.Colors.Window;
-        root.ColumnCount = 1;
+        root.Padding = new Padding(18);
+        root.BackColor = DesignTokens.Colors.AppBackground;
+        root.ColumnCount = 2;
         root.RowCount = 3;
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 214));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 108));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 76));
         this.Controls.Add(root);
+
+        Control header = BuildSettingsHeader();
+        root.SetColumnSpan(header, 2);
+        root.Controls.Add(header, 0, 0);
+
+        Control navigation = BuildSettingsNavigation();
+        root.Controls.Add(navigation, 0, 1);
+
+        this.settingsContentHost = new Panel();
+        this.settingsContentHost.Dock = DockStyle.Fill;
+        this.settingsContentHost.BackColor = DesignTokens.Colors.AppBackground;
+        this.settingsContentHost.Margin = new Padding(16, 0, 0, 0);
+        root.Controls.Add(this.settingsContentHost, 1, 1);
+
+        this.settingsPages = new Control[]
+        {
+            BuildRuntimeTab(),
+            BuildWidgetTab(),
+            BuildCodexRadarTab(),
+            BuildPowerTab(),
+            BuildNetworkMonitorTab(),
+            BuildConnectionCheckTab(),
+            BuildOperationTab(),
+            BuildMetricsTab()
+        };
+
+        for (int i = 0; i < this.settingsPages.Length; i++)
+        {
+            Control page = this.settingsPages[i];
+            page.Dock = DockStyle.Fill;
+            page.Visible = false;
+            this.settingsContentHost.Controls.Add(page);
+        }
+
+        SelectSettingsPage(0);
+
+        Control footer = BuildFooterButtons();
+        root.SetColumnSpan(footer, 2);
+        root.Controls.Add(footer, 0, 2);
+    }
+
+    private Control BuildSettingsHeader()
+    {
+        TableLayoutPanel header = new TableLayoutPanel();
+        header.Dock = DockStyle.Fill;
+        header.BackColor = DesignTokens.Colors.AppBackground;
+        header.ColumnCount = 2;
+        header.RowCount = 2;
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 280));
+        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+        header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         Label title = new Label();
         title.Text = "性能小窗设置";
         title.Font = DesignTokens.CreateUIFont(16.0f, FontStyle.Bold);
-        title.ForeColor = DesignTokens.Colors.Text;
-        title.BackColor = DesignTokens.Colors.Window;
+        title.ForeColor = DesignTokens.Colors.TextStrong;
+        title.BackColor = DesignTokens.Colors.AppBackground;
         title.Dock = DockStyle.Fill;
         title.TextAlign = ContentAlignment.MiddleLeft;
-        root.Controls.Add(title, 0, 0);
+        title.UseCompatibleTextRendering = true;
 
-        TabControl tabs = new TabControl();
-        tabs.Dock = DockStyle.Fill;
-        tabs.Font = DesignTokens.CreateUIFont(10.0f);
-        tabs.Controls.Add(BuildRuntimeTab());
-        tabs.Controls.Add(BuildWidgetTab());
-        tabs.Controls.Add(BuildCodexRadarTab());
-        tabs.Controls.Add(BuildPowerTab());
-        tabs.Controls.Add(BuildNetworkMonitorTab());
-        tabs.Controls.Add(BuildConnectionCheckTab());
-        tabs.Controls.Add(BuildOperationTab());
-        tabs.Controls.Add(BuildMetricsTab());
-        root.Controls.Add(tabs, 0, 1);
+        Label subtitle = new Label();
+        subtitle.Text = "左侧选择模块，右侧调整参数，保存前会实时预览。";
+        subtitle.Font = DesignTokens.CreateUIFont(9.5f);
+        subtitle.ForeColor = DesignTokens.Colors.GlyphMuted;
+        subtitle.BackColor = DesignTokens.Colors.AppBackground;
+        subtitle.Dock = DockStyle.Fill;
+        subtitle.TextAlign = ContentAlignment.TopLeft;
+        subtitle.AutoEllipsis = true;
+        subtitle.UseCompatibleTextRendering = true;
 
-        root.Controls.Add(BuildFooterButtons(), 0, 2);
+        this.settingsSearchBox = new TextBox();
+        this.settingsSearchBox.Dock = DockStyle.Bottom;
+        this.settingsSearchBox.Height = 32;
+        this.settingsSearchBox.Margin = new Padding(12, 0, 0, 17);
+        this.settingsSearchBox.Font = DesignTokens.CreateUIFont(10.0f);
+        this.settingsSearchBox.BackColor = DesignTokens.Colors.Control;
+        this.settingsSearchBox.ForeColor = DesignTokens.Colors.Text;
+        this.settingsSearchBox.BorderStyle = BorderStyle.FixedSingle;
+        this.settingsSearchBox.TextChanged += delegate { FilterSettingsNavigation(); };
+        this.settingsSearchBox.HandleCreated += delegate
+        {
+            SendMessage(this.settingsSearchBox.Handle, EmSetCueBanner, IntPtr.Zero, "搜索设置");
+        };
+
+        header.Controls.Add(title, 0, 0);
+        header.Controls.Add(subtitle, 0, 1);
+        header.SetRowSpan(this.settingsSearchBox, 2);
+        header.Controls.Add(this.settingsSearchBox, 1, 0);
+        return header;
+    }
+
+    private Control BuildSettingsNavigation()
+    {
+        SettingsNavigationPanel navigation = new SettingsNavigationPanel();
+        navigation.Dock = DockStyle.Fill;
+        navigation.FlowDirection = FlowDirection.TopDown;
+        navigation.WrapContents = false;
+        navigation.AutoScroll = true;
+        navigation.BackColor = DesignTokens.Colors.Surface;
+        navigation.Padding = new Padding(12);
+        navigation.Margin = new Padding(0);
+
+        this.settingsNavigationButtons = new Button[SettingsNavigationTitles.Length];
+        for (int i = 0; i < SettingsNavigationTitles.Length; i++)
+        {
+            int pageIndex = i;
+            Button button = new Button();
+            button.Text = SettingsNavigationTitles[i];
+            button.Width = 184;
+            button.Height = 42;
+            button.Margin = new Padding(0, 0, 0, 8);
+            button.Padding = new Padding(14, 0, 10, 1);
+            button.TextAlign = ContentAlignment.MiddleLeft;
+            button.FlatStyle = FlatStyle.Flat;
+            button.FlatAppearance.BorderSize = 1;
+            button.Font = DesignTokens.CreateUIFont(10.0f, FontStyle.Bold);
+            button.Cursor = Cursors.Hand;
+            button.UseCompatibleTextRendering = true;
+            button.Click += delegate { SelectSettingsPage(pageIndex); };
+            this.settingsNavigationButtons[i] = button;
+            navigation.Controls.Add(button);
+        }
+
+        return navigation;
+    }
+
+    private void SelectSettingsPage(int pageIndex)
+    {
+        if (this.settingsPages == null ||
+            this.settingsNavigationButtons == null ||
+            pageIndex < 0 ||
+            pageIndex >= this.settingsPages.Length)
+        {
+            return;
+        }
+
+        for (int i = 0; i < this.settingsPages.Length; i++)
+        {
+            this.settingsPages[i].Visible = i == pageIndex;
+            StyleNavigationButton(this.settingsNavigationButtons[i], i == pageIndex);
+        }
+
+        this.selectedSettingsPageIndex = pageIndex;
+        this.settingsPages[pageIndex].BringToFront();
+        UpdateResponsiveLayout();
+    }
+
+    private static void StyleNavigationButton(Button button, bool active)
+    {
+        button.BackColor = active ? DesignTokens.Colors.ControlActive : DesignTokens.Colors.Surface;
+        button.ForeColor = active ? DesignTokens.Colors.Accent : DesignTokens.Colors.SubtleText;
+        button.FlatAppearance.BorderColor = active ? DesignTokens.Colors.AccentDeep : DesignTokens.Colors.Surface;
+        button.FlatAppearance.MouseOverBackColor = active ? DesignTokens.Colors.ControlActive : DesignTokens.Colors.Control;
+        button.FlatAppearance.MouseDownBackColor = DesignTokens.Colors.ControlPressed;
+    }
+
+    private void FilterSettingsNavigation()
+    {
+        if (this.settingsNavigationButtons == null || this.settingsSearchBox == null)
+        {
+            return;
+        }
+
+        string query = (this.settingsSearchBox.Text ?? string.Empty).Trim();
+        bool anyVisible = false;
+        for (int i = 0; i < this.settingsNavigationButtons.Length; i++)
+        {
+            bool visible = query.Length == 0 ||
+                SettingsNavigationTitles[i].IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
+            this.settingsNavigationButtons[i].Visible = visible;
+            anyVisible |= visible;
+        }
+
+        if (!anyVisible)
+        {
+            for (int i = 0; i < this.settingsNavigationButtons.Length; i++)
+            {
+                this.settingsNavigationButtons[i].Visible = true;
+            }
+        }
+    }
+
+    private SettingsPagePanel GetSelectedSettingsPage()
+    {
+        if (this.settingsPages == null ||
+            this.selectedSettingsPageIndex < 0 ||
+            this.selectedSettingsPageIndex >= this.settingsPages.Length)
+        {
+            return null;
+        }
+
+        return this.settingsPages[this.selectedSettingsPageIndex] as SettingsPagePanel;
+    }
+
+    private SettingsNavigationPanel GetNavigationPanelAt(Point screenPoint)
+    {
+        if (this.settingsNavigationButtons == null || this.settingsNavigationButtons.Length == 0)
+        {
+            return null;
+        }
+
+        Control parent = this.settingsNavigationButtons[0].Parent;
+        SettingsNavigationPanel navigation = parent as SettingsNavigationPanel;
+        if (navigation == null)
+        {
+            return null;
+        }
+
+        Point local = navigation.PointToClient(screenPoint);
+        return navigation.ClientRectangle.Contains(local) ? navigation : null;
+    }
+
+    private void UpdateResponsiveLayout()
+    {
+        if (this.settingsPages == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < this.settingsPages.Length; i++)
+        {
+            UpdateResponsiveLayout(this.settingsPages[i]);
+        }
+    }
+
+    private void UpdateResponsiveLayout(Control root)
+    {
+        if (root == null)
+        {
+            return;
+        }
+
+        TableLayoutPanel table = root as TableLayoutPanel;
+        if (table != null && table.Tag as string == "SettingsSection")
+        {
+            int available = Math.Max(0, table.ClientSize.Width - table.Padding.Left - table.Padding.Right);
+            int labelWidth = available < 560 ? 148 : 214;
+            int editorWidth = available < 560 ? 112 : 140;
+            if (table.ColumnStyles.Count >= 3)
+            {
+                table.ColumnStyles[0].Width = labelWidth;
+                table.ColumnStyles[1].Width = editorWidth;
+            }
+        }
+
+        for (int i = 0; i < root.Controls.Count; i++)
+        {
+            UpdateResponsiveLayout(root.Controls[i]);
+        }
     }
 
     private void InitializeControls()
@@ -449,9 +752,9 @@ internal sealed class SettingsForm : Form
         WirePair(this.codexModelTimeEfficiencyLowThresholdBox, this.codexModelTimeEfficiencyLowThresholdSlider);
     }
 
-    private TabPage BuildRuntimeTab()
+    private SettingsPagePanel BuildRuntimeTab()
     {
-        TabPage page = BuildTabPage("运行");
+        SettingsPagePanel page = BuildTabPage("运行");
         TableLayoutPanel section = BuildSettingsSection("性能和交互", 6);
         AddEditorRow(section, 1, "性能模式", this.performanceModeCombo);
         AddEditorRow(section, 2, "可见性", this.visibilityCombo);
@@ -466,9 +769,9 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
-    private TabPage BuildWidgetTab()
+    private SettingsPagePanel BuildWidgetTab()
     {
-        TabPage page = BuildTabPage("主窗口");
+        SettingsPagePanel page = BuildTabPage("主窗口");
         TableLayoutPanel section = BuildSettingsSection("主窗口布局", 6);
         AddSliderRow(section, 1, "窗口宽度", this.widthBox, this.widthSlider);
         AddSliderRow(section, 2, "窗口高度", this.heightBox, this.heightSlider);
@@ -480,9 +783,9 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
-    private TabPage BuildCodexRadarTab()
+    private SettingsPagePanel BuildCodexRadarTab()
     {
-        TabPage page = BuildTabPage("CodexRadar");
+        SettingsPagePanel page = BuildTabPage("CodexRadar");
         TableLayoutPanel section = BuildSettingsSection("CodexRadar 模块", 20);
         AddSliderRow(section, 1, "模块宽度", this.codexRadarWidthBox, this.codexRadarWidthSlider);
         AddSliderRow(section, 2, "模块高度", this.codexRadarHeightBox, this.codexRadarHeightSlider);
@@ -514,9 +817,9 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
-    private TabPage BuildPowerTab()
+    private SettingsPagePanel BuildPowerTab()
     {
-        TabPage page = BuildTabPage("功耗模块");
+        SettingsPagePanel page = BuildTabPage("功耗模块");
         TableLayoutPanel section = BuildSettingsSection("功耗模块", 9);
         AddSliderRow(section, 1, "模块宽度", this.powerThermalWidthBox, this.powerThermalWidthSlider);
         AddSliderRow(section, 2, "模块高度", this.powerThermalHeightBox, this.powerThermalHeightSlider);
@@ -531,9 +834,9 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
-    private TabPage BuildNetworkMonitorTab()
+    private SettingsPagePanel BuildNetworkMonitorTab()
     {
-        TabPage page = BuildTabPage("网络监控");
+        SettingsPagePanel page = BuildTabPage("网络监控");
         TableLayoutPanel section = BuildSettingsSection("网络监控模块", 9);
         AddSliderRow(section, 1, "模块宽度", this.networkMonitorWidthBox, this.networkMonitorWidthSlider);
         AddSliderRow(section, 2, "模块高度", this.networkMonitorHeightBox, this.networkMonitorHeightSlider);
@@ -554,9 +857,9 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
-    private TabPage BuildConnectionCheckTab()
+    private SettingsPagePanel BuildConnectionCheckTab()
     {
-        TabPage page = BuildTabPage("连接检测");
+        SettingsPagePanel page = BuildTabPage("连接检测");
         TableLayoutPanel section = BuildSettingsSection("CleanIP徽标模块", 8);
         AddSliderRow(section, 1, "模块宽度", this.connectionCheckWidthBox, this.connectionCheckWidthSlider);
         AddSliderRow(section, 2, "模块高度", this.connectionCheckHeightBox, this.connectionCheckHeightSlider);
@@ -576,9 +879,9 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
-    private TabPage BuildOperationTab()
+    private SettingsPagePanel BuildOperationTab()
     {
-        TabPage page = BuildTabPage("操作模块");
+        SettingsPagePanel page = BuildTabPage("操作模块");
         TableLayoutPanel section = BuildSettingsSection("操作模块", 4);
         AddSliderRow(section, 1, "按钮大小", this.operationButtonSizeBox, this.operationButtonSizeSlider);
         AddSliderRow(section, 2, "距左边缘", this.operationLeftOffsetBox, this.operationLeftOffsetSlider);
@@ -588,40 +891,48 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
-    private TabPage BuildMetricsTab()
+    private SettingsPagePanel BuildMetricsTab()
     {
-        TabPage page = BuildTabPage("栏目");
+        SettingsPagePanel page = BuildTabPage("栏目");
         Control metrics = BuildMetricLayoutSidePanel();
         metrics.Dock = DockStyle.Fill;
         page.Controls.Add(metrics);
         return page;
     }
 
-    private TabPage BuildTabPage(string text)
+    private SettingsPagePanel BuildTabPage(string text)
     {
-        TabPage page = new TabPage(text);
-        page.BackColor = DesignTokens.Colors.Window;
+        SettingsPagePanel page = new SettingsPagePanel();
+        page.Name = "SettingsPage" + text;
+        page.BackColor = DesignTokens.Colors.AppBackground;
         page.ForeColor = DesignTokens.Colors.Text;
-        page.Padding = new Padding(DesignTokens.Spacing.SettingsPagePadding);
+        page.Padding = new Padding(0, 0, 10, 0);
         page.AutoScroll = true;
+        page.AutoScrollMargin = new Size(0, 18);
+        page.HorizontalScroll.Enabled = false;
+        page.HorizontalScroll.Visible = false;
         return page;
     }
 
     private TableLayoutPanel BuildSettingsSection(string title, int contentRows)
     {
-        TableLayoutPanel section = new TableLayoutPanel();
+        SettingsSectionPanel section = new SettingsSectionPanel();
+        section.Tag = "SettingsSection";
         section.Dock = DockStyle.Top;
         section.AutoSize = true;
-        section.BackColor = DesignTokens.Colors.Window;
+        section.BackColor = DesignTokens.Colors.Surface;
+        section.Margin = new Padding(0, 0, 0, 14);
+        section.Padding = new Padding(18, 8, 18, 18);
         section.ColumnCount = 3;
         section.RowCount = contentRows + 1;
-        section.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 168));
+        section.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 214));
         section.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
         section.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        section.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        section.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        section.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         for (int i = 0; i < contentRows; i++)
         {
-            section.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+            section.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
         }
 
         Label label = new Label();
@@ -629,8 +940,9 @@ internal sealed class SettingsForm : Form
         label.Dock = DockStyle.Fill;
         label.TextAlign = ContentAlignment.MiddleLeft;
         label.Font = DesignTokens.CreateUIFont(12.0f, FontStyle.Bold);
-        label.ForeColor = DesignTokens.Colors.Text;
-        label.BackColor = DesignTokens.Colors.Window;
+        label.ForeColor = DesignTokens.Colors.TextStrong;
+        label.BackColor = DesignTokens.Colors.Surface;
+        label.AutoEllipsis = true;
         section.SetColumnSpan(label, 3);
         section.Controls.Add(label, 0, 0);
         return section;
@@ -642,7 +954,7 @@ internal sealed class SettingsForm : Form
         checkBox.Text = text;
         checkBox.AutoSize = true;
         checkBox.ForeColor = DesignTokens.Colors.Text;
-        checkBox.BackColor = DesignTokens.Colors.Window;
+        checkBox.BackColor = DesignTokens.Colors.Surface;
         checkBox.Margin = new Padding(0, 0, DesignTokens.Spacing.SettingsCheckGap, 0);
         checkBox.CheckedChanged += OnSettingChanged;
         return checkBox;
@@ -893,7 +1205,7 @@ internal sealed class SettingsForm : Form
         };
 
         Button fullExitButton = new Button();
-        fullExitButton.Text = "完全退出";
+        fullExitButton.Text = "退出";
         fullExitButton.Width = DesignTokens.Sizes.SettingsPrimaryButtonWidth;
         fullExitButton.Height = DesignTokens.Sizes.SettingsButtonHeight;
         fullExitButton.Click += delegate
@@ -904,7 +1216,7 @@ internal sealed class SettingsForm : Form
         };
 
         Button exitButton = new Button();
-        exitButton.Text = "退出软件";
+        exitButton.Text = "强杀";
         exitButton.Width = DesignTokens.Sizes.SettingsPrimaryButtonWidth;
         exitButton.Height = DesignTokens.Sizes.SettingsButtonHeight;
         exitButton.Click += delegate
@@ -922,7 +1234,7 @@ internal sealed class SettingsForm : Form
 
         TableLayoutPanel footer = new TableLayoutPanel();
         footer.Dock = DockStyle.Fill;
-        footer.BackColor = DesignTokens.Colors.Window;
+        footer.BackColor = DesignTokens.Colors.AppBackground;
         footer.ColumnCount = 2;
         footer.RowCount = 1;
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -931,7 +1243,7 @@ internal sealed class SettingsForm : Form
         FlowLayoutPanel leftButtons = new FlowLayoutPanel();
         leftButtons.FlowDirection = FlowDirection.LeftToRight;
         leftButtons.Dock = DockStyle.Fill;
-        leftButtons.BackColor = DesignTokens.Colors.Window;
+        leftButtons.BackColor = DesignTokens.Colors.AppBackground;
         leftButtons.Padding = new Padding(0, 12, 0, 0);
         leftButtons.Controls.Add(fullExitButton);
         leftButtons.Controls.Add(exitButton);
@@ -939,7 +1251,7 @@ internal sealed class SettingsForm : Form
         FlowLayoutPanel rightButtons = new FlowLayoutPanel();
         rightButtons.FlowDirection = FlowDirection.RightToLeft;
         rightButtons.Dock = DockStyle.Fill;
-        rightButtons.BackColor = DesignTokens.Colors.Window;
+        rightButtons.BackColor = DesignTokens.Colors.AppBackground;
         rightButtons.Padding = new Padding(0, 12, 0, 0);
         rightButtons.Controls.Add(saveButton);
         rightButtons.Controls.Add(cancelButton);
@@ -952,7 +1264,7 @@ internal sealed class SettingsForm : Form
 
     private static Size GetDesiredClientSize()
     {
-        return new Size(1080, 760);
+        return new Size(1180, 820);
     }
 
     private static Size FitClientSizeToScreen(Size desiredSize)
@@ -990,7 +1302,7 @@ internal sealed class SettingsForm : Form
         slider.AutoSize = false;
         slider.Height = 34;
         slider.Dock = DockStyle.Fill;
-        slider.BackColor = DesignTokens.Colors.Window;
+        slider.BackColor = DesignTokens.Colors.Surface;
         slider.SmallChange = 1;
         slider.LargeChange = Math.Max(10, (max - min) / 20);
         slider.ValueChanged += OnSettingChanged;
@@ -1001,24 +1313,64 @@ internal sealed class SettingsForm : Form
     {
         ComboBox combo = new ComboBox();
         combo.DropDownStyle = ComboBoxStyle.DropDownList;
+        combo.FlatStyle = FlatStyle.Flat;
+        combo.DrawMode = DrawMode.OwnerDrawFixed;
+        combo.ItemHeight = 28;
         combo.Dock = DockStyle.Fill;
-        combo.Font = DesignTokens.CreateUIFont(10.5f);
+        combo.Font = DesignTokens.CreateUIFont(7.35f);
         combo.BackColor = DesignTokens.Colors.Control;
         combo.ForeColor = DesignTokens.Colors.Text;
+        combo.DrawItem += DrawSettingsComboItem;
         combo.SelectedIndexChanged += OnSettingChanged;
         return combo;
+    }
+
+    private static void DrawSettingsComboItem(object sender, DrawItemEventArgs e)
+    {
+        ComboBox combo = sender as ComboBox;
+        if (combo == null)
+        {
+            return;
+        }
+
+        bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+        Color backColor = selected ? DesignTokens.Colors.ControlActive : DesignTokens.Colors.Control;
+        Color textColor = selected ? DesignTokens.Colors.Accent : DesignTokens.Colors.Text;
+        using (SolidBrush background = new SolidBrush(backColor))
+        {
+            e.Graphics.FillRectangle(background, e.Bounds);
+        }
+
+        string text = string.Empty;
+        if (e.Index >= 0 && e.Index < combo.Items.Count)
+        {
+            text = combo.Items[e.Index].ToString();
+        }
+        else if (combo.SelectedItem != null)
+        {
+            text = combo.SelectedItem.ToString();
+        }
+
+        Rectangle textBounds = new Rectangle(e.Bounds.Left + 8, e.Bounds.Top, Math.Max(0, e.Bounds.Width - 12), e.Bounds.Height);
+        TextRenderer.DrawText(
+            e.Graphics,
+            text,
+            combo.Font,
+            textBounds,
+            textColor,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
     }
 
     private Control BuildMetricLayoutSidePanel()
     {
         TableLayoutPanel panel = new TableLayoutPanel();
         panel.Dock = DockStyle.Fill;
-        panel.BackColor = DesignTokens.Colors.Window;
+        panel.BackColor = DesignTokens.Colors.AppBackground;
         panel.ColumnCount = 1;
         panel.RowCount = 2;
         panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        panel.Padding = new Padding(12, 0, 0, 0);
+        panel.Padding = new Padding(0);
 
         Label label = new Label();
         label.Text = "栏目排序";
@@ -1026,8 +1378,8 @@ internal sealed class SettingsForm : Form
         label.TextAlign = ContentAlignment.MiddleLeft;
         label.Font = DesignTokens.CreateUIFont(10.5f, FontStyle.Bold);
         label.UseCompatibleTextRendering = true;
-        label.ForeColor = DesignTokens.Colors.SubtleText;
-        label.BackColor = DesignTokens.Colors.Window;
+        label.ForeColor = DesignTokens.Colors.TextStrong;
+        label.BackColor = DesignTokens.Colors.AppBackground;
 
         Control editor = BuildMetricLayoutEditor();
         panel.Controls.Add(label, 0, 0);
@@ -1039,7 +1391,7 @@ internal sealed class SettingsForm : Form
     {
         TableLayoutPanel editor = new TableLayoutPanel();
         editor.Dock = DockStyle.Fill;
-        editor.BackColor = DesignTokens.Colors.Window;
+        editor.BackColor = DesignTokens.Colors.AppBackground;
         editor.ColumnCount = 1;
         editor.RowCount = 2;
         editor.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
@@ -1049,6 +1401,7 @@ internal sealed class SettingsForm : Form
         this.availableMetricsPanel.Dock = DockStyle.Fill;
         this.availableMetricsPanel.BackColor = DesignTokens.Colors.Control;
         this.availableMetricsPanel.Padding = new Padding(10, 10, 10, 8);
+        this.availableMetricsPanel.Margin = new Padding(0, 0, 0, 12);
         this.availableMetricsPanel.AllowDrop = true;
         this.availableMetricsPanel.DragEnter += OnMetricDragEnter;
         this.availableMetricsPanel.DragDrop += delegate
@@ -1064,7 +1417,7 @@ internal sealed class SettingsForm : Form
 
         this.metricSlotsPanel = new TableLayoutPanel();
         this.metricSlotsPanel.Dock = DockStyle.Fill;
-        this.metricSlotsPanel.BackColor = DesignTokens.Colors.Window;
+        this.metricSlotsPanel.BackColor = DesignTokens.Colors.AppBackground;
         int slotColumns = 2;
         int slotRows = (WidgetSettings.DefaultMetricOrder.Length + slotColumns - 1) / slotColumns;
         this.metricSlotsPanel.ColumnCount = slotColumns;
@@ -1222,7 +1575,7 @@ internal sealed class SettingsForm : Form
         panel.Dock = DockStyle.Fill;
         panel.FlowDirection = FlowDirection.LeftToRight;
         panel.WrapContents = false;
-        panel.BackColor = DesignTokens.Colors.Window;
+        panel.BackColor = root.BackColor;
         panel.Padding = new Padding(0, 13, 0, 0);
         for (int i = 0; i < controls.Length; i++)
         {
@@ -1237,7 +1590,7 @@ internal sealed class SettingsForm : Form
     {
         Panel panel = new Panel();
         panel.Dock = DockStyle.Fill;
-        panel.BackColor = DesignTokens.Colors.Window;
+        panel.BackColor = DesignTokens.Colors.Surface;
         button.Anchor = AnchorStyles.Left;
         button.Location = new Point(0, 8);
         panel.Controls.Add(button);
@@ -1257,7 +1610,8 @@ internal sealed class SettingsForm : Form
         label.Font = DesignTokens.CreateUIFont(10.5f, FontStyle.Bold);
         label.UseCompatibleTextRendering = true;
         label.ForeColor = DesignTokens.Colors.SubtleText;
-        label.BackColor = DesignTokens.Colors.Window;
+        label.BackColor = root.BackColor;
+        label.AutoEllipsis = true;
         root.Controls.Add(label, 0, row);
     }
 
@@ -2504,10 +2858,266 @@ internal sealed class SettingsForm : Form
         button.FlatStyle = FlatStyle.Flat;
         button.FlatAppearance.BorderColor = primary ? DesignTokens.Colors.Accent : DesignTokens.Colors.Border;
         button.FlatAppearance.BorderSize = 1;
+        button.FlatAppearance.MouseOverBackColor = primary ? DesignTokens.Colors.AccentBorder : DesignTokens.Colors.ControlActive;
+        button.FlatAppearance.MouseDownBackColor = primary ? DesignTokens.Colors.AccentSoft : DesignTokens.Colors.ControlPressed;
         button.BackColor = primary ? DesignTokens.Colors.Accent : DesignTokens.Colors.Control;
         button.ForeColor = primary ? DesignTokens.Colors.TextOnAccent : DesignTokens.Colors.Text;
         button.Font = DesignTokens.CreateUIFont(9.5f, FontStyle.Bold);
         button.UseCompatibleTextRendering = true;
         button.Margin = new Padding(DesignTokens.Spacing.SettingsButtonGap, 0, 0, 0);
+    }
+
+    private static GraphicsPath CreateRoundedRectanglePath(Rectangle bounds, int radius)
+    {
+        GraphicsPath path = new GraphicsPath();
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            return path;
+        }
+
+        int diameter = Math.Max(1, radius * 2);
+        Rectangle arc = new Rectangle(bounds.Left, bounds.Top, diameter, diameter);
+        path.AddArc(arc, 180, 90);
+        arc.X = bounds.Right - diameter;
+        path.AddArc(arc, 270, 90);
+        arc.Y = bounds.Bottom - diameter;
+        path.AddArc(arc, 0, 90);
+        arc.X = bounds.Left;
+        path.AddArc(arc, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, string lParam);
+
+    private sealed class SettingsPagePanel : Panel
+    {
+        private readonly HashSet<Control> wheelTargets = new HashSet<Control>();
+
+        public SettingsPagePanel()
+        {
+            this.SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw,
+                true);
+        }
+
+        protected override void OnControlAdded(ControlEventArgs e)
+        {
+            base.OnControlAdded(e);
+            AttachWheelTarget(e.Control);
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            if (ScrollByMouseWheelDelta(e.Delta))
+            {
+                if (e is HandledMouseEventArgs)
+                {
+                    ((HandledMouseEventArgs)e).Handled = true;
+                }
+
+                return;
+            }
+
+            base.OnMouseWheel(e);
+        }
+
+        public bool HasVerticalOverflow
+        {
+            get
+            {
+                int bottom = this.Padding.Top + this.Padding.Bottom;
+                for (int i = 0; i < this.Controls.Count; i++)
+                {
+                    Control control = this.Controls[i];
+                    if (control.Visible)
+                    {
+                        bottom = Math.Max(bottom, control.Bottom + control.Margin.Bottom + this.Padding.Bottom);
+                    }
+                }
+
+                return bottom > this.ClientSize.Height;
+            }
+        }
+
+        public int ScrollTop
+        {
+            get { return Math.Max(0, -this.AutoScrollPosition.Y); }
+        }
+
+        private void AttachWheelTarget(Control control)
+        {
+            if (control == null || control == this || !this.wheelTargets.Add(control))
+            {
+                return;
+            }
+
+            control.MouseWheel += OnDescendantMouseWheel;
+            control.ControlAdded += OnDescendantControlAdded;
+            control.Disposed += OnDescendantDisposed;
+            for (int i = 0; i < control.Controls.Count; i++)
+            {
+                AttachWheelTarget(control.Controls[i]);
+            }
+        }
+
+        private void OnDescendantControlAdded(object sender, ControlEventArgs e)
+        {
+            AttachWheelTarget(e.Control);
+        }
+
+        private void OnDescendantDisposed(object sender, EventArgs e)
+        {
+            Control control = sender as Control;
+            if (control == null)
+            {
+                return;
+            }
+
+            control.MouseWheel -= OnDescendantMouseWheel;
+            control.ControlAdded -= OnDescendantControlAdded;
+            control.Disposed -= OnDescendantDisposed;
+            this.wheelTargets.Remove(control);
+        }
+
+        private void OnDescendantMouseWheel(object sender, MouseEventArgs e)
+        {
+            if (ScrollByMouseWheelDelta(e.Delta) && e is HandledMouseEventArgs)
+            {
+                ((HandledMouseEventArgs)e).Handled = true;
+            }
+        }
+
+        public bool ScrollByMouseWheelDelta(int delta)
+        {
+            if (delta == 0)
+            {
+                return false;
+            }
+
+            int max = Math.Max(0, this.VerticalScroll.Maximum - this.VerticalScroll.LargeChange + 1);
+            if (max <= 0)
+            {
+                return false;
+            }
+
+            int notches = Math.Max(1, Math.Abs(delta) / 120);
+            int lines = SystemInformation.MouseWheelScrollLines;
+            int amount = lines <= 0
+                ? Math.Max(1, this.ClientSize.Height)
+                : Math.Max(24, lines * 28);
+            int current = Math.Max(0, -this.AutoScrollPosition.Y);
+            int next = current + (delta < 0 ? amount : -amount) * notches;
+            next = Math.Max(0, Math.Min(max, next));
+            if (next == current)
+            {
+                return true;
+            }
+
+            this.AutoScrollPosition = new Point(0, next);
+            this.Invalidate();
+            return true;
+        }
+    }
+
+    private sealed class SettingsNavigationPanel : FlowLayoutPanel
+    {
+        public SettingsNavigationPanel()
+        {
+            this.SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw |
+                ControlStyles.UserPaint,
+                true);
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            Rectangle bounds = new Rectangle(0, 0, this.Width - 1, this.Height - 1);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath path = CreateRoundedRectanglePath(bounds, DesignTokens.Radius.SettingsCard))
+            using (SolidBrush brush = new SolidBrush(DesignTokens.Colors.Surface))
+            {
+                e.Graphics.FillPath(brush, path);
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            Rectangle bounds = new Rectangle(0, 0, this.Width - 1, this.Height - 1);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath path = CreateRoundedRectanglePath(bounds, DesignTokens.Radius.SettingsCard))
+            using (Pen pen = new Pen(DesignTokens.Colors.Border, 1))
+            {
+                e.Graphics.DrawPath(pen, path);
+            }
+        }
+
+        public bool ScrollByMouseWheelDelta(int delta)
+        {
+            if (delta == 0)
+            {
+                return false;
+            }
+
+            int max = Math.Max(0, this.VerticalScroll.Maximum - this.VerticalScroll.LargeChange + 1);
+            if (max <= 0)
+            {
+                return false;
+            }
+
+            int current = Math.Max(0, -this.AutoScrollPosition.Y);
+            int next = current + (delta < 0 ? 42 : -42);
+            next = Math.Max(0, Math.Min(max, next));
+            if (next == current)
+            {
+                return true;
+            }
+
+            this.AutoScrollPosition = new Point(0, next);
+            this.Invalidate();
+            return true;
+        }
+    }
+
+    private sealed class SettingsSectionPanel : TableLayoutPanel
+    {
+        public SettingsSectionPanel()
+        {
+            this.SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw |
+                ControlStyles.UserPaint,
+                true);
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            Rectangle bounds = new Rectangle(0, 0, this.Width - 1, this.Height - 1);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath path = CreateRoundedRectanglePath(bounds, DesignTokens.Radius.SettingsCard))
+            using (SolidBrush brush = new SolidBrush(DesignTokens.Colors.Surface))
+            {
+                e.Graphics.FillPath(brush, path);
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            Rectangle bounds = new Rectangle(0, 0, this.Width - 1, this.Height - 1);
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath path = CreateRoundedRectanglePath(bounds, DesignTokens.Radius.SettingsCard))
+            using (Pen pen = new Pen(DesignTokens.White(DesignTokens.Alpha.WeakOutline), 1))
+            {
+                e.Graphics.DrawPath(pen, path);
+            }
+        }
     }
 }

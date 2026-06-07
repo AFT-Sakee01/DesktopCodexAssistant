@@ -481,6 +481,16 @@ internal static class NativeMethods
         out int opcodeValueType);
 
     [DllImport("wlanapi.dll")]
+    private static extern uint WlanGetNetworkBssList(
+        IntPtr clientHandle,
+        ref Guid interfaceGuid,
+        IntPtr dot11Ssid,
+        int dot11BssType,
+        [MarshalAs(UnmanagedType.Bool)] bool securityEnabled,
+        IntPtr reserved,
+        out IntPtr wlanBssList);
+
+    [DllImport("wlanapi.dll")]
     private static extern void WlanFreeMemory(IntPtr memory);
 
     [DllImport("wlanapi.dll")]
@@ -693,6 +703,39 @@ internal static class NativeMethods
 
         public WLAN_ASSOCIATION_ATTRIBUTES wlanAssociationAttributes;
         public WLAN_SECURITY_ATTRIBUTES wlanSecurityAttributes;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WLAN_RATE_SET
+    {
+        public uint uRateSetLength;
+
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 126)]
+        public ushort[] usRateSet;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WLAN_BSS_ENTRY
+    {
+        public DOT11_SSID dot11Ssid;
+        public uint uPhyId;
+
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 6)]
+        public byte[] dot11Bssid;
+
+        public int dot11BssType;
+        public int dot11BssPhyType;
+        public int lRssi;
+        public uint uLinkQuality;
+        public byte bInRegDomain;
+        public ushort usBeaconPeriod;
+        public ulong ullTimestamp;
+        public ulong ullHostTimestamp;
+        public ushort usCapabilityInformation;
+        public uint ulChCenterFrequency;
+        public WLAN_RATE_SET wlanRateSet;
+        public uint ulIeOffset;
+        public uint ulIeSize;
     }
 
     private enum AudioDataFlow
@@ -1398,6 +1441,13 @@ internal static class NativeMethods
             details.SignalQuality = Math.Max(0, Math.Min(100, (int)association.wlanSignalQuality));
             details.TxRateKbps = association.ulTxRate;
             details.RxRateKbps = association.ulRxRate;
+            int rssiDbm;
+            if (TryGetConnectedWifiRssi(clientHandle, interfaceGuid, details.Bssid, out rssiDbm))
+            {
+                details.RssiKnown = true;
+                details.RssiDbm = rssiDbm;
+            }
+
             return true;
         }
         catch
@@ -1441,6 +1491,70 @@ internal static class NativeMethods
 
         quality = details.SignalQuality;
         return true;
+    }
+
+    private static bool TryGetConnectedWifiRssi(IntPtr clientHandle, Guid interfaceGuid, string connectedBssid, out int rssiDbm)
+    {
+        const uint success = 0;
+        const int dot11BssTypeAny = 3;
+        const int maxReasonableBssEntries = 4096;
+
+        rssiDbm = 0;
+        if (clientHandle == IntPtr.Zero || string.IsNullOrWhiteSpace(connectedBssid))
+        {
+            return false;
+        }
+
+        IntPtr bssList = IntPtr.Zero;
+        try
+        {
+            Guid queryInterfaceGuid = interfaceGuid;
+            uint status = WlanGetNetworkBssList(
+                clientHandle,
+                ref queryInterfaceGuid,
+                IntPtr.Zero,
+                dot11BssTypeAny,
+                false,
+                IntPtr.Zero,
+                out bssList);
+            if (status != success || bssList == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            int count = Marshal.ReadInt32(bssList, 4);
+            if (count <= 0 || count > maxReasonableBssEntries)
+            {
+                return false;
+            }
+
+            int entrySize = Marshal.SizeOf(typeof(WLAN_BSS_ENTRY));
+            IntPtr entryPtr = new IntPtr(bssList.ToInt64() + 8);
+            for (int i = 0; i < count; i++)
+            {
+                WLAN_BSS_ENTRY entry = (WLAN_BSS_ENTRY)Marshal.PtrToStructure(entryPtr, typeof(WLAN_BSS_ENTRY));
+                if (string.Equals(FormatBssid(entry.dot11Bssid), connectedBssid, StringComparison.OrdinalIgnoreCase))
+                {
+                    rssiDbm = entry.lRssi;
+                    return true;
+                }
+
+                entryPtr = new IntPtr(entryPtr.ToInt64() + entrySize);
+            }
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            if (bssList != IntPtr.Zero)
+            {
+                WlanFreeMemory(bssList);
+            }
+        }
+
+        return false;
     }
 
     private static string DecodeSsid(DOT11_SSID ssid)

@@ -2,7 +2,7 @@
 
 ## 1. 文档范围
 
-本文以 Codex Developer Assistant Window on WOA 当前源码为准，说明性能数据从 Windows 采样到界面显示的完整链路、三档性能模式、近期优化，以及以下窗口的共同运行机制：
+本文以 Desktop Codex Assistant 当前源码为准，说明性能数据从 Windows 采样到界面显示的完整链路、三档性能模式、近期优化，以及以下窗口的共同运行机制：
 
 - 主性能窗口 `WidgetForm`
 - Codex 监测窗口 `CodexRadarForm`
@@ -236,15 +236,22 @@ diskAlertPercent = min(writeBusyPercent, readBusyPercent)
 | 栏目 | 主要数据源 | 显示和图表 | 告警值 |
 | --- | --- | --- | --- |
 | CPU | Processor/Processor Information PDH | 总占用曲线、每逻辑核心柱状图、实时/基准频率 | CPU 柱状图自身颜色规则，不使用通用面板红底 |
-| MEMORY | Windows 内存状态及硬件信息 | `MEMORY`、占用率、已用/总量 | 内存占用率 |
+| MEMORY | Windows 内存状态及 `Win32_PhysicalMemory` | 厂商、频率、占用率、已用/总量 | 内存占用率 |
 | DISK | PhysicalDisk PDH 及卷容量 | WT/RD 双曲线、整数容量行 | 读写忙碌度较小值 |
-| NETWORK | Network Interface PDH、NetworkInterface API、Wi-Fi API | SSID/接口名、UP/DL 双曲线 | 断线状态，不使用通用高负载告警 |
+| NETWORK | Network Interface PDH、NetworkInterface API、Wi-Fi API | SSID/接口名、UP/DL 双曲线；Wi-Fi 时增加 RSSI 行 | 断线状态，不使用通用高负载告警 |
 | GPU | GPU Engine/Adapter Memory PDH | GPU 与显存双曲线 | GPU/显存占用率较大值 |
 | NPU | NPU 计数器，必要时从 GPU Engine LUID 分类 | NPU 与共享/专用内存双曲线 | NPU/内存占用率较大值 |
 
 历史曲线最多保留 34 个点。CPU、内存、GPU、NPU 使用百分比；网络和磁盘历史统一保存为 `Kbps`，绘图时按当前历史最大值自动缩放。
 
-主窗口文本支持三行和四行布局。磁盘使用四等分行高，其他栏目继续使用原有三行布局，避免四行支持改变网络和内存的字号及间距。
+主窗口文本支持三行和四行布局。磁盘容量和 Wi-Fi RSSI 使用四等分行高；其他栏目继续使用原有三行布局，避免四行支持改变非 Wi-Fi 网络和内存的字号及间距。
+
+Wi-Fi RSSI 读取方式：
+
+- 先通过 `WlanQueryInterface` 读取当前连接详情、SSID、BSSID 和链路速率。
+- 再通过 `WlanGetNetworkBssList` 读取当前可见 BSS 列表。
+- 使用当前 BSSID 匹配对应 `WLAN_BSS_ENTRY.lRssi`，显示为 `RSSI -45dBm` 这类格式。
+- 主性能窗口缓存主网络状态，Wi-Fi RSSI 约每 5 秒刷新一次；网络切换事件会立即触发重新检测。
 
 ### 5.2 主窗口告警层
 
@@ -427,12 +434,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
 停止正在运行的实例：
 
 ```powershell
-.\CodexDeveloperAssistantWindowOnWOA.exe --stop
+.\DesktopCodexAssistant.exe --stop
 ```
 
 日志目录：
 
-`%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA`
+`%LOCALAPPDATA%\DesktopCodexAssistant`
 
 主要验证项：
 
@@ -453,7 +460,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
 可运行采样自检：
 
 ```powershell
-.\CodexDeveloperAssistantWindowOnWOA.exe --test
+.\DesktopCodexAssistant.exe --test
 ```
 
 自检会输出 CPU、内存、磁盘 WT/RD、网络 UP/DL、GPU 和 NPU 的一次采样结果。它验证计数器可读取，不代表短时间内每个计数器都必须非零。

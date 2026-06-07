@@ -29,7 +29,6 @@ internal static class Program
     private static int Main(string[] args)
     {
         MigrateLegacyStorage();
-        MigrateLegacyStartup();
 
         int restartAfterPid;
         if (TryGetIntArg(args, "--restart-after-pid", out restartAfterPid))
@@ -44,7 +43,7 @@ internal static class Program
         {
             LogInfo("Stop requested.");
             SignalStop();
-            SignalStop(ProductIdentity.LegacyStopEventName);
+            SignalLegacyStops();
             return 0;
         }
 
@@ -78,8 +77,8 @@ internal static class Program
             return TestLoggerStoragePolicy();
         }
 
-        // Stop a pre-rename process before acquiring the new product mutex.
-        SignalStop(ProductIdentity.LegacyStopEventName);
+        // Stop pre-rename processes before acquiring the new product mutex.
+        SignalLegacyStops();
 
         // The named mutex prevents duplicate layered windows; the named event provides a clean cross-process stop path.
         bool createdNew;
@@ -219,7 +218,7 @@ internal static class Program
             }
 
             runKey.SetValue(RunValueName, command, RegistryValueKind.String);
-            runKey.DeleteValue(ProductIdentity.LegacyRunValueName, false);
+            DeleteLegacyStartupValues(runKey);
             LogInfo("Startup registry value set: " + command);
         }
     }
@@ -231,7 +230,7 @@ internal static class Program
             if (runKey != null)
             {
                 runKey.DeleteValue(RunValueName, false);
-                runKey.DeleteValue(ProductIdentity.LegacyRunValueName, false);
+                DeleteLegacyStartupValues(runKey);
                 LogInfo("Startup registry value removed.");
             }
         }
@@ -342,6 +341,14 @@ internal static class Program
         SignalStop(StopEventName);
     }
 
+    private static void SignalLegacyStops()
+    {
+        for (int i = 0; i < ProductIdentity.LegacyStopEventNames.Length; i++)
+        {
+            SignalStop(ProductIdentity.LegacyStopEventNames[i]);
+        }
+    }
+
     private static void SignalStop(string eventName)
     {
         try
@@ -369,8 +376,11 @@ internal static class Program
             {
                 Thread.Sleep(1100);
                 PerfSnapshot snapshot = sampler.Sample();
+                string rssi = snapshot.NetworkIsWifi
+                    ? (snapshot.NetworkRssiKnown ? snapshot.NetworkRssiDbm.ToString(CultureInfo.InvariantCulture) + "dBm" : "--dBm")
+                    : "n/a";
                 string sampleText = string.Format(
-                    "{0} {1:0}% {2} | Memory {3:0.0}/{4:0.0} GB ({5:0}%) | Disk WT {6} RD {7} | GPU {8:0}% {9:0.0}/{10:0.#} GB | NPU {11:0}% {12:0.0}/{13:0.#} GB | Network {14} UP {15} DL {16}",
+                    "{0} {1:0}% {2} | Memory {3:0.0}/{4:0.0} GB ({5:0}%) | Disk WT {6} RD {7} | GPU {8:0}% {9:0.0}/{10:0.#} GB | NPU {11:0}% {12:0.0}/{13:0.#} GB | Network {14} UP {15} DL {16} RSSI {17}",
                     snapshot.CpuName,
                     snapshot.CpuPercent,
                     FormatCpuFrequencyPair(snapshot.CpuFrequencyGhz, snapshot.CpuBaseFrequencyGhz),
@@ -387,7 +397,8 @@ internal static class Program
                     snapshot.NpuMemoryTotalGb,
                     snapshot.NetworkConnected ? "connected" : "disconnected",
                     NetworkRateFormatter.Format(snapshot.NetworkSentBytesPerSecond),
-                    NetworkRateFormatter.Format(snapshot.NetworkReceivedBytesPerSecond));
+                    NetworkRateFormatter.Format(snapshot.NetworkReceivedBytesPerSecond),
+                    rssi);
                 Console.WriteLine(sampleText);
                 LogInfo("Test sample: " + sampleText);
                 Console.WriteLine("Process: {0}", NativeMethods.DescribeProcessMachine());
@@ -425,22 +436,32 @@ internal static class Program
         try
         {
             string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            string legacyDirectory = Path.Combine(localAppData, ProductIdentity.LegacyStorageDirectoryName);
             string currentDirectory = Path.Combine(localAppData, ProductIdentity.MachineName);
-            if (Directory.Exists(currentDirectory) || !Directory.Exists(legacyDirectory))
+            if (Directory.Exists(currentDirectory))
             {
                 return;
             }
 
-            Directory.CreateDirectory(currentDirectory);
-            string[] files = Directory.GetFiles(legacyDirectory);
-            for (int i = 0; i < files.Length; i++)
+            for (int legacyIndex = 0; legacyIndex < ProductIdentity.LegacyStorageDirectoryNames.Length; legacyIndex++)
             {
-                string destination = Path.Combine(currentDirectory, Path.GetFileName(files[i]));
-                if (!File.Exists(destination))
+                string legacyDirectory = Path.Combine(localAppData, ProductIdentity.LegacyStorageDirectoryNames[legacyIndex]);
+                if (!Directory.Exists(legacyDirectory))
                 {
-                    File.Copy(files[i], destination, false);
+                    continue;
                 }
+
+                Directory.CreateDirectory(currentDirectory);
+                string[] files = Directory.GetFiles(legacyDirectory);
+                for (int i = 0; i < files.Length; i++)
+                {
+                    string destination = Path.Combine(currentDirectory, Path.GetFileName(files[i]));
+                    if (!File.Exists(destination))
+                    {
+                        File.Copy(files[i], destination, false);
+                    }
+                }
+
+                return;
             }
         }
         catch
@@ -449,37 +470,11 @@ internal static class Program
         }
     }
 
-    private static void MigrateLegacyStartup()
+    private static void DeleteLegacyStartupValues(RegistryKey runKey)
     {
-        try
+        for (int i = 0; i < ProductIdentity.LegacyRunValueNames.Length; i++)
         {
-            using (RegistryKey runKey = Registry.CurrentUser.OpenSubKey(RunKeyPath, true))
-            {
-                if (runKey == null || runKey.GetValue(RunValueName) != null)
-                {
-                    return;
-                }
-
-                object legacyValue = runKey.GetValue(ProductIdentity.LegacyRunValueName);
-                if (legacyValue == null)
-                {
-                    return;
-                }
-
-                string legacyCommand = legacyValue.ToString();
-                string command = Quote(Application.ExecutablePath);
-                if (legacyCommand.IndexOf("--desktop-parent", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    command += " --desktop-parent";
-                }
-
-                runKey.SetValue(RunValueName, command, RegistryValueKind.String);
-                runKey.DeleteValue(ProductIdentity.LegacyRunValueName, false);
-            }
-        }
-        catch
-        {
-            // Startup migration is best-effort and can be retried by Install.ps1.
+            runKey.DeleteValue(ProductIdentity.LegacyRunValueNames[i], false);
         }
     }
 

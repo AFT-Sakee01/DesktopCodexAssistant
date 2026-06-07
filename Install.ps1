@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$logDir = Join-Path $env:LOCALAPPDATA "CodexDeveloperAssistantWindowOnWOA"
+$logDir = Join-Path $env:LOCALAPPDATA "DesktopCodexAssistant"
 $log = Join-Path $logDir "install.log"
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
@@ -54,15 +54,15 @@ function Write-InstallLog {
     Write-Host $Message
 }
 
-$exe = Join-Path $PSScriptRoot "CodexDeveloperAssistantWindowOnWOA.exe"
+$exe = Join-Path $PSScriptRoot "DesktopCodexAssistant.exe"
 if (-not (Test-Path -LiteralPath $exe)) {
     Write-InstallLog "Executable missing; building $exe"
     & (Join-Path $PSScriptRoot "Build-Arm64.ps1") -OutputPath $exe
 }
 
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$runValue = "CodexDeveloperAssistantWindowOnWOA"
-$legacyRunValue = "DesktopPerfWidgetLiteArm64"
+$runValue = "DesktopCodexAssistant"
+$legacyRunValues = @("CodexDeveloperAssistantWindowOnWOA", "DesktopPerfWidgetLiteArm64")
 $startupCommand = '"' + $exe + '"'
 if ($DesktopParent) {
     $startupCommand += " --desktop-parent"
@@ -70,7 +70,9 @@ if ($DesktopParent) {
 
 New-Item -Path $runKey -Force | Out-Null
 New-ItemProperty -Path $runKey -Name $runValue -PropertyType String -Value $startupCommand -Force | Out-Null
-Remove-ItemProperty -Path $runKey -Name $legacyRunValue -ErrorAction SilentlyContinue
+foreach ($legacyRunValue in $legacyRunValues) {
+    Remove-ItemProperty -Path $runKey -Name $legacyRunValue -ErrorAction SilentlyContinue
+}
 Write-InstallLog "Startup entry set: $startupCommand"
 
 Start-Process -FilePath $exe -ArgumentList "--stop" -Wait

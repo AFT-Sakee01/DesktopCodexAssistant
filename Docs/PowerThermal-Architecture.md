@@ -12,7 +12,7 @@
 | `Interop/NativeMethods.cs` | Windows 电源通知、有效电源模式通知和分层窗口接口 |
 | `Settings/WidgetSettings.cs` | 三档性能模式及公共刷新间隔 |
 | `Settings/SettingsForm.cs` | 性能模式、窗口尺寸、透明度、延展方向和测试状态 |
-| `CodexDeveloperAssistantWindowOnWOA.cs` | 进程优先级与 Windows Power Throttling |
+| `DesktopCodexAssistant.cs` | 进程优先级与 Windows Power Throttling |
 | `Core/WidgetForm.cs` | 子窗口生命周期、显示器恢复和设置分发 |
 
 本文中的“性能模式”对应内部枚举 `WidgetPerformanceMode.Smooth`。保留旧枚举名是为了兼容已有设置文件。
@@ -268,7 +268,7 @@ Effective Power Mode 优先注册接口版本 2，失败时回退版本 1。无�
 日志目录：
 
 ```text
-%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA
+%LOCALAPPDATA%\DesktopCodexAssistant
 ```
 
 ## 11. 测试入口
@@ -283,8 +283,8 @@ Effective Power Mode 优先注册接口版本 2，失败时回退版本 1。无�
 建议修改后至少执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPath .\CodexDeveloperAssistantWindowOnWOA-test.exe
-.\CodexDeveloperAssistantWindowOnWOA-test.exe --test
+powershell -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPath .\DesktopCodexAssistant-test.exe
+.\DesktopCodexAssistant-test.exe --test
 ```
 
 运行检查：

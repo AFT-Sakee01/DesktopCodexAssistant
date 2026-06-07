@@ -50,6 +50,7 @@ internal sealed class PdhSampler : IDisposable
     private readonly HashSet<string> npuLuidTokens;
     private NetworkState cachedNetworkState;
     private int networkStateRefreshRequested;
+    private DateTime lastNetworkStateRefreshUtc;
     private DateTime lastDiskUsageRefreshUtc;
     private double cachedDiskCapacityPercent;
     private double cachedDiskUsedGb;
@@ -62,6 +63,7 @@ internal sealed class PdhSampler : IDisposable
     private double cachedNpuMemoryUsedGb;
     private double cachedNpuMemoryPercent;
     private bool disposed;
+    private const int WifiRssiRefreshIntervalMs = 5000;
 
     public PdhSampler()
     {
@@ -159,6 +161,7 @@ internal sealed class PdhSampler : IDisposable
         }
 
         this.cachedNetworkState = DetectNetworkState();
+        this.lastNetworkStateRefreshUtc = DateTime.UtcNow;
         GpuInfo gpuInfo = DetectGpuInfo();
         this.gpuName = gpuInfo.Name;
         this.gpuMemoryTotalGb = gpuInfo.MemoryTotalGb;
@@ -227,9 +230,12 @@ internal sealed class PdhSampler : IDisposable
         snapshot.DiskReadBytesPerSecond = Math.Max(0.0, ReadCounter(this.diskReadCounter));
         snapshot.DiskWritePercent = Clamp(ReadCounter(this.diskWritePercentCounter), 0.0, 100.0);
         snapshot.DiskReadPercent = Clamp(ReadCounter(this.diskReadPercentCounter), 0.0, 100.0);
-        NetworkState networkState = GetCachedNetworkState();
+        NetworkState networkState = GetCachedNetworkState(nowUtc);
         snapshot.NetworkName = networkState.Name;
         snapshot.NetworkConnected = networkState.Connected;
+        snapshot.NetworkIsWifi = networkState.IsWifi;
+        snapshot.NetworkRssiKnown = networkState.RssiKnown;
+        snapshot.NetworkRssiDbm = networkState.RssiDbm;
         snapshot.DiskName = this.diskInfo.Name;
         snapshot.GpuName = this.gpuName;
         snapshot.NpuName = this.npuName;
@@ -337,11 +343,20 @@ internal sealed class PdhSampler : IDisposable
         Interlocked.Exchange(ref this.networkStateRefreshRequested, 1);
     }
 
-    private NetworkState GetCachedNetworkState()
+    private NetworkState GetCachedNetworkState(DateTime nowUtc)
     {
-        if (Interlocked.Exchange(ref this.networkStateRefreshRequested, 0) != 0)
+        bool refreshRequested = Interlocked.Exchange(ref this.networkStateRefreshRequested, 0) != 0;
+        bool rssiRefreshDue =
+            this.cachedNetworkState != null &&
+            this.cachedNetworkState.Connected &&
+            this.cachedNetworkState.IsWifi &&
+            (this.lastNetworkStateRefreshUtc == DateTime.MinValue ||
+             (nowUtc - this.lastNetworkStateRefreshUtc).TotalMilliseconds >= WifiRssiRefreshIntervalMs);
+
+        if (refreshRequested || rssiRefreshDue || this.cachedNetworkState == null)
         {
             this.cachedNetworkState = DetectNetworkState();
+            this.lastNetworkStateRefreshUtc = nowUtc;
         }
 
         return this.cachedNetworkState;
@@ -693,11 +708,17 @@ internal sealed class PdhSampler : IDisposable
             if (best != null)
             {
                 state.Connected = true;
-                string ssid = GetWifiSsid(best);
-                if (!string.IsNullOrEmpty(ssid))
+                state.IsWifi = best.NetworkInterfaceType == NetworkInterfaceType.Wireless80211;
+                WifiConnectionDetails wifi = GetWifiDetails(best);
+                if (wifi != null)
                 {
-                    state.Name = ssid;
-                    return state;
+                    state.RssiKnown = wifi.RssiKnown;
+                    state.RssiDbm = wifi.RssiDbm;
+                    if (!string.IsNullOrEmpty(wifi.Ssid))
+                    {
+                        state.Name = wifi.Ssid;
+                        return state;
+                    }
                 }
 
                 if (!string.IsNullOrEmpty(best.Name))
@@ -821,11 +842,11 @@ internal sealed class PdhSampler : IDisposable
             identity.IndexOf("wan miniport", StringComparison.Ordinal) >= 0;
     }
 
-    private static string GetWifiSsid(NetworkInterface networkInterface)
+    private static WifiConnectionDetails GetWifiDetails(NetworkInterface networkInterface)
     {
         if (networkInterface == null || networkInterface.NetworkInterfaceType != NetworkInterfaceType.Wireless80211)
         {
-            return string.Empty;
+            return null;
         }
 
         Guid interfaceGuid;
@@ -835,10 +856,11 @@ internal sealed class PdhSampler : IDisposable
         }
         catch
         {
-            return string.Empty;
+            return null;
         }
 
-        return NativeMethods.TryGetConnectedWifiSsid(interfaceGuid);
+        WifiConnectionDetails details;
+        return NativeMethods.TryGetConnectedWifiDetails(interfaceGuid, out details) ? details : null;
     }
 
     private static CpuInfo DetectCpuInfo()

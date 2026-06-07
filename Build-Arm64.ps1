@@ -1,5 +1,5 @@
 param(
-    [string]$OutputPath = (Join-Path $PSScriptRoot "CodexDeveloperAssistantWindowOnWOA.exe")
+    [string]$OutputPath = (Join-Path $PSScriptRoot "DesktopCodexAssistant.exe")
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,7 +9,7 @@ $compilerCandidates = @(
     (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\17\BuildTools\MSBuild\Current\Bin\Roslyn\csc.exe"),
     (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\Roslyn\csc.exe")
 )
-$mainSource = Join-Path $PSScriptRoot "CodexDeveloperAssistantWindowOnWOA.cs"
+$mainSource = Join-Path $PSScriptRoot "DesktopCodexAssistant.cs"
 $sourceDirectories = @(
     "Core",
     "Settings",

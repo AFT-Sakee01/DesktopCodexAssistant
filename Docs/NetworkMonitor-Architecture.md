@@ -256,7 +256,7 @@ reader 监听：
 独立日志：
 
 ```text
-%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA\gfw-probe.log
+%LOCALAPPDATA%\DesktopCodexAssistant\gfw-probe.log
 ```
 
 每轮日志前保留空行，第一行记录时间和触发来源，之后记录控制站点、候选站点和总结。

@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$logDir = Join-Path $env:LOCALAPPDATA "CodexDeveloperAssistantWindowOnWOA"
+$logDir = Join-Path $env:LOCALAPPDATA "DesktopCodexAssistant"
 $log = Join-Path $logDir "install.log"
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 
@@ -53,14 +53,16 @@ function Write-InstallLog {
     Write-Host $Message
 }
 
-$exe = Join-Path $PSScriptRoot "CodexDeveloperAssistantWindowOnWOA.exe"
+$exe = Join-Path $PSScriptRoot "DesktopCodexAssistant.exe"
 $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-$runValue = "CodexDeveloperAssistantWindowOnWOA"
-$legacyRunValue = "DesktopPerfWidgetLiteArm64"
+$runValue = "DesktopCodexAssistant"
+$legacyRunValues = @("CodexDeveloperAssistantWindowOnWOA", "DesktopPerfWidgetLiteArm64")
 
 if (Test-Path -LiteralPath $runKey) {
     Remove-ItemProperty -Path $runKey -Name $runValue -ErrorAction SilentlyContinue
-    Remove-ItemProperty -Path $runKey -Name $legacyRunValue -ErrorAction SilentlyContinue
+    foreach ($legacyRunValue in $legacyRunValues) {
+        Remove-ItemProperty -Path $runKey -Name $legacyRunValue -ErrorAction SilentlyContinue
+    }
 }
 Write-InstallLog "Startup entry removed: $runValue"
 
