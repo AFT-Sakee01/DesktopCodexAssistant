@@ -251,8 +251,14 @@ internal sealed class OperationForm : Form
 
     public void RecoverAfterDisplayResume()
     {
+        ResetDisplayRenderResources();
         PositionOperationWindow();
         RenderLayeredWindow();
+    }
+
+    public void PrepareForDisplaySuspend()
+    {
+        ResetDisplayRenderResources();
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -2049,6 +2055,12 @@ internal sealed class OperationForm : Form
             this.renderBitmap.Dispose();
             this.renderBitmap = null;
         }
+    }
+
+    private void ResetDisplayRenderResources()
+    {
+        DisposeRenderBuffer();
+        this.layeredUpdateFailureLogged = false;
     }
 
     private void ConfigureGraphics(Graphics g)

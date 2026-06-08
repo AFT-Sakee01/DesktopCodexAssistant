@@ -2,7 +2,7 @@
 
 This file is the primary Codex-readable maintenance log for Desktop Codex Assistant. Read it before making changes in this program directory.
 
-Current version: 1.0.2.2
+Current version: 1.0.2.3
 
 Version rule: start at 1.0.0.0. After each completed fix, increment the last segment by 1. The last segment can go up to 99. After 1.0.0.99, carry to 1.0.1.00. Keep `Core/ProductIdentity.cs` assembly, file, and informational versions synchronized with the maintenance log version.
 
@@ -71,3 +71,13 @@ From the second line onward, write the fix details or discovered issue. Leave on
 验证结果: ARM64 正式构建通过；DesktopCodexAssistant.exe SHA1 为 AE2FEAE77A07FE52800770F81096682FE94B977A；PE Machine=ARM64；程序集版本为 1.0.2.2。
 验证结果: x64 正式构建通过；DesktopCodexAssistant-x64.exe SHA1 为 196154D99A0089B7CEB7DBB367036CD4E991EE84；PE Machine=x64；程序集版本为 1.0.2.2。
 验证结果: ARM64 和 x64 的 --test-layout、--test-logger、--test 均返回退出码 0；ARM64 与 x64 正常启动-停止烟测均返回退出码 0；应用 error.log 未新增错误记录。
+
+时间: 2026-06-08 13:06:22 +09:00 | 版本: 1.0.2.3 | 窗口: 全局 | 模块: 息屏/休眠恢复
+定位结论: 息屏/休眠后无法恢复的高风险点是 layered window 复用的 native memory DC/HBITMAP 可能跨显示驱动或 DWM 恢复后失效，而原恢复路径只将托管 Bitmap 标记为需要重绘；另一个风险是 `--desktop-parent` 模式下旧 WorkerW 父窗口失效后没有先脱离旧父窗口再重新挂接。
+修正内容: `NativeMethods.LayeredBitmapSurface` 增加 Reset，恢复时释放并重建 native DC/HBITMAP；主窗口、CodexRadar、功耗、网络、连接检测均在恢复时重建托管渲染缓存并重置 native surface，操作面板重建托管 Bitmap 并恢复失败日志状态。
+修正内容: 屏幕关闭或系统挂起时主动释放主窗口和子窗口显示资源；显示恢复改为三轮延迟恢复，覆盖 DWM、显示驱动和 WorkerW 稍晚恢复的情况。
+修正内容: `--desktop-parent` 恢复时先 `SetParent(..., IntPtr.Zero)` 脱离旧桌面宿主，恢复普通顶层窗口样式，再尝试挂接新的桌面宿主；后续恢复轮继续重试挂接。
+修正内容: 新增 `--test-display-recovery`，使用真实 layered-window API 验证 native surface reset 前后均可更新窗口。
+验证结果: ARM64 正式构建通过；DesktopCodexAssistant.exe SHA1 为 44293426BF026A813ED6989783E94007CE546186；PE Machine=ARM64；程序集版本为 1.0.2.3。
+验证结果: x64 正式构建通过；DesktopCodexAssistant-x64.exe SHA1 为 8987E69C1576BE64D082B80F4540D0DA43BCD97A；PE Machine=x64；程序集版本为 1.0.2.3。
+验证结果: ARM64 与 x64 的 --test-display-recovery、--test-layout、--test-logger、--test 均返回退出码 0；ARM64 普通模式、ARM64 --desktop-parent 模式、x64 普通模式的恢复消息烟测均返回退出码 0，日志记录三轮恢复和 desktop-parent 脱离/重挂接；ARM64 suspend/resume 消息烟测返回退出码 0，日志记录 Display resources released. Reason=power suspend 与三轮恢复；应用 error.log 未新增错误记录。

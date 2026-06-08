@@ -19,6 +19,8 @@ using Microsoft.Win32;
 internal sealed class WidgetForm : Form
 {
     private const int DisplayRecoveryDelayMs = 350;
+    private const int DisplayRecoveryRetryDelayMs = 1500;
+    private const int DisplayRecoveryMaxAttempts = 3;
     private const int SampleDiagnosticIntervalMinutes = 15;
     private static readonly string[] HardwareVendorPrefixes = new string[]
     {
@@ -114,6 +116,7 @@ internal sealed class WidgetForm : Form
     private bool formClosing;
     private IntPtr displayPowerNotificationHandle;
     private string pendingDisplayRecoveryReason = string.Empty;
+    private int pendingDisplayRecoveryAttempt;
 
     public WidgetForm(PdhSampler sampler, EventWaitHandle stopEvent, WidgetSettings settings, bool useDesktopParent)
     {
@@ -361,6 +364,8 @@ internal sealed class WidgetForm : Form
         if (eventType == NativeMethods.PBT_APMSUSPEND)
         {
             this.displayRecoveryTimer.Stop();
+            this.pendingDisplayRecoveryAttempt = 0;
+            PrepareForDisplayInactive("power suspend");
             return;
         }
 
@@ -381,10 +386,18 @@ internal sealed class WidgetForm : Form
             (NativeMethods.POWERBROADCAST_SETTING)Marshal.PtrToStructure(
                 dataPtr,
                 typeof(NativeMethods.POWERBROADCAST_SETTING));
-        if (setting.PowerSetting == NativeMethods.GUID_CONSOLE_DISPLAY_STATE && setting.Data == 1)
+        if (setting.PowerSetting != NativeMethods.GUID_CONSOLE_DISPLAY_STATE)
+        {
+            return;
+        }
+
+        if (setting.Data == 1)
         {
             ScheduleDisplayRecovery("display powered on");
+            return;
         }
+
+        PrepareForDisplayInactive("display powered off");
     }
 
     private void OnSystemSessionSwitch(object sender, SessionSwitchEventArgs e)
@@ -421,6 +434,8 @@ internal sealed class WidgetForm : Form
         }
 
         this.pendingDisplayRecoveryReason = reason ?? string.Empty;
+        this.pendingDisplayRecoveryAttempt = 0;
+        this.displayRecoveryTimer.Interval = DisplayRecoveryDelayMs;
         this.displayRecoveryTimer.Stop();
         this.displayRecoveryTimer.Start();
     }
@@ -428,10 +443,30 @@ internal sealed class WidgetForm : Form
     private void OnDisplayRecoveryTimerTick(object sender, EventArgs e)
     {
         this.displayRecoveryTimer.Stop();
-        RecoverAfterDisplayResume();
+        this.pendingDisplayRecoveryAttempt++;
+        int attempt = this.pendingDisplayRecoveryAttempt;
+        RecoverAfterDisplayResume(attempt);
+
+        if (!this.formClosing &&
+            !this.IsDisposed &&
+            this.IsHandleCreated &&
+            attempt < DisplayRecoveryMaxAttempts)
+        {
+            this.displayRecoveryTimer.Interval = DisplayRecoveryRetryDelayMs;
+            this.displayRecoveryTimer.Start();
+            return;
+        }
+
+        Program.LogInfo(
+            "Display recovery completed. Reason=" +
+            this.pendingDisplayRecoveryReason +
+            ", Attempts=" +
+            attempt.ToString(CultureInfo.InvariantCulture));
+        this.pendingDisplayRecoveryReason = string.Empty;
+        this.pendingDisplayRecoveryAttempt = 0;
     }
 
-    private void RecoverAfterDisplayResume()
+    private void RecoverAfterDisplayResume(int attempt)
     {
         if (this.formClosing || this.IsDisposed || !this.IsHandleCreated)
         {
@@ -440,7 +475,7 @@ internal sealed class WidgetForm : Form
 
         if (this.useDesktopParent)
         {
-            this.desktopAttached = false;
+            DetachFromDesktopLayer("display recovery");
             AttachToDesktopLayer();
         }
 
@@ -448,7 +483,7 @@ internal sealed class WidgetForm : Form
         ApplyClickThroughStyle();
         ApplyDisplayLayoutForCurrentWorkArea();
         PositionWidget();
-        this.renderBufferValid = false;
+        ResetDisplayRenderResources();
         RenderLayeredWindow();
 
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
@@ -476,8 +511,45 @@ internal sealed class WidgetForm : Form
             this.operationForm.RecoverAfterDisplayResume();
         }
 
-        Program.LogInfo("Display recovery completed. Reason=" + this.pendingDisplayRecoveryReason);
-        this.pendingDisplayRecoveryReason = string.Empty;
+        Program.LogInfo(
+            "Display recovery pass completed. Reason=" +
+            this.pendingDisplayRecoveryReason +
+            ", Attempt=" +
+            attempt.ToString(CultureInfo.InvariantCulture) +
+            "/" +
+            DisplayRecoveryMaxAttempts.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private void PrepareForDisplayInactive(string reason)
+    {
+        ResetDisplayRenderResources();
+
+        if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
+        {
+            this.codexRadarForm.PrepareForDisplaySuspend();
+        }
+
+        if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
+        {
+            this.powerThermalForm.PrepareForDisplaySuspend();
+        }
+
+        if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
+        {
+            this.networkMonitorForm.PrepareForDisplaySuspend();
+        }
+
+        if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
+        {
+            this.connectionCheckForm.PrepareForDisplaySuspend();
+        }
+
+        if (this.operationForm != null && !this.operationForm.IsDisposed)
+        {
+            this.operationForm.PrepareForDisplaySuspend();
+        }
+
+        Program.LogInfo("Display resources released. Reason=" + reason);
     }
 
     private bool ApplyDisplayLayoutForCurrentWorkArea()
@@ -671,8 +743,53 @@ internal sealed class WidgetForm : Form
         int style = NativeMethods.GetWindowLong(this.Handle, NativeMethods.GWL_STYLE);
         style = (style | NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE) & ~NativeMethods.WS_POPUP;
         NativeMethods.SetWindowLong(this.Handle, NativeMethods.GWL_STYLE, style);
+        NativeMethods.SetWindowPos(
+            this.Handle,
+            NativeMethods.HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SWP_NOACTIVATE |
+            NativeMethods.SWP_NOMOVE |
+            NativeMethods.SWP_NOSIZE |
+            NativeMethods.SWP_NOOWNERZORDER |
+            NativeMethods.SWP_FRAMECHANGED |
+            NativeMethods.SWP_SHOWWINDOW);
         this.desktopAttached = true;
         Program.LogInfo("Attached to desktop host. Host=0x" + desktopHost.ToInt64().ToString("X"));
+    }
+
+    private void DetachFromDesktopLayer(string reason)
+    {
+        if (!this.IsHandleCreated)
+        {
+            return;
+        }
+
+        NativeMethods.SetParent(this.Handle, IntPtr.Zero);
+        int style = NativeMethods.GetWindowLong(this.Handle, NativeMethods.GWL_STYLE);
+        style = (style | NativeMethods.WS_POPUP | NativeMethods.WS_VISIBLE) & ~NativeMethods.WS_CHILD;
+        NativeMethods.SetWindowLong(this.Handle, NativeMethods.GWL_STYLE, style);
+        NativeMethods.SetWindowPos(
+            this.Handle,
+            NativeMethods.HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SWP_NOACTIVATE |
+            NativeMethods.SWP_NOMOVE |
+            NativeMethods.SWP_NOSIZE |
+            NativeMethods.SWP_FRAMECHANGED |
+            NativeMethods.SWP_SHOWWINDOW);
+
+        if (this.desktopAttached)
+        {
+            Program.LogInfo("Detached from desktop host. Reason=" + reason);
+        }
+
+        this.desktopAttached = false;
     }
 
     private void PositionWidget()
@@ -1564,6 +1681,13 @@ internal sealed class WidgetForm : Form
         }
 
         this.renderBufferValid = false;
+    }
+
+    private void ResetDisplayRenderResources()
+    {
+        DisposeRenderBuffer();
+        this.layeredSurface.Reset();
+        this.layeredUpdateFailureLogged = false;
     }
 
     private List<MetricPanel> BuildMetricPanels()

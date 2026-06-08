@@ -82,6 +82,11 @@ internal static class Program
             return TestLayoutScalingPolicy();
         }
 
+        if (HasArg(args, "--test-display-recovery"))
+        {
+            return TestDisplayRecoveryPolicy();
+        }
+
         // Stop pre-rename processes before acquiring the new product mutex.
         SignalLegacyStops();
 
@@ -450,6 +455,92 @@ internal static class Program
             Console.Error.WriteLine(ex.ToString());
             LogException(ex);
             return 1;
+        }
+    }
+
+    private static int TestDisplayRecoveryPolicy()
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+
+            using (DisplayRecoverySelfTestForm form = new DisplayRecoverySelfTestForm())
+            using (NativeMethods.LayeredBitmapSurface surface = new NativeMethods.LayeredBitmapSurface())
+            {
+                Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+                form.StartPosition = FormStartPosition.Manual;
+                form.FormBorderStyle = FormBorderStyle.None;
+                form.ShowInTaskbar = false;
+                form.Size = new Size(32, 32);
+                form.Location = new Point(workArea.Left, workArea.Top);
+                form.BackColor = Color.Black;
+                form.Show();
+                Application.DoEvents();
+
+                using (Bitmap first = CreateDisplayRecoveryTestBitmap(Color.FromArgb(220, 40, 140, 255)))
+                {
+                    if (!surface.Update(form.Handle, form.Location, first, 255, true))
+                    {
+                        throw new InvalidOperationException("Initial layered update failed.");
+                    }
+                }
+
+                surface.Reset();
+                using (Bitmap second = CreateDisplayRecoveryTestBitmap(Color.FromArgb(220, 70, 220, 120)))
+                {
+                    if (!surface.Update(form.Handle, form.Location, second, 255, true))
+                    {
+                        throw new InvalidOperationException("Layered update after reset failed.");
+                    }
+                }
+
+                surface.Reset();
+                surface.Reset();
+                form.Close();
+            }
+
+            Console.WriteLine("Display recovery layered surface policy: PASS");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static Bitmap CreateDisplayRecoveryTestBitmap(Color color)
+    {
+        Bitmap bitmap = new Bitmap(32, 32, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using (Graphics g = Graphics.FromImage(bitmap))
+        using (SolidBrush brush = new SolidBrush(color))
+        {
+            g.Clear(Color.Transparent);
+            g.FillRectangle(brush, new Rectangle(0, 0, bitmap.Width, bitmap.Height));
+        }
+
+        return bitmap;
+    }
+
+    private sealed class DisplayRecoverySelfTestForm : Form
+    {
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams cp = base.CreateParams;
+                cp.ExStyle |= NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_LAYERED;
+                return cp;
+            }
+        }
+
+        protected override bool ShowWithoutActivation
+        {
+            get { return true; }
         }
     }
 

@@ -161,7 +161,9 @@ flowchart LR
 - 全屏隐藏时，各窗口停止不必要的悬停和绘制。
 - 主窗口在省电模式下跳过隐藏期间的昂贵 PDH 采样，但控制定时器仍运行，因此可以处理停止信号、设置变更和退出全屏。
 - 显示器关闭、会话锁定或系统休眠时，Codex 与功耗采样暂停。
-- 显示恢复后使缓存失效、重新定位窗口，并安排一次刷新。
+- 显示器关闭或系统挂起时，主窗口会释放主窗口和子窗口的托管渲染缓存，并重置复用的 native layered-window DC/HBITMAP，避免唤醒后继续使用息屏前的 GDI 资源。
+- 显示恢复后执行三轮延迟恢复，重新定位、重建 layered-window 资源、强制重绘，并安排一次刷新；这覆盖 DWM、显示驱动或 WorkerW 桌面宿主稍晚恢复的情况。
+- `--desktop-parent` 模式下，恢复时先把主窗口从旧 WorkerW 脱离成普通顶层窗口，再尝试挂接到新的桌面宿主；如果第一次没有找到宿主，后续恢复轮继续重试。
 
 ### 4.7 主网络接口筛选
 
@@ -475,10 +477,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-X64.ps1
 
 ```powershell
 .\DesktopCodexAssistant.exe --test-layout
+.\DesktopCodexAssistant.exe --test-display-recovery
 .\DesktopCodexAssistant.exe --test
 ```
 
-布局自检会模拟工作区尺寸变化并验证比例换算。采样自检会输出 CPU、内存、磁盘 WT/RD、网络 UP/DL、GPU 和 NPU 的一次采样结果。它验证计数器可读取，不代表短时间内每个计数器都必须非零。
+布局自检会模拟工作区尺寸变化并验证比例换算。显示恢复自检会用真实 layered-window API 验证 native surface reset 后仍可更新窗口。采样自检会输出 CPU、内存、磁盘 WT/RD、网络 UP/DL、GPU 和 NPU 的一次采样结果。它验证计数器可读取，不代表短时间内每个计数器都必须非零。
 
 2026-06-07 的 ARM64 调试中，单核等效 CPU 占用观察值如下：
 

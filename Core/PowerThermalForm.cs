@@ -485,11 +485,16 @@ internal sealed class PowerThermalForm : Form
         this.sessionActive = true;
         this.cachedPowerReadingUtc = DateTime.MinValue;
         this.cachedThermalReadingsUtc = DateTime.MinValue;
-        this.renderBufferValid = false;
+        ResetDisplayRenderResources();
         PositionPowerThermalWindow();
         RenderLayeredWindow();
         RequestSampling(true, true, true);
         ScheduleNextRenderTick();
+    }
+
+    public void PrepareForDisplaySuspend()
+    {
+        ResetDisplayRenderResources();
     }
 
     private void OnTimerTick(object sender, EventArgs e)
@@ -2512,6 +2517,13 @@ internal sealed class PowerThermalForm : Form
         }
 
         this.renderBufferValid = false;
+    }
+
+    private void ResetDisplayRenderResources()
+    {
+        DisposeRenderBuffer();
+        this.layeredSurface.Reset();
+        this.layeredUpdateFailureLogged = false;
     }
 
     private int GetBackgroundOpacityAlpha()

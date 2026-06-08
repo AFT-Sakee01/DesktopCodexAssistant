@@ -1258,6 +1258,16 @@ internal static class NativeMethods
             }
         }
 
+        public void Reset()
+        {
+            if (this.disposed)
+            {
+                return;
+            }
+
+            ReleaseNativeResources();
+        }
+
         private bool ReplaceBitmap(Bitmap bitmap)
         {
             if (this.bitmapHandle != IntPtr.Zero)
@@ -1303,11 +1313,17 @@ internal static class NativeMethods
             }
 
             this.disposed = true;
+            ReleaseNativeResources();
+        }
+
+        private void ReleaseNativeResources()
+        {
             if (this.memoryDc != IntPtr.Zero && this.originalBitmap != IntPtr.Zero)
             {
                 SelectObject(this.memoryDc, this.originalBitmap);
             }
 
+            this.originalBitmap = IntPtr.Zero;
             if (this.bitmapHandle != IntPtr.Zero)
             {
                 DeleteObject(this.bitmapHandle);
@@ -1319,6 +1335,9 @@ internal static class NativeMethods
                 DeleteDC(this.memoryDc);
                 this.memoryDc = IntPtr.Zero;
             }
+
+            this.bitmapWidth = 0;
+            this.bitmapHeight = 0;
         }
     }
 

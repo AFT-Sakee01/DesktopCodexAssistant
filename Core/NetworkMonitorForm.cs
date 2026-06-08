@@ -214,11 +214,16 @@ internal sealed class NetworkMonitorForm : Form
 
     public void RecoverAfterDisplayResume()
     {
-        this.renderBufferValid = false;
+        ResetDisplayRenderResources();
         PositionNetworkMonitorWindow();
         RenderLayeredWindow();
         this.reader.RequestRefresh();
         ScheduleNextRenderTick();
+    }
+
+    public void PrepareForDisplaySuspend()
+    {
+        ResetDisplayRenderResources();
     }
 
     private void OnTimerTick(object sender, EventArgs e)
@@ -1122,6 +1127,13 @@ internal sealed class NetworkMonitorForm : Form
             this.contentBitmap.Dispose();
             this.contentBitmap = null;
         }
+    }
+
+    private void ResetDisplayRenderResources()
+    {
+        DisposeRenderBuffers();
+        this.layeredSurface.Reset();
+        this.layeredUpdateFailureLogged = false;
     }
 
     private Font GetCachedUiFont(float size, FontStyle style)

@@ -547,10 +547,15 @@ internal sealed class CodexRadarForm : Form
         this.codexPowerSuspended = false;
         this.codexDisplayActive = true;
         this.codexSessionActive = true;
-        this.renderBufferValid = false;
+        ResetDisplayRenderResources();
         PositionCodexRadar();
         ResumeCodexPollingSoon();
         ScheduleNextCodexRadarTick();
+    }
+
+    public void PrepareForDisplaySuspend()
+    {
+        ResetDisplayRenderResources();
     }
 
     private void PrimeCodexWebRefreshSchedule(DateTime nowUtc)
@@ -5479,6 +5484,13 @@ internal sealed class CodexRadarForm : Form
         }
 
         this.renderBufferValid = false;
+    }
+
+    private void ResetDisplayRenderResources()
+    {
+        DisposeRenderBuffer();
+        this.layeredSurface.Reset();
+        this.layeredUpdateFailureLogged = false;
     }
 
     private static DateTime TruncateToSecond(DateTime value)

@@ -206,11 +206,16 @@ internal sealed class ConnectionCheckForm : Form
 
     public void RecoverAfterDisplayResume()
     {
-        this.renderBufferValid = false;
+        ResetDisplayRenderResources();
         PositionConnectionCheckWindow();
         RenderLayeredWindow();
         this.reader.RequestRefresh();
         ScheduleNextRenderTick();
+    }
+
+    public void PrepareForDisplaySuspend()
+    {
+        ResetDisplayRenderResources();
     }
 
     private void OnTimerTick(object sender, EventArgs e)
@@ -1344,6 +1349,13 @@ internal sealed class ConnectionCheckForm : Form
         }
 
         this.renderBufferValid = false;
+    }
+
+    private void ResetDisplayRenderResources()
+    {
+        DisposeRenderBuffer();
+        this.layeredSurface.Reset();
+        this.layeredUpdateFailureLogged = false;
     }
 
     private int GetBackgroundOpacityAlpha()
