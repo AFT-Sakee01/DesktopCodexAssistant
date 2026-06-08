@@ -1,5 +1,7 @@
 param(
-    [string]$OutputPath = (Join-Path $PSScriptRoot "DesktopCodexAssistant.exe")
+    [string]$OutputPath = (Join-Path $PSScriptRoot "DesktopCodexAssistant.exe"),
+    [ValidateSet("arm64", "x64")]
+    [string]$Platform = "arm64"
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,7 +21,7 @@ $sourceDirectories = @(
 
 $compiler = $compilerCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if (-not $compiler) {
-    throw "A Roslyn C# compiler with /platform:arm64 support was not found. Install Visual Studio Build Tools 2022 or newer."
+    throw "A Roslyn C# compiler with /platform:$Platform support was not found. Install Visual Studio Build Tools 2022 or newer."
 }
 
 if (-not (Test-Path -LiteralPath $mainSource)) {
@@ -47,32 +49,30 @@ $windowsWinmd = Get-ChildItem -Path (Join-Path ${env:ProgramFiles(x86)} "Windows
     Where-Object { $_.FullName -notmatch "\\Facade\\" } |
     Sort-Object FullName -Descending |
     Select-Object -First 1
-$windowsRuntime = @(
-    "C:\Windows\Microsoft.NET\FrameworkArm64\v4.0.30319\System.Runtime.WindowsRuntime.dll",
-    "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.WindowsRuntime.dll",
-    "C:\Windows\Microsoft.NET\Framework\v4.0.30319\System.Runtime.WindowsRuntime.dll"
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-$systemRuntime = @(
-    "C:\Windows\Microsoft.NET\FrameworkArm64\v4.0.30319\System.Runtime.dll",
-    "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.dll",
-    "C:\Windows\Microsoft.NET\Framework\v4.0.30319\System.Runtime.dll",
-    "C:\Windows\Microsoft.NET\assembly\GAC_MSIL\System.Runtime\v4.0_4.0.0.0__b03f5f7f11d50a3a\System.Runtime.dll"
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-$uiAutomationClient = @(
-    "C:\Windows\Microsoft.NET\FrameworkArm64\v4.0.30319\WPF\UIAutomationClient.dll",
-    "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\UIAutomationClient.dll",
-    "C:\Windows\Microsoft.NET\Framework\v4.0.30319\WPF\UIAutomationClient.dll"
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-$uiAutomationTypes = @(
-    "C:\Windows\Microsoft.NET\FrameworkArm64\v4.0.30319\WPF\UIAutomationTypes.dll",
-    "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\UIAutomationTypes.dll",
-    "C:\Windows\Microsoft.NET\Framework\v4.0.30319\WPF\UIAutomationTypes.dll"
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-$windowsBase = @(
-    "C:\Windows\Microsoft.NET\FrameworkArm64\v4.0.30319\WPF\WindowsBase.dll",
-    "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\WPF\WindowsBase.dll",
-    "C:\Windows\Microsoft.NET\Framework\v4.0.30319\WPF\WindowsBase.dll"
-) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$frameworkPriority = if ($Platform -eq "x64") {
+    @("Framework64", "FrameworkArm64", "Framework")
+}
+else {
+    @("FrameworkArm64", "Framework64", "Framework")
+}
+
+$windowsRuntime = $frameworkPriority | ForEach-Object {
+    "C:\Windows\Microsoft.NET\$_\v4.0.30319\System.Runtime.WindowsRuntime.dll"
+} | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$systemRuntimeCandidates = @($frameworkPriority | ForEach-Object {
+    "C:\Windows\Microsoft.NET\$_\v4.0.30319\System.Runtime.dll"
+})
+$systemRuntimeCandidates += "C:\Windows\Microsoft.NET\assembly\GAC_MSIL\System.Runtime\v4.0_4.0.0.0__b03f5f7f11d50a3a\System.Runtime.dll"
+$systemRuntime = $systemRuntimeCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$uiAutomationClient = $frameworkPriority | ForEach-Object {
+    "C:\Windows\Microsoft.NET\$_\v4.0.30319\WPF\UIAutomationClient.dll"
+} | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$uiAutomationTypes = $frameworkPriority | ForEach-Object {
+    "C:\Windows\Microsoft.NET\$_\v4.0.30319\WPF\UIAutomationTypes.dll"
+} | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$windowsBase = $frameworkPriority | ForEach-Object {
+    "C:\Windows\Microsoft.NET\$_\v4.0.30319\WPF\WindowsBase.dll"
+} | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 
 if (-not $windowsWinmd -or -not $windowsRuntime -or -not $systemRuntime -or -not $uiAutomationClient -or -not $uiAutomationTypes -or -not $windowsBase) {
     throw "Windows SDK WinRT metadata was not found. Install the Windows 10/11 SDK."
@@ -81,7 +81,7 @@ if (-not $windowsWinmd -or -not $windowsRuntime -or -not $systemRuntime -or -not
 $compilerArgs = @(
     "/nologo",
     "/target:winexe",
-    "/platform:arm64",
+    "/platform:$Platform",
     "/optimize+",
     "/reference:System.dll",
     "/reference:System.Drawing.dll",

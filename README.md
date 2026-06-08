@@ -27,6 +27,7 @@ Build:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-X64.ps1
 ```
 
 Run:

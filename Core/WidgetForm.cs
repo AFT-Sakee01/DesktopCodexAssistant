@@ -349,6 +349,7 @@ internal sealed class WidgetForm : Form
 
         if (m.Msg == WM_DISPLAYCHANGE || m.Msg == WM_SETTINGCHANGE)
         {
+            ApplyDisplayLayoutForCurrentWorkArea();
             PositionWidget();
             ScheduleDisplayRecovery(m.Msg == WM_DISPLAYCHANGE ? "display change" : "settings change");
         }
@@ -445,6 +446,7 @@ internal sealed class WidgetForm : Form
 
         UpdateVisibilityForMode();
         ApplyClickThroughStyle();
+        ApplyDisplayLayoutForCurrentWorkArea();
         PositionWidget();
         this.renderBufferValid = false;
         RenderLayeredWindow();
@@ -476,6 +478,25 @@ internal sealed class WidgetForm : Form
 
         Program.LogInfo("Display recovery completed. Reason=" + this.pendingDisplayRecoveryReason);
         this.pendingDisplayRecoveryReason = string.Empty;
+    }
+
+    private bool ApplyDisplayLayoutForCurrentWorkArea()
+    {
+        WidgetSettings adjustedSettings = this.currentSettings.Clone();
+        if (!adjustedSettings.AdaptToCurrentWorkArea())
+        {
+            return false;
+        }
+
+        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+        Program.LogInfo(string.Format(
+            "Display layout adapted to work area {0},{1},{2},{3}.",
+            workArea.Left,
+            workArea.Top,
+            workArea.Width,
+            workArea.Height));
+        ApplyRuntimeSettings(adjustedSettings);
+        return true;
     }
 
     private ContextMenuStrip BuildContextMenu()

@@ -2,7 +2,7 @@
 
 This file is the primary Codex-readable maintenance log for Desktop Codex Assistant. Read it before making changes in this program directory.
 
-Current version: 1.0.2.0
+Current version: 1.0.2.2
 
 Version rule: start at 1.0.0.0. After each completed fix, increment the last segment by 1. The last segment can go up to 99. After 1.0.0.99, carry to 1.0.1.00. Keep `Core/ProductIdentity.cs` assembly, file, and informational versions synchronized with the maintenance log version.
 
@@ -55,3 +55,19 @@ From the second line onward, write the fix details or discovered issue. Leave on
 修正内容: 将根目录中 UUID 命名和旧产品名历史 exe 合并归档到 Artifacts/LegacyExecutables，并按产品名、构建时间和 SHA1 短码重命名。
 验证结果: ARM64 正式构建通过并覆盖 DesktopCodexAssistant.exe；正式 exe SHA1 为 1185C4A6FCF083B0F4C63A14BAA0922259978666；程序集版本为 1.0.2.0。
 验证结果: 正式版 --test-logger 返回 PASS；正式版 --test 返回退出码 0；本次未运行安装/卸载脚本，未截图，未主动写入注册表。
+
+时间: 2026-06-08 03:26:43 +09:00 | 版本: 1.0.2.1 | 窗口: 左下角操作面板 | 模块: 电源与设备限定按钮
+修正内容: 电源按钮优先通过 SeelenUI CLI 触发 @seelen/power-menu，SeelenUI 未运行或触发失败时回退到 Windows Security / Ctrl+Alt+Delete 菜单。
+修正内容: 增加 ASUS Zenbook 硬件识别，非 ASUS Zenbook 设备隐藏“解除 80% 充电限制 24 小时”和“恢复 80% 充电限制”两个按钮，并压缩操作面板宽度。
+修正内容: 增加 SeelenUI 主进程状态探测；seelen-ui 未运行时“退出 SeelenUI”按钮显示为灰色禁用态，鼠标悬停不显示用途提示，也不接受点击。
+验证结果: ARM64 临时测试构建通过；正式构建通过并覆盖 DesktopCodexAssistant.exe；正式 exe SHA1 为 CD4B66BF7085E00250B13867F0375A156070563A；程序集版本为 1.0.2.1。
+验证结果: 正式版 --test 与 --test-logger 均返回退出码 0；正式程序已按原参数重新启动；应用 error.log 未新增错误记录。
+
+时间: 2026-06-08 12:23:02 +09:00 | 版本: 1.0.2.2 | 窗口: 全局 | 模块: 分辨率比例适配与 x64 构建
+修正内容: 设置文件升级到 Version=9，保存当前工作区基准，并在分辨率、任务栏工作区或屏幕恢复后按宽高比例换算性能面板、CodexRadar、功耗、网络、连接检测和操作面板的尺寸与位置。
+修正内容: 显示变化、系统设置变化、息屏恢复和解锁恢复时先执行工作区比例适配，再重新定位和重绘所有子面板，保持当前屏占比。
+修正内容: 设置窗口初始尺寸和最小尺寸改为按当前工作区自适应，小分辨率下保留滚动访问能力，避免固定 920x620 撑出屏幕。
+修正内容: Build-Arm64.ps1 增加 -Platform arm64/x64 参数，并新增 Build-X64.ps1，生成 DesktopCodexAssistant-x64.exe。
+验证结果: ARM64 正式构建通过；DesktopCodexAssistant.exe SHA1 为 AE2FEAE77A07FE52800770F81096682FE94B977A；PE Machine=ARM64；程序集版本为 1.0.2.2。
+验证结果: x64 正式构建通过；DesktopCodexAssistant-x64.exe SHA1 为 196154D99A0089B7CEB7DBB367036CD4E991EE84；PE Machine=x64；程序集版本为 1.0.2.2。
+验证结果: ARM64 和 x64 的 --test-layout、--test-logger、--test 均返回退出码 0；ARM64 与 x64 正常启动-停止烟测均返回退出码 0；应用 error.log 未新增错误记录。

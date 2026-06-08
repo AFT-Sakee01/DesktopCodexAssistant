@@ -174,9 +174,10 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.MaximizeBox = true;
         this.MinimizeBox = false;
         this.AutoScroll = false;
-        this.AutoScrollMinSize = GetDesiredClientSize();
-        this.ClientSize = FitClientSizeToScreen(GetDesiredClientSize());
-        this.MinimumSize = new Size(920, 620);
+        Size desiredClientSize = GetDesiredClientSize();
+        this.AutoScrollMinSize = desiredClientSize;
+        this.ClientSize = FitClientSizeToScreen(desiredClientSize);
+        this.MinimumSize = GetMinimumWindowSizeForScreen();
         this.Font = DesignTokens.CreateUIFont(10.0f);
         this.BackColor = DesignTokens.Colors.AppBackground;
         this.ForeColor = DesignTokens.Colors.Text;
@@ -1269,13 +1270,45 @@ internal sealed class SettingsForm : Form, IMessageFilter
 
     private static Size FitClientSizeToScreen(Size desiredSize)
     {
-        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
-        int margin = 64;
-        int maxWidth = Math.Max(640, workArea.Width - margin);
-        int maxHeight = Math.Max(520, workArea.Height - margin);
+        Rectangle workArea = GetUsableWorkArea();
+        int margin = GetAdaptiveScreenMargin(workArea);
+        int maxWidth = Math.Max(320, workArea.Width - margin);
+        int maxHeight = Math.Max(300, workArea.Height - margin);
         int width = Math.Min(desiredSize.Width + SystemInformation.VerticalScrollBarWidth, maxWidth);
         int height = Math.Min(desiredSize.Height, maxHeight);
         return new Size(width, height);
+    }
+
+    private static Size GetMinimumWindowSizeForScreen()
+    {
+        Rectangle workArea = GetUsableWorkArea();
+        int margin = GetAdaptiveScreenMargin(workArea);
+        int width = Math.Min(920, Math.Max(320, workArea.Width - margin));
+        int height = Math.Min(620, Math.Max(300, workArea.Height - margin));
+        return new Size(width, height);
+    }
+
+    private static Rectangle GetUsableWorkArea()
+    {
+        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+        if (workArea.Width > 0 && workArea.Height > 0)
+        {
+            return workArea;
+        }
+
+        Rectangle bounds = Screen.PrimaryScreen.Bounds;
+        if (bounds.Width > 0 && bounds.Height > 0)
+        {
+            return bounds;
+        }
+
+        return new Rectangle(0, 0, 1280, 720);
+    }
+
+    private static int GetAdaptiveScreenMargin(Rectangle workArea)
+    {
+        int shortestSide = Math.Min(Math.Max(1, workArea.Width), Math.Max(1, workArea.Height));
+        return Math.Max(24, Math.Min(64, shortestSide / 12));
     }
 
     private NumericUpDown BuildNumberBox(int min, int max)

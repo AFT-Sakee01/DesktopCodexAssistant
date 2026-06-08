@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Management;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -19,12 +21,20 @@ internal sealed class OperationForm : Form
     private const int BatteryLimitRestoreButtonIndex = 6;
     private const int AppSettingsButtonIndex = 7;
     private const int SeelenExitButtonIndex = 8;
+    private const int SmallColumnCountWithBatteryCare = 4;
+    private const int SmallColumnCountWithoutBatteryCare = 3;
     private const string AsusAssistantPackagePrefix = "B9ECED6F.ASUSPCAssistant_";
     private const string AsusAssistantPackageSuffix = "_qmba6cd70vzyy";
     private const string AsusKeyboardHostRelativePath = @"HwAdjustPage\ATK Package\AsusKeyboardHost.exe";
     private const string AsusKeyboardHostAlias = "B9ECED6F.ASUSPCAssistant.AsusKeyboardHost.exe";
     private const string AsusBatteryCarePauseArguments = "-HWSettingsToast acin_set";
     private const string AsusBatteryLimitRestoreArguments = "-HWSettingsToast acin80";
+    private const string SeelenPowerMenuWidgetId = "@seelen/power-menu";
+    private const string SeelenCliFileName = "slu.exe";
+    private const string SeelenUiProcessName = "seelen-ui";
+    private const string SeelenUiExecutableName = "seelen-ui.exe";
+    private const string SeelenInstallRelativePath = @"Seelen\Seelen UI";
+    private const int SeelenStatusRefreshIntervalMs = 2500;
     private const double HoverStepPerSecond = 7.5;
     private const double PressAnimationMs = 150.0;
     private readonly Action openSettingsAction;
@@ -32,11 +42,14 @@ internal sealed class OperationForm : Form
     private readonly Action restartAction;
     private readonly Action<string, string, ToolTipIcon> notificationAction;
     private readonly System.Windows.Forms.Timer animationTimer;
+    private readonly System.Windows.Forms.Timer seelenStatusTimer;
     private readonly ToolTip hoverToolTip;
+    private readonly bool isAsusZenbookDevice;
     private WidgetSettings currentSettings;
     private float scale;
     private bool hiddenForFullscreen;
     private bool layeredUpdateFailureLogged;
+    private bool seelenUiRunning;
     private int hoveredButton = -1;
     private int toolTipButton = -1;
     private int pressedButton = -1;
@@ -58,6 +71,13 @@ internal sealed class OperationForm : Form
         this.forceRefreshAction = forceRefreshAction;
         this.restartAction = restartAction;
         this.notificationAction = notificationAction;
+        this.isAsusZenbookDevice = DetectAsusZenbookDevice();
+        this.seelenUiRunning = IsSeelenUiRunning();
+        Program.LogInfo(
+            "Operation panel device capabilities. AsusZenbook=" +
+            this.isAsusZenbookDevice.ToString() +
+            ", SeelenUiRunning=" +
+            this.seelenUiRunning.ToString());
 
         this.SetStyle(
             ControlStyles.AllPaintingInWmPaint |
@@ -82,6 +102,10 @@ internal sealed class OperationForm : Form
         this.animationTimer = new System.Windows.Forms.Timer();
         this.animationTimer.Interval = WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode);
         this.animationTimer.Tick += OnAnimationTimerTick;
+
+        this.seelenStatusTimer = new System.Windows.Forms.Timer();
+        this.seelenStatusTimer.Interval = SeelenStatusRefreshIntervalMs;
+        this.seelenStatusTimer.Tick += OnSeelenStatusTimerTick;
 
         this.hoverToolTip = new ToolTip();
         this.hoverToolTip.ShowAlways = true;
@@ -108,6 +132,8 @@ internal sealed class OperationForm : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        RefreshSeelenUiStatus();
+        this.seelenStatusTimer.Start();
         ApplyRuntimeSettings(this.currentSettings);
         PositionOperationWindow();
         RenderLayeredWindow();
@@ -118,6 +144,9 @@ internal sealed class OperationForm : Form
         this.animationTimer.Stop();
         this.animationTimer.Tick -= OnAnimationTimerTick;
         this.animationTimer.Dispose();
+        this.seelenStatusTimer.Stop();
+        this.seelenStatusTimer.Tick -= OnSeelenStatusTimerTick;
+        this.seelenStatusTimer.Dispose();
         this.hoverToolTip.Hide(this);
         this.hoverToolTip.Dispose();
         DisposeRenderBuffer();
@@ -271,8 +300,13 @@ internal sealed class OperationForm : Form
         this.hoverToolTip.Hide(this);
     }
 
-    private static string GetButtonToolTipText(int button)
+    private string GetButtonToolTipText(int button)
     {
+        if (!IsButtonEnabled(button))
+        {
+            return string.Empty;
+        }
+
         if (button == StartButtonIndex)
         {
             return "左键：Windows 开始菜单\r\n右键：Windows 开始右键菜单";
@@ -285,7 +319,7 @@ internal sealed class OperationForm : Form
 
         if (button == WindowsPowerMenuButtonIndex)
         {
-            return "Windows 电源菜单";
+            return "SeelenUI 电源菜单\r\n不可用时打开 Ctrl+Alt+Delete 菜单";
         }
 
         if (button == RefreshButtonIndex)
@@ -378,6 +412,38 @@ internal sealed class OperationForm : Form
         }
     }
 
+    private void OnSeelenStatusTimerTick(object sender, EventArgs e)
+    {
+        RefreshSeelenUiStatus();
+    }
+
+    private void RefreshSeelenUiStatus()
+    {
+        SetSeelenUiRunning(IsSeelenUiRunning());
+    }
+
+    private void SetSeelenUiRunning(bool running)
+    {
+        if (this.seelenUiRunning == running)
+        {
+            return;
+        }
+
+        this.seelenUiRunning = running;
+        if (!IsButtonEnabled(this.hoveredButton))
+        {
+            this.hoveredButton = -1;
+            HideHoverToolTip();
+        }
+
+        if (!IsButtonEnabled(this.pressedButton))
+        {
+            this.pressedButton = -1;
+        }
+
+        RenderLayeredWindow();
+    }
+
     private void ExecuteButton(int button, MouseButtons mouseButton)
     {
         if (button == StartButtonIndex)
@@ -402,7 +468,11 @@ internal sealed class OperationForm : Form
 
         if (button == WindowsPowerMenuButtonIndex)
         {
-            NativeMethods.OpenWindowsSystemPowerMenu();
+            if (!TryOpenSeelenPowerMenu())
+            {
+                NativeMethods.OpenWindowsSecurityMenu();
+            }
+
             return;
         }
 
@@ -418,6 +488,11 @@ internal sealed class OperationForm : Form
 
         if (button == SeelenExitButtonIndex)
         {
+            if (!this.seelenUiRunning)
+            {
+                return;
+            }
+
             if (!ConfirmExitSeelenUi())
             {
                 return;
@@ -452,6 +527,152 @@ internal sealed class OperationForm : Form
         if (button == BatteryLimitRestoreButtonIndex)
         {
             BeginInvokeBatteryLimitRestore();
+        }
+    }
+
+    private bool TryOpenSeelenPowerMenu()
+    {
+        bool running = IsSeelenUiRunning();
+        SetSeelenUiRunning(running);
+        if (!running)
+        {
+            Program.LogInfo("SeelenUI power menu fallback: seelen-ui is not running.");
+            return false;
+        }
+
+        string cliPath = FindSeelenCliPath();
+        if (string.IsNullOrEmpty(cliPath))
+        {
+            Program.LogInfo("SeelenUI power menu fallback: slu.exe was not found.");
+            return false;
+        }
+
+        try
+        {
+            ProcessStartInfo startInfo = new ProcessStartInfo();
+            startInfo.FileName = cliPath;
+            startInfo.Arguments = "widget trigger " + SeelenPowerMenuWidgetId;
+            startInfo.WorkingDirectory = Path.GetDirectoryName(cliPath);
+            startInfo.UseShellExecute = false;
+            startInfo.CreateNoWindow = true;
+            startInfo.WindowStyle = ProcessWindowStyle.Hidden;
+
+            Process process = Process.Start(startInfo);
+            if (process == null)
+            {
+                Program.LogInfo("SeelenUI power menu fallback: Process.Start returned null for " + cliPath);
+                return false;
+            }
+
+            using (process)
+            {
+                if (!process.WaitForExit(1500))
+                {
+                    Program.LogInfo("SeelenUI power menu trigger is still running; assuming it was accepted.");
+                    return true;
+                }
+
+                if (process.ExitCode == 0)
+                {
+                    Program.LogInfo("SeelenUI power menu triggered through " + cliPath);
+                    return true;
+                }
+
+                Program.LogInfo(
+                    "SeelenUI power menu fallback: slu.exe exited with code " +
+                    process.ExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return false;
+        }
+    }
+
+    private static string FindSeelenCliPath()
+    {
+        string runningDirectory = FindRunningSeelenUiDirectory();
+        string candidate = CombineExistingFile(runningDirectory, SeelenCliFileName);
+        if (!string.IsNullOrEmpty(candidate))
+        {
+            return candidate;
+        }
+
+        candidate = CombineExistingFile(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), SeelenInstallRelativePath),
+            SeelenCliFileName);
+        if (!string.IsNullOrEmpty(candidate))
+        {
+            return candidate;
+        }
+
+        candidate = CombineExistingFile(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), SeelenInstallRelativePath),
+            SeelenCliFileName);
+        if (!string.IsNullOrEmpty(candidate))
+        {
+            return candidate;
+        }
+
+        candidate = CombineExistingFile(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), SeelenInstallRelativePath),
+            SeelenCliFileName);
+        return candidate;
+    }
+
+    private static string FindRunningSeelenUiDirectory()
+    {
+        Process[] processes = null;
+        try
+        {
+            processes = Process.GetProcessesByName(SeelenUiProcessName);
+            for (int i = 0; i < processes.Length; i++)
+            {
+                Process process = processes[i];
+                if (process == null)
+                {
+                    continue;
+                }
+
+                string path = NativeMethods.TryGetProcessImagePath(process.Id);
+                if (string.IsNullOrEmpty(path) ||
+                    !string.Equals(Path.GetFileName(path), SeelenUiExecutableName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                return Path.GetDirectoryName(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+        }
+        finally
+        {
+            DisposeProcesses(processes);
+        }
+
+        return null;
+    }
+
+    private static string CombineExistingFile(string directory, string fileName)
+    {
+        if (string.IsNullOrEmpty(directory) || string.IsNullOrEmpty(fileName))
+        {
+            return null;
+        }
+
+        try
+        {
+            string path = Path.Combine(directory, fileName);
+            return File.Exists(path) ? path : null;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -707,6 +928,97 @@ internal sealed class OperationForm : Form
         }
     }
 
+    private static bool DetectAsusZenbookDevice()
+    {
+        List<string> values = new List<string>();
+        AddWmiValues(
+            values,
+            "SELECT Manufacturer, Model, SystemFamily FROM Win32_ComputerSystem",
+            new string[] { "Manufacturer", "Model", "SystemFamily" });
+        AddWmiValues(
+            values,
+            "SELECT Vendor, Name, Version FROM Win32_ComputerSystemProduct",
+            new string[] { "Vendor", "Name", "Version" });
+
+        bool asus = false;
+        bool zenbook = false;
+        for (int i = 0; i < values.Count; i++)
+        {
+            string value = values[i];
+            asus |= IsAsusHardwareName(value);
+            zenbook |= IsZenbookHardwareName(value);
+        }
+
+        return asus && zenbook;
+    }
+
+    private static void AddWmiValues(List<string> values, string query, string[] propertyNames)
+    {
+        if (values == null || string.IsNullOrEmpty(query) || propertyNames == null)
+        {
+            return;
+        }
+
+        try
+        {
+            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(query))
+            using (ManagementObjectCollection results = searcher.Get())
+            {
+                foreach (ManagementObject item in results)
+                {
+                    using (item)
+                    {
+                        for (int i = 0; i < propertyNames.Length; i++)
+                        {
+                            object rawValue = item[propertyNames[i]];
+                            if (rawValue == null)
+                            {
+                                continue;
+                            }
+
+                            string value = rawValue.ToString();
+                            if (!string.IsNullOrWhiteSpace(value))
+                            {
+                                values.Add(value.Trim());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (ManagementException ex)
+        {
+            Program.LogException(ex);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Program.LogException(ex);
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+        }
+    }
+
+    private static bool IsAsusHardwareName(string value)
+    {
+        return !string.IsNullOrEmpty(value) &&
+            (value.IndexOf("ASUS", StringComparison.OrdinalIgnoreCase) >= 0 ||
+             value.IndexOf("ASUSTeK", StringComparison.OrdinalIgnoreCase) >= 0);
+    }
+
+    private static bool IsZenbookHardwareName(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return false;
+        }
+
+        return value.IndexOf("Zenbook", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            value.IndexOf("UX3407", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            value.IndexOf("UX3607", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
     private bool ConfirmExitSeelenUi()
     {
         DialogResult result = MessageBox.Show(
@@ -742,6 +1054,7 @@ internal sealed class OperationForm : Form
                         if (!this.IsDisposed)
                         {
                             this.seelenExitRunning = false;
+                            SetSeelenUiRunning(IsSeelenUiRunning());
                             RenderLayeredWindow();
                         }
                     });
@@ -909,6 +1222,41 @@ internal sealed class OperationForm : Form
         }
     }
 
+    private static bool IsSeelenUiRunning()
+    {
+        Process[] processes = null;
+        try
+        {
+            processes = Process.GetProcessesByName(SeelenUiProcessName);
+            return processes != null && processes.Length > 0;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return false;
+        }
+        finally
+        {
+            DisposeProcesses(processes);
+        }
+    }
+
+    private static void DisposeProcesses(Process[] processes)
+    {
+        if (processes == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < processes.Length; i++)
+        {
+            if (processes[i] != null)
+            {
+                processes[i].Dispose();
+            }
+        }
+    }
+
     private static bool IsSeelenUiProcess(Process process)
     {
         string name = string.Empty;
@@ -947,14 +1295,60 @@ internal sealed class OperationForm : Form
             value.IndexOf("seelen", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
-    private static bool AcceptsMouseButton(int button, MouseButtons mouseButton)
+    private bool IsButtonVisible(int button)
     {
-        if (button < 0)
+        if (button < 0 || button >= ButtonCount)
         {
             return false;
         }
 
-        if (IsEmptyButton(button))
+        if ((button == BatteryCarePauseButtonIndex || button == BatteryLimitRestoreButtonIndex) &&
+            !ShouldShowBatteryCareButtons())
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool IsButtonEnabled(int button)
+    {
+        if (!IsButtonVisible(button))
+        {
+            return false;
+        }
+
+        if (button == SeelenExitButtonIndex)
+        {
+            return this.seelenUiRunning && !this.seelenExitRunning;
+        }
+
+        if (button == BatteryCarePauseButtonIndex)
+        {
+            return !this.batteryCarePauseRunning;
+        }
+
+        if (button == BatteryLimitRestoreButtonIndex)
+        {
+            return !this.batteryLimitRestoreRunning;
+        }
+
+        return true;
+    }
+
+    private bool IsButtonUnavailable(int button)
+    {
+        return button == SeelenExitButtonIndex && !this.seelenUiRunning;
+    }
+
+    private bool ShouldShowBatteryCareButtons()
+    {
+        return this.isAsusZenbookDevice;
+    }
+
+    private bool AcceptsMouseButton(int button, MouseButtons mouseButton)
+    {
+        if (!IsButtonEnabled(button))
         {
             return false;
         }
@@ -972,13 +1366,13 @@ internal sealed class OperationForm : Form
         RectangleF[] rects = GetButtonRects();
         for (int i = 0; i < rects.Length; i++)
         {
+            if (!IsButtonEnabled(i))
+            {
+                continue;
+            }
+
             if (rects[i].Contains(point.X, point.Y))
             {
-                if (IsEmptyButton(i))
-                {
-                    return -1;
-                }
-
                 return i;
             }
         }
@@ -991,23 +1385,28 @@ internal sealed class OperationForm : Form
         int margin = S(3);
         int startSize = GetStartButtonSize();
         int smallSize = GetSmallButtonSize();
-        return new RectangleF[]
-        {
-            new RectangleF(margin, margin, startSize, startSize),
-            new RectangleF(margin + startSize, margin, smallSize, smallSize),
-            new RectangleF(margin + startSize, margin + smallSize, smallSize, smallSize),
-            new RectangleF(margin + startSize + smallSize, margin, smallSize, smallSize),
-            new RectangleF(margin + startSize + smallSize, margin + smallSize, smallSize, smallSize),
-            new RectangleF(margin + startSize + smallSize * 2, margin, smallSize, smallSize),
-            new RectangleF(margin + startSize + smallSize * 2, margin + smallSize, smallSize, smallSize),
-            new RectangleF(margin + startSize + smallSize * 3, margin, smallSize, smallSize),
-            new RectangleF(margin + startSize + smallSize * 3, margin + smallSize, smallSize, smallSize)
-        };
-    }
+        RectangleF[] rects = new RectangleF[ButtonCount];
+        rects[StartButtonIndex] = new RectangleF(margin, margin, startSize, startSize);
 
-    private static bool IsEmptyButton(int button)
-    {
-        return false;
+        int columnLeft = margin + startSize;
+        rects[WindowsSettingsButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+        rects[WindowsPowerMenuButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+
+        columnLeft += smallSize;
+        rects[RefreshButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+        rects[RestartButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+
+        columnLeft += smallSize;
+        if (ShouldShowBatteryCareButtons())
+        {
+            rects[BatteryCarePauseButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+            rects[BatteryLimitRestoreButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+            columnLeft += smallSize;
+        }
+
+        rects[AppSettingsButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+        rects[SeelenExitButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+        return rects;
     }
 
     private Size GetDesiredSize()
@@ -1015,7 +1414,10 @@ internal sealed class OperationForm : Form
         int margin = S(3);
         int startSize = GetStartButtonSize();
         int smallSize = GetSmallButtonSize();
-        return new Size(margin * 2 + startSize + smallSize * 4, margin * 2 + startSize);
+        int smallColumns = ShouldShowBatteryCareButtons()
+            ? SmallColumnCountWithBatteryCare
+            : SmallColumnCountWithoutBatteryCare;
+        return new Size(margin * 2 + startSize + smallSize * smallColumns, margin * 2 + startSize);
     }
 
     private int GetStartButtonSize()
@@ -1146,21 +1548,44 @@ internal sealed class OperationForm : Form
         DrawButton(g, rects[WindowsPowerMenuButtonIndex], WindowsPowerMenuButtonIndex, false, false, false, false);
         DrawButton(g, rects[RefreshButtonIndex], RefreshButtonIndex, false, false, false, false);
         DrawButton(g, rects[RestartButtonIndex], RestartButtonIndex, false, false, false, false);
-        DrawButton(g, rects[BatteryCarePauseButtonIndex], BatteryCarePauseButtonIndex, false, false, false, false);
-        DrawButton(g, rects[BatteryLimitRestoreButtonIndex], BatteryLimitRestoreButtonIndex, false, false, false, false);
+        if (ShouldShowBatteryCareButtons())
+        {
+            DrawButton(g, rects[BatteryCarePauseButtonIndex], BatteryCarePauseButtonIndex, false, false, false, false);
+            DrawButton(g, rects[BatteryLimitRestoreButtonIndex], BatteryLimitRestoreButtonIndex, false, false, false, false);
+        }
+
         DrawButton(g, rects[AppSettingsButtonIndex], AppSettingsButtonIndex, false, true, false, false);
         DrawButton(g, rects[SeelenExitButtonIndex], SeelenExitButtonIndex, false, false, true, false);
     }
 
     private void DrawButton(Graphics g, RectangleF rect, int button, bool leftSegment, bool topRight, bool bottomRight, bool startButton)
     {
+        if (!IsButtonVisible(button) || rect.Width <= 0.0f || rect.Height <= 0.0f)
+        {
+            return;
+        }
+
         double hover = this.hoverProgress[button];
         double press = button == this.pressedButton ? 1.0 : GetPressProgress(button);
+        bool unavailable = IsButtonUnavailable(button);
+        if (unavailable)
+        {
+            hover = 0.0;
+            press = 0.0;
+        }
+
         int backgroundAlpha = GetBackgroundOpacityAlpha();
         int fillAlpha = ScaleAlpha(ClampByte((int)Math.Round(58 + hover * 54 + press * 36)), backgroundAlpha);
         int outlineAlpha = ScaleAlpha(ClampByte((int)Math.Round(44 + hover * 70 + press * 40)), backgroundAlpha);
         Color fill;
-        if (button == SeelenExitButtonIndex)
+        if (unavailable)
+        {
+            fill = DesignTokens.WithAlpha(
+                DesignTokens.Colors.Control,
+                ScaleAlpha(ClampByte((int)Math.Round(34 + press * 16)), backgroundAlpha));
+            outlineAlpha = ScaleAlpha(44, backgroundAlpha);
+        }
+        else if (button == SeelenExitButtonIndex)
         {
             fill = this.seelenExitRunning
                 ? DesignTokens.WithAlpha(DesignTokens.Colors.DangerDeep, ClampByte(fillAlpha + ScaleAlpha(24, backgroundAlpha)))
@@ -1349,6 +1774,7 @@ internal sealed class OperationForm : Form
 
     private void DrawSeelenExitGlyph(Graphics g, RectangleF rect)
     {
+        bool unavailable = IsButtonUnavailable(SeelenExitButtonIndex);
         float size = Math.Min(rect.Width, rect.Height);
         float stroke = Math.Max(1.0f, 1.25f * this.scale);
         RectangleF app = new RectangleF(
@@ -1356,11 +1782,20 @@ internal sealed class OperationForm : Form
             rect.Top + size * 0.19f,
             size * 0.54f,
             size * 0.58f);
+        Color glyphColor = unavailable
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 168)
+            : DesignTokens.White(244);
+        Color exitColor = unavailable
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 176)
+            : DesignTokens.White(252);
+        Color markColor = unavailable
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 142)
+            : DesignTokens.WithAlpha(DesignTokens.Colors.DangerBorder, 255);
         using (GraphicsPath appPath = RoundedRectangle(app, Math.Max(1.5f, size * 0.10f)))
-        using (Pen appPen = new Pen(DesignTokens.White(244), stroke))
-        using (Pen exitPen = new Pen(DesignTokens.White(252), Math.Max(1.0f, 1.45f * this.scale)))
-        using (SolidBrush exitBrush = new SolidBrush(DesignTokens.White(252)))
-        using (SolidBrush markBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.DangerBorder, 255)))
+        using (Pen appPen = new Pen(glyphColor, stroke))
+        using (Pen exitPen = new Pen(exitColor, Math.Max(1.0f, 1.45f * this.scale)))
+        using (SolidBrush exitBrush = new SolidBrush(exitColor))
+        using (SolidBrush markBrush = new SolidBrush(markColor))
         {
             appPen.StartCap = LineCap.Round;
             appPen.EndCap = LineCap.Round;

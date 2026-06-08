@@ -381,7 +381,20 @@ CleanIP 检测触发条件：
 
 全屏检测和位置维护由主窗口控制循环处理。位置 X/Y 以目标屏幕坐标为准，保存设置后所有子窗口重新应用位置。
 
-### 6.3 鼠标穿透与防遮挡
+### 6.3 分辨率与工作区比例适配
+
+`settings.ini` 从 Version 9 起写入 `LayoutWorkAreaLeft`、`LayoutWorkAreaTop`、`LayoutWorkAreaWidth` 和 `LayoutWorkAreaHeight`。这些值记录上次保存或适配时的主屏工作区，不包含任务栏占用区域。
+
+加载设置、收到 `WM_DISPLAYCHANGE`、收到系统设置变化、息屏恢复和会话解锁恢复时，`WidgetSettings.AdaptToCurrentWorkArea` 会比较旧工作区与当前工作区：
+
+- 宽度、左侧坐标按 X 比例换算；
+- 高度、底边坐标按 Y 比例换算；
+- 操作面板的按钮尺寸使用较小轴比例，保持正方形；
+- 所有窗口最终再裁剪到当前工作区，避免低分辨率或任务栏变化后跑出屏幕。
+
+因此用户在当前分辨率下调整好的屏占比，会在切换分辨率、外接显示器模式变化或息屏唤醒后尽量保持一致。
+
+### 6.4 鼠标穿透与防遮挡
 
 `ClickThroughMode` 有启用、禁用和自动三种内部状态。自动模式下：
 
@@ -390,7 +403,7 @@ CleanIP 检测触发条件：
 
 防遮挡功能与鼠标穿透属于互斥交互方案。防遮挡启用时，程序通过全局鼠标位置判断指针是否进入窗口，不依赖窗口收到鼠标消息，因此可兼容透明分层窗口。进入窗口后，整个窗口的可见 Alpha 在 `0.15` 秒内过渡到约 `5%`，移开后恢复设置值。动画只改变提交 Alpha，通常比重新绘制所有曲线和文字开销更低。
 
-### 6.4 设置预览、保存与取消
+### 6.5 设置预览、保存与取消
 
 设置窗口编辑时把临时设置实时应用到各窗口：
 
@@ -429,6 +442,7 @@ CleanIP 检测触发条件：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-X64.ps1
 ```
 
 停止正在运行的实例：
@@ -450,7 +464,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
 - 长时间运行时句柄数没有持续增长；
 - `error.log` 没有新增异常；
 - 退出后不存在残留进程。
-- 任务管理器中进程架构显示为 ARM64，而不是 x64；
+- ARM64 产物 PE Machine 为 ARM64，x64 产物 PE Machine 为 x64；
 - WSL2/Hyper-V 存在时，网络主名称仍选择实际联网接口或 Wi-Fi SSID；
 - 网络与磁盘速率在 Kbps/Mbps/Gbps 边界正确切换；
 - 磁盘第四行容量只显示整数；
@@ -460,10 +474,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
 可运行采样自检：
 
 ```powershell
+.\DesktopCodexAssistant.exe --test-layout
 .\DesktopCodexAssistant.exe --test
 ```
 
-自检会输出 CPU、内存、磁盘 WT/RD、网络 UP/DL、GPU 和 NPU 的一次采样结果。它验证计数器可读取，不代表短时间内每个计数器都必须非零。
+布局自检会模拟工作区尺寸变化并验证比例换算。采样自检会输出 CPU、内存、磁盘 WT/RD、网络 UP/DL、GPU 和 NPU 的一次采样结果。它验证计数器可读取，不代表短时间内每个计数器都必须非零。
 
 2026-06-07 的 ARM64 调试中，单核等效 CPU 占用观察值如下：
 

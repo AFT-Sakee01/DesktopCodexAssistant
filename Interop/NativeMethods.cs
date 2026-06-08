@@ -85,6 +85,7 @@ internal static class NativeMethods
     private const byte VK_D = 0x44;
     private const byte VK_X = 0x58;
     private const byte VK_U = 0x55;
+    private const byte VK_DELETE = 0x2E;
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     private const uint MOUSEEVENTF_LEFTUP = 0x0004;
@@ -2461,6 +2462,16 @@ internal static class NativeMethods
         return OpenSettingsPage("powersleep");
     }
 
+    public static bool OpenWindowsSecurityMenu()
+    {
+        if (TryOpenWindowsSecurityViaShellApplication())
+        {
+            return true;
+        }
+
+        return SendCtrlAltDeleteChord();
+    }
+
     public static bool OpenSettingsPage(string pageName)
     {
         if (string.IsNullOrEmpty(pageName))
@@ -2487,6 +2498,51 @@ internal static class NativeMethods
         }
     }
 
+    private static bool TryOpenWindowsSecurityViaShellApplication()
+    {
+        object shell = null;
+        try
+        {
+            Type shellType = Type.GetTypeFromProgID("Shell.Application");
+            if (shellType == null)
+            {
+                return false;
+            }
+
+            shell = Activator.CreateInstance(shellType);
+            if (shell == null)
+            {
+                return false;
+            }
+
+            shellType.InvokeMember(
+                "WindowsSecurity",
+                System.Reflection.BindingFlags.InvokeMethod,
+                null,
+                shell,
+                null);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Program.LogInfo("Shell.Application WindowsSecurity failed: " + ex.GetType().Name + ": " + ex.Message);
+            return false;
+        }
+        finally
+        {
+            if (shell != null && Marshal.IsComObject(shell))
+            {
+                try
+                {
+                    Marshal.FinalReleaseComObject(shell);
+                }
+                catch
+                {
+                }
+            }
+        }
+    }
+
     private static bool TryOpenWindowsPowerUserShutdownMenu()
     {
         try
@@ -2494,6 +2550,24 @@ internal static class NativeMethods
             OpenWindowsStartContextMenu();
             Thread.Sleep(90);
             SendSingleKey(VK_U);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool SendCtrlAltDeleteChord()
+    {
+        try
+        {
+            keybd_event((byte)VK_CONTROL, 0, 0, UIntPtr.Zero);
+            keybd_event((byte)VK_MENU, 0, 0, UIntPtr.Zero);
+            keybd_event(VK_DELETE, 0, 0, UIntPtr.Zero);
+            keybd_event(VK_DELETE, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            keybd_event((byte)VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            keybd_event((byte)VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
             return true;
         }
         catch

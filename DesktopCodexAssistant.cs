@@ -77,6 +77,11 @@ internal static class Program
             return TestLoggerStoragePolicy();
         }
 
+        if (HasArg(args, "--test-layout"))
+        {
+            return TestLayoutScalingPolicy();
+        }
+
         // Stop pre-rename processes before acquiring the new product mutex.
         SignalLegacyStops();
 
@@ -421,6 +426,23 @@ internal static class Program
         {
             Logger.RunStoragePolicySelfTest();
             Console.WriteLine("Logger storage policy: PASS");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int TestLayoutScalingPolicy()
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            WidgetSettings.RunLayoutScalingSelfTest();
+            Console.WriteLine("Layout scaling policy: PASS");
             return 0;
         }
         catch (Exception ex)

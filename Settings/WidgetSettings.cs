@@ -162,6 +162,7 @@ internal sealed class WidgetSettings
     public const int MaxOperationButtonSize = 120;
     public const int MinOperationOffset = 0;
     public const int MaxOperationOffset = 4000;
+    private const int CurrentSettingsVersion = 9;
     public const int MinCodexModelIqPassed = 0;
     public const int MaxCodexModelIqPassed = 12;
     public const int DefaultCodexModelIqBaselinePassed = 8;
@@ -224,6 +225,10 @@ internal sealed class WidgetSettings
     public int OperationLeftOffset { get; set; }
     public int OperationBottomOffset { get; set; }
     public int OperationBackgroundTransparencyPercent { get; set; }
+    public int LayoutWorkAreaLeft { get; set; }
+    public int LayoutWorkAreaTop { get; set; }
+    public int LayoutWorkAreaWidth { get; set; }
+    public int LayoutWorkAreaHeight { get; set; }
     public WidgetVisibilityMode VisibilityMode { get; set; }
     public ClickThroughMode ClickThroughMode { get; set; }
     public bool StartupEnabled { get; set; }
@@ -308,6 +313,10 @@ internal sealed class WidgetSettings
         this.OperationLeftOffset = defaults.OperationLeftOffset;
         this.OperationBottomOffset = defaults.OperationBottomOffset;
         this.OperationBackgroundTransparencyPercent = 0;
+        this.LayoutWorkAreaLeft = defaults.LayoutWorkAreaLeft;
+        this.LayoutWorkAreaTop = defaults.LayoutWorkAreaTop;
+        this.LayoutWorkAreaWidth = defaults.LayoutWorkAreaWidth;
+        this.LayoutWorkAreaHeight = defaults.LayoutWorkAreaHeight;
         this.VisibilityMode = WidgetVisibilityMode.DesktopOnly;
         this.ClickThroughMode = ClickThroughMode.Auto;
         this.StartupEnabled = Program.IsStartupEnabled();
@@ -390,6 +399,7 @@ internal sealed class WidgetSettings
         settings.OperationLeftOffset = Math.Max(0, (int)Math.Round(8.0f * scale));
         settings.OperationBottomOffset = Math.Max(0, (int)Math.Round(8.0f * scale));
         settings.OperationBackgroundTransparencyPercent = 0;
+        settings.CaptureLayoutWorkArea(workArea);
         settings.VisibilityMode = WidgetVisibilityMode.DesktopOnly;
         settings.ClickThroughMode = ClickThroughMode.Auto;
         settings.StartupEnabled = Program.IsStartupEnabled();
@@ -467,6 +477,10 @@ internal sealed class WidgetSettings
             OperationLeftOffset = this.OperationLeftOffset,
             OperationBottomOffset = this.OperationBottomOffset,
             OperationBackgroundTransparencyPercent = this.OperationBackgroundTransparencyPercent,
+            LayoutWorkAreaLeft = this.LayoutWorkAreaLeft,
+            LayoutWorkAreaTop = this.LayoutWorkAreaTop,
+            LayoutWorkAreaWidth = this.LayoutWorkAreaWidth,
+            LayoutWorkAreaHeight = this.LayoutWorkAreaHeight,
             VisibilityMode = this.VisibilityMode,
             ClickThroughMode = this.ClickThroughMode,
             StartupEnabled = this.StartupEnabled,
@@ -593,23 +607,10 @@ internal sealed class WidgetSettings
         }
 
         this.MetricOrder = NormalizeMetricOrder(this.MetricOrder);
-        Rectangle bounds = Screen.PrimaryScreen.Bounds;
-        this.LeftX = Clamp(this.LeftX, bounds.Left, Math.Max(bounds.Left, bounds.Right - this.Width));
-        this.BottomY = Clamp(this.BottomY, Math.Min(bounds.Bottom - 1, bounds.Top + this.Height - 1), Math.Max(bounds.Top, bounds.Bottom - 1));
-        this.CodexRadarLeftX = Clamp(this.CodexRadarLeftX, bounds.Left, Math.Max(bounds.Left, bounds.Right - this.CodexRadarWidth));
-        this.CodexRadarBottomY = Clamp(this.CodexRadarBottomY, Math.Min(bounds.Bottom - 1, bounds.Top + this.CodexRadarHeight - 1), Math.Max(bounds.Top, bounds.Bottom - 1));
-        this.PowerThermalLeftX = Clamp(this.PowerThermalLeftX, bounds.Left, Math.Max(bounds.Left, bounds.Right - this.PowerThermalWidth));
-        this.PowerThermalBottomY = Clamp(this.PowerThermalBottomY, Math.Min(bounds.Bottom - 1, bounds.Top + this.PowerThermalHeight - 1), Math.Max(bounds.Top, bounds.Bottom - 1));
-        this.NetworkMonitorLeftX = Clamp(this.NetworkMonitorLeftX, bounds.Left, Math.Max(bounds.Left, bounds.Right - this.NetworkMonitorWidth));
-        this.NetworkMonitorBottomY = Clamp(this.NetworkMonitorBottomY, Math.Min(bounds.Bottom - 1, bounds.Top + this.NetworkMonitorHeight - 1), Math.Max(bounds.Top, bounds.Bottom - 1));
-        this.ConnectionCheckLeftX = Clamp(this.ConnectionCheckLeftX, bounds.Left, Math.Max(bounds.Left, bounds.Right - this.ConnectionCheckWidth));
-        this.ConnectionCheckBottomY = Clamp(this.ConnectionCheckBottomY, Math.Min(bounds.Bottom - 1, bounds.Top + this.ConnectionCheckHeight - 1), Math.Max(bounds.Top, bounds.Bottom - 1));
-        float scale = GetPrimaryScale();
         Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
-        int operationMaxLeftOffset = Math.Max(0, workArea.Width - GetOperationWindowWidth(this.OperationButtonSize, scale));
-        int operationMaxBottomOffset = Math.Max(0, workArea.Height - GetOperationWindowHeight(this.OperationButtonSize, scale));
-        this.OperationLeftOffset = Clamp(this.OperationLeftOffset, MinOperationOffset, Math.Min(MaxOperationOffset, operationMaxLeftOffset));
-        this.OperationBottomOffset = Clamp(this.OperationBottomOffset, MinOperationOffset, Math.Min(MaxOperationOffset, operationMaxBottomOffset));
+        EnsureUsableWorkArea(ref workArea);
+        EnsureLayoutWorkAreaReference(workArea);
+        ClampLayoutToWorkArea(workArea, GetPrimaryScale());
     }
 
     public static WidgetSettings Load()
@@ -673,6 +674,7 @@ internal sealed class WidgetSettings
             ApplyCleanIpBadgeSizeMigration(settings);
         }
 
+        settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
         return settings;
@@ -689,10 +691,11 @@ internal sealed class WidgetSettings
     public void Save()
     {
         this.Normalize();
+        this.CaptureCurrentWorkArea();
         Directory.CreateDirectory(Logger.DirectoryPath);
         string[] lines = new string[]
         {
-            "Version=8",
+            "Version=" + CurrentSettingsVersion.ToString(CultureInfo.InvariantCulture),
             "Width=" + this.Width,
             "Height=" + this.Height,
             "LeftX=" + this.LeftX,
@@ -732,6 +735,10 @@ internal sealed class WidgetSettings
             "OperationLeftOffset=" + this.OperationLeftOffset,
             "OperationBottomOffset=" + this.OperationBottomOffset,
             "OperationBackgroundTransparencyPercent=" + this.OperationBackgroundTransparencyPercent,
+            "LayoutWorkAreaLeft=" + this.LayoutWorkAreaLeft,
+            "LayoutWorkAreaTop=" + this.LayoutWorkAreaTop,
+            "LayoutWorkAreaWidth=" + this.LayoutWorkAreaWidth,
+            "LayoutWorkAreaHeight=" + this.LayoutWorkAreaHeight,
             "VisibilityMode=" + this.VisibilityMode,
             "ClickThroughMode=" + this.ClickThroughMode,
             "StartupEnabled=" + this.StartupEnabled,
@@ -1048,6 +1055,30 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "LayoutWorkAreaLeft", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.LayoutWorkAreaLeft = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "LayoutWorkAreaTop", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.LayoutWorkAreaTop = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "LayoutWorkAreaWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.LayoutWorkAreaWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "LayoutWorkAreaHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.LayoutWorkAreaHeight = intValue;
+            return;
+        }
+
         if (string.Equals(key, "StartupEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.StartupEnabled = boolValue;
@@ -1279,6 +1310,307 @@ internal sealed class WidgetSettings
             {
                 settings.ClickThroughMode = ClickThroughMode.Auto;
             }
+        }
+    }
+
+    public bool AdaptToCurrentWorkArea()
+    {
+        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+        EnsureUsableWorkArea(ref workArea);
+        return AdaptToWorkArea(workArea);
+    }
+
+    internal bool AdaptToWorkArea(Rectangle currentWorkArea)
+    {
+        EnsureUsableWorkArea(ref currentWorkArea);
+        if (!HasLayoutWorkAreaReference())
+        {
+            CaptureLayoutWorkArea(currentWorkArea);
+            return false;
+        }
+
+        Rectangle previousWorkArea = new Rectangle(
+            this.LayoutWorkAreaLeft,
+            this.LayoutWorkAreaTop,
+            this.LayoutWorkAreaWidth,
+            this.LayoutWorkAreaHeight);
+        EnsureUsableWorkArea(ref previousWorkArea);
+        if (previousWorkArea.Left == currentWorkArea.Left &&
+            previousWorkArea.Top == currentWorkArea.Top &&
+            previousWorkArea.Width == currentWorkArea.Width &&
+            previousWorkArea.Height == currentWorkArea.Height)
+        {
+            return false;
+        }
+
+        double scaleX = currentWorkArea.Width / (double)Math.Max(1, previousWorkArea.Width);
+        double scaleY = currentWorkArea.Height / (double)Math.Max(1, previousWorkArea.Height);
+        double uniformScale = Math.Min(scaleX, scaleY);
+
+        PanelLayout scaledLayout = ScalePanelLayout(
+            this.Width,
+            this.Height,
+            this.LeftX,
+            this.BottomY,
+            previousWorkArea,
+            currentWorkArea,
+            scaleX,
+            scaleY,
+            MinWidth,
+            MaxWidth,
+            MinHeight,
+            MaxHeight);
+        this.Width = scaledLayout.Width;
+        this.Height = scaledLayout.Height;
+        this.LeftX = scaledLayout.LeftX;
+        this.BottomY = scaledLayout.BottomY;
+
+        scaledLayout = ScalePanelLayout(
+            this.CodexRadarWidth,
+            this.CodexRadarHeight,
+            this.CodexRadarLeftX,
+            this.CodexRadarBottomY,
+            previousWorkArea,
+            currentWorkArea,
+            scaleX,
+            scaleY,
+            MinCodexRadarWidth,
+            MaxCodexRadarWidth,
+            MinCodexRadarHeight,
+            MaxCodexRadarHeight);
+        this.CodexRadarWidth = scaledLayout.Width;
+        this.CodexRadarHeight = scaledLayout.Height;
+        this.CodexRadarLeftX = scaledLayout.LeftX;
+        this.CodexRadarBottomY = scaledLayout.BottomY;
+
+        scaledLayout = ScalePanelLayout(
+            this.PowerThermalWidth,
+            this.PowerThermalHeight,
+            this.PowerThermalLeftX,
+            this.PowerThermalBottomY,
+            previousWorkArea,
+            currentWorkArea,
+            scaleX,
+            scaleY,
+            MinPowerThermalWidth,
+            MaxPowerThermalWidth,
+            MinPowerThermalHeight,
+            MaxPowerThermalHeight);
+        this.PowerThermalWidth = scaledLayout.Width;
+        this.PowerThermalHeight = scaledLayout.Height;
+        this.PowerThermalLeftX = scaledLayout.LeftX;
+        this.PowerThermalBottomY = scaledLayout.BottomY;
+
+        scaledLayout = ScalePanelLayout(
+            this.NetworkMonitorWidth,
+            this.NetworkMonitorHeight,
+            this.NetworkMonitorLeftX,
+            this.NetworkMonitorBottomY,
+            previousWorkArea,
+            currentWorkArea,
+            scaleX,
+            scaleY,
+            MinNetworkMonitorWidth,
+            MaxNetworkMonitorWidth,
+            MinNetworkMonitorHeight,
+            MaxNetworkMonitorHeight);
+        this.NetworkMonitorWidth = scaledLayout.Width;
+        this.NetworkMonitorHeight = scaledLayout.Height;
+        this.NetworkMonitorLeftX = scaledLayout.LeftX;
+        this.NetworkMonitorBottomY = scaledLayout.BottomY;
+
+        scaledLayout = ScalePanelLayout(
+            this.ConnectionCheckWidth,
+            this.ConnectionCheckHeight,
+            this.ConnectionCheckLeftX,
+            this.ConnectionCheckBottomY,
+            previousWorkArea,
+            currentWorkArea,
+            scaleX,
+            scaleY,
+            MinConnectionCheckWidth,
+            MaxConnectionCheckWidth,
+            MinConnectionCheckHeight,
+            MaxConnectionCheckHeight);
+        this.ConnectionCheckWidth = scaledLayout.Width;
+        this.ConnectionCheckHeight = scaledLayout.Height;
+        this.ConnectionCheckLeftX = scaledLayout.LeftX;
+        this.ConnectionCheckBottomY = scaledLayout.BottomY;
+
+        this.OperationButtonSize = Clamp(
+            RoundScaled(this.OperationButtonSize, uniformScale),
+            MinOperationButtonSize,
+            MaxOperationButtonSize);
+        this.OperationLeftOffset = Clamp(RoundScaled(this.OperationLeftOffset, scaleX), MinOperationOffset, MaxOperationOffset);
+        this.OperationBottomOffset = Clamp(RoundScaled(this.OperationBottomOffset, scaleY), MinOperationOffset, MaxOperationOffset);
+
+        CaptureLayoutWorkArea(currentWorkArea);
+        ClampLayoutToWorkArea(currentWorkArea, GetPrimaryScale());
+        return true;
+    }
+
+    private void ClampLayoutToWorkArea(Rectangle workArea, float scale)
+    {
+        EnsureUsableWorkArea(ref workArea);
+        this.LeftX = Clamp(this.LeftX, workArea.Left, Math.Max(workArea.Left, workArea.Right - this.Width));
+        this.BottomY = Clamp(this.BottomY, Math.Min(workArea.Bottom - 1, workArea.Top + this.Height - 1), Math.Max(workArea.Top, workArea.Bottom - 1));
+        this.CodexRadarLeftX = Clamp(this.CodexRadarLeftX, workArea.Left, Math.Max(workArea.Left, workArea.Right - this.CodexRadarWidth));
+        this.CodexRadarBottomY = Clamp(this.CodexRadarBottomY, Math.Min(workArea.Bottom - 1, workArea.Top + this.CodexRadarHeight - 1), Math.Max(workArea.Top, workArea.Bottom - 1));
+        this.PowerThermalLeftX = Clamp(this.PowerThermalLeftX, workArea.Left, Math.Max(workArea.Left, workArea.Right - this.PowerThermalWidth));
+        this.PowerThermalBottomY = Clamp(this.PowerThermalBottomY, Math.Min(workArea.Bottom - 1, workArea.Top + this.PowerThermalHeight - 1), Math.Max(workArea.Top, workArea.Bottom - 1));
+        this.NetworkMonitorLeftX = Clamp(this.NetworkMonitorLeftX, workArea.Left, Math.Max(workArea.Left, workArea.Right - this.NetworkMonitorWidth));
+        this.NetworkMonitorBottomY = Clamp(this.NetworkMonitorBottomY, Math.Min(workArea.Bottom - 1, workArea.Top + this.NetworkMonitorHeight - 1), Math.Max(workArea.Top, workArea.Bottom - 1));
+        this.ConnectionCheckLeftX = Clamp(this.ConnectionCheckLeftX, workArea.Left, Math.Max(workArea.Left, workArea.Right - this.ConnectionCheckWidth));
+        this.ConnectionCheckBottomY = Clamp(this.ConnectionCheckBottomY, Math.Min(workArea.Bottom - 1, workArea.Top + this.ConnectionCheckHeight - 1), Math.Max(workArea.Top, workArea.Bottom - 1));
+
+        int operationMaxLeftOffset = Math.Max(0, workArea.Width - GetOperationWindowWidth(this.OperationButtonSize, scale));
+        int operationMaxBottomOffset = Math.Max(0, workArea.Height - GetOperationWindowHeight(this.OperationButtonSize, scale));
+        this.OperationLeftOffset = Clamp(this.OperationLeftOffset, MinOperationOffset, Math.Min(MaxOperationOffset, operationMaxLeftOffset));
+        this.OperationBottomOffset = Clamp(this.OperationBottomOffset, MinOperationOffset, Math.Min(MaxOperationOffset, operationMaxBottomOffset));
+    }
+
+    private struct PanelLayout
+    {
+        public int Width;
+        public int Height;
+        public int LeftX;
+        public int BottomY;
+    }
+
+    private static PanelLayout ScalePanelLayout(
+        int width,
+        int height,
+        int leftX,
+        int bottomY,
+        Rectangle previousWorkArea,
+        Rectangle currentWorkArea,
+        double scaleX,
+        double scaleY,
+        int minWidth,
+        int maxWidth,
+        int minHeight,
+        int maxHeight)
+    {
+        PanelLayout layout = new PanelLayout();
+        layout.Width = Clamp(RoundScaled(width, scaleX), minWidth, maxWidth);
+        layout.Height = Clamp(RoundScaled(height, scaleY), minHeight, maxHeight);
+        layout.LeftX = currentWorkArea.Left + RoundScaled(leftX - previousWorkArea.Left, scaleX);
+        layout.BottomY = currentWorkArea.Top + RoundScaled(bottomY - previousWorkArea.Top, scaleY);
+        return layout;
+    }
+
+    private static int RoundScaled(int value, double scale)
+    {
+        if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0.0)
+        {
+            return value;
+        }
+
+        return (int)Math.Round(value * scale, MidpointRounding.AwayFromZero);
+    }
+
+    private bool HasLayoutWorkAreaReference()
+    {
+        return this.LayoutWorkAreaWidth > 0 && this.LayoutWorkAreaHeight > 0;
+    }
+
+    private void EnsureLayoutWorkAreaReference(Rectangle workArea)
+    {
+        if (!HasLayoutWorkAreaReference())
+        {
+            CaptureLayoutWorkArea(workArea);
+        }
+    }
+
+    private void CaptureCurrentWorkArea()
+    {
+        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+        EnsureUsableWorkArea(ref workArea);
+        CaptureLayoutWorkArea(workArea);
+    }
+
+    private void CaptureLayoutWorkArea(Rectangle workArea)
+    {
+        EnsureUsableWorkArea(ref workArea);
+        this.LayoutWorkAreaLeft = workArea.Left;
+        this.LayoutWorkAreaTop = workArea.Top;
+        this.LayoutWorkAreaWidth = Math.Max(1, workArea.Width);
+        this.LayoutWorkAreaHeight = Math.Max(1, workArea.Height);
+    }
+
+    private static void EnsureUsableWorkArea(ref Rectangle workArea)
+    {
+        if (workArea.Width > 0 && workArea.Height > 0)
+        {
+            return;
+        }
+
+        workArea = Screen.PrimaryScreen.Bounds;
+        if (workArea.Width <= 0 || workArea.Height <= 0)
+        {
+            workArea = new Rectangle(0, 0, 1920, 1080);
+        }
+    }
+
+    internal static void RunLayoutScalingSelfTest()
+    {
+        WidgetSettings settings = new WidgetSettings(true);
+        settings.Width = 432;
+        settings.Height = 120;
+        settings.LeftX = 2400;
+        settings.BottomY = 1680;
+        settings.CodexRadarWidth = 210;
+        settings.CodexRadarHeight = 64;
+        settings.CodexRadarLeftX = 2550;
+        settings.CodexRadarBottomY = 1520;
+        settings.PowerThermalWidth = 100;
+        settings.PowerThermalHeight = 64;
+        settings.PowerThermalLeftX = 2438;
+        settings.PowerThermalBottomY = 1520;
+        settings.NetworkMonitorWidth = 480;
+        settings.NetworkMonitorHeight = 170;
+        settings.NetworkMonitorLeftX = 2384;
+        settings.NetworkMonitorBottomY = 1438;
+        settings.ConnectionCheckWidth = 240;
+        settings.ConnectionCheckHeight = 85;
+        settings.ConnectionCheckLeftX = 2624;
+        settings.ConnectionCheckBottomY = 1240;
+        settings.OperationButtonSize = 64;
+        settings.OperationLeftOffset = 12;
+        settings.OperationBottomOffset = 14;
+        settings.LayoutWorkAreaLeft = 0;
+        settings.LayoutWorkAreaTop = 0;
+        settings.LayoutWorkAreaWidth = 2880;
+        settings.LayoutWorkAreaHeight = 1700;
+
+        Rectangle current = new Rectangle(0, 0, 1920, 1080);
+        AssertLayout(settings.AdaptToWorkArea(current), "first adaptation should change layout");
+        AssertLayout(settings.LayoutWorkAreaWidth == 1920 && settings.LayoutWorkAreaHeight == 1080, "layout reference should update");
+        AssertLayout(settings.Width == 288, "widget width ratio");
+        AssertLayout(settings.Height == 86, "widget height minimum clamp");
+        AssertLayout(settings.LeftX == 1600, "widget left ratio");
+        AssertLayout(settings.BottomY == 1067, "widget bottom ratio");
+        AssertLayout(settings.NetworkMonitorWidth == 320, "network width ratio");
+        AssertLayout(settings.NetworkMonitorHeight == 112, "network height minimum clamp");
+        AssertLayout(settings.ConnectionCheckWidth == 160, "connection width ratio");
+        AssertLayout(settings.ConnectionCheckHeight == 56, "connection height minimum clamp");
+        AssertLayout(settings.OperationButtonSize == 41, "operation button uniform scale");
+        AssertLayout(settings.OperationLeftOffset == 8, "operation left offset ratio");
+        AssertLayout(settings.OperationBottomOffset == 9, "operation bottom offset ratio");
+        AssertLayout(!settings.AdaptToWorkArea(current), "same work area should not change layout");
+
+        Rectangle shifted = new Rectangle(100, 40, 1600, 900);
+        AssertLayout(settings.AdaptToWorkArea(shifted), "shifted adaptation should change layout");
+        AssertLayout(settings.LayoutWorkAreaLeft == 100 && settings.LayoutWorkAreaTop == 40, "shifted layout reference should update");
+        AssertLayout(settings.LeftX >= shifted.Left && settings.LeftX <= shifted.Right - settings.Width, "shifted left clamp");
+        AssertLayout(settings.BottomY >= shifted.Top + settings.Height - 1 && settings.BottomY <= shifted.Bottom - 1, "shifted bottom clamp");
+    }
+
+    private static void AssertLayout(bool condition, string message)
+    {
+        if (!condition)
+        {
+            throw new InvalidOperationException("Layout scaling self-test failed: " + message);
         }
     }
 
