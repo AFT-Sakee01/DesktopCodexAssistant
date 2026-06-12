@@ -22,6 +22,8 @@ internal sealed class WidgetForm : Form
     private const int DisplayRecoveryRetryDelayMs = 1500;
     private const int DisplayRecoveryMaxAttempts = 3;
     private const int SampleDiagnosticIntervalMinutes = 15;
+    private const int SeelenDockPulseFallbackIntervalMs = 30 * 60 * 1000;
+    private const int ForegroundMaximizedCacheMs = 750;
     private static readonly string[] HardwareVendorPrefixes = new string[]
     {
         "Western Digital",
@@ -62,6 +64,7 @@ internal sealed class WidgetForm : Form
     private readonly System.Windows.Forms.Timer timer;
     private readonly System.Windows.Forms.Timer hoverTimer;
     private readonly System.Windows.Forms.Timer displayRecoveryTimer;
+    private readonly System.Windows.Forms.Timer seelenDockPulseTimer;
     private readonly List<double> cpuHistory;
     private readonly List<double> memoryHistory;
     private readonly List<double> diskWriteHistory;
@@ -99,6 +102,15 @@ internal sealed class WidgetForm : Form
     private OperationForm operationForm;
     private double hoverOpacityProgress;
     private DateTime hoverOpacityLastUtc;
+    private bool manualForceHoverOpacityActive;
+    private bool autoIdleHoverOpacityActive;
+    private bool autoMaximizedHoverOpacityActive;
+    private bool cachedForegroundMaximizedOrFullscreen;
+    private Point lastMouseActivityPosition;
+    private bool lastMouseButtonDown;
+    private DateTime lastMouseActivityUtc;
+    private DateTime cachedForegroundMaximizedUtc;
+    private bool applyingAutomaticHoverOpacityState;
     private DateTime lastSettingsWriteUtc;
     private DateTime lastSampleDiagnosticUtc;
     private FileSystemWatcher settingsWatcher;
@@ -107,6 +119,7 @@ internal sealed class WidgetForm : Form
     private Size lastLoggedSize;
     private bool lastLoggedDesktopAttached;
     private bool positionLogInitialized;
+    private long burnInShiftSlot = long.MinValue;
     private Bitmap renderBitmap;
     private Graphics renderGraphics;
     private bool renderBufferValid;
@@ -115,8 +128,14 @@ internal sealed class WidgetForm : Form
     private readonly Dictionary<string, Font> fontCache = new Dictionary<string, Font>(StringComparer.Ordinal);
     private bool formClosing;
     private IntPtr displayPowerNotificationHandle;
+    private IntPtr acDcPowerNotificationHandle;
+    private IntPtr batteryPowerNotificationHandle;
+    private IntPtr powerSchemeNotificationHandle;
+    private IntPtr effectivePowerModeNotificationHandle;
+    private NativeMethods.EffectivePowerModeCallback effectivePowerModeCallback;
     private string pendingDisplayRecoveryReason = string.Empty;
     private int pendingDisplayRecoveryAttempt;
+    private DateTime nextSeelenDockPulseLocal;
 
     public WidgetForm(PdhSampler sampler, EventWaitHandle stopEvent, WidgetSettings settings, bool useDesktopParent)
     {
@@ -125,7 +144,11 @@ internal sealed class WidgetForm : Form
         this.useDesktopParent = useDesktopParent;
         this.savedSettings = settings.Clone();
         this.currentSettings = settings.Clone();
+        this.manualForceHoverOpacityActive = this.currentSettings.ForceHoverOpacityActive;
+        this.lastMouseActivityPosition = Cursor.Position;
+        this.lastMouseActivityUtc = DateTime.UtcNow;
         this.lastSettingsWriteUtc = GetSettingsWriteUtc();
+        this.effectivePowerModeCallback = OnEffectivePowerModeChanged;
         InitializeSettingsWatcher();
         this.cpuHistory = new List<double>();
         this.memoryHistory = new List<double>();
@@ -142,6 +165,9 @@ internal sealed class WidgetForm : Form
         this.displayRecoveryTimer = new System.Windows.Forms.Timer();
         this.displayRecoveryTimer.Interval = DisplayRecoveryDelayMs;
         this.displayRecoveryTimer.Tick += OnDisplayRecoveryTimerTick;
+        this.seelenDockPulseTimer = new System.Windows.Forms.Timer();
+        this.seelenDockPulseTimer.Interval = SeelenDockPulseFallbackIntervalMs;
+        this.seelenDockPulseTimer.Tick += OnSeelenDockPulseTimerTick;
 
         this.SetStyle(
             ControlStyles.AllPaintingInWmPaint |
@@ -225,9 +251,12 @@ internal sealed class WidgetForm : Form
             delegate { OpenSettings(); },
             delegate { ForceRefreshAllModules(); },
             delegate { RestartCurrentProcess(); },
-            ShowWindowsNotification);
+            ShowWindowsNotification,
+            delegate { return ToggleForcedHoverOpacity(); },
+            delegate { return PulseSeelenDockToFront("operation panel", false, false); });
         this.operationForm.Show(this);
         this.timer.Start();
+        UpdateSeelenDockPulseTimer();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -236,6 +265,34 @@ internal sealed class WidgetForm : Form
         if (this.displayPowerNotificationHandle == IntPtr.Zero)
         {
             this.displayPowerNotificationHandle = NativeMethods.RegisterConsoleDisplayStateNotification(this.Handle);
+        }
+
+        if (this.acDcPowerNotificationHandle == IntPtr.Zero)
+        {
+            this.acDcPowerNotificationHandle = NativeMethods.RegisterPowerSettingNotificationForWindow(
+                this.Handle,
+                NativeMethods.GUID_ACDC_POWER_SOURCE);
+        }
+
+        if (this.batteryPowerNotificationHandle == IntPtr.Zero)
+        {
+            this.batteryPowerNotificationHandle = NativeMethods.RegisterPowerSettingNotificationForWindow(
+                this.Handle,
+                NativeMethods.GUID_BATTERY_PERCENTAGE_REMAINING);
+        }
+
+        if (this.powerSchemeNotificationHandle == IntPtr.Zero)
+        {
+            this.powerSchemeNotificationHandle = NativeMethods.RegisterPowerSettingNotificationForWindow(
+                this.Handle,
+                NativeMethods.GUID_POWERSCHEME_PERSONALITY);
+        }
+
+        if (this.effectivePowerModeNotificationHandle == IntPtr.Zero)
+        {
+            NativeMethods.TryRegisterEffectivePowerModeNotification(
+                this.effectivePowerModeCallback,
+                out this.effectivePowerModeNotificationHandle);
         }
     }
 
@@ -247,6 +304,15 @@ internal sealed class WidgetForm : Form
             this.displayPowerNotificationHandle = IntPtr.Zero;
         }
 
+        NativeMethods.UnregisterPowerNotification(this.acDcPowerNotificationHandle);
+        NativeMethods.UnregisterPowerNotification(this.batteryPowerNotificationHandle);
+        NativeMethods.UnregisterPowerNotification(this.powerSchemeNotificationHandle);
+        NativeMethods.UnregisterEffectivePowerModeNotification(this.effectivePowerModeNotificationHandle);
+        this.acDcPowerNotificationHandle = IntPtr.Zero;
+        this.batteryPowerNotificationHandle = IntPtr.Zero;
+        this.powerSchemeNotificationHandle = IntPtr.Zero;
+        this.effectivePowerModeNotificationHandle = IntPtr.Zero;
+
         base.OnHandleDestroyed(e);
     }
 
@@ -257,6 +323,9 @@ internal sealed class WidgetForm : Form
         this.displayRecoveryTimer.Stop();
         this.displayRecoveryTimer.Tick -= OnDisplayRecoveryTimerTick;
         this.displayRecoveryTimer.Dispose();
+        this.seelenDockPulseTimer.Stop();
+        this.seelenDockPulseTimer.Tick -= OnSeelenDockPulseTimerTick;
+        this.seelenDockPulseTimer.Dispose();
         this.timer.Stop();
         this.timer.Tick -= OnTimerTick;
         this.timer.Dispose();
@@ -386,6 +455,14 @@ internal sealed class WidgetForm : Form
             (NativeMethods.POWERBROADCAST_SETTING)Marshal.PtrToStructure(
                 dataPtr,
                 typeof(NativeMethods.POWERBROADCAST_SETTING));
+        if (setting.PowerSetting == NativeMethods.GUID_ACDC_POWER_SOURCE ||
+            setting.PowerSetting == NativeMethods.GUID_BATTERY_PERCENTAGE_REMAINING ||
+            setting.PowerSetting == NativeMethods.GUID_POWERSCHEME_PERSONALITY)
+        {
+            RefreshAutomaticPerformanceMode("power setting change");
+            return;
+        }
+
         if (setting.PowerSetting != NativeMethods.GUID_CONSOLE_DISPLAY_STATE)
         {
             return;
@@ -398,6 +475,50 @@ internal sealed class WidgetForm : Form
         }
 
         PrepareForDisplayInactive("display powered off");
+    }
+
+    private void OnEffectivePowerModeChanged(int mode, IntPtr context)
+    {
+        WidgetSettings.InvalidateEffectivePerformanceModeCache();
+        RefreshAutomaticPerformanceModeFromAnyThread("effective power mode");
+    }
+
+    private void RefreshAutomaticPerformanceModeFromAnyThread(string reason)
+    {
+        if (this.formClosing || this.IsDisposed || !this.IsHandleCreated)
+        {
+            return;
+        }
+
+        if (this.InvokeRequired)
+        {
+            try
+            {
+                this.BeginInvoke((MethodInvoker)delegate
+                {
+                    RefreshAutomaticPerformanceMode(reason);
+                });
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            return;
+        }
+
+        RefreshAutomaticPerformanceMode(reason);
+    }
+
+    private void RefreshAutomaticPerformanceMode(string reason)
+    {
+        WidgetSettings.InvalidateEffectivePerformanceModeCache();
+        if (this.currentSettings.PerformanceMode != WidgetPerformanceMode.WindowsPowerMode)
+        {
+            return;
+        }
+
+        Program.LogInfo("Automatic performance mode refresh. Reason=" + reason);
+        ApplyRuntimeSettings(this.currentSettings);
     }
 
     private void OnSystemSessionSwitch(object sender, SessionSwitchEventArgs e)
@@ -462,6 +583,11 @@ internal sealed class WidgetForm : Form
             this.pendingDisplayRecoveryReason +
             ", Attempts=" +
             attempt.ToString(CultureInfo.InvariantCulture));
+        if (ShouldPulseSeelenDockAfterDisplayRecovery(this.pendingDisplayRecoveryReason))
+        {
+            PulseSeelenDockToFront("display recovery: " + this.pendingDisplayRecoveryReason, false, true);
+        }
+
         this.pendingDisplayRecoveryReason = string.Empty;
         this.pendingDisplayRecoveryAttempt = 0;
     }
@@ -552,6 +678,167 @@ internal sealed class WidgetForm : Form
         Program.LogInfo("Display resources released. Reason=" + reason);
     }
 
+    private static bool ShouldPulseSeelenDockAfterDisplayRecovery(string reason)
+    {
+        if (string.IsNullOrEmpty(reason))
+        {
+            return false;
+        }
+
+        return reason.IndexOf("display", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            reason.IndexOf("power resume", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            reason.IndexOf("session unlock", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private void UpdateSeelenDockPulseTimer()
+    {
+        if (this.formClosing || this.IsDisposed)
+        {
+            return;
+        }
+
+        if (!this.currentSettings.SeelenDockForegroundPulseEnabled)
+        {
+            this.seelenDockPulseTimer.Stop();
+            this.nextSeelenDockPulseLocal = DateTime.MinValue;
+            return;
+        }
+
+        ScheduleNextSeelenDockPulse(DateTime.Now);
+    }
+
+    private void ScheduleNextSeelenDockPulse(DateTime nowLocal)
+    {
+        DateTime nextLocal = GetNextSeelenDockPulseLocalTime(nowLocal);
+        this.nextSeelenDockPulseLocal = nextLocal;
+        int interval = (int)Math.Max(
+            1000.0,
+            Math.Min(
+                int.MaxValue,
+                Math.Ceiling((nextLocal - nowLocal).TotalMilliseconds)));
+        this.seelenDockPulseTimer.Interval = interval;
+        this.seelenDockPulseTimer.Stop();
+        this.seelenDockPulseTimer.Start();
+    }
+
+    private static DateTime GetNextSeelenDockPulseLocalTime(DateTime nowLocal)
+    {
+        DateTime hour = new DateTime(
+            nowLocal.Year,
+            nowLocal.Month,
+            nowLocal.Day,
+            nowLocal.Hour,
+            0,
+            0,
+            nowLocal.Kind);
+        DateTime nextLocal = nowLocal.Minute < 30
+            ? hour.AddMinutes(30)
+            : hour.AddHours(1);
+        if (nextLocal <= nowLocal.AddSeconds(1))
+        {
+            nextLocal = nextLocal.Minute == 0
+                ? nextLocal.AddMinutes(30)
+                : nextLocal.AddMinutes(30);
+        }
+
+        return nextLocal;
+    }
+
+    private void OnSeelenDockPulseTimerTick(object sender, EventArgs e)
+    {
+        this.seelenDockPulseTimer.Stop();
+        if (this.formClosing || this.IsDisposed)
+        {
+            return;
+        }
+
+        if (!this.currentSettings.SeelenDockForegroundPulseEnabled)
+        {
+            this.nextSeelenDockPulseLocal = DateTime.MinValue;
+            return;
+        }
+
+        DateTime nowLocal = DateTime.Now;
+        if (this.nextSeelenDockPulseLocal == DateTime.MinValue ||
+            nowLocal < this.nextSeelenDockPulseLocal.AddSeconds(-1))
+        {
+            ScheduleNextSeelenDockPulse(nowLocal);
+            return;
+        }
+
+        PulseSeelenDockToFront(
+            "scheduled " + this.nextSeelenDockPulseLocal.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
+            true,
+            true);
+        ScheduleNextSeelenDockPulse(nowLocal.AddSeconds(1));
+    }
+
+    private bool PulseSeelenDockToFront(string reason, bool skipWhenForegroundMaximizedOrFullscreen, bool respectSetting)
+    {
+        if (respectSetting && !this.currentSettings.SeelenDockForegroundPulseEnabled)
+        {
+            return false;
+        }
+
+        if (skipWhenForegroundMaximizedOrFullscreen &&
+            NativeMethods.IsForegroundWindowMaximizedOrFullscreen(this.Handle))
+        {
+            Program.LogInfo("Seelen dock foreground pulse skipped because foreground window is maximized or fullscreen. Reason=" + reason);
+            return false;
+        }
+
+        string detail;
+        bool success = NativeMethods.TryPulseSeelenDockWindowToFront(out detail);
+        Program.LogInfo(
+            "Seelen dock foreground pulse. Reason=" +
+            reason +
+            ", Success=" +
+            success.ToString() +
+            ", Detail=" +
+            detail);
+        if (success)
+        {
+            RestoreApplicationTopMostPriority();
+        }
+
+        return success;
+    }
+
+    private void RestoreApplicationTopMostPriority()
+    {
+        if (this.currentSettings.VisibilityMode == WidgetVisibilityMode.DesktopOnly)
+        {
+            return;
+        }
+
+        PulseFormToTopMost(this);
+        PulseFormToTopMost(this.codexRadarForm);
+        PulseFormToTopMost(this.powerThermalForm);
+        PulseFormToTopMost(this.networkMonitorForm);
+        PulseFormToTopMost(this.connectionCheckForm);
+        PulseFormToTopMost(this.operationForm);
+    }
+
+    private static void PulseFormToTopMost(Form form)
+    {
+        if (form == null || form.IsDisposed || !form.IsHandleCreated || !form.Visible)
+        {
+            return;
+        }
+
+        NativeMethods.SetWindowPos(
+            form.Handle,
+            NativeMethods.HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SWP_NOACTIVATE |
+            NativeMethods.SWP_NOMOVE |
+            NativeMethods.SWP_NOSIZE |
+            NativeMethods.SWP_SHOWWINDOW);
+    }
+
     private bool ApplyDisplayLayoutForCurrentWorkArea()
     {
         WidgetSettings adjustedSettings = this.currentSettings.Clone();
@@ -617,8 +904,14 @@ internal sealed class WidgetForm : Form
         {
             ReloadSettingsIfChanged();
             UpdateVisibilityForMode();
+            if (!this.hiddenForFullscreen &&
+                BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+            {
+                PositionWidget();
+            }
+
             if (this.hiddenForFullscreen &&
-                this.currentSettings.PerformanceMode == WidgetPerformanceMode.BatterySaver)
+                WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode) == WidgetPerformanceMode.BatterySaver)
             {
                 // Keep the control tick alive for settings, stop, and visibility checks, but skip PDH sampling.
                 return;
@@ -798,6 +1091,13 @@ internal sealed class WidgetForm : Form
         Point location = CalculateLocation(workArea);
         int left = location.X;
         int top = location.Y;
+        Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
+            new Point(left, top),
+            this.Size,
+            workArea,
+            BurnInProtection.MainWidgetSalt);
+        left = shiftedLocation.X;
+        top = shiftedLocation.Y;
         this.Location = new Point(left, top);
         uint flags =
             NativeMethods.SWP_NOACTIVATE |
@@ -860,6 +1160,8 @@ internal sealed class WidgetForm : Form
     {
         WidgetSettings nextSettings = settings.Clone();
         nextSettings.Normalize();
+        nextSettings.ForceHoverOpacityActive = false;
+        this.manualForceHoverOpacityActive = false;
         nextSettings.Save();
         Program.SetStartupEnabled(nextSettings.StartupEnabled, false);
         this.savedSettings = nextSettings.Clone();
@@ -884,6 +1186,7 @@ internal sealed class WidgetForm : Form
     internal void ForceRefreshAllModules()
     {
         Program.LogInfo("Forced refresh requested from operation panel.");
+        this.sampler.RequestDiskUsageRefresh();
         OnTimerTick(this, EventArgs.Empty);
 
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
@@ -905,6 +1208,16 @@ internal sealed class WidgetForm : Form
         {
             this.connectionCheckForm.ForceRefresh();
         }
+    }
+
+    internal bool ToggleForcedHoverOpacity()
+    {
+        this.manualForceHoverOpacityActive = !this.manualForceHoverOpacityActive;
+        Program.LogInfo(
+            "Forced hover opacity toggled from operation panel. ManualActive=" +
+            this.manualForceHoverOpacityActive.ToString());
+        ApplyCombinedHoverOpacityState("operation panel toggle");
+        return this.currentSettings.ForceHoverOpacityActive;
     }
 
     internal void TestCodexExtraResetNotification()
@@ -1022,10 +1335,30 @@ internal sealed class WidgetForm : Form
 
     private void ApplyRuntimeSettings(WidgetSettings settings)
     {
-        this.currentSettings = settings.Clone();
-        this.currentSettings.Normalize();
+        WidgetSettings nextSettings = settings.Clone();
+        nextSettings.Normalize();
+        if (!this.applyingAutomaticHoverOpacityState)
+        {
+            this.manualForceHoverOpacityActive = nextSettings.ForceHoverOpacityActive;
+        }
+
+        if (!nextSettings.AutoHoverOpacityIdleEnabled)
+        {
+            this.autoIdleHoverOpacityActive = false;
+        }
+
+        if (!nextSettings.AutoHoverOpacityMaximizedEnabled)
+        {
+            this.autoMaximizedHoverOpacityActive = false;
+            this.cachedForegroundMaximizedOrFullscreen = false;
+            this.cachedForegroundMaximizedUtc = DateTime.MinValue;
+        }
+
+        nextSettings.ForceHoverOpacityActive = IsCombinedHoverOpacityActive();
+        this.currentSettings = nextSettings;
         Program.ApplyPerformanceMode(this.currentSettings.PerformanceMode);
         ApplyPerformanceTimerIntervals();
+        UpdateSeelenDockPulseTimer();
 
         Size desiredSize = new Size(this.currentSettings.Width, this.currentSettings.Height);
         if (this.Size != desiredSize)
@@ -1100,18 +1433,19 @@ internal sealed class WidgetForm : Form
 
     private int GetCurrentWidgetTimerIntervalMs()
     {
+        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
         if (!this.hiddenForFullscreen)
         {
-            return WidgetSettings.GetWidgetSampleIntervalMs(this.currentSettings.PerformanceMode);
+            return WidgetSettings.GetWidgetSampleIntervalMs(mode);
         }
 
         // Hidden windows still need to notice when the foreground app leaves fullscreen.
-        if (this.currentSettings.PerformanceMode == WidgetPerformanceMode.Smooth)
+        if (mode == WidgetPerformanceMode.Smooth)
         {
-            return WidgetSettings.GetWidgetSampleIntervalMs(this.currentSettings.PerformanceMode);
+            return WidgetSettings.GetWidgetSampleIntervalMs(mode);
         }
 
-        return this.currentSettings.PerformanceMode == WidgetPerformanceMode.BatterySaver ? 5000 : 2500;
+        return mode == WidgetPerformanceMode.BatterySaver ? 5000 : 2500;
     }
 
     private void ReloadSettingsIfChanged()
@@ -1225,10 +1559,13 @@ internal sealed class WidgetForm : Form
 
     private void OnHoverTimerTick(object sender, EventArgs e)
     {
+        bool automaticStateChanged = UpdateAutomaticHoverOpacityTriggers();
         ApplyClickThroughStyle();
         bool opacityChanged = UpdateHoverOpacityAnimation();
         bool hoverTarget = IsHoverOpacityTargetActive();
-        bool animationActive = Math.Abs(this.hoverOpacityProgress - (hoverTarget ? 1.0 : 0.0)) > 0.001;
+        bool animationActive =
+            automaticStateChanged ||
+            Math.Abs(this.hoverOpacityProgress - (hoverTarget ? 1.0 : 0.0)) > 0.001;
         // All passive panels share this UI-thread timer so hover support costs one
         // message-pump wakeup instead of one wakeup per window.
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
@@ -1265,10 +1602,114 @@ internal sealed class WidgetForm : Form
         }
     }
 
+    private bool UpdateAutomaticHoverOpacityTriggers()
+    {
+        if (this.currentSettings == null)
+        {
+            return false;
+        }
+
+        DateTime nowUtc = DateTime.UtcNow;
+        UpdateMouseActivityState(nowUtc);
+
+        bool idleActive = false;
+        if (this.currentSettings.AutoHoverOpacityIdleEnabled)
+        {
+            int idleSeconds = Math.Max(
+                WidgetSettings.MinAutoHoverOpacityIdleSeconds,
+                Math.Min(
+                    WidgetSettings.MaxAutoHoverOpacityIdleSeconds,
+                    this.currentSettings.AutoHoverOpacityIdleSeconds));
+            idleActive = (nowUtc - this.lastMouseActivityUtc).TotalSeconds >= idleSeconds;
+        }
+
+        bool maximizedActive =
+            this.currentSettings.AutoHoverOpacityMaximizedEnabled &&
+            IsForegroundWindowMaximizedOrFullscreenCached(nowUtc);
+
+        if (idleActive == this.autoIdleHoverOpacityActive &&
+            maximizedActive == this.autoMaximizedHoverOpacityActive)
+        {
+            return false;
+        }
+
+        this.autoIdleHoverOpacityActive = idleActive;
+        this.autoMaximizedHoverOpacityActive = maximizedActive;
+        Program.LogInfo(
+            "Automatic hover opacity state changed. IdleActive=" +
+            idleActive.ToString() +
+            ", MaximizedActive=" +
+            maximizedActive.ToString() +
+            ", ManualActive=" +
+            this.manualForceHoverOpacityActive.ToString());
+        ApplyCombinedHoverOpacityState("automatic trigger");
+        return true;
+    }
+
+    private bool IsForegroundWindowMaximizedOrFullscreenCached(DateTime nowUtc)
+    {
+        if (this.cachedForegroundMaximizedUtc != DateTime.MinValue &&
+            (nowUtc - this.cachedForegroundMaximizedUtc).TotalMilliseconds < ForegroundMaximizedCacheMs)
+        {
+            return this.cachedForegroundMaximizedOrFullscreen;
+        }
+
+        this.cachedForegroundMaximizedOrFullscreen = NativeMethods.IsForegroundWindowMaximizedOrFullscreen(this.Handle);
+        this.cachedForegroundMaximizedUtc = nowUtc;
+        return this.cachedForegroundMaximizedOrFullscreen;
+    }
+
+    private void UpdateMouseActivityState(DateTime nowUtc)
+    {
+        Point cursor = Cursor.Position;
+        bool mouseButtonDown = NativeMethods.IsAnyMouseButtonDown();
+        if (cursor != this.lastMouseActivityPosition || mouseButtonDown != this.lastMouseButtonDown || mouseButtonDown)
+        {
+            this.lastMouseActivityPosition = cursor;
+            this.lastMouseButtonDown = mouseButtonDown;
+            this.lastMouseActivityUtc = nowUtc;
+        }
+    }
+
+    private void ApplyCombinedHoverOpacityState(string reason)
+    {
+        if (this.currentSettings == null)
+        {
+            return;
+        }
+
+        bool combined = IsCombinedHoverOpacityActive();
+        if (this.currentSettings.ForceHoverOpacityActive == combined)
+        {
+            return;
+        }
+
+        WidgetSettings nextSettings = this.currentSettings.Clone();
+        nextSettings.ForceHoverOpacityActive = combined;
+        this.applyingAutomaticHoverOpacityState = true;
+        try
+        {
+            ApplyRuntimeSettings(nextSettings);
+        }
+        finally
+        {
+            this.applyingAutomaticHoverOpacityState = false;
+        }
+
+        Program.LogInfo("Hover opacity runtime state applied. Active=" + combined.ToString() + ", Reason=" + reason);
+    }
+
+    private bool IsCombinedHoverOpacityActive()
+    {
+        return this.manualForceHoverOpacityActive ||
+            this.autoIdleHoverOpacityActive ||
+            this.autoMaximizedHoverOpacityActive;
+    }
+
     private void UpdateHoverAnimationTimer()
     {
         if (!this.hiddenForFullscreen &&
-            (this.currentSettings.HoverOpacityEnabled || NeedsClickThroughPolling()))
+            (IsHoverOpacityRuntimeEnabled() || NeedsClickThroughPolling()))
         {
             if (!this.hoverTimer.Enabled)
             {
@@ -1316,10 +1757,18 @@ internal sealed class WidgetForm : Form
 
     private bool IsHoverOpacityTargetActive()
     {
-        return this.currentSettings.HoverOpacityEnabled &&
+        return IsHoverOpacityRuntimeEnabled() &&
             !this.hiddenForFullscreen &&
             this.Visible &&
-            this.Bounds.Contains(Cursor.Position);
+            (this.currentSettings.ForceHoverOpacityActive || this.Bounds.Contains(Cursor.Position));
+    }
+
+    private bool IsHoverOpacityRuntimeEnabled()
+    {
+        return this.currentSettings.HoverOpacityEnabled ||
+            this.currentSettings.ForceHoverOpacityActive ||
+            this.currentSettings.AutoHoverOpacityIdleEnabled ||
+            this.currentSettings.AutoHoverOpacityMaximizedEnabled;
     }
 
     private void ApplyClickThroughStyle()
@@ -1981,7 +2430,7 @@ internal sealed class WidgetForm : Form
 
     private int ApplyHoverTransparencyTarget(int alpha)
     {
-        if (!this.currentSettings.HoverOpacityEnabled || this.hoverOpacityProgress <= 0.0)
+        if (!IsHoverOpacityRuntimeEnabled() || this.hoverOpacityProgress <= 0.0)
         {
             return alpha;
         }

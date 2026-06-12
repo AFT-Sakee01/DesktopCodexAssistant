@@ -109,6 +109,7 @@ internal enum NetworkStatusTestMode
 
 internal enum WidgetPerformanceMode
 {
+    WindowsPowerMode,
     Smooth,
     Balanced,
     BatterySaver
@@ -148,6 +149,12 @@ internal sealed class WidgetSettings
     public const int MinGfwProbeIntervalMinutes = 15;
     public const int MaxGfwProbeIntervalMinutes = 240;
     public const int DefaultGfwProbeIntervalMinutes = 30;
+    public const int CloudStatusRegionJapan = 1;
+    public const int CloudStatusRegionAsiaPacific = 2;
+    public const int CloudStatusRegionNorthAmerica = 4;
+    public const int CloudStatusRegionEurope = 8;
+    public const int CloudStatusRegionMaskAll = CloudStatusRegionJapan | CloudStatusRegionAsiaPacific | CloudStatusRegionNorthAmerica | CloudStatusRegionEurope;
+    public const int DefaultCloudStatusRegionMask = CloudStatusRegionJapan;
     public const int MaxPowerThermalAutoHeight = 900;
     public const int MinPowerThermalVisibleAlerts = 1;
     public const int MaxPowerThermalVisibleAlerts = 8;
@@ -162,7 +169,14 @@ internal sealed class WidgetSettings
     public const int MaxOperationButtonSize = 120;
     public const int MinOperationOffset = 0;
     public const int MaxOperationOffset = 4000;
-    private const int CurrentSettingsVersion = 9;
+    public const int MinAutoHoverOpacityIdleSeconds = 1;
+    public const int MaxAutoHoverOpacityIdleSeconds = 300;
+    public const int DefaultAutoHoverOpacityIdleSeconds = 60;
+    private const int CurrentSettingsVersion = 15;
+    private const int EffectivePerformanceModeCacheMs = 2000;
+    private static readonly object EffectivePerformanceModeSync = new object();
+    private static DateTime effectivePerformanceModeCacheUtc = DateTime.MinValue;
+    private static WidgetPerformanceMode effectivePerformanceModeCache = WidgetPerformanceMode.Balanced;
     public const int MinCodexModelIqPassed = 0;
     public const int MaxCodexModelIqPassed = 12;
     public const int DefaultCodexModelIqBaselinePassed = 8;
@@ -209,10 +223,13 @@ internal sealed class WidgetSettings
     public int NetworkMonitorLeftX { get; set; }
     public int NetworkMonitorBottomY { get; set; }
     public int NetworkMonitorTransparencyPercent { get; set; }
+    public string NetworkMonitorAdapterId { get; set; }
     public NetworkStatusTestMode NetworkStatusTestMode { get; set; }
     public bool GfwProbeEnabled { get; set; }
     public int GfwProbeIntervalMinutes { get; set; }
     public int GfwProbeManualRefreshToken { get; set; }
+    public int CloudEndpointTestSeed { get; set; }
+    public int CloudStatusRegionMask { get; set; }
     public int ConnectionCheckWidth { get; set; }
     public int ConnectionCheckHeight { get; set; }
     public int ConnectionCheckLeftX { get; set; }
@@ -225,6 +242,8 @@ internal sealed class WidgetSettings
     public int OperationLeftOffset { get; set; }
     public int OperationBottomOffset { get; set; }
     public int OperationBackgroundTransparencyPercent { get; set; }
+    public bool ForceShowForegroundFpsEnabled { get; set; }
+    public bool SeelenDockForegroundPulseEnabled { get; set; }
     public int LayoutWorkAreaLeft { get; set; }
     public int LayoutWorkAreaTop { get; set; }
     public int LayoutWorkAreaWidth { get; set; }
@@ -258,11 +277,15 @@ internal sealed class WidgetSettings
     public WidgetPerformanceMode PerformanceMode { get; set; }
     public bool PowerSavingEnabled
     {
-        get { return this.PerformanceMode == WidgetPerformanceMode.BatterySaver; }
+        get { return GetEffectivePerformanceMode(this.PerformanceMode) == WidgetPerformanceMode.BatterySaver; }
         set { this.PerformanceMode = value ? WidgetPerformanceMode.BatterySaver : WidgetPerformanceMode.Balanced; }
     }
 
     public bool HoverOpacityEnabled { get; set; }
+    public bool ForceHoverOpacityActive { get; set; }
+    public bool AutoHoverOpacityIdleEnabled { get; set; }
+    public int AutoHoverOpacityIdleSeconds { get; set; }
+    public bool AutoHoverOpacityMaximizedEnabled { get; set; }
     public string[] MetricOrder { get; set; }
 
     public static string SettingsPath
@@ -277,48 +300,53 @@ internal sealed class WidgetSettings
         this.Height = defaults.Height;
         this.LeftX = defaults.LeftX;
         this.BottomY = defaults.BottomY;
-        this.BackgroundTransparencyPercent = DefaultBackgroundTransparency;
-        this.ApplicationTransparencyPercent = 0;
+        this.BackgroundTransparencyPercent = defaults.BackgroundTransparencyPercent;
+        this.ApplicationTransparencyPercent = defaults.ApplicationTransparencyPercent;
         this.CodexRadarWidth = defaults.CodexRadarWidth;
         this.CodexRadarHeight = defaults.CodexRadarHeight;
         this.CodexRadarLeftX = defaults.CodexRadarLeftX;
         this.CodexRadarBottomY = defaults.CodexRadarBottomY;
-        this.CodexRadarTransparencyPercent = DefaultBackgroundTransparency;
+        this.CodexRadarTransparencyPercent = defaults.CodexRadarTransparencyPercent;
         this.PowerThermalWidth = defaults.PowerThermalWidth;
         this.PowerThermalHeight = defaults.PowerThermalHeight;
         this.PowerThermalLeftX = defaults.PowerThermalLeftX;
         this.PowerThermalBottomY = defaults.PowerThermalBottomY;
-        this.PowerThermalTransparencyPercent = DefaultBackgroundTransparency;
-        this.PowerThermalAutoSizeEnabled = true;
-        this.PowerThermalAutoDirection = PowerThermalAutoDirection.Left;
-        this.PowerThermalVisibleAlertCount = DefaultPowerThermalVisibleAlerts;
+        this.PowerThermalTransparencyPercent = defaults.PowerThermalTransparencyPercent;
+        this.PowerThermalAutoSizeEnabled = defaults.PowerThermalAutoSizeEnabled;
+        this.PowerThermalAutoDirection = defaults.PowerThermalAutoDirection;
+        this.PowerThermalVisibleAlertCount = defaults.PowerThermalVisibleAlertCount;
         this.NetworkMonitorWidth = defaults.NetworkMonitorWidth;
         this.NetworkMonitorHeight = defaults.NetworkMonitorHeight;
         this.NetworkMonitorLeftX = defaults.NetworkMonitorLeftX;
         this.NetworkMonitorBottomY = defaults.NetworkMonitorBottomY;
-        this.NetworkMonitorTransparencyPercent = DefaultBackgroundTransparency;
-        this.NetworkStatusTestMode = NetworkStatusTestMode.Off;
-        this.GfwProbeEnabled = false;
-        this.GfwProbeIntervalMinutes = DefaultGfwProbeIntervalMinutes;
+        this.NetworkMonitorTransparencyPercent = defaults.NetworkMonitorTransparencyPercent;
+        this.NetworkMonitorAdapterId = defaults.NetworkMonitorAdapterId;
+        this.NetworkStatusTestMode = defaults.NetworkStatusTestMode;
+        this.GfwProbeEnabled = defaults.GfwProbeEnabled;
+        this.GfwProbeIntervalMinutes = defaults.GfwProbeIntervalMinutes;
         this.GfwProbeManualRefreshToken = 0;
+        this.CloudEndpointTestSeed = defaults.CloudEndpointTestSeed;
+        this.CloudStatusRegionMask = defaults.CloudStatusRegionMask;
         this.ConnectionCheckWidth = defaults.ConnectionCheckWidth;
         this.ConnectionCheckHeight = defaults.ConnectionCheckHeight;
         this.ConnectionCheckLeftX = defaults.ConnectionCheckLeftX;
         this.ConnectionCheckBottomY = defaults.ConnectionCheckBottomY;
-        this.ConnectionCheckTransparencyPercent = DefaultBackgroundTransparency;
-        this.ConnectionCheckBorderTransparencyPercent = DefaultConnectionCheckBorderTransparency;
-        this.ConnectionCheckIntervalSeconds = DefaultConnectionCheckIntervalSeconds;
+        this.ConnectionCheckTransparencyPercent = defaults.ConnectionCheckTransparencyPercent;
+        this.ConnectionCheckBorderTransparencyPercent = defaults.ConnectionCheckBorderTransparencyPercent;
+        this.ConnectionCheckIntervalSeconds = defaults.ConnectionCheckIntervalSeconds;
         this.ConnectionCheckManualRefreshToken = 0;
         this.OperationButtonSize = defaults.OperationButtonSize;
         this.OperationLeftOffset = defaults.OperationLeftOffset;
         this.OperationBottomOffset = defaults.OperationBottomOffset;
-        this.OperationBackgroundTransparencyPercent = 0;
+        this.OperationBackgroundTransparencyPercent = defaults.OperationBackgroundTransparencyPercent;
+        this.ForceShowForegroundFpsEnabled = defaults.ForceShowForegroundFpsEnabled;
+        this.SeelenDockForegroundPulseEnabled = defaults.SeelenDockForegroundPulseEnabled;
         this.LayoutWorkAreaLeft = defaults.LayoutWorkAreaLeft;
         this.LayoutWorkAreaTop = defaults.LayoutWorkAreaTop;
         this.LayoutWorkAreaWidth = defaults.LayoutWorkAreaWidth;
         this.LayoutWorkAreaHeight = defaults.LayoutWorkAreaHeight;
-        this.VisibilityMode = WidgetVisibilityMode.DesktopOnly;
-        this.ClickThroughMode = ClickThroughMode.Auto;
+        this.VisibilityMode = defaults.VisibilityMode;
+        this.ClickThroughMode = defaults.ClickThroughMode;
         this.StartupEnabled = Program.IsStartupEnabled();
         this.ShowCpu = true;
         this.ShowMemory = true;
@@ -326,26 +354,29 @@ internal sealed class WidgetSettings
         this.ShowNetwork = true;
         this.ShowGpu = true;
         this.ShowNpu = true;
-        this.AlertTestEnabled = false;
-        this.ThermalTestMode = ThermalTestMode.Off;
-        this.CodexRadarTestMode = CodexRadarTestMode.Off;
-        this.ServiceHealthTestMode = ServiceHealthTestMode.Off;
-        this.CleanIpBadgeTestMode = CleanIpBadgeTestMode.Off;
-        this.CodexModelIqTestEnabled = false;
-        this.CodexModelIqTestPassed = DefaultCodexModelIqBaselinePassed;
-        this.CodexModelIqBaselinePassed = DefaultCodexModelIqBaselinePassed;
-        this.CodexModelEfficiencyTestEnabled = false;
-        this.CodexModelTokenEfficiencyTestPercent = DefaultCodexModelEfficiencyPercent;
-        this.CodexModelTimeEfficiencyTestPercent = DefaultCodexModelEfficiencyPercent;
-        this.CodexModelTokenEfficiencyBaselinePassed = DefaultCodexModelEfficiencyBaselineValue;
-        this.CodexModelTokenEfficiencyBaselineTokens = DefaultCodexModelEfficiencyBaselineValue;
-        this.CodexModelTimeEfficiencyBaselinePassed = DefaultCodexModelEfficiencyBaselineValue;
-        this.CodexModelTimeEfficiencyBaselineSeconds = DefaultCodexModelEfficiencyBaselineValue;
-        this.CodexModelTokenEfficiencyLowThresholdPercent = DefaultCodexModelEfficiencyLowThresholdPercent;
-        this.CodexModelTimeEfficiencyLowThresholdPercent = DefaultCodexModelEfficiencyLowThresholdPercent;
-        this.PerformanceMode = WidgetPerformanceMode.Balanced;
-        this.HoverOpacityEnabled = false;
-        this.MetricOrder = CloneMetricOrder(DefaultMetricOrder);
+        this.AlertTestEnabled = defaults.AlertTestEnabled;
+        this.ThermalTestMode = defaults.ThermalTestMode;
+        this.CodexRadarTestMode = defaults.CodexRadarTestMode;
+        this.ServiceHealthTestMode = defaults.ServiceHealthTestMode;
+        this.CleanIpBadgeTestMode = defaults.CleanIpBadgeTestMode;
+        this.CodexModelIqTestEnabled = defaults.CodexModelIqTestEnabled;
+        this.CodexModelIqTestPassed = defaults.CodexModelIqTestPassed;
+        this.CodexModelIqBaselinePassed = defaults.CodexModelIqBaselinePassed;
+        this.CodexModelEfficiencyTestEnabled = defaults.CodexModelEfficiencyTestEnabled;
+        this.CodexModelTokenEfficiencyTestPercent = defaults.CodexModelTokenEfficiencyTestPercent;
+        this.CodexModelTimeEfficiencyTestPercent = defaults.CodexModelTimeEfficiencyTestPercent;
+        this.CodexModelTokenEfficiencyBaselinePassed = defaults.CodexModelTokenEfficiencyBaselinePassed;
+        this.CodexModelTokenEfficiencyBaselineTokens = defaults.CodexModelTokenEfficiencyBaselineTokens;
+        this.CodexModelTimeEfficiencyBaselinePassed = defaults.CodexModelTimeEfficiencyBaselinePassed;
+        this.CodexModelTimeEfficiencyBaselineSeconds = defaults.CodexModelTimeEfficiencyBaselineSeconds;
+        this.CodexModelTokenEfficiencyLowThresholdPercent = defaults.CodexModelTokenEfficiencyLowThresholdPercent;
+        this.CodexModelTimeEfficiencyLowThresholdPercent = defaults.CodexModelTimeEfficiencyLowThresholdPercent;
+        this.PerformanceMode = defaults.PerformanceMode;
+        this.HoverOpacityEnabled = defaults.HoverOpacityEnabled;
+        this.AutoHoverOpacityIdleEnabled = defaults.AutoHoverOpacityIdleEnabled;
+        this.AutoHoverOpacityIdleSeconds = defaults.AutoHoverOpacityIdleSeconds;
+        this.AutoHoverOpacityMaximizedEnabled = defaults.AutoHoverOpacityMaximizedEnabled;
+        this.MetricOrder = CloneMetricOrder(defaults.MetricOrder);
     }
 
     private WidgetSettings(bool skipDefaults)
@@ -355,52 +386,56 @@ internal sealed class WidgetSettings
     public static WidgetSettings CreateDefaults()
     {
         WidgetSettings settings = new WidgetSettings(true);
-        float scale = GetPrimaryScale();
-        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
-        int margin = (int)Math.Round(16.0f * scale);
-
-        settings.Width = Clamp((int)Math.Round(392.0f * scale), MinWidth, MaxWidth);
-        settings.Height = Clamp((int)Math.Round(116.0f * scale), MinHeight, MaxHeight);
-        settings.LeftX = workArea.Right - settings.Width - margin;
-        settings.BottomY = workArea.Bottom - margin - 1;
-        settings.BackgroundTransparencyPercent = DefaultBackgroundTransparency;
+        settings.Width = 628;
+        settings.Height = 400;
+        settings.LeftX = 2252;
+        settings.BottomY = 1557;
+        settings.BackgroundTransparencyPercent = 40;
         settings.ApplicationTransparencyPercent = 0;
-        settings.CodexRadarWidth = Clamp((int)Math.Round(192.0f * scale), MinCodexRadarWidth, MaxCodexRadarWidth);
-        settings.CodexRadarHeight = Clamp((int)Math.Round(58.0f * scale), MinCodexRadarHeight, MaxCodexRadarHeight);
-        settings.CodexRadarLeftX = workArea.Right - settings.CodexRadarWidth - margin;
-        settings.CodexRadarBottomY = settings.BottomY - settings.Height - margin;
-        settings.CodexRadarTransparencyPercent = DefaultBackgroundTransparency;
-        settings.PowerThermalWidth = Clamp((int)Math.Round(settings.CodexRadarWidth * 0.34f), MinPowerThermalWidth, MaxPowerThermalWidth);
-        settings.PowerThermalHeight = settings.CodexRadarHeight;
-        settings.PowerThermalLeftX = Math.Max(workArea.Left, settings.CodexRadarLeftX - settings.PowerThermalWidth - (int)Math.Round(6.0f * scale));
-        settings.PowerThermalBottomY = settings.CodexRadarBottomY;
-        settings.PowerThermalTransparencyPercent = DefaultBackgroundTransparency;
+        settings.CodexRadarWidth = 628;
+        settings.CodexRadarHeight = 116;
+        settings.CodexRadarLeftX = 2252;
+        settings.CodexRadarBottomY = 470;
+        settings.CodexRadarTransparencyPercent = 30;
+        settings.PowerThermalWidth = 120;
+        settings.PowerThermalHeight = 110;
+        settings.PowerThermalLeftX = 2760;
+        settings.PowerThermalBottomY = 582;
+        settings.PowerThermalTransparencyPercent = 30;
         settings.PowerThermalAutoSizeEnabled = true;
-        settings.PowerThermalAutoDirection = PowerThermalAutoDirection.Left;
-        settings.PowerThermalVisibleAlertCount = DefaultPowerThermalVisibleAlerts;
-        settings.NetworkMonitorWidth = Clamp((int)Math.Round(420.0f * scale), MinNetworkMonitorWidth, MaxNetworkMonitorWidth);
-        settings.NetworkMonitorHeight = Clamp((int)Math.Round(150.0f * scale), MinNetworkMonitorHeight, MaxNetworkMonitorHeight);
-        settings.NetworkMonitorLeftX = workArea.Right - settings.NetworkMonitorWidth - margin;
-        settings.NetworkMonitorBottomY = settings.CodexRadarBottomY - settings.CodexRadarHeight - margin;
-        settings.NetworkMonitorTransparencyPercent = DefaultBackgroundTransparency;
+        settings.PowerThermalAutoDirection = PowerThermalAutoDirection.Down;
+        settings.PowerThermalVisibleAlertCount = 8;
+        settings.NetworkMonitorWidth = 583;
+        settings.NetworkMonitorHeight = 239;
+        settings.NetworkMonitorLeftX = 2297;
+        settings.NetworkMonitorBottomY = 1799;
+        settings.NetworkMonitorTransparencyPercent = 20;
+        settings.NetworkMonitorAdapterId = string.Empty;
         settings.NetworkStatusTestMode = NetworkStatusTestMode.Off;
-        settings.GfwProbeEnabled = false;
+        settings.GfwProbeEnabled = true;
         settings.GfwProbeIntervalMinutes = DefaultGfwProbeIntervalMinutes;
         settings.GfwProbeManualRefreshToken = 0;
-        settings.ConnectionCheckWidth = Clamp((int)Math.Round(settings.NetworkMonitorWidth * 0.5f), MinConnectionCheckWidth, MaxConnectionCheckWidth);
-        settings.ConnectionCheckHeight = Clamp((int)Math.Round(settings.NetworkMonitorHeight * 0.5f), MinConnectionCheckHeight, MaxConnectionCheckHeight);
-        settings.ConnectionCheckLeftX = workArea.Right - settings.ConnectionCheckWidth - margin;
-        settings.ConnectionCheckBottomY = settings.NetworkMonitorBottomY - settings.NetworkMonitorHeight - margin;
-        settings.ConnectionCheckTransparencyPercent = DefaultBackgroundTransparency;
-        settings.ConnectionCheckBorderTransparencyPercent = DefaultConnectionCheckBorderTransparency;
-        settings.ConnectionCheckIntervalSeconds = DefaultConnectionCheckIntervalSeconds;
+        settings.CloudEndpointTestSeed = 0;
+        settings.CloudStatusRegionMask = DefaultCloudStatusRegionMask;
+        settings.ConnectionCheckWidth = 292;
+        settings.ConnectionCheckHeight = 95;
+        settings.ConnectionCheckLeftX = 2588;
+        settings.ConnectionCheckBottomY = 355;
+        settings.ConnectionCheckTransparencyPercent = 20;
+        settings.ConnectionCheckBorderTransparencyPercent = 100;
+        settings.ConnectionCheckIntervalSeconds = 600;
         settings.ConnectionCheckManualRefreshToken = 0;
-        settings.OperationButtonSize = Clamp((int)Math.Round(56.0f * scale), MinOperationButtonSize, MaxOperationButtonSize);
-        settings.OperationLeftOffset = Math.Max(0, (int)Math.Round(8.0f * scale));
-        settings.OperationBottomOffset = Math.Max(0, (int)Math.Round(8.0f * scale));
+        settings.OperationButtonSize = 86;
+        settings.OperationLeftOffset = 0;
+        settings.OperationBottomOffset = 0;
         settings.OperationBackgroundTransparencyPercent = 0;
-        settings.CaptureLayoutWorkArea(workArea);
-        settings.VisibilityMode = WidgetVisibilityMode.DesktopOnly;
+        settings.ForceShowForegroundFpsEnabled = false;
+        settings.SeelenDockForegroundPulseEnabled = true;
+        settings.LayoutWorkAreaLeft = 0;
+        settings.LayoutWorkAreaTop = 60;
+        settings.LayoutWorkAreaWidth = 2880;
+        settings.LayoutWorkAreaHeight = 1740;
+        settings.VisibilityMode = WidgetVisibilityMode.AlwaysVisible;
         settings.ClickThroughMode = ClickThroughMode.Auto;
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.ShowCpu = true;
@@ -426,8 +461,11 @@ internal sealed class WidgetSettings
         settings.CodexModelTimeEfficiencyBaselineSeconds = DefaultCodexModelEfficiencyBaselineValue;
         settings.CodexModelTokenEfficiencyLowThresholdPercent = DefaultCodexModelEfficiencyLowThresholdPercent;
         settings.CodexModelTimeEfficiencyLowThresholdPercent = DefaultCodexModelEfficiencyLowThresholdPercent;
-        settings.PerformanceMode = WidgetPerformanceMode.Balanced;
-        settings.HoverOpacityEnabled = false;
+        settings.PerformanceMode = WidgetPerformanceMode.BatterySaver;
+        settings.HoverOpacityEnabled = true;
+        settings.AutoHoverOpacityIdleEnabled = false;
+        settings.AutoHoverOpacityIdleSeconds = DefaultAutoHoverOpacityIdleSeconds;
+        settings.AutoHoverOpacityMaximizedEnabled = false;
         settings.MetricOrder = CloneMetricOrder(DefaultMetricOrder);
         settings.Normalize();
         return settings;
@@ -461,10 +499,13 @@ internal sealed class WidgetSettings
             NetworkMonitorLeftX = this.NetworkMonitorLeftX,
             NetworkMonitorBottomY = this.NetworkMonitorBottomY,
             NetworkMonitorTransparencyPercent = this.NetworkMonitorTransparencyPercent,
+            NetworkMonitorAdapterId = this.NetworkMonitorAdapterId,
             NetworkStatusTestMode = this.NetworkStatusTestMode,
             GfwProbeEnabled = this.GfwProbeEnabled,
             GfwProbeIntervalMinutes = this.GfwProbeIntervalMinutes,
             GfwProbeManualRefreshToken = this.GfwProbeManualRefreshToken,
+            CloudEndpointTestSeed = this.CloudEndpointTestSeed,
+            CloudStatusRegionMask = this.CloudStatusRegionMask,
             ConnectionCheckWidth = this.ConnectionCheckWidth,
             ConnectionCheckHeight = this.ConnectionCheckHeight,
             ConnectionCheckLeftX = this.ConnectionCheckLeftX,
@@ -477,6 +518,8 @@ internal sealed class WidgetSettings
             OperationLeftOffset = this.OperationLeftOffset,
             OperationBottomOffset = this.OperationBottomOffset,
             OperationBackgroundTransparencyPercent = this.OperationBackgroundTransparencyPercent,
+            ForceShowForegroundFpsEnabled = this.ForceShowForegroundFpsEnabled,
+            SeelenDockForegroundPulseEnabled = this.SeelenDockForegroundPulseEnabled,
             LayoutWorkAreaLeft = this.LayoutWorkAreaLeft,
             LayoutWorkAreaTop = this.LayoutWorkAreaTop,
             LayoutWorkAreaWidth = this.LayoutWorkAreaWidth,
@@ -509,6 +552,10 @@ internal sealed class WidgetSettings
             CodexModelTimeEfficiencyLowThresholdPercent = this.CodexModelTimeEfficiencyLowThresholdPercent,
             PerformanceMode = this.PerformanceMode,
             HoverOpacityEnabled = this.HoverOpacityEnabled,
+            ForceHoverOpacityActive = this.ForceHoverOpacityActive,
+            AutoHoverOpacityIdleEnabled = this.AutoHoverOpacityIdleEnabled,
+            AutoHoverOpacityIdleSeconds = this.AutoHoverOpacityIdleSeconds,
+            AutoHoverOpacityMaximizedEnabled = this.AutoHoverOpacityMaximizedEnabled,
             MetricOrder = CloneMetricOrder(this.MetricOrder)
         };
     }
@@ -529,7 +576,14 @@ internal sealed class WidgetSettings
         this.NetworkMonitorWidth = Clamp(this.NetworkMonitorWidth, MinNetworkMonitorWidth, MaxNetworkMonitorWidth);
         this.NetworkMonitorHeight = Clamp(this.NetworkMonitorHeight, MinNetworkMonitorHeight, MaxNetworkMonitorHeight);
         this.NetworkMonitorTransparencyPercent = Clamp(this.NetworkMonitorTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
+        this.NetworkMonitorAdapterId = (this.NetworkMonitorAdapterId ?? string.Empty).Trim();
         this.GfwProbeIntervalMinutes = Clamp(this.GfwProbeIntervalMinutes, MinGfwProbeIntervalMinutes, MaxGfwProbeIntervalMinutes);
+        this.CloudStatusRegionMask &= CloudStatusRegionMaskAll;
+        if (this.CloudStatusRegionMask == 0)
+        {
+            this.CloudStatusRegionMask = DefaultCloudStatusRegionMask;
+        }
+
         this.ConnectionCheckWidth = Clamp(this.ConnectionCheckWidth, MinConnectionCheckWidth, MaxConnectionCheckWidth);
         this.ConnectionCheckHeight = Clamp(this.ConnectionCheckHeight, MinConnectionCheckHeight, MaxConnectionCheckHeight);
         this.ConnectionCheckTransparencyPercent = Clamp(this.ConnectionCheckTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
@@ -542,6 +596,10 @@ internal sealed class WidgetSettings
 
         this.OperationButtonSize = Clamp(this.OperationButtonSize, MinOperationButtonSize, MaxOperationButtonSize);
         this.OperationBackgroundTransparencyPercent = Clamp(this.OperationBackgroundTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
+        this.AutoHoverOpacityIdleSeconds = Clamp(
+            this.AutoHoverOpacityIdleSeconds,
+            MinAutoHoverOpacityIdleSeconds,
+            MaxAutoHoverOpacityIdleSeconds);
         this.CodexModelIqTestPassed = Clamp(this.CodexModelIqTestPassed, MinCodexModelIqPassed, MaxCodexModelIqPassed);
         this.CodexModelIqBaselinePassed = Clamp(this.CodexModelIqBaselinePassed, MinCodexModelIqPassed, MaxCodexModelIqPassed);
         this.CodexModelTokenEfficiencyTestPercent = Clamp(
@@ -721,9 +779,12 @@ internal sealed class WidgetSettings
             "NetworkMonitorLeftX=" + this.NetworkMonitorLeftX,
             "NetworkMonitorBottomY=" + this.NetworkMonitorBottomY,
             "NetworkMonitorTransparencyPercent=" + this.NetworkMonitorTransparencyPercent,
+            "NetworkMonitorAdapterId=" + this.NetworkMonitorAdapterId,
             "NetworkStatusTestMode=" + this.NetworkStatusTestMode,
             "GfwProbeEnabled=" + this.GfwProbeEnabled,
             "GfwProbeIntervalMinutes=" + this.GfwProbeIntervalMinutes,
+            "CloudEndpointTestSeed=" + this.CloudEndpointTestSeed,
+            "CloudStatusRegionMask=" + this.CloudStatusRegionMask,
             "ConnectionCheckWidth=" + this.ConnectionCheckWidth,
             "ConnectionCheckHeight=" + this.ConnectionCheckHeight,
             "ConnectionCheckLeftX=" + this.ConnectionCheckLeftX,
@@ -735,6 +796,8 @@ internal sealed class WidgetSettings
             "OperationLeftOffset=" + this.OperationLeftOffset,
             "OperationBottomOffset=" + this.OperationBottomOffset,
             "OperationBackgroundTransparencyPercent=" + this.OperationBackgroundTransparencyPercent,
+            "ForceShowForegroundFpsEnabled=" + this.ForceShowForegroundFpsEnabled,
+            "SeelenDockForegroundPulseEnabled=" + this.SeelenDockForegroundPulseEnabled,
             "LayoutWorkAreaLeft=" + this.LayoutWorkAreaLeft,
             "LayoutWorkAreaTop=" + this.LayoutWorkAreaTop,
             "LayoutWorkAreaWidth=" + this.LayoutWorkAreaWidth,
@@ -768,6 +831,9 @@ internal sealed class WidgetSettings
             "PowerSavingEnabled=" + this.PowerSavingEnabled,
             "PerformanceMode=" + this.PerformanceMode,
             "HoverOpacityEnabled=" + this.HoverOpacityEnabled,
+            "AutoHoverOpacityIdleEnabled=" + this.AutoHoverOpacityIdleEnabled,
+            "AutoHoverOpacityIdleSeconds=" + this.AutoHoverOpacityIdleSeconds,
+            "AutoHoverOpacityMaximizedEnabled=" + this.AutoHoverOpacityMaximizedEnabled,
             "MetricOrder=" + string.Join(",", NormalizeMetricOrder(this.MetricOrder))
         };
         File.WriteAllLines(SettingsPath, lines);
@@ -952,6 +1018,12 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "NetworkMonitorAdapterId", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.NetworkMonitorAdapterId = (value ?? string.Empty).Trim();
+            return;
+        }
+
         if (string.Equals(key, "NetworkStatusTestMode", StringComparison.OrdinalIgnoreCase))
         {
             try
@@ -975,6 +1047,18 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "GfwProbeIntervalMinutes", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
         {
             settings.GfwProbeIntervalMinutes = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CloudEndpointTestSeed", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CloudEndpointTestSeed = Math.Max(0, intValue);
+            return;
+        }
+
+        if (string.Equals(key, "CloudStatusRegionMask", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CloudStatusRegionMask = intValue & CloudStatusRegionMaskAll;
             return;
         }
 
@@ -1052,6 +1136,18 @@ internal sealed class WidgetSettings
             int.TryParse(value, out intValue))
         {
             settings.OperationBackgroundTransparencyPercent = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ForceShowForegroundFpsEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.ForceShowForegroundFpsEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "SeelenDockForegroundPulseEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.SeelenDockForegroundPulseEnabled = boolValue;
             return;
         }
 
@@ -1280,6 +1376,24 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "HoverOpacityEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.HoverOpacityEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "AutoHoverOpacityIdleEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.AutoHoverOpacityIdleEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "AutoHoverOpacityIdleSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.AutoHoverOpacityIdleSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "AutoHoverOpacityMaximizedEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.AutoHoverOpacityMaximizedEnabled = boolValue;
             return;
         }
 
@@ -1616,11 +1730,13 @@ internal sealed class WidgetSettings
 
     public static bool ShouldEnableProcessPowerSaving(WidgetPerformanceMode mode)
     {
+        mode = GetEffectivePerformanceMode(mode);
         return mode == WidgetPerformanceMode.BatterySaver;
     }
 
     public static int GetWidgetSampleIntervalMs(WidgetPerformanceMode mode)
     {
+        mode = GetEffectivePerformanceMode(mode);
         // Controls the main PDH hardware sampler, not the power/thermal WMI sampler.
         if (mode == WidgetPerformanceMode.Smooth)
         {
@@ -1637,6 +1753,7 @@ internal sealed class WidgetSettings
 
     public static int GetPanelRenderIntervalMs(WidgetPerformanceMode mode)
     {
+        mode = GetEffectivePerformanceMode(mode);
         // Secondary panels use this as their idle redraw/check cadence.
         if (mode == WidgetPerformanceMode.Smooth)
         {
@@ -1653,6 +1770,7 @@ internal sealed class WidgetSettings
 
     public static int GetExpensiveHardwareSampleIntervalMs(WidgetPerformanceMode mode)
     {
+        mode = GetEffectivePerformanceMode(mode);
         // GPU Engine can expand to hundreds of counters; CPU and disk remain on the
         // faster widget cadence while GPU/NPU use this independent interval.
         if (mode == WidgetPerformanceMode.Smooth)
@@ -1670,6 +1788,7 @@ internal sealed class WidgetSettings
 
     public static int GetHoverAnimationIntervalMs(WidgetPerformanceMode mode)
     {
+        mode = GetEffectivePerformanceMode(mode);
         // Used only while opacity is actively moving toward its target.
         if (mode == WidgetPerformanceMode.Smooth)
         {
@@ -1686,6 +1805,7 @@ internal sealed class WidgetSettings
 
     public static int GetInteractionIdlePollingIntervalMs(WidgetPerformanceMode mode)
     {
+        mode = GetEffectivePerformanceMode(mode);
         // Cursor/click-through checks can run much slower once animation is settled.
         if (mode == WidgetPerformanceMode.Smooth)
         {
@@ -1704,6 +1824,7 @@ internal sealed class WidgetSettings
     // These values are scheduling ceilings; unchanged snapshots still skip redraw.
     public static int GetNetworkLocalRefreshIntervalMs(WidgetPerformanceMode mode)
     {
+        mode = GetEffectivePerformanceMode(mode);
         if (mode == WidgetPerformanceMode.Smooth)
         {
             return 2000;
@@ -1720,6 +1841,7 @@ internal sealed class WidgetSettings
 
     public static int GetNetworkConnectivityIntervalMs(WidgetPerformanceMode mode, NetworkAccessState state)
     {
+        mode = GetEffectivePerformanceMode(mode);
         if (state == NetworkAccessState.AdapterMissing)
         {
             return int.MaxValue;
@@ -1748,6 +1870,7 @@ internal sealed class WidgetSettings
 
     public static int GetNetworkPublicIpRefreshIntervalMinutes(WidgetPerformanceMode mode)
     {
+        mode = GetEffectivePerformanceMode(mode);
         if (mode == WidgetPerformanceMode.Smooth)
         {
             return 5;
@@ -1764,6 +1887,59 @@ internal sealed class WidgetSettings
     public static int GetNetworkIdlePollingIntervalMs(WidgetPerformanceMode mode)
     {
         return GetInteractionIdlePollingIntervalMs(mode);
+    }
+
+    public static WidgetPerformanceMode GetEffectivePerformanceMode(WidgetPerformanceMode mode)
+    {
+        if (mode != WidgetPerformanceMode.WindowsPowerMode)
+        {
+            return mode;
+        }
+
+        DateTime nowUtc = DateTime.UtcNow;
+        lock (EffectivePerformanceModeSync)
+        {
+            if (effectivePerformanceModeCacheUtc != DateTime.MinValue &&
+                (nowUtc - effectivePerformanceModeCacheUtc).TotalMilliseconds < EffectivePerformanceModeCacheMs)
+            {
+                return effectivePerformanceModeCache;
+            }
+
+            WidgetPerformanceMode resolved = MapSystemPowerModeTextToPerformanceMode(
+                PowerThermalForm.ReadCurrentSystemPowerModeText());
+            effectivePerformanceModeCache = resolved;
+            effectivePerformanceModeCacheUtc = nowUtc;
+            return resolved;
+        }
+    }
+
+    public static void InvalidateEffectivePerformanceModeCache()
+    {
+        lock (EffectivePerformanceModeSync)
+        {
+            effectivePerformanceModeCacheUtc = DateTime.MinValue;
+        }
+    }
+
+    private static WidgetPerformanceMode MapSystemPowerModeTextToPerformanceMode(string powerModeText)
+    {
+        if (string.IsNullOrEmpty(powerModeText))
+        {
+            return WidgetPerformanceMode.Balanced;
+        }
+
+        if (powerModeText.IndexOf("性能", StringComparison.Ordinal) >= 0)
+        {
+            return WidgetPerformanceMode.Smooth;
+        }
+
+        if (powerModeText.IndexOf("省电", StringComparison.Ordinal) >= 0 ||
+            powerModeText.IndexOf("节能", StringComparison.Ordinal) >= 0)
+        {
+            return WidgetPerformanceMode.BatterySaver;
+        }
+
+        return WidgetPerformanceMode.Balanced;
     }
 
     public static bool ShouldEnableClickThrough(ClickThroughMode mode, WidgetVisibilityMode visibilityMode)
@@ -1788,7 +1964,7 @@ internal sealed class WidgetSettings
         int smallSize = Math.Max(
             Math.Max(1, (int)Math.Round(18.0f * Math.Max(1.0f, scale))),
             (int)Math.Round(buttonSize / 2.0f));
-        return margin * 2 + buttonSize + smallSize * 4;
+        return margin * 2 + buttonSize + smallSize * 6;
     }
 
     public static int GetOperationWindowHeight(int buttonSize, float scale)

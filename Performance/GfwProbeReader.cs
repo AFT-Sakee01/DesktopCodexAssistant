@@ -62,19 +62,13 @@ internal sealed class GfwProbeReader
         }
 
         // Do not spend DNS/TCP/TLS/HTTP probes when Internet access is not established.
-        // A completed result remains resident; only an initial empty result gets a reason.
+        // Manual refresh and network changes must not leave stale cloud tiles visible.
         if (networkState != NetworkAccessState.Online)
         {
             lock (this.sync)
             {
-                this.snapshot.Enabled = true;
-                this.snapshot.Running = false;
-                if (!this.snapshot.CheckedAtKnown)
-                {
-                    this.snapshot.Status = GfwProbeStatus.Inconclusive;
-                    this.snapshot.Detail = "不可判定";
-                    this.snapshot.Reason = GetUnavailableNetworkReason(networkState);
-                }
+                this.lastProbeStartedUtc = DateTime.MinValue;
+                ApplyUnavailableNetworkSnapshot(networkState);
 
                 return this.snapshot.Clone();
             }
@@ -129,6 +123,60 @@ internal sealed class GfwProbeReader
         }
 
         return "断网";
+    }
+
+    private void ApplyUnavailableNetworkSnapshot(NetworkAccessState networkState)
+    {
+        string reason = GetUnavailableNetworkReason(networkState);
+        if (this.snapshot.Enabled &&
+            !this.snapshot.Running &&
+            this.snapshot.Status == GfwProbeStatus.Inconclusive &&
+            !this.snapshot.CheckedAtKnown &&
+            string.Equals(this.snapshot.Detail, "不可判定", StringComparison.Ordinal) &&
+            string.Equals(this.snapshot.Reason, reason, StringComparison.Ordinal) &&
+            HasCloudEndpointStatus(this.snapshot.CloudEndpoints, CloudEndpointStatus.Unknown))
+        {
+            return;
+        }
+
+        this.snapshot.Enabled = true;
+        this.snapshot.Running = false;
+        this.snapshot.Status = GfwProbeStatus.Inconclusive;
+        this.snapshot.Detail = "不可判定";
+        this.snapshot.Reason = reason;
+        this.snapshot.CheckedAtLocal = DateTime.MinValue;
+        this.snapshot.CheckedAtKnown = false;
+        this.snapshot.CloudEndpoints = CreateUnavailableCloudEndpointSnapshots(reason);
+    }
+
+    private static CloudEndpointSnapshot[] CreateUnavailableCloudEndpointSnapshots(string reason)
+    {
+        CloudEndpointSnapshot[] snapshots = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Unknown);
+        for (int i = 0; i < snapshots.Length; i++)
+        {
+            snapshots[i].Reason = reason;
+            snapshots[i].AlertReason = reason;
+        }
+
+        return snapshots;
+    }
+
+    private static bool HasCloudEndpointStatus(CloudEndpointSnapshot[] snapshots, CloudEndpointStatus status)
+    {
+        if (snapshots == null || snapshots.Length == 0)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < snapshots.Length; i++)
+        {
+            if (snapshots[i] == null || snapshots[i].Status != status)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void StartProbe(DateTime now, string trigger)

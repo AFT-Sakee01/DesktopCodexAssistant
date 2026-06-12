@@ -82,6 +82,11 @@ internal static class Program
             return TestLayoutScalingPolicy();
         }
 
+        if (HasArg(args, "--test-settings-bindings"))
+        {
+            return TestSettingsBindingPolicy();
+        }
+
         if (HasArg(args, "--test-display-recovery"))
         {
             return TestDisplayRecoveryPolicy();
@@ -291,12 +296,13 @@ internal static class Program
 
     internal static void ApplyPerformanceMode(WidgetPerformanceMode mode)
     {
-        if (performanceModeKnown && activePerformanceMode == mode)
+        WidgetPerformanceMode effectiveMode = WidgetSettings.GetEffectivePerformanceMode(mode);
+        if (performanceModeKnown && activePerformanceMode == effectiveMode)
         {
             return;
         }
 
-        bool powerSaving = WidgetSettings.ShouldEnableProcessPowerSaving(mode);
+        bool powerSaving = WidgetSettings.ShouldEnableProcessPowerSaving(effectiveMode);
         // BelowNormal keeps the UI responsive while EcoQoS/Power Throttling reduces background
         // execution cost. Idle priority caused excessive delays in WMI and settings operations.
         bool throttlingSet = NativeMethods.TrySetProcessPowerThrottling(powerSaving);
@@ -311,10 +317,11 @@ internal static class Program
         }
 
         performanceModeKnown = true;
-        activePerformanceMode = mode;
+        activePerformanceMode = effectiveMode;
         LogInfo(string.Format(
-            "Performance mode {0}. ProcessPowerSaving={1}, PowerThrottling={2}, Priority={3}",
+            "Performance mode {0}{1}. ProcessPowerSaving={2}, PowerThrottling={3}, Priority={4}",
             mode,
+            effectiveMode == mode ? string.Empty : " -> " + effectiveMode,
             powerSaving,
             throttlingSet,
             prioritySet));
@@ -448,6 +455,26 @@ internal static class Program
         {
             WidgetSettings.RunLayoutScalingSelfTest();
             Console.WriteLine("Layout scaling policy: PASS");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int TestSettingsBindingPolicy()
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            SettingsForm.RunSettingsBindingSelfTest();
+            Console.WriteLine("Settings binding policy: PASS");
             return 0;
         }
         catch (Exception ex)

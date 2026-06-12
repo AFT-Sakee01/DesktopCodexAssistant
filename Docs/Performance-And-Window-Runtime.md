@@ -40,6 +40,7 @@ flowchart LR
     Reader --> Connectivity["连通性 / 延迟 / 抖动"]
     Reader --> PublicIP["公网 IP"]
     Reader --> GFW["GfwProbeReader"]
+    Reader --> Cloud["CloudEndpointProbeReader"]
     CleanIP --> CleanReader["CleanIpConnectionReader"]
 ```
 
@@ -280,9 +281,11 @@ Wi-Fi RSSI 读取方式：
 `NetworkMonitorReader`：
 
 - 同步读取本地网卡、IPv4/IPv6、DNS、Wi-Fi 认证和 PHY；
+- 支持设置页指定当前网卡；未指定时继续按默认网关、地址、接口类型和链路速率自动选择；
 - 异步读取公网 IP；
 - 异步执行 Ping、NCSI 门户检测、延迟、抖动和丢包率测量；
 - 调用 `GfwProbeReader` 获取防火墙检测结果；
+- 调用 `CloudEndpointProbeReader` 独立获取云服务检测结果，GFW 失败结论不会使云服务检测跳过或置灰；
 - 返回快照副本，禁止 UI 直接修改内部状态。
 
 连通性状态判定：
@@ -477,11 +480,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-X64.ps1
 
 ```powershell
 .\DesktopCodexAssistant.exe --test-layout
+.\DesktopCodexAssistant.exe --test-settings-bindings
 .\DesktopCodexAssistant.exe --test-display-recovery
 .\DesktopCodexAssistant.exe --test
 ```
 
-布局自检会模拟工作区尺寸变化并验证比例换算。显示恢复自检会用真实 layered-window API 验证 native surface reset 后仍可更新窗口。采样自检会输出 CPU、内存、磁盘 WT/RD、网络 UP/DL、GPU 和 NPU 的一次采样结果。它验证计数器可读取，不代表短时间内每个计数器都必须非零。
+布局自检会模拟工作区尺寸变化并验证比例换算。设置绑定自检会在程序内部创建设置面板对象，验证可见控件能读回到 WidgetSettings，并覆盖位置范围与连接检测刷新间隔。显示恢复自检会用真实 layered-window API 验证 native surface reset 后仍可更新窗口。采样自检会输出 CPU、内存、磁盘 WT/RD、网络 UP/DL、GPU 和 NPU 的一次采样结果。它验证计数器可读取，不代表短时间内每个计数器都必须非零。
 
 2026-06-07 的 ARM64 调试中，单核等效 CPU 占用观察值如下：
 

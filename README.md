@@ -8,7 +8,11 @@ This Windows on Arm application provides a compact developer-assistance workspac
 
 This branch is maintained as a dedicated build for ASUS UX3407N and UX3607O Windows on Arm machines. The current power, thermal, window placement, and hardware-monitoring behavior is calibrated against that device family.
 
-Other Windows on Arm or x64 machines are not the support target for this branch. They may run with degraded or missing thermal, NPU, GPU, battery, or vendor-control data.
+Other Windows on Arm or x64 machines are not the support target for this branch. They may run with degraded or missing thermal, NPU, GPU, battery, or vendor-control data. Public x64 and ARM64 binaries are provided for compatibility testing and deployment convenience.
+
+## Seelen UI interoperability
+
+This project does not include, modify, link, or redistribute Seelen UI code. Optional Seelen UI actions only interoperate with a separately installed Seelen UI instance through process/window detection and the installed `slu.exe` command-line tool. Seelen UI is a separate project licensed under AGPL-3.0; its name is used only to describe interoperability.
 
 Kept:
 

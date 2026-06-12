@@ -19,6 +19,7 @@ internal sealed class NetworkMonitorReader : IDisposable
     private const int HttpTimeoutMs = 4000;
     private readonly object sync = new object();
     private readonly GfwProbeReader gfwProbeReader = new GfwProbeReader();
+    private readonly CloudEndpointProbeReader cloudEndpointProbeReader = new CloudEndpointProbeReader();
     private NetworkMonitorSnapshot snapshot = new NetworkMonitorSnapshot();
     private DateTime lastLocalRefreshUtc;
     private DateTime lastPublicIpRefreshUtc;
@@ -30,6 +31,7 @@ internal sealed class NetworkMonitorReader : IDisposable
     // Incremented whenever the selected adapter or its addresses may have changed.
     // Background results must match this generation and InterfaceId before commit.
     private long networkGeneration;
+    private string selectedAdapterId = string.Empty;
     private bool disposed;
 
     public NetworkMonitorReader()
@@ -65,6 +67,7 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
 
         this.gfwProbeReader.RequestRefresh();
+        this.cloudEndpointProbeReader.RequestRefresh();
     }
 
     public NetworkMonitorSnapshot GetSnapshot(WidgetSettings settings)
@@ -72,16 +75,18 @@ internal sealed class NetworkMonitorReader : IDisposable
         // Local metadata is cheap and synchronous; public IP and connectivity are single-flight tasks.
         DateTime now = DateTime.UtcNow;
         WidgetPerformanceMode mode = settings == null ? WidgetPerformanceMode.Balanced : settings.PerformanceMode;
+        string requestedAdapterId = settings == null ? string.Empty : NormalizeAdapterId(settings.NetworkMonitorAdapterId);
         bool refreshLocal;
         lock (this.sync)
         {
             refreshLocal = this.localRefreshRequested ||
+                !string.Equals(requestedAdapterId, this.selectedAdapterId, StringComparison.OrdinalIgnoreCase) ||
                 (now - this.lastLocalRefreshUtc).TotalMilliseconds >= WidgetSettings.GetNetworkLocalRefreshIntervalMs(mode);
         }
 
         if (refreshLocal)
         {
-            RefreshLocalSnapshot(now);
+            RefreshLocalSnapshot(now, requestedAdapterId);
         }
 
         bool connected;
@@ -112,6 +117,7 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
 
         GfwProbeSnapshot gfwProbe = this.gfwProbeReader.GetSnapshot(settings, accessState);
+        gfwProbe.CloudEndpoints = this.cloudEndpointProbeReader.GetSnapshot(settings, accessState);
         lock (this.sync)
         {
             this.snapshot.GfwProbe = gfwProbe;
@@ -121,11 +127,12 @@ internal sealed class NetworkMonitorReader : IDisposable
         {
             NetworkMonitorSnapshot clone = this.snapshot.Clone();
             ApplyNetworkStatusTestMode(clone, settings);
+            ApplyCloudEndpointTestMode(clone, settings);
             return clone;
         }
     }
 
-    private void RefreshLocalSnapshot(DateTime now)
+    private void RefreshLocalSnapshot(DateTime now, string requestedAdapterId)
     {
         long generationAtStart;
         lock (this.sync)
@@ -133,7 +140,8 @@ internal sealed class NetworkMonitorReader : IDisposable
             generationAtStart = this.networkGeneration;
         }
 
-        NetworkMonitorSnapshot local = BuildLocalSnapshot();
+        requestedAdapterId = NormalizeAdapterId(requestedAdapterId);
+        NetworkMonitorSnapshot local = BuildLocalSnapshot(requestedAdapterId);
         local.PublicIp = "--";
         local.ConnectivityTarget = ConnectivityTarget;
 
@@ -178,7 +186,8 @@ internal sealed class NetworkMonitorReader : IDisposable
                 local.LatencyMs = 0.0;
                 local.JitterMs = 0.0;
                 local.PacketLossPercent = 100;
-                local.LastError = "No active interface";
+                local.AccessReason = local.InterfaceKnown ? "网卡未连接" : "网卡未识别";
+                local.LastError = local.InterfaceKnown ? "Selected interface is not up" : "No active interface";
             }
             else if (identityChanged)
             {
@@ -197,10 +206,11 @@ internal sealed class NetworkMonitorReader : IDisposable
             this.snapshot = local;
             this.lastLocalRefreshUtc = now;
             this.localRefreshRequested = eventDuringRefresh;
+            this.selectedAdapterId = requestedAdapterId;
         }
     }
 
-    private static NetworkMonitorSnapshot BuildLocalSnapshot()
+    private static NetworkMonitorSnapshot BuildLocalSnapshot(string requestedAdapterId)
     {
         NetworkMonitorSnapshot result = new NetworkMonitorSnapshot();
         result.UpdatedLocal = DateTime.Now;
@@ -208,7 +218,7 @@ internal sealed class NetworkMonitorReader : IDisposable
 
         try
         {
-            NetworkInterface best = SelectPrimaryInterface();
+            NetworkInterface best = SelectPrimaryInterface(requestedAdapterId);
             if (best == null)
             {
                 result.Connected = false;
@@ -217,7 +227,7 @@ internal sealed class NetworkMonitorReader : IDisposable
                 return result;
             }
 
-            result.Connected = true;
+            result.Connected = best.OperationalStatus == OperationalStatus.Up;
             result.InterfaceKnown = true;
             result.InterfaceId = best.Id ?? string.Empty;
             result.InterfaceName = EmptyFallback(best.Name, "Network");
@@ -265,6 +275,7 @@ internal sealed class NetworkMonitorReader : IDisposable
 
     private void MarkNetworkChanged()
     {
+        bool requestGfwRefresh = false;
         lock (this.sync)
         {
             if (this.disposed)
@@ -288,6 +299,14 @@ internal sealed class NetworkMonitorReader : IDisposable
                 this.snapshot.AccessState = NetworkAccessState.Unknown;
                 this.snapshot.AccessReason = "网络已变化";
             }
+
+            requestGfwRefresh = true;
+        }
+
+        if (requestGfwRefresh)
+        {
+            this.gfwProbeReader.RequestRefresh();
+            this.cloudEndpointProbeReader.RequestRefresh();
         }
     }
 
@@ -326,11 +345,26 @@ internal sealed class NetworkMonitorReader : IDisposable
             !string.Equals(previous.DnsServers, current.DnsServers, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static NetworkInterface SelectPrimaryInterface()
+    private static NetworkInterface SelectPrimaryInterface(string requestedAdapterId)
     {
         // Prefer a usable default-route interface, then real address families and link type.
         // Link speed is only a final tie-breaker so a fast virtual interface does not win alone.
         NetworkInterface[] interfaces = NetworkInterface.GetAllNetworkInterfaces();
+        requestedAdapterId = NormalizeAdapterId(requestedAdapterId);
+        if (requestedAdapterId.Length > 0)
+        {
+            for (int i = 0; i < interfaces.Length; i++)
+            {
+                NetworkInterface item = interfaces[i];
+                if (item != null &&
+                    (string.Equals(item.Id, requestedAdapterId, StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(item.Name, requestedAdapterId, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return item;
+                }
+            }
+        }
+
         NetworkInterface best = null;
         long bestScore = long.MinValue;
         for (int i = 0; i < interfaces.Length; i++)
@@ -353,6 +387,11 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
 
         return best;
+    }
+
+    private static string NormalizeAdapterId(string adapterId)
+    {
+        return (adapterId ?? string.Empty).Trim();
     }
 
     private static long ScoreInterface(NetworkInterface item)
@@ -738,6 +777,85 @@ internal sealed class NetworkMonitorReader : IDisposable
                 snapshot.JitterMs = 0.0;
                 return;
         }
+    }
+
+    private static void ApplyCloudEndpointTestMode(NetworkMonitorSnapshot snapshot, WidgetSettings settings)
+    {
+        if (snapshot == null || settings == null || settings.CloudEndpointTestSeed <= 0)
+        {
+            return;
+        }
+
+        if (settings.NetworkStatusTestMode == NetworkStatusTestMode.Off)
+        {
+            snapshot.Connected = true;
+            snapshot.InterfaceKnown = true;
+            snapshot.ConnectivityKnown = true;
+            snapshot.ConnectivityOnline = true;
+            snapshot.AccessState = NetworkAccessState.Online;
+            snapshot.AccessReason = "云服务测试";
+        }
+
+        GfwProbeSnapshot gfw = snapshot.GfwProbe == null ? new GfwProbeSnapshot() : snapshot.GfwProbe.Clone();
+        gfw.Enabled = true;
+        gfw.Running = false;
+        gfw.Status = GfwProbeStatus.Normal;
+        gfw.Detail = "测试";
+        gfw.Reason = "云服务随机状态测试";
+        gfw.CheckedAtLocal = DateTime.Now;
+        gfw.CheckedAtKnown = true;
+        gfw.CloudEndpoints = BuildCloudEndpointTestSnapshots(settings.CloudEndpointTestSeed);
+        snapshot.GfwProbe = gfw;
+    }
+
+    private static CloudEndpointSnapshot[] BuildCloudEndpointTestSnapshots(int seed)
+    {
+        CloudEndpointSnapshot[] snapshots = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Normal);
+        CloudEndpointStatus[] statuses = new CloudEndpointStatus[]
+        {
+            CloudEndpointStatus.Normal,
+            CloudEndpointStatus.Slow,
+            CloudEndpointStatus.Down,
+            CloudEndpointStatus.Abnormal
+        };
+        Random random = new Random(seed);
+        DateTime checkedAt = DateTime.Now;
+        for (int i = 0; i < snapshots.Length; i++)
+        {
+            CloudEndpointStatus status = statuses[random.Next(statuses.Length)];
+            snapshots[i].Status = status;
+            snapshots[i].CheckedAtLocal = checkedAt;
+            snapshots[i].CheckedAtKnown = true;
+            snapshots[i].LatencyMs = status == CloudEndpointStatus.Normal
+                ? random.Next(30, 260)
+                : (status == CloudEndpointStatus.Slow ? random.Next(1000, 2200) : 0);
+            snapshots[i].Reason = "测试随机 " + status.ToString();
+            snapshots[i].AlertReason = GetCloudEndpointTestAlertReason(status, random);
+        }
+
+        return snapshots;
+    }
+
+    private static string GetCloudEndpointTestAlertReason(CloudEndpointStatus status, Random random)
+    {
+        if (status == CloudEndpointStatus.Down)
+        {
+            string[] reasons = new string[] { "DNS失败", "TCP失败", "TLS失败", "请求超时" };
+            return reasons[random.Next(reasons.Length)];
+        }
+
+        if (status == CloudEndpointStatus.Abnormal)
+        {
+            string[] reasons = new string[] { "拒绝访问", "访问限流", "服务异常", "官方降级" };
+            return reasons[random.Next(reasons.Length)];
+        }
+
+        if (status == CloudEndpointStatus.Slow)
+        {
+            return "延迟过高";
+        }
+
+        return string.Empty;
     }
 
     private static string FetchText(string url)

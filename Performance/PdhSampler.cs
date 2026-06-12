@@ -286,6 +286,12 @@ internal sealed class PdhSampler : IDisposable
         return snapshot;
     }
 
+    public void RequestDiskUsageRefresh()
+    {
+        EnsureNotDisposed();
+        this.lastDiskUsageRefreshUtc = DateTime.MinValue;
+    }
+
     public void Dispose()
     {
         if (!this.disposed)

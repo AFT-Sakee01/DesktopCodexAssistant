@@ -23,6 +23,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private const int EmSetCueBanner = 0x1501;
     private readonly WidgetForm owner;
     private readonly System.Windows.Forms.Timer previewTimer;
+    private readonly System.Windows.Forms.Timer footerStatusTimer;
     private WidgetSettings baseline;
     private NumericUpDown widthBox;
     private NumericUpDown heightBox;
@@ -60,6 +61,8 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private NumericUpDown operationLeftOffsetBox;
     private NumericUpDown operationBottomOffsetBox;
     private NumericUpDown operationTransparencyBox;
+    private NumericUpDown autoHoverOpacityIdleSecondsBox;
+    private CheckBox forceShowFpsCheck;
     private NumericUpDown codexModelIqTestPassedBox;
     private NumericUpDown codexModelIqBaselineBox;
     private NumericUpDown codexModelTokenEfficiencyTestBox;
@@ -114,6 +117,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private ComboBox thermalTestCombo;
     private ComboBox performanceModeCombo;
     private ComboBox clickThroughCombo;
+    private ComboBox networkAdapterCombo;
     private Button alertTestButton;
     private Button codexRadarTestButton;
     private Button serviceHealthTestButton;
@@ -121,13 +125,21 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private Button connectionCheckManualRefreshButton;
     private Button networkStatusTestButton;
     private Button gfwProbeTestButton;
+    private Button cloudEndpointTestButton;
     private Button extraResetNotificationTestButton;
     private Button radarOpenNotificationTestButton;
     private CheckBox startupCheck;
     private CheckBox hoverOpacityCheck;
+    private CheckBox autoHoverOpacityIdleCheck;
+    private CheckBox autoHoverOpacityMaximizedCheck;
+    private CheckBox seelenDockForegroundPulseCheck;
     private CheckBox codexModelIqTestCheck;
     private CheckBox codexModelEfficiencyTestCheck;
     private CheckBox gfwProbeCheck;
+    private CheckBox cloudRegionJapanCheck;
+    private CheckBox cloudRegionAsiaPacificCheck;
+    private CheckBox cloudRegionNorthAmericaCheck;
+    private CheckBox cloudRegionEuropeCheck;
     private FlowLayoutPanel availableMetricsPanel;
     private TableLayoutPanel metricSlotsPanel;
     private Panel[] metricSlotPanels;
@@ -135,12 +147,14 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private Button[] settingsNavigationButtons;
     private Control[] settingsPages;
     private TextBox settingsSearchBox;
+    private Label footerStatusLabel;
     private int selectedSettingsPageIndex;
     private bool messageFilterRegistered;
     private string draggedMetricId;
     private int draggedSourceSlotIndex;
     private int gfwProbeManualRefreshToken;
     private int connectionCheckManualRefreshToken;
+    private int cloudEndpointTestSeed;
     private bool initializing;
     private bool saved;
 
@@ -166,6 +180,9 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.previewTimer = new System.Windows.Forms.Timer();
         this.previewTimer.Interval = PreviewDebounceMs;
         this.previewTimer.Tick += OnPreviewTimerTick;
+        this.footerStatusTimer = new System.Windows.Forms.Timer();
+        this.footerStatusTimer.Interval = 5000;
+        this.footerStatusTimer.Tick += OnFooterStatusTimerTick;
 
         this.Text = "性能小窗设置";
         this.FormBorderStyle = FormBorderStyle.Sizable;
@@ -217,6 +234,9 @@ internal sealed class SettingsForm : Form, IMessageFilter
 
         this.previewTimer.Tick -= OnPreviewTimerTick;
         this.previewTimer.Dispose();
+        this.footerStatusTimer.Stop();
+        this.footerStatusTimer.Tick -= OnFooterStatusTimerTick;
+        this.footerStatusTimer.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -576,6 +596,11 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.operationBottomOffsetBox = BuildNumberBox(WidgetSettings.MinOperationOffset, WidgetSettings.MaxOperationOffset);
         this.operationTransparencyBox = BuildNumberBox(WidgetSettings.MinBackgroundTransparency, WidgetSettings.MaxBackgroundTransparency);
         this.operationTransparencyBox.Increment = 1;
+        this.autoHoverOpacityIdleSecondsBox = BuildNumberBox(
+            WidgetSettings.MinAutoHoverOpacityIdleSeconds,
+            WidgetSettings.MaxAutoHoverOpacityIdleSeconds);
+        this.autoHoverOpacityIdleSecondsBox.Increment = 1;
+        this.autoHoverOpacityIdleSecondsBox.Width = 120;
         this.codexModelIqTestPassedBox = BuildNumberBox(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed);
         this.codexModelIqTestPassedBox.Increment = 1;
         this.codexModelIqBaselineBox = BuildNumberBox(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed);
@@ -667,6 +692,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.powerThermalAutoDirectionCombo = BuildCombo();
         this.performanceModeCombo = BuildCombo();
         this.clickThroughCombo = BuildCombo();
+        this.networkAdapterCombo = BuildCombo();
         this.alertTestButton = BuildToggleButton();
         this.codexRadarTestButton = BuildCodexRadarTestButton();
         this.serviceHealthTestButton = BuildServiceHealthTestButton();
@@ -674,6 +700,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.connectionCheckManualRefreshButton = BuildConnectionCheckManualRefreshButton();
         this.networkStatusTestButton = BuildNetworkStatusTestButton();
         this.gfwProbeTestButton = BuildGfwProbeTestButton();
+        this.cloudEndpointTestButton = BuildCloudEndpointTestButton();
         this.extraResetNotificationTestButton = BuildNotificationTestButton(
             "额外重置",
             delegate { this.owner.TestCodexExtraResetNotification(); });
@@ -683,10 +710,18 @@ internal sealed class SettingsForm : Form, IMessageFilter
 
         this.startupCheck = BuildCheckBox("开机自动启动");
         this.hoverOpacityCheck = BuildCheckBox("悬停透明 95%");
+        this.autoHoverOpacityIdleCheck = BuildCheckBox("鼠标空闲后增高透明度");
+        this.autoHoverOpacityMaximizedCheck = BuildCheckBox("前台最大化窗口时增高透明度");
+        this.forceShowFpsCheck = BuildCheckBox("强制显示FPS模式");
+        this.seelenDockForegroundPulseCheck = BuildCheckBox("Seelen Dock 自动拉前");
         this.powerThermalAutoSizeCheck = BuildCheckBox("启用自动大小");
         this.codexModelIqTestCheck = BuildCheckBox("覆盖实时 IQ 数据");
         this.codexModelEfficiencyTestCheck = BuildCheckBox("覆盖实时效率数据");
         this.gfwProbeCheck = BuildCheckBox("启用 GFW 检测");
+        this.cloudRegionJapanCheck = BuildCheckBox("日本");
+        this.cloudRegionAsiaPacificCheck = BuildCheckBox("亚太");
+        this.cloudRegionNorthAmericaCheck = BuildCheckBox("北美");
+        this.cloudRegionEuropeCheck = BuildCheckBox("欧洲");
 
         this.metricSlotPanels = new Panel[WidgetSettings.DefaultMetricOrder.Length];
     }
@@ -696,6 +731,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.visibilityCombo.Items.Add(new ComboOption("仅桌面可见", WidgetVisibilityMode.DesktopOnly));
         this.visibilityCombo.Items.Add(new ComboOption("一直可见", WidgetVisibilityMode.AlwaysVisible));
         this.visibilityCombo.Items.Add(new ComboOption("仅全屏不可见", WidgetVisibilityMode.HideWhenFullscreen));
+        this.performanceModeCombo.Items.Add(new ComboOption("根据 Windows 电源模式自动切换", WidgetPerformanceMode.WindowsPowerMode));
         this.performanceModeCombo.Items.Add(new ComboOption("性能", WidgetPerformanceMode.Smooth));
         this.performanceModeCombo.Items.Add(new ComboOption("均衡", WidgetPerformanceMode.Balanced));
         this.performanceModeCombo.Items.Add(new ComboOption("省电", WidgetPerformanceMode.BatterySaver));
@@ -707,6 +743,73 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.thermalTestCombo.Items.Add(new ComboOption("关闭", ThermalTestMode.Off));
         this.thermalTestCombo.Items.Add(new ComboOption("模拟 75 度", ThermalTestMode.Simulate75));
         this.thermalTestCombo.Items.Add(new ComboOption("模拟 100 度", ThermalTestMode.Simulate100));
+        PopulateNetworkAdapterOptions();
+    }
+
+    private void PopulateNetworkAdapterOptions()
+    {
+        if (this.networkAdapterCombo == null)
+        {
+            return;
+        }
+
+        this.networkAdapterCombo.Items.Clear();
+        this.networkAdapterCombo.Items.Add(new ComboOption("自动选择", string.Empty));
+        try
+        {
+            NetworkInterface[] adapters = NetworkInterface.GetAllNetworkInterfaces();
+            Array.Sort(adapters, CompareNetworkInterfacesByName);
+            for (int i = 0; i < adapters.Length; i++)
+            {
+                NetworkInterface adapter = adapters[i];
+                if (adapter == null)
+                {
+                    continue;
+                }
+
+                string id = adapter.Id ?? string.Empty;
+                if (id.Length == 0)
+                {
+                    continue;
+                }
+
+                string text = FallbackText(adapter.Name, "Network") + " | " +
+                    adapter.OperationalStatus.ToString() + " | " +
+                    FormatInterfaceTypeForSettings(adapter.NetworkInterfaceType);
+                this.networkAdapterCombo.Items.Add(new ComboOption(text, id));
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static string FallbackText(string value, string fallback)
+    {
+        return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+    }
+
+    private static int CompareNetworkInterfacesByName(NetworkInterface left, NetworkInterface right)
+    {
+        return string.Compare(
+            left == null ? string.Empty : left.Name,
+            right == null ? string.Empty : right.Name,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string FormatInterfaceTypeForSettings(NetworkInterfaceType type)
+    {
+        if (type == NetworkInterfaceType.Wireless80211)
+        {
+            return "Wi-Fi";
+        }
+
+        if (type == NetworkInterfaceType.Ethernet || type == NetworkInterfaceType.GigabitEthernet)
+        {
+            return "Ethernet";
+        }
+
+        return type.ToString();
     }
 
     private void WireControlPairs()
@@ -756,16 +859,19 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private SettingsPagePanel BuildRuntimeTab()
     {
         SettingsPagePanel page = BuildTabPage("运行");
-        TableLayoutPanel section = BuildSettingsSection("性能和交互", 6);
+        TableLayoutPanel section = BuildSettingsSection("性能和交互", 9);
         AddEditorRow(section, 1, "性能模式", this.performanceModeCombo);
         AddEditorRow(section, 2, "可见性", this.visibilityCombo);
         AddEditorRow(section, 3, "点击穿透", this.clickThroughCombo);
         AddCheckRow(section, 4, "启动", this.startupCheck);
         AddCheckRow(section, 5, "透明交互", this.hoverOpacityCheck);
-        AddLabel(section, 6, "告警测试");
+        AddCheckRow(section, 6, "防烧屏空闲", this.autoHoverOpacityIdleCheck);
+        AddEditorRow(section, 7, "空闲秒数", this.autoHoverOpacityIdleSecondsBox);
+        AddCheckRow(section, 8, "最大化窗口", this.autoHoverOpacityMaximizedCheck);
+        AddLabel(section, 9, "告警测试");
         Control alertEditor = BuildButtonEditor(this.alertTestButton);
         section.SetColumnSpan(alertEditor, 2);
-        section.Controls.Add(alertEditor, 1, 6);
+        section.Controls.Add(alertEditor, 1, 9);
         page.Controls.Add(section);
         return page;
     }
@@ -838,22 +944,35 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private SettingsPagePanel BuildNetworkMonitorTab()
     {
         SettingsPagePanel page = BuildTabPage("网络监控");
-        TableLayoutPanel section = BuildSettingsSection("网络监控模块", 9);
+        TableLayoutPanel section = BuildSettingsSection("网络监控模块", 12);
         AddSliderRow(section, 1, "模块宽度", this.networkMonitorWidthBox, this.networkMonitorWidthSlider);
         AddSliderRow(section, 2, "模块高度", this.networkMonitorHeightBox, this.networkMonitorHeightSlider);
         AddSliderRow(section, 3, "位置 X", this.networkMonitorLeftXBox, this.networkMonitorLeftXSlider);
         AddSliderRow(section, 4, "位置 Y", this.networkMonitorBottomYBox, this.networkMonitorBottomYSlider);
         AddSliderRow(section, 5, "背景透明度", this.networkMonitorTransparencyBox, this.networkMonitorTransparencySlider);
-        AddLabel(section, 6, "网络状态测试");
+        AddEditorRow(section, 6, "网卡选择", this.networkAdapterCombo);
+        AddLabel(section, 7, "网络状态测试");
         Control statusEditor = BuildButtonEditor(this.networkStatusTestButton);
         section.SetColumnSpan(statusEditor, 2);
-        section.Controls.Add(statusEditor, 1, 6);
-        AddCheckRow(section, 7, "GFW检测", this.gfwProbeCheck);
-        AddSliderRow(section, 8, "检测间隔分钟", this.gfwProbeIntervalBox, this.gfwProbeIntervalSlider);
-        AddLabel(section, 9, "立即测试");
+        section.Controls.Add(statusEditor, 1, 7);
+        AddCheckRow(section, 8, "GFW检测", this.gfwProbeCheck);
+        AddSliderRow(section, 9, "检测间隔分钟", this.gfwProbeIntervalBox, this.gfwProbeIntervalSlider);
+        AddCheckRow(
+            section,
+            10,
+            "官方地区",
+            this.cloudRegionJapanCheck,
+            this.cloudRegionAsiaPacificCheck,
+            this.cloudRegionNorthAmericaCheck,
+            this.cloudRegionEuropeCheck);
+        AddLabel(section, 11, "立即测试");
         Control gfwEditor = BuildButtonEditor(this.gfwProbeTestButton);
         section.SetColumnSpan(gfwEditor, 2);
-        section.Controls.Add(gfwEditor, 1, 9);
+        section.Controls.Add(gfwEditor, 1, 11);
+        AddLabel(section, 12, "云服务测试");
+        Control cloudEditor = BuildButtonEditor(this.cloudEndpointTestButton);
+        section.SetColumnSpan(cloudEditor, 2);
+        section.Controls.Add(cloudEditor, 1, 12);
         page.Controls.Add(section);
         return page;
     }
@@ -861,21 +980,22 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private SettingsPagePanel BuildConnectionCheckTab()
     {
         SettingsPagePanel page = BuildTabPage("连接检测");
-        TableLayoutPanel section = BuildSettingsSection("CleanIP徽标模块", 8);
+        TableLayoutPanel section = BuildSettingsSection("CleanIP徽标模块", 9);
         AddSliderRow(section, 1, "模块宽度", this.connectionCheckWidthBox, this.connectionCheckWidthSlider);
         AddSliderRow(section, 2, "模块高度", this.connectionCheckHeightBox, this.connectionCheckHeightSlider);
         AddSliderRow(section, 3, "位置 X", this.connectionCheckLeftXBox, this.connectionCheckLeftXSlider);
         AddSliderRow(section, 4, "位置 Y", this.connectionCheckBottomYBox, this.connectionCheckBottomYSlider);
         AddSliderRow(section, 5, "背景透明度", this.connectionCheckTransparencyBox, this.connectionCheckTransparencySlider);
         AddSliderRow(section, 6, "白色边框透明度", this.connectionCheckBorderTransparencyBox, this.connectionCheckBorderTransparencySlider);
-        AddLabel(section, 7, "手动刷新");
+        AddSliderRow(section, 7, "自动刷新秒", this.connectionCheckIntervalBox, this.connectionCheckIntervalSlider);
+        AddLabel(section, 8, "手动刷新");
         Control manualEditor = BuildButtonEditor(this.connectionCheckManualRefreshButton);
         section.SetColumnSpan(manualEditor, 2);
-        section.Controls.Add(manualEditor, 1, 7);
-        AddLabel(section, 8, "强制测试");
+        section.Controls.Add(manualEditor, 1, 8);
+        AddLabel(section, 9, "强制测试");
         Control cleanIpEditor = BuildButtonEditor(this.cleanIpBadgeTestButton);
         section.SetColumnSpan(cleanIpEditor, 2);
-        section.Controls.Add(cleanIpEditor, 1, 8);
+        section.Controls.Add(cleanIpEditor, 1, 9);
         page.Controls.Add(section);
         return page;
     }
@@ -883,11 +1003,13 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private SettingsPagePanel BuildOperationTab()
     {
         SettingsPagePanel page = BuildTabPage("操作模块");
-        TableLayoutPanel section = BuildSettingsSection("操作模块", 4);
+        TableLayoutPanel section = BuildSettingsSection("操作模块", 6);
         AddSliderRow(section, 1, "按钮大小", this.operationButtonSizeBox, this.operationButtonSizeSlider);
         AddSliderRow(section, 2, "距左边缘", this.operationLeftOffsetBox, this.operationLeftOffsetSlider);
         AddSliderRow(section, 3, "距底边缘", this.operationBottomOffsetBox, this.operationBottomOffsetSlider);
         AddSliderRow(section, 4, "背景透明度", this.operationTransparencyBox, this.operationTransparencySlider);
+        AddCheckRow(section, 5, "FPS显示", this.forceShowFpsCheck);
+        AddCheckRow(section, 6, "Seelen修复", this.seelenDockForegroundPulseCheck);
         page.Controls.Add(section);
         return page;
     }
@@ -1112,6 +1234,31 @@ internal sealed class SettingsForm : Form, IMessageFilter
         return button;
     }
 
+    private Button BuildCloudEndpointTestButton()
+    {
+        Button button = new Button();
+        button.Width = DesignTokens.Sizes.SettingsButtonWidth;
+        button.Height = DesignTokens.Sizes.SettingsToggleHeight;
+        button.MinimumSize = new Size(DesignTokens.Sizes.SettingsButtonWidth, DesignTokens.Sizes.SettingsToggleHeight);
+        button.AutoSize = true;
+        button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        button.Padding = new Padding(14, 5, 14, 5);
+        button.Click += delegate
+        {
+            if (this.initializing)
+            {
+                return;
+            }
+
+            int current = GetCloudEndpointTestSeed();
+            SetCloudEndpointTestSeed(current == 0 ? CreateCloudEndpointTestSeed() : 0);
+            this.saved = false;
+            this.owner.PreviewSettings(ReadControls());
+        };
+        StyleButton(button, false);
+        return button;
+    }
+
     private Button BuildNetworkStatusTestButton()
     {
         Button button = new Button();
@@ -1172,17 +1319,14 @@ internal sealed class SettingsForm : Form, IMessageFilter
                 this.baseline = settings.Clone();
                 this.baseline.Normalize();
                 this.saved = true;
-                MessageBox.Show(this, "保存完成。", "设置", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowFooterStatus("保存完成", false);
             }
             catch (Exception ex)
             {
                 Program.LogException(ex);
-                MessageBox.Show(
-                    this,
-                    "保存失败。\r\n错误码: 0x" + ex.HResult.ToString("X8", CultureInfo.InvariantCulture) + "\r\n" + ex.Message,
-                    "设置",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
+                ShowFooterStatus(
+                    "保存失败 0x" + ex.HResult.ToString("X8", CultureInfo.InvariantCulture) + ": " + ex.Message,
+                    true);
             }
         };
 
@@ -1236,10 +1380,11 @@ internal sealed class SettingsForm : Form, IMessageFilter
         TableLayoutPanel footer = new TableLayoutPanel();
         footer.Dock = DockStyle.Fill;
         footer.BackColor = DesignTokens.Colors.AppBackground;
-        footer.ColumnCount = 2;
+        footer.ColumnCount = 3;
         footer.RowCount = 1;
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
 
         FlowLayoutPanel leftButtons = new FlowLayoutPanel();
         leftButtons.FlowDirection = FlowDirection.LeftToRight;
@@ -1258,9 +1403,48 @@ internal sealed class SettingsForm : Form, IMessageFilter
         rightButtons.Controls.Add(cancelButton);
         rightButtons.Controls.Add(resetButton);
 
+        this.footerStatusLabel = new Label();
+        this.footerStatusLabel.Dock = DockStyle.Fill;
+        this.footerStatusLabel.Margin = new Padding(8, 12, 8, 0);
+        this.footerStatusLabel.Padding = new Padding(10, 0, 10, 1);
+        this.footerStatusLabel.TextAlign = ContentAlignment.MiddleCenter;
+        this.footerStatusLabel.AutoEllipsis = true;
+        this.footerStatusLabel.BackColor = DesignTokens.Colors.Control;
+        this.footerStatusLabel.ForeColor = DesignTokens.Colors.SuccessText;
+        this.footerStatusLabel.Font = DesignTokens.CreateUIFont(9.5f, FontStyle.Bold);
+        this.footerStatusLabel.UseCompatibleTextRendering = true;
+        this.footerStatusLabel.Visible = false;
+
         footer.Controls.Add(leftButtons, 0, 0);
-        footer.Controls.Add(rightButtons, 1, 0);
+        footer.Controls.Add(this.footerStatusLabel, 1, 0);
+        footer.Controls.Add(rightButtons, 2, 0);
         return footer;
+    }
+
+    private void ShowFooterStatus(string text, bool error)
+    {
+        if (this.footerStatusLabel == null)
+        {
+            return;
+        }
+
+        this.footerStatusTimer.Stop();
+        this.footerStatusLabel.Text = text;
+        this.footerStatusLabel.ForeColor = error ? DesignTokens.Colors.DangerText : DesignTokens.Colors.SuccessText;
+        this.footerStatusLabel.FlatStyle = FlatStyle.Flat;
+        this.footerStatusLabel.Visible = true;
+        this.footerStatusLabel.BringToFront();
+        this.footerStatusTimer.Start();
+    }
+
+    private void OnFooterStatusTimerTick(object sender, EventArgs e)
+    {
+        this.footerStatusTimer.Stop();
+        if (this.footerStatusLabel != null)
+        {
+            this.footerStatusLabel.Visible = false;
+            this.footerStatusLabel.Text = string.Empty;
+        }
     }
 
     private static Size GetDesiredClientSize()
@@ -1716,6 +1900,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
             this.operationButtonSizeBox.Value = settings.OperationButtonSize;
             this.operationLeftOffsetBox.Value = settings.OperationLeftOffset;
             this.operationBottomOffsetBox.Value = settings.OperationBottomOffset;
+            this.autoHoverOpacityIdleSecondsBox.Value = settings.AutoHoverOpacityIdleSeconds;
             this.codexModelIqTestPassedBox.Value = settings.CodexModelIqTestPassed;
             this.codexModelIqBaselineBox.Value = settings.CodexModelIqBaselinePassed;
             this.codexModelTokenEfficiencyTestBox.Value = settings.CodexModelTokenEfficiencyTestPercent;
@@ -1769,6 +1954,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
             this.powerThermalTransparencySlider.Value = settings.PowerThermalTransparencyPercent;
             this.networkMonitorTransparencyBox.Value = settings.NetworkMonitorTransparencyPercent;
             this.networkMonitorTransparencySlider.Value = settings.NetworkMonitorTransparencyPercent;
+            SetNetworkAdapterId(settings.NetworkMonitorAdapterId);
             this.connectionCheckTransparencyBox.Value = settings.ConnectionCheckTransparencyPercent;
             this.connectionCheckTransparencySlider.Value = settings.ConnectionCheckTransparencyPercent;
             this.operationTransparencyBox.Value = settings.OperationBackgroundTransparencyPercent;
@@ -1778,12 +1964,18 @@ internal sealed class SettingsForm : Form, IMessageFilter
             SelectComboValue(this.clickThroughCombo, settings.ClickThroughMode);
             this.startupCheck.Checked = settings.StartupEnabled;
             this.hoverOpacityCheck.Checked = settings.HoverOpacityEnabled;
+            this.autoHoverOpacityIdleCheck.Checked = settings.AutoHoverOpacityIdleEnabled;
+            this.autoHoverOpacityMaximizedCheck.Checked = settings.AutoHoverOpacityMaximizedEnabled;
+            this.forceShowFpsCheck.Checked = settings.ForceShowForegroundFpsEnabled;
+            this.seelenDockForegroundPulseCheck.Checked = settings.SeelenDockForegroundPulseEnabled;
             this.powerThermalAutoSizeCheck.Checked = settings.PowerThermalAutoSizeEnabled;
             SelectComboValue(this.powerThermalAutoDirectionCombo, settings.PowerThermalAutoDirection);
             this.codexModelIqTestCheck.Checked = settings.CodexModelIqTestEnabled;
             this.codexModelEfficiencyTestCheck.Checked = settings.CodexModelEfficiencyTestEnabled;
             this.gfwProbeCheck.Checked = settings.GfwProbeEnabled;
             this.gfwProbeManualRefreshToken = settings.GfwProbeManualRefreshToken;
+            SetCloudEndpointTestSeed(settings.CloudEndpointTestSeed);
+            SetCloudStatusRegionMask(settings.CloudStatusRegionMask);
             this.connectionCheckManualRefreshToken = settings.ConnectionCheckManualRefreshToken;
             SelectComboValue(this.thermalTestCombo, settings.ThermalTestMode);
             SetAlertTestButtonState(settings.AlertTestEnabled);
@@ -1794,6 +1986,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
             LoadMetricLayout(settings);
             UpdatePowerThermalAutoControls();
             UpdateGfwProbeControls();
+            UpdateAutoHoverOpacityControls();
         }
         finally
         {
@@ -1817,6 +2010,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         UpdateOperationPositionRanges((int)this.operationButtonSizeBox.Value);
         UpdatePowerThermalAutoControls();
         UpdateGfwProbeControls();
+        UpdateAutoHoverOpacityControls();
         QueuePreviewSettings();
     }
 
@@ -1857,20 +2051,48 @@ internal sealed class SettingsForm : Form, IMessageFilter
 
     private void UpdateGfwProbeControls()
     {
-        bool enabled = this.gfwProbeCheck != null && this.gfwProbeCheck.Checked;
         if (this.gfwProbeIntervalBox != null)
         {
-            this.gfwProbeIntervalBox.Enabled = enabled;
+            this.gfwProbeIntervalBox.Enabled = true;
         }
 
         if (this.gfwProbeIntervalSlider != null)
         {
-            this.gfwProbeIntervalSlider.Enabled = enabled;
+            this.gfwProbeIntervalSlider.Enabled = true;
         }
 
         if (this.gfwProbeTestButton != null)
         {
             this.gfwProbeTestButton.Enabled = true;
+        }
+
+        if (this.cloudRegionJapanCheck != null)
+        {
+            this.cloudRegionJapanCheck.Enabled = true;
+        }
+
+        if (this.cloudRegionAsiaPacificCheck != null)
+        {
+            this.cloudRegionAsiaPacificCheck.Enabled = true;
+        }
+
+        if (this.cloudRegionNorthAmericaCheck != null)
+        {
+            this.cloudRegionNorthAmericaCheck.Enabled = true;
+        }
+
+        if (this.cloudRegionEuropeCheck != null)
+        {
+            this.cloudRegionEuropeCheck.Enabled = true;
+        }
+    }
+
+    private void UpdateAutoHoverOpacityControls()
+    {
+        bool enabled = this.autoHoverOpacityIdleCheck != null && this.autoHoverOpacityIdleCheck.Checked;
+        if (this.autoHoverOpacityIdleSecondsBox != null)
+        {
+            this.autoHoverOpacityIdleSecondsBox.Enabled = enabled;
         }
     }
 
@@ -1880,7 +2102,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.initializing = true;
         try
         {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            Rectangle bounds = GetUsableWorkArea();
             int leftMin = bounds.Left;
             int leftMax = Math.Max(bounds.Left, bounds.Right - width);
             int bottomMin = Math.Min(bounds.Bottom - 1, bounds.Top + height - 1);
@@ -1903,7 +2125,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.initializing = true;
         try
         {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            Rectangle bounds = GetUsableWorkArea();
             int leftMin = bounds.Left;
             int leftMax = Math.Max(bounds.Left, bounds.Right - width);
             int bottomMin = Math.Min(bounds.Bottom - 1, bounds.Top + height - 1);
@@ -1926,7 +2148,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.initializing = true;
         try
         {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            Rectangle bounds = GetUsableWorkArea();
             int leftMin = bounds.Left;
             int leftMax = Math.Max(bounds.Left, bounds.Right - width);
             int bottomMin = Math.Min(bounds.Bottom - 1, bounds.Top + height - 1);
@@ -1949,7 +2171,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.initializing = true;
         try
         {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            Rectangle bounds = GetUsableWorkArea();
             int leftMin = bounds.Left;
             int leftMax = Math.Max(bounds.Left, bounds.Right - width);
             int bottomMin = Math.Min(bounds.Bottom - 1, bounds.Top + height - 1);
@@ -1972,7 +2194,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.initializing = true;
         try
         {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            Rectangle bounds = GetUsableWorkArea();
             int leftMin = bounds.Left;
             int leftMax = Math.Max(bounds.Left, bounds.Right - width);
             int bottomMin = Math.Min(bounds.Bottom - 1, bounds.Top + height - 1);
@@ -1998,7 +2220,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
             using (Graphics g = this.CreateGraphics())
             {
                 float scale = Math.Max(1.0f, g.DpiX / 96.0f);
-                Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+                Rectangle workArea = GetUsableWorkArea();
                 int maxLeftOffset = Math.Max(0, workArea.Width - WidgetSettings.GetOperationWindowWidth(buttonSize, scale));
                 int maxBottomOffset = Math.Max(0, workArea.Height - WidgetSettings.GetOperationWindowHeight(buttonSize, scale));
 
@@ -2072,10 +2294,13 @@ internal sealed class SettingsForm : Form, IMessageFilter
         settings.NetworkMonitorLeftX = (int)this.networkMonitorLeftXBox.Value;
         settings.NetworkMonitorBottomY = (int)this.networkMonitorBottomYBox.Value;
         settings.NetworkMonitorTransparencyPercent = (int)this.networkMonitorTransparencyBox.Value;
+        settings.NetworkMonitorAdapterId = GetNetworkAdapterId();
         settings.NetworkStatusTestMode = GetNetworkStatusTestButtonMode();
         settings.GfwProbeEnabled = this.gfwProbeCheck.Checked;
         settings.GfwProbeIntervalMinutes = (int)this.gfwProbeIntervalBox.Value;
         settings.GfwProbeManualRefreshToken = this.gfwProbeManualRefreshToken;
+        settings.CloudEndpointTestSeed = GetCloudEndpointTestSeed();
+        settings.CloudStatusRegionMask = GetCloudStatusRegionMask();
         settings.ConnectionCheckWidth = (int)this.connectionCheckWidthBox.Value;
         settings.ConnectionCheckHeight = (int)this.connectionCheckHeightBox.Value;
         settings.ConnectionCheckLeftX = (int)this.connectionCheckLeftXBox.Value;
@@ -2088,6 +2313,8 @@ internal sealed class SettingsForm : Form, IMessageFilter
         settings.OperationLeftOffset = (int)this.operationLeftOffsetBox.Value;
         settings.OperationBottomOffset = (int)this.operationBottomOffsetBox.Value;
         settings.OperationBackgroundTransparencyPercent = (int)this.operationTransparencyBox.Value;
+        settings.ForceShowForegroundFpsEnabled = this.forceShowFpsCheck.Checked;
+        settings.SeelenDockForegroundPulseEnabled = this.seelenDockForegroundPulseCheck.Checked;
         settings.ThermalTestMode = (ThermalTestMode)GetComboValue(this.thermalTestCombo, ThermalTestMode.Off);
         settings.CodexRadarTestMode = GetCodexRadarTestButtonMode();
         settings.ServiceHealthTestMode = GetServiceHealthTestButtonMode();
@@ -2109,6 +2336,9 @@ internal sealed class SettingsForm : Form, IMessageFilter
         settings.PerformanceMode = (WidgetPerformanceMode)GetComboValue(this.performanceModeCombo, WidgetPerformanceMode.Balanced);
         settings.ClickThroughMode = (ClickThroughMode)GetComboValue(this.clickThroughCombo, ClickThroughMode.Auto);
         settings.HoverOpacityEnabled = this.hoverOpacityCheck.Checked;
+        settings.AutoHoverOpacityIdleEnabled = this.autoHoverOpacityIdleCheck.Checked;
+        settings.AutoHoverOpacityIdleSeconds = (int)this.autoHoverOpacityIdleSecondsBox.Value;
+        settings.AutoHoverOpacityMaximizedEnabled = this.autoHoverOpacityMaximizedCheck.Checked;
         string[] selectedMetrics = ReadMetricSlots(false);
         settings.ShowCpu = ContainsMetricId(selectedMetrics, WidgetSettings.MetricCpu);
         settings.ShowMemory = ContainsMetricId(selectedMetrics, WidgetSettings.MetricMemory);
@@ -2120,6 +2350,347 @@ internal sealed class SettingsForm : Form, IMessageFilter
         settings.MetricOrder = selectedMetrics;
         settings.Normalize();
         return settings;
+    }
+
+    internal static void RunSettingsBindingSelfTest()
+    {
+        WidgetSettings baseline = WidgetSettings.CreateDefaults();
+        baseline.Normalize();
+        using (SettingsForm form = new SettingsForm(null, baseline))
+        {
+            form.OwnerFormClosing = true;
+            form.saved = true;
+            form.VerifySettingsBindingSelfTest();
+        }
+    }
+
+    private void VerifySettingsBindingSelfTest()
+    {
+        AssertVisibleBinding(this.connectionCheckIntervalBox, "ConnectionCheckIntervalSeconds box");
+        AssertVisibleBinding(this.connectionCheckIntervalSlider, "ConnectionCheckIntervalSeconds slider");
+        AssertVisibleBinding(this.autoHoverOpacityIdleSecondsBox, "AutoHoverOpacityIdleSeconds box");
+        AssertVisibleBinding(this.seelenDockForegroundPulseCheck, "SeelenDockForegroundPulseEnabled check");
+        AssertPositionRangeUsesWorkArea("Widget", this.widthBox, this.heightBox, this.leftXBox, this.bottomYBox);
+        AssertPositionRangeUsesWorkArea("CodexRadar", this.codexRadarWidthBox, this.codexRadarHeightBox, this.codexRadarLeftXBox, this.codexRadarBottomYBox);
+        AssertPositionRangeUsesWorkArea("PowerThermal", this.powerThermalWidthBox, this.powerThermalHeightBox, this.powerThermalLeftXBox, this.powerThermalBottomYBox);
+        AssertPositionRangeUsesWorkArea("NetworkMonitor", this.networkMonitorWidthBox, this.networkMonitorHeightBox, this.networkMonitorLeftXBox, this.networkMonitorBottomYBox);
+        AssertPositionRangeUsesWorkArea("ConnectionCheck", this.connectionCheckWidthBox, this.connectionCheckHeightBox, this.connectionCheckLeftXBox, this.connectionCheckBottomYBox);
+
+        bool wasInitializing = this.initializing;
+        this.initializing = true;
+        int width = PickDifferentValue(this.widthBox);
+        int height = PickDifferentValue(this.heightBox);
+        int leftX = (int)this.leftXBox.Minimum;
+        int bottomY = (int)this.bottomYBox.Maximum;
+        int backgroundTransparency = PickDifferentValue(this.backgroundTransparencyBox);
+        int applicationTransparency = PickDifferentValue(this.applicationTransparencyBox);
+        int codexRadarWidth = PickDifferentValue(this.codexRadarWidthBox);
+        int codexRadarHeight = PickDifferentValue(this.codexRadarHeightBox);
+        int codexRadarLeftX = (int)this.codexRadarLeftXBox.Minimum;
+        int codexRadarBottomY = (int)this.codexRadarBottomYBox.Maximum;
+        int codexRadarTransparency = PickDifferentValue(this.codexRadarTransparencyBox);
+        int powerThermalWidth = PickDifferentValue(this.powerThermalWidthBox);
+        int powerThermalHeight = PickDifferentValue(this.powerThermalHeightBox);
+        int powerThermalLeftX = (int)this.powerThermalLeftXBox.Minimum;
+        int powerThermalBottomY = (int)this.powerThermalBottomYBox.Maximum;
+        int powerThermalTransparency = PickDifferentValue(this.powerThermalTransparencyBox);
+        int powerThermalVisibleAlerts = PickDifferentValue(this.powerThermalVisibleAlertCountBox);
+        int networkMonitorWidth = PickDifferentValue(this.networkMonitorWidthBox);
+        int networkMonitorHeight = PickDifferentValue(this.networkMonitorHeightBox);
+        int networkMonitorLeftX = (int)this.networkMonitorLeftXBox.Minimum;
+        int networkMonitorBottomY = (int)this.networkMonitorBottomYBox.Maximum;
+        int networkMonitorTransparency = PickDifferentValue(this.networkMonitorTransparencyBox);
+        int gfwProbeInterval = PickDifferentValue(this.gfwProbeIntervalBox);
+        int connectionCheckWidth = PickDifferentValue(this.connectionCheckWidthBox);
+        int connectionCheckHeight = PickDifferentValue(this.connectionCheckHeightBox);
+        int connectionCheckLeftX = (int)this.connectionCheckLeftXBox.Minimum;
+        int connectionCheckBottomY = (int)this.connectionCheckBottomYBox.Maximum;
+        int connectionCheckTransparency = PickDifferentValue(this.connectionCheckTransparencyBox);
+        int connectionCheckBorderTransparency = PickDifferentValue(this.connectionCheckBorderTransparencyBox);
+        int connectionCheckInterval = PickDifferentValue(this.connectionCheckIntervalBox);
+        int operationButtonSize = PickDifferentValue(this.operationButtonSizeBox);
+        int operationLeftOffset = PickDifferentValue(this.operationLeftOffsetBox);
+        int operationBottomOffset = PickDifferentValue(this.operationBottomOffsetBox);
+        int operationTransparency = PickDifferentValue(this.operationTransparencyBox);
+        int autoHoverOpacityIdleSeconds = PickDifferentValue(this.autoHoverOpacityIdleSecondsBox);
+        int iqPassed = PickDifferentValue(this.codexModelIqTestPassedBox);
+        int iqBaseline = PickDifferentValue(this.codexModelIqBaselineBox);
+        int tokenEfficiency = PickDifferentValue(this.codexModelTokenEfficiencyTestBox);
+        int timeEfficiency = PickDifferentValue(this.codexModelTimeEfficiencyTestBox);
+        int tokenBaselinePassed = PickDifferentValue(this.codexModelTokenEfficiencyBaselinePassedBox);
+        int tokenBaselineTokens = PickDifferentValue(this.codexModelTokenEfficiencyBaselineTokensBox);
+        int timeBaselinePassed = PickDifferentValue(this.codexModelTimeEfficiencyBaselinePassedBox);
+        int timeBaselineSeconds = PickDifferentValue(this.codexModelTimeEfficiencyBaselineSecondsBox);
+        int tokenLowThreshold = PickDifferentValue(this.codexModelTokenEfficiencyLowThresholdBox);
+        int timeLowThreshold = PickDifferentValue(this.codexModelTimeEfficiencyLowThresholdBox);
+        try
+        {
+            SetNumber(this.widthBox, this.widthSlider, width);
+            SetNumber(this.heightBox, this.heightSlider, height);
+            SetNumber(this.leftXBox, this.leftXSlider, leftX);
+            SetNumber(this.bottomYBox, this.bottomYSlider, bottomY);
+            SetNumber(this.backgroundTransparencyBox, this.backgroundTransparencySlider, backgroundTransparency);
+            SetNumber(this.applicationTransparencyBox, this.applicationTransparencySlider, applicationTransparency);
+            SetNumber(this.codexRadarWidthBox, this.codexRadarWidthSlider, codexRadarWidth);
+            SetNumber(this.codexRadarHeightBox, this.codexRadarHeightSlider, codexRadarHeight);
+            SetNumber(this.codexRadarLeftXBox, this.codexRadarLeftXSlider, codexRadarLeftX);
+            SetNumber(this.codexRadarBottomYBox, this.codexRadarBottomYSlider, codexRadarBottomY);
+            SetNumber(this.codexRadarTransparencyBox, this.codexRadarTransparencySlider, codexRadarTransparency);
+            SetNumber(this.powerThermalWidthBox, this.powerThermalWidthSlider, powerThermalWidth);
+            SetNumber(this.powerThermalHeightBox, this.powerThermalHeightSlider, powerThermalHeight);
+            SetNumber(this.powerThermalLeftXBox, this.powerThermalLeftXSlider, powerThermalLeftX);
+            SetNumber(this.powerThermalBottomYBox, this.powerThermalBottomYSlider, powerThermalBottomY);
+            SetNumber(this.powerThermalTransparencyBox, this.powerThermalTransparencySlider, powerThermalTransparency);
+            SetNumber(this.powerThermalVisibleAlertCountBox, this.powerThermalVisibleAlertCountSlider, powerThermalVisibleAlerts);
+            SetNumber(this.networkMonitorWidthBox, this.networkMonitorWidthSlider, networkMonitorWidth);
+            SetNumber(this.networkMonitorHeightBox, this.networkMonitorHeightSlider, networkMonitorHeight);
+            SetNumber(this.networkMonitorLeftXBox, this.networkMonitorLeftXSlider, networkMonitorLeftX);
+            SetNumber(this.networkMonitorBottomYBox, this.networkMonitorBottomYSlider, networkMonitorBottomY);
+            SetNumber(this.networkMonitorTransparencyBox, this.networkMonitorTransparencySlider, networkMonitorTransparency);
+            SetNetworkAdapterId("settings-self-test-adapter");
+            SetNumber(this.gfwProbeIntervalBox, this.gfwProbeIntervalSlider, gfwProbeInterval);
+            SetNumber(this.connectionCheckWidthBox, this.connectionCheckWidthSlider, connectionCheckWidth);
+            SetNumber(this.connectionCheckHeightBox, this.connectionCheckHeightSlider, connectionCheckHeight);
+            SetNumber(this.connectionCheckLeftXBox, this.connectionCheckLeftXSlider, connectionCheckLeftX);
+            SetNumber(this.connectionCheckBottomYBox, this.connectionCheckBottomYSlider, connectionCheckBottomY);
+            SetNumber(this.connectionCheckTransparencyBox, this.connectionCheckTransparencySlider, connectionCheckTransparency);
+            SetNumber(this.connectionCheckBorderTransparencyBox, this.connectionCheckBorderTransparencySlider, connectionCheckBorderTransparency);
+            SetNumber(this.connectionCheckIntervalBox, this.connectionCheckIntervalSlider, connectionCheckInterval);
+            SetNumber(this.operationButtonSizeBox, this.operationButtonSizeSlider, operationButtonSize);
+            SetNumber(this.operationLeftOffsetBox, this.operationLeftOffsetSlider, operationLeftOffset);
+            SetNumber(this.operationBottomOffsetBox, this.operationBottomOffsetSlider, operationBottomOffset);
+            SetNumber(this.operationTransparencyBox, this.operationTransparencySlider, operationTransparency);
+            SetNumber(this.autoHoverOpacityIdleSecondsBox, null, autoHoverOpacityIdleSeconds);
+            SetNumber(this.codexModelIqTestPassedBox, this.codexModelIqTestPassedSlider, iqPassed);
+            SetNumber(this.codexModelIqBaselineBox, this.codexModelIqBaselineSlider, iqBaseline);
+            SetNumber(this.codexModelTokenEfficiencyTestBox, this.codexModelTokenEfficiencyTestSlider, tokenEfficiency);
+            SetNumber(this.codexModelTimeEfficiencyTestBox, this.codexModelTimeEfficiencyTestSlider, timeEfficiency);
+            SetNumber(this.codexModelTokenEfficiencyBaselinePassedBox, null, tokenBaselinePassed);
+            SetNumber(this.codexModelTokenEfficiencyBaselineTokensBox, null, tokenBaselineTokens);
+            SetNumber(this.codexModelTimeEfficiencyBaselinePassedBox, null, timeBaselinePassed);
+            SetNumber(this.codexModelTimeEfficiencyBaselineSecondsBox, null, timeBaselineSeconds);
+            SetNumber(this.codexModelTokenEfficiencyLowThresholdBox, this.codexModelTokenEfficiencyLowThresholdSlider, tokenLowThreshold);
+            SetNumber(this.codexModelTimeEfficiencyLowThresholdBox, this.codexModelTimeEfficiencyLowThresholdSlider, timeLowThreshold);
+
+            SelectComboValue(this.visibilityCombo, WidgetVisibilityMode.HideWhenFullscreen);
+            SelectComboValue(this.performanceModeCombo, WidgetPerformanceMode.Smooth);
+            SelectComboValue(this.clickThroughCombo, ClickThroughMode.Enabled);
+            SelectComboValue(this.powerThermalAutoDirectionCombo, PowerThermalAutoDirection.Left);
+            SelectComboValue(this.thermalTestCombo, ThermalTestMode.Simulate75);
+            this.startupCheck.Checked = true;
+            this.hoverOpacityCheck.Checked = false;
+            this.autoHoverOpacityIdleCheck.Checked = true;
+            this.autoHoverOpacityMaximizedCheck.Checked = true;
+            this.forceShowFpsCheck.Checked = true;
+            this.seelenDockForegroundPulseCheck.Checked = false;
+            this.powerThermalAutoSizeCheck.Checked = true;
+            this.codexModelIqTestCheck.Checked = true;
+            this.codexModelEfficiencyTestCheck.Checked = true;
+            this.gfwProbeCheck.Checked = true;
+            SetAlertTestButtonState(true);
+            SetCodexRadarTestButtonMode(CodexRadarTestMode.Open);
+            SetServiceHealthTestButtonMode(ServiceHealthTestMode.Unavailable);
+            SetCleanIpBadgeTestButtonMode(CleanIpBadgeTestMode.ProxyRisk);
+            SetNetworkStatusTestButtonMode(NetworkStatusTestMode.NeedsValidation);
+            this.gfwProbeManualRefreshToken = 3;
+            SetCloudEndpointTestSeed(12345);
+            SetCloudStatusRegionMask(WidgetSettings.CloudStatusRegionJapan | WidgetSettings.CloudStatusRegionEurope);
+            this.connectionCheckManualRefreshToken = 5;
+            SetSlotMetric(0, WidgetSettings.MetricNpu);
+            SetSlotMetric(1, WidgetSettings.MetricCpu);
+            SetSlotMetric(2, WidgetSettings.MetricNetwork);
+            for (int i = 3; i < this.metricSlotPanels.Length; i++)
+            {
+                SetSlotMetric(i, string.Empty);
+            }
+        }
+        finally
+        {
+            this.initializing = wasInitializing;
+        }
+
+        WidgetSettings settings = ReadControls();
+        AssertEqual(width, settings.Width, "Width");
+        AssertEqual(height, settings.Height, "Height");
+        AssertEqual(leftX, settings.LeftX, "LeftX");
+        AssertEqual(bottomY, settings.BottomY, "BottomY");
+        AssertEqual(backgroundTransparency, settings.BackgroundTransparencyPercent, "BackgroundTransparencyPercent");
+        AssertEqual(applicationTransparency, settings.ApplicationTransparencyPercent, "ApplicationTransparencyPercent");
+        AssertEqual(codexRadarWidth, settings.CodexRadarWidth, "CodexRadarWidth");
+        AssertEqual(codexRadarHeight, settings.CodexRadarHeight, "CodexRadarHeight");
+        AssertEqual(codexRadarLeftX, settings.CodexRadarLeftX, "CodexRadarLeftX");
+        AssertEqual(codexRadarBottomY, settings.CodexRadarBottomY, "CodexRadarBottomY");
+        AssertEqual(codexRadarTransparency, settings.CodexRadarTransparencyPercent, "CodexRadarTransparencyPercent");
+        AssertEqual(powerThermalWidth, settings.PowerThermalWidth, "PowerThermalWidth");
+        AssertEqual(powerThermalHeight, settings.PowerThermalHeight, "PowerThermalHeight");
+        AssertEqual(powerThermalLeftX, settings.PowerThermalLeftX, "PowerThermalLeftX");
+        AssertEqual(powerThermalBottomY, settings.PowerThermalBottomY, "PowerThermalBottomY");
+        AssertEqual(powerThermalTransparency, settings.PowerThermalTransparencyPercent, "PowerThermalTransparencyPercent");
+        AssertTrue(settings.PowerThermalAutoSizeEnabled, "PowerThermalAutoSizeEnabled");
+        AssertEqual(PowerThermalAutoDirection.Left, settings.PowerThermalAutoDirection, "PowerThermalAutoDirection");
+        AssertEqual(powerThermalVisibleAlerts, settings.PowerThermalVisibleAlertCount, "PowerThermalVisibleAlertCount");
+        AssertEqual(networkMonitorWidth, settings.NetworkMonitorWidth, "NetworkMonitorWidth");
+        AssertEqual(networkMonitorHeight, settings.NetworkMonitorHeight, "NetworkMonitorHeight");
+        AssertEqual(networkMonitorLeftX, settings.NetworkMonitorLeftX, "NetworkMonitorLeftX");
+        AssertEqual(networkMonitorBottomY, settings.NetworkMonitorBottomY, "NetworkMonitorBottomY");
+        AssertEqual(networkMonitorTransparency, settings.NetworkMonitorTransparencyPercent, "NetworkMonitorTransparencyPercent");
+        AssertEqual("settings-self-test-adapter", settings.NetworkMonitorAdapterId, "NetworkMonitorAdapterId");
+        AssertEqual(NetworkStatusTestMode.NeedsValidation, settings.NetworkStatusTestMode, "NetworkStatusTestMode");
+        AssertTrue(settings.GfwProbeEnabled, "GfwProbeEnabled");
+        AssertEqual(gfwProbeInterval, settings.GfwProbeIntervalMinutes, "GfwProbeIntervalMinutes");
+        AssertEqual(3, settings.GfwProbeManualRefreshToken, "GfwProbeManualRefreshToken");
+        AssertEqual(12345, settings.CloudEndpointTestSeed, "CloudEndpointTestSeed");
+        AssertEqual(
+            WidgetSettings.CloudStatusRegionJapan | WidgetSettings.CloudStatusRegionEurope,
+            settings.CloudStatusRegionMask,
+            "CloudStatusRegionMask");
+        AssertEqual(connectionCheckWidth, settings.ConnectionCheckWidth, "ConnectionCheckWidth");
+        AssertEqual(connectionCheckHeight, settings.ConnectionCheckHeight, "ConnectionCheckHeight");
+        AssertEqual(connectionCheckLeftX, settings.ConnectionCheckLeftX, "ConnectionCheckLeftX");
+        AssertEqual(connectionCheckBottomY, settings.ConnectionCheckBottomY, "ConnectionCheckBottomY");
+        AssertEqual(connectionCheckTransparency, settings.ConnectionCheckTransparencyPercent, "ConnectionCheckTransparencyPercent");
+        AssertEqual(connectionCheckBorderTransparency, settings.ConnectionCheckBorderTransparencyPercent, "ConnectionCheckBorderTransparencyPercent");
+        AssertEqual(connectionCheckInterval, settings.ConnectionCheckIntervalSeconds, "ConnectionCheckIntervalSeconds");
+        AssertEqual(5, settings.ConnectionCheckManualRefreshToken, "ConnectionCheckManualRefreshToken");
+        AssertEqual(operationButtonSize, settings.OperationButtonSize, "OperationButtonSize");
+        AssertEqual(operationLeftOffset, settings.OperationLeftOffset, "OperationLeftOffset");
+        AssertEqual(operationBottomOffset, settings.OperationBottomOffset, "OperationBottomOffset");
+        AssertEqual(operationTransparency, settings.OperationBackgroundTransparencyPercent, "OperationBackgroundTransparencyPercent");
+        AssertTrue(settings.ForceShowForegroundFpsEnabled, "ForceShowForegroundFpsEnabled");
+        AssertTrue(!settings.SeelenDockForegroundPulseEnabled, "SeelenDockForegroundPulseEnabled");
+        AssertEqual(WidgetVisibilityMode.HideWhenFullscreen, settings.VisibilityMode, "VisibilityMode");
+        AssertEqual(ClickThroughMode.Enabled, settings.ClickThroughMode, "ClickThroughMode");
+        AssertTrue(settings.StartupEnabled, "StartupEnabled");
+        AssertTrue(!settings.HoverOpacityEnabled, "HoverOpacityEnabled");
+        AssertTrue(settings.AutoHoverOpacityIdleEnabled, "AutoHoverOpacityIdleEnabled");
+        AssertEqual(autoHoverOpacityIdleSeconds, settings.AutoHoverOpacityIdleSeconds, "AutoHoverOpacityIdleSeconds");
+        AssertTrue(settings.AutoHoverOpacityMaximizedEnabled, "AutoHoverOpacityMaximizedEnabled");
+        AssertTrue(settings.AlertTestEnabled, "AlertTestEnabled");
+        AssertEqual(ThermalTestMode.Simulate75, settings.ThermalTestMode, "ThermalTestMode");
+        AssertEqual(CodexRadarTestMode.Open, settings.CodexRadarTestMode, "CodexRadarTestMode");
+        AssertEqual(ServiceHealthTestMode.Unavailable, settings.ServiceHealthTestMode, "ServiceHealthTestMode");
+        AssertEqual(CleanIpBadgeTestMode.ProxyRisk, settings.CleanIpBadgeTestMode, "CleanIpBadgeTestMode");
+        AssertTrue(settings.CodexModelIqTestEnabled, "CodexModelIqTestEnabled");
+        AssertEqual(iqPassed, settings.CodexModelIqTestPassed, "CodexModelIqTestPassed");
+        AssertEqual(iqBaseline, settings.CodexModelIqBaselinePassed, "CodexModelIqBaselinePassed");
+        AssertTrue(settings.CodexModelEfficiencyTestEnabled, "CodexModelEfficiencyTestEnabled");
+        AssertEqual(tokenEfficiency, settings.CodexModelTokenEfficiencyTestPercent, "CodexModelTokenEfficiencyTestPercent");
+        AssertEqual(timeEfficiency, settings.CodexModelTimeEfficiencyTestPercent, "CodexModelTimeEfficiencyTestPercent");
+        AssertEqual(tokenBaselinePassed, settings.CodexModelTokenEfficiencyBaselinePassed, "CodexModelTokenEfficiencyBaselinePassed");
+        AssertEqual(tokenBaselineTokens, settings.CodexModelTokenEfficiencyBaselineTokens, "CodexModelTokenEfficiencyBaselineTokens");
+        AssertEqual(timeBaselinePassed, settings.CodexModelTimeEfficiencyBaselinePassed, "CodexModelTimeEfficiencyBaselinePassed");
+        AssertEqual(timeBaselineSeconds, settings.CodexModelTimeEfficiencyBaselineSeconds, "CodexModelTimeEfficiencyBaselineSeconds");
+        AssertEqual(tokenLowThreshold, settings.CodexModelTokenEfficiencyLowThresholdPercent, "CodexModelTokenEfficiencyLowThresholdPercent");
+        AssertEqual(timeLowThreshold, settings.CodexModelTimeEfficiencyLowThresholdPercent, "CodexModelTimeEfficiencyLowThresholdPercent");
+        AssertEqual(WidgetPerformanceMode.Smooth, settings.PerformanceMode, "PerformanceMode");
+        AssertTrue(settings.ShowNpu, "ShowNpu");
+        AssertTrue(settings.ShowCpu, "ShowCpu");
+        AssertTrue(settings.ShowNetwork, "ShowNetwork");
+        AssertTrue(!settings.ShowMemory, "ShowMemory");
+        AssertTrue(!settings.ShowDisk, "ShowDisk");
+        AssertTrue(!settings.ShowGpu, "ShowGpu");
+        AssertEqual(WidgetSettings.MetricNpu, settings.MetricOrder[0], "MetricOrder[0]");
+        AssertEqual(WidgetSettings.MetricCpu, settings.MetricOrder[1], "MetricOrder[1]");
+        AssertEqual(WidgetSettings.MetricNetwork, settings.MetricOrder[2], "MetricOrder[2]");
+    }
+
+    private void AssertPositionRangeUsesWorkArea(string name, NumericUpDown widthBox, NumericUpDown heightBox, NumericUpDown leftBox, NumericUpDown bottomBox)
+    {
+        Rectangle workArea = GetUsableWorkArea();
+        UpdatePositionRangeForSelfTest(name, (int)widthBox.Value, (int)heightBox.Value);
+        AssertEqual(workArea.Left, (int)leftBox.Minimum, name + ".Left.Minimum");
+        AssertEqual(Math.Max(workArea.Left, workArea.Right - (int)widthBox.Value), (int)leftBox.Maximum, name + ".Left.Maximum");
+        AssertEqual(Math.Min(workArea.Bottom - 1, workArea.Top + (int)heightBox.Value - 1), (int)bottomBox.Minimum, name + ".Bottom.Minimum");
+        AssertEqual(Math.Max(workArea.Top, workArea.Bottom - 1), (int)bottomBox.Maximum, name + ".Bottom.Maximum");
+    }
+
+    private void UpdatePositionRangeForSelfTest(string name, int width, int height)
+    {
+        if (string.Equals(name, "Widget", StringComparison.Ordinal))
+        {
+            UpdatePositionRanges(width, height);
+            return;
+        }
+
+        if (string.Equals(name, "CodexRadar", StringComparison.Ordinal))
+        {
+            UpdateCodexRadarPositionRanges(width, height);
+            return;
+        }
+
+        if (string.Equals(name, "PowerThermal", StringComparison.Ordinal))
+        {
+            UpdatePowerThermalPositionRanges(width, height);
+            return;
+        }
+
+        if (string.Equals(name, "NetworkMonitor", StringComparison.Ordinal))
+        {
+            UpdateNetworkMonitorPositionRanges(width, height);
+            return;
+        }
+
+        UpdateConnectionCheckPositionRanges(width, height);
+    }
+
+    private static void AssertVisibleBinding(Control control, string name)
+    {
+        if (control == null || control.Parent == null)
+        {
+            throw new InvalidOperationException(name + " is not attached to the settings panel.");
+        }
+    }
+
+    private static int PickDifferentValue(NumericUpDown box)
+    {
+        int current = (int)box.Value;
+        int min = (int)box.Minimum;
+        int max = (int)box.Maximum;
+        if (current < max)
+        {
+            return current + 1;
+        }
+
+        if (current > min)
+        {
+            return current - 1;
+        }
+
+        return current;
+    }
+
+    private static void SetNumber(NumericUpDown box, TrackBar slider, int value)
+    {
+        int clamped = Math.Max((int)box.Minimum, Math.Min((int)box.Maximum, value));
+        box.Value = clamped;
+        if (slider != null)
+        {
+            slider.Value = Math.Max(slider.Minimum, Math.Min(slider.Maximum, clamped));
+        }
+    }
+
+    private static void AssertEqual(int expected, int actual, string name)
+    {
+        if (expected != actual)
+        {
+            throw new InvalidOperationException(name + " expected " + expected.ToString(CultureInfo.InvariantCulture) + " but got " + actual.ToString(CultureInfo.InvariantCulture) + ".");
+        }
+    }
+
+    private static void AssertEqual<T>(T expected, T actual, string name)
+    {
+        if (!object.Equals(expected, actual))
+        {
+            throw new InvalidOperationException(name + " expected " + expected + " but got " + actual + ".");
+        }
+    }
+
+    private static void AssertTrue(bool condition, string name)
+    {
+        if (!condition)
+        {
+            throw new InvalidOperationException(name + " did not satisfy the settings binding policy.");
+        }
     }
 
     private void LoadMetricLayout(WidgetSettings settings)
@@ -2687,6 +3258,149 @@ internal sealed class SettingsForm : Form, IMessageFilter
         }
 
         return "实时";
+    }
+
+    private int GetCloudEndpointTestSeed()
+    {
+        return this.cloudEndpointTestButton != null && this.cloudEndpointTestButton.Tag is int
+            ? (int)this.cloudEndpointTestButton.Tag
+            : 0;
+    }
+
+    private void SetCloudEndpointTestSeed(int seed)
+    {
+        this.cloudEndpointTestSeed = Math.Max(0, seed);
+        if (this.cloudEndpointTestButton == null)
+        {
+            return;
+        }
+
+        this.cloudEndpointTestButton.Tag = this.cloudEndpointTestSeed;
+        if (this.cloudEndpointTestSeed > 0)
+        {
+            this.cloudEndpointTestButton.Text = "恢复实时";
+            this.cloudEndpointTestButton.BackColor = DesignTokens.Colors.WarningSoft;
+            this.cloudEndpointTestButton.ForeColor = DesignTokens.Colors.TextOnAccent;
+            this.cloudEndpointTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.Warning;
+            return;
+        }
+
+        this.cloudEndpointTestButton.Text = "随机状态";
+        this.cloudEndpointTestButton.BackColor = DesignTokens.Colors.Control;
+        this.cloudEndpointTestButton.ForeColor = DesignTokens.Colors.Text;
+        this.cloudEndpointTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.Border;
+    }
+
+    private string GetNetworkAdapterId()
+    {
+        object value = GetComboValue(this.networkAdapterCombo, string.Empty);
+        return value == null ? string.Empty : Convert.ToString(value, CultureInfo.InvariantCulture).Trim();
+    }
+
+    private void SetNetworkAdapterId(string adapterId)
+    {
+        adapterId = (adapterId ?? string.Empty).Trim();
+        if (this.networkAdapterCombo == null)
+        {
+            return;
+        }
+
+        if (adapterId.Length > 0 && !ComboContainsValue(this.networkAdapterCombo, adapterId))
+        {
+            this.networkAdapterCombo.Items.Add(new ComboOption("已保存: " + ShortenAdapterId(adapterId), adapterId));
+        }
+
+        SelectComboValue(this.networkAdapterCombo, adapterId);
+    }
+
+    private static bool ComboContainsValue(ComboBox combo, object value)
+    {
+        if (combo == null)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < combo.Items.Count; i++)
+        {
+            ComboOption option = combo.Items[i] as ComboOption;
+            if (option != null && object.Equals(option.Value, value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string ShortenAdapterId(string adapterId)
+    {
+        if (string.IsNullOrEmpty(adapterId) || adapterId.Length <= 18)
+        {
+            return adapterId ?? string.Empty;
+        }
+
+        return adapterId.Substring(0, 8) + "..." + adapterId.Substring(adapterId.Length - 6);
+    }
+
+    private int GetCloudStatusRegionMask()
+    {
+        int mask = 0;
+        if (this.cloudRegionJapanCheck != null && this.cloudRegionJapanCheck.Checked)
+        {
+            mask |= WidgetSettings.CloudStatusRegionJapan;
+        }
+
+        if (this.cloudRegionAsiaPacificCheck != null && this.cloudRegionAsiaPacificCheck.Checked)
+        {
+            mask |= WidgetSettings.CloudStatusRegionAsiaPacific;
+        }
+
+        if (this.cloudRegionNorthAmericaCheck != null && this.cloudRegionNorthAmericaCheck.Checked)
+        {
+            mask |= WidgetSettings.CloudStatusRegionNorthAmerica;
+        }
+
+        if (this.cloudRegionEuropeCheck != null && this.cloudRegionEuropeCheck.Checked)
+        {
+            mask |= WidgetSettings.CloudStatusRegionEurope;
+        }
+
+        mask &= WidgetSettings.CloudStatusRegionMaskAll;
+        return mask == 0 ? WidgetSettings.DefaultCloudStatusRegionMask : mask;
+    }
+
+    private void SetCloudStatusRegionMask(int mask)
+    {
+        mask &= WidgetSettings.CloudStatusRegionMaskAll;
+        if (mask == 0)
+        {
+            mask = WidgetSettings.DefaultCloudStatusRegionMask;
+        }
+
+        if (this.cloudRegionJapanCheck != null)
+        {
+            this.cloudRegionJapanCheck.Checked = (mask & WidgetSettings.CloudStatusRegionJapan) != 0;
+        }
+
+        if (this.cloudRegionAsiaPacificCheck != null)
+        {
+            this.cloudRegionAsiaPacificCheck.Checked = (mask & WidgetSettings.CloudStatusRegionAsiaPacific) != 0;
+        }
+
+        if (this.cloudRegionNorthAmericaCheck != null)
+        {
+            this.cloudRegionNorthAmericaCheck.Checked = (mask & WidgetSettings.CloudStatusRegionNorthAmerica) != 0;
+        }
+
+        if (this.cloudRegionEuropeCheck != null)
+        {
+            this.cloudRegionEuropeCheck.Checked = (mask & WidgetSettings.CloudStatusRegionEurope) != 0;
+        }
+    }
+
+    private static int CreateCloudEndpointTestSeed()
+    {
+        return Environment.TickCount & int.MaxValue;
     }
 
     private CleanIpBadgeTestMode GetCleanIpBadgeTestButtonMode()

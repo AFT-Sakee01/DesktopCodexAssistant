@@ -22,6 +22,7 @@ internal sealed class ConnectionCheckForm : Form
     private Bitmap renderBitmap;
     private Graphics renderGraphics;
     private bool renderBufferValid;
+    private long burnInShiftSlot = long.MinValue;
     // The native surface keeps the HBITMAP alive across alpha-only hover updates.
     private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
     private readonly UiFontCache fontCache = new UiFontCache();
@@ -235,7 +236,16 @@ internal sealed class ConnectionCheckForm : Form
                 sizeChanged = true;
             }
 
-            if (!this.hiddenForFullscreen && this.Visible && (displayChanged || sizeChanged))
+            bool positionChanged = false;
+            if (!this.hiddenForFullscreen &&
+                this.Visible &&
+                BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+            {
+                PositionConnectionCheckWindow();
+                positionChanged = true;
+            }
+
+            if (!this.hiddenForFullscreen && this.Visible && (displayChanged || sizeChanged || positionChanged))
             {
                 RenderLayeredWindow();
             }
@@ -317,7 +327,7 @@ internal sealed class ConnectionCheckForm : Form
     {
         if (!this.sharedInteractionPolling ||
             this.hiddenForFullscreen ||
-            (!this.currentSettings.HoverOpacityEnabled && !NeedsClickThroughPolling()))
+            (!IsHoverOpacityRuntimeEnabled() && !NeedsClickThroughPolling()))
         {
             return false;
         }
@@ -328,7 +338,7 @@ internal sealed class ConnectionCheckForm : Form
     private void UpdateHoverAnimationTimer()
     {
         if (!this.hiddenForFullscreen &&
-            (this.currentSettings.HoverOpacityEnabled || NeedsClickThroughPolling()))
+            (IsHoverOpacityRuntimeEnabled() || NeedsClickThroughPolling()))
         {
             if (this.sharedInteractionPolling)
             {
@@ -382,10 +392,15 @@ internal sealed class ConnectionCheckForm : Form
 
     private bool IsHoverOpacityTargetActive()
     {
-        return this.currentSettings.HoverOpacityEnabled &&
+        return IsHoverOpacityRuntimeEnabled() &&
             !this.hiddenForFullscreen &&
             this.Visible &&
-            this.Bounds.Contains(Cursor.Position);
+            (this.currentSettings.ForceHoverOpacityActive || this.Bounds.Contains(Cursor.Position));
+    }
+
+    private bool IsHoverOpacityRuntimeEnabled()
+    {
+        return this.currentSettings.HoverOpacityEnabled || this.currentSettings.ForceHoverOpacityActive;
     }
 
     private void ApplyClickThroughStyle()
@@ -458,6 +473,13 @@ internal sealed class ConnectionCheckForm : Form
         int baseHeight = Math.Max(WidgetSettings.MinConnectionCheckHeight, this.currentSettings.ConnectionCheckHeight);
         int top = this.currentSettings.ConnectionCheckBottomY - baseHeight + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
+        Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
+            new Point(left, top),
+            this.Size,
+            workArea,
+            BurnInProtection.ConnectionCheckSalt);
+        left = shiftedLocation.X;
+        top = shiftedLocation.Y;
         this.Location = new Point(left, top);
 
         NativeMethods.SetWindowPos(
@@ -1383,7 +1405,7 @@ internal sealed class ConnectionCheckForm : Form
 
     private int ApplyHoverTransparencyTarget(int alpha)
     {
-        if (!this.currentSettings.HoverOpacityEnabled || this.hoverOpacityProgress <= 0.0)
+        if (!IsHoverOpacityRuntimeEnabled() || this.hoverOpacityProgress <= 0.0)
         {
             return alpha;
         }

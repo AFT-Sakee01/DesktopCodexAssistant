@@ -51,6 +51,7 @@ internal sealed class PowerThermalForm : Form
     private Bitmap renderBitmap;
     private Graphics renderGraphics;
     private bool renderBufferValid;
+    private long burnInShiftSlot = long.MinValue;
     // The native surface keeps the HBITMAP alive across alpha-only hover updates.
     private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
     private readonly UiFontCache fontCache = new UiFontCache();
@@ -358,6 +359,7 @@ internal sealed class PowerThermalForm : Form
 
     private void OnEffectivePowerModeChanged(int mode, IntPtr context)
     {
+        WidgetSettings.InvalidateEffectivePerformanceModeCache();
         RequestSamplingFromAnyThread(true, false);
     }
 
@@ -570,8 +572,9 @@ internal sealed class PowerThermalForm : Form
     private SamplingPolicy GetSamplingPolicy()
     {
         // "Smooth" is the legacy persisted enum name for the user-facing Performance mode.
+        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
         SamplingPolicy policy = new SamplingPolicy();
-        if (this.currentSettings.PerformanceMode == WidgetPerformanceMode.Smooth)
+        if (mode == WidgetPerformanceMode.Smooth)
         {
             policy.PowerIntervalMs = 1000;
             policy.ThermalIntervalMs = 2000;
@@ -581,7 +584,7 @@ internal sealed class PowerThermalForm : Form
             return policy;
         }
 
-        if (this.currentSettings.PerformanceMode == WidgetPerformanceMode.BatterySaver)
+        if (mode == WidgetPerformanceMode.BatterySaver)
         {
             policy.PowerIntervalMs = 5000;
             policy.ThermalIntervalMs = 10000;
@@ -767,12 +770,21 @@ internal sealed class PowerThermalForm : Form
             PositionPowerThermalWindow();
         }
 
+        bool positionChanged = false;
+        if (!this.hiddenForFullscreen &&
+            this.Visible &&
+            BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+        {
+            PositionPowerThermalWindow();
+            positionChanged = true;
+        }
+
         lock (this.samplingSync)
         {
             this.samplingWorkerRunning = false;
         }
 
-        if (contentChanged || animatedWarning || sizeChanged)
+        if (contentChanged || animatedWarning || sizeChanged || positionChanged)
         {
             RenderLayeredWindow();
         }
@@ -847,7 +859,7 @@ internal sealed class PowerThermalForm : Form
     {
         if (!this.sharedInteractionPolling ||
             this.hiddenForFullscreen ||
-            (!this.currentSettings.HoverOpacityEnabled && !NeedsClickThroughPolling()))
+            (!IsHoverOpacityRuntimeEnabled() && !NeedsClickThroughPolling()))
         {
             return false;
         }
@@ -858,7 +870,7 @@ internal sealed class PowerThermalForm : Form
     private void UpdateHoverAnimationTimer()
     {
         if (!this.hiddenForFullscreen &&
-            (this.currentSettings.HoverOpacityEnabled || NeedsClickThroughPolling()))
+            (IsHoverOpacityRuntimeEnabled() || NeedsClickThroughPolling()))
         {
             if (this.sharedInteractionPolling)
             {
@@ -912,10 +924,15 @@ internal sealed class PowerThermalForm : Form
 
     private bool IsHoverOpacityTargetActive()
     {
-        return this.currentSettings.HoverOpacityEnabled &&
+        return IsHoverOpacityRuntimeEnabled() &&
             !this.hiddenForFullscreen &&
             this.Visible &&
-            this.Bounds.Contains(Cursor.Position);
+            (this.currentSettings.ForceHoverOpacityActive || this.Bounds.Contains(Cursor.Position));
+    }
+
+    private bool IsHoverOpacityRuntimeEnabled()
+    {
+        return this.currentSettings.HoverOpacityEnabled || this.currentSettings.ForceHoverOpacityActive;
     }
 
     private void PositionPowerThermalWindow()
@@ -952,6 +969,13 @@ internal sealed class PowerThermalForm : Form
         int baseHeight = Math.Max(WidgetSettings.MinPowerThermalHeight, this.currentSettings.PowerThermalHeight);
         int top = this.currentSettings.PowerThermalBottomY - baseHeight + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
+        Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
+            new Point(left, top),
+            this.Size,
+            workArea,
+            BurnInProtection.PowerThermalSalt);
+        left = shiftedLocation.X;
+        top = shiftedLocation.Y;
         this.Location = new Point(left, top);
 
         NativeMethods.SetWindowPos(
@@ -2157,6 +2181,26 @@ internal sealed class PowerThermalForm : Form
         }
     }
 
+    internal static string ReadCurrentSystemPowerModeText()
+    {
+        bool pluggedInKnown = false;
+        bool pluggedIn = false;
+        try
+        {
+            PowerLineStatus lineStatus = SystemInformation.PowerStatus.PowerLineStatus;
+            if (lineStatus != PowerLineStatus.Unknown)
+            {
+                pluggedInKnown = true;
+                pluggedIn = lineStatus == PowerLineStatus.Online;
+            }
+        }
+        catch
+        {
+        }
+
+        return ReadSystemPowerModeText(pluggedInKnown, pluggedIn);
+    }
+
     private static string ReadSystemPowerModeText(bool pluggedInKnown, bool pluggedIn)
     {
         string overlayMode = ReadPowerOverlayModeText(pluggedInKnown, pluggedIn);
@@ -2545,7 +2589,7 @@ internal sealed class PowerThermalForm : Form
 
     private int ApplyHoverTransparencyTarget(int alpha)
     {
-        if (!this.currentSettings.HoverOpacityEnabled || this.hoverOpacityProgress <= 0.0)
+        if (!IsHoverOpacityRuntimeEnabled() || this.hoverOpacityProgress <= 0.0)
         {
             return alpha;
         }

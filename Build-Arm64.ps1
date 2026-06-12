@@ -86,6 +86,7 @@ $compilerArgs = @(
     "/reference:System.dll",
     "/reference:System.Drawing.dll",
     "/reference:System.Management.dll",
+    "/reference:System.Net.Http.dll",
     "/reference:System.Web.Extensions.dll",
     "/reference:System.Windows.Forms.dll",
     "/reference:$systemRuntime",

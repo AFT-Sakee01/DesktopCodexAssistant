@@ -96,6 +96,93 @@ internal enum GfwProbeStatus
     Inconclusive
 }
 
+internal enum CloudEndpointStatus
+{
+    Unknown,
+    Checking,
+    Normal,
+    Slow,
+    Down,
+    Abnormal
+}
+
+internal sealed class CloudEndpointSnapshot
+{
+    public string Key { get; set; }
+    public string ShortLabel { get; set; }
+    public string DisplayName { get; set; }
+    public bool Domestic { get; set; }
+    public CloudEndpointStatus Status { get; set; }
+    public int LatencyMs { get; set; }
+    public string Reason { get; set; }
+    public string AlertReason { get; set; }
+    public string AlertName { get; set; }
+    public DateTime CheckedAtLocal { get; set; }
+    public bool CheckedAtKnown { get; set; }
+
+    public CloudEndpointSnapshot()
+    {
+        this.Key = string.Empty;
+        this.ShortLabel = string.Empty;
+        this.DisplayName = string.Empty;
+        this.Reason = string.Empty;
+        this.AlertReason = string.Empty;
+        this.AlertName = string.Empty;
+        this.CheckedAtLocal = DateTime.MinValue;
+    }
+
+    public CloudEndpointSnapshot Clone()
+    {
+        return new CloudEndpointSnapshot
+        {
+            Key = this.Key,
+            ShortLabel = this.ShortLabel,
+            DisplayName = this.DisplayName,
+            Domestic = this.Domestic,
+            Status = this.Status,
+            LatencyMs = this.LatencyMs,
+            Reason = this.Reason,
+            AlertReason = this.AlertReason,
+            AlertName = this.AlertName,
+            CheckedAtLocal = this.CheckedAtLocal,
+            CheckedAtKnown = this.CheckedAtKnown
+        };
+    }
+
+    public static CloudEndpointSnapshot[] CreateDefaults(CloudEndpointStatus status)
+    {
+        return new CloudEndpointSnapshot[]
+        {
+            Create("cloudflare", "Cf", "Cloudflare", false, status),
+            Create("aws", "Aw", "AWS", false, status),
+            Create("google", "Go", "Google Cloud", false, status),
+            Create("github", "Gi", "GitHub", false, status),
+            Create("aliyun", "Al", "阿里云", true, status),
+            Create("tencent", "Tx", "腾讯云", true, status)
+        };
+    }
+
+    private static CloudEndpointSnapshot Create(
+        string key,
+        string shortLabel,
+        string displayName,
+        bool domestic,
+        CloudEndpointStatus status)
+    {
+        return new CloudEndpointSnapshot
+        {
+            Key = key,
+            ShortLabel = shortLabel,
+            DisplayName = displayName,
+            Domestic = domestic,
+            Status = status,
+            Reason = string.Empty,
+            AlertReason = string.Empty,
+            AlertName = string.Empty
+        };
+    }
+}
+
 internal sealed class GfwProbeSnapshot
 {
     public bool Enabled { get; set; }
@@ -107,6 +194,7 @@ internal sealed class GfwProbeSnapshot
     public bool CheckedAtKnown { get; set; }
     public int DomainsTested { get; set; }
     public int AnomalyCount { get; set; }
+    public CloudEndpointSnapshot[] CloudEndpoints { get; set; }
 
     public GfwProbeSnapshot()
     {
@@ -114,6 +202,7 @@ internal sealed class GfwProbeSnapshot
         this.Detail = "关闭";
         this.Reason = string.Empty;
         this.CheckedAtLocal = DateTime.MinValue;
+        this.CloudEndpoints = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Unknown);
     }
 
     public GfwProbeSnapshot Clone()
@@ -128,8 +217,25 @@ internal sealed class GfwProbeSnapshot
             CheckedAtLocal = this.CheckedAtLocal,
             CheckedAtKnown = this.CheckedAtKnown,
             DomainsTested = this.DomainsTested,
-            AnomalyCount = this.AnomalyCount
+            AnomalyCount = this.AnomalyCount,
+            CloudEndpoints = CloneCloudEndpoints(this.CloudEndpoints)
         };
+    }
+
+    private static CloudEndpointSnapshot[] CloneCloudEndpoints(CloudEndpointSnapshot[] endpoints)
+    {
+        if (endpoints == null || endpoints.Length == 0)
+        {
+            return CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Unknown);
+        }
+
+        CloudEndpointSnapshot[] clone = new CloudEndpointSnapshot[endpoints.Length];
+        for (int i = 0; i < endpoints.Length; i++)
+        {
+            clone[i] = endpoints[i] == null ? new CloudEndpointSnapshot() : endpoints[i].Clone();
+        }
+
+        return clone;
     }
 }
 

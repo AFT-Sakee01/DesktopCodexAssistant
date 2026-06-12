@@ -95,6 +95,7 @@ internal sealed class CodexRadarForm : Form
     private Bitmap renderBitmap;
     private Graphics renderGraphics;
     private bool renderBufferValid;
+    private long burnInShiftSlot = long.MinValue;
     // The native surface keeps the HBITMAP alive across alpha-only hover updates.
     private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
     private readonly UiFontCache fontCache = new UiFontCache();
@@ -407,10 +408,19 @@ internal sealed class CodexRadarForm : Form
                 sizeChanged = true;
             }
 
+            bool positionChanged = false;
+            if (!this.hiddenForFullscreen &&
+                this.Visible &&
+                BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+            {
+                PositionCodexRadar();
+                positionChanged = true;
+            }
+
             DateTime renderSecond = TruncateToSecond(DateTime.Now);
             if (!this.hiddenForFullscreen &&
                 this.Visible &&
-                (sizeChanged || this.lastRenderedClockSecondLocal != renderSecond))
+                (sizeChanged || positionChanged || this.lastRenderedClockSecondLocal != renderSecond))
             {
                 RenderLayeredWindow();
             }
@@ -526,6 +536,7 @@ internal sealed class CodexRadarForm : Form
     {
         this.lastQuotaRefreshUtc = DateTime.MinValue;
         this.nextQuotaInactiveRefreshUtc = DateTime.MinValue;
+        RequestServiceNetworkRefresh();
 
         lock (this.codexResetStatusLock)
         {
@@ -750,7 +761,7 @@ internal sealed class CodexRadarForm : Form
     {
         if (!this.sharedInteractionPolling ||
             this.hiddenForFullscreen ||
-            (!this.currentSettings.HoverOpacityEnabled && !NeedsClickThroughPolling()))
+            (!IsHoverOpacityRuntimeEnabled() && !NeedsClickThroughPolling()))
         {
             return false;
         }
@@ -761,7 +772,7 @@ internal sealed class CodexRadarForm : Form
     private void UpdateHoverAnimationTimer()
     {
         if (!this.hiddenForFullscreen &&
-            (this.currentSettings.HoverOpacityEnabled || NeedsClickThroughPolling()))
+            (IsHoverOpacityRuntimeEnabled() || NeedsClickThroughPolling()))
         {
             if (this.sharedInteractionPolling)
             {
@@ -815,10 +826,15 @@ internal sealed class CodexRadarForm : Form
 
     private bool IsHoverOpacityTargetActive()
     {
-        return this.currentSettings.HoverOpacityEnabled &&
+        return IsHoverOpacityRuntimeEnabled() &&
             !this.hiddenForFullscreen &&
             this.Visible &&
-            this.Bounds.Contains(Cursor.Position);
+            (this.currentSettings.ForceHoverOpacityActive || this.Bounds.Contains(Cursor.Position));
+    }
+
+    private bool IsHoverOpacityRuntimeEnabled()
+    {
+        return this.currentSettings.HoverOpacityEnabled || this.currentSettings.ForceHoverOpacityActive;
     }
 
     public void SetHiddenForFullscreen(bool hidden)
@@ -869,6 +885,13 @@ internal sealed class CodexRadarForm : Form
         int baseHeight = Math.Max(WidgetSettings.MinCodexRadarHeight, this.currentSettings.CodexRadarHeight);
         int top = this.currentSettings.CodexRadarBottomY - baseHeight + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - baseHeight));
+        Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
+            new Point(left, top),
+            this.Size,
+            workArea,
+            BurnInProtection.CodexRadarSalt);
+        left = shiftedLocation.X;
+        top = shiftedLocation.Y;
         this.Location = new Point(left, top);
 
         NativeMethods.SetWindowPos(
@@ -1508,9 +1531,8 @@ internal sealed class CodexRadarForm : Form
         RectangleF modelIqRowRect,
         CodexRadarSnapshot snapshot)
     {
-        if (snapshot == null ||
-            !snapshot.ModelIqRefreshedAtKnown ||
-            (!IsCodexModelEfficiencyLow(snapshot) && !IsCodexModelIqDown(snapshot)))
+        // Freshness is an independent model_iq status, not only an error-state annotation.
+        if (snapshot == null || !snapshot.ModelIqDataDateKnown)
         {
             return;
         }
@@ -1565,31 +1587,6 @@ internal sealed class CodexRadarForm : Form
             timeHeight);
 
         DrawCodexModelFreshnessStatus(g, timeRect, snapshot);
-    }
-
-    private bool IsCodexModelEfficiencyLow(CodexRadarSnapshot snapshot)
-    {
-        if (snapshot == null || !snapshot.ModelIqEfficiencyKnown)
-        {
-            return false;
-        }
-
-        string text;
-        Color color;
-        GetCodexModelEfficiencyLabelAndColor(
-            snapshot.ModelIqTokenEfficiencyPercent,
-            snapshot.ModelIqTimeEfficiencyPercent,
-            out text,
-            out color);
-        return string.Equals(text, "低效", StringComparison.Ordinal);
-    }
-
-    private bool IsCodexModelIqDown(CodexRadarSnapshot snapshot)
-    {
-        int passed;
-        int validTasks;
-        return TryGetCodexModelIqPassed(snapshot, out passed, out validTasks) &&
-            passed < GetCodexModelIqBaselinePassed();
     }
 
     private void DrawCodexModelFreshnessStatus(Graphics g, RectangleF timeRect, CodexRadarSnapshot snapshot)
@@ -1813,7 +1810,10 @@ internal sealed class CodexRadarForm : Form
         Color textColor = state == ServiceHealthState.Offline
             ? DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230)
             : DesignTokens.White(245);
-        bool smallCross = state == ServiceHealthState.Unavailable || state == ServiceHealthState.Unreachable;
+        bool smallCross =
+            state == ServiceHealthState.Offline ||
+            state == ServiceHealthState.Unavailable ||
+            state == ServiceHealthState.Unreachable;
         float crossReserve = smallCross ? Math.Max(S(10), rect.Height * 0.52f) + S(2) : 0.0f;
         RectangleF textRect = new RectangleF(
             rect.Left + S(1),
@@ -1837,7 +1837,9 @@ internal sealed class CodexRadarForm : Form
                 crossSize);
             Color crossColor = state == ServiceHealthState.Unreachable
                 ? DesignTokens.Colors.DangerStrong
-                : DesignTokens.Colors.Warning;
+                : (state == ServiceHealthState.Unavailable
+                    ? DesignTokens.Colors.Warning
+                    : DesignTokens.Colors.GlyphMuted);
             DrawServiceHealthSmallCross(g, crossRect, crossColor);
         }
     }
@@ -3511,12 +3513,13 @@ internal sealed class CodexRadarForm : Form
 
     private double GetQuotaActiveRefreshSeconds()
     {
-        if (this.currentSettings.PerformanceMode == WidgetPerformanceMode.Smooth)
+        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
+        if (mode == WidgetPerformanceMode.Smooth)
         {
             return 10.0;
         }
 
-        if (this.currentSettings.PerformanceMode == WidgetPerformanceMode.BatterySaver)
+        if (mode == WidgetPerformanceMode.BatterySaver)
         {
             return 30.0;
         }
@@ -3526,12 +3529,13 @@ internal sealed class CodexRadarForm : Form
 
     private double GetQuotaProcessCheckSeconds()
     {
-        if (this.currentSettings.PerformanceMode == WidgetPerformanceMode.Smooth)
+        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
+        if (mode == WidgetPerformanceMode.Smooth)
         {
             return 3.0;
         }
 
-        if (this.currentSettings.PerformanceMode == WidgetPerformanceMode.BatterySaver)
+        if (mode == WidgetPerformanceMode.BatterySaver)
         {
             return 10.0;
         }
@@ -3541,12 +3545,13 @@ internal sealed class CodexRadarForm : Form
 
     private TimeSpan GetQuotaInactiveRefreshInterval()
     {
-        if (this.currentSettings.PerformanceMode == WidgetPerformanceMode.Smooth)
+        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
+        if (mode == WidgetPerformanceMode.Smooth)
         {
             return TimeSpan.FromMinutes(10.0);
         }
 
-        if (this.currentSettings.PerformanceMode == WidgetPerformanceMode.BatterySaver)
+        if (mode == WidgetPerformanceMode.BatterySaver)
         {
             return TimeSpan.FromMinutes(60.0);
         }
@@ -5524,7 +5529,7 @@ internal sealed class CodexRadarForm : Form
 
     private int ApplyHoverTransparencyTarget(int alpha)
     {
-        if (!this.currentSettings.HoverOpacityEnabled || this.hoverOpacityProgress <= 0.0)
+        if (!IsHoverOpacityRuntimeEnabled() || this.hoverOpacityProgress <= 0.0)
         {
             return alpha;
         }
