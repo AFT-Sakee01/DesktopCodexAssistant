@@ -2,7 +2,7 @@
 
 This file is the primary Codex-readable maintenance log for Desktop Codex Assistant. Read it before making changes in this program directory.
 
-Current version: 1.0.2.42
+Current version: 1.0.2.43
 
 Version rule: start at 1.0.0.0. After each completed fix, increment the last segment by 1. The last segment can go up to 99. After 1.0.0.99, carry to 1.0.1.00. Keep `Core/ProductIdentity.cs` assembly, file, and informational versions synchronized with the maintenance log version.
 
@@ -307,3 +307,10 @@ From the second line onward, write the fix details or discovered issue. Leave on
 修正内容: 程序版本递增到 1.0.2.42，并同步程序集、文件和信息版本。
 验证结果: ARM64 与 x64 临时产物和 Release 正式产物均构建通过；Release ARM64 SHA1 为 FD8035A082BDD0DD028DD582168701605ECAE55F，PE Machine=ARM64；Release x64 SHA1 为 DAF405AC5D35C9BD510F35062AACF0A129B9865F，PE Machine=x64。
 验证结果: Release ARM64 与 x64 的 `--test`、`--test-settings-bindings`、`--test-layout`、`--test-display-recovery`、`--test-logger` 均返回退出码 0；本次未使用截图。
+
+时间: 2026-06-17 00:09:30 +09:00 | 版本: 1.0.2.43 | 窗口: 连接检测 | 模块: 公开版图标
+修正内容: 重绘连接检测窗口当前显示和同一位置可能出现的全部状态图标，包括风险、原生、未通告、广播、住宅、移动、商业、教育、政府、DNS/CDN、IDC、住宅代理、VPN、代理、Tor、中继和未知状态。
+修正内容: 原图标不再沿用网页/FontAwesome 的盾牌、定位、路由器、房屋、建筑、面具、过滤器和链条等造型，改为本项目内 GDI+ 原创几何图标；检测数据、状态映射和测试选项保持不变。
+修正内容: 程序版本递增到 1.0.2.43，并同步程序集、文件和信息版本。
+验证结果: ARM64 与 x64 临时产物和 Release 正式产物均构建通过；Release ARM64 SHA1 为 25C1A5C9895A2679FCF6CFE01E788D7BB271BF79，PE Machine=ARM64；Release x64 SHA1 为 6AC6E7246DFF0D341260FB3984BC76D2D9715084，PE Machine=x64。
+验证结果: Release ARM64 与 x64 的 `--test`、`--test-settings-bindings`、`--test-layout`、`--test-display-recovery`、`--test-logger` 均返回退出码 0。

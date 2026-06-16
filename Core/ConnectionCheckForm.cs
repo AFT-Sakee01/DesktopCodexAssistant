@@ -1106,216 +1106,257 @@ internal sealed class ConnectionCheckForm : Form
 
     private void DrawShieldIcon(Graphics g, RectangleF rect, Color color)
     {
-        using (GraphicsPath path = new GraphicsPath())
-        using (SolidBrush brush = new SolidBrush(color))
+        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 54)))
+        using (GraphicsPath outer = new GraphicsPath())
         {
-            path.AddLines(new PointF[]
+            outer.AddPolygon(new PointF[]
             {
-                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.04f),
-                new PointF(rect.Right - rect.Width * 0.12f, rect.Top + rect.Height * 0.18f),
-                new PointF(rect.Right - rect.Width * 0.18f, rect.Top + rect.Height * 0.62f),
-                new PointF(rect.Left + rect.Width * 0.50f, rect.Bottom - rect.Height * 0.05f),
-                new PointF(rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.62f),
-                new PointF(rect.Left + rect.Width * 0.12f, rect.Top + rect.Height * 0.18f)
+                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.08f),
+                new PointF(rect.Right - rect.Width * 0.16f, rect.Top + rect.Height * 0.24f),
+                new PointF(rect.Right - rect.Width * 0.26f, rect.Bottom - rect.Height * 0.14f),
+                new PointF(rect.Left + rect.Width * 0.50f, rect.Bottom - rect.Height * 0.02f),
+                new PointF(rect.Left + rect.Width * 0.26f, rect.Bottom - rect.Height * 0.14f),
+                new PointF(rect.Left + rect.Width * 0.16f, rect.Top + rect.Height * 0.24f)
             });
-            path.CloseFigure();
-            g.FillPath(brush, path);
+            g.FillPath(brush, outer);
+            g.DrawPath(pen, outer);
+            g.DrawLine(pen, rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.16f, rect.Left + rect.Width * 0.50f, rect.Bottom - rect.Height * 0.18f);
+            g.DrawLine(pen, rect.Left + rect.Width * 0.33f, rect.Top + rect.Height * 0.48f, rect.Right - rect.Width * 0.33f, rect.Top + rect.Height * 0.48f);
         }
     }
 
     private void DrawLocationCheckIcon(Graphics g, RectangleF rect, Color color)
     {
-        using (GraphicsPath pin = new GraphicsPath())
+        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
         using (SolidBrush brush = new SolidBrush(color))
-        using (Pen check = new Pen(DesignTokens.Colors.AppBackground, Math.Max(1.2f, S(2))))
         {
-            pin.AddEllipse(rect.Left + rect.Width * 0.20f, rect.Top + rect.Height * 0.05f, rect.Width * 0.60f, rect.Height * 0.58f);
-            pin.AddPolygon(new PointF[]
-            {
-                new PointF(rect.Left + rect.Width * 0.50f, rect.Bottom - rect.Height * 0.02f),
-                new PointF(rect.Left + rect.Width * 0.30f, rect.Top + rect.Height * 0.50f),
-                new PointF(rect.Left + rect.Width * 0.70f, rect.Top + rect.Height * 0.50f)
-            });
-            g.FillPath(brush, pin);
-            g.DrawLines(check, new PointF[]
-            {
-                new PointF(rect.Left + rect.Width * 0.35f, rect.Top + rect.Height * 0.34f),
-                new PointF(rect.Left + rect.Width * 0.47f, rect.Top + rect.Height * 0.46f),
-                new PointF(rect.Left + rect.Width * 0.67f, rect.Top + rect.Height * 0.26f)
-            });
+            PointF center = new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.50f);
+            float node = Math.Max(S(3), rect.Width * 0.13f);
+            PointF left = new PointF(rect.Left + rect.Width * 0.22f, rect.Top + rect.Height * 0.68f);
+            PointF right = new PointF(rect.Right - rect.Width * 0.20f, rect.Top + rect.Height * 0.26f);
+            PointF top = new PointF(rect.Left + rect.Width * 0.42f, rect.Top + rect.Height * 0.16f);
+            g.DrawLine(pen, left, center);
+            g.DrawLine(pen, center, right);
+            g.DrawLine(pen, top, center);
+            g.FillEllipse(brush, center.X - node, center.Y - node, node * 2.0f, node * 2.0f);
+            g.FillEllipse(brush, left.X - node * 0.75f, left.Y - node * 0.75f, node * 1.5f, node * 1.5f);
+            g.FillEllipse(brush, right.X - node * 0.75f, right.Y - node * 0.75f, node * 1.5f, node * 1.5f);
+            g.FillEllipse(brush, top.X - node * 0.65f, top.Y - node * 0.65f, node * 1.3f, node * 1.3f);
         }
     }
 
     private void DrawRouterIcon(Graphics g, RectangleF rect, Color color)
     {
         using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
-        using (SolidBrush brush = new SolidBrush(color))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 72)))
+        using (SolidBrush nodeBrush = new SolidBrush(color))
         {
-            RectangleF body = new RectangleF(rect.Left + rect.Width * 0.12f, rect.Top + rect.Height * 0.42f, rect.Width * 0.76f, rect.Height * 0.36f);
-            g.DrawRectangle(pen, Rectangle.Round(body));
-            g.FillEllipse(brush, rect.Left + rect.Width * 0.24f, rect.Top + rect.Height * 0.56f, rect.Width * 0.08f, rect.Height * 0.08f);
-            g.FillEllipse(brush, rect.Left + rect.Width * 0.42f, rect.Top + rect.Height * 0.56f, rect.Width * 0.08f, rect.Height * 0.08f);
-            g.DrawLine(pen, rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.42f, rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.14f);
-            g.DrawArc(pen, rect.Left + rect.Width * 0.32f, rect.Top + rect.Height * 0.06f, rect.Width * 0.36f, rect.Height * 0.28f, 210, 120);
+            RectangleF core = new RectangleF(rect.Left + rect.Width * 0.32f, rect.Top + rect.Height * 0.34f, rect.Width * 0.36f, rect.Height * 0.32f);
+            using (GraphicsPath corePath = RoundedRectangle(core, core.Height * 0.22f))
+            {
+                g.FillPath(brush, corePath);
+                g.DrawPath(pen, corePath);
+            }
+
+            PointF origin = new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.50f);
+            PointF[] ends = new PointF[]
+            {
+                new PointF(rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.22f),
+                new PointF(rect.Right - rect.Width * 0.16f, rect.Top + rect.Height * 0.22f),
+                new PointF(rect.Left + rect.Width * 0.18f, rect.Bottom - rect.Height * 0.18f),
+                new PointF(rect.Right - rect.Width * 0.16f, rect.Bottom - rect.Height * 0.18f)
+            };
+            for (int i = 0; i < ends.Length; i++)
+            {
+                g.DrawLine(pen, origin, ends[i]);
+                g.FillEllipse(nodeBrush, ends[i].X - rect.Width * 0.045f, ends[i].Y - rect.Width * 0.045f, rect.Width * 0.09f, rect.Width * 0.09f);
+            }
         }
     }
 
     private void DrawCircleMinusIcon(Graphics g, RectangleF rect, Color color)
     {
         using (Pen pen = new Pen(color, Math.Max(1.4f, S(2))))
+        using (Pen gap = new Pen(DesignTokens.Colors.AppBackground, Math.Max(1.5f, S(3))))
         {
-            g.DrawEllipse(pen, rect);
-            g.DrawLine(pen, rect.Left + rect.Width * 0.28f, rect.Top + rect.Height * 0.50f, rect.Right - rect.Width * 0.28f, rect.Top + rect.Height * 0.50f);
+            RectangleF ring = new RectangleF(rect.Left + rect.Width * 0.14f, rect.Top + rect.Height * 0.14f, rect.Width * 0.72f, rect.Height * 0.72f);
+            g.DrawArc(pen, ring, 25, 275);
+            g.DrawArc(gap, ring, 306, 34);
+            g.DrawLine(pen, rect.Left + rect.Width * 0.28f, rect.Top + rect.Height * 0.62f, rect.Right - rect.Width * 0.28f, rect.Top + rect.Height * 0.38f);
         }
     }
 
     private void DrawHouseIcon(Graphics g, RectangleF rect, Color color)
     {
-        using (GraphicsPath path = new GraphicsPath())
-        using (SolidBrush brush = new SolidBrush(color))
+        using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 62)))
+        using (SolidBrush nodeBrush = new SolidBrush(color))
         {
-            path.AddPolygon(new PointF[]
+            RectangleF arch = new RectangleF(rect.Left + rect.Width * 0.26f, rect.Top + rect.Height * 0.20f, rect.Width * 0.48f, rect.Height * 0.64f);
+            using (GraphicsPath path = RoundedRectangle(arch, arch.Width * 0.22f))
             {
-                new PointF(rect.Left + rect.Width * 0.10f, rect.Top + rect.Height * 0.48f),
-                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.12f),
-                new PointF(rect.Right - rect.Width * 0.10f, rect.Top + rect.Height * 0.48f),
-                new PointF(rect.Right - rect.Width * 0.18f, rect.Top + rect.Height * 0.48f),
-                new PointF(rect.Right - rect.Width * 0.18f, rect.Bottom - rect.Height * 0.12f),
-                new PointF(rect.Left + rect.Width * 0.18f, rect.Bottom - rect.Height * 0.12f),
-                new PointF(rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.48f)
-            });
-            g.FillPath(brush, path);
+                g.FillPath(brush, path);
+                g.DrawPath(pen, path);
+            }
+
+            g.DrawLine(pen, rect.Left + rect.Width * 0.18f, rect.Bottom - rect.Height * 0.16f, rect.Right - rect.Width * 0.18f, rect.Bottom - rect.Height * 0.16f);
+            g.FillEllipse(nodeBrush, rect.Left + rect.Width * 0.44f, rect.Top + rect.Height * 0.54f, rect.Width * 0.06f, rect.Width * 0.06f);
         }
     }
 
     private void DrawMobileIcon(Graphics g, RectangleF rect, Color color)
     {
         using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
-        using (SolidBrush brush = new SolidBrush(color))
-        using (GraphicsPath phone = RoundedRectangle(new RectangleF(rect.Left + rect.Width * 0.28f, rect.Top + rect.Height * 0.06f, rect.Width * 0.44f, rect.Height * 0.88f), rect.Width * 0.10f))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 66)))
+        using (SolidBrush nodeBrush = new SolidBrush(color))
         {
-            g.DrawPath(pen, phone);
-            g.FillEllipse(brush, rect.Left + rect.Width * 0.46f, rect.Bottom - rect.Height * 0.18f, rect.Width * 0.08f, rect.Width * 0.08f);
+            RectangleF body = new RectangleF(rect.Left + rect.Width * 0.32f, rect.Top + rect.Height * 0.10f, rect.Width * 0.36f, rect.Height * 0.76f);
+            using (GraphicsPath phone = RoundedRectangle(body, body.Width * 0.22f))
+            {
+                g.FillPath(brush, phone);
+                g.DrawPath(pen, phone);
+            }
+
+            g.DrawLine(pen, body.Left + body.Width * 0.26f, body.Top + body.Height * 0.16f, body.Right - body.Width * 0.26f, body.Top + body.Height * 0.16f);
+            g.FillEllipse(nodeBrush, body.Left + body.Width * 0.43f, body.Bottom - body.Height * 0.14f, body.Width * 0.14f, body.Width * 0.14f);
         }
     }
 
     private void DrawBriefcaseIcon(Graphics g, RectangleF rect, Color color)
     {
         using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 64)))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 62)))
         {
-            RectangleF body = new RectangleF(rect.Left + rect.Width * 0.10f, rect.Top + rect.Height * 0.34f, rect.Width * 0.80f, rect.Height * 0.52f);
-            g.FillRectangle(brush, body);
-            g.DrawRectangle(pen, Rectangle.Round(body));
-            g.DrawArc(pen, rect.Left + rect.Width * 0.34f, rect.Top + rect.Height * 0.16f, rect.Width * 0.32f, rect.Height * 0.30f, 180, 180);
+            RectangleF tower = new RectangleF(rect.Left + rect.Width * 0.24f, rect.Top + rect.Height * 0.16f, rect.Width * 0.52f, rect.Height * 0.68f);
+            g.FillRectangle(brush, tower);
+            g.DrawRectangle(pen, Rectangle.Round(tower));
+            for (int row = 0; row < 3; row++)
+            {
+                float y = tower.Top + tower.Height * (0.20f + row * 0.23f);
+                g.DrawLine(pen, tower.Left + tower.Width * 0.20f, y, tower.Right - tower.Width * 0.20f, y);
+            }
+
+            g.DrawLine(pen, tower.Left + tower.Width * 0.50f, tower.Top, tower.Left + tower.Width * 0.50f, tower.Bottom);
         }
     }
 
     private void DrawGraduationIcon(Graphics g, RectangleF rect, Color color)
     {
-        using (SolidBrush brush = new SolidBrush(color))
         using (Pen pen = new Pen(color, Math.Max(1.2f, S(1))))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 62)))
         {
-            g.FillPolygon(brush, new PointF[]
+            RectangleF book = new RectangleF(rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.24f, rect.Width * 0.64f, rect.Height * 0.52f);
+            using (GraphicsPath leftPage = RoundedRectangle(new RectangleF(book.Left, book.Top, book.Width * 0.48f, book.Height), book.Height * 0.12f))
+            using (GraphicsPath rightPage = RoundedRectangle(new RectangleF(book.Left + book.Width * 0.52f, book.Top, book.Width * 0.48f, book.Height), book.Height * 0.12f))
             {
-                new PointF(rect.Left + rect.Width * 0.08f, rect.Top + rect.Height * 0.42f),
-                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.18f),
-                new PointF(rect.Right - rect.Width * 0.08f, rect.Top + rect.Height * 0.42f),
-                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.64f)
-            });
-            g.DrawLine(pen, rect.Left + rect.Width * 0.72f, rect.Top + rect.Height * 0.48f, rect.Left + rect.Width * 0.72f, rect.Bottom - rect.Height * 0.12f);
-            g.FillRectangle(brush, rect.Left + rect.Width * 0.30f, rect.Top + rect.Height * 0.60f, rect.Width * 0.40f, rect.Height * 0.16f);
+                g.FillPath(brush, leftPage);
+                g.FillPath(brush, rightPage);
+                g.DrawPath(pen, leftPage);
+                g.DrawPath(pen, rightPage);
+            }
+
+            g.DrawLine(pen, rect.Left + rect.Width * 0.50f, book.Top + book.Height * 0.08f, rect.Left + rect.Width * 0.50f, book.Bottom - book.Height * 0.06f);
+            g.DrawLine(pen, book.Left + book.Width * 0.18f, book.Top + book.Height * 0.30f, book.Left + book.Width * 0.40f, book.Top + book.Height * 0.22f);
+            g.DrawLine(pen, book.Right - book.Width * 0.18f, book.Top + book.Height * 0.30f, book.Right - book.Width * 0.40f, book.Top + book.Height * 0.22f);
         }
     }
 
     private void DrawLandmarkIcon(Graphics g, RectangleF rect, Color color)
     {
-        using (SolidBrush brush = new SolidBrush(color))
+        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 64)))
+        using (SolidBrush nodeBrush = new SolidBrush(color))
         {
-            g.FillPolygon(brush, new PointF[]
-            {
-                new PointF(rect.Left + rect.Width * 0.10f, rect.Top + rect.Height * 0.34f),
-                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.10f),
-                new PointF(rect.Right - rect.Width * 0.10f, rect.Top + rect.Height * 0.34f)
-            });
+            RectangleF seal = new RectangleF(rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.14f, rect.Width * 0.64f, rect.Height * 0.64f);
+            g.FillEllipse(brush, seal);
+            g.DrawEllipse(pen, seal);
             for (int i = 0; i < 3; i++)
             {
-                float x = rect.Left + rect.Width * (0.22f + i * 0.22f);
-                g.FillRectangle(brush, x, rect.Top + rect.Height * 0.40f, rect.Width * 0.08f, rect.Height * 0.38f);
+                double angle = (-90 + i * 120) * Math.PI / 180.0;
+                PointF p = new PointF(
+                    seal.Left + seal.Width * 0.50f + (float)Math.Cos(angle) * seal.Width * 0.25f,
+                    seal.Top + seal.Height * 0.50f + (float)Math.Sin(angle) * seal.Height * 0.25f);
+                g.FillEllipse(nodeBrush, p.X - seal.Width * 0.055f, p.Y - seal.Width * 0.055f, seal.Width * 0.11f, seal.Width * 0.11f);
             }
-
-            g.FillRectangle(brush, rect.Left + rect.Width * 0.12f, rect.Bottom - rect.Height * 0.16f, rect.Width * 0.76f, rect.Height * 0.10f);
         }
     }
 
     private void DrawNetworkIcon(Graphics g, RectangleF rect, Color color)
     {
         using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
-        using (SolidBrush brush = new SolidBrush(color))
         {
-            RectangleF top = new RectangleF(rect.Left + rect.Width * 0.40f, rect.Top + rect.Height * 0.08f, rect.Width * 0.20f, rect.Height * 0.20f);
-            RectangleF left = new RectangleF(rect.Left + rect.Width * 0.12f, rect.Bottom - rect.Height * 0.28f, rect.Width * 0.20f, rect.Height * 0.20f);
-            RectangleF right = new RectangleF(rect.Right - rect.Width * 0.32f, rect.Bottom - rect.Height * 0.28f, rect.Width * 0.20f, rect.Height * 0.20f);
-            g.DrawLine(pen, top.Left + top.Width / 2, top.Bottom, left.Left + left.Width / 2, left.Top);
-            g.DrawLine(pen, top.Left + top.Width / 2, top.Bottom, right.Left + right.Width / 2, right.Top);
-            g.FillRectangle(brush, top);
-            g.FillRectangle(brush, left);
-            g.FillRectangle(brush, right);
+            RectangleF globe = new RectangleF(rect.Left + rect.Width * 0.16f, rect.Top + rect.Height * 0.16f, rect.Width * 0.68f, rect.Height * 0.68f);
+            g.DrawEllipse(pen, globe);
+            g.DrawArc(pen, globe.Left + globe.Width * 0.22f, globe.Top, globe.Width * 0.56f, globe.Height, 90, 180);
+            g.DrawArc(pen, globe.Left + globe.Width * 0.22f, globe.Top, globe.Width * 0.56f, globe.Height, 270, 180);
+            g.DrawLine(pen, globe.Left + globe.Width * 0.12f, globe.Top + globe.Height * 0.50f, globe.Right - globe.Width * 0.12f, globe.Top + globe.Height * 0.50f);
         }
     }
 
     private void DrawServerIcon(Graphics g, RectangleF rect, Color color)
     {
         using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 58)))
         using (SolidBrush dot = new SolidBrush(color))
         {
-            RectangleF top = new RectangleF(rect.Left + rect.Width * 0.14f, rect.Top + rect.Height * 0.18f, rect.Width * 0.72f, rect.Height * 0.26f);
-            RectangleF bottom = new RectangleF(rect.Left + rect.Width * 0.14f, rect.Top + rect.Height * 0.56f, rect.Width * 0.72f, rect.Height * 0.26f);
-            g.DrawRectangle(pen, Rectangle.Round(top));
-            g.DrawRectangle(pen, Rectangle.Round(bottom));
-            g.FillEllipse(dot, top.Left + top.Width * 0.12f, top.Top + top.Height * 0.38f, top.Height * 0.22f, top.Height * 0.22f);
-            g.FillEllipse(dot, bottom.Left + bottom.Width * 0.12f, bottom.Top + bottom.Height * 0.38f, bottom.Height * 0.22f, bottom.Height * 0.22f);
+            for (int i = 0; i < 3; i++)
+            {
+                RectangleF rack = new RectangleF(rect.Left + rect.Width * 0.20f, rect.Top + rect.Height * (0.14f + i * 0.24f), rect.Width * 0.60f, rect.Height * 0.17f);
+                using (GraphicsPath path = RoundedRectangle(rack, rack.Height * 0.22f))
+                {
+                    g.FillPath(fill, path);
+                    g.DrawPath(pen, path);
+                }
+
+                g.FillEllipse(dot, rack.Right - rack.Height * 0.42f, rack.Top + rack.Height * 0.34f, rack.Height * 0.28f, rack.Height * 0.28f);
+            }
         }
     }
 
     private void DrawMaskIcon(Graphics g, RectangleF rect, Color color)
     {
-        using (GraphicsPath path = new GraphicsPath())
-        using (SolidBrush brush = new SolidBrush(color))
-        using (SolidBrush cutout = new SolidBrush(DesignTokens.Colors.AppBackground))
+        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
         {
-            path.AddEllipse(rect.Left + rect.Width * 0.08f, rect.Top + rect.Height * 0.22f, rect.Width * 0.84f, rect.Height * 0.50f);
-            g.FillPath(brush, path);
-            g.FillEllipse(cutout, rect.Left + rect.Width * 0.28f, rect.Top + rect.Height * 0.40f, rect.Width * 0.14f, rect.Height * 0.10f);
-            g.FillEllipse(cutout, rect.Right - rect.Width * 0.42f, rect.Top + rect.Height * 0.40f, rect.Width * 0.14f, rect.Height * 0.10f);
+            RectangleF outer = new RectangleF(rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.14f, rect.Width * 0.64f, rect.Height * 0.72f);
+            g.DrawEllipse(pen, outer);
+            g.DrawArc(pen, outer.Left + outer.Width * 0.18f, outer.Top + outer.Height * 0.08f, outer.Width * 0.64f, outer.Height * 0.84f, 90, 280);
+            g.DrawArc(pen, outer.Left + outer.Width * 0.34f, outer.Top + outer.Height * 0.18f, outer.Width * 0.34f, outer.Height * 0.64f, 90, 280);
         }
     }
 
     private void DrawFilterIcon(Graphics g, RectangleF rect, Color color)
     {
-        using (GraphicsPath path = new GraphicsPath())
-        using (SolidBrush brush = new SolidBrush(color))
+        using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
         {
-            path.AddPolygon(new PointF[]
+            PointF left = new PointF(rect.Left + rect.Width * 0.20f, rect.Top + rect.Height * 0.30f);
+            PointF center = new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.50f);
+            PointF right = new PointF(rect.Right - rect.Width * 0.20f, rect.Bottom - rect.Height * 0.30f);
+            g.DrawLine(pen, left, center);
+            g.DrawLine(pen, center, right);
+            g.DrawLine(pen, rect.Left + rect.Width * 0.20f, rect.Bottom - rect.Height * 0.30f, rect.Right - rect.Width * 0.20f, rect.Top + rect.Height * 0.30f);
+            using (SolidBrush brush = new SolidBrush(color))
             {
-                new PointF(rect.Left + rect.Width * 0.10f, rect.Top + rect.Height * 0.14f),
-                new PointF(rect.Right - rect.Width * 0.10f, rect.Top + rect.Height * 0.14f),
-                new PointF(rect.Left + rect.Width * 0.58f, rect.Top + rect.Height * 0.56f),
-                new PointF(rect.Left + rect.Width * 0.58f, rect.Bottom - rect.Height * 0.12f),
-                new PointF(rect.Left + rect.Width * 0.42f, rect.Bottom - rect.Height * 0.22f),
-                new PointF(rect.Left + rect.Width * 0.42f, rect.Top + rect.Height * 0.56f)
-            });
-            g.FillPath(brush, path);
+                g.FillEllipse(brush, left.X - rect.Width * 0.045f, left.Y - rect.Width * 0.045f, rect.Width * 0.09f, rect.Width * 0.09f);
+                g.FillEllipse(brush, center.X - rect.Width * 0.045f, center.Y - rect.Width * 0.045f, rect.Width * 0.09f, rect.Width * 0.09f);
+                g.FillEllipse(brush, right.X - rect.Width * 0.045f, right.Y - rect.Width * 0.045f, rect.Width * 0.09f, rect.Width * 0.09f);
+            }
         }
     }
 
     private void DrawLinkIcon(Graphics g, RectangleF rect, Color color)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.4f, S(2))))
+        using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
+        using (SolidBrush brush = new SolidBrush(color))
         {
-            g.DrawArc(pen, rect.Left + rect.Width * 0.08f, rect.Top + rect.Height * 0.28f, rect.Width * 0.46f, rect.Height * 0.34f, 70, 250);
-            g.DrawArc(pen, rect.Right - rect.Width * 0.54f, rect.Top + rect.Height * 0.38f, rect.Width * 0.46f, rect.Height * 0.34f, 250, 250);
-            g.DrawLine(pen, rect.Left + rect.Width * 0.38f, rect.Top + rect.Height * 0.56f, rect.Left + rect.Width * 0.62f, rect.Top + rect.Height * 0.44f);
+            PointF a = new PointF(rect.Left + rect.Width * 0.24f, rect.Top + rect.Height * 0.30f);
+            PointF b = new PointF(rect.Left + rect.Width * 0.52f, rect.Top + rect.Height * 0.50f);
+            PointF c = new PointF(rect.Right - rect.Width * 0.20f, rect.Bottom - rect.Height * 0.24f);
+            g.DrawLine(pen, a, b);
+            g.DrawLine(pen, b, c);
+            g.FillEllipse(brush, a.X - rect.Width * 0.075f, a.Y - rect.Width * 0.075f, rect.Width * 0.15f, rect.Width * 0.15f);
+            g.FillEllipse(brush, b.X - rect.Width * 0.06f, b.Y - rect.Width * 0.06f, rect.Width * 0.12f, rect.Width * 0.12f);
+            g.FillEllipse(brush, c.X - rect.Width * 0.075f, c.Y - rect.Width * 0.075f, rect.Width * 0.15f, rect.Width * 0.15f);
         }
     }
 
@@ -1323,13 +1364,27 @@ internal sealed class ConnectionCheckForm : Form
     {
         Font font = this.fontCache.GetUi(Math.Max(10.0f, rect.Height * 0.62f), FontStyle.Bold);
         using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
-        using (SolidBrush brush = new SolidBrush(color))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 58)))
+        using (SolidBrush text = new SolidBrush(color))
         using (StringFormat format = new StringFormat())
         {
-            g.DrawEllipse(pen, rect);
+            using (GraphicsPath diamond = new GraphicsPath())
+            {
+                diamond.AddPolygon(new PointF[]
+                {
+                    new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.08f),
+                    new PointF(rect.Right - rect.Width * 0.08f, rect.Top + rect.Height * 0.50f),
+                    new PointF(rect.Left + rect.Width * 0.50f, rect.Bottom - rect.Height * 0.08f),
+                    new PointF(rect.Left + rect.Width * 0.08f, rect.Top + rect.Height * 0.50f)
+                });
+                diamond.CloseFigure();
+                g.FillPath(brush, diamond);
+                g.DrawPath(pen, diamond);
+            }
+
             format.Alignment = StringAlignment.Center;
             format.LineAlignment = StringAlignment.Center;
-            g.DrawString("?", font, brush, rect, format);
+            g.DrawString("?", font, text, rect, format);
         }
     }
 
