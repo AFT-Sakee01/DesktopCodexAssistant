@@ -2,7 +2,7 @@
 
 This file is the primary Codex-readable maintenance log for Desktop Codex Assistant. Read it before making changes in this program directory.
 
-Current version: 1.0.2.41
+Current version: 1.0.2.42
 
 Version rule: start at 1.0.0.0. After each completed fix, increment the last segment by 1. The last segment can go up to 99. After 1.0.0.99, carry to 1.0.1.00. Keep `Core/ProductIdentity.cs` assembly, file, and informational versions synchronized with the maintenance log version.
 
@@ -300,3 +300,10 @@ From the second line onward, write the fix details or discovered issue. Leave on
 修正内容: 网络监控窗口右下角新增黄色当前网卡名称覆盖层，与云服务方块同属内容覆盖层，不改变 `IF`、公网、GFW 或云服务方块既有坐标和大小。
 修正内容: 手动选择的网卡即使未连接也会保留为当前接口显示，连通性则进入离线/未连接判定，避免被自动切换到其他可用虚拟网卡。
 验证结果: `git diff --check` 仅有既有 LF/CRLF 提示；ARM64 临时产物和正式产物的 `--test`、`--test-settings-bindings`、`--test-layout`、`--test-display-recovery`、`--test-logger` 均返回退出码 0；ARM64 正式构建通过并覆盖 DesktopCodexAssistant.exe，SHA1 为 38FA703879CA037BB860E3B1A04B60B46F71F32E；程序集版本为 1.0.2.41；正式程序已重新启动，PID=35456。
+
+时间: 2026-06-16 14:27:35 +09:00 | 版本: 1.0.2.42 | 窗口: 连接检测 | 模块: 公开版 UI
+修正内容: 重绘连接检测窗口为原创公开版布局，改为顶部状态行、左侧风险轨、右侧原生状态/IP 类型胶囊和底部检测元信息，不再使用三枚网页同款大徽章版式。
+修正内容: 连接检测底部文案改为通用“连接检测/测试模式”，降低公开版对第三方页面视觉和文案的依赖；检测数据、触发规则和 CleanIP 数据解析逻辑保持不变。
+修正内容: 程序版本递增到 1.0.2.42，并同步程序集、文件和信息版本。
+验证结果: ARM64 与 x64 临时产物和 Release 正式产物均构建通过；Release ARM64 SHA1 为 FD8035A082BDD0DD028DD582168701605ECAE55F，PE Machine=ARM64；Release x64 SHA1 为 DAF405AC5D35C9BD510F35062AACF0A129B9865F，PE Machine=x64。
+验证结果: Release ARM64 与 x64 的 `--test`、`--test-settings-bindings`、`--test-layout`、`--test-display-recovery`、`--test-logger` 均返回退出码 0；本次未使用截图。
