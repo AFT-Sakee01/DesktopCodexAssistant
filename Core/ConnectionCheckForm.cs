@@ -574,28 +574,42 @@ internal sealed class ConnectionCheckForm : Form
         bool firstRun = this.snapshot == null || (!this.snapshot.CheckedAtKnown && this.snapshot.Running);
         bool failed = this.snapshot != null && !this.snapshot.Success && !this.snapshot.Running && this.snapshot.CheckedAtKnown;
 
-        if (waiting)
+        if (waiting || firstRun || failed)
         {
-            DrawStateMessage(g, content, "连接检测", "等待检测", DesignTokens.Colors.GlyphMuted);
-            return;
-        }
-
-        if (firstRun)
-        {
-            DrawStateMessage(g, content, "连接检测", "检测中", DesignTokens.Colors.Warning);
-            return;
-        }
-
-        if (failed)
-        {
-            string errorText = this.snapshot == null ? "不可用" : EmptyToDash(this.snapshot.Error);
-            string title = "CleanIP";
-            if (this.snapshot != null && this.snapshot.CheckedAtKnown)
+            Color stateText;
+            Color stateBorder;
+            Color stateFill;
+            if (failed)
             {
-                title += " · " + this.snapshot.CheckedAtLocal.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+                BuildPalette(DesignTokens.Colors.Danger, out stateText, out stateBorder, out stateFill);
+            }
+            else if (firstRun)
+            {
+                BuildPalette(DesignTokens.Colors.Warning, out stateText, out stateBorder, out stateFill);
+            }
+            else
+            {
+                BuildPalette(DesignTokens.Colors.GlyphMuted, out stateText, out stateBorder, out stateFill);
             }
 
-            DrawStateMessage(g, content, title, errorText, DesignTokens.Colors.Danger);
+            DrawBadgeTriplet(
+                g,
+                content,
+                "fa-solid fa-shield-halved",
+                failed ? "ERR" : "--",
+                "fa-solid fa-circle-question",
+                failed ? "失败" : (firstRun ? "检测中" : "等待"),
+                "fa-solid fa-circle-question",
+                failed ? GetCompactErrorLabel(this.snapshot.Error) : "--",
+                stateText,
+                stateBorder,
+                stateFill,
+                stateText,
+                stateBorder,
+                stateFill,
+                stateText,
+                stateBorder,
+                stateFill);
             return;
         }
 
@@ -614,160 +628,69 @@ internal sealed class ConnectionCheckForm : Form
         Color typeFill;
         GetIpTypePalette(this.snapshot.IpTypeKey, out typeText, out typeBorder, out typeFill);
 
-        float footerHeight = content.Height < S(78) ? 0.0f : Math.Min(S(16), Math.Max(S(11), content.Height * 0.16f));
-        float headerHeight = Math.Min(S(22), Math.Max(S(15), content.Height * 0.22f));
-        float gap = Math.Max(S(3), content.Width * 0.012f);
-        RectangleF headerRect = new RectangleF(content.Left, content.Top, content.Width, headerHeight);
-        DrawConnectionHeader(g, headerRect, this.snapshot.Running ? DesignTokens.Colors.Warning : scoreText);
-
-        float bodyTop = headerRect.Bottom + gap;
-        float bodyBottom = content.Bottom - footerHeight - (footerHeight > 0 ? gap : 0.0f);
-        RectangleF body = new RectangleF(content.Left, bodyTop, content.Width, Math.Max(S(28), bodyBottom - bodyTop));
-        float railWidth = Math.Min(S(76), Math.Max(S(54), body.Width * 0.25f));
-        RectangleF scoreRect = new RectangleF(body.Left, body.Top, railWidth, body.Height);
-        DrawScoreRail(g, scoreRect, scoreText, scoreBorder, scoreFill);
-
-        RectangleF right = new RectangleF(scoreRect.Right + gap, body.Top, body.Right - scoreRect.Right - gap, body.Height);
-        if (right.Width > S(58))
-        {
-            float pillHeight = Math.Min(S(23), Math.Max(S(17), right.Height * 0.42f));
-            float pillGap = Math.Max(S(3), right.Width * 0.018f);
-            RectangleF nativeRect = new RectangleF(right.Left, right.Top, (right.Width - pillGap) / 2.0f, pillHeight);
-            RectangleF typeRect = new RectangleF(nativeRect.Right + pillGap, right.Top, nativeRect.Width, pillHeight);
-            DrawStatusPill(g, nativeRect, this.snapshot.NativeIconClass, this.snapshot.NativeLabel, nativeText, nativeBorder, nativeFill);
-            DrawStatusPill(g, typeRect, this.snapshot.IpTypeIconClass, this.snapshot.IpTypeLabel, typeText, typeBorder, typeFill);
-
-            RectangleF detailRect = new RectangleF(right.Left, nativeRect.Bottom + gap, right.Width, Math.Max(S(14), right.Bottom - nativeRect.Bottom - gap));
-            DrawDetailStrip(g, detailRect, BuildDetailText());
-        }
-
-        if (footerHeight > 0)
-        {
-            RectangleF footer = new RectangleF(content.Left + S(1), content.Bottom - footerHeight, content.Width - S(2), footerHeight);
-            DrawMetaLine(g, footer);
-        }
+        DrawBadgeTriplet(
+            g,
+            content,
+            "fa-solid fa-shield-halved",
+            this.snapshot.ScoreLabel,
+            this.snapshot.NativeIconClass,
+            this.snapshot.NativeLabel,
+            this.snapshot.IpTypeIconClass,
+            this.snapshot.IpTypeLabel,
+            scoreText,
+            scoreBorder,
+            scoreFill,
+            nativeText,
+            nativeBorder,
+            nativeFill,
+            typeText,
+            typeBorder,
+            typeFill);
     }
 
-    private void DrawConnectionHeader(Graphics g, RectangleF rect, Color accent)
+    private void DrawBadgeTriplet(
+        Graphics g,
+        RectangleF content,
+        string firstIcon,
+        string firstText,
+        string secondIcon,
+        string secondText,
+        string thirdIcon,
+        string thirdText,
+        Color firstTextColor,
+        Color firstBorderColor,
+        Color firstFillColor,
+        Color secondTextColor,
+        Color secondBorderColor,
+        Color secondFillColor,
+        Color thirdTextColor,
+        Color thirdBorderColor,
+        Color thirdFillColor)
     {
-        Font titleFont = this.fontCache.GetUi(Math.Max(8.0f, rect.Height * 0.52f), FontStyle.Bold);
-        Font statusFont = this.fontCache.GetUi(Math.Max(7.0f, rect.Height * 0.42f), FontStyle.Bold);
-        string status = this.snapshot == null || !this.snapshot.CheckedAtKnown
-            ? "等待"
-            : (this.snapshot.Running ? "更新中" : (this.snapshot.TestMode ? "测试" : "实时"));
-        string latency = this.snapshot != null && this.snapshot.LatencyMs > 0
-            ? this.snapshot.LatencyMs.ToString(CultureInfo.InvariantCulture) + "ms"
-            : string.Empty;
+        float gap = Math.Max(S(2), content.Width * 0.014f);
+        float badgeWidth = (content.Width - gap * 2.0f) / 3.0f;
+        RectangleF first = new RectangleF(content.Left, content.Top, badgeWidth, content.Height);
+        RectangleF second = new RectangleF(first.Right + gap, content.Top, badgeWidth, content.Height);
+        RectangleF third = new RectangleF(second.Right + gap, content.Top, badgeWidth, content.Height);
 
-        using (SolidBrush accentBrush = new SolidBrush(DesignTokens.WithAlpha(accent, 210)))
-        using (SolidBrush titleBrush = new SolidBrush(DesignTokens.TextStrong(220)))
-        using (SolidBrush statusBrush = new SolidBrush(DesignTokens.TextMuted(190)))
-        {
-            float dot = Math.Max(S(4), rect.Height * 0.26f);
-            RectangleF dotRect = new RectangleF(rect.Left + S(2), rect.Top + (rect.Height - dot) / 2.0f, dot, dot);
-            g.FillEllipse(accentBrush, dotRect);
-
-            RectangleF titleRect = new RectangleF(dotRect.Right + S(5), rect.Top, rect.Width * 0.44f, rect.Height);
-            DrawFittedText(g, "连接检测", titleFont, titleBrush, titleRect, StringAlignment.Near);
-
-            string statusText = string.IsNullOrEmpty(latency) ? status : status + " / " + latency;
-            RectangleF statusRect = new RectangleF(titleRect.Right, rect.Top, rect.Right - titleRect.Right - S(2), rect.Height);
-            DrawFittedText(g, statusText, statusFont, statusBrush, statusRect, StringAlignment.Far);
-        }
+        DrawCleanIpBadge(g, first, firstIcon, firstText, firstTextColor, firstBorderColor, firstFillColor);
+        DrawCleanIpBadge(g, second, secondIcon, secondText, secondTextColor, secondBorderColor, secondFillColor);
+        DrawCleanIpBadge(g, third, thirdIcon, thirdText, thirdTextColor, thirdBorderColor, thirdFillColor);
     }
 
-    private void DrawScoreRail(Graphics g, RectangleF rect, Color textColor, Color borderColor, Color fillColor)
+    private static string GetCompactErrorLabel(string error)
     {
-        using (GraphicsPath path = RoundedRectangle(rect, S(5)))
-        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(fillColor, 172)))
-        using (Pen border = new Pen(DesignTokens.WithAlpha(borderColor, 218), Math.Max(1.0f, S(1))))
+        string value = error ?? string.Empty;
+        if (value.IndexOf("403", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            g.FillPath(fill, path);
-            g.DrawPath(border, path);
+            return "HTTP403";
         }
 
-        Font labelFont = this.fontCache.GetUi(Math.Max(7.0f, rect.Height * 0.13f), FontStyle.Bold);
-        Font valueFont = this.fontCache.GetUi(Math.Max(15.0f, Math.Min(rect.Height * 0.36f, rect.Width * 0.38f)), FontStyle.Bold);
-        using (SolidBrush muted = new SolidBrush(DesignTokens.TextMuted(168)))
-        using (SolidBrush value = new SolidBrush(textColor))
-        {
-            RectangleF labelRect = new RectangleF(rect.Left + S(4), rect.Top + S(3), rect.Width - S(8), rect.Height * 0.22f);
-            DrawFittedText(g, "RISK", labelFont, muted, labelRect, StringAlignment.Center);
-
-            RectangleF scoreRect = new RectangleF(rect.Left + S(4), rect.Top + rect.Height * 0.25f, rect.Width - S(8), rect.Height * 0.48f);
-            DrawFittedText(g, EmptyToDash(this.snapshot.ScoreLabel), valueFont, value, scoreRect, StringAlignment.Center);
-
-            string grade = string.IsNullOrWhiteSpace(this.snapshot.Grade) || this.snapshot.Grade == "--"
-                ? "score"
-                : "grade " + this.snapshot.Grade.Trim();
-            RectangleF gradeRect = new RectangleF(rect.Left + S(4), rect.Bottom - rect.Height * 0.25f - S(2), rect.Width - S(8), rect.Height * 0.22f);
-            DrawFittedText(g, grade, labelFont, muted, gradeRect, StringAlignment.Center);
-        }
-    }
-
-    private void DrawStatusPill(Graphics g, RectangleF rect, string iconClass, string text, Color textColor, Color borderColor, Color fillColor)
-    {
-        using (GraphicsPath path = RoundedRectangle(rect, rect.Height / 2.0f))
-        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(fillColor, 150)))
-        using (Pen border = new Pen(DesignTokens.WithAlpha(borderColor, 205), Math.Max(1.0f, S(1))))
-        {
-            g.FillPath(fill, path);
-            g.DrawPath(border, path);
-        }
-
-        float padding = Math.Max(S(4), rect.Height * 0.20f);
-        float iconSize = Math.Max(S(10), Math.Min(rect.Height * 0.58f, rect.Width * 0.24f));
-        RectangleF iconRect = new RectangleF(rect.Left + padding, rect.Top + (rect.Height - iconSize) / 2.0f, iconSize, iconSize);
-        DrawBadgeIcon(g, iconClass, iconRect, textColor);
-
-        RectangleF textRect = new RectangleF(iconRect.Right + S(3), rect.Top, rect.Right - iconRect.Right - padding - S(3), rect.Height);
-        Font font = this.fontCache.GetUi(Math.Max(8.0f, rect.Height * 0.48f), FontStyle.Bold);
-        using (SolidBrush brush = new SolidBrush(textColor))
-        {
-            DrawFittedText(g, EmptyToDash(text), font, brush, textRect, StringAlignment.Near);
-        }
-    }
-
-    private void DrawDetailStrip(Graphics g, RectangleF rect, string text)
-    {
-        using (GraphicsPath path = RoundedRectangle(rect, S(4)))
-        using (SolidBrush fill = new SolidBrush(DesignTokens.White(18)))
-        using (Pen border = new Pen(DesignTokens.White(34), Math.Max(1.0f, S(1))))
-        {
-            g.FillPath(fill, path);
-            g.DrawPath(border, path);
-        }
-
-        Font font = this.fontCache.GetUi(Math.Max(8.0f, Math.Min(rect.Height * 0.48f, rect.Width * 0.07f)), FontStyle.Bold);
-        using (SolidBrush brush = new SolidBrush(DesignTokens.TextMuted(202)))
-        {
-            RectangleF textRect = new RectangleF(rect.Left + S(6), rect.Top, rect.Width - S(12), rect.Height);
-            DrawFittedText(g, text, font, brush, textRect, StringAlignment.Near);
-        }
-    }
-
-    private void DrawStateMessage(Graphics g, RectangleF rect, string title, string detail, Color color)
-    {
-        Color fill = DesignTokens.WithAlpha(color, 34);
-        Color border = DesignTokens.WithAlpha(color, 172);
-        using (GraphicsPath path = RoundedRectangle(rect, S(6)))
-        using (SolidBrush brush = new SolidBrush(fill))
-        using (Pen pen = new Pen(border, Math.Max(1, S(1))))
-        {
-            g.FillPath(brush, path);
-            g.DrawPath(pen, path);
-        }
-
-        Font titleFont = this.fontCache.GetUi(Math.Max(10.0f, rect.Height * 0.26f), FontStyle.Bold);
-        Font valueFont = this.fontCache.GetUi(Math.Max(13.0f, rect.Height * 0.34f), FontStyle.Bold);
-        using (SolidBrush titleBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
-        using (SolidBrush valueBrush = new SolidBrush(color))
-        {
-            RectangleF titleRect = new RectangleF(rect.Left + S(10), rect.Top + S(8), rect.Width - S(20), rect.Height * 0.34f);
-            RectangleF valueRect = new RectangleF(rect.Left + S(10), rect.Top + rect.Height * 0.38f, rect.Width - S(20), rect.Height * 0.44f);
-            DrawFittedText(g, title, titleFont, titleBrush, titleRect, StringAlignment.Center);
-            DrawFittedText(g, detail, valueFont, valueBrush, valueRect, StringAlignment.Center);
-        }
+        if (value.IndexOf("429", StringComparison.OrdinalIgnoreCase) >= 0) return "HTTP429";
+        if (value.IndexOf("超时", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0) return "TIMEOUT";
+        if (value.IndexOf("DNS", StringComparison.OrdinalIgnoreCase) >= 0) return "DNS";
+        if (value.IndexOf("连接", StringComparison.OrdinalIgnoreCase) >= 0 || value.IndexOf("connect", StringComparison.OrdinalIgnoreCase) >= 0) return "CONNECT";
+        return "ERROR";
     }
 
     private void DrawCleanIpBadge(Graphics g, RectangleF rect, string iconClass, string text, Color textColor, Color borderColor, Color fillColor)
@@ -868,50 +791,6 @@ internal sealed class ConnectionCheckForm : Form
         }
 
         return hasDigit && hasLetter;
-    }
-
-    private void DrawMetaLine(Graphics g, RectangleF rect)
-    {
-        string meta = BuildMetaText();
-        Color color = this.snapshot != null && this.snapshot.Running ? DesignTokens.Colors.Warning : DesignTokens.Colors.GlyphMuted;
-        Font font = this.fontCache.GetUi(Math.Max(8.0f, rect.Height * 0.52f), FontStyle.Bold);
-        using (SolidBrush brush = new SolidBrush(color))
-        {
-            DrawFittedText(g, meta, font, brush, rect, StringAlignment.Center);
-        }
-    }
-
-    private string BuildMetaText()
-    {
-        if (this.snapshot == null || !this.snapshot.CheckedAtKnown)
-        {
-            return "连接检测 · 等待检测";
-        }
-
-        string time = this.snapshot.CheckedAtLocal.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
-        string prefix = this.snapshot.TestMode ? "测试模式" : "连接检测";
-        string status = this.snapshot.Running ? "更新中 · " : string.Empty;
-        string trigger = string.IsNullOrWhiteSpace(this.snapshot.RefreshTrigger) ? string.Empty : this.snapshot.RefreshTrigger.Trim() + " · ";
-        string left = FirstNonEmpty(this.snapshot.Ip, "--");
-        string middle = FirstNonEmpty(this.snapshot.Asn, this.snapshot.Organization, "--");
-        return status + prefix + " · " + trigger + left + " · " + middle + " · " + time;
-    }
-
-    private string BuildDetailText()
-    {
-        if (this.snapshot == null)
-        {
-            return "--";
-        }
-
-        string endpoint = FirstNonEmpty(this.snapshot.Ip, this.snapshot.Asn, "--");
-        string region = FirstNonEmpty(this.snapshot.Location, this.snapshot.Organization, "--");
-        if (string.Equals(endpoint, region, StringComparison.OrdinalIgnoreCase))
-        {
-            return endpoint;
-        }
-
-        return endpoint + " / " + region;
     }
 
     private void GetScorePalette(out Color text, out Color border, out Color fill)
