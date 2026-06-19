@@ -23,6 +23,7 @@ internal static class NativeMethods
     public const int WS_EX_TRANSPARENT = 0x00000020;
     public const int WS_EX_NOACTIVATE = 0x08000000;
     public const int WS_EX_LAYERED = 0x00080000;
+    public const int WS_EX_TOPMOST = 0x00000008;
     public const int GWL_STYLE = -16;
     public const int GWL_EXSTYLE = -20;
     public const int WS_CHILD = 0x40000000;
@@ -72,10 +73,19 @@ internal static class NativeMethods
     private const byte AC_SRC_ALPHA = 0x01;
     private const int ULW_ALPHA = 0x00000002;
     private const int ATTACH_PARENT_PROCESS = -1;
+    private const string LiveCaptionsAppsFolderPath = @"shell:AppsFolder\{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\LiveCaptions.exe";
+    private const string WindowsAiStudioProtocol = "ms-clicktodo";
+    private const string WindowsAiStudioAppsFolderPath = @"shell:AppsFolder\MicrosoftWindows.Client.CoreAI_cw5n1h2txyewy!ClickToDoApp";
+    private const string WindowsAiStudioPackagePrefix = "MicrosoftWindows.Client.CoreAI_";
+    private const string WindowsAiStudioPackageSuffix = "_cw5n1h2txyewy";
     private const uint GW_OWNER = 4;
     private const uint WM_APPCOMMAND = 0x0319;
     private const uint WM_CLOSE = 0x0010;
     private const int VK_LBUTTON = 0x01;
+    private const int VK_RBUTTON = 0x02;
+    private const int VK_MBUTTON = 0x04;
+    private const int VK_XBUTTON1 = 0x05;
+    private const int VK_XBUTTON2 = 0x06;
     private const int VK_CONTROL = 0x11;
     private const int VK_MENU = 0x12;
     private const byte VK_SPACE = 0x20;
@@ -2382,53 +2392,64 @@ internal static class NativeMethods
         }
     }
 
-    public static void ToggleDesktop()
+    public static bool ToggleDesktop()
     {
-        SendWinKeyChord(VK_D);
+        return TryInvokeShellApplicationMethod("ToggleDesktop");
     }
 
-    public static void OpenStartMenu()
+    public static bool OpenStartMenu()
     {
-        try
-        {
-            keybd_event(VK_LWIN, 0, 0, UIntPtr.Zero);
-            keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-        }
-        catch
-        {
-        }
+        return OpenWindowsStartMenu();
     }
 
     public static bool OpenWindowsStartMenu()
     {
-        if (TryInvokeWindowsStartButton(false))
-        {
-            return true;
-        }
-
-        SendSingleKey(VK_RWIN);
-        return true;
+        return TryInvokeWindowsStartButton(false);
     }
 
     public static bool OpenWindowsStartContextMenu()
     {
-        if (TryInvokeWindowsStartButton(true))
-        {
-            return true;
-        }
-
-        SendWinKeyChord(VK_X);
-        return true;
+        return TryInvokeWindowsStartButton(true);
     }
 
-    public static void OpenStartContextMenu()
+    public static bool OpenStartContextMenu()
     {
-        SendWinKeyChord(VK_X);
+        return OpenWindowsStartContextMenu();
     }
 
     public static void OpenQuickSettings()
     {
         SendWinKeyChord(VK_A);
+    }
+
+    public static bool OpenLiveCaptions()
+    {
+        if (StartShellProcess("explorer.exe", LiveCaptionsAppsFolderPath))
+        {
+            return true;
+        }
+
+        string systemPath = Path.Combine(Environment.SystemDirectory, "LiveCaptions.exe");
+        if (File.Exists(systemPath) && StartShellProcess(systemPath, null))
+        {
+            return true;
+        }
+
+        return StartShellProcess("LiveCaptions.exe", null);
+    }
+
+    public static bool IsLiveCaptionsAvailable()
+    {
+        string systemPath = Path.Combine(Environment.SystemDirectory, "LiveCaptions.exe");
+        if (File.Exists(systemPath))
+        {
+            return true;
+        }
+
+        string aliasPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            @"Microsoft\WindowsApps\LiveCaptions.exe");
+        return File.Exists(aliasPath);
     }
 
     public static void OpenHiddenTrayIcons()
@@ -2441,14 +2462,9 @@ internal static class NativeMethods
         Program.LogInfo("Hidden tray icons button was not found through UI Automation.");
     }
 
-    public static void OpenInputSwitcher()
+    public static bool OpenInputSwitcher()
     {
-        if (OpenShellUri("ms-inputapp:"))
-        {
-            return;
-        }
-
-        SendWinKeyChord(VK_SPACE);
+        return OpenShellUri("ms-inputapp:");
     }
 
     public static bool OpenActionCenterControl(string controlName)
@@ -2471,6 +2487,27 @@ internal static class NativeMethods
         return OpenShellUri("ms-settings:");
     }
 
+    public static bool OpenTaskManager()
+    {
+        return StartShellProcess("taskmgr.exe", null);
+    }
+
+    public static bool OpenWindowsAiStudio()
+    {
+        if (OpenShellUri(WindowsAiStudioProtocol + ":"))
+        {
+            return true;
+        }
+
+        return StartShellProcess("explorer.exe", WindowsAiStudioAppsFolderPath);
+    }
+
+    public static bool IsWindowsAiStudioAvailable()
+    {
+        return IsShellProtocolRegistered(WindowsAiStudioProtocol) ||
+            IsAppPackageRegistered(WindowsAiStudioPackagePrefix, WindowsAiStudioPackageSuffix);
+    }
+
     public static bool OpenWindowsSystemPowerMenu()
     {
         if (TryOpenWindowsPowerUserShutdownMenu())
@@ -2483,12 +2520,7 @@ internal static class NativeMethods
 
     public static bool OpenWindowsSecurityMenu()
     {
-        if (TryOpenWindowsSecurityViaShellApplication())
-        {
-            return true;
-        }
-
-        return SendCtrlAltDeleteChord();
+        return TryInvokeShellApplicationMethod("WindowsSecurity");
     }
 
     public static bool OpenSettingsPage(string pageName)
@@ -2517,11 +2549,139 @@ internal static class NativeMethods
         }
     }
 
-    private static bool TryOpenWindowsSecurityViaShellApplication()
+    private static bool StartShellProcess(string fileName, string arguments)
+    {
+        if (string.IsNullOrEmpty(fileName))
+        {
+            return false;
+        }
+
+        try
+        {
+            ProcessStartInfo startInfo = new ProcessStartInfo();
+            startInfo.FileName = fileName;
+            startInfo.UseShellExecute = true;
+            if (!string.IsNullOrEmpty(arguments))
+            {
+                startInfo.Arguments = arguments;
+            }
+
+            Process.Start(startInfo);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsShellProtocolRegistered(string protocolName)
+    {
+        if (string.IsNullOrEmpty(protocolName))
+        {
+            return false;
+        }
+
+        string normalized = protocolName.TrimEnd(':');
+        return RegistryKeyExists(Registry.CurrentUser, @"Software\Classes\" + normalized) ||
+            RegistryKeyExists(Registry.LocalMachine, @"SOFTWARE\Classes\" + normalized) ||
+            RegistryKeyExists(Registry.ClassesRoot, normalized);
+    }
+
+    private static bool IsAppPackageRegistered(string packagePrefix, string packageSuffix)
+    {
+        if (string.IsNullOrEmpty(packagePrefix) || string.IsNullOrEmpty(packageSuffix))
+        {
+            return false;
+        }
+
+        return RegistryContainsSubKeyName(
+                Registry.CurrentUser,
+                @"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages",
+                packagePrefix,
+                packageSuffix) ||
+            RegistryContainsSubKeyName(
+                Registry.CurrentUser,
+                @"Software\Classes\ActivatableClasses\Package",
+                packagePrefix,
+                packageSuffix) ||
+            RegistryContainsSubKeyName(
+                Registry.CurrentUser,
+                @"Software\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications",
+                packagePrefix,
+                packageSuffix) ||
+            RegistryContainsSubKeyName(
+                Registry.LocalMachine,
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications",
+                packagePrefix,
+                packageSuffix);
+    }
+
+    private static bool RegistryKeyExists(RegistryKey root, string path)
+    {
+        if (root == null || string.IsNullOrEmpty(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            using (RegistryKey key = root.OpenSubKey(path))
+            {
+                return key != null;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool RegistryContainsSubKeyName(RegistryKey root, string path, string prefix, string suffix)
+    {
+        if (root == null || string.IsNullOrEmpty(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            using (RegistryKey key = root.OpenSubKey(path))
+            {
+                if (key == null)
+                {
+                    return false;
+                }
+
+                string[] names = key.GetSubKeyNames();
+                for (int i = 0; i < names.Length; i++)
+                {
+                    string name = names[i];
+                    if (name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                        name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
+    }
+
+    private static bool TryInvokeShellApplicationMethod(string methodName)
     {
         object shell = null;
         try
         {
+            if (string.IsNullOrEmpty(methodName))
+            {
+                return false;
+            }
+
             Type shellType = Type.GetTypeFromProgID("Shell.Application");
             if (shellType == null)
             {
@@ -2535,7 +2695,7 @@ internal static class NativeMethods
             }
 
             shellType.InvokeMember(
-                "WindowsSecurity",
+                methodName,
                 System.Reflection.BindingFlags.InvokeMethod,
                 null,
                 shell,
@@ -2544,7 +2704,7 @@ internal static class NativeMethods
         }
         catch (Exception ex)
         {
-            Program.LogInfo("Shell.Application WindowsSecurity failed: " + ex.GetType().Name + ": " + ex.Message);
+            Program.LogInfo("Shell.Application " + methodName + " failed: " + ex.GetType().Name + ": " + ex.Message);
             return false;
         }
         finally
@@ -2566,27 +2726,9 @@ internal static class NativeMethods
     {
         try
         {
-            OpenWindowsStartContextMenu();
+            SendWinKeyChord(VK_X);
             Thread.Sleep(90);
             SendSingleKey(VK_U);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static bool SendCtrlAltDeleteChord()
-    {
-        try
-        {
-            keybd_event((byte)VK_CONTROL, 0, 0, UIntPtr.Zero);
-            keybd_event((byte)VK_MENU, 0, 0, UIntPtr.Zero);
-            keybd_event(VK_DELETE, 0, 0, UIntPtr.Zero);
-            keybd_event(VK_DELETE, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            keybd_event((byte)VK_MENU, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
-            keybd_event((byte)VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
             return true;
         }
         catch
@@ -3973,6 +4115,220 @@ internal static class NativeMethods
                string.Equals(className, "Windows.UI.Core.CoreWindow", StringComparison.OrdinalIgnoreCase);
     }
 
+    public static bool TryPulseSeelenDockWindowToFront(out string detail)
+    {
+        List<IntPtr> handles = FindSeelenDockAndBarWindows();
+        if (handles.Count == 0)
+        {
+            detail = "Seelen dock/top bar windows were not found.";
+            return false;
+        }
+
+        int successCount = 0;
+        int failureCount = 0;
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < handles.Count; i++)
+        {
+            IntPtr handle = handles[i];
+            bool success = SetWindowPos(
+                handle,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOACTIVATE |
+                SWP_NOMOVE |
+                SWP_NOSIZE |
+                SWP_SHOWWINDOW);
+            if (builder.Length > 0)
+            {
+                builder.Append("; ");
+            }
+
+            builder.Append(success ? "pulsed " : "failed ");
+            builder.Append("0x");
+            builder.Append(handle.ToInt64().ToString("X", CultureInfo.InvariantCulture));
+            if (success)
+            {
+                successCount++;
+            }
+            else
+            {
+                failureCount++;
+            }
+        }
+
+        detail = "Seelen dock/top bar foreground pulse handled " +
+            handles.Count.ToString(CultureInfo.InvariantCulture) +
+            " window(s), success=" +
+            successCount.ToString(CultureInfo.InvariantCulture) +
+            ", failed=" +
+            failureCount.ToString(CultureInfo.InvariantCulture) +
+            ". " +
+            builder;
+        return successCount > 0;
+    }
+
+    private static List<IntPtr> FindSeelenDockAndBarWindows()
+    {
+        List<IntPtr> handles = new List<IntPtr>();
+        IntPtr fallbackHandle = IntPtr.Zero;
+        int fallbackScore = int.MinValue;
+        EnumWindows(delegate(IntPtr handle, IntPtr lParam)
+        {
+            if (!IsWindowVisible(handle))
+            {
+                return true;
+            }
+
+            string className = GetWindowClassName(handle);
+            if (!string.Equals(className, "Tauri Window", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            uint processId;
+            GetWindowThreadProcessId(handle, out processId);
+            if (processId == 0 || !ContainsSeelen(TryGetProcessImagePath((int)processId)))
+            {
+                return true;
+            }
+
+            RECT rect;
+            if (!GetWindowRect(handle, out rect))
+            {
+                return true;
+            }
+
+            int width = Math.Max(0, rect.Right - rect.Left);
+            int height = Math.Max(0, rect.Bottom - rect.Top);
+            if (width <= 0 || height <= 0)
+            {
+                return true;
+            }
+
+            string title = GetWindowTitle(handle);
+            Rectangle bounds = Screen.FromHandle(handle).Bounds;
+            bool explicitBarTitle = IsSeelenDockTitle(title) || IsSeelenTopBarTitle(title);
+            bool likelyEdgeBar = IsLikelySeelenTopOrBottomBarWindow(rect, bounds, width, height);
+            if (explicitBarTitle || likelyEdgeBar)
+            {
+                AddUniqueWindowHandle(handles, handle);
+                return true;
+            }
+
+            int exStyle = GetWindowLong(handle, GWL_EXSTYLE);
+            bool topMost = (exStyle & WS_EX_TOPMOST) != 0;
+            bool noActivate = (exStyle & WS_EX_NOACTIVATE) != 0;
+            bool edgeAligned =
+                rect.Left <= bounds.Left + 2 ||
+                rect.Top <= bounds.Top + 2 ||
+                rect.Right >= bounds.Right - 2 ||
+                rect.Bottom >= bounds.Bottom - 2;
+            int score = 0;
+            if (topMost)
+            {
+                score += 1000;
+            }
+
+            if (noActivate)
+            {
+                score += 500;
+            }
+
+            if (edgeAligned)
+            {
+                score += 250;
+            }
+
+            score += Math.Min(10000, width * height / 1000);
+            if (score > fallbackScore)
+            {
+                fallbackScore = score;
+                fallbackHandle = handle;
+            }
+
+            return true;
+        }, IntPtr.Zero);
+
+        if (handles.Count == 0 && fallbackHandle != IntPtr.Zero)
+        {
+            AddUniqueWindowHandle(handles, fallbackHandle);
+        }
+
+        return handles;
+    }
+
+    private static void AddUniqueWindowHandle(List<IntPtr> handles, IntPtr handle)
+    {
+        if (handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        for (int i = 0; i < handles.Count; i++)
+        {
+            if (handles[i] == handle)
+            {
+                return;
+            }
+        }
+
+        handles.Add(handle);
+    }
+
+    private static bool IsLikelySeelenTopOrBottomBarWindow(RECT rect, Rectangle screenBounds, int width, int height)
+    {
+        if (width <= 0 || height <= 0 || screenBounds.Width <= 0 || screenBounds.Height <= 0)
+        {
+            return false;
+        }
+
+        const int Tolerance = 4;
+        int maximumBarHeight = Math.Max(72, Math.Min(220, screenBounds.Height / 4));
+        bool compactHeight = height <= maximumBarHeight;
+        bool horizontalBar = width >= Math.Max(160, height * 2);
+        bool touchesTop = rect.Top <= screenBounds.Top + Tolerance;
+        bool touchesBottom = rect.Bottom >= screenBounds.Bottom - Tolerance;
+        return compactHeight && horizontalBar && (touchesTop || touchesBottom);
+    }
+
+    private static bool IsSeelenDockTitle(string title)
+    {
+        if (string.IsNullOrEmpty(title))
+        {
+            return false;
+        }
+
+        return title.IndexOf("Dock", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("Taskbar", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("Weg", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("停靠", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("任务", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("任務", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool IsSeelenTopBarTitle(string title)
+    {
+        if (string.IsNullOrEmpty(title))
+        {
+            return false;
+        }
+
+        return title.IndexOf("Fancy Toolbar", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("TopBar", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("Top Bar", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("Toolbar", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("Tool Bar", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("精美工具栏", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("花式工具栏", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("顶部", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("頂部", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("工具栏", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            title.IndexOf("工具列", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
     public static IntPtr FindDesktopHostWindow()
     {
         IntPtr progman = FindWindow("Progman", null);
@@ -4054,6 +4410,11 @@ internal static class NativeMethods
             return false;
         }
 
+        if (IsCurrentProcessWindow(foreground) || IsSeelenUiWindow(foreground))
+        {
+            return false;
+        }
+
         string className = GetWindowClassName(foreground);
         if (string.Equals(className, "Progman", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(className, "WorkerW", StringComparison.OrdinalIgnoreCase) ||
@@ -4084,6 +4445,16 @@ internal static class NativeMethods
     public static bool IsLeftMouseButtonDown()
     {
         return (GetAsyncKeyState(VK_LBUTTON) & unchecked((short)0x8000)) != 0;
+    }
+
+    public static bool IsAnyMouseButtonDown()
+    {
+        return
+            (GetAsyncKeyState(VK_LBUTTON) & unchecked((short)0x8000)) != 0 ||
+            (GetAsyncKeyState(VK_RBUTTON) & unchecked((short)0x8000)) != 0 ||
+            (GetAsyncKeyState(VK_MBUTTON) & unchecked((short)0x8000)) != 0 ||
+            (GetAsyncKeyState(VK_XBUTTON1) & unchecked((short)0x8000)) != 0 ||
+            (GetAsyncKeyState(VK_XBUTTON2) & unchecked((short)0x8000)) != 0;
     }
 
     public static bool IsClickThroughModifierDown()
@@ -4117,6 +4488,51 @@ internal static class NativeMethods
         }
 
         return builder.ToString();
+    }
+
+    private static bool IsCurrentProcessWindow(IntPtr handle)
+    {
+        try
+        {
+            uint processId;
+            GetWindowThreadProcessId(handle, out processId);
+            return processId == (uint)Process.GetCurrentProcess().Id;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsSeelenUiWindow(IntPtr handle)
+    {
+        string className = GetWindowClassName(handle);
+        if (ContainsSeelen(className))
+        {
+            return true;
+        }
+
+        try
+        {
+            uint processId;
+            GetWindowThreadProcessId(handle, out processId);
+            if (processId == 0)
+            {
+                return false;
+            }
+
+            return ContainsSeelen(TryGetProcessImagePath((int)processId));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool ContainsSeelen(string value)
+    {
+        return !string.IsNullOrEmpty(value) &&
+            value.IndexOf("seelen", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     public static string DescribeProcessMachine()

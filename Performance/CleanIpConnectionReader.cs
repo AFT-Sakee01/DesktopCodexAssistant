@@ -103,11 +103,18 @@ internal sealed class CleanIpConnectionReader : IDisposable
 
             bool manualRefresh = manualRefreshToken != this.lastManualRefreshToken;
             bool firstRefresh = this.lastRefreshUtc == DateTime.MinValue || !this.snapshot.CheckedAtKnown;
+            int refreshIntervalSeconds = settings == null
+                ? WidgetSettings.DefaultConnectionCheckIntervalSeconds
+                : settings.ConnectionCheckIntervalSeconds;
+            refreshIntervalSeconds = Math.Max(
+                WidgetSettings.MinConnectionCheckIntervalSeconds,
+                Math.Min(WidgetSettings.MaxConnectionCheckIntervalSeconds, refreshIntervalSeconds));
+            bool configuredRefresh = !firstRefresh && (now - this.lastRefreshUtc).TotalSeconds >= refreshIntervalSeconds;
             bool hourlyRefresh = this.nextHourlyRefreshLocal != DateTime.MinValue && nowLocal >= this.nextHourlyRefreshLocal;
             bool errorRetry = this.snapshot.CheckedAtKnown && !this.snapshot.Success && IsErrorRetrySlotDue(nowLocal);
             bool forcedRefresh = this.forceRefreshRequested;
 
-            if (!this.requestRunning && (firstRefresh || connectedNow || manualRefresh || hourlyRefresh || errorRetry || forcedRefresh))
+            if (!this.requestRunning && (firstRefresh || connectedNow || manualRefresh || configuredRefresh || hourlyRefresh || errorRetry || forcedRefresh))
             {
                 this.requestRunning = true;
                 this.forceRefreshRequested = false;
@@ -123,6 +130,10 @@ internal sealed class CleanIpConnectionReader : IDisposable
                 {
                     this.lastManualRefreshToken = manualRefreshToken;
                     trigger = "手动刷新";
+                }
+                else if (configuredRefresh)
+                {
+                    trigger = "定时间隔";
                 }
                 else if (connectedNow)
                 {
@@ -142,7 +153,7 @@ internal sealed class CleanIpConnectionReader : IDisposable
                     trigger = "首次检测";
                 }
 
-                if (firstRefresh || connectedNow || hourlyRefresh || this.nextHourlyRefreshLocal == DateTime.MinValue)
+                if (firstRefresh || connectedNow || configuredRefresh || hourlyRefresh || this.nextHourlyRefreshLocal == DateTime.MinValue)
                 {
                     ScheduleNextHourlyRefresh(nowLocal);
                 }

@@ -23,6 +23,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private const int EmSetCueBanner = 0x1501;
     private readonly WidgetForm owner;
     private readonly System.Windows.Forms.Timer previewTimer;
+    private readonly System.Windows.Forms.Timer footerStatusTimer;
     private WidgetSettings baseline;
     private NumericUpDown widthBox;
     private NumericUpDown heightBox;
@@ -60,6 +61,8 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private NumericUpDown operationLeftOffsetBox;
     private NumericUpDown operationBottomOffsetBox;
     private NumericUpDown operationTransparencyBox;
+    private NumericUpDown autoHoverOpacityIdleSecondsBox;
+    private CheckBox forceShowFpsCheck;
     private NumericUpDown codexModelIqTestPassedBox;
     private NumericUpDown codexModelIqBaselineBox;
     private NumericUpDown codexModelTokenEfficiencyTestBox;
@@ -114,20 +117,42 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private ComboBox thermalTestCombo;
     private ComboBox performanceModeCombo;
     private ComboBox clickThroughCombo;
+    private ComboBox networkAdapterCombo;
+    private ComboBox codexModelIqBaselineModeCombo;
+    private ComboBox codexModelTokenEfficiencyBaselineModeCombo;
+    private ComboBox codexModelTimeEfficiencyBaselineModeCombo;
+    private TableLayoutPanel codexRadarModelButtonGrid;
+    private readonly List<Button> codexRadarModelButtons = new List<Button>();
+    private string selectedCodexRadarModelKey;
+    private ComboBox displayTimeZoneModeCombo;
+    private ComboBox displayTimeZoneCombo;
+    private Label displayTimeZoneOffsetLabel;
+    private Label beijingMidnightLabel;
     private Button alertTestButton;
-    private Button codexRadarTestButton;
-    private Button serviceHealthTestButton;
+    private Button codexRadarRandomModeButton;
+    private Button codexRadarRandomRefreshButton;
+    private CheckBox codexRadarRandomAutoRefreshCheck;
     private Button cleanIpBadgeTestButton;
     private Button connectionCheckManualRefreshButton;
     private Button networkStatusTestButton;
     private Button gfwProbeTestButton;
-    private Button extraResetNotificationTestButton;
-    private Button radarOpenNotificationTestButton;
+    private Button cloudEndpointTestButton;
+    private int codexRadarRandomTestRefreshToken;
     private CheckBox startupCheck;
     private CheckBox hoverOpacityCheck;
+    private CheckBox autoHoverOpacityIdleCheck;
+    private CheckBox autoHoverOpacityMaximizedCheck;
+    private CheckBox burnInHiddenModeColorProtectionCheck;
+    private CheckBox seelenDockForegroundPulseCheck;
+    private CheckBox ctrlDRecoveryPulseCheck;
+    private CheckBox powerResumeRestartCheck;
     private CheckBox codexModelIqTestCheck;
     private CheckBox codexModelEfficiencyTestCheck;
     private CheckBox gfwProbeCheck;
+    private CheckBox cloudRegionJapanCheck;
+    private CheckBox cloudRegionAsiaPacificCheck;
+    private CheckBox cloudRegionNorthAmericaCheck;
+    private CheckBox cloudRegionEuropeCheck;
     private FlowLayoutPanel availableMetricsPanel;
     private TableLayoutPanel metricSlotsPanel;
     private Panel[] metricSlotPanels;
@@ -135,12 +160,14 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private Button[] settingsNavigationButtons;
     private Control[] settingsPages;
     private TextBox settingsSearchBox;
+    private Label footerStatusLabel;
     private int selectedSettingsPageIndex;
     private bool messageFilterRegistered;
     private string draggedMetricId;
     private int draggedSourceSlotIndex;
     private int gfwProbeManualRefreshToken;
     private int connectionCheckManualRefreshToken;
+    private int cloudEndpointTestSeed;
     private bool initializing;
     private bool saved;
 
@@ -149,11 +176,11 @@ internal sealed class SettingsForm : Form, IMessageFilter
         "运行",
         "主窗口",
         "CodexRadar",
+        "时区",
         "功耗模块",
         "网络监控",
         "连接检测",
-        "操作模块",
-        "栏目"
+        "操作模块"
     };
 
     public bool OwnerFormClosing { get; set; }
@@ -166,6 +193,9 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.previewTimer = new System.Windows.Forms.Timer();
         this.previewTimer.Interval = PreviewDebounceMs;
         this.previewTimer.Tick += OnPreviewTimerTick;
+        this.footerStatusTimer = new System.Windows.Forms.Timer();
+        this.footerStatusTimer.Interval = 5000;
+        this.footerStatusTimer.Tick += OnFooterStatusTimerTick;
 
         this.Text = "性能小窗设置";
         this.FormBorderStyle = FormBorderStyle.Sizable;
@@ -217,6 +247,9 @@ internal sealed class SettingsForm : Form, IMessageFilter
 
         this.previewTimer.Tick -= OnPreviewTimerTick;
         this.previewTimer.Dispose();
+        this.footerStatusTimer.Stop();
+        this.footerStatusTimer.Tick -= OnFooterStatusTimerTick;
+        this.footerStatusTimer.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -243,14 +276,14 @@ internal sealed class SettingsForm : Form, IMessageFilter
         }
 
         int delta = unchecked((short)((long)m.WParam >> 16));
-        SettingsPagePanel page = GetSelectedSettingsPage();
-        if (page != null && page.ScrollByMouseWheelDelta(delta))
+        SettingsNavigationPanel navigation = GetNavigationPanelAt(cursor);
+        if (navigation != null && navigation.ScrollByMouseWheelDelta(delta))
         {
             return true;
         }
 
-        SettingsNavigationPanel navigation = GetNavigationPanelAt(cursor);
-        if (navigation != null && navigation.ScrollByMouseWheelDelta(delta))
+        SettingsPagePanel page = GetSelectedSettingsPageAt(cursor);
+        if (page != null && page.ScrollByMouseWheelDelta(delta))
         {
             return true;
         }
@@ -295,11 +328,11 @@ internal sealed class SettingsForm : Form, IMessageFilter
             BuildRuntimeTab(),
             BuildWidgetTab(),
             BuildCodexRadarTab(),
+            BuildTimeZoneTab(),
             BuildPowerTab(),
             BuildNetworkMonitorTab(),
             BuildConnectionCheckTab(),
-            BuildOperationTab(),
-            BuildMetricsTab()
+            BuildOperationTab()
         };
 
         for (int i = 0; i < this.settingsPages.Length; i++)
@@ -472,6 +505,18 @@ internal sealed class SettingsForm : Form, IMessageFilter
         return this.settingsPages[this.selectedSettingsPageIndex] as SettingsPagePanel;
     }
 
+    private SettingsPagePanel GetSelectedSettingsPageAt(Point screenPoint)
+    {
+        SettingsPagePanel page = GetSelectedSettingsPage();
+        if (page == null)
+        {
+            return null;
+        }
+
+        Point local = page.PointToClient(screenPoint);
+        return page.ClientRectangle.Contains(local) ? page : null;
+    }
+
     private SettingsNavigationPanel GetNavigationPanelAt(Point screenPoint)
     {
         if (this.settingsNavigationButtons == null || this.settingsNavigationButtons.Length == 0)
@@ -576,6 +621,11 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.operationBottomOffsetBox = BuildNumberBox(WidgetSettings.MinOperationOffset, WidgetSettings.MaxOperationOffset);
         this.operationTransparencyBox = BuildNumberBox(WidgetSettings.MinBackgroundTransparency, WidgetSettings.MaxBackgroundTransparency);
         this.operationTransparencyBox.Increment = 1;
+        this.autoHoverOpacityIdleSecondsBox = BuildNumberBox(
+            WidgetSettings.MinAutoHoverOpacityIdleSeconds,
+            WidgetSettings.MaxAutoHoverOpacityIdleSeconds);
+        this.autoHoverOpacityIdleSecondsBox.Increment = 1;
+        this.autoHoverOpacityIdleSecondsBox.Width = 120;
         this.codexModelIqTestPassedBox = BuildNumberBox(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed);
         this.codexModelIqTestPassedBox.Increment = 1;
         this.codexModelIqBaselineBox = BuildNumberBox(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed);
@@ -667,26 +717,45 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.powerThermalAutoDirectionCombo = BuildCombo();
         this.performanceModeCombo = BuildCombo();
         this.clickThroughCombo = BuildCombo();
+        this.networkAdapterCombo = BuildCombo();
+        this.codexModelIqBaselineModeCombo = BuildCombo();
+        this.codexModelTokenEfficiencyBaselineModeCombo = BuildCombo();
+        this.codexModelTimeEfficiencyBaselineModeCombo = BuildCombo();
+        this.selectedCodexRadarModelKey = this.baseline.CodexRadarModelKey;
+        this.displayTimeZoneModeCombo = BuildCombo();
+        this.displayTimeZoneCombo = BuildCombo();
+        this.displayTimeZoneOffsetLabel = BuildSettingsInfoLabel();
+        this.beijingMidnightLabel = BuildSettingsInfoLabel();
         this.alertTestButton = BuildToggleButton();
-        this.codexRadarTestButton = BuildCodexRadarTestButton();
-        this.serviceHealthTestButton = BuildServiceHealthTestButton();
+        this.codexRadarRandomModeButton = BuildCodexRadarRandomModeButton();
+        this.codexRadarRandomRefreshButton = BuildCodexRadarRandomRefreshButton();
+        this.codexRadarRandomAutoRefreshCheck = BuildCheckBox("自动刷新");
+        this.codexRadarRandomAutoRefreshCheck.CheckedChanged += delegate
+        {
+            UpdateCodexRadarRandomTestControls();
+        };
         this.cleanIpBadgeTestButton = BuildCleanIpBadgeTestButton();
         this.connectionCheckManualRefreshButton = BuildConnectionCheckManualRefreshButton();
         this.networkStatusTestButton = BuildNetworkStatusTestButton();
         this.gfwProbeTestButton = BuildGfwProbeTestButton();
-        this.extraResetNotificationTestButton = BuildNotificationTestButton(
-            "额外重置",
-            delegate { this.owner.TestCodexExtraResetNotification(); });
-        this.radarOpenNotificationTestButton = BuildNotificationTestButton(
-            "速蹬开启",
-            delegate { this.owner.TestCodexRadarOpenNotification(); });
-
+        this.cloudEndpointTestButton = BuildCloudEndpointTestButton();
         this.startupCheck = BuildCheckBox("开机自动启动");
         this.hoverOpacityCheck = BuildCheckBox("悬停透明 95%");
+        this.autoHoverOpacityIdleCheck = BuildCheckBox("鼠标空闲后增高透明度");
+        this.autoHoverOpacityMaximizedCheck = BuildCheckBox("前台最大化窗口时增高透明度");
+        this.burnInHiddenModeColorProtectionCheck = BuildCheckBox("隐藏模式反色防烧屏");
+        this.forceShowFpsCheck = BuildCheckBox("强制显示FPS模式");
+        this.seelenDockForegroundPulseCheck = BuildCheckBox("Seelen Dock 自动拉前");
+        this.ctrlDRecoveryPulseCheck = BuildCheckBox("Ctrl+D 后延迟拉前");
+        this.powerResumeRestartCheck = BuildCheckBox("休眠唤醒后重启");
         this.powerThermalAutoSizeCheck = BuildCheckBox("启用自动大小");
         this.codexModelIqTestCheck = BuildCheckBox("覆盖实时 IQ 数据");
         this.codexModelEfficiencyTestCheck = BuildCheckBox("覆盖实时效率数据");
         this.gfwProbeCheck = BuildCheckBox("启用 GFW 检测");
+        this.cloudRegionJapanCheck = BuildCheckBox("日本");
+        this.cloudRegionAsiaPacificCheck = BuildCheckBox("亚太");
+        this.cloudRegionNorthAmericaCheck = BuildCheckBox("北美");
+        this.cloudRegionEuropeCheck = BuildCheckBox("欧洲");
 
         this.metricSlotPanels = new Panel[WidgetSettings.DefaultMetricOrder.Length];
     }
@@ -696,6 +765,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.visibilityCombo.Items.Add(new ComboOption("仅桌面可见", WidgetVisibilityMode.DesktopOnly));
         this.visibilityCombo.Items.Add(new ComboOption("一直可见", WidgetVisibilityMode.AlwaysVisible));
         this.visibilityCombo.Items.Add(new ComboOption("仅全屏不可见", WidgetVisibilityMode.HideWhenFullscreen));
+        this.performanceModeCombo.Items.Add(new ComboOption("根据 Windows 电源模式自动切换", WidgetPerformanceMode.WindowsPowerMode));
         this.performanceModeCombo.Items.Add(new ComboOption("性能", WidgetPerformanceMode.Smooth));
         this.performanceModeCombo.Items.Add(new ComboOption("均衡", WidgetPerformanceMode.Balanced));
         this.performanceModeCombo.Items.Add(new ComboOption("省电", WidgetPerformanceMode.BatterySaver));
@@ -707,6 +777,109 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.thermalTestCombo.Items.Add(new ComboOption("关闭", ThermalTestMode.Off));
         this.thermalTestCombo.Items.Add(new ComboOption("模拟 75 度", ThermalTestMode.Simulate75));
         this.thermalTestCombo.Items.Add(new ComboOption("模拟 100 度", ThermalTestMode.Simulate100));
+        PopulateCodexBaselineModeOptions(this.codexModelIqBaselineModeCombo);
+        PopulateCodexBaselineModeOptions(this.codexModelTokenEfficiencyBaselineModeCombo);
+        PopulateCodexBaselineModeOptions(this.codexModelTimeEfficiencyBaselineModeCombo);
+        this.displayTimeZoneModeCombo.Items.Add(new ComboOption("自动使用系统时区", DisplayTimeZoneMode.Automatic));
+        this.displayTimeZoneModeCombo.Items.Add(new ComboOption("手动选择时区", DisplayTimeZoneMode.Manual));
+        PopulateTimeZoneOptions();
+        PopulateNetworkAdapterOptions();
+    }
+
+    private static void PopulateCodexBaselineModeOptions(ComboBox combo)
+    {
+        combo.Items.Add(new ComboOption("绝对值", CodexModelBaselineMode.Absolute));
+        combo.Items.Add(new ComboOption("近 7 日平均", CodexModelBaselineMode.Recent7Average));
+        combo.Items.Add(new ComboOption("近 30 日平均", CodexModelBaselineMode.Recent30Average));
+        combo.Items.Add(new ComboOption("全记录平均", CodexModelBaselineMode.AllRecordsAverage));
+    }
+
+    private void PopulateTimeZoneOptions()
+    {
+        this.displayTimeZoneCombo.Items.Clear();
+        try
+        {
+            foreach (TimeZoneInfo zone in TimeZoneInfo.GetSystemTimeZones())
+            {
+                string text = FormatUtcOffset(zone.BaseUtcOffset) + "  " + zone.DisplayName;
+                this.displayTimeZoneCombo.Items.Add(new ComboOption(text, zone.Id));
+            }
+        }
+        catch
+        {
+        }
+
+        if (this.displayTimeZoneCombo.Items.Count == 0)
+        {
+            this.displayTimeZoneCombo.Items.Add(
+                new ComboOption(TimeZoneInfo.Local.DisplayName, TimeZoneInfo.Local.Id));
+        }
+    }
+
+    private void PopulateNetworkAdapterOptions()
+    {
+        if (this.networkAdapterCombo == null)
+        {
+            return;
+        }
+
+        this.networkAdapterCombo.Items.Clear();
+        this.networkAdapterCombo.Items.Add(new ComboOption("自动选择", string.Empty));
+        try
+        {
+            NetworkInterface[] adapters = NetworkInterface.GetAllNetworkInterfaces();
+            Array.Sort(adapters, CompareNetworkInterfacesByName);
+            for (int i = 0; i < adapters.Length; i++)
+            {
+                NetworkInterface adapter = adapters[i];
+                if (adapter == null)
+                {
+                    continue;
+                }
+
+                string id = adapter.Id ?? string.Empty;
+                if (id.Length == 0)
+                {
+                    continue;
+                }
+
+                string text = FallbackText(adapter.Name, "Network") + " | " +
+                    adapter.OperationalStatus.ToString() + " | " +
+                    FormatInterfaceTypeForSettings(adapter.NetworkInterfaceType);
+                this.networkAdapterCombo.Items.Add(new ComboOption(text, id));
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static string FallbackText(string value, string fallback)
+    {
+        return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+    }
+
+    private static int CompareNetworkInterfacesByName(NetworkInterface left, NetworkInterface right)
+    {
+        return string.Compare(
+            left == null ? string.Empty : left.Name,
+            right == null ? string.Empty : right.Name,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string FormatInterfaceTypeForSettings(NetworkInterfaceType type)
+    {
+        if (type == NetworkInterfaceType.Wireless80211)
+        {
+            return "Wi-Fi";
+        }
+
+        if (type == NetworkInterfaceType.Ethernet || type == NetworkInterfaceType.GigabitEthernet)
+        {
+            return "Ethernet";
+        }
+
+        return type.ToString();
     }
 
     private void WireControlPairs()
@@ -756,16 +929,20 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private SettingsPagePanel BuildRuntimeTab()
     {
         SettingsPagePanel page = BuildTabPage("运行");
-        TableLayoutPanel section = BuildSettingsSection("性能和交互", 6);
+        TableLayoutPanel section = BuildSettingsSection("性能和交互", 10);
         AddEditorRow(section, 1, "性能模式", this.performanceModeCombo);
         AddEditorRow(section, 2, "可见性", this.visibilityCombo);
         AddEditorRow(section, 3, "点击穿透", this.clickThroughCombo);
         AddCheckRow(section, 4, "启动", this.startupCheck);
         AddCheckRow(section, 5, "透明交互", this.hoverOpacityCheck);
-        AddLabel(section, 6, "告警测试");
+        AddCheckRow(section, 6, "防烧屏空闲", this.autoHoverOpacityIdleCheck);
+        AddEditorRow(section, 7, "空闲秒数", this.autoHoverOpacityIdleSecondsBox);
+        AddCheckRow(section, 8, "最大化窗口", this.autoHoverOpacityMaximizedCheck);
+        AddCheckRow(section, 9, "隐藏反色", this.burnInHiddenModeColorProtectionCheck);
+        AddLabel(section, 10, "告警测试");
         Control alertEditor = BuildButtonEditor(this.alertTestButton);
         section.SetColumnSpan(alertEditor, 2);
-        section.Controls.Add(alertEditor, 1, 6);
+        section.Controls.Add(alertEditor, 1, 10);
         page.Controls.Add(section);
         return page;
     }
@@ -787,33 +964,80 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private SettingsPagePanel BuildCodexRadarTab()
     {
         SettingsPagePanel page = BuildTabPage("CodexRadar");
-        TableLayoutPanel section = BuildSettingsSection("CodexRadar 模块", 20);
+        TableLayoutPanel section = BuildSettingsSection("CodexRadar 模块", 21);
         AddSliderRow(section, 1, "模块宽度", this.codexRadarWidthBox, this.codexRadarWidthSlider);
         AddSliderRow(section, 2, "模块高度", this.codexRadarHeightBox, this.codexRadarHeightSlider);
         AddSliderRow(section, 3, "位置 X", this.codexRadarLeftXBox, this.codexRadarLeftXSlider);
         AddSliderRow(section, 4, "位置 Y", this.codexRadarBottomYBox, this.codexRadarBottomYSlider);
         AddSliderRow(section, 5, "背景透明度", this.codexRadarTransparencyBox, this.codexRadarTransparencySlider);
-        AddLabel(section, 6, "Radar测试");
-        Control radarEditor = BuildButtonEditor(this.codexRadarTestButton);
-        section.SetColumnSpan(radarEditor, 2);
-        section.Controls.Add(radarEditor, 1, 6);
-        AddLabel(section, 7, "网站检测测试");
-        Control healthEditor = BuildButtonEditor(this.serviceHealthTestButton);
-        section.SetColumnSpan(healthEditor, 2);
-        section.Controls.Add(healthEditor, 1, 7);
-        AddCheckRow(section, 8, "IQ测试启用", this.codexModelIqTestCheck);
-        AddSliderRow(section, 9, "IQ测试通过数", this.codexModelIqTestPassedBox, this.codexModelIqTestPassedSlider);
-        AddSliderRow(section, 10, "IQ正常基准", this.codexModelIqBaselineBox, this.codexModelIqBaselineSlider);
-        AddEditorRow(section, 11, "Token基线通过", this.codexModelTokenEfficiencyBaselinePassedBox);
-        AddEditorRow(section, 12, "Token基线Token", this.codexModelTokenEfficiencyBaselineTokensBox);
-        AddEditorRow(section, 13, "时间基线通过", this.codexModelTimeEfficiencyBaselinePassedBox);
-        AddEditorRow(section, 14, "时间基线秒", this.codexModelTimeEfficiencyBaselineSecondsBox);
-        AddSliderRow(section, 15, "Token低效阈值", this.codexModelTokenEfficiencyLowThresholdBox, this.codexModelTokenEfficiencyLowThresholdSlider);
-        AddSliderRow(section, 16, "时间低效阈值", this.codexModelTimeEfficiencyLowThresholdBox, this.codexModelTimeEfficiencyLowThresholdSlider);
-        AddCheckRow(section, 17, "效率测试启用", this.codexModelEfficiencyTestCheck);
-        AddSliderRow(section, 18, "Token效率测试", this.codexModelTokenEfficiencyTestBox, this.codexModelTokenEfficiencyTestSlider);
-        AddSliderRow(section, 19, "时间效率测试", this.codexModelTimeEfficiencyTestBox, this.codexModelTimeEfficiencyTestSlider);
-        AddCheckRow(section, 20, "通知测试", this.extraResetNotificationTestButton, this.radarOpenNotificationTestButton);
+        AddLabel(section, 6, "窗口测试");
+        Control randomTestEditor = BuildCodexRadarRandomTestEditor();
+        section.SetColumnSpan(randomTestEditor, 2);
+        section.Controls.Add(randomTestEditor, 1, 6);
+        AddCheckRow(section, 7, "IQ测试启用", this.codexModelIqTestCheck);
+        AddSliderRow(section, 8, "IQ测试通过数", this.codexModelIqTestPassedBox, this.codexModelIqTestPassedSlider);
+        AddEditorRow(section, 9, "IQ基准", this.codexModelIqBaselineModeCombo);
+        AddSliderRow(section, 10, "IQ绝对基准", this.codexModelIqBaselineBox, this.codexModelIqBaselineSlider);
+        AddEditorRow(section, 11, "Token基准", this.codexModelTokenEfficiencyBaselineModeCombo);
+        AddEditorRow(section, 12, "Token基线通过", this.codexModelTokenEfficiencyBaselinePassedBox);
+        AddEditorRow(section, 13, "Token基线Token", this.codexModelTokenEfficiencyBaselineTokensBox);
+        AddEditorRow(section, 14, "时间基准", this.codexModelTimeEfficiencyBaselineModeCombo);
+        AddEditorRow(section, 15, "时间基线通过", this.codexModelTimeEfficiencyBaselinePassedBox);
+        AddEditorRow(section, 16, "时间基线秒", this.codexModelTimeEfficiencyBaselineSecondsBox);
+        AddSliderRow(section, 17, "Token低效阈值", this.codexModelTokenEfficiencyLowThresholdBox, this.codexModelTokenEfficiencyLowThresholdSlider);
+        AddSliderRow(section, 18, "时间低效阈值", this.codexModelTimeEfficiencyLowThresholdBox, this.codexModelTimeEfficiencyLowThresholdSlider);
+        AddCheckRow(section, 19, "效率测试启用", this.codexModelEfficiencyTestCheck);
+        AddSliderRow(section, 20, "Token效率测试", this.codexModelTokenEfficiencyTestBox, this.codexModelTokenEfficiencyTestSlider);
+        AddSliderRow(section, 21, "时间效率测试", this.codexModelTimeEfficiencyTestBox, this.codexModelTimeEfficiencyTestSlider);
+        page.Controls.Add(BuildCodexRadarModelSection());
+        page.Controls.Add(section);
+        return page;
+    }
+
+    private Control BuildCodexRadarRandomTestEditor()
+    {
+        FlowLayoutPanel panel = new FlowLayoutPanel();
+        panel.Dock = DockStyle.Fill;
+        panel.FlowDirection = FlowDirection.LeftToRight;
+        panel.WrapContents = false;
+        panel.BackColor = DesignTokens.Colors.Surface;
+        panel.Padding = new Padding(0, 8, 0, 0);
+        panel.Controls.Add(this.codexRadarRandomModeButton);
+        panel.Controls.Add(this.codexRadarRandomRefreshButton);
+        panel.Controls.Add(this.codexRadarRandomAutoRefreshCheck);
+        return panel;
+    }
+
+    private Control BuildCodexRadarModelSection()
+    {
+        TableLayoutPanel section = BuildSettingsSection("检测模型", 1);
+        section.RowStyles[1] = new RowStyle(SizeType.AutoSize);
+        this.codexRadarModelButtonGrid = new TableLayoutPanel();
+        this.codexRadarModelButtonGrid.Dock = DockStyle.Top;
+        this.codexRadarModelButtonGrid.AutoSize = true;
+        this.codexRadarModelButtonGrid.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        this.codexRadarModelButtonGrid.BackColor = DesignTokens.Colors.Surface;
+        this.codexRadarModelButtonGrid.Margin = new Padding(0, 4, 0, 0);
+        this.codexRadarModelButtonGrid.ColumnCount = 5;
+        for (int i = 0; i < 5; i++)
+        {
+            this.codexRadarModelButtonGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20.0f));
+        }
+
+        RebuildCodexRadarModelButtons();
+        section.SetColumnSpan(this.codexRadarModelButtonGrid, 2);
+        section.Controls.Add(this.codexRadarModelButtonGrid, 1, 1);
+        return section;
+    }
+
+    private SettingsPagePanel BuildTimeZoneTab()
+    {
+        SettingsPagePanel page = BuildTabPage("时区");
+        TableLayoutPanel section = BuildSettingsSection("显示时区", 4);
+        AddEditorRow(section, 1, "时区模式", this.displayTimeZoneModeCombo);
+        AddEditorRow(section, 2, "手动时区", this.displayTimeZoneCombo);
+        AddEditorRow(section, 3, "北京时间差", this.displayTimeZoneOffsetLabel);
+        AddEditorRow(section, 4, "北京时间 0 点", this.beijingMidnightLabel);
         page.Controls.Add(section);
         return page;
     }
@@ -838,22 +1062,35 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private SettingsPagePanel BuildNetworkMonitorTab()
     {
         SettingsPagePanel page = BuildTabPage("网络监控");
-        TableLayoutPanel section = BuildSettingsSection("网络监控模块", 9);
+        TableLayoutPanel section = BuildSettingsSection("网络监控模块", 12);
         AddSliderRow(section, 1, "模块宽度", this.networkMonitorWidthBox, this.networkMonitorWidthSlider);
         AddSliderRow(section, 2, "模块高度", this.networkMonitorHeightBox, this.networkMonitorHeightSlider);
         AddSliderRow(section, 3, "位置 X", this.networkMonitorLeftXBox, this.networkMonitorLeftXSlider);
         AddSliderRow(section, 4, "位置 Y", this.networkMonitorBottomYBox, this.networkMonitorBottomYSlider);
         AddSliderRow(section, 5, "背景透明度", this.networkMonitorTransparencyBox, this.networkMonitorTransparencySlider);
-        AddLabel(section, 6, "网络状态测试");
+        AddEditorRow(section, 6, "网卡选择", this.networkAdapterCombo);
+        AddLabel(section, 7, "网络状态测试");
         Control statusEditor = BuildButtonEditor(this.networkStatusTestButton);
         section.SetColumnSpan(statusEditor, 2);
-        section.Controls.Add(statusEditor, 1, 6);
-        AddCheckRow(section, 7, "GFW检测", this.gfwProbeCheck);
-        AddSliderRow(section, 8, "检测间隔分钟", this.gfwProbeIntervalBox, this.gfwProbeIntervalSlider);
-        AddLabel(section, 9, "立即测试");
+        section.Controls.Add(statusEditor, 1, 7);
+        AddCheckRow(section, 8, "GFW检测", this.gfwProbeCheck);
+        AddSliderRow(section, 9, "检测间隔分钟", this.gfwProbeIntervalBox, this.gfwProbeIntervalSlider);
+        AddCheckRow(
+            section,
+            10,
+            "官方地区",
+            this.cloudRegionJapanCheck,
+            this.cloudRegionAsiaPacificCheck,
+            this.cloudRegionNorthAmericaCheck,
+            this.cloudRegionEuropeCheck);
+        AddLabel(section, 11, "立即测试");
         Control gfwEditor = BuildButtonEditor(this.gfwProbeTestButton);
         section.SetColumnSpan(gfwEditor, 2);
-        section.Controls.Add(gfwEditor, 1, 9);
+        section.Controls.Add(gfwEditor, 1, 11);
+        AddLabel(section, 12, "云服务测试");
+        Control cloudEditor = BuildButtonEditor(this.cloudEndpointTestButton);
+        section.SetColumnSpan(cloudEditor, 2);
+        section.Controls.Add(cloudEditor, 1, 12);
         page.Controls.Add(section);
         return page;
     }
@@ -861,21 +1098,22 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private SettingsPagePanel BuildConnectionCheckTab()
     {
         SettingsPagePanel page = BuildTabPage("连接检测");
-        TableLayoutPanel section = BuildSettingsSection("CleanIP徽标模块", 8);
+        TableLayoutPanel section = BuildSettingsSection("CleanIP徽标模块", 9);
         AddSliderRow(section, 1, "模块宽度", this.connectionCheckWidthBox, this.connectionCheckWidthSlider);
         AddSliderRow(section, 2, "模块高度", this.connectionCheckHeightBox, this.connectionCheckHeightSlider);
         AddSliderRow(section, 3, "位置 X", this.connectionCheckLeftXBox, this.connectionCheckLeftXSlider);
         AddSliderRow(section, 4, "位置 Y", this.connectionCheckBottomYBox, this.connectionCheckBottomYSlider);
         AddSliderRow(section, 5, "背景透明度", this.connectionCheckTransparencyBox, this.connectionCheckTransparencySlider);
         AddSliderRow(section, 6, "白色边框透明度", this.connectionCheckBorderTransparencyBox, this.connectionCheckBorderTransparencySlider);
-        AddLabel(section, 7, "手动刷新");
+        AddSliderRow(section, 7, "自动刷新秒", this.connectionCheckIntervalBox, this.connectionCheckIntervalSlider);
+        AddLabel(section, 8, "手动刷新");
         Control manualEditor = BuildButtonEditor(this.connectionCheckManualRefreshButton);
         section.SetColumnSpan(manualEditor, 2);
-        section.Controls.Add(manualEditor, 1, 7);
-        AddLabel(section, 8, "强制测试");
+        section.Controls.Add(manualEditor, 1, 8);
+        AddLabel(section, 9, "强制测试");
         Control cleanIpEditor = BuildButtonEditor(this.cleanIpBadgeTestButton);
         section.SetColumnSpan(cleanIpEditor, 2);
-        section.Controls.Add(cleanIpEditor, 1, 8);
+        section.Controls.Add(cleanIpEditor, 1, 9);
         page.Controls.Add(section);
         return page;
     }
@@ -883,11 +1121,15 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private SettingsPagePanel BuildOperationTab()
     {
         SettingsPagePanel page = BuildTabPage("操作模块");
-        TableLayoutPanel section = BuildSettingsSection("操作模块", 4);
+        TableLayoutPanel section = BuildSettingsSection("操作模块", 8);
         AddSliderRow(section, 1, "按钮大小", this.operationButtonSizeBox, this.operationButtonSizeSlider);
         AddSliderRow(section, 2, "距左边缘", this.operationLeftOffsetBox, this.operationLeftOffsetSlider);
         AddSliderRow(section, 3, "距底边缘", this.operationBottomOffsetBox, this.operationBottomOffsetSlider);
         AddSliderRow(section, 4, "背景透明度", this.operationTransparencyBox, this.operationTransparencySlider);
+        AddCheckRow(section, 5, "FPS显示", this.forceShowFpsCheck);
+        AddCheckRow(section, 6, "Seelen修复", this.seelenDockForegroundPulseCheck);
+        AddCheckRow(section, 7, "Ctrl+D拉前", this.ctrlDRecoveryPulseCheck);
+        AddCheckRow(section, 8, "唤醒重启", this.powerResumeRestartCheck);
         page.Controls.Add(section);
         return page;
     }
@@ -985,7 +1227,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         return button;
     }
 
-    private Button BuildCodexRadarTestButton()
+    private Button BuildCodexRadarRandomModeButton()
     {
         Button button = new Button();
         button.Width = DesignTokens.Sizes.SettingsButtonWidth;
@@ -1001,7 +1243,13 @@ internal sealed class SettingsForm : Form, IMessageFilter
                 return;
             }
 
-            SetCodexRadarTestButtonMode(GetNextCodexRadarTestMode(GetCodexRadarTestButtonMode()));
+            SetCodexRadarRandomTestEnabled(!GetCodexRadarRandomTestEnabled());
+            if (GetCodexRadarRandomTestEnabled())
+            {
+                this.codexRadarRandomTestRefreshToken++;
+            }
+
+            UpdateCodexRadarRandomTestControls();
             this.saved = false;
             this.owner.PreviewSettings(ReadControls());
         };
@@ -1009,23 +1257,24 @@ internal sealed class SettingsForm : Form, IMessageFilter
         return button;
     }
 
-    private Button BuildServiceHealthTestButton()
+    private Button BuildCodexRadarRandomRefreshButton()
     {
         Button button = new Button();
-        button.Width = DesignTokens.Sizes.SettingsButtonWidth;
+        button.Text = "刷新";
+        button.Width = Math.Max(74, DesignTokens.Sizes.SettingsButtonWidth - 18);
         button.Height = DesignTokens.Sizes.SettingsToggleHeight;
-        button.MinimumSize = new Size(DesignTokens.Sizes.SettingsButtonWidth, DesignTokens.Sizes.SettingsToggleHeight);
+        button.MinimumSize = new Size(button.Width, DesignTokens.Sizes.SettingsToggleHeight);
         button.AutoSize = true;
         button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        button.Padding = new Padding(14, 5, 14, 5);
+        button.Padding = new Padding(12, 5, 12, 5);
         button.Click += delegate
         {
-            if (this.initializing)
+            if (this.initializing || !GetCodexRadarRandomTestEnabled())
             {
                 return;
             }
 
-            SetServiceHealthTestButtonMode(GetNextServiceHealthTestMode(GetServiceHealthTestButtonMode()));
+            this.codexRadarRandomTestRefreshToken++;
             this.saved = false;
             this.owner.PreviewSettings(ReadControls());
         };
@@ -1112,6 +1361,31 @@ internal sealed class SettingsForm : Form, IMessageFilter
         return button;
     }
 
+    private Button BuildCloudEndpointTestButton()
+    {
+        Button button = new Button();
+        button.Width = DesignTokens.Sizes.SettingsButtonWidth;
+        button.Height = DesignTokens.Sizes.SettingsToggleHeight;
+        button.MinimumSize = new Size(DesignTokens.Sizes.SettingsButtonWidth, DesignTokens.Sizes.SettingsToggleHeight);
+        button.AutoSize = true;
+        button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        button.Padding = new Padding(14, 5, 14, 5);
+        button.Click += delegate
+        {
+            if (this.initializing)
+            {
+                return;
+            }
+
+            int current = GetCloudEndpointTestSeed();
+            SetCloudEndpointTestSeed(current == 0 ? CreateCloudEndpointTestSeed() : 0);
+            this.saved = false;
+            this.owner.PreviewSettings(ReadControls());
+        };
+        StyleButton(button, false);
+        return button;
+    }
+
     private Button BuildNetworkStatusTestButton()
     {
         Button button = new Button();
@@ -1172,17 +1446,14 @@ internal sealed class SettingsForm : Form, IMessageFilter
                 this.baseline = settings.Clone();
                 this.baseline.Normalize();
                 this.saved = true;
-                MessageBox.Show(this, "保存完成。", "设置", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ShowFooterStatus("保存完成", false);
             }
             catch (Exception ex)
             {
                 Program.LogException(ex);
-                MessageBox.Show(
-                    this,
-                    "保存失败。\r\n错误码: 0x" + ex.HResult.ToString("X8", CultureInfo.InvariantCulture) + "\r\n" + ex.Message,
-                    "设置",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
+                ShowFooterStatus(
+                    "保存失败 0x" + ex.HResult.ToString("X8", CultureInfo.InvariantCulture) + ": " + ex.Message,
+                    true);
             }
         };
 
@@ -1236,10 +1507,11 @@ internal sealed class SettingsForm : Form, IMessageFilter
         TableLayoutPanel footer = new TableLayoutPanel();
         footer.Dock = DockStyle.Fill;
         footer.BackColor = DesignTokens.Colors.AppBackground;
-        footer.ColumnCount = 2;
+        footer.ColumnCount = 3;
         footer.RowCount = 1;
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
 
         FlowLayoutPanel leftButtons = new FlowLayoutPanel();
         leftButtons.FlowDirection = FlowDirection.LeftToRight;
@@ -1258,9 +1530,48 @@ internal sealed class SettingsForm : Form, IMessageFilter
         rightButtons.Controls.Add(cancelButton);
         rightButtons.Controls.Add(resetButton);
 
+        this.footerStatusLabel = new Label();
+        this.footerStatusLabel.Dock = DockStyle.Fill;
+        this.footerStatusLabel.Margin = new Padding(8, 12, 8, 0);
+        this.footerStatusLabel.Padding = new Padding(10, 0, 10, 1);
+        this.footerStatusLabel.TextAlign = ContentAlignment.MiddleCenter;
+        this.footerStatusLabel.AutoEllipsis = true;
+        this.footerStatusLabel.BackColor = DesignTokens.Colors.Control;
+        this.footerStatusLabel.ForeColor = DesignTokens.Colors.SuccessText;
+        this.footerStatusLabel.Font = DesignTokens.CreateUIFont(9.5f, FontStyle.Bold);
+        this.footerStatusLabel.UseCompatibleTextRendering = true;
+        this.footerStatusLabel.Visible = false;
+
         footer.Controls.Add(leftButtons, 0, 0);
-        footer.Controls.Add(rightButtons, 1, 0);
+        footer.Controls.Add(this.footerStatusLabel, 1, 0);
+        footer.Controls.Add(rightButtons, 2, 0);
         return footer;
+    }
+
+    private void ShowFooterStatus(string text, bool error)
+    {
+        if (this.footerStatusLabel == null)
+        {
+            return;
+        }
+
+        this.footerStatusTimer.Stop();
+        this.footerStatusLabel.Text = text;
+        this.footerStatusLabel.ForeColor = error ? DesignTokens.Colors.DangerText : DesignTokens.Colors.SuccessText;
+        this.footerStatusLabel.FlatStyle = FlatStyle.Flat;
+        this.footerStatusLabel.Visible = true;
+        this.footerStatusLabel.BringToFront();
+        this.footerStatusTimer.Start();
+    }
+
+    private void OnFooterStatusTimerTick(object sender, EventArgs e)
+    {
+        this.footerStatusTimer.Stop();
+        if (this.footerStatusLabel != null)
+        {
+            this.footerStatusLabel.Visible = false;
+            this.footerStatusLabel.Text = string.Empty;
+        }
     }
 
     private static Size GetDesiredClientSize()
@@ -1356,6 +1667,19 @@ internal sealed class SettingsForm : Form, IMessageFilter
         combo.DrawItem += DrawSettingsComboItem;
         combo.SelectedIndexChanged += OnSettingChanged;
         return combo;
+    }
+
+    private Label BuildSettingsInfoLabel()
+    {
+        Label label = new Label();
+        label.Dock = DockStyle.Fill;
+        label.TextAlign = ContentAlignment.MiddleLeft;
+        label.Font = DesignTokens.CreateUIFont(9.5f, FontStyle.Bold);
+        label.ForeColor = DesignTokens.Colors.Text;
+        label.BackColor = DesignTokens.Colors.Surface;
+        label.AutoEllipsis = true;
+        label.UseCompatibleTextRendering = true;
+        return label;
     }
 
     private static void DrawSettingsComboItem(object sender, DrawItemEventArgs e)
@@ -1716,6 +2040,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
             this.operationButtonSizeBox.Value = settings.OperationButtonSize;
             this.operationLeftOffsetBox.Value = settings.OperationLeftOffset;
             this.operationBottomOffsetBox.Value = settings.OperationBottomOffset;
+            this.autoHoverOpacityIdleSecondsBox.Value = settings.AutoHoverOpacityIdleSeconds;
             this.codexModelIqTestPassedBox.Value = settings.CodexModelIqTestPassed;
             this.codexModelIqBaselineBox.Value = settings.CodexModelIqBaselinePassed;
             this.codexModelTokenEfficiencyTestBox.Value = settings.CodexModelTokenEfficiencyTestPercent;
@@ -1769,6 +2094,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
             this.powerThermalTransparencySlider.Value = settings.PowerThermalTransparencyPercent;
             this.networkMonitorTransparencyBox.Value = settings.NetworkMonitorTransparencyPercent;
             this.networkMonitorTransparencySlider.Value = settings.NetworkMonitorTransparencyPercent;
+            SetNetworkAdapterId(settings.NetworkMonitorAdapterId);
             this.connectionCheckTransparencyBox.Value = settings.ConnectionCheckTransparencyPercent;
             this.connectionCheckTransparencySlider.Value = settings.ConnectionCheckTransparencyPercent;
             this.operationTransparencyBox.Value = settings.OperationBackgroundTransparencyPercent;
@@ -1776,24 +2102,45 @@ internal sealed class SettingsForm : Form, IMessageFilter
             SelectComboValue(this.visibilityCombo, settings.VisibilityMode);
             SelectComboValue(this.performanceModeCombo, settings.PerformanceMode);
             SelectComboValue(this.clickThroughCombo, settings.ClickThroughMode);
+            SelectComboValue(this.codexModelIqBaselineModeCombo, settings.CodexModelIqBaselineMode);
+            SelectComboValue(this.codexModelTokenEfficiencyBaselineModeCombo, settings.CodexModelTokenEfficiencyBaselineMode);
+            SelectComboValue(this.codexModelTimeEfficiencyBaselineModeCombo, settings.CodexModelTimeEfficiencyBaselineMode);
+            SetSelectedCodexRadarModelKey(settings.CodexRadarModelKey);
+            RebuildCodexRadarModelButtons();
+            SelectComboValue(this.displayTimeZoneModeCombo, settings.DisplayTimeZoneMode);
+            SelectComboValue(this.displayTimeZoneCombo, settings.DisplayTimeZoneId);
             this.startupCheck.Checked = settings.StartupEnabled;
             this.hoverOpacityCheck.Checked = settings.HoverOpacityEnabled;
+            this.autoHoverOpacityIdleCheck.Checked = settings.AutoHoverOpacityIdleEnabled;
+            this.autoHoverOpacityMaximizedCheck.Checked = settings.AutoHoverOpacityMaximizedEnabled;
+            this.burnInHiddenModeColorProtectionCheck.Checked = settings.BurnInHiddenModeColorProtectionEnabled;
+            this.forceShowFpsCheck.Checked = settings.ForceShowForegroundFpsEnabled;
+            this.seelenDockForegroundPulseCheck.Checked = settings.SeelenDockForegroundPulseEnabled;
+            this.ctrlDRecoveryPulseCheck.Checked = settings.CtrlDRecoveryPulseEnabled;
+            this.powerResumeRestartCheck.Checked = settings.PowerResumeRestartEnabled;
             this.powerThermalAutoSizeCheck.Checked = settings.PowerThermalAutoSizeEnabled;
             SelectComboValue(this.powerThermalAutoDirectionCombo, settings.PowerThermalAutoDirection);
             this.codexModelIqTestCheck.Checked = settings.CodexModelIqTestEnabled;
             this.codexModelEfficiencyTestCheck.Checked = settings.CodexModelEfficiencyTestEnabled;
             this.gfwProbeCheck.Checked = settings.GfwProbeEnabled;
             this.gfwProbeManualRefreshToken = settings.GfwProbeManualRefreshToken;
+            SetCloudEndpointTestSeed(settings.CloudEndpointTestSeed);
+            SetCloudStatusRegionMask(settings.CloudStatusRegionMask);
             this.connectionCheckManualRefreshToken = settings.ConnectionCheckManualRefreshToken;
             SelectComboValue(this.thermalTestCombo, settings.ThermalTestMode);
             SetAlertTestButtonState(settings.AlertTestEnabled);
-            SetCodexRadarTestButtonMode(settings.CodexRadarTestMode);
-            SetServiceHealthTestButtonMode(settings.ServiceHealthTestMode);
+            this.codexRadarRandomTestRefreshToken = settings.CodexRadarRandomTestRefreshToken;
+            SetCodexRadarRandomTestEnabled(settings.CodexRadarRandomTestEnabled);
+            this.codexRadarRandomAutoRefreshCheck.Checked = settings.CodexRadarRandomTestAutoRefresh;
+            UpdateCodexRadarRandomTestControls();
             SetCleanIpBadgeTestButtonMode(settings.CleanIpBadgeTestMode);
             SetNetworkStatusTestButtonMode(settings.NetworkStatusTestMode);
             LoadMetricLayout(settings);
             UpdatePowerThermalAutoControls();
             UpdateGfwProbeControls();
+            UpdateAutoHoverOpacityControls();
+            UpdateTimeZoneControls();
+            UpdateCodexBaselineControls();
         }
         finally
         {
@@ -1817,6 +2164,9 @@ internal sealed class SettingsForm : Form, IMessageFilter
         UpdateOperationPositionRanges((int)this.operationButtonSizeBox.Value);
         UpdatePowerThermalAutoControls();
         UpdateGfwProbeControls();
+        UpdateAutoHoverOpacityControls();
+        UpdateTimeZoneControls();
+        UpdateCodexBaselineControls();
         QueuePreviewSettings();
     }
 
@@ -1855,23 +2205,151 @@ internal sealed class SettingsForm : Form, IMessageFilter
         }
     }
 
+    private void UpdateCodexBaselineControls()
+    {
+        bool iqAbsolute = GetComboBaselineMode(this.codexModelIqBaselineModeCombo) ==
+            CodexModelBaselineMode.Absolute;
+        bool tokenAbsolute = GetComboBaselineMode(this.codexModelTokenEfficiencyBaselineModeCombo) ==
+            CodexModelBaselineMode.Absolute;
+        bool timeAbsolute = GetComboBaselineMode(this.codexModelTimeEfficiencyBaselineModeCombo) ==
+            CodexModelBaselineMode.Absolute;
+
+        SetNumericAndSliderEnabled(this.codexModelIqBaselineBox, this.codexModelIqBaselineSlider, iqAbsolute);
+        SetNumericAndSliderEnabled(this.codexModelTokenEfficiencyBaselinePassedBox, null, tokenAbsolute);
+        SetNumericAndSliderEnabled(this.codexModelTokenEfficiencyBaselineTokensBox, null, tokenAbsolute);
+        SetNumericAndSliderEnabled(this.codexModelTimeEfficiencyBaselinePassedBox, null, timeAbsolute);
+        SetNumericAndSliderEnabled(this.codexModelTimeEfficiencyBaselineSecondsBox, null, timeAbsolute);
+    }
+
+    private static CodexModelBaselineMode GetComboBaselineMode(ComboBox combo)
+    {
+        return (CodexModelBaselineMode)GetComboValue(combo, CodexModelBaselineMode.AllRecordsAverage);
+    }
+
+    private static void SetNumericAndSliderEnabled(NumericUpDown number, TrackBar slider, bool enabled)
+    {
+        if (number != null)
+        {
+            number.Enabled = enabled;
+        }
+
+        if (slider != null)
+        {
+            slider.Enabled = enabled;
+        }
+    }
+
     private void UpdateGfwProbeControls()
     {
-        bool enabled = this.gfwProbeCheck != null && this.gfwProbeCheck.Checked;
         if (this.gfwProbeIntervalBox != null)
         {
-            this.gfwProbeIntervalBox.Enabled = enabled;
+            this.gfwProbeIntervalBox.Enabled = true;
         }
 
         if (this.gfwProbeIntervalSlider != null)
         {
-            this.gfwProbeIntervalSlider.Enabled = enabled;
+            this.gfwProbeIntervalSlider.Enabled = true;
         }
 
         if (this.gfwProbeTestButton != null)
         {
             this.gfwProbeTestButton.Enabled = true;
         }
+
+        if (this.cloudRegionJapanCheck != null)
+        {
+            this.cloudRegionJapanCheck.Enabled = true;
+        }
+
+        if (this.cloudRegionAsiaPacificCheck != null)
+        {
+            this.cloudRegionAsiaPacificCheck.Enabled = true;
+        }
+
+        if (this.cloudRegionNorthAmericaCheck != null)
+        {
+            this.cloudRegionNorthAmericaCheck.Enabled = true;
+        }
+
+        if (this.cloudRegionEuropeCheck != null)
+        {
+            this.cloudRegionEuropeCheck.Enabled = true;
+        }
+    }
+
+    private void UpdateAutoHoverOpacityControls()
+    {
+        bool enabled = this.autoHoverOpacityIdleCheck != null && this.autoHoverOpacityIdleCheck.Checked;
+        if (this.autoHoverOpacityIdleSecondsBox != null)
+        {
+            this.autoHoverOpacityIdleSecondsBox.Enabled = enabled;
+        }
+    }
+
+    private void UpdateTimeZoneControls()
+    {
+        if (this.displayTimeZoneModeCombo == null ||
+            this.displayTimeZoneCombo == null ||
+            this.displayTimeZoneOffsetLabel == null ||
+            this.beijingMidnightLabel == null)
+        {
+            return;
+        }
+
+        DisplayTimeZoneMode mode = (DisplayTimeZoneMode)GetComboValue(
+            this.displayTimeZoneModeCombo,
+            DisplayTimeZoneMode.Automatic);
+        this.displayTimeZoneCombo.Enabled = mode == DisplayTimeZoneMode.Manual;
+
+        TimeZoneInfo selectedZone = mode == DisplayTimeZoneMode.Automatic
+            ? TimeZoneInfo.Local
+            : TimeZoneUtilities.ResolveTimeZone(
+                Convert.ToString(GetComboValue(this.displayTimeZoneCombo, TimeZoneInfo.Local.Id), CultureInfo.InvariantCulture),
+                TimeZoneInfo.Local);
+        TimeZoneInfo beijingZone = TimeZoneUtilities.GetBeijingTimeZone();
+        DateTime utcNow = DateTime.UtcNow;
+        TimeSpan selectedOffset = selectedZone.GetUtcOffset(utcNow);
+        TimeSpan beijingOffset = beijingZone.GetUtcOffset(utcNow);
+        TimeSpan difference = selectedOffset - beijingOffset;
+        string relation = difference == TimeSpan.Zero
+            ? "与北京时间相同"
+            : (difference > TimeSpan.Zero
+                ? "比北京时间快 " + FormatDuration(difference)
+                : "比北京时间慢 " + FormatDuration(difference.Negate()));
+        this.displayTimeZoneOffsetLabel.Text =
+            selectedZone.StandardName + "  " + FormatUtcOffset(selectedOffset) + "，" + relation;
+
+        DateTime beijingDate = TimeZoneInfo.ConvertTimeFromUtc(utcNow, beijingZone).Date;
+        DateTime beijingMidnight = DateTime.SpecifyKind(beijingDate, DateTimeKind.Unspecified);
+        DateTime midnightUtc = TimeZoneInfo.ConvertTimeToUtc(beijingMidnight, beijingZone);
+        DateTime selectedMidnight = TimeZoneInfo.ConvertTimeFromUtc(midnightUtc, selectedZone);
+        int dayDelta = (selectedMidnight.Date - beijingDate).Days;
+        string dayRelation = dayDelta < 0 ? "前一天" : (dayDelta > 0 ? "后一天" : "当天");
+        this.beijingMidnightLabel.Text =
+            dayRelation + " " + selectedMidnight.ToString("HH:mm", CultureInfo.CurrentCulture);
+    }
+
+    private static string FormatUtcOffset(TimeSpan offset)
+    {
+        string sign = offset < TimeSpan.Zero ? "-" : "+";
+        TimeSpan absolute = offset.Duration();
+        return "UTC" + sign +
+            ((int)absolute.TotalHours).ToString("00", CultureInfo.InvariantCulture) + ":" +
+            absolute.Minutes.ToString("00", CultureInfo.InvariantCulture);
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        int totalMinutes = Math.Max(0, (int)Math.Round(duration.TotalMinutes));
+        int hours = totalMinutes / 60;
+        int minutes = totalMinutes % 60;
+        if (minutes == 0)
+        {
+            return hours.ToString(CultureInfo.InvariantCulture) + " 小时";
+        }
+
+        return hours.ToString(CultureInfo.InvariantCulture) + " 小时 " +
+            minutes.ToString(CultureInfo.InvariantCulture) + " 分";
     }
 
     private void UpdatePositionRanges(int width, int height)
@@ -1880,7 +2358,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.initializing = true;
         try
         {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            Rectangle bounds = GetUsableWorkArea();
             int leftMin = bounds.Left;
             int leftMax = Math.Max(bounds.Left, bounds.Right - width);
             int bottomMin = Math.Min(bounds.Bottom - 1, bounds.Top + height - 1);
@@ -1903,7 +2381,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.initializing = true;
         try
         {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            Rectangle bounds = GetUsableWorkArea();
             int leftMin = bounds.Left;
             int leftMax = Math.Max(bounds.Left, bounds.Right - width);
             int bottomMin = Math.Min(bounds.Bottom - 1, bounds.Top + height - 1);
@@ -1926,7 +2404,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.initializing = true;
         try
         {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            Rectangle bounds = GetUsableWorkArea();
             int leftMin = bounds.Left;
             int leftMax = Math.Max(bounds.Left, bounds.Right - width);
             int bottomMin = Math.Min(bounds.Bottom - 1, bounds.Top + height - 1);
@@ -1949,7 +2427,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.initializing = true;
         try
         {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            Rectangle bounds = GetUsableWorkArea();
             int leftMin = bounds.Left;
             int leftMax = Math.Max(bounds.Left, bounds.Right - width);
             int bottomMin = Math.Min(bounds.Bottom - 1, bounds.Top + height - 1);
@@ -1972,7 +2450,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.initializing = true;
         try
         {
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
+            Rectangle bounds = GetUsableWorkArea();
             int leftMin = bounds.Left;
             int leftMax = Math.Max(bounds.Left, bounds.Right - width);
             int bottomMin = Math.Min(bounds.Bottom - 1, bounds.Top + height - 1);
@@ -1998,7 +2476,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
             using (Graphics g = this.CreateGraphics())
             {
                 float scale = Math.Max(1.0f, g.DpiX / 96.0f);
-                Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+                Rectangle workArea = GetUsableWorkArea();
                 int maxLeftOffset = Math.Max(0, workArea.Width - WidgetSettings.GetOperationWindowWidth(buttonSize, scale));
                 int maxBottomOffset = Math.Max(0, workArea.Height - WidgetSettings.GetOperationWindowHeight(buttonSize, scale));
 
@@ -2072,10 +2550,13 @@ internal sealed class SettingsForm : Form, IMessageFilter
         settings.NetworkMonitorLeftX = (int)this.networkMonitorLeftXBox.Value;
         settings.NetworkMonitorBottomY = (int)this.networkMonitorBottomYBox.Value;
         settings.NetworkMonitorTransparencyPercent = (int)this.networkMonitorTransparencyBox.Value;
+        settings.NetworkMonitorAdapterId = GetNetworkAdapterId();
         settings.NetworkStatusTestMode = GetNetworkStatusTestButtonMode();
         settings.GfwProbeEnabled = this.gfwProbeCheck.Checked;
         settings.GfwProbeIntervalMinutes = (int)this.gfwProbeIntervalBox.Value;
         settings.GfwProbeManualRefreshToken = this.gfwProbeManualRefreshToken;
+        settings.CloudEndpointTestSeed = GetCloudEndpointTestSeed();
+        settings.CloudStatusRegionMask = GetCloudStatusRegionMask();
         settings.ConnectionCheckWidth = (int)this.connectionCheckWidthBox.Value;
         settings.ConnectionCheckHeight = (int)this.connectionCheckHeightBox.Value;
         settings.ConnectionCheckLeftX = (int)this.connectionCheckLeftXBox.Value;
@@ -2088,43 +2569,500 @@ internal sealed class SettingsForm : Form, IMessageFilter
         settings.OperationLeftOffset = (int)this.operationLeftOffsetBox.Value;
         settings.OperationBottomOffset = (int)this.operationBottomOffsetBox.Value;
         settings.OperationBackgroundTransparencyPercent = (int)this.operationTransparencyBox.Value;
+        settings.ForceShowForegroundFpsEnabled = this.forceShowFpsCheck.Checked;
+        settings.SeelenDockForegroundPulseEnabled = this.seelenDockForegroundPulseCheck.Checked;
+        settings.CtrlDRecoveryPulseEnabled = this.ctrlDRecoveryPulseCheck.Checked;
+        settings.PowerResumeRestartEnabled = this.powerResumeRestartCheck.Checked;
         settings.ThermalTestMode = (ThermalTestMode)GetComboValue(this.thermalTestCombo, ThermalTestMode.Off);
-        settings.CodexRadarTestMode = GetCodexRadarTestButtonMode();
-        settings.ServiceHealthTestMode = GetServiceHealthTestButtonMode();
+        settings.CodexRadarTestMode = CodexRadarTestMode.Off;
+        settings.ServiceHealthTestMode = ServiceHealthTestMode.Off;
+        settings.CodexRadarRandomTestEnabled = GetCodexRadarRandomTestEnabled();
+        settings.CodexRadarRandomTestAutoRefresh =
+            this.codexRadarRandomAutoRefreshCheck != null &&
+            this.codexRadarRandomAutoRefreshCheck.Checked;
+        settings.CodexRadarRandomTestRefreshToken = this.codexRadarRandomTestRefreshToken;
         settings.CleanIpBadgeTestMode = GetCleanIpBadgeTestButtonMode();
         settings.CodexModelIqTestEnabled = this.codexModelIqTestCheck.Checked;
         settings.CodexModelIqTestPassed = (int)this.codexModelIqTestPassedBox.Value;
         settings.CodexModelIqBaselinePassed = (int)this.codexModelIqBaselineBox.Value;
+        settings.CodexModelIqBaselineMode = GetComboBaselineMode(this.codexModelIqBaselineModeCombo);
         settings.CodexModelEfficiencyTestEnabled = this.codexModelEfficiencyTestCheck.Checked;
         settings.CodexModelTokenEfficiencyTestPercent = (int)this.codexModelTokenEfficiencyTestBox.Value;
         settings.CodexModelTimeEfficiencyTestPercent = (int)this.codexModelTimeEfficiencyTestBox.Value;
         settings.CodexModelTokenEfficiencyBaselinePassed = (int)this.codexModelTokenEfficiencyBaselinePassedBox.Value;
         settings.CodexModelTokenEfficiencyBaselineTokens = (int)this.codexModelTokenEfficiencyBaselineTokensBox.Value;
+        settings.CodexModelTokenEfficiencyBaselineMode = GetComboBaselineMode(this.codexModelTokenEfficiencyBaselineModeCombo);
         settings.CodexModelTimeEfficiencyBaselinePassed = (int)this.codexModelTimeEfficiencyBaselinePassedBox.Value;
         settings.CodexModelTimeEfficiencyBaselineSeconds = (int)this.codexModelTimeEfficiencyBaselineSecondsBox.Value;
+        settings.CodexModelTimeEfficiencyBaselineMode = GetComboBaselineMode(this.codexModelTimeEfficiencyBaselineModeCombo);
         settings.CodexModelTokenEfficiencyLowThresholdPercent = (int)this.codexModelTokenEfficiencyLowThresholdBox.Value;
         settings.CodexModelTimeEfficiencyLowThresholdPercent = (int)this.codexModelTimeEfficiencyLowThresholdBox.Value;
+        settings.CodexRadarModelKey = CodexRadarModelCatalog.NormalizeModelKey(this.selectedCodexRadarModelKey);
+        settings.CodexRadarModelVersion = CodexRadarModelCatalog.LegacyVersionFromKey(settings.CodexRadarModelKey);
+        settings.DisplayTimeZoneMode = (DisplayTimeZoneMode)GetComboValue(
+            this.displayTimeZoneModeCombo,
+            DisplayTimeZoneMode.Automatic);
+        settings.DisplayTimeZoneId = Convert.ToString(
+            GetComboValue(this.displayTimeZoneCombo, TimeZoneInfo.Local.Id),
+            CultureInfo.InvariantCulture);
         settings.VisibilityMode = (WidgetVisibilityMode)GetComboValue(this.visibilityCombo, WidgetVisibilityMode.DesktopOnly);
         settings.StartupEnabled = this.startupCheck.Checked;
         settings.PerformanceMode = (WidgetPerformanceMode)GetComboValue(this.performanceModeCombo, WidgetPerformanceMode.Balanced);
         settings.ClickThroughMode = (ClickThroughMode)GetComboValue(this.clickThroughCombo, ClickThroughMode.Auto);
         settings.HoverOpacityEnabled = this.hoverOpacityCheck.Checked;
-        string[] selectedMetrics = ReadMetricSlots(false);
-        settings.ShowCpu = ContainsMetricId(selectedMetrics, WidgetSettings.MetricCpu);
-        settings.ShowMemory = ContainsMetricId(selectedMetrics, WidgetSettings.MetricMemory);
-        settings.ShowDisk = ContainsMetricId(selectedMetrics, WidgetSettings.MetricDisk);
-        settings.ShowNetwork = ContainsMetricId(selectedMetrics, WidgetSettings.MetricNetwork);
-        settings.ShowGpu = ContainsMetricId(selectedMetrics, WidgetSettings.MetricGpu);
-        settings.ShowNpu = ContainsMetricId(selectedMetrics, WidgetSettings.MetricNpu);
+        settings.AutoHoverOpacityIdleEnabled = this.autoHoverOpacityIdleCheck.Checked;
+        settings.AutoHoverOpacityIdleSeconds = (int)this.autoHoverOpacityIdleSecondsBox.Value;
+        settings.AutoHoverOpacityMaximizedEnabled = this.autoHoverOpacityMaximizedCheck.Checked;
+        settings.BurnInHiddenModeColorProtectionEnabled = this.burnInHiddenModeColorProtectionCheck.Checked;
+        string[] selectedMetrics = this.metricSlotsPanel == null
+            ? CloneStringArray(this.baseline.MetricOrder)
+            : ReadMetricSlots(false);
+        if (this.metricSlotsPanel == null)
+        {
+            settings.ShowCpu = this.baseline.ShowCpu;
+            settings.ShowMemory = this.baseline.ShowMemory;
+            settings.ShowDisk = this.baseline.ShowDisk;
+            settings.ShowNetwork = this.baseline.ShowNetwork;
+            settings.ShowGpu = this.baseline.ShowGpu;
+            settings.ShowNpu = this.baseline.ShowNpu;
+        }
+        else
+        {
+            settings.ShowCpu = ContainsMetricId(selectedMetrics, WidgetSettings.MetricCpu);
+            settings.ShowMemory = ContainsMetricId(selectedMetrics, WidgetSettings.MetricMemory);
+            settings.ShowDisk = ContainsMetricId(selectedMetrics, WidgetSettings.MetricDisk);
+            settings.ShowNetwork = ContainsMetricId(selectedMetrics, WidgetSettings.MetricNetwork);
+            settings.ShowGpu = ContainsMetricId(selectedMetrics, WidgetSettings.MetricGpu);
+            settings.ShowNpu = ContainsMetricId(selectedMetrics, WidgetSettings.MetricNpu);
+        }
         settings.AlertTestEnabled = GetAlertTestButtonState();
         settings.MetricOrder = selectedMetrics;
         settings.Normalize();
         return settings;
     }
 
+    internal static void RunSettingsBindingSelfTest()
+    {
+        WidgetSettings baseline = WidgetSettings.CreateDefaults();
+        baseline.Normalize();
+        using (SettingsForm form = new SettingsForm(null, baseline))
+        {
+            form.OwnerFormClosing = true;
+            form.saved = true;
+            form.StartPosition = FormStartPosition.Manual;
+            form.Location = new Point(-32000, -32000);
+            form.Show();
+            Application.DoEvents();
+            form.VerifySettingsBindingSelfTest();
+        }
+    }
+
+    private void VerifySettingsBindingSelfTest()
+    {
+        AssertVisibleBinding(this.connectionCheckIntervalBox, "ConnectionCheckIntervalSeconds box");
+        AssertVisibleBinding(this.connectionCheckIntervalSlider, "ConnectionCheckIntervalSeconds slider");
+        AssertVisibleBinding(this.codexRadarModelButtonGrid, "CodexRadarModelKey buttons");
+        AssertVisibleBinding(this.codexModelIqBaselineModeCombo, "CodexModelIqBaselineMode combo");
+        AssertVisibleBinding(this.codexModelTokenEfficiencyBaselineModeCombo, "CodexModelTokenEfficiencyBaselineMode combo");
+        AssertVisibleBinding(this.codexModelTimeEfficiencyBaselineModeCombo, "CodexModelTimeEfficiencyBaselineMode combo");
+        AssertVisibleBinding(this.displayTimeZoneModeCombo, "DisplayTimeZoneMode combo");
+        AssertVisibleBinding(this.displayTimeZoneCombo, "DisplayTimeZoneId combo");
+        AssertVisibleBinding(this.autoHoverOpacityIdleSecondsBox, "AutoHoverOpacityIdleSeconds box");
+        AssertVisibleBinding(this.seelenDockForegroundPulseCheck, "SeelenDockForegroundPulseEnabled check");
+        AssertVisibleBinding(this.ctrlDRecoveryPulseCheck, "CtrlDRecoveryPulseEnabled check");
+        AssertVisibleBinding(this.powerResumeRestartCheck, "PowerResumeRestartEnabled check");
+        AssertVisibleBinding(this.burnInHiddenModeColorProtectionCheck, "BurnInHiddenModeColorProtectionEnabled check");
+        AssertSettingsPagesWheelScrollable();
+        AssertPositionRangeUsesWorkArea("Widget", this.widthBox, this.heightBox, this.leftXBox, this.bottomYBox);
+        AssertPositionRangeUsesWorkArea("CodexRadar", this.codexRadarWidthBox, this.codexRadarHeightBox, this.codexRadarLeftXBox, this.codexRadarBottomYBox);
+        AssertPositionRangeUsesWorkArea("PowerThermal", this.powerThermalWidthBox, this.powerThermalHeightBox, this.powerThermalLeftXBox, this.powerThermalBottomYBox);
+        AssertPositionRangeUsesWorkArea("NetworkMonitor", this.networkMonitorWidthBox, this.networkMonitorHeightBox, this.networkMonitorLeftXBox, this.networkMonitorBottomYBox);
+        AssertPositionRangeUsesWorkArea("ConnectionCheck", this.connectionCheckWidthBox, this.connectionCheckHeightBox, this.connectionCheckLeftXBox, this.connectionCheckBottomYBox);
+
+        bool wasInitializing = this.initializing;
+        this.initializing = true;
+        int width = PickDifferentValue(this.widthBox);
+        int height = PickDifferentValue(this.heightBox);
+        int leftX = (int)this.leftXBox.Minimum;
+        int bottomY = (int)this.bottomYBox.Maximum;
+        int backgroundTransparency = PickDifferentValue(this.backgroundTransparencyBox);
+        int applicationTransparency = PickDifferentValue(this.applicationTransparencyBox);
+        int codexRadarWidth = PickDifferentValue(this.codexRadarWidthBox);
+        int codexRadarHeight = PickDifferentValue(this.codexRadarHeightBox);
+        int codexRadarLeftX = (int)this.codexRadarLeftXBox.Minimum;
+        int codexRadarBottomY = (int)this.codexRadarBottomYBox.Maximum;
+        int codexRadarTransparency = PickDifferentValue(this.codexRadarTransparencyBox);
+        int powerThermalWidth = PickDifferentValue(this.powerThermalWidthBox);
+        int powerThermalHeight = PickDifferentValue(this.powerThermalHeightBox);
+        int powerThermalLeftX = (int)this.powerThermalLeftXBox.Minimum;
+        int powerThermalBottomY = (int)this.powerThermalBottomYBox.Maximum;
+        int powerThermalTransparency = PickDifferentValue(this.powerThermalTransparencyBox);
+        int powerThermalVisibleAlerts = PickDifferentValue(this.powerThermalVisibleAlertCountBox);
+        int networkMonitorWidth = PickDifferentValue(this.networkMonitorWidthBox);
+        int networkMonitorHeight = PickDifferentValue(this.networkMonitorHeightBox);
+        int networkMonitorLeftX = (int)this.networkMonitorLeftXBox.Minimum;
+        int networkMonitorBottomY = (int)this.networkMonitorBottomYBox.Maximum;
+        int networkMonitorTransparency = PickDifferentValue(this.networkMonitorTransparencyBox);
+        int gfwProbeInterval = PickDifferentValue(this.gfwProbeIntervalBox);
+        int connectionCheckWidth = PickDifferentValue(this.connectionCheckWidthBox);
+        int connectionCheckHeight = PickDifferentValue(this.connectionCheckHeightBox);
+        int connectionCheckLeftX = (int)this.connectionCheckLeftXBox.Minimum;
+        int connectionCheckBottomY = (int)this.connectionCheckBottomYBox.Maximum;
+        int connectionCheckTransparency = PickDifferentValue(this.connectionCheckTransparencyBox);
+        int connectionCheckBorderTransparency = PickDifferentValue(this.connectionCheckBorderTransparencyBox);
+        int connectionCheckInterval = PickDifferentValue(this.connectionCheckIntervalBox);
+        int operationButtonSize = PickDifferentValue(this.operationButtonSizeBox);
+        int operationLeftOffset = PickDifferentValue(this.operationLeftOffsetBox);
+        int operationBottomOffset = PickDifferentValue(this.operationBottomOffsetBox);
+        int operationTransparency = PickDifferentValue(this.operationTransparencyBox);
+        int autoHoverOpacityIdleSeconds = PickDifferentValue(this.autoHoverOpacityIdleSecondsBox);
+        int iqPassed = PickDifferentValue(this.codexModelIqTestPassedBox);
+        int iqBaseline = PickDifferentValue(this.codexModelIqBaselineBox);
+        int tokenEfficiency = PickDifferentValue(this.codexModelTokenEfficiencyTestBox);
+        int timeEfficiency = PickDifferentValue(this.codexModelTimeEfficiencyTestBox);
+        int tokenBaselinePassed = PickDifferentValue(this.codexModelTokenEfficiencyBaselinePassedBox);
+        int tokenBaselineTokens = PickDifferentValue(this.codexModelTokenEfficiencyBaselineTokensBox);
+        int timeBaselinePassed = PickDifferentValue(this.codexModelTimeEfficiencyBaselinePassedBox);
+        int timeBaselineSeconds = PickDifferentValue(this.codexModelTimeEfficiencyBaselineSecondsBox);
+        int tokenLowThreshold = PickDifferentValue(this.codexModelTokenEfficiencyLowThresholdBox);
+        int timeLowThreshold = PickDifferentValue(this.codexModelTimeEfficiencyLowThresholdBox);
+        try
+        {
+            SetNumber(this.widthBox, this.widthSlider, width);
+            SetNumber(this.heightBox, this.heightSlider, height);
+            SetNumber(this.leftXBox, this.leftXSlider, leftX);
+            SetNumber(this.bottomYBox, this.bottomYSlider, bottomY);
+            SetNumber(this.backgroundTransparencyBox, this.backgroundTransparencySlider, backgroundTransparency);
+            SetNumber(this.applicationTransparencyBox, this.applicationTransparencySlider, applicationTransparency);
+            SetNumber(this.codexRadarWidthBox, this.codexRadarWidthSlider, codexRadarWidth);
+            SetNumber(this.codexRadarHeightBox, this.codexRadarHeightSlider, codexRadarHeight);
+            SetNumber(this.codexRadarLeftXBox, this.codexRadarLeftXSlider, codexRadarLeftX);
+            SetNumber(this.codexRadarBottomYBox, this.codexRadarBottomYSlider, codexRadarBottomY);
+            SetNumber(this.codexRadarTransparencyBox, this.codexRadarTransparencySlider, codexRadarTransparency);
+            SetNumber(this.powerThermalWidthBox, this.powerThermalWidthSlider, powerThermalWidth);
+            SetNumber(this.powerThermalHeightBox, this.powerThermalHeightSlider, powerThermalHeight);
+            SetNumber(this.powerThermalLeftXBox, this.powerThermalLeftXSlider, powerThermalLeftX);
+            SetNumber(this.powerThermalBottomYBox, this.powerThermalBottomYSlider, powerThermalBottomY);
+            SetNumber(this.powerThermalTransparencyBox, this.powerThermalTransparencySlider, powerThermalTransparency);
+            SetNumber(this.powerThermalVisibleAlertCountBox, this.powerThermalVisibleAlertCountSlider, powerThermalVisibleAlerts);
+            SetNumber(this.networkMonitorWidthBox, this.networkMonitorWidthSlider, networkMonitorWidth);
+            SetNumber(this.networkMonitorHeightBox, this.networkMonitorHeightSlider, networkMonitorHeight);
+            SetNumber(this.networkMonitorLeftXBox, this.networkMonitorLeftXSlider, networkMonitorLeftX);
+            SetNumber(this.networkMonitorBottomYBox, this.networkMonitorBottomYSlider, networkMonitorBottomY);
+            SetNumber(this.networkMonitorTransparencyBox, this.networkMonitorTransparencySlider, networkMonitorTransparency);
+            SetNetworkAdapterId("settings-self-test-adapter");
+            SetNumber(this.gfwProbeIntervalBox, this.gfwProbeIntervalSlider, gfwProbeInterval);
+            SetNumber(this.connectionCheckWidthBox, this.connectionCheckWidthSlider, connectionCheckWidth);
+            SetNumber(this.connectionCheckHeightBox, this.connectionCheckHeightSlider, connectionCheckHeight);
+            SetNumber(this.connectionCheckLeftXBox, this.connectionCheckLeftXSlider, connectionCheckLeftX);
+            SetNumber(this.connectionCheckBottomYBox, this.connectionCheckBottomYSlider, connectionCheckBottomY);
+            SetNumber(this.connectionCheckTransparencyBox, this.connectionCheckTransparencySlider, connectionCheckTransparency);
+            SetNumber(this.connectionCheckBorderTransparencyBox, this.connectionCheckBorderTransparencySlider, connectionCheckBorderTransparency);
+            SetNumber(this.connectionCheckIntervalBox, this.connectionCheckIntervalSlider, connectionCheckInterval);
+            SetNumber(this.operationButtonSizeBox, this.operationButtonSizeSlider, operationButtonSize);
+            SetNumber(this.operationLeftOffsetBox, this.operationLeftOffsetSlider, operationLeftOffset);
+            SetNumber(this.operationBottomOffsetBox, this.operationBottomOffsetSlider, operationBottomOffset);
+            SetNumber(this.operationTransparencyBox, this.operationTransparencySlider, operationTransparency);
+            SetNumber(this.autoHoverOpacityIdleSecondsBox, null, autoHoverOpacityIdleSeconds);
+            SetNumber(this.codexModelIqTestPassedBox, this.codexModelIqTestPassedSlider, iqPassed);
+            SetNumber(this.codexModelIqBaselineBox, this.codexModelIqBaselineSlider, iqBaseline);
+            SetNumber(this.codexModelTokenEfficiencyTestBox, this.codexModelTokenEfficiencyTestSlider, tokenEfficiency);
+            SetNumber(this.codexModelTimeEfficiencyTestBox, this.codexModelTimeEfficiencyTestSlider, timeEfficiency);
+            SetNumber(this.codexModelTokenEfficiencyBaselinePassedBox, null, tokenBaselinePassed);
+            SetNumber(this.codexModelTokenEfficiencyBaselineTokensBox, null, tokenBaselineTokens);
+            SetNumber(this.codexModelTimeEfficiencyBaselinePassedBox, null, timeBaselinePassed);
+            SetNumber(this.codexModelTimeEfficiencyBaselineSecondsBox, null, timeBaselineSeconds);
+            SetNumber(this.codexModelTokenEfficiencyLowThresholdBox, this.codexModelTokenEfficiencyLowThresholdSlider, tokenLowThreshold);
+            SetNumber(this.codexModelTimeEfficiencyLowThresholdBox, this.codexModelTimeEfficiencyLowThresholdSlider, timeLowThreshold);
+
+            SelectComboValue(this.visibilityCombo, WidgetVisibilityMode.HideWhenFullscreen);
+            SelectComboValue(this.performanceModeCombo, WidgetPerformanceMode.Smooth);
+            SelectComboValue(this.clickThroughCombo, ClickThroughMode.Enabled);
+            SelectComboValue(this.powerThermalAutoDirectionCombo, PowerThermalAutoDirection.Left);
+            SelectComboValue(this.thermalTestCombo, ThermalTestMode.Simulate75);
+            SelectComboValue(this.codexModelIqBaselineModeCombo, CodexModelBaselineMode.Recent7Average);
+            SelectComboValue(this.codexModelTokenEfficiencyBaselineModeCombo, CodexModelBaselineMode.Recent30Average);
+            SelectComboValue(this.codexModelTimeEfficiencyBaselineModeCombo, CodexModelBaselineMode.Absolute);
+            SetSelectedCodexRadarModelKey("gpt_55_medium");
+            SelectComboValue(this.displayTimeZoneModeCombo, DisplayTimeZoneMode.Manual);
+            SelectComboValue(this.displayTimeZoneCombo, TimeZoneUtilities.BeijingTimeZoneId);
+            this.startupCheck.Checked = true;
+            this.hoverOpacityCheck.Checked = false;
+            this.autoHoverOpacityIdleCheck.Checked = true;
+            this.autoHoverOpacityMaximizedCheck.Checked = true;
+            this.burnInHiddenModeColorProtectionCheck.Checked = true;
+            this.forceShowFpsCheck.Checked = true;
+            this.seelenDockForegroundPulseCheck.Checked = false;
+            this.ctrlDRecoveryPulseCheck.Checked = false;
+            this.powerResumeRestartCheck.Checked = false;
+            this.powerThermalAutoSizeCheck.Checked = true;
+            this.codexModelIqTestCheck.Checked = true;
+            this.codexModelEfficiencyTestCheck.Checked = true;
+            this.gfwProbeCheck.Checked = true;
+            SetAlertTestButtonState(true);
+            SetCodexRadarRandomTestEnabled(true);
+            this.codexRadarRandomAutoRefreshCheck.Checked = true;
+            this.codexRadarRandomTestRefreshToken = 7;
+            UpdateCodexRadarRandomTestControls();
+            SetCleanIpBadgeTestButtonMode(CleanIpBadgeTestMode.ProxyRisk);
+            SetNetworkStatusTestButtonMode(NetworkStatusTestMode.NeedsValidation);
+            this.gfwProbeManualRefreshToken = 3;
+            SetCloudEndpointTestSeed(12345);
+            SetCloudStatusRegionMask(WidgetSettings.CloudStatusRegionJapan | WidgetSettings.CloudStatusRegionEurope);
+            this.connectionCheckManualRefreshToken = 5;
+        }
+        finally
+        {
+            this.initializing = wasInitializing;
+        }
+
+        WidgetSettings settings = ReadControls();
+        AssertEqual(width, settings.Width, "Width");
+        AssertEqual(height, settings.Height, "Height");
+        AssertEqual(leftX, settings.LeftX, "LeftX");
+        AssertEqual(bottomY, settings.BottomY, "BottomY");
+        AssertEqual(backgroundTransparency, settings.BackgroundTransparencyPercent, "BackgroundTransparencyPercent");
+        AssertEqual(applicationTransparency, settings.ApplicationTransparencyPercent, "ApplicationTransparencyPercent");
+        AssertEqual(codexRadarWidth, settings.CodexRadarWidth, "CodexRadarWidth");
+        AssertEqual(codexRadarHeight, settings.CodexRadarHeight, "CodexRadarHeight");
+        AssertEqual(codexRadarLeftX, settings.CodexRadarLeftX, "CodexRadarLeftX");
+        AssertEqual(codexRadarBottomY, settings.CodexRadarBottomY, "CodexRadarBottomY");
+        AssertEqual(codexRadarTransparency, settings.CodexRadarTransparencyPercent, "CodexRadarTransparencyPercent");
+        AssertEqual(powerThermalWidth, settings.PowerThermalWidth, "PowerThermalWidth");
+        AssertEqual(powerThermalHeight, settings.PowerThermalHeight, "PowerThermalHeight");
+        AssertEqual(powerThermalLeftX, settings.PowerThermalLeftX, "PowerThermalLeftX");
+        AssertEqual(powerThermalBottomY, settings.PowerThermalBottomY, "PowerThermalBottomY");
+        AssertEqual(powerThermalTransparency, settings.PowerThermalTransparencyPercent, "PowerThermalTransparencyPercent");
+        AssertTrue(settings.PowerThermalAutoSizeEnabled, "PowerThermalAutoSizeEnabled");
+        AssertEqual(PowerThermalAutoDirection.Left, settings.PowerThermalAutoDirection, "PowerThermalAutoDirection");
+        AssertEqual(powerThermalVisibleAlerts, settings.PowerThermalVisibleAlertCount, "PowerThermalVisibleAlertCount");
+        AssertEqual(networkMonitorWidth, settings.NetworkMonitorWidth, "NetworkMonitorWidth");
+        AssertEqual(networkMonitorHeight, settings.NetworkMonitorHeight, "NetworkMonitorHeight");
+        AssertEqual(networkMonitorLeftX, settings.NetworkMonitorLeftX, "NetworkMonitorLeftX");
+        AssertEqual(networkMonitorBottomY, settings.NetworkMonitorBottomY, "NetworkMonitorBottomY");
+        AssertEqual(networkMonitorTransparency, settings.NetworkMonitorTransparencyPercent, "NetworkMonitorTransparencyPercent");
+        AssertEqual("settings-self-test-adapter", settings.NetworkMonitorAdapterId, "NetworkMonitorAdapterId");
+        AssertEqual(NetworkStatusTestMode.NeedsValidation, settings.NetworkStatusTestMode, "NetworkStatusTestMode");
+        AssertTrue(settings.GfwProbeEnabled, "GfwProbeEnabled");
+        AssertEqual(gfwProbeInterval, settings.GfwProbeIntervalMinutes, "GfwProbeIntervalMinutes");
+        AssertEqual(3, settings.GfwProbeManualRefreshToken, "GfwProbeManualRefreshToken");
+        AssertEqual(12345, settings.CloudEndpointTestSeed, "CloudEndpointTestSeed");
+        AssertEqual(
+            WidgetSettings.CloudStatusRegionJapan | WidgetSettings.CloudStatusRegionEurope,
+            settings.CloudStatusRegionMask,
+            "CloudStatusRegionMask");
+        AssertEqual(connectionCheckWidth, settings.ConnectionCheckWidth, "ConnectionCheckWidth");
+        AssertEqual(connectionCheckHeight, settings.ConnectionCheckHeight, "ConnectionCheckHeight");
+        AssertEqual(connectionCheckLeftX, settings.ConnectionCheckLeftX, "ConnectionCheckLeftX");
+        AssertEqual(connectionCheckBottomY, settings.ConnectionCheckBottomY, "ConnectionCheckBottomY");
+        AssertEqual(connectionCheckTransparency, settings.ConnectionCheckTransparencyPercent, "ConnectionCheckTransparencyPercent");
+        AssertEqual(connectionCheckBorderTransparency, settings.ConnectionCheckBorderTransparencyPercent, "ConnectionCheckBorderTransparencyPercent");
+        AssertEqual(connectionCheckInterval, settings.ConnectionCheckIntervalSeconds, "ConnectionCheckIntervalSeconds");
+        AssertEqual(5, settings.ConnectionCheckManualRefreshToken, "ConnectionCheckManualRefreshToken");
+        AssertEqual(operationButtonSize, settings.OperationButtonSize, "OperationButtonSize");
+        AssertEqual(operationLeftOffset, settings.OperationLeftOffset, "OperationLeftOffset");
+        AssertEqual(operationBottomOffset, settings.OperationBottomOffset, "OperationBottomOffset");
+        AssertEqual(operationTransparency, settings.OperationBackgroundTransparencyPercent, "OperationBackgroundTransparencyPercent");
+        AssertTrue(settings.ForceShowForegroundFpsEnabled, "ForceShowForegroundFpsEnabled");
+        AssertTrue(!settings.SeelenDockForegroundPulseEnabled, "SeelenDockForegroundPulseEnabled");
+        AssertTrue(!settings.CtrlDRecoveryPulseEnabled, "CtrlDRecoveryPulseEnabled");
+        AssertTrue(!settings.PowerResumeRestartEnabled, "PowerResumeRestartEnabled");
+        AssertEqual(WidgetVisibilityMode.HideWhenFullscreen, settings.VisibilityMode, "VisibilityMode");
+        AssertEqual(ClickThroughMode.Enabled, settings.ClickThroughMode, "ClickThroughMode");
+        AssertTrue(settings.StartupEnabled, "StartupEnabled");
+        AssertTrue(!settings.HoverOpacityEnabled, "HoverOpacityEnabled");
+        AssertTrue(settings.AutoHoverOpacityIdleEnabled, "AutoHoverOpacityIdleEnabled");
+        AssertEqual(autoHoverOpacityIdleSeconds, settings.AutoHoverOpacityIdleSeconds, "AutoHoverOpacityIdleSeconds");
+        AssertTrue(settings.AutoHoverOpacityMaximizedEnabled, "AutoHoverOpacityMaximizedEnabled");
+        AssertTrue(settings.BurnInHiddenModeColorProtectionEnabled, "BurnInHiddenModeColorProtectionEnabled");
+        AssertTrue(settings.AlertTestEnabled, "AlertTestEnabled");
+        AssertEqual(ThermalTestMode.Simulate75, settings.ThermalTestMode, "ThermalTestMode");
+        AssertEqual(CodexRadarTestMode.Off, settings.CodexRadarTestMode, "CodexRadarTestMode");
+        AssertEqual(ServiceHealthTestMode.Off, settings.ServiceHealthTestMode, "ServiceHealthTestMode");
+        AssertTrue(settings.CodexRadarRandomTestEnabled, "CodexRadarRandomTestEnabled");
+        AssertTrue(settings.CodexRadarRandomTestAutoRefresh, "CodexRadarRandomTestAutoRefresh");
+        AssertEqual(7, settings.CodexRadarRandomTestRefreshToken, "CodexRadarRandomTestRefreshToken");
+        AssertEqual(CleanIpBadgeTestMode.ProxyRisk, settings.CleanIpBadgeTestMode, "CleanIpBadgeTestMode");
+        AssertTrue(settings.CodexModelIqTestEnabled, "CodexModelIqTestEnabled");
+        AssertEqual(iqPassed, settings.CodexModelIqTestPassed, "CodexModelIqTestPassed");
+        AssertEqual(iqBaseline, settings.CodexModelIqBaselinePassed, "CodexModelIqBaselinePassed");
+        AssertEqual(CodexModelBaselineMode.Recent7Average, settings.CodexModelIqBaselineMode, "CodexModelIqBaselineMode");
+        AssertTrue(settings.CodexModelEfficiencyTestEnabled, "CodexModelEfficiencyTestEnabled");
+        AssertEqual(tokenEfficiency, settings.CodexModelTokenEfficiencyTestPercent, "CodexModelTokenEfficiencyTestPercent");
+        AssertEqual(timeEfficiency, settings.CodexModelTimeEfficiencyTestPercent, "CodexModelTimeEfficiencyTestPercent");
+        AssertEqual(tokenBaselinePassed, settings.CodexModelTokenEfficiencyBaselinePassed, "CodexModelTokenEfficiencyBaselinePassed");
+        AssertEqual(tokenBaselineTokens, settings.CodexModelTokenEfficiencyBaselineTokens, "CodexModelTokenEfficiencyBaselineTokens");
+        AssertEqual(CodexModelBaselineMode.Recent30Average, settings.CodexModelTokenEfficiencyBaselineMode, "CodexModelTokenEfficiencyBaselineMode");
+        AssertEqual(timeBaselinePassed, settings.CodexModelTimeEfficiencyBaselinePassed, "CodexModelTimeEfficiencyBaselinePassed");
+        AssertEqual(timeBaselineSeconds, settings.CodexModelTimeEfficiencyBaselineSeconds, "CodexModelTimeEfficiencyBaselineSeconds");
+        AssertEqual(CodexModelBaselineMode.Absolute, settings.CodexModelTimeEfficiencyBaselineMode, "CodexModelTimeEfficiencyBaselineMode");
+        AssertEqual(tokenLowThreshold, settings.CodexModelTokenEfficiencyLowThresholdPercent, "CodexModelTokenEfficiencyLowThresholdPercent");
+        AssertEqual(timeLowThreshold, settings.CodexModelTimeEfficiencyLowThresholdPercent, "CodexModelTimeEfficiencyLowThresholdPercent");
+        AssertEqual("gpt_55_medium", settings.CodexRadarModelKey, "CodexRadarModelKey");
+        AssertEqual(CodexRadarModelVersion.Gpt55Medium, settings.CodexRadarModelVersion, "CodexRadarModelVersion");
+        AssertEqual(DisplayTimeZoneMode.Manual, settings.DisplayTimeZoneMode, "DisplayTimeZoneMode");
+        AssertEqual(TimeZoneUtilities.BeijingTimeZoneId, settings.DisplayTimeZoneId, "DisplayTimeZoneId");
+        AssertEqual(WidgetPerformanceMode.Smooth, settings.PerformanceMode, "PerformanceMode");
+        AssertEqual(this.baseline.ShowCpu, settings.ShowCpu, "ShowCpu");
+        AssertEqual(this.baseline.ShowMemory, settings.ShowMemory, "ShowMemory");
+        AssertEqual(this.baseline.ShowDisk, settings.ShowDisk, "ShowDisk");
+        AssertEqual(this.baseline.ShowNetwork, settings.ShowNetwork, "ShowNetwork");
+        AssertEqual(this.baseline.ShowGpu, settings.ShowGpu, "ShowGpu");
+        AssertEqual(this.baseline.ShowNpu, settings.ShowNpu, "ShowNpu");
+    }
+
+    private void AssertSettingsPagesWheelScrollable()
+    {
+        if (this.settingsPages == null)
+        {
+            throw new InvalidOperationException("Settings pages missing.");
+        }
+
+        int originalPage = this.selectedSettingsPageIndex;
+        Size originalClientSize = this.ClientSize;
+        int testedScrollablePages = 0;
+        try
+        {
+            this.ClientSize = new Size(Math.Max(720, this.MinimumSize.Width), 360);
+            UpdateResponsiveLayout();
+            for (int i = 0; i < this.settingsPages.Length; i++)
+            {
+                SelectSettingsPage(i);
+                SettingsPagePanel page = this.settingsPages[i] as SettingsPagePanel;
+                if (page == null)
+                {
+                    continue;
+                }
+
+                page.PerformLayout();
+                page.AutoScrollPosition = Point.Empty;
+                page.PerformLayout();
+                if (!page.HasVerticalOverflow)
+                {
+                    continue;
+                }
+
+                testedScrollablePages++;
+                int before = page.ScrollTop;
+                bool handled = page.ScrollByMouseWheelDelta(-120);
+                int after = page.ScrollTop;
+                string title = i >= 0 && i < SettingsNavigationTitles.Length ? SettingsNavigationTitles[i] : i.ToString(CultureInfo.InvariantCulture);
+                AssertTrue(handled, "Settings page wheel handled: " + title);
+                AssertTrue(after > before, "Settings page wheel moved: " + title);
+                page.ScrollByMouseWheelDelta(120);
+            }
+        }
+        finally
+        {
+            this.ClientSize = originalClientSize;
+            SelectSettingsPage(originalPage);
+        }
+
+        AssertTrue(testedScrollablePages > 0, "Settings page wheel coverage");
+    }
+
+    private void AssertPositionRangeUsesWorkArea(string name, NumericUpDown widthBox, NumericUpDown heightBox, NumericUpDown leftBox, NumericUpDown bottomBox)
+    {
+        Rectangle workArea = GetUsableWorkArea();
+        UpdatePositionRangeForSelfTest(name, (int)widthBox.Value, (int)heightBox.Value);
+        AssertEqual(workArea.Left, (int)leftBox.Minimum, name + ".Left.Minimum");
+        AssertEqual(Math.Max(workArea.Left, workArea.Right - (int)widthBox.Value), (int)leftBox.Maximum, name + ".Left.Maximum");
+        AssertEqual(Math.Min(workArea.Bottom - 1, workArea.Top + (int)heightBox.Value - 1), (int)bottomBox.Minimum, name + ".Bottom.Minimum");
+        AssertEqual(Math.Max(workArea.Top, workArea.Bottom - 1), (int)bottomBox.Maximum, name + ".Bottom.Maximum");
+    }
+
+    private void UpdatePositionRangeForSelfTest(string name, int width, int height)
+    {
+        if (string.Equals(name, "Widget", StringComparison.Ordinal))
+        {
+            UpdatePositionRanges(width, height);
+            return;
+        }
+
+        if (string.Equals(name, "CodexRadar", StringComparison.Ordinal))
+        {
+            UpdateCodexRadarPositionRanges(width, height);
+            return;
+        }
+
+        if (string.Equals(name, "PowerThermal", StringComparison.Ordinal))
+        {
+            UpdatePowerThermalPositionRanges(width, height);
+            return;
+        }
+
+        if (string.Equals(name, "NetworkMonitor", StringComparison.Ordinal))
+        {
+            UpdateNetworkMonitorPositionRanges(width, height);
+            return;
+        }
+
+        UpdateConnectionCheckPositionRanges(width, height);
+    }
+
+    private static void AssertVisibleBinding(Control control, string name)
+    {
+        if (control == null || control.Parent == null)
+        {
+            throw new InvalidOperationException(name + " is not attached to the settings panel.");
+        }
+    }
+
+    private static int PickDifferentValue(NumericUpDown box)
+    {
+        int current = (int)box.Value;
+        int min = (int)box.Minimum;
+        int max = (int)box.Maximum;
+        if (current < max)
+        {
+            return current + 1;
+        }
+
+        if (current > min)
+        {
+            return current - 1;
+        }
+
+        return current;
+    }
+
+    private static void SetNumber(NumericUpDown box, TrackBar slider, int value)
+    {
+        int clamped = Math.Max((int)box.Minimum, Math.Min((int)box.Maximum, value));
+        box.Value = clamped;
+        if (slider != null)
+        {
+            slider.Value = Math.Max(slider.Minimum, Math.Min(slider.Maximum, clamped));
+        }
+    }
+
+    private static void AssertEqual(int expected, int actual, string name)
+    {
+        if (expected != actual)
+        {
+            throw new InvalidOperationException(name + " expected " + expected.ToString(CultureInfo.InvariantCulture) + " but got " + actual.ToString(CultureInfo.InvariantCulture) + ".");
+        }
+    }
+
+    private static void AssertEqual<T>(T expected, T actual, string name)
+    {
+        if (!object.Equals(expected, actual))
+        {
+            throw new InvalidOperationException(name + " expected " + expected + " but got " + actual + ".");
+        }
+    }
+
+    private static void AssertTrue(bool condition, string name)
+    {
+        if (!condition)
+        {
+            throw new InvalidOperationException(name + " did not satisfy the settings binding policy.");
+        }
+    }
+
     private void LoadMetricLayout(WidgetSettings settings)
     {
-        if (this.metricSlotPanels == null)
+        if (this.metricSlotPanels == null || this.metricSlotsPanel == null)
         {
             return;
         }
@@ -2215,6 +3153,11 @@ internal sealed class SettingsForm : Form, IMessageFilter
     private void RefreshMetricSlot(int index)
     {
         Panel slot = this.metricSlotPanels[index];
+        if (slot == null)
+        {
+            return;
+        }
+
         string metricId = GetSlotMetric(index);
         Label content = FindChildLabel(slot, "slotContent");
         Button remove = FindChildButton(slot, "slotRemove");
@@ -2245,7 +3188,10 @@ internal sealed class SettingsForm : Form, IMessageFilter
 
     private string GetSlotMetric(int index)
     {
-        if (this.metricSlotPanels == null || index < 0 || index >= this.metricSlotPanels.Length)
+        if (this.metricSlotPanels == null ||
+            index < 0 ||
+            index >= this.metricSlotPanels.Length ||
+            this.metricSlotPanels[index] == null)
         {
             return string.Empty;
         }
@@ -2255,7 +3201,10 @@ internal sealed class SettingsForm : Form, IMessageFilter
 
     private void SetSlotMetric(int index, string metricId)
     {
-        if (this.metricSlotPanels == null || index < 0 || index >= this.metricSlotPanels.Length)
+        if (this.metricSlotPanels == null ||
+            index < 0 ||
+            index >= this.metricSlotPanels.Length ||
+            this.metricSlotPanels[index] == null)
         {
             return;
         }
@@ -2330,6 +3279,18 @@ internal sealed class SettingsForm : Form, IMessageFilter
         return false;
     }
 
+    private static string[] CloneStringArray(string[] values)
+    {
+        if (values == null || values.Length == 0)
+        {
+            return new string[0];
+        }
+
+        string[] clone = new string[values.Length];
+        Array.Copy(values, clone, values.Length);
+        return clone;
+    }
+
     private void BeginMetricDrag(string metricId, int sourceSlotIndex, Control source)
     {
         if (string.IsNullOrEmpty(metricId))
@@ -2395,194 +3356,198 @@ internal sealed class SettingsForm : Form, IMessageFilter
         this.alertTestButton.FlatAppearance.BorderColor = enabled ? DesignTokens.Colors.DangerBorder : DesignTokens.Colors.Border;
     }
 
-    private CodexRadarTestMode GetCodexRadarTestButtonMode()
+    private bool GetCodexRadarRandomTestEnabled()
     {
-        return this.codexRadarTestButton != null &&
-            this.codexRadarTestButton.Tag is CodexRadarTestMode
-                ? (CodexRadarTestMode)this.codexRadarTestButton.Tag
-                : CodexRadarTestMode.Off;
+        return this.codexRadarRandomModeButton != null &&
+            this.codexRadarRandomModeButton.Tag is bool &&
+            (bool)this.codexRadarRandomModeButton.Tag;
     }
 
-    private void SetCodexRadarTestButtonMode(CodexRadarTestMode mode)
+    private void SetCodexRadarRandomTestEnabled(bool enabled)
     {
-        if (this.codexRadarTestButton == null)
+        if (this.codexRadarRandomModeButton == null)
         {
             return;
         }
 
-        this.codexRadarTestButton.Tag = mode;
-        this.codexRadarTestButton.Text = GetCodexRadarTestButtonText(mode);
-        if (mode == CodexRadarTestMode.Open)
+        this.codexRadarRandomModeButton.Tag = enabled;
+        this.codexRadarRandomModeButton.Text = enabled ? "测试" : "实时";
+        if (enabled)
         {
-            this.codexRadarTestButton.BackColor = DesignTokens.Colors.WarningSoft;
-            this.codexRadarTestButton.ForeColor = DesignTokens.Colors.TextOnAccent;
-            this.codexRadarTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.Warning;
+            this.codexRadarRandomModeButton.BackColor = DesignTokens.Colors.WarningSoft;
+            this.codexRadarRandomModeButton.ForeColor = DesignTokens.Colors.TextOnAccent;
+            this.codexRadarRandomModeButton.FlatAppearance.BorderColor = DesignTokens.Colors.Warning;
             return;
         }
 
-        if (mode == CodexRadarTestMode.Closed)
-        {
-            this.codexRadarTestButton.BackColor = DesignTokens.Colors.Danger;
-            this.codexRadarTestButton.ForeColor = DesignTokens.Colors.TextOnDanger;
-            this.codexRadarTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.DangerBorder;
-            return;
-        }
-
-        if (mode == CodexRadarTestMode.None)
-        {
-            this.codexRadarTestButton.BackColor = DesignTokens.Colors.ControlActive;
-            this.codexRadarTestButton.ForeColor = DesignTokens.Colors.Text;
-            this.codexRadarTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.Badge;
-            return;
-        }
-
-        this.codexRadarTestButton.BackColor = DesignTokens.Colors.Control;
-        this.codexRadarTestButton.ForeColor = DesignTokens.Colors.Text;
-        this.codexRadarTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.Border;
+        this.codexRadarRandomModeButton.BackColor = DesignTokens.Colors.Control;
+        this.codexRadarRandomModeButton.ForeColor = DesignTokens.Colors.Text;
+        this.codexRadarRandomModeButton.FlatAppearance.BorderColor = DesignTokens.Colors.Border;
     }
 
-    private static CodexRadarTestMode GetNextCodexRadarTestMode(CodexRadarTestMode mode)
+    private void UpdateCodexRadarRandomTestControls()
     {
-        if (mode == CodexRadarTestMode.Off)
+        bool enabled = GetCodexRadarRandomTestEnabled();
+        if (this.codexRadarRandomRefreshButton != null)
         {
-            return CodexRadarTestMode.None;
+            this.codexRadarRandomRefreshButton.Visible = enabled;
+            this.codexRadarRandomRefreshButton.Enabled = enabled;
         }
 
-        if (mode == CodexRadarTestMode.None)
+        if (this.codexRadarRandomAutoRefreshCheck != null)
         {
-            return CodexRadarTestMode.Open;
+            this.codexRadarRandomAutoRefreshCheck.Visible = enabled;
+            this.codexRadarRandomAutoRefreshCheck.Enabled = enabled;
         }
-
-        if (mode == CodexRadarTestMode.Open)
-        {
-            return CodexRadarTestMode.Closed;
-        }
-
-        return CodexRadarTestMode.Off;
     }
 
-    private static string GetCodexRadarTestButtonText(CodexRadarTestMode mode)
+    private void RebuildCodexRadarModelButtons()
     {
-        if (mode == CodexRadarTestMode.None)
-        {
-            return "None";
-        }
-
-        if (mode == CodexRadarTestMode.Open)
-        {
-            return "Open";
-        }
-
-        if (mode == CodexRadarTestMode.Closed)
-        {
-            return "Closed";
-        }
-
-        return "实时";
-    }
-
-    private ServiceHealthTestMode GetServiceHealthTestButtonMode()
-    {
-        return this.serviceHealthTestButton != null &&
-            this.serviceHealthTestButton.Tag is ServiceHealthTestMode
-                ? (ServiceHealthTestMode)this.serviceHealthTestButton.Tag
-                : ServiceHealthTestMode.Off;
-    }
-
-    private void SetServiceHealthTestButtonMode(ServiceHealthTestMode mode)
-    {
-        if (this.serviceHealthTestButton == null)
+        if (this.codexRadarModelButtonGrid == null)
         {
             return;
         }
 
-        this.serviceHealthTestButton.Tag = mode;
-        this.serviceHealthTestButton.Text = GetServiceHealthTestButtonText(mode);
-        if (mode == ServiceHealthTestMode.Normal)
+        List<CodexRadarModelInfo> models = CodexRadarModelCatalog.LoadModels();
+        string selectedKey = CodexRadarModelCatalog.NormalizeModelKey(this.selectedCodexRadarModelKey);
+        if (selectedKey.Length == 0)
         {
-            this.serviceHealthTestButton.BackColor = DesignTokens.Colors.SuccessSoft;
-            this.serviceHealthTestButton.ForeColor = DesignTokens.Colors.TextOnAccent;
-            this.serviceHealthTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.QuotaGood;
-            return;
+            selectedKey = CodexRadarModelCatalog.DefaultModelKey;
         }
 
-        if (mode == ServiceHealthTestMode.Offline)
+        bool selectedFound = false;
+        for (int i = 0; i < models.Count; i++)
         {
-            this.serviceHealthTestButton.BackColor = DesignTokens.Colors.ControlActive;
-            this.serviceHealthTestButton.ForeColor = DesignTokens.Colors.Text;
-            this.serviceHealthTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.Badge;
-            return;
+            if (models[i] != null &&
+                string.Equals(models[i].Key, selectedKey, StringComparison.OrdinalIgnoreCase))
+            {
+                selectedFound = true;
+                break;
+            }
         }
 
-        if (mode == ServiceHealthTestMode.Unavailable)
+        if (!selectedFound)
         {
-            this.serviceHealthTestButton.BackColor = DesignTokens.Colors.WarningSoft;
-            this.serviceHealthTestButton.ForeColor = DesignTokens.Colors.TextOnAccent;
-            this.serviceHealthTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.Warning;
-            return;
+            models.Add(new CodexRadarModelInfo
+            {
+                Key = selectedKey,
+                Label = CodexRadarModelCatalog.GetDisplayLabel(string.Empty, selectedKey),
+                Available = false,
+                MissingCount = 1
+            });
         }
 
-        if (mode == ServiceHealthTestMode.Unreachable)
+        this.codexRadarModelButtonGrid.SuspendLayout();
+        for (int i = this.codexRadarModelButtonGrid.Controls.Count - 1; i >= 0; i--)
         {
-            this.serviceHealthTestButton.BackColor = DesignTokens.Colors.Danger;
-            this.serviceHealthTestButton.ForeColor = DesignTokens.Colors.TextOnDanger;
-            this.serviceHealthTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.DangerBorder;
-            return;
+            Control control = this.codexRadarModelButtonGrid.Controls[i];
+            this.codexRadarModelButtonGrid.Controls.RemoveAt(i);
+            control.Dispose();
         }
 
-        this.serviceHealthTestButton.BackColor = DesignTokens.Colors.Control;
-        this.serviceHealthTestButton.ForeColor = DesignTokens.Colors.Text;
-        this.serviceHealthTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.Border;
+        this.codexRadarModelButtons.Clear();
+        this.codexRadarModelButtonGrid.RowStyles.Clear();
+        int slotCount = Math.Max(5, ((models.Count + 4) / 5) * 5);
+        this.codexRadarModelButtonGrid.RowCount = Math.Max(1, slotCount / 5);
+        for (int row = 0; row < this.codexRadarModelButtonGrid.RowCount; row++)
+        {
+            this.codexRadarModelButtonGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        }
+
+        for (int slot = 0; slot < slotCount; slot++)
+        {
+            Button button = BuildCodexRadarModelButton(slot < models.Count ? models[slot] : null);
+            this.codexRadarModelButtonGrid.Controls.Add(button, slot % 5, slot / 5);
+            this.codexRadarModelButtons.Add(button);
+        }
+
+        this.codexRadarModelButtonGrid.ResumeLayout(true);
+        UpdateCodexRadarModelButtonStyles();
     }
 
-    private static ServiceHealthTestMode GetNextServiceHealthTestMode(ServiceHealthTestMode mode)
+    private Button BuildCodexRadarModelButton(CodexRadarModelInfo model)
     {
-        if (mode == ServiceHealthTestMode.Off)
+        Button button = new Button();
+        button.Dock = DockStyle.Fill;
+        button.Height = 36;
+        button.Margin = new Padding(3);
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderSize = 1;
+        button.Font = DesignTokens.CreateUIFont(9.0f, FontStyle.Bold);
+        button.Text = "--";
+        button.Tag = model;
+        if (model == null)
         {
-            return ServiceHealthTestMode.Normal;
+            button.Enabled = false;
+            button.BackColor = DesignTokens.Colors.Control;
+            button.ForeColor = DesignTokens.Colors.GlyphMuted;
+            button.FlatAppearance.BorderColor = DesignTokens.Colors.Border;
+            return button;
         }
 
-        if (mode == ServiceHealthTestMode.Normal)
+        button.Text = CodexRadarModelCatalog.GetDisplayLabel(model.Label, model.Key);
+        button.Enabled = model.Available ||
+            string.Equals(model.Key, this.selectedCodexRadarModelKey, StringComparison.OrdinalIgnoreCase);
+        button.Click += delegate
         {
-            return ServiceHealthTestMode.Offline;
-        }
+            CodexRadarModelInfo info = button.Tag as CodexRadarModelInfo;
+            if (info == null || !info.Available)
+            {
+                return;
+            }
 
-        if (mode == ServiceHealthTestMode.Offline)
-        {
-            return ServiceHealthTestMode.Unavailable;
-        }
-
-        if (mode == ServiceHealthTestMode.Unavailable)
-        {
-            return ServiceHealthTestMode.Unreachable;
-        }
-
-        return ServiceHealthTestMode.Off;
+            SetSelectedCodexRadarModelKey(info.Key);
+            this.saved = false;
+            QueuePreviewSettings();
+        };
+        return button;
     }
 
-    private static string GetServiceHealthTestButtonText(ServiceHealthTestMode mode)
+    private void SetSelectedCodexRadarModelKey(string key)
     {
-        if (mode == ServiceHealthTestMode.Normal)
-        {
-            return "正常";
-        }
+        string normalized = CodexRadarModelCatalog.NormalizeModelKey(key);
+        this.selectedCodexRadarModelKey = normalized.Length == 0
+            ? CodexRadarModelCatalog.DefaultModelKey
+            : normalized;
+        UpdateCodexRadarModelButtonStyles();
+    }
 
-        if (mode == ServiceHealthTestMode.Offline)
+    private void UpdateCodexRadarModelButtonStyles()
+    {
+        string selectedKey = CodexRadarModelCatalog.NormalizeModelKey(this.selectedCodexRadarModelKey);
+        for (int i = 0; i < this.codexRadarModelButtons.Count; i++)
         {
-            return "断网";
-        }
+            Button button = this.codexRadarModelButtons[i];
+            CodexRadarModelInfo model = button.Tag as CodexRadarModelInfo;
+            if (model == null)
+            {
+                button.BackColor = DesignTokens.Colors.Control;
+                button.ForeColor = DesignTokens.Colors.GlyphMuted;
+                button.FlatAppearance.BorderColor = DesignTokens.Colors.Border;
+                continue;
+            }
 
-        if (mode == ServiceHealthTestMode.Unavailable)
-        {
-            return "服务不可用";
-        }
+            bool selected = string.Equals(model.Key, selectedKey, StringComparison.OrdinalIgnoreCase);
+            if (selected)
+            {
+                button.BackColor = DesignTokens.Colors.AccentAction;
+                button.ForeColor = Color.White;
+                button.FlatAppearance.BorderColor = DesignTokens.Colors.AccentBorder;
+                continue;
+            }
 
-        if (mode == ServiceHealthTestMode.Unreachable)
-        {
-            return "无法连接";
-        }
+            if (!model.Available)
+            {
+                button.BackColor = DesignTokens.Colors.ControlPressed;
+                button.ForeColor = DesignTokens.Colors.GlyphMuted;
+                button.FlatAppearance.BorderColor = DesignTokens.Colors.Border;
+                continue;
+            }
 
-        return "实时";
+            button.BackColor = DesignTokens.Colors.Control;
+            button.ForeColor = DesignTokens.Colors.Text;
+            button.FlatAppearance.BorderColor = DesignTokens.Colors.Border;
+        }
     }
 
     private NetworkStatusTestMode GetNetworkStatusTestButtonMode()
@@ -2687,6 +3652,149 @@ internal sealed class SettingsForm : Form, IMessageFilter
         }
 
         return "实时";
+    }
+
+    private int GetCloudEndpointTestSeed()
+    {
+        return this.cloudEndpointTestButton != null && this.cloudEndpointTestButton.Tag is int
+            ? (int)this.cloudEndpointTestButton.Tag
+            : 0;
+    }
+
+    private void SetCloudEndpointTestSeed(int seed)
+    {
+        this.cloudEndpointTestSeed = Math.Max(0, seed);
+        if (this.cloudEndpointTestButton == null)
+        {
+            return;
+        }
+
+        this.cloudEndpointTestButton.Tag = this.cloudEndpointTestSeed;
+        if (this.cloudEndpointTestSeed > 0)
+        {
+            this.cloudEndpointTestButton.Text = "恢复实时";
+            this.cloudEndpointTestButton.BackColor = DesignTokens.Colors.WarningSoft;
+            this.cloudEndpointTestButton.ForeColor = DesignTokens.Colors.TextOnAccent;
+            this.cloudEndpointTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.Warning;
+            return;
+        }
+
+        this.cloudEndpointTestButton.Text = "随机状态";
+        this.cloudEndpointTestButton.BackColor = DesignTokens.Colors.Control;
+        this.cloudEndpointTestButton.ForeColor = DesignTokens.Colors.Text;
+        this.cloudEndpointTestButton.FlatAppearance.BorderColor = DesignTokens.Colors.Border;
+    }
+
+    private string GetNetworkAdapterId()
+    {
+        object value = GetComboValue(this.networkAdapterCombo, string.Empty);
+        return value == null ? string.Empty : Convert.ToString(value, CultureInfo.InvariantCulture).Trim();
+    }
+
+    private void SetNetworkAdapterId(string adapterId)
+    {
+        adapterId = (adapterId ?? string.Empty).Trim();
+        if (this.networkAdapterCombo == null)
+        {
+            return;
+        }
+
+        if (adapterId.Length > 0 && !ComboContainsValue(this.networkAdapterCombo, adapterId))
+        {
+            this.networkAdapterCombo.Items.Add(new ComboOption("已保存: " + ShortenAdapterId(adapterId), adapterId));
+        }
+
+        SelectComboValue(this.networkAdapterCombo, adapterId);
+    }
+
+    private static bool ComboContainsValue(ComboBox combo, object value)
+    {
+        if (combo == null)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < combo.Items.Count; i++)
+        {
+            ComboOption option = combo.Items[i] as ComboOption;
+            if (option != null && object.Equals(option.Value, value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string ShortenAdapterId(string adapterId)
+    {
+        if (string.IsNullOrEmpty(adapterId) || adapterId.Length <= 18)
+        {
+            return adapterId ?? string.Empty;
+        }
+
+        return adapterId.Substring(0, 8) + "..." + adapterId.Substring(adapterId.Length - 6);
+    }
+
+    private int GetCloudStatusRegionMask()
+    {
+        int mask = 0;
+        if (this.cloudRegionJapanCheck != null && this.cloudRegionJapanCheck.Checked)
+        {
+            mask |= WidgetSettings.CloudStatusRegionJapan;
+        }
+
+        if (this.cloudRegionAsiaPacificCheck != null && this.cloudRegionAsiaPacificCheck.Checked)
+        {
+            mask |= WidgetSettings.CloudStatusRegionAsiaPacific;
+        }
+
+        if (this.cloudRegionNorthAmericaCheck != null && this.cloudRegionNorthAmericaCheck.Checked)
+        {
+            mask |= WidgetSettings.CloudStatusRegionNorthAmerica;
+        }
+
+        if (this.cloudRegionEuropeCheck != null && this.cloudRegionEuropeCheck.Checked)
+        {
+            mask |= WidgetSettings.CloudStatusRegionEurope;
+        }
+
+        mask &= WidgetSettings.CloudStatusRegionMaskAll;
+        return mask == 0 ? WidgetSettings.DefaultCloudStatusRegionMask : mask;
+    }
+
+    private void SetCloudStatusRegionMask(int mask)
+    {
+        mask &= WidgetSettings.CloudStatusRegionMaskAll;
+        if (mask == 0)
+        {
+            mask = WidgetSettings.DefaultCloudStatusRegionMask;
+        }
+
+        if (this.cloudRegionJapanCheck != null)
+        {
+            this.cloudRegionJapanCheck.Checked = (mask & WidgetSettings.CloudStatusRegionJapan) != 0;
+        }
+
+        if (this.cloudRegionAsiaPacificCheck != null)
+        {
+            this.cloudRegionAsiaPacificCheck.Checked = (mask & WidgetSettings.CloudStatusRegionAsiaPacific) != 0;
+        }
+
+        if (this.cloudRegionNorthAmericaCheck != null)
+        {
+            this.cloudRegionNorthAmericaCheck.Checked = (mask & WidgetSettings.CloudStatusRegionNorthAmerica) != 0;
+        }
+
+        if (this.cloudRegionEuropeCheck != null)
+        {
+            this.cloudRegionEuropeCheck.Checked = (mask & WidgetSettings.CloudStatusRegionEurope) != 0;
+        }
+    }
+
+    private static int CreateCloudEndpointTestSeed()
+    {
+        return Environment.TickCount & int.MaxValue;
     }
 
     private CleanIpBadgeTestMode GetCleanIpBadgeTestButtonMode()
@@ -2962,17 +4070,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
         {
             get
             {
-                int bottom = this.Padding.Top + this.Padding.Bottom;
-                for (int i = 0; i < this.Controls.Count; i++)
-                {
-                    Control control = this.Controls[i];
-                    if (control.Visible)
-                    {
-                        bottom = Math.Max(bottom, control.Bottom + control.Margin.Bottom + this.Padding.Bottom);
-                    }
-                }
-
-                return bottom > this.ClientSize.Height;
+                return GetVerticalScrollMaximum() > 0;
             }
         }
 
@@ -3031,7 +4129,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
                 return false;
             }
 
-            int max = Math.Max(0, this.VerticalScroll.Maximum - this.VerticalScroll.LargeChange + 1);
+            int max = GetVerticalScrollMaximum();
             if (max <= 0)
             {
                 return false;
@@ -3053,6 +4151,29 @@ internal sealed class SettingsForm : Form, IMessageFilter
             this.AutoScrollPosition = new Point(0, next);
             this.Invalidate();
             return true;
+        }
+
+        private int GetVerticalScrollMaximum()
+        {
+            int contentHeight = GetScrollableContentHeight();
+            this.AutoScrollMinSize = new Size(0, contentHeight);
+            return Math.Max(0, contentHeight - this.ClientSize.Height);
+        }
+
+        private int GetScrollableContentHeight()
+        {
+            int current = Math.Max(0, -this.AutoScrollPosition.Y);
+            int bottom = this.Padding.Top + this.Padding.Bottom;
+            for (int i = 0; i < this.Controls.Count; i++)
+            {
+                Control control = this.Controls[i];
+                if (control.Visible)
+                {
+                    bottom = Math.Max(bottom, control.Bottom + current + control.Margin.Bottom + this.Padding.Bottom);
+                }
+            }
+
+            return bottom;
         }
     }
 
@@ -3098,7 +4219,7 @@ internal sealed class SettingsForm : Form, IMessageFilter
                 return false;
             }
 
-            int max = Math.Max(0, this.VerticalScroll.Maximum - this.VerticalScroll.LargeChange + 1);
+            int max = GetVerticalScrollMaximum();
             if (max <= 0)
             {
                 return false;
@@ -3115,6 +4236,29 @@ internal sealed class SettingsForm : Form, IMessageFilter
             this.AutoScrollPosition = new Point(0, next);
             this.Invalidate();
             return true;
+        }
+
+        private int GetVerticalScrollMaximum()
+        {
+            int contentHeight = GetScrollableContentHeight();
+            this.AutoScrollMinSize = new Size(0, contentHeight);
+            return Math.Max(0, contentHeight - this.ClientSize.Height);
+        }
+
+        private int GetScrollableContentHeight()
+        {
+            int current = Math.Max(0, -this.AutoScrollPosition.Y);
+            int bottom = this.Padding.Top + this.Padding.Bottom;
+            for (int i = 0; i < this.Controls.Count; i++)
+            {
+                Control control = this.Controls[i];
+                if (control.Visible)
+                {
+                    bottom = Math.Max(bottom, control.Bottom + current + control.Margin.Bottom + this.Padding.Bottom);
+                }
+            }
+
+            return bottom;
         }
     }
 

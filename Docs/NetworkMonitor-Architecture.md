@@ -11,7 +11,9 @@
 | `Core/NetworkMonitorForm.cs` | 网络窗口生命周期、布局、状态文字、红叉和分层窗口绘制 |
 | `Performance/NetworkMonitorReader.cs` | 本地网卡、公网 IP、连通性、延迟、抖动和门户认证检测 |
 | `Performance/GfwProbeReader.cs` | GFW 多阶段探测、结果驻留和独立日志 |
-| `Performance/PdhModels.cs` | 网络、Wi-Fi 和 GFW 快照模型 |
+| `Performance/CloudEndpointProbe.cs` | 云服务公网可用性轻量采样、异常确认和缓存 |
+| `Performance/CloudEndpointProbeReader.cs` | 云服务独立单飞调度、手动冷却和网络状态门控 |
+| `Performance/PdhModels.cs` | 网络、Wi-Fi、GFW 和云服务快照模型 |
 | `Settings/WidgetSettings.cs` | 三档性能策略和网络窗口设置 |
 | `Settings/SettingsForm.cs` | 网络窗口参数、GFW 参数和网络状态测试入口 |
 | `Interop/NativeMethods.cs` | WLAN、分层窗口和原生窗口接口 |
@@ -47,10 +49,12 @@ flowchart LR
     Reader --> Connectivity["Ping + NCSI"]
     Reader --> PublicIP["公网 IP"]
     Reader --> GFW["GfwProbeReader"]
+    Reader --> Cloud["CloudEndpointProbeReader"]
     Local --> Snapshot["NetworkMonitorSnapshot"]
     Connectivity --> Snapshot
     PublicIP --> Snapshot
     GFW --> Snapshot
+    Cloud --> Snapshot
     Snapshot --> Compare{"显示字段变化?"}
     Compare -- "否" --> Keep["复用当前分层位图"]
     Compare -- "是" --> Draw["重新绘制缓存位图"]
@@ -69,7 +73,7 @@ flowchart LR
 | 本地接口 | `InterfaceId`、名称、类型、速率、IPv4/IPv6、DNS |
 | Wi-Fi | SSID、认证、加密、PHY、信号、收发协商速率 |
 | 公网连通性 | `AccessState`、延迟、抖动、丢包、公网 IP |
-| GFW | `GfwProbeSnapshot` |
+| GFW 与云服务 | `GfwProbeSnapshot`、`CloudEndpointSnapshot[]` |
 
 线程规则：
 
@@ -90,6 +94,8 @@ flowchart LR
 | `NeedsValidation` | 门户重定向、401/403/511 或 NCSI 内容被替换 | 橙色 | 无 |
 | `Offline` | 网卡存在，但 Ping 和 HTTP 均无法证明公网可用 | 红色 | 有 |
 | `AdapterMissing` | 没有识别到可用活动网卡 | 红色 | 有 |
+
+如果公网连通性本身为 `Online`，但 GFW 检测已完成且结果不是通过，标题栏会用橙色 `全球互联网不可用` 覆盖 `ONLINE`。该覆盖只影响标题状态文本，不改变 PING 行、GFW 行或真实 `AccessState`。
 
 ### 5.2 状态优先级
 
@@ -132,14 +138,41 @@ flowchart LR
 
 最高分接口作为主接口。`InterfaceId` 用于判断后台任务是否仍属于当前网络。
 
+设置页“网卡选择”保存为 `NetworkMonitorAdapterId`。空值表示继续自动选择；非空时优先按 `NetworkInterface.Id` 匹配，兼容按接口名称匹配。手动选择的接口即使当前不是 `Up` 也会成为本地快照来源，此时 `InterfaceKnown` 保持为真、`Connected` 为假，界面可继续显示当前选择的网卡名称，同时连通性状态进入离线/未连接路径。
+
 本地快照包括：
 
 - 最多两个 IPv4/IPv6 地址
-- 最多三个 DNS 地址
+- 当前网卡的 DNS 地址和每个 DNS 的健康状态
 - WLAN 当前连接属性
 - 链路速率和接口类型
 
 省电模式不进行固定周期接口枚举，只在首次读取、手动刷新或 Windows 网络事件后更新。
+
+### 6.1 DNS 状态检测
+
+DNS 地址列表随本地网卡刷新一起更新；DNS 健康状态由独立后台任务低频检测，不阻塞 UI 线程。
+
+检测流程：
+
+1. 对每个 DNS 服务器用 UDP 53 查询 `www.msftconnecttest.com`。
+2. UDP 无响应时用 TCP 53 查询同一域名；TCP 成功但 UDP 失败显示为黄色问题。
+3. 正常域名解析成功后，查询随机 `.invalid` 域名验证 NXDOMAIN。
+4. 随机不存在域名返回地址时，再查询第二个随机 `.invalid` 域名；连续两次返回地址才判定为劫持，否则降为黄色问题。
+
+单轮 DNS 检测最多 2 个 DNS 服务器并发，结果仍按原 DNS 列表顺序提交。这样能避免多 DNS 全部串行导致刷新拖太久，也不会一次性对所有 DNS 服务器打满查询。
+
+DNS 状态颜色：
+
+| 状态 | 条件 | 颜色 |
+| --- | --- | --- |
+| `Normal` | 正常域名解析成功，随机不存在域名返回 NXDOMAIN | 浅绿色 |
+| `Problem` | DNS 返回错误码、无地址答案、NXDOMAIN 验证异常或仅 TCP 可用 | 黄色 |
+| `Hijacked` | 随机不存在域名被解析为地址 | 红色 |
+| `Unavailable` | DNS 地址无效或 UDP/TCP 均无响应 | 灰色 |
+| `Unknown` | 尚未完成检测 | 灰色 |
+
+DNS 行按异常优先排序显示：劫持、问题、不可用、未知、正常。最多显示 3 个 DNS；如果隐藏更多 DNS，`+n` 的颜色取隐藏项中的最差状态。
 
 ## 7. 连通性检测
 
@@ -193,6 +226,9 @@ flowchart LR
 | 离线重试 | 3 s | 5 s | 10 s |
 | 需要验证重试 | 5 s | 10 s | 30 s |
 | 公网 IP 刷新 | 5 min | 10 min | 15 min |
+| DNS 未知复查 | 15 s | 30 s | 60 s |
+| DNS 异常复查 | 30 s | 60 s | 120 s |
+| DNS 全正常复查 | 5 min | 10 min | 15 min |
 | 悬停动画 | 16 ms | 33 ms | 100 ms |
 | 静止交互轮询 | 30 ms | 100 ms | 250 ms |
 
@@ -234,12 +270,13 @@ reader 监听：
 - `publicIpRequestRunning`
 - `connectivityRequestRunning`
 - `GfwProbeReader.requestRunning`
+- `CloudEndpointProbeReader.requestRunning`
 
 调度时间记录的是任务开始时间。任务仍在运行时，即使新的 UI tick 判断已经到期，也不会创建第二个同类任务。
 
 公网 IP 先请求 IPv6/IPv4 通用接口 `api64.ipify.org`，失败后回退 `api.ipify.org`。
 
-公网 IP 和 GFW 只在真实网络状态为 `Online` 时启动。测试模式不会触发额外真实网络请求。
+公网 IP、GFW 和云服务检测只在真实网络状态为 `Online` 时启动。测试模式不会触发额外真实网络请求。云服务检测的执行与 GFW 结论解耦，GFW 被判为疑似异常时不会跳过云服务请求，也不会把海外云服务方块强制置灰。
 
 ## 11. GFW 检测协作
 
@@ -253,13 +290,45 @@ reader 监听：
 
 已经完成的 GFW 结果会驻留，直到下一次检测覆盖。网络暂时不可用时不会抹掉已有结论。
 
+云服务检测由 `CloudEndpointProbeReader` 独立调度，结果仍挂在 `GfwProbeSnapshot.CloudEndpoints` 供现有 UI 绘制。开始刷新时 6 个方块进入 `Checking`，并随 UI 刷新在绿色/淡绿色和黄色之间切换，完成后结果驻留到下一轮覆盖。手动刷新接受后有 45 秒冷却，冷却期内重复点击只复用现有结果。
+
+云服务目标：
+
+| 显示 | 服务 | 检测方式 |
+| --- | --- | --- |
+| `Cf` | Cloudflare | Statuspage JSON `summary.json` |
+| `Aw` | AWS | `https://aws.amazon.com/` HTTP 状态码 |
+| `Go` | Google Cloud | Google Cloud Service Health `incidents.json` 降级源 |
+| `Gi` | GitHub | Statuspage JSON `summary.json` |
+| `Al` | 阿里云 | `https://www.aliyun.com/` HTTP 状态码 |
+| `Tx` | 腾讯云 | `https://cloud.tencent.com/` HTTP 状态码 |
+
+每轮云服务刷新先对需要刷新的目标各采样 1 次，并发上限为 3。只有首轮结果异常、无法连接或延迟达到 1000 ms 的目标才追加 2 次确认，相邻确认间隔 10 秒；首轮正常的目标不再跟随全量三次采样。公开状态 API 可用的服务优先使用 API，没有无凭证公开 API 的服务按 HTTPS 状态码分类：`2xx/3xx` 正常，`401/403` 拒绝访问，`429` 访问限流，`451` 地区受限，`404/410` 入口异常，`5xx` 服务异常，DNS/TCP/TLS/超时类失败显示为无法连接。HTTP `HEAD` 返回 `403/405/501` 时会用轻量 `GET` 复查，避免单纯拒绝 `HEAD` 的站点误报。
+
+云服务缓存按结果分层：官方 API 正常结果缓存 30 分钟，普通 HTTPS 正常结果缓存 15 分钟，延迟过高或状态异常缓存 2 分钟，无法连接缓存 45 秒，未知结果缓存 30 秒。Cloudflare、Google Cloud 和 GitHub 的官方状态 API 支持 `ETag` / `If-Modified-Since` 条件请求；服务端返回 `304` 时直接复用缓存正文。地区设置变化时只强制刷新 Cloudflare 和 Google Cloud，AWS、GitHub、阿里云、腾讯云在 TTL 内继续复用缓存。
+
+Cloudflare 和 Google Cloud 的官方状态源会按设置页“官方地区”过滤，当前支持日本、亚太、北美、欧洲，默认只勾选日本。Cloudflare 依据事件、维护和组件名称匹配地区；Google Cloud 依据 `currently_affected_locations` 的区域 ID 和标题匹配地区。无法识别地区的官方事件按全局事件处理，避免漏报。
+
+至少两次正常时，取延迟最接近的两次平均值作为代表延迟；代表延迟达到 1000 ms 则显示黄色延迟过高，否则显示绿色正常。至少两次无法连接显示红色，至少两次状态异常显示橙色，其余混合结果显示橙色。
+
+`IP4` 行右侧显示云服务方块，方块组右对齐，`IP4` 地址文本会预留方块宽度避免重叠。颜色规则：
+
+- 网络不是 `Online`：全部灰色。
+- 正在刷新：黄色。
+- 正常：海外服务绿色，阿里云和腾讯云淡绿色。
+- 延迟过高：黄色；无法连接：红色；状态异常：橙色。
+
+如果云服务处于检测中，网络状态文字右侧显示黄色 `云服务测试中`。如果存在一个红色或橙色云服务，网络状态文字右侧先显示服务名加 `!`，下一次刷新显示失败层级或原因加 `!`，例如 `AWS!` / `拒绝访问!`。服务名映射为 Cloudflare、AWS、Google Cloud、Github、Aliyun、Tencent。公网文字仍使用固定右侧区域绘制，不参与云服务提示布局。
+
+如果同时存在多个红色或橙色云服务，网络状态文字右侧按方块从左到右轮换，每个服务都按“服务名!”、“原因!”顺序随 UI 刷新切换。红色表示无法连接，橙色表示状态异常。
+
 独立日志：
 
 ```text
 %LOCALAPPDATA%\DesktopCodexAssistant\gfw-probe.log
 ```
 
-每轮日志前保留空行，第一行记录时间和触发来源，之后记录控制站点、候选站点和总结。
+每轮日志前保留空行，第一行记录时间和触发来源。GFW 触发会记录控制站点、候选站点和总结；云服务触发会记录缓存命中、轻量采样、异常确认和最终 TTL。
 
 ## 12. 绘制与缓存
 
@@ -267,9 +336,10 @@ reader 监听：
 
 `HasSameDisplayData` 只比较实际影响画面的字段，包括：
 
-- 接口、地址、DNS、Wi-Fi
+- 接口、地址、DNS 地址与 DNS 状态、Wi-Fi
 - 状态、公网 IP、延迟、抖动、丢包
 - GFW 状态、理由和时间
+- 云服务方块标签、国内外标记和显示状态
 
 内部更新时间或不显示的数据不会触发重绘。延迟和抖动差异小于 0.5 ms 时视为相同。
 

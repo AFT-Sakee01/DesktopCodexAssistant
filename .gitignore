@@ -5,6 +5,7 @@
 *.ilk
 bin/
 obj/
+_build/
 
 # Local backups and generated archives
 Backups/

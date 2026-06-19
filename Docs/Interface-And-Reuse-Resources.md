@@ -1,0 +1,166 @@
+# 接口与复用资源汇总
+
+## 1. 文档用途
+
+本汇总以当前源码为准，帮助后续修改在新增实现前优先找到可复用接口、服务、组件、命令和持久化资源。
+
+机器可检索的完整索引位于：
+
+`Docs/INTERFACE_INDEX.jsonl`
+
+JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和废弃标记。
+
+## 2. 复用顺序
+
+1. 查询 `Docs/INTERFACE_INDEX.jsonl` 的 `id`、`name`、`purpose` 和 `reuse`。
+2. 优先调用已有内部 API，不在窗口类中重复实现系统调用或网络调度。
+3. 外部请求复用已有 reader、单飞、缓存、取消和过期结果保护。
+4. 新设置完整接入默认值、Clone、Load、Save、Normalize、设置 UI 和绑定自测。
+5. 新 layered 窗口复用窗口生命周期、`LayeredBitmapSurface`、字体缓存和防烧屏处理。
+6. 新持久化文件放在 `%LOCALAPPDATA%\DesktopCodexAssistant`，不写入程序目录。
+
+## 3. 外部服务
+
+| 索引 ID | 服务 | 所属模块 | 复用重点 |
+| --- | --- | --- | --- |
+| `external_api.codex_radar.current` | Codex Radar current.json | `CodexRadarForm` | 北京时间整点调度、半日 IQ 窗口、速蹬窗口、RSS 链接、动态模型目录、JSON/HTML 回退和模型缓存 |
+| `external_api.codex_radar.feed` | Codex Radar RSS | `CodexRadarForm` | 只跟随 current.json 成功响应读取，用 GUID/pubDate 去重额外重置 |
+| `external_api.claude.status` | Claude Statuspage | `CodexRadarForm` | 服务健康状态映射 |
+| `external_api.openai.status` | OpenAI Statuspage | `CodexRadarForm` | 五阶段连接诊断 |
+| `external_api.chatgpt.probe` | ChatGPT HTTPS | `CodexRadarForm` | 仅做连接判断，不读取用户会话 |
+| `external_api.cleanip.me` | CleanIP | `CleanIpConnectionReader` | 整点抖动、错误重试和测试快照 |
+| `external_api.ipify.public_ip` | ipify | `NetworkMonitorReader` | 单飞和 network generation 校验 |
+| `external_api.microsoft.connecttest` | Microsoft NCSI | `NetworkMonitorReader` | 与 Ping 组合判断门户和离线 |
+| `external_api.cloudflare.doh` | Cloudflare DoH | `GfwProbeReader` | 独立 DNS 对照 |
+| `external_api.gfw.probe_hosts` | GFW 控制组与候选组 | `GfwProbeReader` | DNS/TCP/TLS/HTTP 多阶段语义 |
+| `external_api.cloud.health_targets` | 六个云服务端点 | `CloudEndpointProbe` | 并发上限、缓存、三次采样和取消 |
+
+## 4. 命令与进程接口
+
+### 4.1 主程序 CLI
+
+入口：`DesktopCodexAssistant.exe`
+
+| 参数 | 用途 |
+| --- | --- |
+| `--desktop-parent` / `--workerw` | 尝试挂接桌面 WorkerW |
+| `--stop` | 通过命名事件停止现有实例 |
+| `--install` / `--uninstall` | 维护当前用户启动项 |
+| `--no-start` | 安装后不启动 |
+| `--restart-after-pid PID` | 等待旧进程退出后重启 |
+| `--test` | 基础采样测试 |
+| `--test-logger` | 日志存储策略测试 |
+| `--test-layout` | 分辨率布局换算测试 |
+| `--test-settings-bindings` | 设置控件绑定测试 |
+| `--test-display-recovery` | 分层窗口显示恢复测试 |
+| `--test-operation-panel` | 操作面板命中遮罩、动画、单飞、FPS 间隔和 SeelenUI 结果映射测试 |
+
+对应索引：`command.application.cli`
+
+### 4.2 构建与安装
+
+| 索引 ID | 入口 | 约束 |
+| --- | --- | --- |
+| `command.build.arm64` | `Build-Arm64.ps1` | 默认构建入口 |
+| `command.build.x64` | `Build-X64.ps1` | 仅在用户明确要求时调用 |
+| `command.install` | `Install.ps1` | 写启动项并启动程序 |
+| `command.uninstall` | `Uninstall.ps1` | 删除启动项并按需停止程序 |
+
+### 4.3 IPC 与外部程序
+
+| 索引 ID | 接口 |
+| --- | --- |
+| `event.application.stop` | `Local\DesktopCodexAssistantStop` 命名事件 |
+| `service.application.single_instance` | `Local\DesktopCodexAssistant` 命名 Mutex |
+| `command.seelen.cli` | SeelenUI `slu.exe`，电源菜单调用在后台单飞执行，UI 线程只处理结果和回退 |
+| `command.windows.shell_actions` | Windows URI、AppsFolder、Shell.Application 和系统进程入口 |
+
+## 5. Windows 系统接口
+
+| 索引 ID | 能力 | 主要复用位置 |
+| --- | --- | --- |
+| `service.windows.pdh` | CPU、磁盘、网络、GPU、NPU 计数器 | `PdhSampler` |
+| `service.windows.wmi_hardware` | CPU、内存、磁盘、GPU、NPU 硬件信息 | `PdhSampler` |
+| `service.windows.wmi_power_thermal` | 电池功耗、温度区、电源计划 | `PowerThermalForm` |
+| `service.windows.layered_window` | 透明分层窗口提交和缓存 | 所有监控窗口 |
+| `event.windows.power_display` | 显示、电源、电量和电源模式通知 | `WidgetForm`、`PowerThermalForm` |
+| `service.windows.wlan` | Wi-Fi SSID、信号和链路信息 | `NetworkMonitorReader` |
+| `service.windows.ui_automation` | 开始按钮、隐藏托盘等系统控件 | `NativeMethods` |
+| `service.windows.input_language` | 前台输入法语言和模式 | `NativeMethods` |
+| `event.network.change` | 网络地址与可用性变化 | 网络 readers |
+| `event.keyboard.ctrl_d` | 全局 Ctrl+D | `GlobalCtrlDWatcher` |
+| `event.settings.file_watcher` | 外部设置热加载 | `WidgetForm` |
+| `event.codex.sessions_watcher` | Codex rollout JSONL 更新 | `CodexRadarForm` |
+
+新增 P/Invoke、COM、WinRT 或 Shell 调用优先放入 `Interop/NativeMethods.cs`。
+
+## 6. 内部公共接口
+
+| 索引 ID | 组件 | 复用规则 |
+| --- | --- | --- |
+| `internal_api.widget_settings` | 设置、迁移、布局与性能策略 | 新设置完整接入读写和自测链 |
+| `internal_api.logger` | 缓冲日志、错误日志和 GFW 日志 | 高频事件聚合或只记录状态变化 |
+| `internal_api.timing_stats` | 12 小时滚动耗时统计 | 新增性能计时点复用内存滚动窗口和 15 分钟摘要日志 |
+| `internal_api.pdh_sampler` | 性能快照 | UI 不直接访问 PDH/WMI |
+| `internal_api.network_monitor_reader` | 网络状态总快照 | UI 只读取 Clone |
+| `internal_api.gfw_probe_reader` | GFW 调度 | 与云检测保持解耦 |
+| `internal_api.cloud_endpoint_probe` | 云服务异步探测 | 复用取消、缓存和异常确认 |
+| `internal_api.clean_ip_reader` | 出口身份快照 | 复用单飞和网络事件 |
+| `internal_api.native_methods` | Windows 互操作门面 | 避免散落 P/Invoke |
+| `internal_api.design_tokens` | 色彩、透明度、圆角和字体 | 禁止重复硬编码语义色 |
+| `internal_api.ui_font_cache` | 字体缓存 | 每个窗口生命周期内复用 |
+| `internal_api.burn_in_protection` | 像素位移和隐藏反色 | 新窗口分配独立 salt；操作面板隐藏态只为可见按钮恢复命中 Alpha |
+| `internal_api.time_zone_utilities` | 北京时间调度和显示时区 | 区分业务时间与显示时间 |
+| `internal_api.window_runtime_contract` | 设置、刷新、全屏、挂起、恢复和共享维护 | 新模块实现同等生命周期方法，低频维护复用主协调 tick |
+| `internal_api.snapshot_models` | 跨线程快照契约 | 后台状态通过 Clone 交付 |
+| `internal_api.drawing_and_rate_formatters` | Alpha 绘图和速率格式 | 不重复实现单位换算 |
+
+## 7. 持久化资源
+
+根目录：`%LOCALAPPDATA%\DesktopCodexAssistant`
+
+| 索引 ID | 文件/目录 | 用途 |
+| --- | --- | --- |
+| `config.settings_ini` | `settings.ini` | 全部运行设置和布局 |
+| `file_format.runtime_logs` | 主日志、错误日志、GFW 日志 | 运行和诊断 |
+| `file_format.codex_radar_cache` | `codex-radar-cache.ini` | 动态模型快照和历史基准 |
+| `file_format.codex_radar_model_catalog` | `codex-radar-models.ini` | 模型按钮目录、可用状态和增删去重 |
+| `file_format.codex_quota` | `quota.ini` | Codex 额度缓存 |
+| `file_format.quota_reset_state` | `quota-reset-state.ini` | 本地 reset 保护、RSS 重置和速蹬开启去重 |
+| `file_format.install_log` | `install.log` | 安装和卸载记录 |
+| `resource_directory.codex_sessions` | `%USERPROFILE%\.codex\sessions` | 只读 Codex rollout 数据源 |
+| `resource_directory.docs` | `Docs` | 技术文档和接口索引 |
+| `resource_directory.legacy_executables` | `Artifacts/LegacyExecutables` | 历史归档，不参与运行 |
+| `resource_directory.build_outputs` | 根目录 EXE | ARM64 默认、x64 显式产物 |
+
+## 8. 窗口模块复用契约
+
+主窗口通过 `WidgetForm` 协调：
+
+- `CodexRadarForm`
+- `PowerThermalForm`
+- `NetworkMonitorForm`
+- `ConnectionCheckForm`
+- `OperationForm`
+
+监控窗口按职责实现：
+
+- `ApplyRuntimeSettings`
+- `ForceRefresh`
+- `SetHiddenForFullscreen`
+- `RecoverAfterDisplayResume`
+- `PrepareForDisplaySuspend`
+- `SetSharedInteractionPolling`
+- `ProcessSharedInteractionTick`
+- `ProcessSharedMaintenanceTick`，仅由需要共享低频维护的模块实现
+
+分层窗口同时复用 `NativeMethods.LayeredBitmapSurface`、`UiFontCache`、`DesignTokens`、`BurnInProtection`、内容变化判断和透明度-only 提交。
+
+## 9. 索引维护规则
+
+1. 更名尽量保留已有稳定 `id`。
+2. 废弃项将 `status` 改为 `deprecated`，不直接删除。
+3. 更新 `updated_version` 和 `updated_at`。
+4. 确认 `location` 与 `references` 指向现有项目路径。
+5. 逐行解析 JSONL，检查唯一 ID 和必填字段。
+6. 不登记密码、Token、Cookie、私钥或完整连接串。

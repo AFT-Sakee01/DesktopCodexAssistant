@@ -1,9 +1,11 @@
+using System;
 using System.Drawing;
 
 internal static class DesignTokens
 {
     public const string UiFontFamily = "Segoe UI";
     public const string MonoFontFamily = "Consolas";
+    private static readonly Color BurnInWhite = Color.FromArgb(238, 241, 244);
 
     public static class Colors
     {
@@ -23,12 +25,12 @@ internal static class DesignTokens
         public static readonly Color ControlPressed = Color.FromArgb(54, 54, 58);
         public static readonly Color Border = Color.FromArgb(72, 72, 78);
         public static readonly Color Badge = Color.FromArgb(154, 160, 170);
-        public static readonly Color Text = Color.FromArgb(245, 245, 245);
-        public static readonly Color TextStrong = Color.FromArgb(244, 248, 250);
-        public static readonly Color TextMuted = Color.FromArgb(224, 235, 241);
-        public static readonly Color SubtleText = Color.FromArgb(210, 210, 210);
-        public static readonly Color Glyph = Color.FromArgb(245, 248, 250);
-        public static readonly Color GlyphMuted = Color.FromArgb(142, 149, 158);
+        public static readonly Color Text = Color.FromArgb(232, 235, 238);
+        public static readonly Color TextStrong = Color.FromArgb(236, 240, 242);
+        public static readonly Color TextMuted = Color.FromArgb(202, 211, 218);
+        public static readonly Color SubtleText = Color.FromArgb(188, 194, 198);
+        public static readonly Color Glyph = Color.FromArgb(232, 236, 239);
+        public static readonly Color GlyphMuted = Color.FromArgb(128, 135, 144);
         public static readonly Color TextOnAccent = Color.Black;
         public static readonly Color TextOnDanger = Color.White;
         public static readonly Color Accent = Color.FromArgb(82, 211, 255);
@@ -43,8 +45,8 @@ internal static class DesignTokens
         public static readonly Color SuccessSoft = Color.FromArgb(95, 218, 132);
         public static readonly Color SuccessText = Color.FromArgb(170, 238, 190);
         public static readonly Color QuotaGood = Color.FromArgb(76, 214, 116);
-        public static readonly Color Warning = Color.FromArgb(255, 207, 82);
-        public static readonly Color WarningSoft = Color.FromArgb(242, 202, 73);
+        public static readonly Color Warning = Color.FromArgb(255, 226, 92);
+        public static readonly Color WarningSoft = Color.FromArgb(255, 226, 92);
         public static readonly Color WarningDeep = Color.FromArgb(226, 117, 49);
         public static readonly Color Danger = Color.FromArgb(255, 92, 104);
         public static readonly Color DangerText = Color.FromArgb(255, 178, 186);
@@ -63,14 +65,14 @@ internal static class DesignTokens
 
     public static class Alpha
     {
-        public const int ShellOutline = 90;
-        public const int StrongText = 244;
-        public const int MutedText = 224;
-        public const int Glyph = 238;
-        public const int WeakOutline = 64;
-        public const int HoverGlass = 74;
-        public const int RestGlass = 48;
-        public const int TileShadow = 80;
+        public const int ShellOutline = 76;
+        public const int StrongText = 232;
+        public const int MutedText = 204;
+        public const int Glyph = 224;
+        public const int WeakOutline = 52;
+        public const int HoverGlass = 66;
+        public const int RestGlass = 42;
+        public const int TileShadow = 72;
     }
 
     public static class Radius
@@ -110,7 +112,7 @@ internal static class DesignTokens
 
     public static Color White(int alpha)
     {
-        return WithAlpha(Color.White, alpha);
+        return WithAlpha(BurnInWhite, Math.Min(alpha, 232));
     }
 
     public static Color Black(int alpha)

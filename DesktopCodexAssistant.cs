@@ -82,9 +82,19 @@ internal static class Program
             return TestLayoutScalingPolicy();
         }
 
+        if (HasArg(args, "--test-settings-bindings"))
+        {
+            return TestSettingsBindingPolicy();
+        }
+
         if (HasArg(args, "--test-display-recovery"))
         {
             return TestDisplayRecoveryPolicy();
+        }
+
+        if (HasArg(args, "--test-operation-panel"))
+        {
+            return TestOperationPanelPolicy();
         }
 
         // Stop pre-rename processes before acquiring the new product mutex.
@@ -291,12 +301,13 @@ internal static class Program
 
     internal static void ApplyPerformanceMode(WidgetPerformanceMode mode)
     {
-        if (performanceModeKnown && activePerformanceMode == mode)
+        WidgetPerformanceMode effectiveMode = WidgetSettings.GetEffectivePerformanceMode(mode);
+        if (performanceModeKnown && activePerformanceMode == effectiveMode)
         {
             return;
         }
 
-        bool powerSaving = WidgetSettings.ShouldEnableProcessPowerSaving(mode);
+        bool powerSaving = WidgetSettings.ShouldEnableProcessPowerSaving(effectiveMode);
         // BelowNormal keeps the UI responsive while EcoQoS/Power Throttling reduces background
         // execution cost. Idle priority caused excessive delays in WMI and settings operations.
         bool throttlingSet = NativeMethods.TrySetProcessPowerThrottling(powerSaving);
@@ -311,10 +322,11 @@ internal static class Program
         }
 
         performanceModeKnown = true;
-        activePerformanceMode = mode;
+        activePerformanceMode = effectiveMode;
         LogInfo(string.Format(
-            "Performance mode {0}. ProcessPowerSaving={1}, PowerThrottling={2}, Priority={3}",
+            "Performance mode {0}{1}. ProcessPowerSaving={2}, PowerThrottling={3}, Priority={4}",
             mode,
+            effectiveMode == mode ? string.Empty : " -> " + effectiveMode,
             powerSaving,
             throttlingSet,
             prioritySet));
@@ -390,13 +402,15 @@ internal static class Program
                     ? (snapshot.NetworkRssiKnown ? snapshot.NetworkRssiDbm.ToString(CultureInfo.InvariantCulture) + "dBm" : "--dBm")
                     : "n/a";
                 string sampleText = string.Format(
-                    "{0} {1:0}% {2} | Memory {3:0.0}/{4:0.0} GB ({5:0}%) | Disk WT {6} RD {7} | GPU {8:0}% {9:0.0}/{10:0.#} GB | NPU {11:0}% {12:0.0}/{13:0.#} GB | Network {14} UP {15} DL {16} RSSI {17}",
+                    "{0} {1:0}% {2} | Memory {3:0.0}/{4:0.0} GB ({5:0}%, HW {6:0.0} GB) | Disk {7} WT {8} RD {9} | GPU {10:0}% {11:0.0}/{12:0.#} GB | NPU {13:0}% {14:0.0}/{15:0.#} GB | Network {16} UP {17} DL {18} RSSI {19}",
                     snapshot.CpuName,
                     snapshot.CpuPercent,
                     FormatCpuFrequencyPair(snapshot.CpuFrequencyGhz, snapshot.CpuBaseFrequencyGhz),
                     snapshot.MemoryUsedGb,
                     snapshot.MemoryTotalGb,
                     snapshot.MemoryPercent,
+                    snapshot.MemoryHardwareReservedGb,
+                    string.IsNullOrWhiteSpace(snapshot.DiskVolumeLabel) ? "--" : snapshot.DiskVolumeLabel,
                     NetworkRateFormatter.Format(snapshot.DiskWriteBytesPerSecond),
                     NetworkRateFormatter.Format(snapshot.DiskReadBytesPerSecond),
                     snapshot.GpuPercent,
@@ -458,6 +472,26 @@ internal static class Program
         }
     }
 
+    private static int TestSettingsBindingPolicy()
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            SettingsForm.RunSettingsBindingSelfTest();
+            Console.WriteLine("Settings binding policy: PASS");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
     private static int TestDisplayRecoveryPolicy()
     {
         NativeMethods.AttachToParentConsole();
@@ -502,7 +536,33 @@ internal static class Program
                 form.Close();
             }
 
+            if (!WidgetForm.IsPowerResumeEventType(NativeMethods.PBT_APMRESUMEAUTOMATIC) ||
+                !WidgetForm.IsPowerResumeEventType(NativeMethods.PBT_APMRESUMESUSPEND) ||
+                !WidgetForm.IsPowerResumeEventType(NativeMethods.PBT_APMRESUMECRITICAL) ||
+                WidgetForm.IsPowerResumeEventType(NativeMethods.PBT_APMSUSPEND) ||
+                WidgetForm.IsPowerResumeEventType(NativeMethods.PBT_POWERSETTINGCHANGE))
+            {
+                throw new InvalidOperationException("Power resume event policy failed.");
+            }
+
             Console.WriteLine("Display recovery layered surface policy: PASS");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int TestOperationPanelPolicy()
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            OperationForm.RunSelfTest();
+            Console.WriteLine("Operation panel interaction and performance policy: PASS");
             return 0;
         }
         catch (Exception ex)

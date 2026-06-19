@@ -237,6 +237,7 @@ internal sealed class PdhSampler : IDisposable
         snapshot.NetworkRssiKnown = networkState.RssiKnown;
         snapshot.NetworkRssiDbm = networkState.RssiDbm;
         snapshot.DiskName = this.diskInfo.Name;
+        snapshot.DiskVolumeLabel = this.diskInfo.DisplayVolumes;
         snapshot.GpuName = this.gpuName;
         snapshot.NpuName = this.npuName;
 
@@ -283,7 +284,24 @@ internal sealed class PdhSampler : IDisposable
             snapshot.MemoryPercent = Clamp(memory.dwMemoryLoad, 0.0, 100.0);
         }
 
+        snapshot.MemoryHardwareReservedGb =
+            Math.Max(0.0, snapshot.GpuMemoryUsedGb) +
+            Math.Max(0.0, snapshot.NpuMemoryUsedGb);
+        if (snapshot.MemoryTotalGb > 0.0)
+        {
+            snapshot.MemoryHardwareReservedPercent = Clamp(
+                snapshot.MemoryHardwareReservedGb * 100.0 / snapshot.MemoryTotalGb,
+                0.0,
+                100.0);
+        }
+
         return snapshot;
+    }
+
+    public void RequestDiskUsageRefresh()
+    {
+        EnsureNotDisposed();
+        this.lastDiskUsageRefreshUtc = DateTime.MinValue;
     }
 
     public void Dispose()
@@ -1050,12 +1068,22 @@ internal sealed class PdhSampler : IDisposable
         info.Name = "Physical Disk";
         info.CounterPath = string.Empty;
         info.VolumeRoots = new List<string>();
+        info.DisplayVolumes = string.Empty;
 
         string systemDrive = GetSystemDriveName();
         string[] physicalDiskPaths = ExpandWildcard(@"\PhysicalDisk(*)\% Disk Time");
         info.CounterPath = SelectPhysicalDiskCounterPath(physicalDiskPaths, systemDrive);
         info.VolumeRoots = ExtractVolumeRootsFromPhysicalDiskPath(info.CounterPath);
         int diskIndex = ExtractPhysicalDiskIndex(info.CounterPath);
+        List<string> associatedRoots = DetectUsableVolumeRootsForPhysicalDisk(diskIndex);
+        if (associatedRoots.Count > 0)
+        {
+            info.VolumeRoots = associatedRoots;
+        }
+        else
+        {
+            info.VolumeRoots = FilterUsableDriveRoots(info.VolumeRoots);
+        }
 
         try
         {
@@ -1102,6 +1130,8 @@ internal sealed class PdhSampler : IDisposable
             info.VolumeRoots = DetectFixedDriveRoots();
         }
 
+        info.DisplayVolumes = BuildDiskVolumeLabel(info.VolumeRoots);
+
         if (info.TotalBytes <= 0.0)
         {
             info.TotalBytes = SumDriveTotalBytes(info.VolumeRoots);
@@ -1113,6 +1143,13 @@ internal sealed class PdhSampler : IDisposable
         }
 
         return info;
+    }
+
+    private sealed class DiskVolumeDisplayInfo
+    {
+        public string Root { get; set; }
+        public string Letter { get; set; }
+        public long TotalSize { get; set; }
     }
 
     private static void ApplyDiskDriveObject(DiskInfo info, ManagementObject item, int diskIndex)
@@ -1292,7 +1329,7 @@ internal sealed class PdhSampler : IDisposable
             DriveInfo[] drives = DriveInfo.GetDrives();
             for (int i = 0; i < drives.Length; i++)
             {
-                if (drives[i].DriveType == DriveType.Fixed)
+                if (IsUsableFixedDrive(drives[i]))
                 {
                     roots.Add(drives[i].Name);
                 }
@@ -1303,6 +1340,231 @@ internal sealed class PdhSampler : IDisposable
         }
 
         return roots;
+    }
+
+    private static List<string> DetectUsableVolumeRootsForPhysicalDisk(int diskIndex)
+    {
+        List<string> roots = new List<string>();
+        if (diskIndex < 0)
+        {
+            return roots;
+        }
+
+        try
+        {
+            string deviceId = null;
+            using (ManagementObjectSearcher diskSearcher = new ManagementObjectSearcher("SELECT DeviceID FROM Win32_DiskDrive WHERE Index=" + diskIndex.ToString(CultureInfo.InvariantCulture)))
+            using (ManagementObjectCollection disks = diskSearcher.Get())
+            {
+                foreach (ManagementObject disk in disks)
+                {
+                    deviceId = Convert.ToString(disk["DeviceID"]);
+                    break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(deviceId))
+            {
+                return roots;
+            }
+
+            string partitionQuery =
+                "ASSOCIATORS OF {Win32_DiskDrive.DeviceID='" +
+                EscapeWmiObjectString(deviceId) +
+                "'} WHERE AssocClass=Win32_DiskDriveToDiskPartition";
+            using (ManagementObjectSearcher partitionSearcher = new ManagementObjectSearcher(partitionQuery))
+            using (ManagementObjectCollection partitions = partitionSearcher.Get())
+            {
+                foreach (ManagementObject partition in partitions)
+                {
+                    string logicalQuery =
+                        "ASSOCIATORS OF {" +
+                        partition.Path.RelativePath +
+                        "} WHERE AssocClass=Win32_LogicalDiskToPartition";
+                    using (ManagementObjectSearcher logicalSearcher = new ManagementObjectSearcher(logicalQuery))
+                    using (ManagementObjectCollection logicalDisks = logicalSearcher.Get())
+                    {
+                        foreach (ManagementObject logicalDisk in logicalDisks)
+                        {
+                            if (!IsUsableLogicalDisk(logicalDisk))
+                            {
+                                continue;
+                            }
+
+                            AddUniqueDriveRoot(roots, Convert.ToString(logicalDisk["DeviceID"]));
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return roots;
+    }
+
+    private static bool IsUsableLogicalDisk(ManagementObject logicalDisk)
+    {
+        if (logicalDisk == null)
+        {
+            return false;
+        }
+
+        object driveType = logicalDisk["DriveType"];
+        if (driveType == null || Convert.ToInt32(driveType) != 3)
+        {
+            return false;
+        }
+
+        string fileSystem = Convert.ToString(logicalDisk["FileSystem"]);
+        string deviceId = Convert.ToString(logicalDisk["DeviceID"]);
+        return !string.IsNullOrWhiteSpace(fileSystem) &&
+            !string.IsNullOrWhiteSpace(deviceId) &&
+            deviceId.Length >= 2 &&
+            deviceId[1] == ':';
+    }
+
+    private static string EscapeWmiObjectString(string value)
+    {
+        return (value ?? string.Empty).Replace("\\", "\\\\").Replace("'", "\\'");
+    }
+
+    private static List<string> FilterUsableDriveRoots(List<string> roots)
+    {
+        List<string> usable = new List<string>();
+        if (roots == null)
+        {
+            return usable;
+        }
+
+        for (int i = 0; i < roots.Count; i++)
+        {
+            try
+            {
+                DriveInfo drive = new DriveInfo(roots[i]);
+                if (IsUsableFixedDrive(drive))
+                {
+                    AddUniqueDriveRoot(usable, drive.Name);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        return usable;
+    }
+
+    private static bool IsUsableFixedDrive(DriveInfo drive)
+    {
+        return drive != null &&
+            drive.DriveType == DriveType.Fixed &&
+            drive.IsReady &&
+            drive.TotalSize > 0 &&
+            !string.IsNullOrWhiteSpace(drive.Name) &&
+            drive.Name.Length >= 2 &&
+            drive.Name[1] == ':';
+    }
+
+    private static void AddUniqueDriveRoot(List<string> roots, string value)
+    {
+        string root = NormalizeDriveRoot(value);
+        if (root.Length == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < roots.Count; i++)
+        {
+            if (string.Equals(roots[i], root, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+        }
+
+        roots.Add(root);
+    }
+
+    private static string NormalizeDriveRoot(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        string text = value.Trim();
+        if (text.Length < 2 || text[1] != ':' || !char.IsLetter(text[0]))
+        {
+            return string.Empty;
+        }
+
+        return char.ToUpperInvariant(text[0]).ToString() + @":\";
+    }
+
+    private static string BuildDiskVolumeLabel(List<string> roots)
+    {
+        List<DiskVolumeDisplayInfo> volumes = new List<DiskVolumeDisplayInfo>();
+        if (roots == null)
+        {
+            return string.Empty;
+        }
+
+        for (int i = 0; i < roots.Count; i++)
+        {
+            try
+            {
+                DriveInfo drive = new DriveInfo(roots[i]);
+                if (!IsUsableFixedDrive(drive))
+                {
+                    continue;
+                }
+
+                volumes.Add(new DiskVolumeDisplayInfo
+                {
+                    Root = drive.Name,
+                    Letter = char.ToUpperInvariant(drive.Name[0]).ToString(),
+                    TotalSize = drive.TotalSize
+                });
+            }
+            catch
+            {
+            }
+        }
+
+        if (volumes.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        if (volumes.Count > 3)
+        {
+            volumes.Sort(CompareDiskVolumesBySizeDescending);
+            while (volumes.Count > 3)
+            {
+                volumes.RemoveAt(volumes.Count - 1);
+            }
+        }
+
+        volumes.Sort(CompareDiskVolumesByLetter);
+        string[] letters = new string[volumes.Count];
+        for (int i = 0; i < volumes.Count; i++)
+        {
+            letters[i] = volumes[i].Letter;
+        }
+
+        return string.Join("/", letters);
+    }
+
+    private static int CompareDiskVolumesBySizeDescending(DiskVolumeDisplayInfo left, DiskVolumeDisplayInfo right)
+    {
+        int result = right.TotalSize.CompareTo(left.TotalSize);
+        return result != 0 ? result : CompareDiskVolumesByLetter(left, right);
+    }
+
+    private static int CompareDiskVolumesByLetter(DiskVolumeDisplayInfo left, DiskVolumeDisplayInfo right)
+    {
+        return string.Compare(left.Letter, right.Letter, StringComparison.OrdinalIgnoreCase);
     }
 
     private static double SumDriveTotalBytes(List<string> roots)

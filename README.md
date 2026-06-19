@@ -36,14 +36,25 @@ Run:
 .\DesktopCodexAssistant.exe
 ```
 
+Operation panel self-test:
+
+```powershell
+.\DesktopCodexAssistant.exe --test-operation-panel
+```
+
 Logs and settings are stored under `%LOCALAPPDATA%\DesktopCodexAssistant`.
 
 When the renamed application starts for the first time, it migrates existing settings from `%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA` or `%LOCALAPPDATA%\DesktopPerfWidget-Lite` without overwriting newer files.
 
 ## Technical documentation
 
+- [Maintenance history](CHANGELOG.jsonl)
 - [Hardware support policy](Docs/Hardware-Support.md)
 - [Performance modes and window runtime](Docs/Performance-And-Window-Runtime.md)
+- [Component refresh rules](Docs/Component-Refresh-Rules.md)
 - [Codex monitor architecture](Docs/CodexRadar-Architecture.md)
 - [Power and thermal window architecture](Docs/PowerThermal-Architecture.md)
 - [Network monitor architecture](Docs/NetworkMonitor-Architecture.md)
+- [Interface and reusable resource summary](Docs/Interface-And-Reuse-Resources.md)
+- [Machine-readable interface index](Docs/INTERFACE_INDEX.jsonl)
+- [Operation panel interaction and performance execution spec](Docs/Technical/OperationPanel-Interaction-And-Performance-SPEC-v1.0.2.64-20260616-030809.md)

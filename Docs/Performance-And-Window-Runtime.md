@@ -40,6 +40,7 @@ flowchart LR
     Reader --> Connectivity["连通性 / 延迟 / 抖动"]
     Reader --> PublicIP["公网 IP"]
     Reader --> GFW["GfwProbeReader"]
+    Reader --> Cloud["CloudEndpointProbeReader"]
     CleanIP --> CleanReader["CleanIpConnectionReader"]
 ```
 
@@ -90,6 +91,9 @@ flowchart LR
 | 需要认证时重试 | 5 s | 10 s | 30 s |
 | 离线时重试 | 3 s | 5 s | 10 s |
 | 公网 IP 刷新 | 5 min | 10 min | 15 min |
+| DNS 未知复查 | 15 s | 30 s | 60 s |
+| DNS 异常复查 | 30 s | 60 s | 120 s |
+| DNS 全正常复查 | 5 min | 10 min | 15 min |
 
 `AdapterMissing` 状态不进行周期连通性检测，等待网络地址或可用性事件重新触发。
 
@@ -129,7 +133,7 @@ flowchart LR
 
 窗口因全屏模式隐藏时停止悬停定时器，重新显示后恢复。
 
-`OperationForm` 的动画定时器只在按压、悬停或过渡动画未完成时运行。
+`OperationForm` 的动画定时器只在按压或悬停进度尚未达到目标值时运行。鼠标静止停留在按钮上且动画已经完成后，定时器停止；全屏隐藏和显示器挂起时同时停止动画与 FPS 定时器。
 
 ### 4.4 网络事件驱动
 
@@ -163,6 +167,7 @@ flowchart LR
 - 显示器关闭、会话锁定或系统休眠时，Codex 与功耗采样暂停。
 - 显示器关闭或系统挂起时，主窗口会释放主窗口和子窗口的托管渲染缓存，并重置复用的 native layered-window DC/HBITMAP，避免唤醒后继续使用息屏前的 GDI 资源。
 - 显示恢复后执行三轮延迟恢复，重新定位、重建 layered-window 资源、强制重绘，并安排一次刷新；这覆盖 DWM、显示驱动或 WorkerW 桌面宿主稍晚恢复的情况。
+- 休眠/系统挂起唤醒收到 `PBT_APMRESUMEAUTOMATIC`、`PBT_APMRESUMESUSPEND` 或 `PBT_APMRESUMECRITICAL` 后，若设置开启，会在三轮显示恢复完成后重启 SeelenUI 和本程序。SeelenUI 只在休眠前或唤醒时存在运行实例时重启，避免用户主动关闭 SeelenUI 后被强行启动。
 - `--desktop-parent` 模式下，恢复时先把主窗口从旧 WorkerW 脱离成普通顶层窗口，再尝试挂接到新的桌面宿主；如果第一次没有找到宿主，后续恢复轮继续重试。
 
 ### 4.7 主网络接口筛选
@@ -219,6 +224,17 @@ diskAlertPercent = min(writeBusyPercent, readBusyPercent)
 - 大于等于 `98%` 且连续至少 `3` 秒：显示并闪烁黄色三角告警。
 - 设置中的告警测试：强制按 `100%` 处理，不需要制造真实高负载。
 
+### 4.11 12 小时滚动耗时统计
+
+`TimingStats` 在进程内保存最近 12 小时的耗时样本，新样本进入后会按时间窗口和数量上限淘汰旧样本。当前接入点包括：
+
+- 主窗口控制 tick：`widget.main_tick`
+- 主性能 PDH 采样：`widget.pdh_sample`
+- 主窗口分层渲染：`widget.render`
+- Codex 本地额度读取：`codex.quota_read`
+
+统计器只保存内存样本，不新增持久化文件。每 15 分钟最多写入一条 `TimingStats12h` 摘要到主日志，包含样本数、平均耗时、p95 和最大耗时，用于后续判断是否需要把 PDH 采样或 Codex 本地读取迁移到后台 worker。
+
 ## 5. 各窗口运行机制
 
 ### 5.1 主性能窗口
@@ -238,8 +254,8 @@ diskAlertPercent = min(writeBusyPercent, readBusyPercent)
 | 栏目 | 主要数据源 | 显示和图表 | 告警值 |
 | --- | --- | --- | --- |
 | CPU | Processor/Processor Information PDH | 总占用曲线、每逻辑核心柱状图、实时/基准频率 | CPU 柱状图自身颜色规则，不使用通用面板红底 |
-| MEMORY | Windows 内存状态及 `Win32_PhysicalMemory` | 厂商、频率、占用率、已用/总量 | 内存占用率 |
-| DISK | PhysicalDisk PDH 及卷容量 | WT/RD 双曲线、整数容量行 | 读写忙碌度较小值 |
+| MEMORY | Windows 内存状态、`Win32_PhysicalMemory`、GPU/NPU 内存计数器 | 厂商、频率、占用率、已用/总量；黄线为 GPU+NPU 已用内存占总内存比例 | 内存占用率 |
+| DISK | PhysicalDisk PDH、物理盘到逻辑盘 WMI 关联及卷容量 | `DISK C/D/E`、WT/RD 双曲线、整数容量行；超过 3 个正常分区时只显示容量最大的 3 个 | 读写忙碌度较小值 |
 | NETWORK | Network Interface PDH、NetworkInterface API、Wi-Fi API | SSID/接口名、UP/DL 双曲线；Wi-Fi 时增加 RSSI 行 | 断线状态，不使用通用高负载告警 |
 | GPU | GPU Engine/Adapter Memory PDH | GPU 与显存双曲线 | GPU/显存占用率较大值 |
 | NPU | NPU 计数器，必要时从 GPU Engine LUID 分类 | NPU 与共享/专用内存双曲线 | NPU/内存占用率较大值 |
@@ -280,9 +296,12 @@ Wi-Fi RSSI 读取方式：
 `NetworkMonitorReader`：
 
 - 同步读取本地网卡、IPv4/IPv6、DNS、Wi-Fi 认证和 PHY；
+- 支持设置页指定当前网卡；未指定时继续按默认网关、地址、接口类型和链路速率自动选择；
 - 异步读取公网 IP；
+- 异步检测 DNS 可用性、错误返回和随机不存在域名劫持，并按正常/异常状态自适应复查周期；
 - 异步执行 Ping、NCSI 门户检测、延迟、抖动和丢包率测量；
 - 调用 `GfwProbeReader` 获取防火墙检测结果；
+- 调用 `CloudEndpointProbeReader` 独立获取云服务检测结果，GFW 失败结论不会使云服务检测跳过或置灰；
 - 返回快照副本，禁止 UI 直接修改内部状态。
 
 连通性状态判定：
@@ -305,12 +324,14 @@ Wi-Fi RSSI 读取方式：
 
 | 数据源 | 周期 |
 | --- | ---: |
-| reset 状态 | 15 min |
-| current.json，包含 radar 与 model_iq | radar 开启时 5 min |
-| current.json，包含 radar 与 model_iq | radar 未开启时 10 min |
-| 网站失败重试 | 2 min |
+| CodexRadar 模型数据 | 启动/恢复/模型切换触发一次；常规定时为北京时间每小时整点，RSS 重置提醒只跟随成功响应附属读取 |
+| CodexRadar 失败重试 | 10 min |
+| Claude 失败重试 | 2 min |
+| Claude 官方状态 | 15 min |
+| 五阶段连接诊断 | 性能 3 min / 均衡 5 min / 省电 10 min |
+| 五阶段异常重试 | 1 min |
 
-性能模式只影响额度读取和进程检测：
+性能模式影响额度读取、进程检测和五阶段连接诊断的正常周期：
 
 | 项目 | 性能 | 均衡 | 省电 |
 | --- | ---: | ---: | ---: |
@@ -347,18 +368,22 @@ CleanIP 检测触发条件：
 
 检测结果会一直保留到下一次检测覆盖。网络事件只使网络状态缓存失效，不会伪装成手动或操作面板触发。
 
-测试模式快照会缓存，只有测试状态或手动刷新 token 变化时重新生成，避免每个 UI tick 都改变时间并触发重绘。
+Codex Radar 整窗随机测试启用后会暂停真实网站、额度、Claude 和连接流程轮询。随机快照会缓存；手动刷新通过 refresh token 立即重建，自动刷新开启时最多每秒重建一次，不会在普通 UI tick 上重复随机。测试关闭后恢复真实调度并立即请求关键状态。
 
 ### 5.7 操作窗口
 
-操作窗口没有持续数据采样。它只处理：
+操作窗口没有常驻进程状态轮询。它主要处理：
 
 - Windows/SeelenUI 开始菜单操作；
 - 打开设置；
-- 退出 SeelenUI；
+- 系统快捷操作、刷新和重启；
 - 按压与悬停动画。
 
-动画结束后停止动画定时器，因此静止状态几乎没有绘制负担。
+SeelenUI 电源菜单通过后台单飞任务启动 `slu.exe` 并等待最多 1.5 秒，UI 线程只更新按钮状态和执行 Windows 安全菜单回退。快速重复点击不会并发启动多个命令。
+
+动画结束后停止动画定时器。原每 2.5 秒一次的 SeelenUI 进程扫描已删除，7 分钟防烧屏位移检查复用主窗口协调 tick。
+
+FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞读取性能计数器。性能、均衡、省电模式的刷新间隔分别为 1、2、5 秒；值未变化时不重绘。
 
 ## 6. 窗口合成与交互模式
 
@@ -405,11 +430,13 @@ CleanIP 检测触发条件：
 
 防遮挡功能与鼠标穿透属于互斥交互方案。防遮挡启用时，程序通过全局鼠标位置判断指针是否进入窗口，不依赖窗口收到鼠标消息，因此可兼容透明分层窗口。进入窗口后，整个窗口的可见 Alpha 在 `0.15` 秒内过渡到约 `5%`，移开后恢复设置值。动画只改变提交 Alpha，通常比重新绘制所有曲线和文字开销更低。
 
+操作面板是主动交互窗口。隐藏反色会把灰白图标像素透明化，因此操作面板在像素后处理之后，为可见按钮的圆角区域补充隐藏命中遮罩。遮罩像素使用 `Alpha=64`，再叠加操作面板隐藏态整体透明度后约为 `12/255`，比 `Alpha=1` 的边界值更可靠；按钮间隙、圆角外部和 FPS 信息区域仍保持全透明穿透。
+
 ### 6.5 设置预览、保存与取消
 
 设置窗口编辑时把临时设置实时应用到各窗口：
 
-- 调整尺寸、位置、透明度和栏目顺序会立即预览。
+- 调整尺寸、位置、透明度、Codex Radar 模型按钮和基准模式会立即预览。
 - 点击保存后写入 `settings.ini`，并以新值作为后续基准。
 - 点击取消或直接关闭设置窗口时恢复打开设置前的快照。
 - 主窗口也会检查配置文件修改时间，使外部修改能够热加载。
@@ -477,11 +504,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-X64.ps1
 
 ```powershell
 .\DesktopCodexAssistant.exe --test-layout
+.\DesktopCodexAssistant.exe --test-settings-bindings
 .\DesktopCodexAssistant.exe --test-display-recovery
+.\DesktopCodexAssistant.exe --test-operation-panel
 .\DesktopCodexAssistant.exe --test
 ```
 
-布局自检会模拟工作区尺寸变化并验证比例换算。显示恢复自检会用真实 layered-window API 验证 native surface reset 后仍可更新窗口。采样自检会输出 CPU、内存、磁盘 WT/RD、网络 UP/DL、GPU 和 NPU 的一次采样结果。它验证计数器可读取，不代表短时间内每个计数器都必须非零。
+布局自检会模拟工作区尺寸变化并验证比例换算。设置绑定自检会在程序内部创建设置面板对象，验证可见控件能读回到 WidgetSettings，并覆盖位置范围与连接检测刷新间隔。显示恢复自检会用真实 layered-window API 验证 native surface reset 后仍可更新窗口。操作面板自检覆盖隐藏模式命中像素、动画停止条件、单飞状态、FPS 三档间隔和 SeelenUI 结果映射。采样自检会输出 CPU、内存、磁盘 WT/RD、网络 UP/DL、GPU 和 NPU 的一次采样结果。
 
 2026-06-07 的 ARM64 调试中，单核等效 CPU 占用观察值如下：
 

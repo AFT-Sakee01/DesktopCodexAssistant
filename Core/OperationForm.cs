@@ -3,15 +3,17 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Management;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
 internal sealed class OperationForm : Form
 {
-    private const int ButtonCount = 9;
+    private const int ButtonCount = 13;
     private const int StartButtonIndex = 0;
     private const int WindowsSettingsButtonIndex = 1;
     private const int WindowsPowerMenuButtonIndex = 2;
@@ -20,9 +22,14 @@ internal sealed class OperationForm : Form
     private const int BatteryCarePauseButtonIndex = 5;
     private const int BatteryLimitRestoreButtonIndex = 6;
     private const int AppSettingsButtonIndex = 7;
-    private const int SeelenExitButtonIndex = 8;
-    private const int SmallColumnCountWithBatteryCare = 4;
-    private const int SmallColumnCountWithoutBatteryCare = 3;
+    private const int TaskManagerButtonIndex = 8;
+    private const int WindowsAiStudioButtonIndex = 9;
+    private const int WindowsQuickSettingsButtonIndex = 10;
+    private const int LiveCaptionsButtonIndex = 11;
+    private const int HoverOpacityToggleButtonIndex = 12;
+    private const int SmallColumnCount = 6;
+    private const int ForcedOperationOpacityAlpha = 48;
+    private const byte HiddenModeHitTestAlpha = 64;
     private const string AsusAssistantPackagePrefix = "B9ECED6F.ASUSPCAssistant_";
     private const string AsusAssistantPackageSuffix = "_qmba6cd70vzyy";
     private const string AsusKeyboardHostRelativePath = @"HwAdjustPage\ATK Package\AsusKeyboardHost.exe";
@@ -34,36 +41,54 @@ internal sealed class OperationForm : Form
     private const string SeelenUiProcessName = "seelen-ui";
     private const string SeelenUiExecutableName = "seelen-ui.exe";
     private const string SeelenInstallRelativePath = @"Seelen\Seelen UI";
-    private const int SeelenStatusRefreshIntervalMs = 2500;
     private const double HoverStepPerSecond = 7.5;
     private const double PressAnimationMs = 150.0;
     private readonly Action openSettingsAction;
     private readonly Action forceRefreshAction;
     private readonly Action restartAction;
     private readonly Action<string, string, ToolTipIcon> notificationAction;
+    private readonly Func<bool> toggleHoverOpacityAction;
+    private readonly Func<bool> pulseSeelenDockAction;
     private readonly System.Windows.Forms.Timer animationTimer;
-    private readonly System.Windows.Forms.Timer seelenStatusTimer;
+    private readonly System.Windows.Forms.Timer foregroundFpsTimer;
+    private readonly System.Windows.Forms.Timer restartSingleClickTimer;
+    private readonly ForegroundFpsReader foregroundFpsReader;
     private readonly ToolTip hoverToolTip;
     private readonly bool isAsusZenbookDevice;
+    private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
+    private readonly UiFontCache fontCache = new UiFontCache();
     private WidgetSettings currentSettings;
     private float scale;
     private bool hiddenForFullscreen;
+    private bool displaySuspended;
     private bool layeredUpdateFailureLogged;
-    private bool seelenUiRunning;
+    private bool renderBufferValid;
+    private bool lastRenderedBurnInColorProtectionActive;
+    private bool lastRenderedHitMaskActive;
+    private volatile bool formClosing;
+    private bool myAsusInstalled;
+    private bool windowsAiStudioAvailable;
+    private bool liveCaptionsAvailable;
     private int hoveredButton = -1;
     private int toolTipButton = -1;
     private int pressedButton = -1;
     private int pressAnimationButton = -1;
-    private bool seelenExitRunning;
     private bool batteryCarePauseRunning;
     private bool batteryLimitRestoreRunning;
+    private int seelenPowerMenuRequestRunning;
+    private int foregroundFpsReadRunning;
     private DateTime animationLastUtc;
     private DateTime pressAnimationStartUtc;
+    private int? foregroundFrameRate;
+    private long burnInShiftSlot = long.MinValue;
     private readonly double[] hoverProgress = new double[ButtonCount];
+    private RectangleF[] buttonRects;
+    private bool buttonRectsValid;
     private Bitmap renderBitmap;
     private Graphics renderGraphics;
+    private Bitmap interactionHitMask;
 
-    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction)
+    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction)
     {
         this.currentSettings = settings.Clone();
         this.currentSettings.Normalize();
@@ -71,13 +96,24 @@ internal sealed class OperationForm : Form
         this.forceRefreshAction = forceRefreshAction;
         this.restartAction = restartAction;
         this.notificationAction = notificationAction;
+        this.toggleHoverOpacityAction = toggleHoverOpacityAction;
+        this.pulseSeelenDockAction = pulseSeelenDockAction;
         this.isAsusZenbookDevice = DetectAsusZenbookDevice();
-        this.seelenUiRunning = IsSeelenUiRunning();
+        this.myAsusInstalled = DetectMyAsusInstalled();
+        bool seelenUiRunningAtStartup = IsSeelenUiRunning();
+        this.windowsAiStudioAvailable = NativeMethods.IsWindowsAiStudioAvailable();
+        this.liveCaptionsAvailable = NativeMethods.IsLiveCaptionsAvailable();
         Program.LogInfo(
             "Operation panel device capabilities. AsusZenbook=" +
             this.isAsusZenbookDevice.ToString() +
+            ", MyAsusInstalled=" +
+            this.myAsusInstalled.ToString() +
             ", SeelenUiRunning=" +
-            this.seelenUiRunning.ToString());
+            seelenUiRunningAtStartup.ToString() +
+            ", AiStudioAvailable=" +
+            this.windowsAiStudioAvailable.ToString() +
+            ", LiveCaptionsAvailable=" +
+            this.liveCaptionsAvailable.ToString());
 
         this.SetStyle(
             ControlStyles.AllPaintingInWmPaint |
@@ -103,9 +139,13 @@ internal sealed class OperationForm : Form
         this.animationTimer.Interval = WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode);
         this.animationTimer.Tick += OnAnimationTimerTick;
 
-        this.seelenStatusTimer = new System.Windows.Forms.Timer();
-        this.seelenStatusTimer.Interval = SeelenStatusRefreshIntervalMs;
-        this.seelenStatusTimer.Tick += OnSeelenStatusTimerTick;
+        this.foregroundFpsReader = new ForegroundFpsReader();
+        this.foregroundFpsTimer = new System.Windows.Forms.Timer();
+        this.foregroundFpsTimer.Interval = GetForegroundFpsRefreshIntervalMs(this.currentSettings.PerformanceMode);
+        this.foregroundFpsTimer.Tick += OnForegroundFpsTimerTick;
+        this.restartSingleClickTimer = new System.Windows.Forms.Timer();
+        this.restartSingleClickTimer.Interval = Math.Max(1, SystemInformation.DoubleClickTime);
+        this.restartSingleClickTimer.Tick += OnRestartSingleClickTimerTick;
 
         this.hoverToolTip = new ToolTip();
         this.hoverToolTip.ShowAlways = true;
@@ -132,8 +172,6 @@ internal sealed class OperationForm : Form
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        RefreshSeelenUiStatus();
-        this.seelenStatusTimer.Start();
         ApplyRuntimeSettings(this.currentSettings);
         PositionOperationWindow();
         RenderLayeredWindow();
@@ -141,22 +179,36 @@ internal sealed class OperationForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        this.formClosing = true;
         this.animationTimer.Stop();
         this.animationTimer.Tick -= OnAnimationTimerTick;
         this.animationTimer.Dispose();
-        this.seelenStatusTimer.Stop();
-        this.seelenStatusTimer.Tick -= OnSeelenStatusTimerTick;
-        this.seelenStatusTimer.Dispose();
+        this.foregroundFpsTimer.Stop();
+        this.foregroundFpsTimer.Tick -= OnForegroundFpsTimerTick;
+        this.foregroundFpsTimer.Dispose();
+        this.restartSingleClickTimer.Stop();
+        this.restartSingleClickTimer.Tick -= OnRestartSingleClickTimerTick;
+        this.restartSingleClickTimer.Dispose();
+        if (Interlocked.CompareExchange(ref this.foregroundFpsReadRunning, 0, 0) == 0)
+        {
+            this.foregroundFpsReader.Dispose();
+        }
         this.hoverToolTip.Hide(this);
         this.hoverToolTip.Dispose();
         DisposeRenderBuffer();
+        DisposeInteractionHitMask();
+        this.fontCache.Dispose();
+        this.layeredSurface.Dispose();
         base.OnFormClosed(e);
     }
 
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
+        ResetLayoutCaches();
+        this.fontCache.Dispose();
         DisposeRenderBuffer();
+        this.layeredSurface.Reset();
         using (GraphicsPath path = RoundedRectangle(new RectangleF(0, 0, this.Width, this.Height), S(9)))
         {
             Region oldRegion = this.Region;
@@ -187,10 +239,28 @@ internal sealed class OperationForm : Form
     {
         this.currentSettings = settings.Clone();
         this.currentSettings.Normalize();
+        ResetLayoutCaches();
         int animationInterval = WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode);
         if (this.animationTimer.Interval != animationInterval)
         {
             this.animationTimer.Interval = animationInterval;
+        }
+
+        int foregroundFpsInterval = GetForegroundFpsRefreshIntervalMs(this.currentSettings.PerformanceMode);
+        if (this.foregroundFpsTimer.Interval != foregroundFpsInterval)
+        {
+            this.foregroundFpsTimer.Interval = foregroundFpsInterval;
+        }
+
+        if (!IsButtonInteractive(this.hoveredButton))
+        {
+            this.hoveredButton = -1;
+            HideHoverToolTip();
+        }
+
+        if (!IsButtonInteractive(this.pressedButton))
+        {
+            this.pressedButton = -1;
         }
 
         Size desiredSize = GetDesiredSize();
@@ -217,6 +287,7 @@ internal sealed class OperationForm : Form
             NativeMethods.SWP_NOSIZE);
 
         PositionOperationWindow();
+        UpdateForegroundFpsTimer();
         RenderLayeredWindow();
     }
 
@@ -232,6 +303,7 @@ internal sealed class OperationForm : Form
         if (hidden)
         {
             this.animationTimer.Stop();
+            this.foregroundFpsTimer.Stop();
             if (this.Visible)
             {
                 this.Hide();
@@ -246,19 +318,42 @@ internal sealed class OperationForm : Form
         }
 
         PositionOperationWindow();
+        UpdateForegroundFpsTimer();
         RenderLayeredWindow();
     }
 
     public void RecoverAfterDisplayResume()
     {
+        this.displaySuspended = false;
         ResetDisplayRenderResources();
         PositionOperationWindow();
+        UpdateForegroundFpsTimer();
         RenderLayeredWindow();
     }
 
     public void PrepareForDisplaySuspend()
     {
+        this.displaySuspended = true;
+        this.animationTimer.Stop();
+        this.foregroundFpsTimer.Stop();
         ResetDisplayRenderResources();
+    }
+
+    public void ProcessSharedMaintenanceTick()
+    {
+        if (this.formClosing ||
+            this.hiddenForFullscreen ||
+            this.displaySuspended ||
+            !this.Visible ||
+            this.IsDisposed)
+        {
+            return;
+        }
+
+        if (BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+        {
+            PositionOperationWindow();
+        }
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -308,6 +403,16 @@ internal sealed class OperationForm : Form
 
     private string GetButtonToolTipText(int button)
     {
+        if (!IsButtonVisible(button))
+        {
+            return string.Empty;
+        }
+
+        if (IsButtonUnavailable(button))
+        {
+            return GetUnavailableButtonToolTipText(button);
+        }
+
         if (!IsButtonEnabled(button))
         {
             return string.Empty;
@@ -315,7 +420,7 @@ internal sealed class OperationForm : Form
 
         if (button == StartButtonIndex)
         {
-            return "左键：Windows 开始菜单\r\n右键：Windows 开始右键菜单";
+            return "左键：Windows 开始菜单\r\n右键：Windows 开始右键菜单\r\n通过任务栏系统入口打开，无快捷键回退";
         }
 
         if (button == WindowsSettingsButtonIndex)
@@ -325,7 +430,7 @@ internal sealed class OperationForm : Form
 
         if (button == WindowsPowerMenuButtonIndex)
         {
-            return "SeelenUI 电源菜单\r\n不可用时打开 Ctrl+Alt+Delete 菜单";
+            return "打开 SeelenUI 电源界面\r\n不可用时尝试 Windows 安全菜单，无快捷键回退";
         }
 
         if (button == RefreshButtonIndex)
@@ -335,17 +440,17 @@ internal sealed class OperationForm : Form
 
         if (button == RestartButtonIndex)
         {
-            return "重启本程序";
+            return "单击：拉到前 Seelen Dock\r\n双击：重启 SeelenUI 和本程序";
         }
 
         if (button == BatteryCarePauseButtonIndex)
         {
-            return "解除 80% 充电限制 24 小时";
+            return "关闭电池保护 24 小时";
         }
 
         if (button == BatteryLimitRestoreButtonIndex)
         {
-            return "恢复 80% 充电限制";
+            return "开启电池保护";
         }
 
         if (button == AppSettingsButtonIndex)
@@ -353,12 +458,49 @@ internal sealed class OperationForm : Form
             return "程序设置";
         }
 
-        if (button == SeelenExitButtonIndex)
+        if (button == TaskManagerButtonIndex)
         {
-            return "退出 SeelenUI";
+            return "打开任务管理器";
+        }
+
+        if (button == WindowsAiStudioButtonIndex)
+        {
+            return "打开 AI Studio";
+        }
+
+        if (button == WindowsQuickSettingsButtonIndex)
+        {
+            return "打开快速设置\r\n使用快捷键 Win+A";
+        }
+
+        if (button == LiveCaptionsButtonIndex)
+        {
+            return "打开实时字幕";
+        }
+
+        if (button == HoverOpacityToggleButtonIndex)
+        {
+            return this.currentSettings.ForceHoverOpacityActive
+                ? "恢复模块透明度"
+                : "切换到悬停透明度";
         }
 
         return string.Empty;
+    }
+
+    private string GetUnavailableButtonToolTipText(int button)
+    {
+        if (button == WindowsAiStudioButtonIndex)
+        {
+            return "AI Studio 当前不可用\r\n未检测到 ms-clicktodo 协议或 CoreAI 包";
+        }
+
+        if (button == LiveCaptionsButtonIndex)
+        {
+            return "实时字幕当前不可用\r\n未检测到系统实时字幕入口";
+        }
+
+        return "当前系统入口不可用";
     }
 
     protected override void OnMouseDown(MouseEventArgs e)
@@ -394,6 +536,12 @@ internal sealed class OperationForm : Form
             return;
         }
 
+        if (button == RestartButtonIndex)
+        {
+            HandleRestartButtonClick();
+            return;
+        }
+
         ExecuteButton(button, e.Button);
     }
 
@@ -418,36 +566,15 @@ internal sealed class OperationForm : Form
         }
     }
 
-    private void OnSeelenStatusTimerTick(object sender, EventArgs e)
+    private void OnForegroundFpsTimerTick(object sender, EventArgs e)
     {
-        RefreshSeelenUiStatus();
-    }
-
-    private void RefreshSeelenUiStatus()
-    {
-        SetSeelenUiRunning(IsSeelenUiRunning());
-    }
-
-    private void SetSeelenUiRunning(bool running)
-    {
-        if (this.seelenUiRunning == running)
+        if (!ShouldRunForegroundFpsTimer())
         {
+            UpdateForegroundFpsTimer();
             return;
         }
 
-        this.seelenUiRunning = running;
-        if (!IsButtonEnabled(this.hoveredButton))
-        {
-            this.hoveredButton = -1;
-            HideHoverToolTip();
-        }
-
-        if (!IsButtonEnabled(this.pressedButton))
-        {
-            this.pressedButton = -1;
-        }
-
-        RenderLayeredWindow();
+        BeginUpdateForegroundFrameRate();
     }
 
     private void ExecuteButton(int button, MouseButtons mouseButton)
@@ -456,11 +583,23 @@ internal sealed class OperationForm : Form
         {
             if (mouseButton == MouseButtons.Right)
             {
-                NativeMethods.OpenWindowsStartContextMenu();
+                if (!NativeMethods.OpenWindowsStartContextMenu())
+                {
+                    ShowOperationNotification(
+                        "开始右键菜单",
+                        "未能通过任务栏系统入口打开 Windows 开始右键菜单。",
+                        ToolTipIcon.Warning);
+                }
             }
             else
             {
-                NativeMethods.OpenWindowsStartMenu();
+                if (!NativeMethods.OpenWindowsStartMenu())
+                {
+                    ShowOperationNotification(
+                        "开始菜单",
+                        "未能通过任务栏系统入口打开 Windows 开始菜单。",
+                        ToolTipIcon.Warning);
+                }
             }
 
             return;
@@ -474,11 +613,7 @@ internal sealed class OperationForm : Form
 
         if (button == WindowsPowerMenuButtonIndex)
         {
-            if (!TryOpenSeelenPowerMenu())
-            {
-                NativeMethods.OpenWindowsSecurityMenu();
-            }
-
+            BeginOpenSeelenPowerMenu();
             return;
         }
 
@@ -492,24 +627,10 @@ internal sealed class OperationForm : Form
             return;
         }
 
-        if (button == SeelenExitButtonIndex)
-        {
-            if (!this.seelenUiRunning)
-            {
-                return;
-            }
-
-            if (!ConfirmExitSeelenUi())
-            {
-                return;
-            }
-
-            BeginExitSeelenUi();
-            return;
-        }
-
         if (button == RefreshButtonIndex)
         {
+            RefreshMyAsusInstallStatus();
+            RefreshSystemButtonAvailability();
             if (this.forceRefreshAction != null)
             {
                 this.forceRefreshAction();
@@ -518,9 +639,9 @@ internal sealed class OperationForm : Form
             return;
         }
 
-        if (button == RestartButtonIndex && this.restartAction != null)
+        if (button == RestartButtonIndex)
         {
-            this.restartAction();
+            HandleRestartButtonClick();
             return;
         }
 
@@ -533,68 +654,320 @@ internal sealed class OperationForm : Form
         if (button == BatteryLimitRestoreButtonIndex)
         {
             BeginInvokeBatteryLimitRestore();
+            return;
+        }
+
+        if (button == TaskManagerButtonIndex)
+        {
+            NativeMethods.OpenTaskManager();
+            return;
+        }
+
+        if (button == WindowsAiStudioButtonIndex)
+        {
+            if (!NativeMethods.OpenWindowsAiStudio())
+            {
+                ShowOperationNotification(
+                    "AI Studio",
+                    "未能通过系统入口启动 AI Studio。",
+                    ToolTipIcon.Warning);
+            }
+
+            return;
+        }
+
+        if (button == WindowsQuickSettingsButtonIndex)
+        {
+            NativeMethods.OpenQuickSettings();
+            return;
+        }
+
+        if (button == LiveCaptionsButtonIndex)
+        {
+            if (!NativeMethods.OpenLiveCaptions())
+            {
+                ShowOperationNotification(
+                    "实时字幕",
+                    "未能通过系统入口启动实时字幕。",
+                    ToolTipIcon.Warning);
+            }
+
+            return;
+        }
+
+        if (button == HoverOpacityToggleButtonIndex && this.toggleHoverOpacityAction != null)
+        {
+            this.toggleHoverOpacityAction();
         }
     }
 
-    private bool TryOpenSeelenPowerMenu()
+    private void HandleRestartButtonClick()
     {
-        bool running = IsSeelenUiRunning();
-        SetSeelenUiRunning(running);
-        if (!running)
+        if (this.restartSingleClickTimer.Enabled)
         {
-            Program.LogInfo("SeelenUI power menu fallback: seelen-ui is not running.");
-            return false;
+            this.restartSingleClickTimer.Stop();
+            ExecuteRestartButtonDoubleClick();
+            return;
+        }
+
+        this.restartSingleClickTimer.Interval = Math.Max(1, SystemInformation.DoubleClickTime);
+        this.restartSingleClickTimer.Start();
+    }
+
+    private void OnRestartSingleClickTimerTick(object sender, EventArgs e)
+    {
+        this.restartSingleClickTimer.Stop();
+        PulseSeelenDockFromOperationPanel();
+    }
+
+    private void PulseSeelenDockFromOperationPanel()
+    {
+        bool success = false;
+        if (this.pulseSeelenDockAction != null)
+        {
+            try
+            {
+                success = this.pulseSeelenDockAction();
+            }
+            catch (Exception ex)
+            {
+                Program.LogException(ex);
+            }
+        }
+
+        if (!success)
+        {
+            ShowOperationNotification(
+                "Seelen Dock",
+                "未能找到或拉前 Seelen Dock。",
+                ToolTipIcon.Warning);
+        }
+    }
+
+    private void ExecuteRestartButtonDoubleClick()
+    {
+        if (this.restartAction == null)
+        {
+            return;
+        }
+
+        RestartSeelenUiWithApplicationIfRunning();
+        this.restartAction();
+    }
+
+    private void BeginOpenSeelenPowerMenu()
+    {
+        if (!TryBeginSingleFlight(ref this.seelenPowerMenuRequestRunning))
+        {
+            return;
+        }
+
+        string correlationId = Guid.NewGuid().ToString("N");
+        Program.LogInfo("operation_seelen_power_menu_requested correlation_id=" + correlationId);
+        RenderLayeredWindow();
+
+        Task.Run((Action)delegate
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            SeelenPowerMenuResult result;
+            try
+            {
+                result = RunSeelenPowerMenuCommand();
+            }
+            catch (Exception ex)
+            {
+                Program.LogException(ex);
+                result = SeelenPowerMenuResult.Failed(ex.GetType().Name + ": " + ex.Message);
+            }
+
+            stopwatch.Stop();
+            Program.LogInfo(
+                "operation_seelen_power_menu_completed correlation_id=" +
+                correlationId +
+                ", result=" +
+                result.Status.ToString() +
+                ", elapsed_ms=" +
+                stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                ", exit_code=" +
+                (result.ExitCode.HasValue
+                    ? result.ExitCode.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : "null") +
+                ", detail=" +
+                result.Detail);
+
+            if (this.formClosing || this.IsDisposed || !this.IsHandleCreated)
+            {
+                EndSingleFlight(ref this.seelenPowerMenuRequestRunning);
+                return;
+            }
+
+            try
+            {
+                this.BeginInvoke((MethodInvoker)delegate
+                {
+                    EndSingleFlight(ref this.seelenPowerMenuRequestRunning);
+                    if (this.IsDisposed)
+                    {
+                        return;
+                    }
+
+                    if (result.RequiresFallback && !NativeMethods.OpenWindowsSecurityMenu())
+                    {
+                        ShowOperationNotification(
+                            "电源菜单",
+                            "SeelenUI 电源界面不可用，且未能通过系统接口打开 Windows 安全菜单。",
+                            ToolTipIcon.Warning);
+                    }
+
+                    RenderLayeredWindow();
+                });
+            }
+            catch (InvalidOperationException)
+            {
+                EndSingleFlight(ref this.seelenPowerMenuRequestRunning);
+            }
+        });
+    }
+
+    private static SeelenPowerMenuResult RunSeelenPowerMenuCommand()
+    {
+        if (!IsSeelenUiRunning())
+        {
+            return SeelenPowerMenuResult.Fallback("seelen-ui is not running");
         }
 
         string cliPath = FindSeelenCliPath();
         if (string.IsNullOrEmpty(cliPath))
         {
-            Program.LogInfo("SeelenUI power menu fallback: slu.exe was not found.");
+            return SeelenPowerMenuResult.Fallback("slu.exe was not found");
+        }
+
+        ProcessStartInfo startInfo = new ProcessStartInfo();
+        startInfo.FileName = cliPath;
+        startInfo.Arguments = "widget trigger " + SeelenPowerMenuWidgetId;
+        startInfo.WorkingDirectory = Path.GetDirectoryName(cliPath);
+        startInfo.UseShellExecute = false;
+        startInfo.CreateNoWindow = true;
+        startInfo.WindowStyle = ProcessWindowStyle.Hidden;
+
+        Process process = Process.Start(startInfo);
+        if (process == null)
+        {
+            return SeelenPowerMenuResult.Fallback("Process.Start returned null");
+        }
+
+        using (process)
+        {
+            if (!process.WaitForExit(1500))
+            {
+                return SeelenPowerMenuResult.AcceptedTimeout("slu.exe is still running");
+            }
+
+            if (process.ExitCode == 0)
+            {
+                return SeelenPowerMenuResult.Triggered("slu.exe exited successfully");
+            }
+
+            return SeelenPowerMenuResult.Fallback(
+                "slu.exe exited with code " +
+                process.ExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                process.ExitCode);
+        }
+    }
+
+    private void RestartSeelenUiWithApplicationIfRunning()
+    {
+        RestartSeelenUiForApplicationRestart("operation panel application restart", null, false);
+    }
+
+    internal static bool TryCaptureRunningSeelenUiExecutablePath(out string exePath)
+    {
+        exePath = string.Empty;
+        bool wasRunning = IsSeelenUiRunning();
+        if (!wasRunning)
+        {
+            return false;
+        }
+
+        exePath = FindRunningSeelenUiExecutablePath();
+        if (string.IsNullOrEmpty(exePath))
+        {
+            exePath = FindInstalledSeelenUiExecutablePath();
+        }
+
+        return !string.IsNullOrEmpty(exePath);
+    }
+
+    internal static bool RestartSeelenUiForApplicationRestart(string reason, string preferredExePath, bool restartIfPreviouslyRunning)
+    {
+        bool runningNow = IsSeelenUiRunning();
+        if (!runningNow && !restartIfPreviouslyRunning)
+        {
+            Program.LogInfo("SeelenUI restart skipped during application restart because seelen-ui is not running. Reason=" + reason);
+            return false;
+        }
+
+        string exePath = string.Empty;
+        if (!string.IsNullOrEmpty(preferredExePath) && File.Exists(preferredExePath))
+        {
+            exePath = preferredExePath;
+        }
+
+        if (string.IsNullOrEmpty(exePath))
+        {
+            exePath = FindRunningSeelenUiExecutablePath();
+        }
+
+        if (string.IsNullOrEmpty(exePath))
+        {
+            exePath = FindInstalledSeelenUiExecutablePath();
+        }
+
+        if (string.IsNullOrEmpty(exePath))
+        {
+            Program.LogInfo("SeelenUI restart skipped during application restart because seelen-ui.exe path was not found. Reason=" + reason);
+            return false;
+        }
+
+        Program.LogInfo("SeelenUI restart requested during application restart. Reason=" + reason + ", Path=" + exePath);
+        int killed = KillSeelenUiProcesses();
+        Thread.Sleep(350);
+        bool started = TryStartSeelenUi(exePath);
+        Program.LogInfo(
+            "SeelenUI restart finished during application restart. KilledProcesses=" +
+            killed.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+            ", Started=" +
+            started.ToString());
+        return started;
+    }
+
+    private static bool TryStartSeelenUi(string exePath)
+    {
+        if (string.IsNullOrEmpty(exePath) || !File.Exists(exePath))
+        {
             return false;
         }
 
         try
         {
             ProcessStartInfo startInfo = new ProcessStartInfo();
-            startInfo.FileName = cliPath;
-            startInfo.Arguments = "widget trigger " + SeelenPowerMenuWidgetId;
-            startInfo.WorkingDirectory = Path.GetDirectoryName(cliPath);
-            startInfo.UseShellExecute = false;
-            startInfo.CreateNoWindow = true;
+            startInfo.FileName = exePath;
+            startInfo.WorkingDirectory = Path.GetDirectoryName(exePath);
+            startInfo.UseShellExecute = true;
             startInfo.WindowStyle = ProcessWindowStyle.Hidden;
-
             Process process = Process.Start(startInfo);
-            if (process == null)
+            if (process != null)
             {
-                Program.LogInfo("SeelenUI power menu fallback: Process.Start returned null for " + cliPath);
-                return false;
-            }
-
-            using (process)
-            {
-                if (!process.WaitForExit(1500))
-                {
-                    Program.LogInfo("SeelenUI power menu trigger is still running; assuming it was accepted.");
-                    return true;
-                }
-
-                if (process.ExitCode == 0)
-                {
-                    Program.LogInfo("SeelenUI power menu triggered through " + cliPath);
-                    return true;
-                }
-
-                Program.LogInfo(
-                    "SeelenUI power menu fallback: slu.exe exited with code " +
-                    process.ExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                return false;
+                process.Dispose();
+                return true;
             }
         }
         catch (Exception ex)
         {
             Program.LogException(ex);
-            return false;
         }
+
+        return false;
     }
 
     private static string FindSeelenCliPath()
@@ -626,6 +999,66 @@ internal sealed class OperationForm : Form
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), SeelenInstallRelativePath),
             SeelenCliFileName);
         return candidate;
+    }
+
+    private static string FindRunningSeelenUiExecutablePath()
+    {
+        Process[] processes = null;
+        try
+        {
+            processes = Process.GetProcessesByName(SeelenUiProcessName);
+            for (int i = 0; i < processes.Length; i++)
+            {
+                Process process = processes[i];
+                if (process == null)
+                {
+                    continue;
+                }
+
+                string path = NativeMethods.TryGetProcessImagePath(process.Id);
+                if (string.IsNullOrEmpty(path) ||
+                    !string.Equals(Path.GetFileName(path), SeelenUiExecutableName, StringComparison.OrdinalIgnoreCase) ||
+                    !File.Exists(path))
+                {
+                    continue;
+                }
+
+                return path;
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+        }
+        finally
+        {
+            DisposeProcesses(processes);
+        }
+
+        return null;
+    }
+
+    private static string FindInstalledSeelenUiExecutablePath()
+    {
+        string candidate = CombineExistingFile(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), SeelenInstallRelativePath),
+            SeelenUiExecutableName);
+        if (!string.IsNullOrEmpty(candidate))
+        {
+            return candidate;
+        }
+
+        candidate = CombineExistingFile(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), SeelenInstallRelativePath),
+            SeelenUiExecutableName);
+        if (!string.IsNullOrEmpty(candidate))
+        {
+            return candidate;
+        }
+
+        return CombineExistingFile(
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), SeelenInstallRelativePath),
+            SeelenUiExecutableName);
     }
 
     private static string FindRunningSeelenUiDirectory()
@@ -777,6 +1210,62 @@ internal sealed class OperationForm : Form
         }
     }
 
+    private void RefreshMyAsusInstallStatus()
+    {
+        bool installed = DetectMyAsusInstalled();
+        if (this.myAsusInstalled == installed)
+        {
+            UpdateForegroundFpsTimer();
+            RenderLayeredWindow();
+            return;
+        }
+
+        this.myAsusInstalled = installed;
+        ResetLayoutCaches();
+        Program.LogInfo("MyASUS install status refreshed from operation panel. Installed=" + installed.ToString());
+        if (!ShouldShowBatteryCareButtons() &&
+            (this.hoveredButton == BatteryCarePauseButtonIndex || this.hoveredButton == BatteryLimitRestoreButtonIndex))
+        {
+            this.hoveredButton = -1;
+            HideHoverToolTip();
+        }
+
+        Size desiredSize = GetDesiredSize();
+        if (this.Size != desiredSize)
+        {
+            this.Size = desiredSize;
+        }
+
+        PositionOperationWindow();
+        UpdateForegroundFpsTimer();
+        RenderLayeredWindow();
+    }
+
+    private void RefreshSystemButtonAvailability()
+    {
+        bool aiStudioAvailable = NativeMethods.IsWindowsAiStudioAvailable();
+        bool liveCaptionsAvailable = NativeMethods.IsLiveCaptionsAvailable();
+        if (this.windowsAiStudioAvailable == aiStudioAvailable &&
+            this.liveCaptionsAvailable == liveCaptionsAvailable)
+        {
+            return;
+        }
+
+        this.windowsAiStudioAvailable = aiStudioAvailable;
+        this.liveCaptionsAvailable = liveCaptionsAvailable;
+        Program.LogInfo(
+            "Operation panel system entry availability refreshed. AiStudioAvailable=" +
+            aiStudioAvailable.ToString() +
+            ", LiveCaptionsAvailable=" +
+            liveCaptionsAvailable.ToString());
+        if (!IsButtonInteractive(this.pressedButton))
+        {
+            this.pressedButton = -1;
+        }
+
+        RenderLayeredWindow();
+    }
+
     private static bool TryInvokeAsusBatteryCarePause(out string detail)
     {
         if (TryStartAsusKeyboardHostDirect(AsusBatteryCarePauseArguments, out detail))
@@ -859,10 +1348,7 @@ internal sealed class OperationForm : Form
 
     private static bool TryStartAsusKeyboardHostAlias(string arguments, out string detail)
     {
-        string aliasPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            @"Microsoft\WindowsApps",
-            AsusKeyboardHostAlias);
+        string aliasPath = GetAsusKeyboardHostAliasPath();
         string fileName = File.Exists(aliasPath) ? aliasPath : AsusKeyboardHostAlias;
         try
         {
@@ -888,6 +1374,30 @@ internal sealed class OperationForm : Form
             detail = ex.GetType().Name + ": " + ex.Message;
             return false;
         }
+    }
+
+    private static bool DetectMyAsusInstalled()
+    {
+        if (!string.IsNullOrEmpty(FindAsusAssistantInstallLocation()))
+        {
+            return true;
+        }
+
+        string aliasPath = GetAsusKeyboardHostAliasPath();
+        if (!string.IsNullOrEmpty(aliasPath) && File.Exists(aliasPath))
+        {
+            return true;
+        }
+
+        return IsAsusAssistantPackageRegistered();
+    }
+
+    private static string GetAsusKeyboardHostAliasPath()
+    {
+        return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            @"Microsoft\WindowsApps",
+            AsusKeyboardHostAlias);
     }
 
     private static string FindAsusAssistantInstallLocation()
@@ -932,6 +1442,71 @@ internal sealed class OperationForm : Form
             Program.LogException(ex);
             return null;
         }
+    }
+
+    private static bool IsAsusAssistantPackageRegistered()
+    {
+        return RegistryContainsAsusAssistantPackage(
+            Microsoft.Win32.Registry.CurrentUser,
+            @"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages") ||
+            RegistryContainsAsusAssistantPackage(
+                Microsoft.Win32.Registry.CurrentUser,
+                @"Software\Classes\ActivatableClasses\Package") ||
+            RegistryContainsAsusAssistantPackage(
+                Microsoft.Win32.Registry.CurrentUser,
+                @"Software\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications") ||
+            RegistryContainsAsusAssistantPackage(
+                Microsoft.Win32.Registry.LocalMachine,
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications");
+    }
+
+    private static bool RegistryContainsAsusAssistantPackage(Microsoft.Win32.RegistryKey root, string path)
+    {
+        if (root == null || string.IsNullOrEmpty(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            using (Microsoft.Win32.RegistryKey key = root.OpenSubKey(path))
+            {
+                if (key == null)
+                {
+                    return false;
+                }
+
+                string[] names = key.GetSubKeyNames();
+                for (int i = 0; i < names.Length; i++)
+                {
+                    if (IsAsusAssistantPackageName(names[i]))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+        catch (System.Security.SecurityException)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+        }
+
+        return false;
+    }
+
+    private static bool IsAsusAssistantPackageName(string name)
+    {
+        return !string.IsNullOrEmpty(name) &&
+            name.StartsWith(AsusAssistantPackagePrefix, StringComparison.OrdinalIgnoreCase) &&
+            name.EndsWith(AsusAssistantPackageSuffix, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool DetectAsusZenbookDevice()
@@ -1023,53 +1598,6 @@ internal sealed class OperationForm : Form
         return value.IndexOf("Zenbook", StringComparison.OrdinalIgnoreCase) >= 0 ||
             value.IndexOf("UX3407", StringComparison.OrdinalIgnoreCase) >= 0 ||
             value.IndexOf("UX3607", StringComparison.OrdinalIgnoreCase) >= 0;
-    }
-
-    private bool ConfirmExitSeelenUi()
-    {
-        DialogResult result = MessageBox.Show(
-            this,
-            "确认退出 SeelenUI？\r\n这会结束 seelen-ui、slu-service 以及相关 Seelen 进程。\r\n如果 slu-service 权限较高，可能会弹出管理员确认。",
-            "确认退出",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Warning,
-            MessageBoxDefaultButton.Button2);
-        return result == DialogResult.Yes;
-    }
-
-    private void BeginExitSeelenUi()
-    {
-        if (this.seelenExitRunning)
-        {
-            return;
-        }
-
-        this.seelenExitRunning = true;
-        Program.LogInfo("SeelenUI exit requested.");
-        RenderLayeredWindow();
-        Task.Run((Action)delegate
-        {
-            int killed = KillSeelenUiProcesses();
-            Program.LogInfo("SeelenUI exit sweep finished. KilledProcesses=" + killed.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            try
-            {
-                if (!this.IsDisposed && this.IsHandleCreated)
-                {
-                    this.BeginInvoke((MethodInvoker)delegate
-                    {
-                        if (!this.IsDisposed)
-                        {
-                            this.seelenExitRunning = false;
-                            SetSeelenUiRunning(IsSeelenUiRunning());
-                            RenderLayeredWindow();
-                        }
-                    });
-                }
-            }
-            catch (InvalidOperationException)
-            {
-            }
-        });
     }
 
     private static int KillSeelenUiProcesses()
@@ -1324,9 +1852,14 @@ internal sealed class OperationForm : Form
             return false;
         }
 
-        if (button == SeelenExitButtonIndex)
+        if (IsButtonUnavailable(button))
         {
-            return this.seelenUiRunning && !this.seelenExitRunning;
+            return false;
+        }
+
+        if (button == WindowsPowerMenuButtonIndex)
+        {
+            return Interlocked.CompareExchange(ref this.seelenPowerMenuRequestRunning, 0, 0) == 0;
         }
 
         if (button == BatteryCarePauseButtonIndex)
@@ -1342,14 +1875,46 @@ internal sealed class OperationForm : Form
         return true;
     }
 
+    private bool IsButtonInteractive(int button)
+    {
+        return IsButtonEnabled(button);
+    }
+
     private bool IsButtonUnavailable(int button)
     {
-        return button == SeelenExitButtonIndex && !this.seelenUiRunning;
+        if (button == WindowsAiStudioButtonIndex)
+        {
+            return !this.windowsAiStudioAvailable;
+        }
+
+        if (button == LiveCaptionsButtonIndex)
+        {
+            return !this.liveCaptionsAvailable;
+        }
+
+        return false;
+    }
+
+    private bool IsStateButtonActive(int button)
+    {
+        if (button == HoverOpacityToggleButtonIndex)
+        {
+            return this.currentSettings.ForceHoverOpacityActive;
+        }
+
+        return false;
     }
 
     private bool ShouldShowBatteryCareButtons()
     {
-        return this.isAsusZenbookDevice;
+        return this.isAsusZenbookDevice &&
+            this.myAsusInstalled &&
+            !this.currentSettings.ForceShowForegroundFpsEnabled;
+    }
+
+    private bool ShouldDrawFpsPanel()
+    {
+        return !ShouldShowBatteryCareButtons();
     }
 
     private bool AcceptsMouseButton(int button, MouseButtons mouseButton)
@@ -1372,7 +1937,7 @@ internal sealed class OperationForm : Form
         RectangleF[] rects = GetButtonRects();
         for (int i = 0; i < rects.Length; i++)
         {
-            if (!IsButtonEnabled(i))
+            if (!IsButtonVisible(i))
             {
                 continue;
             }
@@ -1388,6 +1953,11 @@ internal sealed class OperationForm : Form
 
     private RectangleF[] GetButtonRects()
     {
+        if (this.buttonRectsValid && this.buttonRects != null)
+        {
+            return this.buttonRects;
+        }
+
         int margin = S(3);
         int startSize = GetStartButtonSize();
         int smallSize = GetSmallButtonSize();
@@ -1399,20 +1969,27 @@ internal sealed class OperationForm : Form
         rects[WindowsPowerMenuButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
 
         columnLeft += smallSize;
-        rects[RefreshButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
-        rects[RestartButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+        rects[HoverOpacityToggleButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+        rects[RefreshButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
 
         columnLeft += smallSize;
-        if (ShouldShowBatteryCareButtons())
-        {
-            rects[BatteryCarePauseButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
-            rects[BatteryLimitRestoreButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
-            columnLeft += smallSize;
-        }
-
         rects[AppSettingsButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
-        rects[SeelenExitButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
-        return rects;
+        rects[TaskManagerButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+
+        columnLeft += smallSize;
+        rects[RestartButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+        rects[WindowsQuickSettingsButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+
+        columnLeft += smallSize;
+        rects[BatteryCarePauseButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+        rects[LiveCaptionsButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+
+        columnLeft += smallSize;
+        rects[BatteryLimitRestoreButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+        rects[WindowsAiStudioButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+        this.buttonRects = rects;
+        this.buttonRectsValid = true;
+        return this.buttonRects;
     }
 
     private Size GetDesiredSize()
@@ -1420,10 +1997,7 @@ internal sealed class OperationForm : Form
         int margin = S(3);
         int startSize = GetStartButtonSize();
         int smallSize = GetSmallButtonSize();
-        int smallColumns = ShouldShowBatteryCareButtons()
-            ? SmallColumnCountWithBatteryCare
-            : SmallColumnCountWithoutBatteryCare;
-        return new Size(margin * 2 + startSize + smallSize * smallColumns, margin * 2 + startSize);
+        return new Size(margin * 2 + startSize + smallSize * SmallColumnCount, margin * 2 + startSize);
     }
 
     private int GetStartButtonSize()
@@ -1448,6 +2022,13 @@ internal sealed class OperationForm : Form
         int top = workArea.Bottom - this.Height - Math.Max(0, this.currentSettings.OperationBottomOffset);
         left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
+        Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
+            new Point(left, top),
+            this.Size,
+            workArea,
+            BurnInProtection.OperationPanelSalt);
+        left = shiftedLocation.X;
+        top = shiftedLocation.Y;
         this.Location = new Point(left, top);
 
         NativeMethods.SetWindowPos(
@@ -1472,7 +2053,7 @@ internal sealed class OperationForm : Form
         bool changed = false;
         for (int i = 0; i < this.hoverProgress.Length; i++)
         {
-            double target = i == this.hoveredButton ? 1.0 : 0.0;
+            double target = i == this.hoveredButton && IsButtonEnabled(i) ? 1.0 : 0.0;
             double old = this.hoverProgress[i];
             if (this.hoverProgress[i] < target)
             {
@@ -1491,19 +2072,26 @@ internal sealed class OperationForm : Form
 
     private bool NeedsAnimationTimer()
     {
-        if (this.hoveredButton >= 0 || this.pressedButton >= 0)
-        {
-            return true;
-        }
-
         if (IsPressAnimationActive(DateTime.UtcNow))
         {
             return true;
         }
 
-        for (int i = 0; i < this.hoverProgress.Length; i++)
+        return HasPendingHoverTransition(
+            this.hoverProgress,
+            this.hoveredButton,
+            IsButtonEnabled(this.hoveredButton));
+    }
+
+    private static bool HasPendingHoverTransition(
+        double[] progress,
+        int hoveredButton,
+        bool hoveredButtonEnabled)
+    {
+        for (int i = 0; i < progress.Length; i++)
         {
-            if (this.hoverProgress[i] > 0.001)
+            double target = i == hoveredButton && hoveredButtonEnabled ? 1.0 : 0.0;
+            if (Math.Abs(progress[i] - target) > 0.001)
             {
                 return true;
             }
@@ -1538,7 +2126,10 @@ internal sealed class OperationForm : Form
 
     private void EnsureAnimationTimer()
     {
-        if (!this.animationTimer.Enabled)
+        if (!this.hiddenForFullscreen &&
+            this.Visible &&
+            NeedsAnimationTimer() &&
+            !this.animationTimer.Enabled)
         {
             this.animationLastUtc = DateTime.UtcNow;
             this.animationTimer.Start();
@@ -1551,17 +2142,105 @@ internal sealed class OperationForm : Form
         RectangleF[] rects = GetButtonRects();
         DrawButton(g, rects[StartButtonIndex], StartButtonIndex, true, false, false, true);
         DrawButton(g, rects[WindowsSettingsButtonIndex], WindowsSettingsButtonIndex, false, false, false, false);
-        DrawButton(g, rects[WindowsPowerMenuButtonIndex], WindowsPowerMenuButtonIndex, false, false, false, false);
-        DrawButton(g, rects[RefreshButtonIndex], RefreshButtonIndex, false, false, false, false);
+        DrawButton(g, rects[HoverOpacityToggleButtonIndex], HoverOpacityToggleButtonIndex, false, false, false, false);
+        DrawButton(g, rects[AppSettingsButtonIndex], AppSettingsButtonIndex, false, false, false, false);
         DrawButton(g, rects[RestartButtonIndex], RestartButtonIndex, false, false, false, false);
         if (ShouldShowBatteryCareButtons())
         {
             DrawButton(g, rects[BatteryCarePauseButtonIndex], BatteryCarePauseButtonIndex, false, false, false, false);
-            DrawButton(g, rects[BatteryLimitRestoreButtonIndex], BatteryLimitRestoreButtonIndex, false, false, false, false);
+            DrawButton(g, rects[BatteryLimitRestoreButtonIndex], BatteryLimitRestoreButtonIndex, false, true, false, false);
+        }
+        else if (ShouldDrawFpsPanel())
+        {
+            DrawFpsPanel(g, GetBatteryCareFallbackRect(rects));
         }
 
-        DrawButton(g, rects[AppSettingsButtonIndex], AppSettingsButtonIndex, false, true, false, false);
-        DrawButton(g, rects[SeelenExitButtonIndex], SeelenExitButtonIndex, false, false, true, false);
+        DrawButton(g, rects[WindowsPowerMenuButtonIndex], WindowsPowerMenuButtonIndex, false, false, false, false);
+        DrawButton(g, rects[RefreshButtonIndex], RefreshButtonIndex, false, false, false, false);
+        DrawButton(g, rects[TaskManagerButtonIndex], TaskManagerButtonIndex, false, false, false, false);
+        DrawButton(g, rects[WindowsQuickSettingsButtonIndex], WindowsQuickSettingsButtonIndex, false, false, false, false);
+        DrawButton(g, rects[LiveCaptionsButtonIndex], LiveCaptionsButtonIndex, false, false, false, false);
+        DrawButton(g, rects[WindowsAiStudioButtonIndex], WindowsAiStudioButtonIndex, false, false, true, false);
+    }
+
+    private static RectangleF GetBatteryCareFallbackRect(RectangleF[] rects)
+    {
+        RectangleF left = rects[BatteryCarePauseButtonIndex];
+        RectangleF right = rects[BatteryLimitRestoreButtonIndex];
+        return RectangleF.FromLTRB(left.Left, left.Top, right.Right, left.Bottom);
+    }
+
+    private void DrawFpsPanel(Graphics g, RectangleF rect)
+    {
+        if (rect.Width <= 0.0f || rect.Height <= 0.0f)
+        {
+            return;
+        }
+
+        int backgroundAlpha = GetBackgroundOpacityAlpha();
+        float radius = Math.Max(S(5), rect.Height * 0.24f);
+        bool forcedFps = this.currentSettings.ForceShowForegroundFpsEnabled;
+        using (GraphicsPath path = RoundedSegment(rect, radius, false, true, false))
+        using (SolidBrush fillBrush = new SolidBrush(forcedFps
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.AccentSoft, ScaleAlpha(72, backgroundAlpha))
+            : DesignTokens.White(ScaleAlpha(46, backgroundAlpha))))
+        using (Pen borderPen = new Pen(forcedFps
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.AccentBorder, ScaleAlpha(132, backgroundAlpha))
+            : DesignTokens.White(ScaleAlpha(52, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+        {
+            g.FillPath(fillBrush, path);
+            g.DrawPath(borderPen, path);
+        }
+
+        if (forcedFps)
+        {
+            RectangleF ringRect = RectangleF.Inflate(rect, -Math.Max(1.0f, this.scale), -Math.Max(1.0f, this.scale));
+            using (GraphicsPath ringPath = RoundedSegment(ringRect, Math.Max(S(4), ringRect.Height * 0.22f), false, true, false))
+            using (Pen ringPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, ScaleAlpha(150, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+            {
+                g.DrawPath(ringPen, ringPath);
+            }
+        }
+
+        string text = this.foregroundFrameRate.HasValue
+            ? "FPS=" + this.foregroundFrameRate.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : "FPS=-";
+        RectangleF textRect = RectangleF.Inflate(rect, -Math.Max(S(3), rect.Height * 0.12f), -Math.Max(1.0f, rect.Height * 0.10f));
+        Font font = this.fontCache.GetMono(
+            Math.Max(7.0f, Math.Min(rect.Height * 0.42f, rect.Width * 0.17f)),
+            FontStyle.Bold);
+        using (SolidBrush textBrush = new SolidBrush(forcedFps
+            ? DesignTokens.TextStrong(238)
+            : DesignTokens.White(226)))
+        {
+            DrawCenteredFittedText(g, text, font, textBrush, textRect);
+        }
+    }
+
+    private void DrawCenteredFittedText(Graphics g, string text, Font baseFont, Brush brush, RectangleF rect)
+    {
+        if (string.IsNullOrEmpty(text) || rect.Width <= 0.0f || rect.Height <= 0.0f)
+        {
+            return;
+        }
+
+        using (StringFormat format = new StringFormat())
+        {
+            format.Alignment = StringAlignment.Center;
+            format.LineAlignment = StringAlignment.Center;
+            format.Trimming = StringTrimming.EllipsisCharacter;
+            format.FormatFlags = StringFormatFlags.NoWrap;
+
+            Font drawFont = baseFont;
+            float size = baseFont.Size;
+            while (size > 6.0f * this.scale && g.MeasureString(text, drawFont).Width > rect.Width)
+            {
+                size -= 0.5f * this.scale;
+                drawFont = this.fontCache.GetMono(size, baseFont.Style);
+            }
+
+            g.DrawString(text, drawFont, brush, rect, format);
+        }
     }
 
     private void DrawButton(Graphics g, RectangleF rect, int button, bool leftSegment, bool topRight, bool bottomRight, bool startButton)
@@ -1574,6 +2253,7 @@ internal sealed class OperationForm : Form
         double hover = this.hoverProgress[button];
         double press = button == this.pressedButton ? 1.0 : GetPressProgress(button);
         bool unavailable = IsButtonUnavailable(button);
+        bool active = !unavailable && IsStateButtonActive(button);
         if (unavailable)
         {
             hover = 0.0;
@@ -1591,12 +2271,6 @@ internal sealed class OperationForm : Form
                 ScaleAlpha(ClampByte((int)Math.Round(34 + press * 16)), backgroundAlpha));
             outlineAlpha = ScaleAlpha(44, backgroundAlpha);
         }
-        else if (button == SeelenExitButtonIndex)
-        {
-            fill = this.seelenExitRunning
-                ? DesignTokens.WithAlpha(DesignTokens.Colors.DangerDeep, ClampByte(fillAlpha + ScaleAlpha(24, backgroundAlpha)))
-                : DesignTokens.WithAlpha(DesignTokens.Colors.Danger, ScaleAlpha(ClampByte((int)Math.Round(38 + hover * 52 + press * 45)), backgroundAlpha));
-        }
         else if (button == BatteryCarePauseButtonIndex)
         {
             fill = this.batteryCarePauseRunning
@@ -1613,12 +2287,26 @@ internal sealed class OperationForm : Form
         {
             fill = DesignTokens.Accent(ClampByte(fillAlpha + 6));
         }
+        else if (active)
+        {
+            fill = DesignTokens.WithAlpha(
+                Color.FromArgb(178, 225, 255),
+                ScaleAlpha(ClampByte((int)Math.Round(92 + hover * 66 + press * 42)), backgroundAlpha));
+        }
+        else if (button == LiveCaptionsButtonIndex || button == WindowsAiStudioButtonIndex)
+        {
+            fill = DesignTokens.WithAlpha(
+                Color.FromArgb(255, 236, 170),
+                ScaleAlpha(ClampByte((int)Math.Round(74 + hover * 66 + press * 40)), backgroundAlpha));
+        }
         else
         {
             fill = DesignTokens.White(fillAlpha);
         }
 
-        Color border = DesignTokens.White(outlineAlpha);
+        Color border = active
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.AccentBorder, ClampByte(outlineAlpha + ScaleAlpha(72, backgroundAlpha)))
+            : DesignTokens.White(outlineAlpha);
         float radius = Math.Max(S(5), rect.Height * 0.24f);
         using (GraphicsPath path = RoundedSegment(rect, radius, leftSegment, topRight, bottomRight))
         {
@@ -1630,6 +2318,16 @@ internal sealed class OperationForm : Form
             using (Pen pen = new Pen(border, Math.Max(1.0f, this.scale)))
             {
                 g.DrawPath(pen, path);
+            }
+
+            if (active)
+            {
+                RectangleF ringRect = RectangleF.Inflate(rect, -Math.Max(1.0f, this.scale), -Math.Max(1.0f, this.scale));
+                using (GraphicsPath ringPath = RoundedSegment(ringRect, Math.Max(S(4), ringRect.Height * 0.22f), leftSegment, topRight, bottomRight))
+                using (Pen ringPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, ScaleAlpha(154, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+                {
+                    g.DrawPath(ringPen, ringPath);
+                }
             }
         }
 
@@ -1658,10 +2356,6 @@ internal sealed class OperationForm : Form
         {
             DrawRestartGlyph(g, iconRect);
         }
-        else if (button == SeelenExitButtonIndex)
-        {
-            DrawSeelenExitGlyph(g, iconRect);
-        }
         else if (button == BatteryCarePauseButtonIndex)
         {
             DrawBatteryCareGlyph(g, iconRect);
@@ -1669,6 +2363,44 @@ internal sealed class OperationForm : Form
         else if (button == BatteryLimitRestoreButtonIndex)
         {
             DrawBatteryLimitRestoreGlyph(g, iconRect);
+        }
+        else if (button == TaskManagerButtonIndex)
+        {
+            DrawTaskManagerGlyph(g, iconRect);
+        }
+        else if (button == WindowsAiStudioButtonIndex)
+        {
+            DrawWindowsAiStudioGlyph(g, iconRect);
+        }
+        else if (button == WindowsQuickSettingsButtonIndex)
+        {
+            DrawQuickSettingsGlyph(g, iconRect);
+        }
+        else if (button == LiveCaptionsButtonIndex)
+        {
+            DrawLiveCaptionsGlyph(g, iconRect);
+        }
+        else if (button == HoverOpacityToggleButtonIndex)
+        {
+            DrawHoverOpacityGlyph(g, iconRect);
+        }
+
+        if (unavailable)
+        {
+            DrawUnavailableButtonOverlay(g, rect, leftSegment, topRight, bottomRight);
+        }
+    }
+
+    private void DrawUnavailableButtonOverlay(Graphics g, RectangleF rect, bool leftSegment, bool topRight, bool bottomRight)
+    {
+        int backgroundAlpha = GetBackgroundOpacityAlpha();
+        float radius = Math.Max(S(5), rect.Height * 0.24f);
+        using (GraphicsPath path = RoundedSegment(rect, radius, leftSegment, topRight, bottomRight))
+        using (SolidBrush veilBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, ScaleAlpha(116, backgroundAlpha))))
+        using (Pen mutedPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, ScaleAlpha(118, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+        {
+            g.FillPath(veilBrush, path);
+            g.DrawPath(mutedPen, path);
         }
     }
 
@@ -1775,52 +2507,6 @@ internal sealed class OperationForm : Form
                 g.DrawLine(sliderPen, left, y, right, y);
                 g.FillEllipse(knobBrush, knobX - size * 0.055f, y - size * 0.055f, size * 0.11f, size * 0.11f);
             }
-        }
-    }
-
-    private void DrawSeelenExitGlyph(Graphics g, RectangleF rect)
-    {
-        bool unavailable = IsButtonUnavailable(SeelenExitButtonIndex);
-        float size = Math.Min(rect.Width, rect.Height);
-        float stroke = Math.Max(1.0f, 1.25f * this.scale);
-        RectangleF app = new RectangleF(
-            rect.Left + size * 0.09f,
-            rect.Top + size * 0.19f,
-            size * 0.54f,
-            size * 0.58f);
-        Color glyphColor = unavailable
-            ? DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 168)
-            : DesignTokens.White(244);
-        Color exitColor = unavailable
-            ? DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 176)
-            : DesignTokens.White(252);
-        Color markColor = unavailable
-            ? DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 142)
-            : DesignTokens.WithAlpha(DesignTokens.Colors.DangerBorder, 255);
-        using (GraphicsPath appPath = RoundedRectangle(app, Math.Max(1.5f, size * 0.10f)))
-        using (Pen appPen = new Pen(glyphColor, stroke))
-        using (Pen exitPen = new Pen(exitColor, Math.Max(1.0f, 1.45f * this.scale)))
-        using (SolidBrush exitBrush = new SolidBrush(exitColor))
-        using (SolidBrush markBrush = new SolidBrush(markColor))
-        {
-            appPen.StartCap = LineCap.Round;
-            appPen.EndCap = LineCap.Round;
-            exitPen.StartCap = LineCap.Round;
-            exitPen.EndCap = LineCap.Round;
-            g.DrawPath(appPen, appPath);
-            g.FillEllipse(markBrush, app.Left + app.Width * 0.20f, app.Top + app.Height * 0.20f, size * 0.12f, size * 0.12f);
-            g.DrawLine(appPen, app.Left + app.Width * 0.22f, app.Top + app.Height * 0.55f, app.Left + app.Width * 0.55f, app.Top + app.Height * 0.55f);
-            g.DrawLine(appPen, app.Left + app.Width * 0.22f, app.Top + app.Height * 0.72f, app.Left + app.Width * 0.45f, app.Top + app.Height * 0.72f);
-
-            PointF tail = new PointF(rect.Left + size * 0.43f, rect.Top + size * 0.50f);
-            PointF tip = new PointF(rect.Left + size * 0.90f, rect.Top + size * 0.50f);
-            g.DrawLine(exitPen, tail, tip);
-            DrawArrowHead(
-                g,
-                exitBrush,
-                tip,
-                new PointF(tip.X - size * 0.18f, tip.Y - size * 0.15f),
-                new PointF(tip.X - size * 0.18f, tip.Y + size * 0.15f));
         }
     }
 
@@ -1959,11 +2645,11 @@ internal sealed class OperationForm : Form
             body.Top + body.Height * 0.28f,
             size * 0.10f,
             body.Height * 0.44f);
+        Font font = this.fontCache.GetUi(Math.Max(7.0f, size * 0.36f), FontStyle.Bold);
         using (GraphicsPath bodyPath = RoundedRectangle(body, Math.Max(1.0f, size * 0.08f)))
         using (GraphicsPath capPath = RoundedRectangle(cap, Math.Max(1.0f, size * 0.04f)))
         using (Pen pen = new Pen(DesignTokens.White(246), stroke))
         using (SolidBrush capBrush = new SolidBrush(DesignTokens.White(232)))
-        using (Font font = DesignTokens.CreateUIFont(Math.Max(7.0f, size * 0.36f), FontStyle.Bold, GraphicsUnit.Pixel))
         using (SolidBrush textBrush = new SolidBrush(DesignTokens.White(252)))
         {
             pen.LineJoin = LineJoin.Round;
@@ -1989,12 +2675,251 @@ internal sealed class OperationForm : Form
         }
     }
 
+    private void DrawTaskManagerGlyph(Graphics g, RectangleF rect)
+    {
+        float size = Math.Min(rect.Width, rect.Height);
+        float stroke = Math.Max(1.0f, 1.15f * this.scale);
+        RectangleF panel = new RectangleF(
+            rect.Left + size * 0.10f,
+            rect.Top + size * 0.11f,
+            size * 0.80f,
+            size * 0.78f);
+        float titleBarY = panel.Top + panel.Height * 0.25f;
+        using (GraphicsPath panelPath = RoundedRectangle(panel, Math.Max(1.5f, size * 0.10f)))
+        using (Pen panelPen = new Pen(DesignTokens.White(244), stroke))
+        using (Pen graphPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 255), Math.Max(1.0f, 1.35f * this.scale)))
+        using (SolidBrush barBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.SuccessSoft, 238)))
+        {
+            panelPen.StartCap = LineCap.Round;
+            panelPen.EndCap = LineCap.Round;
+            graphPen.StartCap = LineCap.Round;
+            graphPen.EndCap = LineCap.Round;
+            graphPen.LineJoin = LineJoin.Round;
+            g.DrawPath(panelPen, panelPath);
+            g.DrawLine(panelPen, panel.Left, titleBarY, panel.Right, titleBarY);
+            g.DrawLine(panelPen, panel.Left + panel.Width * 0.13f, panel.Top + panel.Height * 0.12f, panel.Left + panel.Width * 0.24f, panel.Top + panel.Height * 0.12f);
+
+            float baseY = panel.Bottom - panel.Height * 0.14f;
+            float barWidth = Math.Max(1.0f, size * 0.10f);
+            float gap = size * 0.055f;
+            float x = panel.Left + panel.Width * 0.18f;
+            float[] heights = new float[] { size * 0.18f, size * 0.31f, size * 0.24f };
+            for (int i = 0; i < heights.Length; i++)
+            {
+                RectangleF bar = new RectangleF(x + i * (barWidth + gap), baseY - heights[i], barWidth, heights[i]);
+                g.FillRectangle(barBrush, bar);
+            }
+
+            PointF p1 = new PointF(panel.Left + panel.Width * 0.60f, baseY - size * 0.08f);
+            PointF p2 = new PointF(panel.Left + panel.Width * 0.70f, baseY - size * 0.30f);
+            PointF p3 = new PointF(panel.Left + panel.Width * 0.83f, baseY - size * 0.18f);
+            g.DrawLines(graphPen, new PointF[] { p1, p2, p3 });
+        }
+    }
+
+    private void DrawWindowsAiStudioGlyph(Graphics g, RectangleF rect)
+    {
+        float size = Math.Min(rect.Width, rect.Height);
+        float stroke = Math.Max(1.0f, 1.15f * this.scale);
+        RectangleF chip = new RectangleF(
+            rect.Left + size * 0.20f,
+            rect.Top + size * 0.23f,
+            size * 0.60f,
+            size * 0.56f);
+        using (GraphicsPath chipPath = RoundedRectangle(chip, Math.Max(1.5f, size * 0.11f)))
+        using (Pen chipPen = new Pen(DesignTokens.White(236), stroke))
+        using (Pen pinPen = new Pen(DesignTokens.White(214), Math.Max(1.0f, 0.95f * this.scale)))
+        using (Pen sparklePen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.AccentAlt, 255), Math.Max(1.0f, 1.35f * this.scale)))
+        using (SolidBrush sparkleBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 255)))
+        {
+            chipPen.StartCap = LineCap.Round;
+            chipPen.EndCap = LineCap.Round;
+            pinPen.StartCap = LineCap.Round;
+            pinPen.EndCap = LineCap.Round;
+            sparklePen.StartCap = LineCap.Round;
+            sparklePen.EndCap = LineCap.Round;
+            g.DrawPath(chipPen, chipPath);
+
+            float pinTop = chip.Top + chip.Height * 0.20f;
+            float pinBottom = chip.Bottom - chip.Height * 0.20f;
+            for (int i = 0; i < 3; i++)
+            {
+                float y = pinTop + (pinBottom - pinTop) * i / 2.0f;
+                g.DrawLine(pinPen, chip.Left - size * 0.10f, y, chip.Left, y);
+                g.DrawLine(pinPen, chip.Right, y, chip.Right + size * 0.10f, y);
+            }
+
+            DrawSparkle(
+                g,
+                sparklePen,
+                sparkleBrush,
+                new PointF(chip.Left + chip.Width * 0.52f, chip.Top + chip.Height * 0.48f),
+                size * 0.25f);
+            DrawSparkle(
+                g,
+                sparklePen,
+                sparkleBrush,
+                new PointF(rect.Left + size * 0.76f, rect.Top + size * 0.22f),
+                size * 0.12f);
+        }
+    }
+
+    private void DrawQuickSettingsGlyph(Graphics g, RectangleF rect)
+    {
+        float size = Math.Min(rect.Width, rect.Height);
+        float stroke = Math.Max(1.0f, 1.1f * this.scale);
+        RectangleF panel = new RectangleF(
+            rect.Left + size * 0.13f,
+            rect.Top + size * 0.17f,
+            size * 0.74f,
+            size * 0.66f);
+        RectangleF firstTile = new RectangleF(
+            panel.Left + panel.Width * 0.13f,
+            panel.Top + panel.Height * 0.17f,
+            panel.Width * 0.30f,
+            panel.Height * 0.27f);
+        RectangleF secondTile = new RectangleF(
+            panel.Right - panel.Width * 0.43f,
+            panel.Top + panel.Height * 0.17f,
+            panel.Width * 0.30f,
+            panel.Height * 0.27f);
+        float sliderY = panel.Top + panel.Height * 0.68f;
+        float sliderLeft = panel.Left + panel.Width * 0.18f;
+        float sliderRight = panel.Right - panel.Width * 0.18f;
+        float knobRadius = Math.Max(1.2f, size * 0.055f);
+
+        using (GraphicsPath panelPath = RoundedRectangle(panel, Math.Max(1.5f, size * 0.09f)))
+        using (GraphicsPath firstTilePath = RoundedRectangle(firstTile, Math.Max(1.0f, firstTile.Height * 0.45f)))
+        using (GraphicsPath secondTilePath = RoundedRectangle(secondTile, Math.Max(1.0f, secondTile.Height * 0.45f)))
+        using (Pen panelPen = new Pen(DesignTokens.White(232), stroke))
+        using (Pen linePen = new Pen(DesignTokens.White(225), Math.Max(1.0f, 1.0f * this.scale)))
+        using (Pen subtlePen = new Pen(DesignTokens.White(154), Math.Max(1.0f, 0.9f * this.scale)))
+        using (SolidBrush activeBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 230)))
+        using (SolidBrush inactiveBrush = new SolidBrush(DesignTokens.White(82)))
+        using (SolidBrush knobBrush = new SolidBrush(DesignTokens.White(244)))
+        {
+            panelPen.StartCap = LineCap.Round;
+            panelPen.EndCap = LineCap.Round;
+            linePen.StartCap = LineCap.Round;
+            linePen.EndCap = LineCap.Round;
+            subtlePen.StartCap = LineCap.Round;
+            subtlePen.EndCap = LineCap.Round;
+
+            g.DrawPath(panelPen, panelPath);
+            g.FillPath(activeBrush, firstTilePath);
+            g.FillPath(inactiveBrush, secondTilePath);
+            g.DrawPath(subtlePen, firstTilePath);
+            g.DrawPath(subtlePen, secondTilePath);
+
+            g.DrawLine(linePen, sliderLeft, sliderY, sliderRight, sliderY);
+            float knobX = sliderLeft + (sliderRight - sliderLeft) * 0.62f;
+            g.FillEllipse(knobBrush, knobX - knobRadius, sliderY - knobRadius, knobRadius * 2.0f, knobRadius * 2.0f);
+
+            float dotRadius = Math.Max(1.0f, size * 0.036f);
+            g.FillEllipse(knobBrush, firstTile.Left + firstTile.Width * 0.50f - dotRadius, firstTile.Top + firstTile.Height * 0.50f - dotRadius, dotRadius * 2.0f, dotRadius * 2.0f);
+            g.DrawLine(linePen, secondTile.Left + secondTile.Width * 0.28f, secondTile.Top + secondTile.Height * 0.50f, secondTile.Right - secondTile.Width * 0.28f, secondTile.Top + secondTile.Height * 0.50f);
+        }
+    }
+
+    private void DrawLiveCaptionsGlyph(Graphics g, RectangleF rect)
+    {
+        float size = Math.Min(rect.Width, rect.Height);
+        float stroke = Math.Max(1.0f, 1.15f * this.scale);
+        RectangleF bubble = new RectangleF(
+            rect.Left + size * 0.10f,
+            rect.Top + size * 0.17f,
+            size * 0.80f,
+            size * 0.60f);
+        PointF tailTip = new PointF(bubble.Left + bubble.Width * 0.34f, bubble.Bottom + size * 0.13f);
+        PointF tailLeft = new PointF(bubble.Left + bubble.Width * 0.41f, bubble.Bottom - size * 0.01f);
+        PointF tailRight = new PointF(bubble.Left + bubble.Width * 0.51f, bubble.Bottom - size * 0.01f);
+        using (GraphicsPath bubblePath = RoundedRectangle(bubble, Math.Max(1.5f, size * 0.12f)))
+        using (Pen bubblePen = new Pen(DesignTokens.White(240), stroke))
+        using (Pen textPen = new Pen(DesignTokens.White(226), Math.Max(1.0f, 1.05f * this.scale)))
+        using (SolidBrush tailBrush = new SolidBrush(DesignTokens.White(222)))
+        {
+            bubblePen.StartCap = LineCap.Round;
+            bubblePen.EndCap = LineCap.Round;
+            textPen.StartCap = LineCap.Round;
+            textPen.EndCap = LineCap.Round;
+
+            g.DrawPath(bubblePen, bubblePath);
+            g.FillPolygon(tailBrush, new PointF[] { tailLeft, tailTip, tailRight });
+
+            float lineLeft = bubble.Left + bubble.Width * 0.18f;
+            float lineRight = bubble.Right - bubble.Width * 0.18f;
+            float lineTop = bubble.Top + bubble.Height * 0.37f;
+            float lineBottom = bubble.Top + bubble.Height * 0.61f;
+            g.DrawLine(textPen, lineLeft, lineTop, lineRight, lineTop);
+            g.DrawLine(textPen, lineLeft, lineBottom, bubble.Left + bubble.Width * 0.67f, lineBottom);
+        }
+    }
+
+    private void DrawHoverOpacityGlyph(Graphics g, RectangleF rect)
+    {
+        float size = Math.Min(rect.Width, rect.Height);
+        float stroke = Math.Max(1.0f, 1.1f * this.scale);
+        RectangleF backPanel = new RectangleF(
+            rect.Left + size * 0.18f,
+            rect.Top + size * 0.16f,
+            size * 0.50f,
+            size * 0.50f);
+        RectangleF frontPanel = new RectangleF(
+            rect.Left + size * 0.32f,
+            rect.Top + size * 0.31f,
+            size * 0.50f,
+            size * 0.50f);
+        using (GraphicsPath backPath = RoundedRectangle(backPanel, Math.Max(1.5f, size * 0.09f)))
+        using (GraphicsPath frontPath = RoundedRectangle(frontPanel, Math.Max(1.5f, size * 0.09f)))
+        using (Pen backPen = new Pen(DesignTokens.White(150), stroke))
+        using (Pen frontPen = new Pen(DesignTokens.White(238), stroke))
+        using (Pen slashPen = new Pen(
+            this.currentSettings.ForceHoverOpacityActive
+                ? DesignTokens.WithAlpha(DesignTokens.Colors.TextOnAccent, 232)
+                : DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 248),
+            Math.Max(1.0f, 1.35f * this.scale)))
+        using (SolidBrush frontBrush = new SolidBrush(DesignTokens.White(this.currentSettings.ForceHoverOpacityActive ? 90 : 42)))
+        {
+            backPen.StartCap = LineCap.Round;
+            backPen.EndCap = LineCap.Round;
+            frontPen.StartCap = LineCap.Round;
+            frontPen.EndCap = LineCap.Round;
+            slashPen.StartCap = LineCap.Round;
+            slashPen.EndCap = LineCap.Round;
+
+            g.DrawPath(backPen, backPath);
+            g.FillPath(frontBrush, frontPath);
+            g.DrawPath(frontPen, frontPath);
+            g.DrawLine(
+                slashPen,
+                rect.Left + size * 0.23f,
+                rect.Bottom - size * 0.23f,
+                rect.Right - size * 0.18f,
+                rect.Top + size * 0.18f);
+        }
+    }
+
+    private static void DrawSparkle(Graphics g, Pen pen, Brush brush, PointF center, float radius)
+    {
+        float shortRadius = radius * 0.45f;
+        g.DrawLine(pen, center.X, center.Y - radius, center.X, center.Y + radius);
+        g.DrawLine(pen, center.X - radius, center.Y, center.X + radius, center.Y);
+        g.DrawLine(pen, center.X - shortRadius, center.Y - shortRadius, center.X + shortRadius, center.Y + shortRadius);
+        g.DrawLine(pen, center.X - shortRadius, center.Y + shortRadius, center.X + shortRadius, center.Y - shortRadius);
+        g.FillEllipse(brush, center.X - radius * 0.18f, center.Y - radius * 0.18f, radius * 0.36f, radius * 0.36f);
+    }
+
     private static void DrawArrowHead(Graphics g, Brush brush, PointF tip, PointF left, PointF right)
     {
         g.FillPolygon(brush, new PointF[] { tip, left, right });
     }
 
     private void RenderLayeredWindow()
+    {
+        RenderLayeredWindow(true);
+    }
+
+    private void RenderLayeredWindow(bool redrawContent)
     {
         if (!this.IsHandleCreated || this.Width <= 0 || this.Height <= 0)
         {
@@ -2004,9 +2929,39 @@ internal sealed class OperationForm : Form
         try
         {
             EnsureRenderBuffer();
-            this.renderGraphics.Clear(Color.Transparent);
-            DrawOperationWindow(this.renderGraphics);
-            if (!NativeMethods.UpdateLayeredWindowFromBitmap(this.Handle, this.Location, this.renderBitmap, 255))
+            bool burnInColorProtectionActive = IsBurnInColorProtectionActive();
+            bool hitMaskActive = burnInColorProtectionActive;
+            bool refreshNativeBitmap =
+                redrawContent ||
+                !this.renderBufferValid ||
+                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive ||
+                hitMaskActive != this.lastRenderedHitMaskActive;
+            if (refreshNativeBitmap)
+            {
+                this.renderGraphics.Clear(Color.Transparent);
+                DrawOperationWindow(this.renderGraphics);
+                if (burnInColorProtectionActive)
+                {
+                    BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
+                }
+
+                if (hitMaskActive)
+                {
+                    EnsureInteractionHitMask();
+                    ApplyInteractionHitMask(this.renderBitmap, this.interactionHitMask);
+                }
+
+                this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
+                this.lastRenderedHitMaskActive = hitMaskActive;
+                this.renderBufferValid = true;
+            }
+
+            if (!this.layeredSurface.Update(
+                this.Handle,
+                this.Location,
+                this.renderBitmap,
+                GetLayeredWindowOpacityAlpha(),
+                refreshNativeBitmap))
             {
                 if (!this.layeredUpdateFailureLogged)
                 {
@@ -2027,6 +2982,129 @@ internal sealed class OperationForm : Form
         }
     }
 
+    private void BeginUpdateForegroundFrameRate()
+    {
+        if (!ShouldRunForegroundFpsTimer() ||
+            !TryBeginSingleFlight(ref this.foregroundFpsReadRunning))
+        {
+            return;
+        }
+
+        Task.Run((Action)delegate
+        {
+            int? sample = null;
+            try
+            {
+                sample = this.foregroundFpsReader.ReadForegroundFps();
+            }
+            catch (Exception ex)
+            {
+                Program.LogException(ex);
+            }
+
+            if (this.formClosing || this.IsDisposed || !this.IsHandleCreated)
+            {
+                EndSingleFlight(ref this.foregroundFpsReadRunning);
+                this.foregroundFpsReader.Dispose();
+                return;
+            }
+
+            try
+            {
+                this.BeginInvoke((MethodInvoker)delegate
+                {
+                    EndSingleFlight(ref this.foregroundFpsReadRunning);
+                    if (this.IsDisposed || !ShouldRunForegroundFpsTimer())
+                    {
+                        return;
+                    }
+
+                    if (this.foregroundFrameRate != sample)
+                    {
+                        this.foregroundFrameRate = sample;
+                        RenderLayeredWindow();
+                    }
+                });
+            }
+            catch (InvalidOperationException)
+            {
+                EndSingleFlight(ref this.foregroundFpsReadRunning);
+                if (this.formClosing)
+                {
+                    this.foregroundFpsReader.Dispose();
+                }
+            }
+        });
+    }
+
+    private void UpdateForegroundFpsTimer()
+    {
+        int interval = GetForegroundFpsRefreshIntervalMs(this.currentSettings.PerformanceMode);
+        if (this.foregroundFpsTimer.Interval != interval)
+        {
+            this.foregroundFpsTimer.Interval = interval;
+        }
+
+        if (ShouldRunForegroundFpsTimer())
+        {
+            if (!this.foregroundFpsTimer.Enabled)
+            {
+                this.foregroundFpsTimer.Start();
+            }
+
+            if (!this.foregroundFrameRate.HasValue)
+            {
+                BeginUpdateForegroundFrameRate();
+            }
+
+            return;
+        }
+
+        if (this.foregroundFpsTimer.Enabled)
+        {
+            this.foregroundFpsTimer.Stop();
+        }
+
+        this.foregroundFrameRate = null;
+    }
+
+    private bool ShouldRunForegroundFpsTimer()
+    {
+        return ShouldDrawFpsPanel() &&
+            !this.hiddenForFullscreen &&
+            !this.displaySuspended &&
+            this.Visible &&
+            !this.formClosing;
+    }
+
+    private static int GetForegroundFpsRefreshIntervalMs(WidgetPerformanceMode mode)
+    {
+        mode = WidgetSettings.GetEffectivePerformanceMode(mode);
+        if (mode == WidgetPerformanceMode.Smooth)
+        {
+            return 1000;
+        }
+
+        if (mode == WidgetPerformanceMode.BatterySaver)
+        {
+            return 5000;
+        }
+
+        return 2000;
+    }
+
+    private byte GetLayeredWindowOpacityAlpha()
+    {
+        return (byte)(this.currentSettings.ForceHoverOpacityActive ? ForcedOperationOpacityAlpha : 255);
+    }
+
+    private bool IsBurnInColorProtectionActive()
+    {
+        return BurnInProtection.ShouldApplyHiddenModeColorProtection(
+            this.currentSettings,
+            this.currentSettings.ForceHoverOpacityActive);
+    }
+
     private void EnsureRenderBuffer()
     {
         if (this.renderBitmap != null &&
@@ -2040,6 +3118,7 @@ internal sealed class OperationForm : Form
         DisposeRenderBuffer();
         this.renderBitmap = new Bitmap(this.Width, this.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         this.renderGraphics = Graphics.FromImage(this.renderBitmap);
+        this.renderBufferValid = false;
     }
 
     private void DisposeRenderBuffer()
@@ -2055,16 +3134,335 @@ internal sealed class OperationForm : Form
             this.renderBitmap.Dispose();
             this.renderBitmap = null;
         }
+
+        this.renderBufferValid = false;
     }
 
     private void ResetDisplayRenderResources()
     {
         DisposeRenderBuffer();
+        DisposeInteractionHitMask();
+        this.layeredSurface.Reset();
         this.layeredUpdateFailureLogged = false;
+    }
+
+    private void ResetLayoutCaches()
+    {
+        this.buttonRects = null;
+        this.buttonRectsValid = false;
+        DisposeInteractionHitMask();
+    }
+
+    private void EnsureInteractionHitMask()
+    {
+        if (this.interactionHitMask != null &&
+            this.interactionHitMask.Width == this.Width &&
+            this.interactionHitMask.Height == this.Height)
+        {
+            return;
+        }
+
+        DisposeInteractionHitMask();
+        this.interactionHitMask = new Bitmap(
+            this.Width,
+            this.Height,
+            PixelFormat.Format32bppPArgb);
+        using (Graphics graphics = Graphics.FromImage(this.interactionHitMask))
+        using (SolidBrush brush = new SolidBrush(Color.White))
+        {
+            graphics.Clear(Color.Transparent);
+            graphics.SmoothingMode = SmoothingMode.None;
+            RectangleF[] rects = GetButtonRects();
+            for (int button = 0; button < rects.Length; button++)
+            {
+                if (!IsButtonVisible(button))
+                {
+                    continue;
+                }
+
+                bool leftSegment;
+                bool topRight;
+                bool bottomRight;
+                GetButtonSegmentShape(button, out leftSegment, out topRight, out bottomRight);
+                float radius = Math.Max(S(5), rects[button].Height * 0.24f);
+                using (GraphicsPath path = RoundedSegment(
+                    rects[button],
+                    radius,
+                    leftSegment,
+                    topRight,
+                    bottomRight))
+                {
+                    graphics.FillPath(brush, path);
+                }
+            }
+        }
+    }
+
+    private static void ApplyInteractionHitMask(Bitmap bitmap, Bitmap mask)
+    {
+        if (bitmap == null ||
+            mask == null ||
+            bitmap.Width != mask.Width ||
+            bitmap.Height != mask.Height)
+        {
+            return;
+        }
+
+        Rectangle bounds = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
+        BitmapData bitmapData = bitmap.LockBits(bounds, ImageLockMode.ReadWrite, PixelFormat.Format32bppPArgb);
+        BitmapData maskData = mask.LockBits(bounds, ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
+        try
+        {
+            int bitmapByteCount = Math.Abs(bitmapData.Stride) * bitmapData.Height;
+            int maskByteCount = Math.Abs(maskData.Stride) * maskData.Height;
+            byte[] bitmapPixels = new byte[bitmapByteCount];
+            byte[] maskPixels = new byte[maskByteCount];
+            Marshal.Copy(bitmapData.Scan0, bitmapPixels, 0, bitmapByteCount);
+            Marshal.Copy(maskData.Scan0, maskPixels, 0, maskByteCount);
+
+            for (int y = 0; y < bitmapData.Height; y++)
+            {
+                int bitmapRow = y * Math.Abs(bitmapData.Stride);
+                int maskRow = y * Math.Abs(maskData.Stride);
+                for (int x = 0; x < bitmapData.Width; x++)
+                {
+                    int bitmapIndex = bitmapRow + x * 4;
+                    int maskIndex = maskRow + x * 4;
+                    if (maskPixels[maskIndex + 3] != 0 &&
+                        bitmapPixels[bitmapIndex + 3] == 0)
+                    {
+                        // Alpha=1 is not reliable once the layered window source alpha is
+                        // reduced for hidden mode. This stays visually faint after the global
+                        // alpha multiplier but remains non-zero in User32 hit testing.
+                        bitmapPixels[bitmapIndex] = 0;
+                        bitmapPixels[bitmapIndex + 1] = 0;
+                        bitmapPixels[bitmapIndex + 2] = 0;
+                        bitmapPixels[bitmapIndex + 3] = HiddenModeHitTestAlpha;
+                    }
+                }
+            }
+
+            Marshal.Copy(bitmapPixels, 0, bitmapData.Scan0, bitmapByteCount);
+        }
+        finally
+        {
+            mask.UnlockBits(maskData);
+            bitmap.UnlockBits(bitmapData);
+        }
+    }
+
+    private void DisposeInteractionHitMask()
+    {
+        if (this.interactionHitMask != null)
+        {
+            this.interactionHitMask.Dispose();
+            this.interactionHitMask = null;
+        }
+    }
+
+    private static void GetButtonSegmentShape(
+        int button,
+        out bool leftSegment,
+        out bool topRight,
+        out bool bottomRight)
+    {
+        leftSegment = button == StartButtonIndex;
+        topRight = button == BatteryLimitRestoreButtonIndex;
+        bottomRight = button == WindowsAiStudioButtonIndex;
+    }
+
+    private static bool TryBeginSingleFlight(ref int state)
+    {
+        return Interlocked.CompareExchange(ref state, 1, 0) == 0;
+    }
+
+    private static void EndSingleFlight(ref int state)
+    {
+        Interlocked.Exchange(ref state, 0);
+    }
+
+    internal static void RunSelfTest()
+    {
+        RunInteractionHitMaskSelfTest();
+        RunAnimationStateSelfTest();
+        RunSingleFlightSelfTest();
+        RunFpsIntervalSelfTest();
+        RunSeelenPowerMenuResultSelfTest();
+    }
+
+    private static void RunInteractionHitMaskSelfTest()
+    {
+        using (Bitmap bitmap = new Bitmap(6, 4, PixelFormat.Format32bppPArgb))
+        using (Bitmap mask = new Bitmap(6, 4, PixelFormat.Format32bppPArgb))
+        using (Graphics bitmapGraphics = Graphics.FromImage(bitmap))
+        using (Graphics maskGraphics = Graphics.FromImage(mask))
+        using (SolidBrush existingBrush = new SolidBrush(Color.FromArgb(100, 30, 60, 90)))
+        using (SolidBrush maskBrush = new SolidBrush(Color.White))
+        {
+            bitmapGraphics.Clear(Color.Transparent);
+            maskGraphics.Clear(Color.Transparent);
+            bitmapGraphics.FillRectangle(existingBrush, 2, 1, 1, 1);
+            maskGraphics.FillRectangle(maskBrush, 1, 1, 3, 2);
+
+            ApplyInteractionHitMask(bitmap, mask);
+
+            AssertSelfTest(bitmap.GetPixel(1, 1).A == HiddenModeHitTestAlpha, "transparent interactive pixel");
+            AssertSelfTest(bitmap.GetPixel(2, 1).A == 100, "existing alpha preserved");
+            AssertSelfTest(bitmap.GetPixel(0, 0).A == 0, "mask exterior remains transparent");
+            AssertSelfTest(bitmap.GetPixel(4, 1).A == 0, "button gap remains transparent");
+            AssertSelfTest(
+                HiddenModeHitTestAlpha * ForcedOperationOpacityAlpha / 255 >= 1,
+                "hidden mode hit-test alpha survives source alpha");
+        }
+    }
+
+    private static void RunAnimationStateSelfTest()
+    {
+        double[] progress = new double[] { 0.5, 0.0 };
+        AssertSelfTest(
+            HasPendingHoverTransition(progress, 0, true),
+            "hover transition should continue");
+        progress[0] = 1.0;
+        AssertSelfTest(
+            !HasPendingHoverTransition(progress, 0, true),
+            "settled hover should stop");
+        progress[0] = 0.4;
+        AssertSelfTest(
+            HasPendingHoverTransition(progress, -1, false),
+            "hover leave transition should continue");
+        progress[0] = 0.0;
+        AssertSelfTest(
+            !HasPendingHoverTransition(progress, -1, false),
+            "settled leave should stop");
+    }
+
+    private static void RunSingleFlightSelfTest()
+    {
+        int state = 0;
+        AssertSelfTest(TryBeginSingleFlight(ref state), "first single-flight entry");
+        AssertSelfTest(!TryBeginSingleFlight(ref state), "duplicate single-flight entry");
+        EndSingleFlight(ref state);
+        AssertSelfTest(TryBeginSingleFlight(ref state), "single-flight reset");
+        EndSingleFlight(ref state);
+    }
+
+    private static void RunFpsIntervalSelfTest()
+    {
+        AssertSelfTest(
+            GetForegroundFpsRefreshIntervalMs(WidgetPerformanceMode.Smooth) == 1000,
+            "smooth FPS interval");
+        AssertSelfTest(
+            GetForegroundFpsRefreshIntervalMs(WidgetPerformanceMode.Balanced) == 2000,
+            "balanced FPS interval");
+        AssertSelfTest(
+            GetForegroundFpsRefreshIntervalMs(WidgetPerformanceMode.BatterySaver) == 5000,
+            "battery saver FPS interval");
+    }
+
+    private static void RunSeelenPowerMenuResultSelfTest()
+    {
+        AssertSelfTest(
+            !SeelenPowerMenuResult.Triggered("ok").RequiresFallback,
+            "triggered result");
+        AssertSelfTest(
+            !SeelenPowerMenuResult.AcceptedTimeout("timeout").RequiresFallback,
+            "accepted timeout result");
+        AssertSelfTest(
+            SeelenPowerMenuResult.Fallback("missing").RequiresFallback,
+            "fallback result");
+        AssertSelfTest(
+            SeelenPowerMenuResult.Failed("failure").RequiresFallback,
+            "failed result");
+    }
+
+    private static void AssertSelfTest(bool condition, string message)
+    {
+        if (!condition)
+        {
+            throw new InvalidOperationException(
+                "Operation panel self-test failed: " +
+                message);
+        }
+    }
+
+    private enum SeelenPowerMenuStatus
+    {
+        Triggered,
+        AcceptedTimeout,
+        FallbackRequired,
+        Failed
+    }
+
+    private sealed class SeelenPowerMenuResult
+    {
+        private SeelenPowerMenuResult(
+            SeelenPowerMenuStatus status,
+            string detail,
+            int? exitCode)
+        {
+            this.Status = status;
+            this.Detail = detail ?? string.Empty;
+            this.ExitCode = exitCode;
+        }
+
+        public SeelenPowerMenuStatus Status { get; private set; }
+        public string Detail { get; private set; }
+        public int? ExitCode { get; private set; }
+        public bool RequiresFallback
+        {
+            get
+            {
+                return this.Status == SeelenPowerMenuStatus.FallbackRequired ||
+                    this.Status == SeelenPowerMenuStatus.Failed;
+            }
+        }
+
+        public static SeelenPowerMenuResult Triggered(string detail)
+        {
+            return new SeelenPowerMenuResult(
+                SeelenPowerMenuStatus.Triggered,
+                detail,
+                null);
+        }
+
+        public static SeelenPowerMenuResult AcceptedTimeout(string detail)
+        {
+            return new SeelenPowerMenuResult(
+                SeelenPowerMenuStatus.AcceptedTimeout,
+                detail,
+                null);
+        }
+
+        public static SeelenPowerMenuResult Fallback(string detail)
+        {
+            return Fallback(detail, null);
+        }
+
+        public static SeelenPowerMenuResult Fallback(string detail, int? exitCode)
+        {
+            return new SeelenPowerMenuResult(
+                SeelenPowerMenuStatus.FallbackRequired,
+                detail,
+                exitCode);
+        }
+
+        public static SeelenPowerMenuResult Failed(string detail)
+        {
+            return new SeelenPowerMenuResult(
+                SeelenPowerMenuStatus.Failed,
+                detail,
+                null);
+        }
     }
 
     private void ConfigureGraphics(Graphics g)
     {
+        if (IsBurnInColorProtectionActive())
+        {
+            BurnInProtection.ConfigureGraphics(g, true);
+            return;
+        }
+
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;

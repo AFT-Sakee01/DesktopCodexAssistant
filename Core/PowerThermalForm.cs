@@ -51,6 +51,8 @@ internal sealed class PowerThermalForm : Form
     private Bitmap renderBitmap;
     private Graphics renderGraphics;
     private bool renderBufferValid;
+    private bool lastRenderedBurnInColorProtectionActive;
+    private long burnInShiftSlot = long.MinValue;
     // The native surface keeps the HBITMAP alive across alpha-only hover updates.
     private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
     private readonly UiFontCache fontCache = new UiFontCache();
@@ -358,6 +360,7 @@ internal sealed class PowerThermalForm : Form
 
     private void OnEffectivePowerModeChanged(int mode, IntPtr context)
     {
+        WidgetSettings.InvalidateEffectivePerformanceModeCache();
         RequestSamplingFromAnyThread(true, false);
     }
 
@@ -570,8 +573,9 @@ internal sealed class PowerThermalForm : Form
     private SamplingPolicy GetSamplingPolicy()
     {
         // "Smooth" is the legacy persisted enum name for the user-facing Performance mode.
+        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
         SamplingPolicy policy = new SamplingPolicy();
-        if (this.currentSettings.PerformanceMode == WidgetPerformanceMode.Smooth)
+        if (mode == WidgetPerformanceMode.Smooth)
         {
             policy.PowerIntervalMs = 1000;
             policy.ThermalIntervalMs = 2000;
@@ -581,7 +585,7 @@ internal sealed class PowerThermalForm : Form
             return policy;
         }
 
-        if (this.currentSettings.PerformanceMode == WidgetPerformanceMode.BatterySaver)
+        if (mode == WidgetPerformanceMode.BatterySaver)
         {
             policy.PowerIntervalMs = 5000;
             policy.ThermalIntervalMs = 10000;
@@ -767,12 +771,21 @@ internal sealed class PowerThermalForm : Form
             PositionPowerThermalWindow();
         }
 
+        bool positionChanged = false;
+        if (!this.hiddenForFullscreen &&
+            this.Visible &&
+            BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+        {
+            PositionPowerThermalWindow();
+            positionChanged = true;
+        }
+
         lock (this.samplingSync)
         {
             this.samplingWorkerRunning = false;
         }
 
-        if (contentChanged || animatedWarning || sizeChanged)
+        if (contentChanged || animatedWarning || sizeChanged || positionChanged)
         {
             RenderLayeredWindow();
         }
@@ -847,7 +860,7 @@ internal sealed class PowerThermalForm : Form
     {
         if (!this.sharedInteractionPolling ||
             this.hiddenForFullscreen ||
-            (!this.currentSettings.HoverOpacityEnabled && !NeedsClickThroughPolling()))
+            (!IsHoverOpacityRuntimeEnabled() && !NeedsClickThroughPolling()))
         {
             return false;
         }
@@ -858,7 +871,7 @@ internal sealed class PowerThermalForm : Form
     private void UpdateHoverAnimationTimer()
     {
         if (!this.hiddenForFullscreen &&
-            (this.currentSettings.HoverOpacityEnabled || NeedsClickThroughPolling()))
+            (IsHoverOpacityRuntimeEnabled() || NeedsClickThroughPolling()))
         {
             if (this.sharedInteractionPolling)
             {
@@ -912,10 +925,15 @@ internal sealed class PowerThermalForm : Form
 
     private bool IsHoverOpacityTargetActive()
     {
-        return this.currentSettings.HoverOpacityEnabled &&
+        return IsHoverOpacityRuntimeEnabled() &&
             !this.hiddenForFullscreen &&
             this.Visible &&
-            this.Bounds.Contains(Cursor.Position);
+            (this.currentSettings.ForceHoverOpacityActive || this.Bounds.Contains(Cursor.Position));
+    }
+
+    private bool IsHoverOpacityRuntimeEnabled()
+    {
+        return this.currentSettings.HoverOpacityEnabled || this.currentSettings.ForceHoverOpacityActive;
     }
 
     private void PositionPowerThermalWindow()
@@ -952,6 +970,13 @@ internal sealed class PowerThermalForm : Form
         int baseHeight = Math.Max(WidgetSettings.MinPowerThermalHeight, this.currentSettings.PowerThermalHeight);
         int top = this.currentSettings.PowerThermalBottomY - baseHeight + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
+        Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
+            new Point(left, top),
+            this.Size,
+            workArea,
+            BurnInProtection.PowerThermalSalt);
+        left = shiftedLocation.X;
+        top = shiftedLocation.Y;
         this.Location = new Point(left, top);
 
         NativeMethods.SetWindowPos(
@@ -1180,8 +1205,7 @@ internal sealed class PowerThermalForm : Form
 
     private void ConfigureGraphics(Graphics g)
     {
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+        BurnInProtection.ConfigureGraphics(g, IsBurnInColorProtectionActive());
     }
 
     private void DrawBackground(Graphics g)
@@ -1321,7 +1345,7 @@ internal sealed class PowerThermalForm : Form
         bool charging = reading.StatusKnown && reading.IsCharging;
         string labelText = charging ? "Charging" : "Power";
         string valueText = reading.WattsKnown ? FormatWatts(reading.Watts) : "-- W";
-        Color accent = charging ? DesignTokens.Colors.SuccessText : DesignTokens.Colors.DangerText;
+        Color accent = GetPowerModuleTextColor(charging);
         RectangleF textBounds = new RectangleF(bounds.Left + S(8), bounds.Top, Math.Max(4.0f, bounds.Width - S(16)), bounds.Height);
         RectangleF labelRect = new RectangleF(textBounds.Left, textBounds.Top, textBounds.Width, textBounds.Height * 0.48f);
         RectangleF valueRect = new RectangleF(textBounds.Left, textBounds.Top + textBounds.Height * 0.45f, textBounds.Width, textBounds.Height * 0.55f);
@@ -1345,9 +1369,8 @@ internal sealed class PowerThermalForm : Form
         bool charging = reading.StatusKnown && reading.IsCharging;
         bool pluggedIn = reading.PluggedInKnown && reading.IsPluggedIn;
         Color accent = GetBatteryPercentColor(known, percent);
-        Color borderColor = pluggedIn
-            ? Color.FromArgb(246, 248, 250)
-            : Color.FromArgb(190, 195, 199);
+        bool hiddenColorProtectionActive = IsBurnInColorProtectionActive();
+        Color borderColor = GetBatteryBorderColor(pluggedIn, hiddenColorProtectionActive);
         string powerModeText = reading.SystemPowerModeKnown ? reading.SystemPowerModeText : "--";
 
         float bodyWidth = Math.Max(S(46), Math.Min(bounds.Width - S(12), bounds.Width * 0.64f));
@@ -1362,9 +1385,12 @@ internal sealed class PowerThermalForm : Form
         RectangleF nubRect = new RectangleF(bodyRect.Right + S(2), bodyRect.Top + (bodyHeight - nubHeight) / 2.0f, nubWidth, nubHeight);
         float radius = Math.Min(S(4), bodyHeight / 3.0f);
 
+        Color bodySurfaceColor = hiddenColorProtectionActive
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.AccentDeep, 46)
+            : DesignTokens.White(28);
         using (GraphicsPath bodyPath = RoundedRectangle(bodyRect, radius))
         using (GraphicsPath nubPath = RoundedRectangle(nubRect, Math.Min(radius, nubRect.Height / 2.0f)))
-        using (SolidBrush surfaceBrush = new SolidBrush(DesignTokens.White(28)))
+        using (SolidBrush surfaceBrush = new SolidBrush(bodySurfaceColor))
         using (SolidBrush nubBrush = new SolidBrush(DesignTokens.WithAlpha(borderColor, pluggedIn ? 210 : 145)))
         using (Pen borderPen = new Pen(DesignTokens.WithAlpha(borderColor, pluggedIn ? 245 : 180), Math.Max(1.0f, this.scale)))
         {
@@ -1387,7 +1413,7 @@ internal sealed class PowerThermalForm : Form
         string percentText = known ? percent.ToString(CultureInfo.InvariantCulture) + "%" : "--";
         bool batteryCarePauseActive = reading.BatteryCarePauseKnown && reading.BatteryCarePauseActive;
         Font percentFont = this.fontCache.GetUi(Math.Max(8.0f, Math.Min(bodyHeight * 0.58f, bodyWidth * 0.20f)), FontStyle.Bold);
-        using (SolidBrush textBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
+        using (SolidBrush textBrush = new SolidBrush(GetHiddenSafeNeutralColor(DesignTokens.Colors.TextStrong, DesignTokens.Colors.AccentAlt)))
         {
             if (batteryCarePauseActive)
             {
@@ -1420,20 +1446,51 @@ internal sealed class PowerThermalForm : Form
         }
     }
 
+    private Color GetPowerModuleTextColor(bool charging)
+    {
+        if (IsBurnInColorProtectionActive())
+        {
+            return charging ? DesignTokens.Colors.Success : DesignTokens.Colors.DangerStrong;
+        }
+
+        return charging ? DesignTokens.Colors.SuccessText : DesignTokens.Colors.DangerText;
+    }
+
+    private Color GetBatteryBorderColor(bool pluggedIn, bool hiddenColorProtectionActive)
+    {
+        if (hiddenColorProtectionActive)
+        {
+            return pluggedIn ? DesignTokens.Colors.Accent : DesignTokens.Colors.AccentAlt;
+        }
+
+        return pluggedIn
+            ? Color.FromArgb(246, 248, 250)
+            : Color.FromArgb(190, 195, 199);
+    }
+
+    private Color GetHiddenSafeNeutralColor(Color normal, Color hidden)
+    {
+        return IsBurnInColorProtectionActive() ? hidden : normal;
+    }
+
     private Color GetSystemPowerModeColor(string powerModeText)
     {
         if (string.Equals(powerModeText, "性能", StringComparison.OrdinalIgnoreCase))
         {
-            return Color.FromArgb(255, 166, 174);
+            return IsBurnInColorProtectionActive()
+                ? DesignTokens.Colors.DangerStrong
+                : Color.FromArgb(255, 166, 174);
         }
 
         if (string.Equals(powerModeText, "省电", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(powerModeText, "节能", StringComparison.OrdinalIgnoreCase))
         {
-            return Color.FromArgb(134, 238, 150);
+            return IsBurnInColorProtectionActive()
+                ? DesignTokens.Colors.Success
+                : Color.FromArgb(134, 238, 150);
         }
 
-        return DesignTokens.Colors.TextStrong;
+        return GetHiddenSafeNeutralColor(DesignTokens.Colors.TextStrong, DesignTokens.Colors.Accent);
     }
 
     private void DrawBatteryCarePauseBadge(Graphics g, RectangleF rect)
@@ -1450,9 +1507,10 @@ internal sealed class PowerThermalForm : Form
             body.Top + body.Height * 0.28f,
             size * 0.10f,
             body.Height * 0.44f);
+        Color outlineColor = GetHiddenSafeNeutralColor(DesignTokens.White(246), DesignTokens.Colors.Accent);
         using (GraphicsPath bodyPath = RoundedRectangle(body, Math.Max(1.0f, size * 0.08f)))
         using (GraphicsPath capPath = RoundedRectangle(cap, Math.Max(1.0f, size * 0.04f)))
-        using (Pen pen = new Pen(DesignTokens.White(246), stroke))
+        using (Pen pen = new Pen(outlineColor, stroke))
         using (SolidBrush accentBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 255)))
         {
             pen.LineJoin = LineJoin.Round;
@@ -1481,6 +1539,36 @@ internal sealed class PowerThermalForm : Form
 
     private Color GetBatteryPercentColor(bool known, int percent)
     {
+        if (IsBurnInColorProtectionActive())
+        {
+            if (!known)
+            {
+                return DesignTokens.Colors.AccentAlt;
+            }
+
+            if (percent >= 97)
+            {
+                return DesignTokens.Colors.Accent;
+            }
+
+            if (percent >= 75)
+            {
+                return DesignTokens.Colors.Success;
+            }
+
+            if (percent >= 50)
+            {
+                return DesignTokens.Colors.Warning;
+            }
+
+            if (percent >= 30)
+            {
+                return DesignTokens.Colors.WarningDeep;
+            }
+
+            return DesignTokens.Colors.DangerStrong;
+        }
+
         if (!known)
         {
             return DesignTokens.Colors.SubtleText;
@@ -1571,10 +1659,11 @@ internal sealed class PowerThermalForm : Form
     {
         float radius = Math.Min(rect.Height / 2.0f, S(8));
         int redAlpha = GetThermalRedAlpha(celsius);
+        Color borderColor = GetHiddenSafeNeutralColor(DesignTokens.White(45), DesignTokens.Colors.AccentAlt);
         using (GraphicsPath path = RoundedRectangle(rect, radius))
         using (SolidBrush baseBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.ThermalChipSurface, 160)))
         using (SolidBrush redBrush = new SolidBrush(DesignTokens.DangerStrong(redAlpha)))
-        using (Pen border = new Pen(DesignTokens.White(45), Math.Max(1.0f, this.scale)))
+        using (Pen border = new Pen(borderColor, Math.Max(1.0f, this.scale)))
         {
             g.FillPath(baseBrush, path);
             g.FillPath(redBrush, path);
@@ -1594,7 +1683,7 @@ internal sealed class PowerThermalForm : Form
 
         RectangleF textRect = new RectangleF(rect.Left + S(5), rect.Top, Math.Max(4, rect.Width - S(10)), rect.Height);
 
-        using (SolidBrush textBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
+        using (SolidBrush textBrush = new SolidBrush(GetHiddenSafeNeutralColor(DesignTokens.Colors.TextStrong, DesignTokens.Colors.Accent)))
         {
             DrawFittedText(g, text, font, textBrush, textRect, StringAlignment.Center);
         }
@@ -2157,6 +2246,26 @@ internal sealed class PowerThermalForm : Form
         }
     }
 
+    internal static string ReadCurrentSystemPowerModeText()
+    {
+        bool pluggedInKnown = false;
+        bool pluggedIn = false;
+        try
+        {
+            PowerLineStatus lineStatus = SystemInformation.PowerStatus.PowerLineStatus;
+            if (lineStatus != PowerLineStatus.Unknown)
+            {
+                pluggedInKnown = true;
+                pluggedIn = lineStatus == PowerLineStatus.Online;
+            }
+        }
+        catch
+        {
+        }
+
+        return ReadSystemPowerModeText(pluggedInKnown, pluggedIn);
+    }
+
     private static string ReadSystemPowerModeText(bool pluggedInKnown, bool pluggedIn)
     {
         string overlayMode = ReadPowerOverlayModeText(pluggedInKnown, pluggedIn);
@@ -2450,12 +2559,22 @@ internal sealed class PowerThermalForm : Form
         try
         {
             EnsureRenderBuffer();
-            bool refreshNativeBitmap = redrawContent || !this.renderBufferValid;
+            bool burnInColorProtectionActive = IsBurnInColorProtectionActive();
+            bool refreshNativeBitmap =
+                redrawContent ||
+                !this.renderBufferValid ||
+                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive;
             if (refreshNativeBitmap)
             {
                 this.renderGraphics.Clear(Color.Transparent);
                 DrawBackground(this.renderGraphics);
                 DrawContentLayer(this.renderGraphics);
+                if (burnInColorProtectionActive)
+                {
+                    BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
+                }
+
+                this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
                 this.renderBufferValid = true;
             }
 
@@ -2502,6 +2621,13 @@ internal sealed class PowerThermalForm : Form
         this.renderBufferValid = false;
     }
 
+    private bool IsBurnInColorProtectionActive()
+    {
+        return BurnInProtection.ShouldApplyHiddenModeColorProtection(
+            this.currentSettings,
+            IsHoverOpacityTargetActive());
+    }
+
     private void DisposeRenderBuffer()
     {
         if (this.renderGraphics != null)
@@ -2545,7 +2671,7 @@ internal sealed class PowerThermalForm : Form
 
     private int ApplyHoverTransparencyTarget(int alpha)
     {
-        if (!this.currentSettings.HoverOpacityEnabled || this.hoverOpacityProgress <= 0.0)
+        if (!IsHoverOpacityRuntimeEnabled() || this.hoverOpacityProgress <= 0.0)
         {
             return alpha;
         }

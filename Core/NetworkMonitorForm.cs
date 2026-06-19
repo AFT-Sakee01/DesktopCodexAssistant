@@ -18,6 +18,10 @@ internal sealed class NetworkMonitorForm : Form
     private float scale;
     private bool hiddenForFullscreen;
     private bool layeredUpdateFailureLogged;
+    private bool cloudEndpointCheckingBlink;
+    private string cloudEndpointAlertSignature = string.Empty;
+    private int cloudEndpointAlertIndex;
+    private bool cloudEndpointAlertNamePhase = true;
     private double hoverOpacityProgress;
     private DateTime hoverOpacityLastUtc;
     private bool sharedInteractionPolling;
@@ -28,6 +32,8 @@ internal sealed class NetworkMonitorForm : Form
     private Bitmap contentBitmap;
     private Graphics contentGraphics;
     private bool renderBufferValid;
+    private bool lastRenderedBurnInColorProtectionActive;
+    private long burnInShiftSlot = long.MinValue;
     private readonly Dictionary<string, Font> fontCache = new Dictionary<string, Font>(StringComparer.Ordinal);
     // The native surface keeps the HBITMAP alive across alpha-only hover updates.
     private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
@@ -233,7 +239,14 @@ internal sealed class NetworkMonitorForm : Form
             // The reader owns I/O; this timer consumes snapshots and redraws only visible changes.
             NetworkMonitorSnapshot nextSnapshot = this.reader.GetSnapshot(this.currentSettings);
             bool displayChanged = !HasSameDisplayData(this.snapshot, nextSnapshot);
+            bool blinkChanged = HasCheckingCloudEndpoint(nextSnapshot);
+            if (blinkChanged)
+            {
+                this.cloudEndpointCheckingBlink = !this.cloudEndpointCheckingBlink;
+            }
+
             this.snapshot = nextSnapshot;
+            bool alertChanged = AdvanceCloudEndpointAlertRotation();
             Size desiredSize = GetDesiredSize();
             bool sizeChanged = false;
             if (this.Size != desiredSize)
@@ -243,7 +256,16 @@ internal sealed class NetworkMonitorForm : Form
                 sizeChanged = true;
             }
 
-            if (!this.hiddenForFullscreen && this.Visible && (displayChanged || sizeChanged))
+            bool positionChanged = false;
+            if (!this.hiddenForFullscreen &&
+                this.Visible &&
+                BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+            {
+                PositionNetworkMonitorWindow();
+                positionChanged = true;
+            }
+
+            if (!this.hiddenForFullscreen && this.Visible && (displayChanged || sizeChanged || positionChanged || blinkChanged || alertChanged))
             {
                 RenderLayeredWindow();
             }
@@ -326,7 +348,7 @@ internal sealed class NetworkMonitorForm : Form
     {
         if (!this.sharedInteractionPolling ||
             this.hiddenForFullscreen ||
-            (!this.currentSettings.HoverOpacityEnabled && !NeedsClickThroughPolling()))
+            (!IsHoverOpacityRuntimeEnabled() && !NeedsClickThroughPolling()))
         {
             return false;
         }
@@ -337,7 +359,7 @@ internal sealed class NetworkMonitorForm : Form
     private void UpdateHoverAnimationTimer()
     {
         if (!this.hiddenForFullscreen &&
-            (this.currentSettings.HoverOpacityEnabled || NeedsClickThroughPolling()))
+            (IsHoverOpacityRuntimeEnabled() || NeedsClickThroughPolling()))
         {
             if (this.sharedInteractionPolling)
             {
@@ -391,10 +413,15 @@ internal sealed class NetworkMonitorForm : Form
 
     private bool IsHoverOpacityTargetActive()
     {
-        return this.currentSettings.HoverOpacityEnabled &&
+        return IsHoverOpacityRuntimeEnabled() &&
             !this.hiddenForFullscreen &&
             this.Visible &&
-            this.Bounds.Contains(Cursor.Position);
+            (this.currentSettings.ForceHoverOpacityActive || this.Bounds.Contains(Cursor.Position));
+    }
+
+    private bool IsHoverOpacityRuntimeEnabled()
+    {
+        return this.currentSettings.HoverOpacityEnabled || this.currentSettings.ForceHoverOpacityActive;
     }
 
     private void ApplyClickThroughStyle()
@@ -467,6 +494,13 @@ internal sealed class NetworkMonitorForm : Form
         int baseHeight = Math.Max(WidgetSettings.MinNetworkMonitorHeight, this.currentSettings.NetworkMonitorHeight);
         int top = this.currentSettings.NetworkMonitorBottomY - baseHeight + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
+        Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
+            new Point(left, top),
+            this.Size,
+            workArea,
+            BurnInProtection.NetworkMonitorSalt);
+        left = shiftedLocation.X;
+        top = shiftedLocation.Y;
         this.Location = new Point(left, top);
 
         NativeMethods.SetWindowPos(
@@ -502,8 +536,7 @@ internal sealed class NetworkMonitorForm : Form
 
     private void ConfigureGraphics(Graphics g)
     {
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+        BurnInProtection.ConfigureGraphics(g, IsBurnInColorProtectionActive());
     }
 
     private void DrawBackground(Graphics g)
@@ -585,10 +618,10 @@ internal sealed class NetworkMonitorForm : Form
 
         float rowTop = header.Bottom + S(1);
         float rowHeight = Math.Max(S(12), (content.Bottom - rowTop) / 7.0f);
-        DrawInfoRow(g, 0, "IF", BuildInterfaceText(), rowTop, rowHeight, DesignTokens.Colors.TextStrong);
-        DrawInfoRow(g, 1, "IP4", EmptyToDash(this.snapshot.IPv4), rowTop, rowHeight, DesignTokens.Colors.TextStrong);
-        DrawInfoRow(g, 2, "IP6", EmptyToDash(this.snapshot.IPv6), rowTop, rowHeight, DesignTokens.Colors.TextStrong);
-        DrawInfoRow(g, 3, "DNS", EmptyToDash(this.snapshot.DnsServers), rowTop, rowHeight, DesignTokens.Colors.TextStrong);
+        DrawInfoRow(g, 0, "IP4", EmptyToDash(this.snapshot.IPv4), rowTop, rowHeight, DesignTokens.Colors.TextStrong);
+        DrawInfoRow(g, 1, "IP6", EmptyToDash(this.snapshot.IPv6), rowTop, rowHeight, DesignTokens.Colors.TextStrong);
+        DrawInfoRow(g, 2, "IF", BuildInterfaceText(), rowTop, rowHeight, DesignTokens.Colors.TextStrong);
+        DrawDnsRow(g, 3, rowTop, rowHeight);
         DrawInfoRow(g, 4, "WIFI", BuildWifiText(), rowTop, rowHeight, this.snapshot.IsWifi ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted);
         DrawInfoRow(g, 5, "PING", BuildConnectivityText(), rowTop, rowHeight, GetConnectivityColor());
         DrawInfoRow(g, 6, "GFW", BuildGfwProbeText(), rowTop, rowHeight, GetGfwProbeColor());
@@ -597,30 +630,401 @@ internal sealed class NetworkMonitorForm : Form
     private void DrawHeader(Graphics g, RectangleF rect)
     {
         NetworkAccessState accessState = GetDisplayAccessState();
-        Color statusColor = GetAccessStateColor(accessState);
+        string statusText = GetHeaderStatusText(accessState);
+        Color statusColor = GetHeaderStatusColor(accessState);
         Font titleFont = GetCachedUiFont(Math.Max(10.0f, rect.Height * 0.56f), FontStyle.Bold);
         Font statusFont = GetCachedUiFont(Math.Max(8.0f, rect.Height * 0.42f), FontStyle.Bold);
         using (SolidBrush titleBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
         using (SolidBrush statusBrush = new SolidBrush(statusColor))
         using (SolidBrush publicBrush = new SolidBrush(this.snapshot.PublicIpKnown ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted))
         {
-            RectangleF titleRect = new RectangleF(rect.Left, rect.Top, rect.Width * 0.30f, rect.Height);
+            RectangleF titleRect = new RectangleF(rect.Left, rect.Top, rect.Width * 0.26f, rect.Height);
             DrawFittedText(g, "NETWORK", titleFont, titleBrush, titleRect, StringAlignment.Near);
 
-            RectangleF statusRect = new RectangleF(titleRect.Right + S(4), rect.Top, rect.Width * 0.24f, rect.Height);
-            DrawFittedText(g, GetAccessStateText(accessState), statusFont, statusBrush, statusRect, StringAlignment.Near);
-
+            RectangleF statusRect = new RectangleF(titleRect.Right + S(4), rect.Top, rect.Width * 0.36f, rect.Height);
+            CloudEndpointAlert alert = GetCloudEndpointAlert(accessState);
             string publicIp = "公网 " + (this.snapshot.PublicIpRefreshing && !this.snapshot.PublicIpKnown ? "..." : EmptyToDash(this.snapshot.PublicIp));
-            RectangleF publicRect = new RectangleF(statusRect.Right, rect.Top, rect.Right - statusRect.Right, rect.Height);
+            RectangleF rightTop = new RectangleF(statusRect.Right, rect.Top, rect.Right - statusRect.Right, rect.Height);
+            RectangleF publicRect = rightTop;
+            RectangleF statusTextRect = statusRect;
+            if (alert.Active)
+            {
+                float gap = S(4);
+                float statusWidth = Math.Min(statusRect.Width, Math.Max(S(38), g.MeasureString(statusText, statusFont).Width + S(2)));
+                float publicWidth = Math.Min(rightTop.Width, Math.Max(S(34), g.MeasureString(publicIp, statusFont).Width + S(2)));
+                float alertLeft = statusRect.Left + statusWidth + gap;
+                float alertRight = Math.Max(alertLeft, rect.Right - publicWidth - gap);
+                statusTextRect = new RectangleF(statusRect.Left, statusRect.Top, statusWidth, statusRect.Height);
+                RectangleF alertRect = new RectangleF(alertLeft, statusRect.Top, Math.Max(0.0f, alertRight - alertLeft), statusRect.Height);
+                using (SolidBrush alertBrush = new SolidBrush(alert.Color))
+                {
+                    DrawFixedText(g, alert.Text, statusFont, alertBrush, alertRect, StringAlignment.Near);
+                }
+            }
+
+            DrawFittedText(g, statusText, statusFont, statusBrush, statusTextRect, StringAlignment.Near);
             DrawFittedText(g, publicIp, statusFont, publicBrush, publicRect, StringAlignment.Far);
         }
+    }
+
+    private void DrawCloudEndpointTiles(Graphics g, RectangleF rect, NetworkAccessState accessState)
+    {
+        CloudEndpointSnapshot[] endpoints = GetDisplayCloudEndpoints();
+        if (endpoints.Length == 0 || rect.Width <= 0 || rect.Height <= 0)
+        {
+            return;
+        }
+
+        float gap = GetCloudEndpointTileGap();
+        float tile = GetCloudEndpointTileSize(rect.Height);
+        float total = tile * endpoints.Length + gap * (endpoints.Length - 1);
+        if (total > rect.Width)
+        {
+            tile = Math.Max(4.0f, (rect.Width - gap * (endpoints.Length - 1)) / endpoints.Length);
+            total = tile * endpoints.Length + gap * (endpoints.Length - 1);
+        }
+
+        float x = rect.Right - total;
+        float y = rect.Top + Math.Max(0.0f, (rect.Height - tile) * 0.5f);
+        Font tileFont = GetCachedUiFont(Math.Max(7.0f, tile * 0.62f), FontStyle.Bold);
+        using (SolidBrush textBrush = new SolidBrush(Color.FromArgb(76, 82, 90)))
+        {
+            for (int i = 0; i < endpoints.Length; i++)
+            {
+                CloudEndpointSnapshot endpoint = endpoints[i] ?? new CloudEndpointSnapshot();
+                RectangleF tileRect = new RectangleF(x + i * (tile + gap), y, tile, tile);
+                using (GraphicsPath tilePath = RoundedRectangle(tileRect, Math.Max(1.0f, S(3))))
+                using (SolidBrush tileBrush = new SolidBrush(GetCloudEndpointBackColor(endpoint, accessState)))
+                {
+                    g.FillPath(tileBrush, tilePath);
+                }
+
+                DrawCloudEndpointTileText(g, GetCloudEndpointTileLabel(endpoint), tileFont, textBrush, tileRect);
+            }
+        }
+    }
+
+    private void DrawCloudEndpointTileText(Graphics g, string text, Font baseFont, Brush brush, RectangleF rect)
+    {
+        using (StringFormat format = new StringFormat())
+        {
+            format.Alignment = StringAlignment.Center;
+            format.LineAlignment = StringAlignment.Center;
+            format.Trimming = StringTrimming.None;
+            format.FormatFlags = StringFormatFlags.NoWrap;
+
+            Font drawFont = baseFont;
+            float size = baseFont.Size;
+            float maxWidth = Math.Max(1.0f, rect.Width * 0.94f);
+            while (size > 4.5f * this.scale && g.MeasureString(text, drawFont).Width > maxWidth)
+            {
+                size -= 0.5f * this.scale;
+                drawFont = GetCachedUiFont(size, baseFont.Style);
+            }
+
+            g.DrawString(text, drawFont, brush, rect, format);
+        }
+    }
+
+    private static string GetCloudEndpointTileLabel(CloudEndpointSnapshot endpoint)
+    {
+        if (endpoint == null)
+        {
+            return "--";
+        }
+
+        if (string.Equals(endpoint.Key, "github", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Gi";
+        }
+
+        if (string.Equals(endpoint.Key, "aws", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Aw";
+        }
+
+        return EmptyToDash(endpoint.ShortLabel);
+    }
+
+    private CloudEndpointSnapshot[] GetDisplayCloudEndpoints()
+    {
+        GfwProbeSnapshot gfw = this.snapshot == null ? null : this.snapshot.GfwProbe;
+        if (gfw == null || gfw.CloudEndpoints == null || gfw.CloudEndpoints.Length == 0)
+        {
+            return CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Unknown);
+        }
+
+        return gfw.CloudEndpoints;
+    }
+
+    private Color GetCloudEndpointBackColor(CloudEndpointSnapshot endpoint, NetworkAccessState accessState)
+    {
+        CloudEndpointStatus status = GetEffectiveCloudEndpointStatus(endpoint, accessState);
+        if (status == CloudEndpointStatus.Normal)
+        {
+            return endpoint != null && endpoint.Domestic ? DesignTokens.Colors.SuccessText : DesignTokens.Colors.Success;
+        }
+
+        if (status == CloudEndpointStatus.Slow || status == CloudEndpointStatus.Checking)
+        {
+            if (status == CloudEndpointStatus.Checking && this.cloudEndpointCheckingBlink)
+            {
+                return endpoint != null && endpoint.Domestic ? DesignTokens.Colors.SuccessText : DesignTokens.Colors.Success;
+            }
+
+            return DesignTokens.Colors.Warning;
+        }
+
+        if (status == CloudEndpointStatus.Down)
+        {
+            return DesignTokens.Colors.Danger;
+        }
+
+        if (status == CloudEndpointStatus.Abnormal)
+        {
+            return DesignTokens.Colors.WarningDeep;
+        }
+
+        return Color.FromArgb(78, 84, 92);
+    }
+
+    private CloudEndpointStatus GetEffectiveCloudEndpointStatus(CloudEndpointSnapshot endpoint, NetworkAccessState accessState)
+    {
+        if (endpoint == null || accessState != NetworkAccessState.Online)
+        {
+            return CloudEndpointStatus.Unknown;
+        }
+
+        if (endpoint.Status == CloudEndpointStatus.Checking)
+        {
+            return CloudEndpointStatus.Checking;
+        }
+
+        return endpoint.Status;
+    }
+
+    private CloudEndpointAlert GetCloudEndpointAlert(NetworkAccessState accessState)
+    {
+        if (HasCheckingCloudEndpoint(this.snapshot))
+        {
+            return new CloudEndpointAlert
+            {
+                Active = true,
+                Text = "云服务测试中",
+                Color = DesignTokens.Colors.Warning
+            };
+        }
+
+        CloudEndpointAlertCandidate[] candidates = GetCloudEndpointAlertCandidates(accessState);
+        if (candidates.Length == 0)
+        {
+            return new CloudEndpointAlert();
+        }
+
+        int index = Math.Max(0, Math.Min(this.cloudEndpointAlertIndex, candidates.Length - 1));
+        CloudEndpointAlertCandidate candidate = candidates[index];
+        return new CloudEndpointAlert
+        {
+            Active = true,
+            Text = (this.cloudEndpointAlertNamePhase ? candidate.Name : candidate.Reason) + "!",
+            Color = candidate.Color
+        };
+    }
+
+    private bool AdvanceCloudEndpointAlertRotation()
+    {
+        CloudEndpointAlertCandidate[] candidates = GetCloudEndpointAlertCandidates(GetDisplayAccessState());
+        if (candidates.Length == 0)
+        {
+            bool hadMultiAlert = !string.IsNullOrEmpty(this.cloudEndpointAlertSignature);
+            this.cloudEndpointAlertSignature = string.Empty;
+            this.cloudEndpointAlertIndex = 0;
+            this.cloudEndpointAlertNamePhase = true;
+            return hadMultiAlert;
+        }
+
+        string signature = BuildCloudEndpointAlertSignature(candidates);
+        if (!string.Equals(signature, this.cloudEndpointAlertSignature, StringComparison.Ordinal))
+        {
+            this.cloudEndpointAlertSignature = signature;
+            this.cloudEndpointAlertIndex = 0;
+            this.cloudEndpointAlertNamePhase = true;
+            return true;
+        }
+
+        if (this.cloudEndpointAlertNamePhase)
+        {
+            this.cloudEndpointAlertNamePhase = false;
+        }
+        else
+        {
+            this.cloudEndpointAlertNamePhase = true;
+            this.cloudEndpointAlertIndex = (this.cloudEndpointAlertIndex + 1) % candidates.Length;
+        }
+
+        return true;
+    }
+
+    private CloudEndpointAlertCandidate[] GetCloudEndpointAlertCandidates(NetworkAccessState accessState)
+    {
+        CloudEndpointSnapshot[] endpoints = GetDisplayCloudEndpoints();
+        List<CloudEndpointAlertCandidate> candidates = new List<CloudEndpointAlertCandidate>();
+        for (int i = 0; i < endpoints.Length; i++)
+        {
+            CloudEndpointSnapshot endpoint = endpoints[i];
+            CloudEndpointStatus status = GetEffectiveCloudEndpointStatus(endpoint, accessState);
+            if (status != CloudEndpointStatus.Down && status != CloudEndpointStatus.Abnormal)
+            {
+                continue;
+            }
+
+            candidates.Add(new CloudEndpointAlertCandidate
+            {
+                Key = endpoint == null ? string.Empty : endpoint.Key,
+                Status = status,
+                Name = GetCloudEndpointAlertName(endpoint),
+                Reason = GetCloudEndpointAlertReason(endpoint, status),
+                Color = status == CloudEndpointStatus.Down
+                    ? DesignTokens.Colors.Danger
+                    : DesignTokens.Colors.WarningDeep
+            });
+        }
+
+        return candidates.ToArray();
+    }
+
+    private static string BuildCloudEndpointAlertSignature(CloudEndpointAlertCandidate[] candidates)
+    {
+        if (candidates == null || candidates.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        System.Text.StringBuilder builder = new System.Text.StringBuilder();
+        for (int i = 0; i < candidates.Length; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append("|");
+            }
+
+            builder.Append(candidates[i].Key);
+            builder.Append(":");
+            builder.Append(candidates[i].Status.ToString());
+            builder.Append(":");
+            builder.Append(candidates[i].Name);
+            builder.Append(":");
+            builder.Append(candidates[i].Reason);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string GetCloudEndpointAlertName(CloudEndpointSnapshot endpoint)
+    {
+        if (endpoint == null)
+        {
+            return "Cloud";
+        }
+
+        if (!string.IsNullOrWhiteSpace(endpoint.AlertName))
+        {
+            return endpoint.AlertName.Trim();
+        }
+
+        if (string.Equals(endpoint.Key, "cloudflare", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Cloudflare";
+        }
+
+        if (string.Equals(endpoint.Key, "aws", StringComparison.OrdinalIgnoreCase))
+        {
+            return "AWS";
+        }
+
+        if (string.Equals(endpoint.Key, "google", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Google Cloud";
+        }
+
+        if (string.Equals(endpoint.Key, "github", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Github";
+        }
+
+        if (string.Equals(endpoint.Key, "aliyun", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Aliyun";
+        }
+
+        if (string.Equals(endpoint.Key, "tencent", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Tencent";
+        }
+
+        return EmptyToDash(endpoint.DisplayName);
+    }
+
+    private static string GetCloudEndpointAlertReason(CloudEndpointSnapshot endpoint, CloudEndpointStatus status)
+    {
+        if (endpoint != null && !string.IsNullOrWhiteSpace(endpoint.AlertReason))
+        {
+            return endpoint.AlertReason.Trim();
+        }
+
+        if (status == CloudEndpointStatus.Down)
+        {
+            return "无法连接";
+        }
+
+        if (status == CloudEndpointStatus.Abnormal)
+        {
+            return "状态异常";
+        }
+
+        if (status == CloudEndpointStatus.Slow)
+        {
+            return "延迟过高";
+        }
+
+        return "未知原因";
+    }
+
+    private float GetCloudEndpointTileGap()
+    {
+        return Math.Max(1.0f, S(2));
+    }
+
+    private float GetCloudEndpointTileSize(float rowHeight)
+    {
+        return Math.Min(Math.Max(7.0f, rowHeight * 0.98f), S(20));
+    }
+
+    private float GetCloudEndpointTileStripWidth(float rowHeight)
+    {
+        CloudEndpointSnapshot[] endpoints = GetDisplayCloudEndpoints();
+        if (endpoints.Length == 0)
+        {
+            return 0.0f;
+        }
+
+        float gap = GetCloudEndpointTileGap();
+        float tile = GetCloudEndpointTileSize(rowHeight);
+        float desired = tile * endpoints.Length + gap * (endpoints.Length - 1);
+        float maxWidth = Math.Max(S(72), this.Width * 0.42f);
+        return Math.Min(desired, maxWidth);
     }
 
     private void DrawInfoRow(Graphics g, int row, string label, string value, float rowTop, float rowHeight, Color valueColor)
     {
         float y = rowTop + row * rowHeight;
-        RectangleF labelRect = new RectangleF(S(10), y, S(42), rowHeight);
-        RectangleF valueRect = new RectangleF(labelRect.Right + S(3), y, this.Width - labelRect.Right - S(13), rowHeight);
+        float labelLeft = S(10);
+        RectangleF labelRect = new RectangleF(labelLeft, y, S(42), rowHeight);
+        bool drawCloudTiles = string.Equals(label, "IP4", StringComparison.Ordinal);
+        float cloudWidth = drawCloudTiles ? GetCloudEndpointTileStripWidth(rowHeight) : 0.0f;
+        float cloudGap = drawCloudTiles && cloudWidth > 0.0f ? S(4) : 0.0f;
+        float valueWidth = Math.Max(S(28), this.Width - labelRect.Right - S(13) - cloudWidth - cloudGap);
+        RectangleF valueRect = new RectangleF(labelRect.Right + S(3), y, valueWidth, rowHeight);
         Font labelFont = GetCachedUiFont(Math.Max(8.0f, rowHeight * 0.52f), FontStyle.Bold);
         Font valueFont = GetCachedUiFont(Math.Max(8.5f, rowHeight * 0.58f), FontStyle.Bold);
         using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
@@ -629,6 +1033,234 @@ internal sealed class NetworkMonitorForm : Form
             DrawFittedText(g, label, labelFont, labelBrush, labelRect, StringAlignment.Near);
             DrawFittedText(g, value, valueFont, valueBrush, valueRect, StringAlignment.Near);
         }
+
+        if (drawCloudTiles && cloudWidth > 0.0f)
+        {
+            RectangleF cloudRect = new RectangleF(Math.Max(S(10), this.Width - S(10) - cloudWidth), y, cloudWidth, rowHeight);
+            DrawCloudEndpointTiles(g, cloudRect, GetDisplayAccessState());
+        }
+    }
+
+    private void DrawDnsRow(Graphics g, int row, float rowTop, float rowHeight)
+    {
+        float y = rowTop + row * rowHeight;
+        float labelLeft = S(10);
+        RectangleF labelRect = new RectangleF(labelLeft, y, S(42), rowHeight);
+        RectangleF valueRect = new RectangleF(labelRect.Right + S(3), y, this.Width - labelRect.Right - S(13), rowHeight);
+        Font labelFont = GetCachedUiFont(Math.Max(8.0f, rowHeight * 0.52f), FontStyle.Bold);
+        Font valueFont = GetCachedUiFont(Math.Max(8.5f, rowHeight * 0.58f), FontStyle.Bold);
+        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
+        {
+            DrawFittedText(g, "DNS", labelFont, labelBrush, labelRect, StringAlignment.Near);
+        }
+
+        DnsDisplaySegment[] segments = BuildDnsDisplaySegments();
+        DrawDnsSegments(g, segments, valueFont, valueRect);
+    }
+
+    private void DrawDnsSegments(Graphics g, DnsDisplaySegment[] segments, Font baseFont, RectangleF rect)
+    {
+        if (segments == null || segments.Length == 0)
+        {
+            using (SolidBrush brush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
+            {
+                DrawFittedText(g, "--", baseFont, brush, rect, StringAlignment.Near);
+            }
+
+            return;
+        }
+
+        Font drawFont = baseFont;
+        float size = baseFont.Size;
+        float totalWidth = MeasureDnsSegments(g, segments, drawFont);
+        while (size > 7.0f * this.scale && totalWidth > rect.Width)
+        {
+            size -= 0.7f * this.scale;
+            drawFont = GetCachedUiFont(size, baseFont.Style);
+            totalWidth = MeasureDnsSegments(g, segments, drawFont);
+        }
+
+        RectangleF clip = rect;
+        Region oldClip = g.Clip;
+        try
+        {
+            g.SetClip(clip);
+            float x = rect.Left;
+            using (StringFormat format = new StringFormat())
+            {
+                format.Alignment = StringAlignment.Near;
+                format.LineAlignment = StringAlignment.Center;
+                format.Trimming = StringTrimming.None;
+                format.FormatFlags = StringFormatFlags.NoWrap;
+                for (int i = 0; i < segments.Length; i++)
+                {
+                    DnsDisplaySegment segment = segments[i];
+                    if (segment == null || string.IsNullOrEmpty(segment.Text))
+                    {
+                        continue;
+                    }
+
+                    float width = g.MeasureString(segment.Text, drawFont).Width;
+                    using (SolidBrush brush = new SolidBrush(segment.Color))
+                    {
+                        g.DrawString(segment.Text, drawFont, brush, new RectangleF(x, rect.Top, width + S(2), rect.Height), format);
+                    }
+
+                    x += width;
+                    if (x >= rect.Right)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+        finally
+        {
+            g.Clip = oldClip;
+            oldClip.Dispose();
+        }
+    }
+
+    private float MeasureDnsSegments(Graphics g, DnsDisplaySegment[] segments, Font font)
+    {
+        float width = 0.0f;
+        for (int i = 0; i < segments.Length; i++)
+        {
+            if (segments[i] != null && !string.IsNullOrEmpty(segments[i].Text))
+            {
+                width += g.MeasureString(segments[i].Text, font).Width;
+            }
+        }
+
+        return width;
+    }
+
+    private DnsDisplaySegment[] BuildDnsDisplaySegments()
+    {
+        DnsDisplayItem[] items = BuildDnsDisplayItems();
+        if (items.Length == 0)
+        {
+            return new DnsDisplaySegment[]
+            {
+                new DnsDisplaySegment { Text = "--", Color = DesignTokens.Colors.GlyphMuted }
+            };
+        }
+
+        int visibleCount = Math.Min(3, items.Length);
+        List<DnsDisplaySegment> segments = new List<DnsDisplaySegment>();
+        for (int i = 0; i < visibleCount; i++)
+        {
+            segments.Add(new DnsDisplaySegment
+            {
+                Text = (i == 0 ? string.Empty : ", ") + EmptyToDash(items[i].Address),
+                Color = GetDnsStatusColor(items[i].Status)
+            });
+        }
+
+        int hiddenCount = items.Length - visibleCount;
+        if (hiddenCount > 0)
+        {
+            DnsServerStatus worstHidden = DnsServerStatus.Normal;
+            for (int i = visibleCount; i < items.Length; i++)
+            {
+                if (GetDnsStatusPriority(items[i].Status) > GetDnsStatusPriority(worstHidden))
+                {
+                    worstHidden = items[i].Status;
+                }
+            }
+
+            segments.Add(new DnsDisplaySegment
+            {
+                Text = " +" + hiddenCount.ToString(CultureInfo.InvariantCulture),
+                Color = GetDnsStatusColor(worstHidden)
+            });
+        }
+
+        return segments.ToArray();
+    }
+
+    private DnsDisplayItem[] BuildDnsDisplayItems()
+    {
+        DnsServerSnapshot[] details = this.snapshot == null ? null : this.snapshot.DnsServerDetails;
+        if (details == null || details.Length == 0)
+        {
+            return new DnsDisplayItem[0];
+        }
+
+        List<DnsDisplayItem> items = new List<DnsDisplayItem>();
+        for (int i = 0; i < details.Length; i++)
+        {
+            DnsServerSnapshot detail = details[i];
+            if (detail == null || string.IsNullOrWhiteSpace(detail.Address))
+            {
+                continue;
+            }
+
+            items.Add(new DnsDisplayItem
+            {
+                Address = detail.Address.Trim(),
+                Status = detail.Status,
+                OriginalIndex = i
+            });
+        }
+
+        items.Sort(delegate(DnsDisplayItem left, DnsDisplayItem right)
+        {
+            int priority = GetDnsStatusPriority(right.Status).CompareTo(GetDnsStatusPriority(left.Status));
+            if (priority != 0)
+            {
+                return priority;
+            }
+
+            return left.OriginalIndex.CompareTo(right.OriginalIndex);
+        });
+
+        return items.ToArray();
+    }
+
+    private static int GetDnsStatusPriority(DnsServerStatus status)
+    {
+        if (status == DnsServerStatus.Hijacked)
+        {
+            return 400;
+        }
+
+        if (status == DnsServerStatus.Problem)
+        {
+            return 300;
+        }
+
+        if (status == DnsServerStatus.Unavailable)
+        {
+            return 200;
+        }
+
+        if (status == DnsServerStatus.Unknown)
+        {
+            return 100;
+        }
+
+        return 0;
+    }
+
+    private static Color GetDnsStatusColor(DnsServerStatus status)
+    {
+        if (status == DnsServerStatus.Normal)
+        {
+            return DesignTokens.Colors.SuccessText;
+        }
+
+        if (status == DnsServerStatus.Problem)
+        {
+            return DesignTokens.Colors.Warning;
+        }
+
+        if (status == DnsServerStatus.Hijacked)
+        {
+            return DesignTokens.Colors.Danger;
+        }
+
+        return DesignTokens.Colors.GlyphMuted;
     }
 
     private string BuildInterfaceText()
@@ -772,6 +1404,41 @@ internal sealed class NetworkMonitorForm : Form
         }
 
         return "CHECKING";
+    }
+
+    private string GetHeaderStatusText(NetworkAccessState accessState)
+    {
+        if (accessState == NetworkAccessState.Online && HasFailedGfwProbe())
+        {
+            return "全球互联网不可用";
+        }
+
+        return GetAccessStateText(accessState);
+    }
+
+    private Color GetHeaderStatusColor(NetworkAccessState accessState)
+    {
+        if (accessState == NetworkAccessState.Online && HasFailedGfwProbe())
+        {
+            return DesignTokens.Colors.Warning;
+        }
+
+        return GetAccessStateColor(accessState);
+    }
+
+    private bool HasFailedGfwProbe()
+    {
+        GfwProbeSnapshot gfw = this.snapshot == null ? null : this.snapshot.GfwProbe;
+        if (gfw == null || !gfw.Enabled || !gfw.CheckedAtKnown)
+        {
+            return false;
+        }
+
+        return gfw.Status == GfwProbeStatus.SuspectedDns ||
+            gfw.Status == GfwProbeStatus.SuspectedTcp ||
+            gfw.Status == GfwProbeStatus.SuspectedTlsSni ||
+            gfw.Status == GfwProbeStatus.SuspectedHttp ||
+            gfw.Status == GfwProbeStatus.Inconclusive;
     }
 
     private static Color GetAccessStateColor(NetworkAccessState state)
@@ -919,6 +1586,39 @@ internal sealed class NetworkMonitorForm : Form
         }
     }
 
+    private static void DrawFixedText(Graphics g, string text, Font font, Brush brush, RectangleF rect, StringAlignment alignment)
+    {
+        using (StringFormat format = new StringFormat())
+        {
+            format.Alignment = alignment;
+            format.LineAlignment = StringAlignment.Center;
+            format.Trimming = StringTrimming.EllipsisCharacter;
+            format.FormatFlags = StringFormatFlags.NoWrap;
+
+            g.DrawString(text ?? string.Empty, font, brush, rect, format);
+        }
+    }
+
+    private static bool HasCheckingCloudEndpoint(NetworkMonitorSnapshot snapshot)
+    {
+        GfwProbeSnapshot gfw = snapshot == null ? null : snapshot.GfwProbe;
+        CloudEndpointSnapshot[] endpoints = gfw == null ? null : gfw.CloudEndpoints;
+        if (endpoints == null)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < endpoints.Length; i++)
+        {
+            if (endpoints[i] != null && endpoints[i].Status == CloudEndpointStatus.Checking)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool HasSameDisplayData(NetworkMonitorSnapshot left, NetworkMonitorSnapshot right)
     {
         if (ReferenceEquals(left, right))
@@ -950,11 +1650,45 @@ internal sealed class NetworkMonitorForm : Form
             string.Equals(left.IPv4, right.IPv4, StringComparison.Ordinal) &&
             string.Equals(left.IPv6, right.IPv6, StringComparison.Ordinal) &&
             string.Equals(left.DnsServers, right.DnsServers, StringComparison.Ordinal) &&
+            HasSameDnsServerData(left.DnsServerDetails, right.DnsServerDetails) &&
             string.Equals(left.PublicIp, right.PublicIp, StringComparison.Ordinal) &&
             string.Equals(left.AccessReason, right.AccessReason, StringComparison.Ordinal) &&
             string.Equals(left.ConnectivityTarget, right.ConnectivityTarget, StringComparison.Ordinal) &&
             HasSameWifiData(left.WifiDetails, right.WifiDetails) &&
             HasSameGfwData(left.GfwProbe, right.GfwProbe);
+    }
+
+    private static bool HasSameDnsServerData(DnsServerSnapshot[] left, DnsServerSnapshot[] right)
+    {
+        if (ReferenceEquals(left, right))
+        {
+            return true;
+        }
+
+        if (left == null || right == null || left.Length != right.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < left.Length; i++)
+        {
+            DnsServerSnapshot leftDns = left[i];
+            DnsServerSnapshot rightDns = right[i];
+            if (ReferenceEquals(leftDns, rightDns))
+            {
+                continue;
+            }
+
+            if (leftDns == null || rightDns == null ||
+                leftDns.Status != rightDns.Status ||
+                !string.Equals(leftDns.Address, rightDns.Address, StringComparison.Ordinal) ||
+                !string.Equals(leftDns.Reason, rightDns.Reason, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool HasSameWifiData(WifiConnectionDetails left, WifiConnectionDetails right)
@@ -998,7 +1732,45 @@ internal sealed class NetworkMonitorForm : Form
             left.CheckedAtKnown == right.CheckedAtKnown &&
             left.CheckedAtLocal == right.CheckedAtLocal &&
             string.Equals(left.Detail, right.Detail, StringComparison.Ordinal) &&
-            string.Equals(left.Reason, right.Reason, StringComparison.Ordinal);
+            string.Equals(left.Reason, right.Reason, StringComparison.Ordinal) &&
+            HasSameCloudEndpointData(left.CloudEndpoints, right.CloudEndpoints);
+    }
+
+    private static bool HasSameCloudEndpointData(CloudEndpointSnapshot[] left, CloudEndpointSnapshot[] right)
+    {
+        if (ReferenceEquals(left, right))
+        {
+            return true;
+        }
+
+        if (left == null || right == null || left.Length != right.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < left.Length; i++)
+        {
+            CloudEndpointSnapshot leftEndpoint = left[i];
+            CloudEndpointSnapshot rightEndpoint = right[i];
+            if (ReferenceEquals(leftEndpoint, rightEndpoint))
+            {
+                continue;
+            }
+
+            if (leftEndpoint == null || rightEndpoint == null ||
+                leftEndpoint.Domestic != rightEndpoint.Domestic ||
+                leftEndpoint.Status != rightEndpoint.Status ||
+                !string.Equals(leftEndpoint.Key, rightEndpoint.Key, StringComparison.Ordinal) ||
+                !string.Equals(leftEndpoint.ShortLabel, rightEndpoint.ShortLabel, StringComparison.Ordinal) ||
+                !string.Equals(leftEndpoint.DisplayName, rightEndpoint.DisplayName, StringComparison.Ordinal) ||
+                !string.Equals(leftEndpoint.AlertReason, rightEndpoint.AlertReason, StringComparison.Ordinal) ||
+                !string.Equals(leftEndpoint.AlertName, rightEndpoint.AlertName, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void RenderLayeredWindow()
@@ -1017,11 +1789,21 @@ internal sealed class NetworkMonitorForm : Form
         {
             EnsureRenderBuffer();
             // Alpha-only hover updates can submit the cached bitmap without rebuilding the content layer.
-            bool refreshNativeBitmap = redrawContent || !this.renderBufferValid;
+            bool burnInColorProtectionActive = IsBurnInColorProtectionActive();
+            bool refreshNativeBitmap =
+                redrawContent ||
+                !this.renderBufferValid ||
+                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive;
             if (refreshNativeBitmap)
             {
                 this.renderGraphics.Clear(Color.Transparent);
                 DrawNetworkMonitorWindow(this.renderGraphics);
+                if (burnInColorProtectionActive)
+                {
+                    BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
+                }
+
+                this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
                 this.renderBufferValid = true;
             }
 
@@ -1075,6 +1857,13 @@ internal sealed class NetworkMonitorForm : Form
         this.renderBitmap = new Bitmap(this.Width, this.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         this.renderGraphics = Graphics.FromImage(this.renderBitmap);
         this.renderBufferValid = false;
+    }
+
+    private bool IsBurnInColorProtectionActive()
+    {
+        return BurnInProtection.ShouldApplyHiddenModeColorProtection(
+            this.currentSettings,
+            IsHoverOpacityTargetActive());
     }
 
     private void EnsureContentBuffer()
@@ -1181,7 +1970,7 @@ internal sealed class NetworkMonitorForm : Form
 
     private int ApplyHoverTransparencyTarget(int alpha)
     {
-        if (!this.currentSettings.HoverOpacityEnabled || this.hoverOpacityProgress <= 0.0)
+        if (!IsHoverOpacityRuntimeEnabled() || this.hoverOpacityProgress <= 0.0)
         {
             return alpha;
         }
@@ -1199,6 +1988,35 @@ internal sealed class NetworkMonitorForm : Form
     private int S(int value)
     {
         return (int)Math.Round(value * this.scale);
+    }
+
+    private sealed class CloudEndpointAlert
+    {
+        public bool Active;
+        public string Text;
+        public Color Color;
+    }
+
+    private sealed class CloudEndpointAlertCandidate
+    {
+        public string Key;
+        public CloudEndpointStatus Status;
+        public string Name;
+        public string Reason;
+        public Color Color;
+    }
+
+    private sealed class DnsDisplaySegment
+    {
+        public string Text;
+        public Color Color;
+    }
+
+    private sealed class DnsDisplayItem
+    {
+        public string Address;
+        public DnsServerStatus Status;
+        public int OriginalIndex;
     }
 
     private static GraphicsPath RoundedRectangle(RectangleF bounds, float radius)
