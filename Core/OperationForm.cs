@@ -173,6 +173,7 @@ internal sealed class OperationForm : Form
     {
         base.OnShown(e);
         ApplyRuntimeSettings(this.currentSettings);
+        UpdateForegroundFpsTimer();
         PositionOperationWindow();
         RenderLayeredWindow();
     }
@@ -655,6 +656,49 @@ internal sealed class OperationForm : Form
         {
             BeginInvokeBatteryLimitRestore();
             return;
+        }
+
+        if (button == TaskManagerButtonIndex)
+        {
+            NativeMethods.OpenTaskManager();
+            return;
+        }
+
+        if (button == WindowsAiStudioButtonIndex)
+        {
+            if (!NativeMethods.OpenWindowsAiStudio())
+            {
+                ShowOperationNotification(
+                    "AI Studio",
+                    "未能通过系统入口启动 AI Studio。",
+                    ToolTipIcon.Warning);
+            }
+
+            return;
+        }
+
+        if (button == WindowsQuickSettingsButtonIndex)
+        {
+            NativeMethods.OpenQuickSettings();
+            return;
+        }
+
+        if (button == LiveCaptionsButtonIndex)
+        {
+            if (!NativeMethods.OpenLiveCaptions())
+            {
+                ShowOperationNotification(
+                    "实时字幕",
+                    "未能通过系统入口启动实时字幕。",
+                    ToolTipIcon.Warning);
+            }
+
+            return;
+        }
+
+        if (button == HoverOpacityToggleButtonIndex && this.toggleHoverOpacityAction != null)
+        {
+            this.toggleHoverOpacityAction();
         }
 
         if (button == TaskManagerButtonIndex)

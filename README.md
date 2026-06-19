@@ -1,14 +1,18 @@
 # Desktop Codex Assistant
 
-UX3407N / UX3607O dedicated edition. This software was created entirely by Codex.
+UX3407N / UX3607O tuned edition with public ARM64 and x64 builds. This software was created entirely by Codex.
 
-This Windows on Arm application provides a compact developer-assistance workspace with performance, Codex monitoring, power, thermal, network, and connectivity modules.
+This Windows desktop application provides a compact developer-assistance workspace with performance, Codex monitoring, power, thermal, network, and connectivity modules.
 
 ## Hardware support
 
-This branch is maintained as a dedicated build for ASUS UX3407N and UX3607O Windows on Arm machines. The current power, thermal, window placement, and hardware-monitoring behavior is calibrated against that device family.
+This branch is maintained with primary calibration for ASUS UX3407N and UX3607O Windows on Arm machines, and public binaries are provided for both ARM64 and x64 Windows.
 
-Other Windows on Arm or x64 machines are not the support target for this branch. They may run with degraded or missing thermal, NPU, GPU, battery, or vendor-control data.
+Other Windows machines may run with degraded or missing thermal, NPU, GPU, battery, or vendor-control data when their firmware or performance counters expose different interfaces.
+
+## Seelen UI interoperability
+
+This project does not include, modify, link, or redistribute Seelen UI code. Optional Seelen UI actions only interoperate with a separately installed Seelen UI instance through process/window detection and the installed `slu.exe` command-line tool. Seelen UI is a separate project licensed under AGPL-3.0; its name is used only to describe interoperability.
 
 Kept:
 
@@ -33,7 +37,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-X64.ps1
 Run:
 
 ```powershell
-.\DesktopCodexAssistant.exe
+.\Release\DesktopCodexAssistant-arm64.exe
+.\Release\DesktopCodexAssistant-x64.exe
 ```
 
 Operation panel self-test:

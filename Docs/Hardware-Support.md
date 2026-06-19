@@ -1,6 +1,6 @@
 # Hardware Support
 
-This repository branch is maintained as the dedicated UX3407N / UX3607O edition.
+This repository branch is maintained as the UX3407N / UX3607O tuned edition with public ARM64 and x64 builds.
 
 ## Supported Target
 
@@ -8,12 +8,14 @@ This repository branch is maintained as the dedicated UX3407N / UX3607O edition.
 - ASUS UX3607O
 - Windows on Arm
 - ARM64 build output
+- 64-bit Windows
+- x64 build output
 
 ## Support Policy
 
-The current UI layout, power behavior, thermal sampling policy, and hardware-monitoring assumptions are tuned for UX3407N / UX3607O systems.
+The current UI layout, power behavior, thermal sampling policy, and hardware-monitoring assumptions are primarily tuned for UX3407N / UX3607O systems.
 
-Other Windows on Arm machines may start and display generic data, but they are outside the support target for this branch. x64 Windows machines require a separate x64 build and separate validation.
+Other Windows machines may start and display generic data. Hardware-specific readings depend on each device's firmware, Windows providers, and performance counters, so some values can be unavailable or less complete outside the tuned ASUS device family.
 
 ## Hardware-Specific Areas
 
@@ -24,4 +26,4 @@ Other Windows on Arm machines may start and display generic data, but they are o
 
 ## Release Rule
 
-Do not publish this branch as a generic Windows monitor. Label builds and archives as UX3407N / UX3607O dedicated artifacts.
+Label builds and archives as UX3407N / UX3607O tuned artifacts, with separate ARM64 and x64 binaries.

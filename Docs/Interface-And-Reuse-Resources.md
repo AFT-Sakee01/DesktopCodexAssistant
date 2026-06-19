@@ -131,7 +131,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `resource_directory.codex_sessions` | `%USERPROFILE%\.codex\sessions` | 只读 Codex rollout 数据源 |
 | `resource_directory.docs` | `Docs` | 技术文档和接口索引 |
 | `resource_directory.legacy_executables` | `Artifacts/LegacyExecutables` | 历史归档，不参与运行 |
-| `resource_directory.build_outputs` | 根目录 EXE | ARM64 默认、x64 显式产物 |
+| `resource_directory.build_outputs` | 根目录 EXE 与 `Release/` 正式产物 | ARM64 默认、x64 显式产物、GitHub 发布资产 |
 
 ## 8. 窗口模块复用契约
 
