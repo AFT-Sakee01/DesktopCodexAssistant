@@ -45,6 +45,8 @@ internal sealed class PowerThermalForm : Form
     private int renderTickCount;
     private double hoverOpacityProgress;
     private DateTime hoverOpacityLastUtc;
+    private DateTime reverseHoverRevealUntilUtc;
+    private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool sharedInteractionPolling;
     // Layered-window content is reused until data or size changes. Alpha-only hover updates
     // can submit the existing bitmap without rebuilding paths, fonts, and brushes.
@@ -925,10 +927,13 @@ internal sealed class PowerThermalForm : Form
 
     private bool IsHoverOpacityTargetActive()
     {
-        return IsHoverOpacityRuntimeEnabled() &&
-            !this.hiddenForFullscreen &&
-            this.Visible &&
-            (this.currentSettings.ForceHoverOpacityActive || this.Bounds.Contains(Cursor.Position));
+        return HoverInteractionPolicy.IsHoverOpacityTargetActive(
+            this.currentSettings,
+            this.Bounds,
+            this.hiddenForFullscreen,
+            this.Visible,
+            ref this.reverseHoverRevealUntilUtc,
+            this.hoverOpacityDelayState);
     }
 
     private bool IsHoverOpacityRuntimeEnabled()

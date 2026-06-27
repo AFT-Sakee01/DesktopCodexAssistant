@@ -128,7 +128,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 `
 ### 8.3 静态检查
 
 - `git diff --check` 通过，仅有工作区既有 LF/CRLF 转换警告。
-- `CHANGELOG.jsonl` 和 `Docs/INTERFACE_INDEX.jsonl` 在写入前均为 61 行、61 个唯一 ID、零 JSON 解析错误。
+- `Docs/Maintenance/CHANGELOG.jsonl` 和 `Docs/Interfaces/INTERFACE_INDEX.jsonl` 在写入前均为 61 行、61 个唯一 ID、零 JSON 解析错误。
 - `SeelenStatusRefreshIntervalMs`、`seelenStatusTimer`、`RefreshSeelenUiStatus` 和 `SetSeelenUiRunning` 均不存在。
 - `OperationForm` 未新增 `WS_EX_TRANSPARENT`。
 

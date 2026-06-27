@@ -185,7 +185,19 @@ internal sealed class WidgetSettings
     public const int MinAutoHoverOpacityIdleSeconds = 1;
     public const int MaxAutoHoverOpacityIdleSeconds = 300;
     public const int DefaultAutoHoverOpacityIdleSeconds = 60;
-    private const int CurrentSettingsVersion = 21;
+    public const int MinSensitiveMouseRangePixels = 10;
+    public const int MaxSensitiveMouseRangePixels = 300;
+    public const int DefaultSensitiveMouseRangePixels = 100;
+    public const int MinReverseHoverOpacityRestoreDelaySeconds = 1;
+    public const int MaxReverseHoverOpacityRestoreDelaySeconds = 30;
+    public const int DefaultReverseHoverOpacityRestoreDelaySeconds = 5;
+    public const double MinHoverOpacityRevealDelaySeconds = 1.0;
+    public const double MaxHoverOpacityRevealDelaySeconds = 10.0;
+    public const double DefaultHoverOpacityRevealDelaySeconds = 1.0;
+    public const double MinHoverOpacityRevealResetSeconds = 0.1;
+    public const double MaxHoverOpacityRevealResetSeconds = 5.0;
+    public const double DefaultHoverOpacityRevealResetSeconds = 0.5;
+    private const int CurrentSettingsVersion = 25;
     private const int EffectivePerformanceModeCacheMs = 2000;
     private static readonly object EffectivePerformanceModeSync = new object();
     private static DateTime effectivePerformanceModeCacheUtc = DateTime.MinValue;
@@ -257,7 +269,7 @@ internal sealed class WidgetSettings
     public int OperationBackgroundTransparencyPercent { get; set; }
     public bool ForceShowForegroundFpsEnabled { get; set; }
     public bool SeelenDockForegroundPulseEnabled { get; set; }
-    public bool CtrlDRecoveryPulseEnabled { get; set; }
+    public bool WinDRecoveryPulseEnabled { get; set; }
     public bool PowerResumeRestartEnabled { get; set; }
     public int LayoutWorkAreaLeft { get; set; }
     public int LayoutWorkAreaTop { get; set; }
@@ -308,6 +320,15 @@ internal sealed class WidgetSettings
 
     public bool HoverOpacityEnabled { get; set; }
     public bool ForceHoverOpacityActive { get; set; }
+    public bool ManualHoverOpacityActive { get; set; }
+    public bool SensitiveMouseModeEnabled { get; set; }
+    public int SensitiveMouseRangePixels { get; set; }
+    public bool HoverOpacityRevealDelayEnabled { get; set; }
+    public double HoverOpacityRevealDelaySeconds { get; set; }
+    public double HoverOpacityRevealResetSeconds { get; set; }
+    public bool HoverOpacityCoverEnabled { get; set; }
+    public bool ReverseHoverOpacityRevealEnabled { get; set; }
+    public int ReverseHoverOpacityRestoreDelaySeconds { get; set; }
     public bool AutoHoverOpacityIdleEnabled { get; set; }
     public int AutoHoverOpacityIdleSeconds { get; set; }
     public bool AutoHoverOpacityMaximizedEnabled { get; set; }
@@ -367,7 +388,7 @@ internal sealed class WidgetSettings
         this.OperationBackgroundTransparencyPercent = defaults.OperationBackgroundTransparencyPercent;
         this.ForceShowForegroundFpsEnabled = defaults.ForceShowForegroundFpsEnabled;
         this.SeelenDockForegroundPulseEnabled = defaults.SeelenDockForegroundPulseEnabled;
-        this.CtrlDRecoveryPulseEnabled = defaults.CtrlDRecoveryPulseEnabled;
+        this.WinDRecoveryPulseEnabled = defaults.WinDRecoveryPulseEnabled;
         this.PowerResumeRestartEnabled = defaults.PowerResumeRestartEnabled;
         this.LayoutWorkAreaLeft = defaults.LayoutWorkAreaLeft;
         this.LayoutWorkAreaTop = defaults.LayoutWorkAreaTop;
@@ -411,6 +432,15 @@ internal sealed class WidgetSettings
         this.DisplayTimeZoneId = defaults.DisplayTimeZoneId;
         this.PerformanceMode = defaults.PerformanceMode;
         this.HoverOpacityEnabled = defaults.HoverOpacityEnabled;
+        this.ManualHoverOpacityActive = defaults.ManualHoverOpacityActive;
+        this.SensitiveMouseModeEnabled = defaults.SensitiveMouseModeEnabled;
+        this.SensitiveMouseRangePixels = defaults.SensitiveMouseRangePixels;
+        this.HoverOpacityRevealDelayEnabled = defaults.HoverOpacityRevealDelayEnabled;
+        this.HoverOpacityRevealDelaySeconds = defaults.HoverOpacityRevealDelaySeconds;
+        this.HoverOpacityRevealResetSeconds = defaults.HoverOpacityRevealResetSeconds;
+        this.HoverOpacityCoverEnabled = defaults.HoverOpacityCoverEnabled;
+        this.ReverseHoverOpacityRevealEnabled = defaults.ReverseHoverOpacityRevealEnabled;
+        this.ReverseHoverOpacityRestoreDelaySeconds = defaults.ReverseHoverOpacityRestoreDelaySeconds;
         this.AutoHoverOpacityIdleEnabled = defaults.AutoHoverOpacityIdleEnabled;
         this.AutoHoverOpacityIdleSeconds = defaults.AutoHoverOpacityIdleSeconds;
         this.AutoHoverOpacityMaximizedEnabled = defaults.AutoHoverOpacityMaximizedEnabled;
@@ -470,7 +500,7 @@ internal sealed class WidgetSettings
         settings.OperationBackgroundTransparencyPercent = 0;
         settings.ForceShowForegroundFpsEnabled = false;
         settings.SeelenDockForegroundPulseEnabled = true;
-        settings.CtrlDRecoveryPulseEnabled = true;
+        settings.WinDRecoveryPulseEnabled = true;
         settings.PowerResumeRestartEnabled = true;
         settings.LayoutWorkAreaLeft = 0;
         settings.LayoutWorkAreaTop = 60;
@@ -514,6 +544,15 @@ internal sealed class WidgetSettings
         settings.DisplayTimeZoneId = TimeZoneInfo.Local.Id;
         settings.PerformanceMode = WidgetPerformanceMode.BatterySaver;
         settings.HoverOpacityEnabled = true;
+        settings.ManualHoverOpacityActive = false;
+        settings.SensitiveMouseModeEnabled = true;
+        settings.SensitiveMouseRangePixels = DefaultSensitiveMouseRangePixels;
+        settings.HoverOpacityRevealDelayEnabled = true;
+        settings.HoverOpacityRevealDelaySeconds = DefaultHoverOpacityRevealDelaySeconds;
+        settings.HoverOpacityRevealResetSeconds = DefaultHoverOpacityRevealResetSeconds;
+        settings.HoverOpacityCoverEnabled = true;
+        settings.ReverseHoverOpacityRevealEnabled = true;
+        settings.ReverseHoverOpacityRestoreDelaySeconds = DefaultReverseHoverOpacityRestoreDelaySeconds;
         settings.AutoHoverOpacityIdleEnabled = false;
         settings.AutoHoverOpacityIdleSeconds = DefaultAutoHoverOpacityIdleSeconds;
         settings.AutoHoverOpacityMaximizedEnabled = false;
@@ -572,7 +611,7 @@ internal sealed class WidgetSettings
             OperationBackgroundTransparencyPercent = this.OperationBackgroundTransparencyPercent,
             ForceShowForegroundFpsEnabled = this.ForceShowForegroundFpsEnabled,
             SeelenDockForegroundPulseEnabled = this.SeelenDockForegroundPulseEnabled,
-            CtrlDRecoveryPulseEnabled = this.CtrlDRecoveryPulseEnabled,
+            WinDRecoveryPulseEnabled = this.WinDRecoveryPulseEnabled,
             PowerResumeRestartEnabled = this.PowerResumeRestartEnabled,
             LayoutWorkAreaLeft = this.LayoutWorkAreaLeft,
             LayoutWorkAreaTop = this.LayoutWorkAreaTop,
@@ -617,6 +656,15 @@ internal sealed class WidgetSettings
             PerformanceMode = this.PerformanceMode,
             HoverOpacityEnabled = this.HoverOpacityEnabled,
             ForceHoverOpacityActive = this.ForceHoverOpacityActive,
+            ManualHoverOpacityActive = this.ManualHoverOpacityActive,
+            SensitiveMouseModeEnabled = this.SensitiveMouseModeEnabled,
+            SensitiveMouseRangePixels = this.SensitiveMouseRangePixels,
+            HoverOpacityRevealDelayEnabled = this.HoverOpacityRevealDelayEnabled,
+            HoverOpacityRevealDelaySeconds = this.HoverOpacityRevealDelaySeconds,
+            HoverOpacityRevealResetSeconds = this.HoverOpacityRevealResetSeconds,
+            HoverOpacityCoverEnabled = this.HoverOpacityCoverEnabled,
+            ReverseHoverOpacityRevealEnabled = this.ReverseHoverOpacityRevealEnabled,
+            ReverseHoverOpacityRestoreDelaySeconds = this.ReverseHoverOpacityRestoreDelaySeconds,
             AutoHoverOpacityIdleEnabled = this.AutoHoverOpacityIdleEnabled,
             AutoHoverOpacityIdleSeconds = this.AutoHoverOpacityIdleSeconds,
             AutoHoverOpacityMaximizedEnabled = this.AutoHoverOpacityMaximizedEnabled,
@@ -661,6 +709,22 @@ internal sealed class WidgetSettings
 
         this.OperationButtonSize = Clamp(this.OperationButtonSize, MinOperationButtonSize, MaxOperationButtonSize);
         this.OperationBackgroundTransparencyPercent = Clamp(this.OperationBackgroundTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
+        this.SensitiveMouseRangePixels = Clamp(
+            this.SensitiveMouseRangePixels,
+            MinSensitiveMouseRangePixels,
+            MaxSensitiveMouseRangePixels);
+        this.HoverOpacityRevealDelaySeconds = Clamp(
+            this.HoverOpacityRevealDelaySeconds,
+            MinHoverOpacityRevealDelaySeconds,
+            MaxHoverOpacityRevealDelaySeconds);
+        this.HoverOpacityRevealResetSeconds = Clamp(
+            this.HoverOpacityRevealResetSeconds,
+            MinHoverOpacityRevealResetSeconds,
+            MaxHoverOpacityRevealResetSeconds);
+        this.ReverseHoverOpacityRestoreDelaySeconds = Clamp(
+            this.ReverseHoverOpacityRestoreDelaySeconds,
+            MinReverseHoverOpacityRestoreDelaySeconds,
+            MaxReverseHoverOpacityRestoreDelaySeconds);
         this.AutoHoverOpacityIdleSeconds = Clamp(
             this.AutoHoverOpacityIdleSeconds,
             MinAutoHoverOpacityIdleSeconds,
@@ -902,7 +966,7 @@ internal sealed class WidgetSettings
             "OperationBackgroundTransparencyPercent=" + this.OperationBackgroundTransparencyPercent,
             "ForceShowForegroundFpsEnabled=" + this.ForceShowForegroundFpsEnabled,
             "SeelenDockForegroundPulseEnabled=" + this.SeelenDockForegroundPulseEnabled,
-            "CtrlDRecoveryPulseEnabled=" + this.CtrlDRecoveryPulseEnabled,
+            "WinDRecoveryPulseEnabled=" + this.WinDRecoveryPulseEnabled,
             "PowerResumeRestartEnabled=" + this.PowerResumeRestartEnabled,
             "LayoutWorkAreaLeft=" + this.LayoutWorkAreaLeft,
             "LayoutWorkAreaTop=" + this.LayoutWorkAreaTop,
@@ -911,6 +975,14 @@ internal sealed class WidgetSettings
             "VisibilityMode=" + this.VisibilityMode,
             "ClickThroughMode=" + this.ClickThroughMode,
             "StartupEnabled=" + this.StartupEnabled,
+            "SensitiveMouseModeEnabled=" + this.SensitiveMouseModeEnabled,
+            "SensitiveMouseRangePixels=" + this.SensitiveMouseRangePixels,
+            "HoverOpacityRevealDelayEnabled=" + this.HoverOpacityRevealDelayEnabled,
+            "HoverOpacityRevealDelaySeconds=" + FormatDouble(this.HoverOpacityRevealDelaySeconds),
+            "HoverOpacityRevealResetSeconds=" + FormatDouble(this.HoverOpacityRevealResetSeconds),
+            "HoverOpacityCoverEnabled=" + this.HoverOpacityCoverEnabled,
+            "ReverseHoverOpacityRevealEnabled=" + this.ReverseHoverOpacityRevealEnabled,
+            "ReverseHoverOpacityRestoreDelaySeconds=" + this.ReverseHoverOpacityRestoreDelaySeconds,
             "ShowCpu=" + this.ShowCpu,
             "ShowMemory=" + this.ShowMemory,
             "ShowDisk=" + this.ShowDisk,
@@ -959,6 +1031,7 @@ internal sealed class WidgetSettings
     private static void ApplyValue(WidgetSettings settings, string key, string value)
     {
         int intValue;
+        double doubleValue;
         bool boolValue;
 
         if (string.Equals(key, "Width", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
@@ -1268,9 +1341,12 @@ internal sealed class WidgetSettings
             return;
         }
 
-        if (string.Equals(key, "CtrlDRecoveryPulseEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        if ((string.Equals(key, "WinDRecoveryPulseEnabled", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(key, "CtrlDRecoveryPulseEnabled", StringComparison.OrdinalIgnoreCase)) &&
+            bool.TryParse(value, out boolValue))
         {
-            settings.CtrlDRecoveryPulseEnabled = boolValue;
+            // Accept the old Ctrl+D key so upgrades preserve the user's existing opt-out.
+            settings.WinDRecoveryPulseEnabled = boolValue;
             return;
         }
 
@@ -1307,6 +1383,56 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "StartupEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.StartupEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "SensitiveMouseModeEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.SensitiveMouseModeEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "SensitiveMouseRangePixels", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SensitiveMouseRangePixels = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "HoverOpacityRevealDelayEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.HoverOpacityRevealDelayEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "HoverOpacityRevealDelaySeconds", StringComparison.OrdinalIgnoreCase) &&
+            TryParseDouble(value, out doubleValue))
+        {
+            settings.HoverOpacityRevealDelaySeconds = doubleValue;
+            return;
+        }
+
+        if (string.Equals(key, "HoverOpacityRevealResetSeconds", StringComparison.OrdinalIgnoreCase) &&
+            TryParseDouble(value, out doubleValue))
+        {
+            settings.HoverOpacityRevealResetSeconds = doubleValue;
+            return;
+        }
+
+        if (string.Equals(key, "HoverOpacityCoverEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.HoverOpacityCoverEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ReverseHoverOpacityRevealEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.ReverseHoverOpacityRevealEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ReverseHoverOpacityRestoreDelaySeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ReverseHoverOpacityRestoreDelaySeconds = intValue;
             return;
         }
 
@@ -1963,6 +2089,38 @@ internal sealed class WidgetSettings
         AssertLayout(settings.BottomY >= shifted.Top + settings.Height - 1 && settings.BottomY <= shifted.Bottom - 1, "shifted bottom clamp");
     }
 
+    internal static void RunCompatibilitySelfTest()
+    {
+        WidgetSettings legacy = CreateDefaults();
+        ApplyValue(legacy, "CtrlDRecoveryPulseEnabled", "False");
+        AssertLayout(!legacy.WinDRecoveryPulseEnabled, "legacy Ctrl+D setting should migrate to Win+D");
+
+        ApplyValue(legacy, "WinDRecoveryPulseEnabled", "True");
+        AssertLayout(legacy.WinDRecoveryPulseEnabled, "Win+D setting should override the migrated value");
+
+        ApplyValue(legacy, "SensitiveMouseRangePixels", "500");
+        ApplyValue(legacy, "HoverOpacityRevealDelayEnabled", "False");
+        ApplyValue(legacy, "ReverseHoverOpacityRestoreDelaySeconds", "0");
+        ApplyValue(legacy, "HoverOpacityRevealDelaySeconds", "20");
+        ApplyValue(legacy, "HoverOpacityRevealResetSeconds", "0.01");
+        legacy.Normalize();
+        AssertLayout(
+            legacy.SensitiveMouseRangePixels == MaxSensitiveMouseRangePixels,
+            "sensitive mouse range should clamp high");
+        AssertLayout(
+            !legacy.HoverOpacityRevealDelayEnabled,
+            "hover reveal delay enabled should load");
+        AssertLayout(
+            legacy.ReverseHoverOpacityRestoreDelaySeconds == MinReverseHoverOpacityRestoreDelaySeconds,
+            "reverse reveal delay should clamp low");
+        AssertLayout(
+            Math.Abs(legacy.HoverOpacityRevealDelaySeconds - MaxHoverOpacityRevealDelaySeconds) < 0.001,
+            "hover reveal delay should clamp high");
+        AssertLayout(
+            Math.Abs(legacy.HoverOpacityRevealResetSeconds - MinHoverOpacityRevealResetSeconds) < 0.001,
+            "hover reveal reset should clamp low");
+    }
+
     private static void AssertLayout(bool condition, string message)
     {
         if (!condition)
@@ -2295,6 +2453,32 @@ internal sealed class WidgetSettings
         }
 
         return value;
+    }
+
+    private static double Clamp(double value, double min, double max)
+    {
+        if (value < min)
+        {
+            return min;
+        }
+
+        if (value > max)
+        {
+            return max;
+        }
+
+        return value;
+    }
+
+    private static bool TryParseDouble(string value, out double result)
+    {
+        return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out result) ||
+            double.TryParse(value, out result);
+    }
+
+    private static string FormatDouble(double value)
+    {
+        return value.ToString("0.###", CultureInfo.InvariantCulture);
     }
 
     public static string MetricDisplayName(string metricId)

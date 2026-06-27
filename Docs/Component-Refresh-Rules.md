@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-Last reviewed version: `1.0.2.80`
+Last reviewed version: `1.0.2.92`
 
 本文集中记录 Desktop Codex Assistant 各组件的刷新、轮询、手动刷新、网络事件、单飞任务和暂停恢复规则。修改定时器、刷新 token、网络事件、后台任务节流、测试模式或显示恢复逻辑时，应同步更新本文。
 
@@ -63,8 +63,12 @@ DNS 检测：
 | 设置热加载 | `settings.ini` 由 `FileSystemWatcher` 和主 tick 修改时间检查共同覆盖。 |
 | 显示恢复 | 首次延迟 350 ms，最多 3 次；后续重试间隔 1500 ms。恢复会重建 layered-window 资源、重定位并强制刷新。 |
 | SeelenUI 拉前 | 设置开启时按本地整点和半点计划；最大化或全屏前台场景按现有逻辑跳过。 |
-| Ctrl+D 恢复 | 全局 Ctrl+D 后延迟 2000 ms 执行本程序和 SeelenUI 拉前；设置可关闭。 |
+| Win+D 恢复 | 全局 Win+D 后延迟 2000 ms 执行本程序和 SeelenUI 拉前；不拦截系统显示桌面，设置可关闭。 |
 | 休眠唤醒重启 | `PBT_APMRESUMEAUTOMATIC`、`PBT_APMRESUMESUSPEND` 或 `PBT_APMRESUMECRITICAL` 后先完成 3 轮显示恢复，再按设置重启 SeelenUI 和本程序；设置可关闭，30 s 内重复恢复事件只处理一次。 |
+| 敏感鼠标模式 | 悬停隐藏默认用以鼠标为中心的正方形命中范围与各窗口矩形相交，默认边长 100 px，可在 10-300 px 设置；关闭后退回点命中。 |
+| 延迟显现 | 普通“鼠标移上去隐藏”在鼠标离开判定区后继续隐藏 `1-10 s`，默认 1 s；离开倒计时内重新进入判定区并停留 `0.1-5 s`，默认 0.5 s，才重置本轮离开倒计时。倒计时到期时若鼠标仍在判定区，窗口保持隐藏。 |
+| 覆盖开启 | 自动隐藏已经激活时，普通鼠标移动不再释放隐藏；只有鼠标进入任一程序窗口的敏感命中范围后才重置空闲计时并恢复。 |
+| 反向隐藏 | 操作面板手动隐藏时，鼠标进入某个程序窗口的敏感命中范围会临时恢复该窗口，移开后按 1-30 s 延迟重新隐藏。 |
 | 防烧屏位移 | 每 7 min 生成新 slot；主窗口和子窗口按各自 salt 微位移。 |
 | 操作面板刷新 | `ForceRefreshAllModules()` 触发主采样、磁盘用量刷新、Codex、功耗、网络和 CleanIP 刷新。 |
 | 诊断日志 | 主采样诊断最多每 15 min 写一次；`TimingStats12h` 耗时摘要也最多每 15 min 写一次，具体样本只保存在内存滚动窗口中。 |
@@ -144,7 +148,7 @@ GFW：
 
 | 项目 | 规则 |
 | --- | --- |
-| UI tick | 使用普通面板调度 500/1000/3000 ms；快照无显示变化时不重绘。 |
+| UI tick | 使用普通面板调度 500/1000/3000 ms；只有三框实际显示字段变化、尺寸变化、位置位移或透明动画需要时重绘；旧详情字段如延迟、IP、ASN、地区和触发来源变化不再触发重绘。 |
 | 设置间隔 | `ConnectionCheckIntervalSeconds` 范围 15-600 s；当前默认设置值为 600 s，代码 fallback 为 60 s。 |
 | 首次和联网 | 首次启动或从断网变为联网时立即检测。 |
 | 每小时计划 | 每小时一次，随机偏移正负 5 min 并包含秒，避免整点集中请求。 |
@@ -162,6 +166,7 @@ GFW：
 | --- | --- |
 | 动画定时器 | 只在按压或悬停进度未到目标时运行；间隔使用全局悬停动画 16/33/100 ms。 |
 | 全屏/挂起 | 全屏隐藏和显示挂起时停止动画与 FPS 定时器。 |
+| 反向隐藏轮询 | 操作面板复用主窗口共享交互 tick 检查手动隐藏下的临时恢复，不新增独立常驻定时器。 |
 | 刷新按钮 | 刷新 MyASUS、系统按钮可用性，并调用主窗口 `ForceRefreshAllModules()`。 |
 | SeelenUI 电源菜单 | 后台单飞执行 `slu.exe` 并最多等待 1500 ms；UI 线程不等待外部进程。 |
 | 单击/双击重启按钮 | 单击行为用 `SystemInformation.DoubleClickTime` 延迟确认，避免和双击重启冲突。 |
@@ -169,15 +174,27 @@ GFW：
 | FPS counter 发现 | 首次或候选缺失时发现；前台进程变化后的重新发现冷却 30 s；完整发现间隔 60 s。 |
 | 防烧屏维护 | 位置位移检查复用主窗口共享维护 tick，不建立额外高频定时器。 |
 
+## 8.1 鼠标隐藏与延迟显现
+
+- 普通“悬停透明”由 `HoverInteractionPolicy` 统一判断鼠标敏感范围；延迟显现可在设置中关闭。
+- 延迟显现开启时，鼠标离开判定区后继续隐藏 `HoverOpacityRevealDelaySeconds`，倒计时内重新进入判定区需持续 `HoverOpacityRevealResetSeconds` 才重置倒计时。
+- 延迟显现关闭时，普通悬停隐藏在鼠标离开判定区后立即恢复，不保留倒计时状态。
+- 左下角操作面板手动隐藏切换会刷新 `ManualHoverOpacityActive`，即使自动隐藏已经让组合隐藏态处于激活状态，也会把手动来源同步给各浮窗。
+- 操作面板刚开启手动隐藏后，在鼠标离开操作面板判定范围前暂不允许反向隐藏恢复操作面板本身；离开后再移回面板，反向隐藏恢复重新生效。
+
 ## 9. 设置窗口
 
-源码：`Settings/SettingsForm.cs`
+源码：`Settings/Win11SettingsForm.cs`
 
 | 项目 | 规则 |
 | --- | --- |
+| 默认界面 | 设置入口只创建基于 WinUI/Fluent 设置结构重写的 `Win11SettingsForm`，第一页是 `控制中心` 模块仪表盘，模块卡片只导航到现有详细设置页；旧 `SettingsForm` 和 `DESKTOP_CODEX_LEGACY_SETTINGS` 回退已移除。 |
+| 视觉资源 | 当前设置界面和控制中心模块卡片共用 `DesignTokens` 的颜色、圆角、按钮尺寸和间距；现行源码的导航图标使用 Segoe Fluent Icons / MDL2 字体字形。若恢复此前的 Phosphor PNG 设计要求，需要同时恢复资源加载器和 `--test-settings-bindings` 图标存在性断言。 |
+| 布局边界 | 设置页卡片、页脚按钮和输入控件必须随内容区宽度重排；中文标题和说明高度按字体实际测量，不使用固定 24/34 px 行高；导航行、控制中心面板和设置行需要保留明显垂直间距，避免图标、标题、说明和按钮互相压叠；`--test-settings-bindings` 覆盖最小窗口下的控件越界检查。 |
 | 实时预览 | 设置变更后 75 ms debounce 应用预览，避免每个控件事件立即写入运行窗口。 |
 | 页脚状态 | 保存成功或失败提示显示 5 s 后自动隐藏。 |
 | 手动刷新 token | GFW、CleanIP 和 Codex Radar 随机测试通过 token 传回 `WidgetSettings`，由对应窗口/reader 识别变化。 |
+| 空闲 CPU 诊断 | 设置页“立即检查”只在点击时运行一次，采样约 1.5 s 当前 CPU/进程，并扫描最近 30 min 事件日志；结果写入本地诊断报告，不建立常驻定时器。 |
 | 保存 | 点击保存写入 `settings.ini`，主窗口 watcher 和修改时间检查负责外部热加载。 |
 | 取消 | 恢复打开设置前的 baseline，不应触发额外持久化写入。 |
 
@@ -186,7 +203,7 @@ GFW：
 修改刷新规则后至少检查：
 
 1. `Docs/Component-Refresh-Rules.md` 是否需要同步。
-2. `Docs/INTERFACE_INDEX.jsonl` 中对应接口、配置、命令或资源是否需要更新。
+2. `Docs/Interfaces/INTERFACE_INDEX.jsonl` 中对应接口、配置、命令或资源是否需要更新。
 3. `Docs/Performance-And-Window-Runtime.md`、`Docs/CodexRadar-Architecture.md` 或 `Docs/NetworkMonitor-Architecture.md` 是否有重复表格需要同步。
 4. 是否仍满足“同类网络请求单飞、过期结果不可覆盖新状态、隐藏/挂起时停止不必要绘制”的约束。
 5. 是否需要运行 `--test-settings-bindings`、`--test-layout`、`--test-display-recovery`、`--test-operation-panel` 或网络/窗口截图验证。

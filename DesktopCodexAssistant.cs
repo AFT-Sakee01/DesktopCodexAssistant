@@ -97,6 +97,11 @@ internal static class Program
             return TestOperationPanelPolicy();
         }
 
+        if (HasArg(args, "--diagnose-idle-cpu"))
+        {
+            return RunIdleCpuDiagnosisCommand(args);
+        }
+
         // Stop pre-rename processes before acquiring the new product mutex.
         SignalLegacyStops();
 
@@ -461,6 +466,7 @@ internal static class Program
         try
         {
             WidgetSettings.RunLayoutScalingSelfTest();
+            CodexRadarForm.RunStatusAndQuotaSelfTest();
             Console.WriteLine("Layout scaling policy: PASS");
             return 0;
         }
@@ -480,8 +486,35 @@ internal static class Program
             NativeMethods.TrySetDpiAware();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            SettingsForm.RunSettingsBindingSelfTest();
+            WidgetSettings.RunCompatibilitySelfTest();
+            HoverInteractionPolicy.RunSelfTest();
+            IdleCpuDiagnostics.RunSelfTest();
+            Win11SettingsForm.RunSettingsBindingSelfTest();
             Console.WriteLine("Settings binding policy: PASS");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RunIdleCpuDiagnosisCommand(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            int minutes;
+            if (!TryGetIntArg(args, "--diagnose-minutes", out minutes))
+            {
+                minutes = 30;
+            }
+
+            IdleCpuDiagnostics.Report report = IdleCpuDiagnostics.Run(minutes);
+            Console.WriteLine(report.Summary);
+            Console.WriteLine(report.ReportPath);
             return 0;
         }
         catch (Exception ex)
@@ -544,6 +577,8 @@ internal static class Program
             {
                 throw new InvalidOperationException("Power resume event policy failed.");
             }
+
+            GlobalWinDWatcher.RunGestureSelfTest();
 
             Console.WriteLine("Display recovery layered surface policy: PASS");
             return 0;

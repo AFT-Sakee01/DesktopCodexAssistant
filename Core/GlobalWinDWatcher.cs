@@ -1,7 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 
-internal sealed class GlobalCtrlDWatcher : IDisposable
+internal sealed class GlobalWinDWatcher : IDisposable
 {
     private const int WhKeyboardLl = 13;
     private const int WmKeyDown = 0x0100;
@@ -9,21 +9,20 @@ internal sealed class GlobalCtrlDWatcher : IDisposable
     private const int WmSysKeyDown = 0x0104;
     private const int WmSysKeyUp = 0x0105;
     private const int VkD = 0x44;
-    private const int VkControl = 0x11;
-    private const int VkLControl = 0xA2;
-    private const int VkRControl = 0xA3;
+    private const int VkLWin = 0x5B;
+    private const int VkRWin = 0x5C;
     private const int KeyDownMask = 0x8000;
 
     private readonly LowLevelKeyboardProc hookProc;
     private IntPtr hookHandle;
-    private bool ctrlDPressed;
+    private bool winDPressed;
 
-    public GlobalCtrlDWatcher()
+    public GlobalWinDWatcher()
     {
         this.hookProc = HookCallback;
     }
 
-    public event EventHandler CtrlDPressed;
+    public event EventHandler WinDPressed;
 
     public bool IsStarted
     {
@@ -57,7 +56,7 @@ internal sealed class GlobalCtrlDWatcher : IDisposable
 
         IntPtr handle = this.hookHandle;
         this.hookHandle = IntPtr.Zero;
-        this.ctrlDPressed = false;
+        this.winDPressed = false;
         UnhookWindowsHookEx(handle);
     }
 
@@ -76,12 +75,12 @@ internal sealed class GlobalCtrlDWatcher : IDisposable
             bool keyUp = message == WmKeyUp || message == WmSysKeyUp;
             if (key.vkCode == VkD)
             {
-                if (keyDown && IsControlKeyDown())
+                if (IsWinDGesture(key.vkCode, keyDown, IsWindowsKeyDown()))
                 {
-                    if (!this.ctrlDPressed)
+                    if (!this.winDPressed)
                     {
-                        this.ctrlDPressed = true;
-                        EventHandler handler = this.CtrlDPressed;
+                        this.winDPressed = true;
+                        EventHandler handler = this.WinDPressed;
                         if (handler != null)
                         {
                             handler(this, EventArgs.Empty);
@@ -90,23 +89,38 @@ internal sealed class GlobalCtrlDWatcher : IDisposable
                 }
                 else if (keyUp)
                 {
-                    this.ctrlDPressed = false;
+                    this.winDPressed = false;
                 }
             }
-            else if (keyUp && (key.vkCode == VkControl || key.vkCode == VkLControl || key.vkCode == VkRControl))
+            else if (keyUp && (key.vkCode == VkLWin || key.vkCode == VkRWin))
             {
-                this.ctrlDPressed = false;
+                this.winDPressed = false;
             }
         }
 
         return CallNextHookEx(this.hookHandle, code, wParam, lParam);
     }
 
-    private static bool IsControlKeyDown()
+    internal static bool IsWinDGesture(int virtualKey, bool keyDown, bool windowsKeyDown)
     {
-        return (GetAsyncKeyState(VkControl) & KeyDownMask) != 0 ||
-            (GetAsyncKeyState(VkLControl) & KeyDownMask) != 0 ||
-            (GetAsyncKeyState(VkRControl) & KeyDownMask) != 0;
+        return virtualKey == VkD && keyDown && windowsKeyDown;
+    }
+
+    internal static void RunGestureSelfTest()
+    {
+        if (!IsWinDGesture(VkD, true, true) ||
+            IsWinDGesture(VkD, true, false) ||
+            IsWinDGesture(VkD, false, true) ||
+            IsWinDGesture(0x43, true, true))
+        {
+            throw new InvalidOperationException("Win+D gesture policy failed.");
+        }
+    }
+
+    private static bool IsWindowsKeyDown()
+    {
+        return (GetAsyncKeyState(VkLWin) & KeyDownMask) != 0 ||
+            (GetAsyncKeyState(VkRWin) & KeyDownMask) != 0;
     }
 
     private delegate IntPtr LowLevelKeyboardProc(int code, IntPtr wParam, IntPtr lParam);

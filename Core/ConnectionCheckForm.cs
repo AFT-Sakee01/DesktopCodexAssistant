@@ -18,6 +18,8 @@ internal sealed class ConnectionCheckForm : Form
     private bool layeredUpdateFailureLogged;
     private double hoverOpacityProgress;
     private DateTime hoverOpacityLastUtc;
+    private DateTime reverseHoverRevealUntilUtc;
+    private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool sharedInteractionPolling;
     private Bitmap renderBitmap;
     private Graphics renderGraphics;
@@ -393,10 +395,13 @@ internal sealed class ConnectionCheckForm : Form
 
     private bool IsHoverOpacityTargetActive()
     {
-        return IsHoverOpacityRuntimeEnabled() &&
-            !this.hiddenForFullscreen &&
-            this.Visible &&
-            (this.currentSettings.ForceHoverOpacityActive || this.Bounds.Contains(Cursor.Position));
+        return HoverInteractionPolicy.IsHoverOpacityTargetActive(
+            this.currentSettings,
+            this.Bounds,
+            this.hiddenForFullscreen,
+            this.Visible,
+            ref this.reverseHoverRevealUntilUtc,
+            this.hoverOpacityDelayState);
     }
 
     private bool IsHoverOpacityRuntimeEnabled()
@@ -1267,24 +1272,6 @@ internal sealed class ConnectionCheckForm : Form
         }
     }
 
-    private static string FirstNonEmpty(params string[] values)
-    {
-        if (values == null)
-        {
-            return string.Empty;
-        }
-
-        for (int i = 0; i < values.Length; i++)
-        {
-            if (!string.IsNullOrWhiteSpace(values[i]) && values[i].Trim() != "--")
-            {
-                return values[i].Trim();
-            }
-        }
-
-        return string.Empty;
-    }
-
     private static string EmptyToDash(string value)
     {
         return string.IsNullOrWhiteSpace(value) ? "--" : value.Trim();
@@ -1302,24 +1289,19 @@ internal sealed class ConnectionCheckForm : Form
             return false;
         }
 
-        return left.CheckedAtLocal == right.CheckedAtLocal &&
-            left.CheckedAtKnown == right.CheckedAtKnown &&
+        return left.CheckedAtKnown == right.CheckedAtKnown &&
             left.Success == right.Success &&
             left.Running == right.Running &&
-            left.TestMode == right.TestMode &&
             left.ScoreKnown == right.ScoreKnown &&
             left.Score == right.Score &&
-            left.LatencyMs == right.LatencyMs &&
-            string.Equals(left.Ip, right.Ip, StringComparison.Ordinal) &&
-            string.Equals(left.Asn, right.Asn, StringComparison.Ordinal) &&
-            string.Equals(left.Organization, right.Organization, StringComparison.Ordinal) &&
-            string.Equals(left.Grade, right.Grade, StringComparison.Ordinal) &&
+            string.Equals(left.ScoreLabel, right.ScoreLabel, StringComparison.Ordinal) &&
             string.Equals(left.NativeKey, right.NativeKey, StringComparison.Ordinal) &&
+            string.Equals(left.NativeIconClass, right.NativeIconClass, StringComparison.Ordinal) &&
             string.Equals(left.NativeLabel, right.NativeLabel, StringComparison.Ordinal) &&
             string.Equals(left.IpTypeKey, right.IpTypeKey, StringComparison.Ordinal) &&
+            string.Equals(left.IpTypeIconClass, right.IpTypeIconClass, StringComparison.Ordinal) &&
             string.Equals(left.IpTypeLabel, right.IpTypeLabel, StringComparison.Ordinal) &&
-            string.Equals(left.Error, right.Error, StringComparison.Ordinal) &&
-            string.Equals(left.RefreshTrigger, right.RefreshTrigger, StringComparison.Ordinal);
+            string.Equals(GetCompactErrorLabel(left.Error), GetCompactErrorLabel(right.Error), StringComparison.Ordinal);
     }
 
     private void DrawFittedText(Graphics g, string text, Font baseFont, Brush brush, RectangleF rect, StringAlignment alignment)

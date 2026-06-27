@@ -6,13 +6,13 @@
 
 机器可检索的完整索引位于：
 
-`Docs/INTERFACE_INDEX.jsonl`
+`Docs/Interfaces/INTERFACE_INDEX.jsonl`
 
 JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和废弃标记。
 
 ## 2. 复用顺序
 
-1. 查询 `Docs/INTERFACE_INDEX.jsonl` 的 `id`、`name`、`purpose` 和 `reuse`。
+1. 查询 `Docs/Interfaces/INTERFACE_INDEX.jsonl` 的 `id`、`name`、`purpose` 和 `reuse`。
 2. 优先调用已有内部 API，不在窗口类中重复实现系统调用或网络调度。
 3. 外部请求复用已有 reader、单飞、缓存、取消和过期结果保护。
 4. 新设置完整接入默认值、Clone、Load、Save、Normalize、设置 UI 和绑定自测。
@@ -54,6 +54,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `--test-settings-bindings` | 设置控件绑定测试 |
 | `--test-display-recovery` | 分层窗口显示恢复测试 |
 | `--test-operation-panel` | 操作面板命中遮罩、动画、单飞、FPS 间隔和 SeelenUI 结果映射测试 |
+| `--diagnose-idle-cpu --diagnose-minutes N` | 一次性空闲 CPU/息屏发热归因诊断 |
 
 对应索引：`command.application.cli`
 
@@ -73,7 +74,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `event.application.stop` | `Local\DesktopCodexAssistantStop` 命名事件 |
 | `service.application.single_instance` | `Local\DesktopCodexAssistant` 命名 Mutex |
 | `command.seelen.cli` | SeelenUI `slu.exe`，电源菜单调用在后台单飞执行，UI 线程只处理结果和回退 |
-| `command.windows.shell_actions` | Windows URI、AppsFolder、Shell.Application 和系统进程入口 |
+| `command.windows.shell_actions` | Windows URI、AppsFolder、Shell.Application、UI Automation、键盘回退和系统进程入口 |
 
 ## 5. Windows 系统接口
 
@@ -88,7 +89,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `service.windows.ui_automation` | 开始按钮、隐藏托盘等系统控件 | `NativeMethods` |
 | `service.windows.input_language` | 前台输入法语言和模式 | `NativeMethods` |
 | `event.network.change` | 网络地址与可用性变化 | 网络 readers |
-| `event.keyboard.ctrl_d` | 全局 Ctrl+D | `GlobalCtrlDWatcher` |
+| `event.keyboard.ctrl_d` | 全局 Win+D（保留旧稳定 ID） | `GlobalWinDWatcher` |
 | `event.settings.file_watcher` | 外部设置热加载 | `WidgetForm` |
 | `event.codex.sessions_watcher` | Codex rollout JSONL 更新 | `CodexRadarForm` |
 
@@ -101,6 +102,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `internal_api.widget_settings` | 设置、迁移、布局与性能策略 | 新设置完整接入读写和自测链 |
 | `internal_api.logger` | 缓冲日志、错误日志和 GFW 日志 | 高频事件聚合或只记录状态变化 |
 | `internal_api.timing_stats` | 12 小时滚动耗时统计 | 新增性能计时点复用内存滚动窗口和 15 分钟摘要日志 |
+| `internal_api.idle_cpu_diagnostics` | 空闲 CPU 飙升归因 | 复用一次性 CPU/进程采样、事件日志扫描和公式化归因规则 |
 | `internal_api.pdh_sampler` | 性能快照 | UI 不直接访问 PDH/WMI |
 | `internal_api.network_monitor_reader` | 网络状态总快照 | UI 只读取 Clone |
 | `internal_api.gfw_probe_reader` | GFW 调度 | 与云检测保持解耦 |
@@ -110,6 +112,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `internal_api.design_tokens` | 色彩、透明度、圆角和字体 | 禁止重复硬编码语义色 |
 | `internal_api.ui_font_cache` | 字体缓存 | 每个窗口生命周期内复用 |
 | `internal_api.burn_in_protection` | 像素位移和隐藏反色 | 新窗口分配独立 salt；操作面板隐藏态只为可见按钮恢复命中 Alpha |
+| `internal_api.hover_interaction_policy` | 鼠标隐藏命中策略 | 敏感鼠标范围、延迟显现、覆盖开启和反向隐藏统一复用，不在窗口中重复点命中或倒计时逻辑 |
 | `internal_api.time_zone_utilities` | 北京时间调度和显示时区 | 区分业务时间与显示时间 |
 | `internal_api.window_runtime_contract` | 设置、刷新、全屏、挂起、恢复和共享维护 | 新模块实现同等生命周期方法，低频维护复用主协调 tick |
 | `internal_api.snapshot_models` | 跨线程快照契约 | 后台状态通过 Clone 交付 |
@@ -123,6 +126,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | --- | --- | --- |
 | `config.settings_ini` | `settings.ini` | 全部运行设置和布局 |
 | `file_format.runtime_logs` | 主日志、错误日志、GFW 日志 | 运行和诊断 |
+| `file_format.idle_cpu_diagnosis_report` | `idle-cpu-diagnosis-*.txt/.json` | 空闲 CPU 归因报告 |
 | `file_format.codex_radar_cache` | `codex-radar-cache.ini` | 动态模型快照和历史基准 |
 | `file_format.codex_radar_model_catalog` | `codex-radar-models.ini` | 模型按钮目录、可用状态和增删去重 |
 | `file_format.codex_quota` | `quota.ini` | Codex 额度缓存 |

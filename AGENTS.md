@@ -2,13 +2,21 @@
 
 The global `C:\Users\GengH\.codex\AGENTS.md` rules apply. This file only records project-specific constraints and overrides; do not duplicate global rules or maintenance history here.
 
-Current version: `1.0.2.81`
+Current version: `1.0.2.95`
+
+## Project AI
+
+- `primary_model: Codex`
+- `creator_model_exempt: Codex`
+- Codex is the primary project AI. Codex may keep existing project document names without a model prefix; other models must prefix new generated documents with their model short name, for example `Dsv4-xxx.md`.
 
 ## Before Editing
 
-- Read `README.md`, the latest relevant entries in `CHANGELOG.jsonl`, `Docs/INTERFACE_INDEX.jsonl`, and the technical document for the affected module.
+- Read `README.md` and the technical document for the affected module.
+- Keyword-search `Docs/Indexes/FEATURE_INDEX.jsonl` and `Docs/Interfaces/INTERFACE_INDEX.jsonl`; read only matching JSONL lines unless the index is missing, stale, or ambiguous.
+- Keyword-search `Docs/Maintenance/CHANGELOG.jsonl` for maintenance context; do not open the full changelog at task start.
 - Treat the worktree as concurrently edited. Preserve unrelated user changes and re-read touched files before applying a patch.
-- Search `Docs/INTERFACE_INDEX.jsonl` before adding an API, service, command, event, persistent file, renderer, or reusable helper.
+- Search the interface index before adding an API, service, command, event, persistent file, renderer, or reusable helper.
 
 ## Product Scope
 
@@ -38,8 +46,9 @@ Current version: `1.0.2.81`
 
 ## Records
 
-- Append completed changes and confirmed issues to root `CHANGELOG.jsonl`; never place maintenance entries back in this file.
+- Append completed changes and confirmed issues to `Docs/Maintenance/CHANGELOG.jsonl`; never place maintenance entries back in this file.
 - Keep `Core/ProductIdentity.cs`, artifacts, and each new changelog record on the same version.
-- Update `Docs/INTERFACE_INDEX.jsonl` when an indexed interface or resource is added, changed, migrated, or deprecated.
+- Update `Docs/Indexes/FEATURE_INDEX.jsonl` when a feature is added, moved, renamed, deprecated, or its recommended tests change.
+- Update `Docs/Interfaces/INTERFACE_INDEX.jsonl` when an indexed interface or resource is added, changed, migrated, or deprecated.
 - Update `Docs/Component-Refresh-Rules.md` when component refresh intervals, timer ownership, manual refresh tokens, network-event invalidation, single-flight behavior, cooldowns, test refresh behavior, or suspend/resume refresh rules change.
 - Historical free-form records migrated from the old `AGENTS.md` are preserved in each changelog object's `legacy_text`.

@@ -81,6 +81,7 @@ internal static class NativeMethods
     private const uint GW_OWNER = 4;
     private const uint WM_APPCOMMAND = 0x0319;
     private const uint WM_CLOSE = 0x0010;
+    private const uint BM_CLICK = 0x00F5;
     private const int VK_LBUTTON = 0x01;
     private const int VK_RBUTTON = 0x02;
     private const int VK_MBUTTON = 0x04;
@@ -2404,12 +2405,22 @@ internal static class NativeMethods
 
     public static bool OpenWindowsStartMenu()
     {
-        return TryInvokeWindowsStartButton(false);
+        if (TryInvokeWindowsStartButton(false))
+        {
+            return true;
+        }
+
+        return TryClickHiddenWindowsStartButton();
     }
 
     public static bool OpenWindowsStartContextMenu()
     {
-        return TryInvokeWindowsStartButton(true);
+        if (TryInvokeWindowsStartButton(true))
+        {
+            return true;
+        }
+
+        return OpenWindowsPowerUserMenu();
     }
 
     public static bool OpenStartContextMenu()
@@ -2567,6 +2578,19 @@ internal static class NativeMethods
             }
 
             Process.Start(startInfo);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool OpenWindowsPowerUserMenu()
+    {
+        try
+        {
+            SendWinKeyChord(VK_X);
             return true;
         }
         catch
@@ -3136,6 +3160,61 @@ internal static class NativeMethods
         }
 
         return false;
+    }
+
+    private static bool TryClickHiddenWindowsStartButton()
+    {
+        IntPtr startButton = FindWindowsStartButtonChild("Shell_TrayWnd");
+        if (startButton == IntPtr.Zero)
+        {
+            startButton = FindWindowsStartButtonChild("Shell_SecondaryTrayWnd");
+        }
+
+        if (startButton == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        // SeelenUI hides Shell_TrayWnd from UI Automation, but the native child
+        // Start button can still accept BM_CLICK. This avoids launching
+        // StartMenuExperienceHost as a standalone ApplicationFrameWindow.
+        IntPtr parentShell = FindWindow("Shell_TrayWnd", null);
+        if (parentShell != IntPtr.Zero)
+        {
+            SetForegroundWindow(parentShell);
+        }
+
+        SendMessage(startButton, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
+        return true;
+    }
+
+    private static IntPtr FindWindowsStartButtonChild(string shellClassName)
+    {
+        if (string.IsNullOrEmpty(shellClassName))
+        {
+            return IntPtr.Zero;
+        }
+
+        IntPtr shellWindow = FindWindow(shellClassName, null);
+        if (shellWindow == IntPtr.Zero)
+        {
+            return IntPtr.Zero;
+        }
+
+        IntPtr found = IntPtr.Zero;
+        EnumChildWindows(shellWindow, delegate(IntPtr childHandle, IntPtr lParam)
+        {
+            string className = GetWindowClassName(childHandle);
+            if (string.Equals(className, "Start", StringComparison.OrdinalIgnoreCase))
+            {
+                found = childHandle;
+                return false;
+            }
+
+            return true;
+        }, IntPtr.Zero);
+
+        return found;
     }
 
     private static bool TryFindWindowsStartButton(AutomationElement element, int depth, ref int visited, out AutomationElement startButton)

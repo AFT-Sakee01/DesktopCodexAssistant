@@ -24,6 +24,8 @@ internal sealed class NetworkMonitorForm : Form
     private bool cloudEndpointAlertNamePhase = true;
     private double hoverOpacityProgress;
     private DateTime hoverOpacityLastUtc;
+    private DateTime reverseHoverRevealUntilUtc;
+    private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool sharedInteractionPolling;
     // Buffers are reused until size changes. renderBufferValid distinguishes a content
     // redraw from an alpha-only UpdateLayeredWindow submission.
@@ -413,10 +415,13 @@ internal sealed class NetworkMonitorForm : Form
 
     private bool IsHoverOpacityTargetActive()
     {
-        return IsHoverOpacityRuntimeEnabled() &&
-            !this.hiddenForFullscreen &&
-            this.Visible &&
-            (this.currentSettings.ForceHoverOpacityActive || this.Bounds.Contains(Cursor.Position));
+        return HoverInteractionPolicy.IsHoverOpacityTargetActive(
+            this.currentSettings,
+            this.Bounds,
+            this.hiddenForFullscreen,
+            this.Visible,
+            ref this.reverseHoverRevealUntilUtc,
+            this.hoverOpacityDelayState);
     }
 
     private bool IsHoverOpacityRuntimeEnabled()

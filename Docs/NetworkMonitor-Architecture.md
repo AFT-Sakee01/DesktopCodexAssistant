@@ -15,7 +15,7 @@
 | `Performance/CloudEndpointProbeReader.cs` | 云服务独立单飞调度、手动冷却和网络状态门控 |
 | `Performance/PdhModels.cs` | 网络、Wi-Fi、GFW 和云服务快照模型 |
 | `Settings/WidgetSettings.cs` | 三档性能策略和网络窗口设置 |
-| `Settings/SettingsForm.cs` | 网络窗口参数、GFW 参数和网络状态测试入口 |
+| `Settings/Win11SettingsForm.cs` | 网络窗口参数、GFW 参数和网络状态测试入口 |
 | `Interop/NativeMethods.cs` | WLAN、分层窗口和原生窗口接口 |
 
 性能模式的通用说明见：

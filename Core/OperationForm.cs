@@ -79,6 +79,9 @@ internal sealed class OperationForm : Form
     private int foregroundFpsReadRunning;
     private DateTime animationLastUtc;
     private DateTime pressAnimationStartUtc;
+    private DateTime reverseHoverRevealUntilUtc;
+    private bool lastReverseHoverRevealActive;
+    private bool suppressReverseHoverRevealUntilCursorLeaves;
     private int? foregroundFrameRate;
     private long burnInShiftSlot = long.MinValue;
     private readonly double[] hoverProgress = new double[ButtonCount];
@@ -238,8 +241,27 @@ internal sealed class OperationForm : Form
 
     public void ApplyRuntimeSettings(WidgetSettings settings)
     {
+        bool wasManualHoverOpacityActive =
+            this.currentSettings != null &&
+            this.currentSettings.ManualHoverOpacityActive;
         this.currentSettings = settings.Clone();
         this.currentSettings.Normalize();
+        if (this.currentSettings.ForceHoverOpacityActive &&
+            this.currentSettings.ManualHoverOpacityActive &&
+            !wasManualHoverOpacityActive)
+        {
+            this.suppressReverseHoverRevealUntilCursorLeaves = true;
+            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
+            this.lastReverseHoverRevealActive = false;
+        }
+        else if (!this.currentSettings.ForceHoverOpacityActive ||
+            !this.currentSettings.ManualHoverOpacityActive)
+        {
+            this.suppressReverseHoverRevealUntilCursorLeaves = false;
+            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
+            this.lastReverseHoverRevealActive = false;
+        }
+
         ResetLayoutCaches();
         int animationInterval = WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode);
         if (this.animationTimer.Interval != animationInterval)
@@ -357,6 +379,28 @@ internal sealed class OperationForm : Form
         }
     }
 
+    public bool ProcessSharedInteractionTick()
+    {
+        if (this.formClosing ||
+            this.hiddenForFullscreen ||
+            this.displaySuspended ||
+            !this.Visible ||
+            this.IsDisposed)
+        {
+            return false;
+        }
+
+        bool active = IsReverseHoverRevealActive();
+        if (active != this.lastReverseHoverRevealActive)
+        {
+            this.lastReverseHoverRevealActive = active;
+            RenderLayeredWindow();
+            return true;
+        }
+
+        return false;
+    }
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
@@ -421,7 +465,7 @@ internal sealed class OperationForm : Form
 
         if (button == StartButtonIndex)
         {
-            return "左键：Windows 开始菜单\r\n右键：Windows 开始右键菜单\r\n通过任务栏系统入口打开，无快捷键回退";
+            return "左键：Windows 开始菜单\r\n右键：Windows 开始右键菜单\r\n优先调用系统入口，必要时使用 Windows 回退";
         }
 
         if (button == WindowsSettingsButtonIndex)
@@ -588,7 +632,7 @@ internal sealed class OperationForm : Form
                 {
                     ShowOperationNotification(
                         "开始右键菜单",
-                        "未能通过任务栏系统入口打开 Windows 开始右键菜单。",
+                        "未能打开 Windows 开始右键菜单。",
                         ToolTipIcon.Warning);
                 }
             }
@@ -598,7 +642,7 @@ internal sealed class OperationForm : Form
                 {
                     ShowOperationNotification(
                         "开始菜单",
-                        "未能通过任务栏系统入口打开 Windows 开始菜单。",
+                        "未能打开 Windows 开始菜单。",
                         ToolTipIcon.Warning);
                 }
             }
@@ -699,49 +743,7 @@ internal sealed class OperationForm : Form
         if (button == HoverOpacityToggleButtonIndex && this.toggleHoverOpacityAction != null)
         {
             this.toggleHoverOpacityAction();
-        }
-
-        if (button == TaskManagerButtonIndex)
-        {
-            NativeMethods.OpenTaskManager();
             return;
-        }
-
-        if (button == WindowsAiStudioButtonIndex)
-        {
-            if (!NativeMethods.OpenWindowsAiStudio())
-            {
-                ShowOperationNotification(
-                    "AI Studio",
-                    "未能通过系统入口启动 AI Studio。",
-                    ToolTipIcon.Warning);
-            }
-
-            return;
-        }
-
-        if (button == WindowsQuickSettingsButtonIndex)
-        {
-            NativeMethods.OpenQuickSettings();
-            return;
-        }
-
-        if (button == LiveCaptionsButtonIndex)
-        {
-            if (!NativeMethods.OpenLiveCaptions())
-            {
-                ShowOperationNotification(
-                    "实时字幕",
-                    "未能通过系统入口启动实时字幕。",
-                    ToolTipIcon.Warning);
-            }
-
-            return;
-        }
-
-        if (button == HoverOpacityToggleButtonIndex && this.toggleHoverOpacityAction != null)
-        {
-            this.toggleHoverOpacityAction();
         }
     }
 
@@ -3139,14 +3141,35 @@ internal sealed class OperationForm : Form
 
     private byte GetLayeredWindowOpacityAlpha()
     {
-        return (byte)(this.currentSettings.ForceHoverOpacityActive ? ForcedOperationOpacityAlpha : 255);
+        return (byte)(this.currentSettings.ForceHoverOpacityActive && !IsReverseHoverRevealActive()
+            ? ForcedOperationOpacityAlpha
+            : 255);
     }
 
     private bool IsBurnInColorProtectionActive()
     {
         return BurnInProtection.ShouldApplyHiddenModeColorProtection(
             this.currentSettings,
-            this.currentSettings.ForceHoverOpacityActive);
+            this.currentSettings.ForceHoverOpacityActive && !IsReverseHoverRevealActive());
+    }
+
+    private bool IsReverseHoverRevealActive()
+    {
+        if (this.suppressReverseHoverRevealUntilCursorLeaves)
+        {
+            if (HoverInteractionPolicy.IsCursorInActivationRange(this.currentSettings, this.Bounds))
+            {
+                this.reverseHoverRevealUntilUtc = DateTime.MinValue;
+                return false;
+            }
+
+            this.suppressReverseHoverRevealUntilCursorLeaves = false;
+        }
+
+        return HoverInteractionPolicy.IsReverseRevealActive(
+            this.currentSettings,
+            this.Bounds,
+            ref this.reverseHoverRevealUntilUtc);
     }
 
     private void EnsureRenderBuffer()

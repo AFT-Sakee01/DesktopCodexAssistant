@@ -53,7 +53,7 @@ When the renamed application starts for the first time, it migrates existing set
 
 ## Technical documentation
 
-- [Maintenance history](CHANGELOG.jsonl)
+- [Maintenance history](Docs/Maintenance/CHANGELOG.jsonl)
 - [Hardware support policy](Docs/Hardware-Support.md)
 - [Performance modes and window runtime](Docs/Performance-And-Window-Runtime.md)
 - [Component refresh rules](Docs/Component-Refresh-Rules.md)
@@ -61,5 +61,7 @@ When the renamed application starts for the first time, it migrates existing set
 - [Power and thermal window architecture](Docs/PowerThermal-Architecture.md)
 - [Network monitor architecture](Docs/NetworkMonitor-Architecture.md)
 - [Interface and reusable resource summary](Docs/Interface-And-Reuse-Resources.md)
-- [Machine-readable interface index](Docs/INTERFACE_INDEX.jsonl)
+- [Machine-readable interface index](Docs/Interfaces/INTERFACE_INDEX.jsonl)
+- [Machine-readable feature index](Docs/Indexes/FEATURE_INDEX.jsonl)
 - [Operation panel interaction and performance execution spec](Docs/Technical/OperationPanel-Interaction-And-Performance-SPEC-v1.0.2.64-20260616-030809.md)
+- [Settings UI design alternatives](Docs/Technical/Codex-Settings-UI-Design-Alternatives-v1.0.2.91-20260627.md)

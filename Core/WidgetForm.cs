@@ -23,7 +23,7 @@ internal sealed class WidgetForm : Form
     private const int DisplayRecoveryMaxAttempts = 3;
     private const int SampleDiagnosticIntervalMinutes = 15;
     private const int SeelenDockPulseFallbackIntervalMs = 30 * 60 * 1000;
-    private const int CtrlDRecoveryDelayMs = 2000;
+    private const int WinDRecoveryDelayMs = 2000;
     private const int PowerResumeRestartGuardSeconds = 30;
     private const int ForegroundMaximizedCacheMs = 750;
     private static readonly string[] HardwareVendorPrefixes = new string[]
@@ -67,8 +67,8 @@ internal sealed class WidgetForm : Form
     private readonly System.Windows.Forms.Timer hoverTimer;
     private readonly System.Windows.Forms.Timer displayRecoveryTimer;
     private readonly System.Windows.Forms.Timer seelenDockPulseTimer;
-    private readonly System.Windows.Forms.Timer ctrlDRecoveryTimer;
-    private readonly GlobalCtrlDWatcher ctrlDWatcher;
+    private readonly System.Windows.Forms.Timer winDRecoveryTimer;
+    private readonly GlobalWinDWatcher winDWatcher;
     private readonly List<double> cpuHistory;
     private readonly List<double> memoryHistory;
     private readonly List<double> memoryHardwareReservedHistory;
@@ -83,7 +83,7 @@ internal sealed class WidgetForm : Form
     private readonly List<double> npuMemoryHistory;
     private NotifyIcon notifyIcon;
     private Icon notifyIconImage;
-    private SettingsForm settingsForm;
+    private Form settingsForm;
     private WidgetSettings savedSettings;
     private WidgetSettings currentSettings;
     private PerfSnapshot snapshot;
@@ -107,6 +107,8 @@ internal sealed class WidgetForm : Form
     private OperationForm operationForm;
     private double hoverOpacityProgress;
     private DateTime hoverOpacityLastUtc;
+    private DateTime reverseHoverRevealUntilUtc;
+    private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool manualForceHoverOpacityActive;
     private bool autoIdleHoverOpacityActive;
     private bool autoMaximizedHoverOpacityActive;
@@ -142,7 +144,7 @@ internal sealed class WidgetForm : Form
     private string pendingDisplayRecoveryReason = string.Empty;
     private int pendingDisplayRecoveryAttempt;
     private DateTime nextSeelenDockPulseLocal;
-    private bool ctrlDWatcherStartFailureLogged;
+    private bool winDWatcherStartFailureLogged;
     private bool pendingPowerResumeRestart;
     private bool seelenUiWasRunningBeforePowerSuspend;
     private string seelenUiExecutablePathBeforePowerSuspend = string.Empty;
@@ -156,6 +158,7 @@ internal sealed class WidgetForm : Form
         this.savedSettings = settings.Clone();
         this.currentSettings = settings.Clone();
         this.manualForceHoverOpacityActive = this.currentSettings.ForceHoverOpacityActive;
+        this.currentSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.lastMouseActivityPosition = Cursor.Position;
         this.lastMouseActivityUtc = DateTime.UtcNow;
         this.lastSettingsWriteUtc = GetSettingsWriteUtc();
@@ -180,11 +183,11 @@ internal sealed class WidgetForm : Form
         this.seelenDockPulseTimer = new System.Windows.Forms.Timer();
         this.seelenDockPulseTimer.Interval = SeelenDockPulseFallbackIntervalMs;
         this.seelenDockPulseTimer.Tick += OnSeelenDockPulseTimerTick;
-        this.ctrlDRecoveryTimer = new System.Windows.Forms.Timer();
-        this.ctrlDRecoveryTimer.Interval = CtrlDRecoveryDelayMs;
-        this.ctrlDRecoveryTimer.Tick += OnCtrlDRecoveryTimerTick;
-        this.ctrlDWatcher = new GlobalCtrlDWatcher();
-        this.ctrlDWatcher.CtrlDPressed += OnGlobalCtrlDPressed;
+        this.winDRecoveryTimer = new System.Windows.Forms.Timer();
+        this.winDRecoveryTimer.Interval = WinDRecoveryDelayMs;
+        this.winDRecoveryTimer.Tick += OnWinDRecoveryTimerTick;
+        this.winDWatcher = new GlobalWinDWatcher();
+        this.winDWatcher.WinDPressed += OnGlobalWinDPressed;
 
         this.SetStyle(
             ControlStyles.AllPaintingInWmPaint |
@@ -274,7 +277,7 @@ internal sealed class WidgetForm : Form
         this.operationForm.Show(this);
         this.timer.Start();
         UpdateSeelenDockPulseTimer();
-        UpdateCtrlDRecoveryWatcher();
+        UpdateWinDRecoveryWatcher();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -344,11 +347,11 @@ internal sealed class WidgetForm : Form
         this.seelenDockPulseTimer.Stop();
         this.seelenDockPulseTimer.Tick -= OnSeelenDockPulseTimerTick;
         this.seelenDockPulseTimer.Dispose();
-        this.ctrlDRecoveryTimer.Stop();
-        this.ctrlDRecoveryTimer.Tick -= OnCtrlDRecoveryTimerTick;
-        this.ctrlDRecoveryTimer.Dispose();
-        this.ctrlDWatcher.CtrlDPressed -= OnGlobalCtrlDPressed;
-        this.ctrlDWatcher.Dispose();
+        this.winDRecoveryTimer.Stop();
+        this.winDRecoveryTimer.Tick -= OnWinDRecoveryTimerTick;
+        this.winDRecoveryTimer.Dispose();
+        this.winDWatcher.WinDPressed -= OnGlobalWinDPressed;
+        this.winDWatcher.Dispose();
         this.timer.Stop();
         this.timer.Tick -= OnTimerTick;
         this.timer.Dispose();
@@ -358,7 +361,12 @@ internal sealed class WidgetForm : Form
         DisposeSettingsWatcher();
         if (this.settingsForm != null)
         {
-            this.settingsForm.OwnerFormClosing = true;
+            ISettingsWindow settingsWindow = this.settingsForm as ISettingsWindow;
+            if (settingsWindow != null)
+            {
+                settingsWindow.OwnerFormClosing = true;
+            }
+
             this.settingsForm.Close();
             this.settingsForm = null;
         }
@@ -859,29 +867,29 @@ internal sealed class WidgetForm : Form
         ScheduleNextSeelenDockPulse(nowLocal.AddSeconds(1));
     }
 
-    private void UpdateCtrlDRecoveryWatcher()
+    private void UpdateWinDRecoveryWatcher()
     {
         if (this.formClosing || this.IsDisposed)
         {
             return;
         }
 
-        this.ctrlDRecoveryTimer.Stop();
-        if (!this.currentSettings.CtrlDRecoveryPulseEnabled)
+        this.winDRecoveryTimer.Stop();
+        if (!this.currentSettings.WinDRecoveryPulseEnabled)
         {
-            this.ctrlDWatcher.Stop();
+            this.winDWatcher.Stop();
             return;
         }
 
         int errorCode;
-        if (!this.ctrlDWatcher.Start(out errorCode) && !this.ctrlDWatcherStartFailureLogged)
+        if (!this.winDWatcher.Start(out errorCode) && !this.winDWatcherStartFailureLogged)
         {
-            this.ctrlDWatcherStartFailureLogged = true;
-            Program.LogInfo("Ctrl+D recovery watcher failed to start. Win32Error=" + errorCode.ToString(CultureInfo.InvariantCulture));
+            this.winDWatcherStartFailureLogged = true;
+            Program.LogInfo("Win+D recovery watcher failed to start. Win32Error=" + errorCode.ToString(CultureInfo.InvariantCulture));
         }
     }
 
-    private void OnGlobalCtrlDPressed(object sender, EventArgs e)
+    private void OnGlobalWinDPressed(object sender, EventArgs e)
     {
         if (this.formClosing || this.IsDisposed)
         {
@@ -892,7 +900,7 @@ internal sealed class WidgetForm : Form
         {
             try
             {
-                this.BeginInvoke((MethodInvoker)delegate { OnGlobalCtrlDPressed(sender, e); });
+                this.BeginInvoke((MethodInvoker)delegate { OnGlobalWinDPressed(sender, e); });
             }
             catch
             {
@@ -901,28 +909,28 @@ internal sealed class WidgetForm : Form
             return;
         }
 
-        if (!this.currentSettings.CtrlDRecoveryPulseEnabled)
+        if (!this.currentSettings.WinDRecoveryPulseEnabled)
         {
             return;
         }
 
-        this.ctrlDRecoveryTimer.Stop();
-        this.ctrlDRecoveryTimer.Interval = CtrlDRecoveryDelayMs;
-        this.ctrlDRecoveryTimer.Start();
-        Program.LogInfo("Ctrl+D recovery pulse scheduled after " + CtrlDRecoveryDelayMs.ToString(CultureInfo.InvariantCulture) + " ms.");
+        this.winDRecoveryTimer.Stop();
+        this.winDRecoveryTimer.Interval = WinDRecoveryDelayMs;
+        this.winDRecoveryTimer.Start();
+        Program.LogInfo("Win+D recovery pulse scheduled after " + WinDRecoveryDelayMs.ToString(CultureInfo.InvariantCulture) + " ms.");
     }
 
-    private void OnCtrlDRecoveryTimerTick(object sender, EventArgs e)
+    private void OnWinDRecoveryTimerTick(object sender, EventArgs e)
     {
-        this.ctrlDRecoveryTimer.Stop();
-        if (this.formClosing || this.IsDisposed || !this.currentSettings.CtrlDRecoveryPulseEnabled)
+        this.winDRecoveryTimer.Stop();
+        if (this.formClosing || this.IsDisposed || !this.currentSettings.WinDRecoveryPulseEnabled)
         {
             return;
         }
 
-        bool seelenSuccess = PulseSeelenDockToFront("Ctrl+D delayed recovery", false, false);
+        bool seelenSuccess = PulseSeelenDockToFront("Win+D delayed recovery", false, false);
         RestoreApplicationTopMostPriority();
-        Program.LogInfo("Ctrl+D recovery pulse completed. SeelenSuccess=" + seelenSuccess.ToString());
+        Program.LogInfo("Win+D recovery pulse completed. SeelenSuccess=" + seelenSuccess.ToString());
     }
 
     private bool PulseSeelenDockToFront(string reason, bool skipWhenForegroundMaximizedOrFullscreen, bool respectSetting)
@@ -1344,6 +1352,7 @@ internal sealed class WidgetForm : Form
         WidgetSettings nextSettings = settings.Clone();
         nextSettings.Normalize();
         nextSettings.ForceHoverOpacityActive = false;
+        nextSettings.ManualHoverOpacityActive = false;
         this.manualForceHoverOpacityActive = false;
         nextSettings.Save();
         Program.SetStartupEnabled(nextSettings.StartupEnabled, false);
@@ -1522,11 +1531,12 @@ internal sealed class WidgetForm : Form
         }
 
         nextSettings.ForceHoverOpacityActive = IsCombinedHoverOpacityActive();
+        nextSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.currentSettings = nextSettings;
         Program.ApplyPerformanceMode(this.currentSettings.PerformanceMode);
         ApplyPerformanceTimerIntervals();
         UpdateSeelenDockPulseTimer();
-        UpdateCtrlDRecoveryWatcher();
+        UpdateWinDRecoveryWatcher();
 
         Size desiredSize = new Size(this.currentSettings.Width, this.currentSettings.Height);
         if (this.Size != desiredSize)
@@ -1756,6 +1766,11 @@ internal sealed class WidgetForm : Form
             animationActive |= this.connectionCheckForm.ProcessSharedInteractionTick();
         }
 
+        if (this.operationForm != null && !this.operationForm.IsDisposed)
+        {
+            animationActive |= this.operationForm.ProcessSharedInteractionTick();
+        }
+
         int desiredInterval = animationActive
             ? WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode)
             : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
@@ -1835,8 +1850,50 @@ internal sealed class WidgetForm : Form
         {
             this.lastMouseActivityPosition = cursor;
             this.lastMouseButtonDown = mouseButtonDown;
+            if (ShouldSuppressAutomaticHoverOpacityRelease(cursor, mouseButtonDown))
+            {
+                return;
+            }
+
             this.lastMouseActivityUtc = nowUtc;
         }
+    }
+
+    private bool ShouldSuppressAutomaticHoverOpacityRelease(Point cursor, bool mouseButtonDown)
+    {
+        if (this.currentSettings == null ||
+            !this.currentSettings.HoverOpacityCoverEnabled ||
+            (!this.autoIdleHoverOpacityActive && !this.autoMaximizedHoverOpacityActive))
+        {
+            return false;
+        }
+
+        // Cover mode suppresses stray mouse movement while automatic hiding is active.
+        // Actual interaction still exits hidden state once the cursor reaches any app window.
+        if (mouseButtonDown)
+        {
+            return false;
+        }
+
+        return !IsPointInAnyManagedWindowActivationRange(cursor);
+    }
+
+    private bool IsPointInAnyManagedWindowActivationRange(Point cursor)
+    {
+        return IsPointInFormActivationRange(this.currentSettings, this, cursor) ||
+            IsPointInFormActivationRange(this.currentSettings, this.codexRadarForm, cursor) ||
+            IsPointInFormActivationRange(this.currentSettings, this.powerThermalForm, cursor) ||
+            IsPointInFormActivationRange(this.currentSettings, this.networkMonitorForm, cursor) ||
+            IsPointInFormActivationRange(this.currentSettings, this.connectionCheckForm, cursor) ||
+            IsPointInFormActivationRange(this.currentSettings, this.operationForm, cursor);
+    }
+
+    private static bool IsPointInFormActivationRange(WidgetSettings settings, Form form, Point cursor)
+    {
+        return form != null &&
+            !form.IsDisposed &&
+            form.Visible &&
+            HoverInteractionPolicy.IsPointInActivationRange(settings, cursor, form.Bounds);
     }
 
     private void ApplyCombinedHoverOpacityState(string reason)
@@ -1847,7 +1904,8 @@ internal sealed class WidgetForm : Form
         }
 
         bool combined = IsCombinedHoverOpacityActive();
-        if (this.currentSettings.ForceHoverOpacityActive == combined)
+        bool manualStateChanged = this.currentSettings.ManualHoverOpacityActive != this.manualForceHoverOpacityActive;
+        if (this.currentSettings.ForceHoverOpacityActive == combined && !manualStateChanged)
         {
             return;
         }
@@ -1925,10 +1983,13 @@ internal sealed class WidgetForm : Form
 
     private bool IsHoverOpacityTargetActive()
     {
-        return IsHoverOpacityRuntimeEnabled() &&
-            !this.hiddenForFullscreen &&
-            this.Visible &&
-            (this.currentSettings.ForceHoverOpacityActive || this.Bounds.Contains(Cursor.Position));
+        return HoverInteractionPolicy.IsHoverOpacityTargetActive(
+            this.currentSettings,
+            this.Bounds,
+            this.hiddenForFullscreen,
+            this.Visible,
+            ref this.reverseHoverRevealUntilUtc,
+            this.hoverOpacityDelayState);
     }
 
     private bool IsHoverOpacityRuntimeEnabled()
@@ -2077,10 +2138,15 @@ internal sealed class WidgetForm : Form
 
         WidgetSettings baseline = this.savedSettings.Clone();
         baseline.Normalize();
-        this.settingsForm = new SettingsForm(this, baseline);
+        this.settingsForm = CreateSettingsWindow(baseline);
         this.settingsForm.FormClosed += delegate { this.settingsForm = null; };
         this.settingsForm.Show();
         this.settingsForm.Activate();
+    }
+
+    private Form CreateSettingsWindow(WidgetSettings baseline)
+    {
+        return new Win11SettingsForm(this, baseline);
     }
 
     private Icon CreateNotifyIcon()

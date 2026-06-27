@@ -3,7 +3,7 @@ using System.Drawing;
 
 internal static class DesignTokens
 {
-    public const string UiFontFamily = "Segoe UI";
+    public const string UiFontFamily = "Microsoft YaHei UI";
     public const string MonoFontFamily = "Consolas";
     private static readonly Color BurnInWhite = Color.FromArgb(238, 241, 244);
 
@@ -86,18 +86,66 @@ internal static class DesignTokens
     public static class Spacing
     {
         public const int SettingsPagePadding = 16;
-        public const int SettingsRootX = 24;
-        public const int SettingsRootY = 18;
-        public const int SettingsCheckGap = 28;
-        public const int SettingsButtonGap = 8;
+        public const int SettingsOuterPadding = 24;
+        public const int SettingsCardPaddingX = 40;
+        public const int SettingsCardPaddingY = 28;
+        public const int SettingsCardGap = 10;
+        public const int SettingsButtonGap = 10;
+        public const int SettingsCheckGap = 8;
     }
 
     public static class Sizes
     {
         public const int SettingsButtonWidth = 96;
-        public const int SettingsPrimaryButtonWidth = 104;
-        public const int SettingsButtonHeight = 36;
-        public const int SettingsToggleHeight = 40;
+        public const int SettingsPrimaryButtonWidth = 118;
+        public const int SettingsButtonHeight = 34;
+        public const int SettingsToggleHeight = 32;
+    }
+
+    public static class SettingsTheme
+    {
+        public static readonly Color MicaBase = Color.FromArgb(32, 32, 32);
+        public static readonly Color MicaLayer = Color.FromArgb(43, 43, 43);
+        public static readonly Color CardRest = Color.FromArgb(45, 45, 45);
+        public static readonly Color CardHover = Color.FromArgb(56, 56, 56);
+        public static readonly Color Stroke = Color.FromArgb(18, 255, 255, 255);
+        public static readonly Color DividerStroke = Color.FromArgb(15, 255, 255, 255);
+        public static readonly Color ControlBg = Color.FromArgb(55, 55, 55);
+        public static readonly Color ControlBorder = Color.FromArgb(72, 72, 72);
+        public static readonly Color TextPrimary = Color.FromArgb(246, 246, 246);
+        public static readonly Color TextSecondary = Color.FromArgb(196, 196, 196);
+        public static readonly Color TextTertiary = Color.FromArgb(154, 154, 154);
+        public static readonly Color AccentColor = Color.FromArgb(96, 205, 255);
+        public static readonly Color AccentHover = Color.FromArgb(118, 218, 255);
+        public static readonly Color AccentPressed = Color.FromArgb(62, 154, 214);
+        public static readonly Color ErrorText = Color.FromArgb(255, 128, 138);
+        public static readonly Color ToggleTrackOff = Color.FromArgb(88, 88, 88);
+        public static readonly Color ToggleTrackOffHover = Color.FromArgb(100, 100, 100);
+        public static readonly Color ToggleKnob = Color.FromArgb(255, 255, 255);
+        public static readonly Color NavSelectedBg = Color.FromArgb(20, 96, 205, 255);
+        public static readonly Color NavHoverBg = Color.FromArgb(40, 40, 40);
+        public static readonly Color ButtonRest = Color.FromArgb(50, 50, 50);
+        public static readonly Color ButtonHover = Color.FromArgb(58, 58, 58);
+        public static readonly Color ButtonPressed = Color.FromArgb(42, 42, 42);
+    }
+
+    public static class NeonGeekTheme
+    {
+        public static readonly Color WindowBase = Color.FromArgb(12, 12, 14);
+        public static readonly Color CardGlassRest = Color.FromArgb(20, 20, 24);
+        public static readonly Color CardGlassHover = Color.FromArgb(30, 30, 35);
+        public static readonly Color CardGlowBorder = Color.FromArgb(50, 50, 60);
+        public static readonly Color NavPillRest = Color.Transparent;
+        public static readonly Color NavPillHover = Color.FromArgb(30, 255, 255, 255);
+        public static readonly Color TextPrimary = Color.FromArgb(255, 255, 255);
+        public static readonly Color TextSecondary = Color.FromArgb(160, 160, 175);
+        public static readonly Color TextMuted = Color.FromArgb(100, 100, 115);
+        public static readonly Color CyberCyan = Color.FromArgb(0, 240, 255);
+        public static readonly Color ElectricPurple = Color.FromArgb(178, 31, 255);
+        public static readonly Color ToggleTrackOff = Color.FromArgb(40, 40, 45);
+        public static readonly Color ToggleTrackHover = Color.FromArgb(60, 60, 68);
+        public static readonly Color DividerLines = Color.FromArgb(35, 35, 45);
+        public static readonly Color InputBackground = Color.FromArgb(18, 18, 22);
     }
 
     public static Font CreateUIFont(float size, FontStyle style = FontStyle.Regular, GraphicsUnit unit = GraphicsUnit.Point)

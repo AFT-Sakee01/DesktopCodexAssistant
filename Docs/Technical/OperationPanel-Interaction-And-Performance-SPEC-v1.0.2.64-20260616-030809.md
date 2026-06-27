@@ -92,9 +92,9 @@ FPS 面板启用时：
 - `Core/ForegroundFpsReader.cs`
 - `DesktopCodexAssistant.cs`，仅在增加操作面板自测入口时修改
 - `Docs/Performance-And-Window-Runtime.md`
-- `Docs/Performance-Optimization-Technical.md`
-- `Docs/INTERFACE_INDEX.jsonl`
-- `CHANGELOG.jsonl`
+- `Docs/Reports/Performance/Performance-Optimization-Technical.md`
+- `Docs/Interfaces/INTERFACE_INDEX.jsonl`
+- `Docs/Maintenance/CHANGELOG.jsonl`
 - `Core/ProductIdentity.cs`
 - `AGENTS.md`
 
@@ -414,7 +414,7 @@ flowchart TD
 
 `DesktopCodexAssistant.exe --test-operation-panel`
 
-新增 CLI 参数时同步 `DesktopCodexAssistant.cs`、README 和 `Docs/INTERFACE_INDEX.jsonl`。
+新增 CLI 参数时同步 `DesktopCodexAssistant.cs`、README 和 `Docs/Interfaces/INTERFACE_INDEX.jsonl`。
 
 #### 9.1.1 命中遮罩像素测试
 
@@ -553,7 +553,7 @@ SeelenUI 电源菜单：
 - 按钮布局由绘制、命中和遮罩共同复用。
 - FPS 采样不阻塞 UI，未变化时不重绘。
 - ARM64 构建和全部自测通过。
-- 正式 EXE、程序集、产品、`AGENTS.md` 和 `CHANGELOG.jsonl` 版本同步为 `1.0.2.64`。
+- 正式 EXE、程序集、产品、`AGENTS.md` 和 `Docs/Maintenance/CHANGELOG.jsonl` 版本同步为 `1.0.2.64`。
 - 正式程序重启后单实例运行并处于 Responding 状态。
 
 ## 12. 回滚策略
@@ -580,7 +580,7 @@ FPS 后台读取不稳定时：
 
 1. 将产品版本升级为 `1.0.2.64`。
 2. 更新 `Docs/Performance-And-Window-Runtime.md`。
-3. 更新 `Docs/Performance-Optimization-Technical.md`。
+3. 更新 `Docs/Reports/Performance/Performance-Optimization-Technical.md`。
 4. 更新接口索引项：
    - `command.seelen.cli`
    - `service.windows.layered_window`
@@ -588,7 +588,7 @@ FPS 后台读取不稳定时：
    - `internal_api.burn_in_protection`
    - `internal_api.window_runtime_contract`
    - 如新增自测参数，更新 `command.application.cli`
-5. 向 `CHANGELOG.jsonl` 追加完整的 `1.0.2.64` 实现记录。
+5. 向 `Docs/Maintenance/CHANGELOG.jsonl` 追加完整的 `1.0.2.64` 实现记录。
 6. 逐行校验所有 JSONL。
 7. 按全局 Goal+Spec 规则生成：
    - `Docs/Technical/GoalSpec-operation-panel-interaction-performance-v1.0.2.64-yyyyMMdd-HHmmss.md`

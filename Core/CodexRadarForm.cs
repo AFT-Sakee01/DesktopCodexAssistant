@@ -63,6 +63,8 @@ internal sealed class CodexRadarForm : Form
     private int renderTickCount;
     private double hoverOpacityProgress;
     private DateTime hoverOpacityLastUtc;
+    private DateTime reverseHoverRevealUntilUtc;
+    private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool sharedInteractionPolling;
     private DateTime lastQuotaRefreshUtc;
     private DateTime lastQuotaProcessCheckUtc;
@@ -1225,10 +1227,13 @@ internal sealed class CodexRadarForm : Form
 
     private bool IsHoverOpacityTargetActive()
     {
-        return IsHoverOpacityRuntimeEnabled() &&
-            !this.hiddenForFullscreen &&
-            this.Visible &&
-            (this.currentSettings.ForceHoverOpacityActive || this.Bounds.Contains(Cursor.Position));
+        return HoverInteractionPolicy.IsHoverOpacityTargetActive(
+            this.currentSettings,
+            this.Bounds,
+            this.hiddenForFullscreen,
+            this.Visible,
+            ref this.reverseHoverRevealUntilUtc,
+            this.hoverOpacityDelayState);
     }
 
     private bool IsHoverOpacityRuntimeEnabled()
@@ -3445,6 +3450,10 @@ internal sealed class CodexRadarForm : Form
 
         bool fiveHourChanged = fiveHourPercent != this.lastFiveHourQuotaReadPercent;
         bool weeklyChanged = weeklyPercent != this.lastWeeklyQuotaReadPercent;
+        int nextFiveHourConsumptionRingBaseline = GetNextFiveHourConsumptionRingBaseline(
+            this.fiveHourConsumptionRingBaselinePercent,
+            this.lastFiveHourQuotaReadPercent,
+            fiveHourPercent);
         bool fiveHourResetMoved =
             fiveHourResetLocal != DateTime.MinValue &&
             this.trackedFiveHourResetLocal != DateTime.MinValue &&
@@ -3458,6 +3467,9 @@ internal sealed class CodexRadarForm : Form
         bool weeklyWindowAdvanced = weeklyChanged && weeklyPercent > this.lastWeeklyQuotaReadPercent;
         if (!fiveHourChanged && !weeklyChanged)
         {
+            // A newer log can repeat the same rounded balance. Keep the previous visible
+            // consumption baseline until a real decrease or reset/increase changes it.
+            this.fiveHourConsumptionRingBaselinePercent = nextFiveHourConsumptionRingBaseline;
             if (fiveHourResetMoved || fiveHourResetBecameKnown)
             {
                 this.trackedFiveHourResetLocal = fiveHourResetLocal;
@@ -3484,9 +3496,7 @@ internal sealed class CodexRadarForm : Form
 
         if (fiveHourChanged)
         {
-            this.fiveHourConsumptionRingBaselinePercent = this.lastFiveHourQuotaReadPercent > fiveHourPercent
-                ? ClampPercent(this.lastFiveHourQuotaReadPercent)
-                : -1;
+            this.fiveHourConsumptionRingBaselinePercent = nextFiveHourConsumptionRingBaseline;
             this.lastFiveHourQuotaReadPercent = fiveHourPercent;
         }
 
@@ -3499,6 +3509,25 @@ internal sealed class CodexRadarForm : Form
         {
             this.lastQuotaReadDeltaSourceUtc = sourceUtc;
         }
+    }
+
+    private static int GetNextFiveHourConsumptionRingBaseline(
+        int currentBaselinePercent,
+        int previousBalancePercent,
+        int currentBalancePercent)
+    {
+        previousBalancePercent = ClampPercent(previousBalancePercent);
+        currentBalancePercent = ClampPercent(currentBalancePercent);
+        if (currentBalancePercent == previousBalancePercent)
+        {
+            return currentBaselinePercent >= 0
+                ? ClampPercent(currentBaselinePercent)
+                : -1;
+        }
+
+        return previousBalancePercent > currentBalancePercent
+            ? previousBalancePercent
+            : -1;
     }
 
     private void ResetQuotaReadDeltaTracking()
@@ -3922,24 +3951,10 @@ internal sealed class CodexRadarForm : Form
                         serializer.DeserializeObject(reader.ReadToEnd()) as Dictionary<string, object>;
                     Dictionary<string, object> status = GetQuotaObject(root, "status");
                     string indicator = GetQuotaString(status, "indicator").Trim();
-                    bool componentProblem = HasOpenAiCodexComponentProblem(root);
-                    if (string.Equals(indicator, "major", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(indicator, "critical", StringComparison.OrdinalIgnoreCase))
-                    {
-                        stage.State = CodexConnectionStageState.Unavailable;
-                        stage.ErrorCode = indicator.ToUpperInvariant();
-                    }
-                    else if (componentProblem ||
-                        string.Equals(indicator, "minor", StringComparison.OrdinalIgnoreCase))
-                    {
-                        stage.State = CodexConnectionStageState.Warning;
-                        stage.ErrorCode = "STATUS";
-                    }
-                    else
-                    {
-                        stage.State = CodexConnectionStageState.Passed;
-                        stage.ErrorCode = string.Empty;
-                    }
+                    stage.State = GetOpenAiCodexComponentState(root, indicator);
+                    stage.ErrorCode = stage.State == CodexConnectionStageState.Passed
+                        ? string.Empty
+                        : "STATUS";
                 }
             }
         }
@@ -3964,24 +3979,19 @@ internal sealed class CodexRadarForm : Form
         }
     }
 
-    private static bool HasOpenAiCodexComponentProblem(Dictionary<string, object> root)
+    private static CodexConnectionStageState GetOpenAiCodexComponentState(
+        Dictionary<string, object> root,
+        string indicator)
     {
         if (root == null)
         {
-            return true;
+            return CodexConnectionStageState.Unavailable;
         }
 
         object rawComponents;
-        if (!root.TryGetValue("components", out rawComponents))
-        {
-            return false;
-        }
-
-        object[] components = rawComponents as object[];
-        if (components == null)
-        {
-            return false;
-        }
+        object[] components = root.TryGetValue("components", out rawComponents)
+            ? rawComponents as object[]
+            : null;
 
         string[] relevantNames = new string[]
         {
@@ -3992,31 +4002,77 @@ internal sealed class CodexRadarForm : Form
             "Codex API",
             "Login"
         };
-        for (int i = 0; i < components.Length; i++)
+        bool relevantComponentFound = false;
+        bool warningFound = false;
+        bool unavailableFound = false;
+        if (components != null)
         {
-            Dictionary<string, object> component = components[i] as Dictionary<string, object>;
-            string name = GetQuotaString(component, "name");
-            bool relevant = false;
-            for (int j = 0; j < relevantNames.Length; j++)
+            for (int i = 0; i < components.Length; i++)
             {
-                if (string.Equals(name, relevantNames[j], StringComparison.OrdinalIgnoreCase))
+                Dictionary<string, object> component = components[i] as Dictionary<string, object>;
+                string name = GetQuotaString(component, "name");
+                bool relevant = false;
+                for (int j = 0; j < relevantNames.Length; j++)
                 {
-                    relevant = true;
-                    break;
+                    if (string.Equals(name, relevantNames[j], StringComparison.OrdinalIgnoreCase))
+                    {
+                        relevant = true;
+                        break;
+                    }
                 }
-            }
 
-            if (relevant &&
-                !string.Equals(
-                    GetQuotaString(component, "status"),
-                    "operational",
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
+                if (!relevant)
+                {
+                    continue;
+                }
+
+                relevantComponentFound = true;
+                string componentStatus = GetQuotaString(component, "status").Trim();
+                if (string.Equals(componentStatus, "operational", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (string.Equals(componentStatus, "partial_outage", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(componentStatus, "major_outage", StringComparison.OrdinalIgnoreCase))
+                {
+                    unavailableFound = true;
+                }
+                else
+                {
+                    warningFound = true;
+                }
             }
         }
 
-        return false;
+        // The global Statuspage indicator may describe an unrelated product or region.
+        // Once Codex-related components are present, only their states may color this node.
+        if (relevantComponentFound)
+        {
+            if (unavailableFound)
+            {
+                return CodexConnectionStageState.Unavailable;
+            }
+
+            return warningFound
+                ? CodexConnectionStageState.Warning
+                : CodexConnectionStageState.Passed;
+        }
+
+        if (string.Equals(indicator, "major", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(indicator, "critical", StringComparison.OrdinalIgnoreCase))
+        {
+            return CodexConnectionStageState.Unavailable;
+        }
+
+        if (string.Equals(indicator, "minor", StringComparison.OrdinalIgnoreCase))
+        {
+            return CodexConnectionStageState.Warning;
+        }
+
+        return string.Equals(indicator, "none", StringComparison.OrdinalIgnoreCase)
+            ? CodexConnectionStageState.Passed
+            : CodexConnectionStageState.Unavailable;
     }
 
     private void ProbeLocalCodexState(CodexConnectionStage stage)
@@ -8205,7 +8261,44 @@ internal sealed class CodexRadarForm : Form
 
     private static Color GetQuotaConsumptionRingColor()
     {
-        return Color.FromArgb(232, 56, 189, 248);
+        return DesignTokens.WithAlpha(GetCodexRadarLightGreen(), 242);
+    }
+
+    internal static void RunStatusAndQuotaSelfTest()
+    {
+        Dictionary<string, object> operationalComponent = new Dictionary<string, object>();
+        operationalComponent["name"] = "Codex API";
+        operationalComponent["status"] = "operational";
+        Dictionary<string, object> root = new Dictionary<string, object>();
+        root["components"] = new object[] { operationalComponent };
+        if (GetOpenAiCodexComponentState(root, "minor") != CodexConnectionStageState.Passed)
+        {
+            throw new InvalidOperationException("Unrelated global minor status colored the Codex component.");
+        }
+
+        operationalComponent["status"] = "degraded_performance";
+        if (GetOpenAiCodexComponentState(root, "minor") != CodexConnectionStageState.Warning)
+        {
+            throw new InvalidOperationException("Codex component degradation was not reported.");
+        }
+
+        int baseline = GetNextFiveHourConsumptionRingBaseline(-1, 67, 57);
+        if (baseline != 67)
+        {
+            throw new InvalidOperationException("Five-hour consumption decrease baseline failed.");
+        }
+
+        baseline = GetNextFiveHourConsumptionRingBaseline(baseline, 57, 57);
+        if (baseline != 67)
+        {
+            throw new InvalidOperationException("Equal five-hour balances cleared the consumption ring.");
+        }
+
+        baseline = GetNextFiveHourConsumptionRingBaseline(baseline, 57, 72);
+        if (baseline != -1)
+        {
+            throw new InvalidOperationException("Five-hour reset/increase did not clear the old baseline.");
+        }
     }
 
     // Legacy power/thermal UI is retained only as reference; PowerThermalForm owns that workload.

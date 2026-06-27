@@ -84,6 +84,7 @@ $compilerArgs = @(
     "/platform:$Platform",
     "/optimize+",
     "/reference:System.dll",
+    "/reference:System.Core.dll",
     "/reference:System.Drawing.dll",
     "/reference:System.Management.dll",
     "/reference:System.Net.Http.dll",

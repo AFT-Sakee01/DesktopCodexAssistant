@@ -11,7 +11,7 @@
 | `Core/PowerThermalForm.cs` | 功耗、电池、系统电源模式和温度告警窗口 |
 | `Interop/NativeMethods.cs` | Windows 电源通知、有效电源模式通知和分层窗口接口 |
 | `Settings/WidgetSettings.cs` | 三档性能模式及公共刷新间隔 |
-| `Settings/SettingsForm.cs` | 性能模式、窗口尺寸、透明度、延展方向和测试状态 |
+| `Settings/Win11SettingsForm.cs` | 性能模式、窗口尺寸、透明度、延展方向和测试状态 |
 | `DesktopCodexAssistant.cs` | 进程优先级与 Windows Power Throttling |
 | `Core/WidgetForm.cs` | 子窗口生命周期、显示器恢复和设置分发 |
 
