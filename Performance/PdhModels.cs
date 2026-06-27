@@ -119,6 +119,7 @@ internal sealed class DnsServerSnapshot
 {
     public string Address { get; set; }
     public DnsServerStatus Status { get; set; }
+    public int FailureCount { get; set; }
     public int LatencyMs { get; set; }
     public string Reason { get; set; }
     public DateTime CheckedAtLocal { get; set; }
@@ -138,6 +139,7 @@ internal sealed class DnsServerSnapshot
         {
             Address = this.Address,
             Status = this.Status,
+            FailureCount = this.FailureCount,
             LatencyMs = this.LatencyMs,
             Reason = this.Reason,
             CheckedAtLocal = this.CheckedAtLocal,
@@ -335,6 +337,8 @@ internal sealed class NetworkMonitorSnapshot
     public double LatencyMs { get; set; }
     public double JitterMs { get; set; }
     public int PacketLossPercent { get; set; }
+    public bool LocalNetworkDegraded { get; set; }
+    public string LocalNetworkDegradedReason { get; set; }
     public GfwProbeSnapshot GfwProbe { get; set; }
     public string LastError { get; set; }
 
@@ -355,6 +359,7 @@ internal sealed class NetworkMonitorSnapshot
         this.AccessState = NetworkAccessState.Unknown;
         this.AccessReason = string.Empty;
         this.ConnectivityTarget = "1.1.1.1";
+        this.LocalNetworkDegradedReason = string.Empty;
         this.GfwProbe = new GfwProbeSnapshot();
         this.LastError = string.Empty;
     }
@@ -389,6 +394,8 @@ internal sealed class NetworkMonitorSnapshot
             LatencyMs = this.LatencyMs,
             JitterMs = this.JitterMs,
             PacketLossPercent = this.PacketLossPercent,
+            LocalNetworkDegraded = this.LocalNetworkDegraded,
+            LocalNetworkDegradedReason = this.LocalNetworkDegradedReason,
             GfwProbe = this.GfwProbe == null ? new GfwProbeSnapshot() : this.GfwProbe.Clone(),
             LastError = this.LastError
         };

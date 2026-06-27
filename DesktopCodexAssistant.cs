@@ -467,6 +467,7 @@ internal static class Program
         {
             WidgetSettings.RunLayoutScalingSelfTest();
             CodexRadarForm.RunStatusAndQuotaSelfTest();
+            ConnectionCheckForm.RunHiddenModeBadgeRenderingSelfTest();
             Console.WriteLine("Layout scaling policy: PASS");
             return 0;
         }

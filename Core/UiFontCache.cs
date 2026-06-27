@@ -13,19 +13,27 @@ internal sealed class UiFontCache : IDisposable
 
     public Font GetUi(float size, FontStyle style)
     {
-        return Get(size, style, false);
+        return Get(size, style, false, GraphicsUnit.Pixel);
     }
 
     public Font GetMono(float size, FontStyle style)
     {
-        return Get(size, style, true);
+        return Get(size, style, true, GraphicsUnit.Pixel);
     }
 
-    private Font Get(float size, FontStyle style, bool mono)
+    // WinForms controls use point-sized fonts; layered-window drawing keeps using pixel-sized GetUi/GetMono.
+    public Font GetUiPoint(float size, FontStyle style)
+    {
+        return Get(size, style, false, GraphicsUnit.Point);
+    }
+
+    private Font Get(float size, FontStyle style, bool mono, GraphicsUnit unit)
     {
         float normalizedSize = (float)Math.Round(Math.Max(1.0f, size), 2);
         string key =
             (mono ? "M|" : "U|") +
+            ((int)unit).ToString(CultureInfo.InvariantCulture) +
+            "|" +
             normalizedSize.ToString("0.00", CultureInfo.InvariantCulture) +
             "|" +
             ((int)style).ToString(CultureInfo.InvariantCulture);
@@ -33,8 +41,8 @@ internal sealed class UiFontCache : IDisposable
         if (!this.fonts.TryGetValue(key, out font))
         {
             font = mono
-                ? DesignTokens.CreateMonoFont(normalizedSize, style, GraphicsUnit.Pixel)
-                : DesignTokens.CreateUIFont(normalizedSize, style, GraphicsUnit.Pixel);
+                ? DesignTokens.CreateMonoFont(normalizedSize, style, unit)
+                : DesignTokens.CreateUIFont(normalizedSize, style, unit);
             this.fonts[key] = font;
         }
 

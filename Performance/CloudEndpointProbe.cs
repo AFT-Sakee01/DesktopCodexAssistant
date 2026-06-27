@@ -72,7 +72,7 @@ internal static class CloudEndpointProbe
         bool forceRefresh,
         bool regionChanged)
     {
-        return RunAsync(logLines, regionMask, previous, forceRefresh, regionChanged, CancellationToken.None)
+        return RunAsync(logLines, regionMask, previous, forceRefresh, regionChanged, false, string.Empty, CancellationToken.None)
             .GetAwaiter()
             .GetResult();
     }
@@ -83,6 +83,8 @@ internal static class CloudEndpointProbe
         CloudEndpointSnapshot[] previous,
         bool forceRefresh,
         bool regionChanged,
+        bool localNetworkDegraded,
+        string localNetworkDegradedReason,
         CancellationToken cancellationToken)
     {
         regionMask = NormalizeRegionMask(regionMask);
@@ -120,6 +122,10 @@ internal static class CloudEndpointProbe
             logLines.Add("云服务轻量采样: 刷新=" + refreshIndices.Count.ToString(CultureInfo.InvariantCulture) +
                 "/" + Targets.Length.ToString(CultureInfo.InvariantCulture) +
                 " 并发上限=" + MaxConcurrentRequests.ToString(CultureInfo.InvariantCulture));
+            if (localNetworkDegraded)
+            {
+                logLines.Add("云服务本地链路门控: " + FormatLocalNetworkDegradedReason(localNetworkDegradedReason));
+            }
         }
 
         if (refreshIndices.Count > 0)
@@ -141,7 +147,11 @@ internal static class CloudEndpointProbe
             for (int i = 0; i < refreshIndices.Count; i++)
             {
                 int targetIndex = refreshIndices[i];
-                ApplySamples(snapshots[targetIndex], samples[targetIndex].ToArray());
+                ApplySamples(
+                    snapshots[targetIndex],
+                    samples[targetIndex].ToArray(),
+                    localNetworkDegraded,
+                    localNetworkDegradedReason);
                 StoreCachedSnapshot(Targets[targetIndex], snapshots[targetIndex], regionMask, nowUtc);
                 if (logLines != null)
                 {
@@ -791,7 +801,11 @@ internal static class CloudEndpointProbe
         return null;
     }
 
-    private static void ApplySamples(CloudEndpointSnapshot snapshot, CloudEndpointSample[] samples)
+    private static void ApplySamples(
+        CloudEndpointSnapshot snapshot,
+        CloudEndpointSample[] samples,
+        bool localNetworkDegraded,
+        string localNetworkDegradedReason)
     {
         if (snapshot == null)
         {
@@ -875,6 +889,12 @@ internal static class CloudEndpointProbe
         if (down >= majority)
         {
             CloudEndpointSample reason = PickRepresentativeSample(samples, CloudEndpointStatus.Down);
+            if (localNetworkDegraded && down < valid && IsLocalLossSensitiveDown(reason))
+            {
+                ApplyLocalNetworkAffectedCloudSnapshot(snapshot, reason, down, valid, localNetworkDegradedReason);
+                return;
+            }
+
             snapshot.Status = CloudEndpointStatus.Down;
             snapshot.LatencyMs = 0;
             snapshot.AlertReason = reason == null ? "无法连接" : reason.AlertReason;
@@ -902,11 +922,57 @@ internal static class CloudEndpointProbe
             worst = PickWorse(worst, samples[i]);
         }
 
+        if (localNetworkDegraded && worst != null && worst.Status == CloudEndpointStatus.Down && IsLocalLossSensitiveDown(worst))
+        {
+            ApplyLocalNetworkAffectedCloudSnapshot(snapshot, worst, down, valid, localNetworkDegradedReason);
+            return;
+        }
+
         snapshot.Status = CloudEndpointStatus.Abnormal;
         snapshot.LatencyMs = 0;
         snapshot.AlertReason = worst == null || string.IsNullOrWhiteSpace(worst.AlertReason) ? "结果不一致" : worst.AlertReason;
         snapshot.AlertName = worst == null ? string.Empty : worst.AlertName;
         snapshot.Reason = "三次结果不一致" + FormatReasonSuffix(worst);
+    }
+
+    private static void ApplyLocalNetworkAffectedCloudSnapshot(
+        CloudEndpointSnapshot snapshot,
+        CloudEndpointSample reason,
+        int downCount,
+        int validCount,
+        string localNetworkDegradedReason)
+    {
+        snapshot.Status = CloudEndpointStatus.Slow;
+        snapshot.LatencyMs = 0;
+        snapshot.AlertReason = "本地丢包影响";
+        snapshot.AlertName = reason == null ? string.Empty : reason.AlertName;
+        snapshot.Reason = FormatLocalNetworkDegradedReason(localNetworkDegradedReason) +
+            " " + downCount.ToString(CultureInfo.InvariantCulture) + "/" +
+            validCount.ToString(CultureInfo.InvariantCulture) + FormatReasonSuffix(reason);
+    }
+
+    private static bool IsLocalLossSensitiveDown(CloudEndpointSample sample)
+    {
+        if (sample == null)
+        {
+            return true;
+        }
+
+        string reason = (sample.AlertReason ?? string.Empty).Trim();
+        return reason.Length == 0 ||
+            reason.IndexOf("DNS", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            reason.IndexOf("TCP", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            reason.IndexOf("TLS", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            reason.IndexOf("超时", StringComparison.Ordinal) >= 0 ||
+            reason.IndexOf("连接", StringComparison.Ordinal) >= 0 ||
+            reason.IndexOf("请求失败", StringComparison.Ordinal) >= 0 ||
+            reason.IndexOf("状态API失败", StringComparison.Ordinal) >= 0 ||
+            reason.IndexOf("任务失败", StringComparison.Ordinal) >= 0;
+    }
+
+    private static string FormatLocalNetworkDegradedReason(string reason)
+    {
+        return string.IsNullOrWhiteSpace(reason) ? "本地网络不稳定" : reason.Trim();
     }
 
     private static CloudEndpointSample PickWorse(CloudEndpointSample left, CloudEndpointSample right)

@@ -284,3 +284,22 @@ Correction applied in `1.0.2.92`:
 ## 1.0.2.94 Source Audit Note
 
 The current integrated `Win11SettingsForm.cs` no longer contains the Phosphor PNG loader or the icon-file assertion described above. Navigation icons are currently drawn with Segoe Fluent Icons / MDL2 glyphs. Restoring Phosphor PNG loading and its self-test coverage remains a follow-up optimization if the visual requirement still applies.
+
+## 1.0.2.96 Agent-Reviewed Source Corrections
+
+The external design-token and code-review reports were rechecked against the current source by the main Codex controller plus two delegated agents. Items that were already absent from current source or fixed in this pass:
+
+- `MicaLayer` now uses the input-layer surface instead of duplicating `MicaBase`.
+- The broad title-bar `WndProc` hit-test override is removed; dragging is limited to the explicit header/title/subtitle mouse handlers.
+- Production settings pages no longer expose the `DumpLayout()` button. The private diagnostic writes under `%LOCALAPPDATA%\DesktopCodexAssistant`.
+- `DumpControl()` no longer calls `GetPreferredSize()` while dumping, so it avoids recursively perturbing layout during diagnostics.
+- Command buttons clear against their parent background, not the global window base color.
+- `SettingGroupCard.LayoutRows()` has a recursion guard with `try/finally`.
+- `SettingRow` uses shared compact-layout thresholds for height calculation and child placement.
+- `Win11SettingsForm` now uses a form-owned `UiFontCache.GetUiPoint()` path for WinForms control fonts and disposes the cache on close.
+
+Remaining intentional or follow-up items:
+
+- Navigation icons still use Segoe Fluent Icons / MDL2 glyphs. Restoring Phosphor PNG loading remains a separate visual-design change.
+- Neon accent colors are part of the current selected visual direction. A pure Win11 neutral theme would be a separate redesign decision.
+- Search filtering can still be optimized further by caching per-setting searchable text, but the current setting count does not make it a blocking issue.

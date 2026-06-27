@@ -39,7 +39,11 @@ internal sealed class CloudEndpointProbeReader
         }
     }
 
-    public CloudEndpointSnapshot[] GetSnapshot(WidgetSettings settings, NetworkAccessState networkState)
+    public CloudEndpointSnapshot[] GetSnapshot(
+        WidgetSettings settings,
+        NetworkAccessState networkState,
+        bool localNetworkDegraded,
+        string localNetworkDegradedReason)
     {
         if (networkState != NetworkAccessState.Online)
         {
@@ -98,7 +102,7 @@ internal sealed class CloudEndpointProbeReader
             string trigger = manualAccepted
                 ? "云服务手动刷新"
                 : (regionChanged ? "云服务地区设置变化" : "云服务定时间隔");
-            StartProbe(now, trigger, regionMask, intervalMinutes, manualAccepted, regionChanged);
+            StartProbe(now, trigger, regionMask, intervalMinutes, manualAccepted, regionChanged, localNetworkDegraded, localNetworkDegradedReason);
         }
 
         lock (this.sync)
@@ -107,7 +111,15 @@ internal sealed class CloudEndpointProbeReader
         }
     }
 
-    private void StartProbe(DateTime now, string trigger, int regionMask, int intervalMinutes, bool forceRefresh, bool regionChanged)
+    private void StartProbe(
+        DateTime now,
+        string trigger,
+        int regionMask,
+        int intervalMinutes,
+        bool forceRefresh,
+        bool regionChanged,
+        bool localNetworkDegraded,
+        string localNetworkDegradedReason)
     {
         CloudEndpointSnapshot[] previous;
         CancellationTokenSource cancellation = new CancellationTokenSource();
@@ -135,7 +147,15 @@ internal sealed class CloudEndpointProbeReader
             bool cancelled = false;
             try
             {
-                result = await CloudEndpointProbe.RunAsync(logLines, regionMask, previous, forceRefresh, regionChanged, cancellation.Token)
+                result = await CloudEndpointProbe.RunAsync(
+                        logLines,
+                        regionMask,
+                        previous,
+                        forceRefresh,
+                        regionChanged,
+                        localNetworkDegraded,
+                        localNetworkDegradedReason,
+                        cancellation.Token)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException)

@@ -700,11 +700,20 @@ internal sealed class ConnectionCheckForm : Form
 
     private void DrawCleanIpBadge(Graphics g, RectangleF rect, string iconClass, string text, Color textColor, Color borderColor, Color fillColor)
     {
+        DrawCleanIpBadge(g, rect, iconClass, text, textColor, borderColor, fillColor, IsBurnInColorProtectionActive());
+    }
+
+    private void DrawCleanIpBadge(Graphics g, RectangleF rect, string iconClass, string text, Color textColor, Color borderColor, Color fillColor, bool suppressDecorativeFill)
+    {
         using (GraphicsPath path = RoundedRectangle(rect, S(6)))
         using (SolidBrush fill = new SolidBrush(fillColor))
         using (Pen border = new Pen(borderColor, Math.Max(1.4f, S(2))))
         {
-            g.FillPath(fill, path);
+            if (!suppressDecorativeFill)
+            {
+                g.FillPath(fill, path);
+            }
+
             g.DrawPath(border, path);
         }
 
@@ -725,7 +734,7 @@ internal sealed class ConnectionCheckForm : Form
             float totalHeight = iconSize + S(2) + textHeight;
             float top = rect.Top + Math.Max(S(2), (rect.Height - totalHeight) / 2.0f);
             RectangleF iconRect = new RectangleF(rect.Left + (rect.Width - iconSize) / 2.0f, top, iconSize, iconSize);
-            DrawBadgeIcon(g, iconClass, iconRect, textColor);
+            DrawBadgeIcon(g, iconClass, iconRect, textColor, suppressDecorativeFill);
 
             float textTop = iconRect.Bottom + S(2);
             if (scoreText)
@@ -745,7 +754,7 @@ internal sealed class ConnectionCheckForm : Form
 
         float horizontalIconSize = Math.Min(rect.Height * 0.64f, Math.Max(S(20), rect.Width * 0.24f));
         RectangleF horizontalIconRect = new RectangleF(rect.Left + padding, rect.Top + (rect.Height - horizontalIconSize) / 2.0f, horizontalIconSize, horizontalIconSize);
-        DrawBadgeIcon(g, iconClass, horizontalIconRect, textColor);
+        DrawBadgeIcon(g, iconClass, horizontalIconRect, textColor, suppressDecorativeFill);
 
         RectangleF horizontalTextRect = new RectangleF(horizontalIconRect.Right + S(4), rect.Top + S(1), rect.Right - horizontalIconRect.Right - padding - S(4), rect.Height - S(2));
         Font horizontalFont = this.fontCache.GetUi(Math.Max(14.0f, rect.Height * 0.42f), FontStyle.Bold);
@@ -897,7 +906,7 @@ internal sealed class ConnectionCheckForm : Form
         return Color.FromArgb(r, g, b);
     }
 
-    private void DrawBadgeIcon(Graphics g, string iconClass, RectangleF rect, Color color)
+    private void DrawBadgeIcon(Graphics g, string iconClass, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
         string icon = (iconClass ?? string.Empty).ToLowerInvariant();
         if (icon.IndexOf("location-check", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -908,43 +917,43 @@ internal sealed class ConnectionCheckForm : Form
 
         if (icon.IndexOf("router", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawRouterIcon(g, rect, color);
+            DrawRouterIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
         if (icon.IndexOf("circle-minus", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawCircleMinusIcon(g, rect, color);
+            DrawCircleMinusIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
         if (icon.IndexOf("house", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawHouseIcon(g, rect, color);
+            DrawHouseIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
         if (icon.IndexOf("mobile", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawMobileIcon(g, rect, color);
+            DrawMobileIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
         if (icon.IndexOf("briefcase", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawBriefcaseIcon(g, rect, color);
+            DrawBriefcaseIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
         if (icon.IndexOf("graduation", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawGraduationIcon(g, rect, color);
+            DrawGraduationIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
         if (icon.IndexOf("landmark", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawLandmarkIcon(g, rect, color);
+            DrawLandmarkIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
@@ -956,7 +965,7 @@ internal sealed class ConnectionCheckForm : Form
 
         if (icon.IndexOf("server", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawServerIcon(g, rect, color);
+            DrawServerIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
@@ -981,14 +990,14 @@ internal sealed class ConnectionCheckForm : Form
 
         if (icon.IndexOf("shield", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawShieldIcon(g, rect, color);
+            DrawShieldIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
-        DrawQuestionIcon(g, rect, color);
+        DrawQuestionIcon(g, rect, color, suppressDecorativeFill);
     }
 
-    private void DrawShieldIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawShieldIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
         using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
         using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 54)))
@@ -1003,7 +1012,11 @@ internal sealed class ConnectionCheckForm : Form
                 new PointF(rect.Left + rect.Width * 0.26f, rect.Bottom - rect.Height * 0.14f),
                 new PointF(rect.Left + rect.Width * 0.16f, rect.Top + rect.Height * 0.24f)
             });
-            g.FillPath(brush, outer);
+            if (!suppressDecorativeFill)
+            {
+                g.FillPath(brush, outer);
+            }
+
             g.DrawPath(pen, outer);
             g.DrawLine(pen, rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.16f, rect.Left + rect.Width * 0.50f, rect.Bottom - rect.Height * 0.18f);
             g.DrawLine(pen, rect.Left + rect.Width * 0.33f, rect.Top + rect.Height * 0.48f, rect.Right - rect.Width * 0.33f, rect.Top + rect.Height * 0.48f);
@@ -1030,7 +1043,7 @@ internal sealed class ConnectionCheckForm : Form
         }
     }
 
-    private void DrawRouterIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawRouterIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
         using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
         using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 72)))
@@ -1039,7 +1052,11 @@ internal sealed class ConnectionCheckForm : Form
             RectangleF core = new RectangleF(rect.Left + rect.Width * 0.32f, rect.Top + rect.Height * 0.34f, rect.Width * 0.36f, rect.Height * 0.32f);
             using (GraphicsPath corePath = RoundedRectangle(core, core.Height * 0.22f))
             {
-                g.FillPath(brush, corePath);
+                if (!suppressDecorativeFill)
+                {
+                    g.FillPath(brush, corePath);
+                }
+
                 g.DrawPath(pen, corePath);
             }
 
@@ -1059,19 +1076,25 @@ internal sealed class ConnectionCheckForm : Form
         }
     }
 
-    private void DrawCircleMinusIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawCircleMinusIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
         using (Pen pen = new Pen(color, Math.Max(1.4f, S(2))))
-        using (Pen gap = new Pen(DesignTokens.Colors.AppBackground, Math.Max(1.5f, S(3))))
         {
             RectangleF ring = new RectangleF(rect.Left + rect.Width * 0.14f, rect.Top + rect.Height * 0.14f, rect.Width * 0.72f, rect.Height * 0.72f);
             g.DrawArc(pen, ring, 25, 275);
-            g.DrawArc(gap, ring, 306, 34);
+            if (!suppressDecorativeFill)
+            {
+                using (Pen gap = new Pen(DesignTokens.Colors.AppBackground, Math.Max(1.5f, S(3))))
+                {
+                    g.DrawArc(gap, ring, 306, 34);
+                }
+            }
+
             g.DrawLine(pen, rect.Left + rect.Width * 0.28f, rect.Top + rect.Height * 0.62f, rect.Right - rect.Width * 0.28f, rect.Top + rect.Height * 0.38f);
         }
     }
 
-    private void DrawHouseIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawHouseIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
         using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
         using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 62)))
@@ -1080,7 +1103,11 @@ internal sealed class ConnectionCheckForm : Form
             RectangleF arch = new RectangleF(rect.Left + rect.Width * 0.26f, rect.Top + rect.Height * 0.20f, rect.Width * 0.48f, rect.Height * 0.64f);
             using (GraphicsPath path = RoundedRectangle(arch, arch.Width * 0.22f))
             {
-                g.FillPath(brush, path);
+                if (!suppressDecorativeFill)
+                {
+                    g.FillPath(brush, path);
+                }
+
                 g.DrawPath(pen, path);
             }
 
@@ -1089,7 +1116,7 @@ internal sealed class ConnectionCheckForm : Form
         }
     }
 
-    private void DrawMobileIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawMobileIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
         using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
         using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 66)))
@@ -1098,7 +1125,11 @@ internal sealed class ConnectionCheckForm : Form
             RectangleF body = new RectangleF(rect.Left + rect.Width * 0.32f, rect.Top + rect.Height * 0.10f, rect.Width * 0.36f, rect.Height * 0.76f);
             using (GraphicsPath phone = RoundedRectangle(body, body.Width * 0.22f))
             {
-                g.FillPath(brush, phone);
+                if (!suppressDecorativeFill)
+                {
+                    g.FillPath(brush, phone);
+                }
+
                 g.DrawPath(pen, phone);
             }
 
@@ -1107,13 +1138,17 @@ internal sealed class ConnectionCheckForm : Form
         }
     }
 
-    private void DrawBriefcaseIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawBriefcaseIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
         using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
         using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 62)))
         {
             RectangleF tower = new RectangleF(rect.Left + rect.Width * 0.24f, rect.Top + rect.Height * 0.16f, rect.Width * 0.52f, rect.Height * 0.68f);
-            g.FillRectangle(brush, tower);
+            if (!suppressDecorativeFill)
+            {
+                g.FillRectangle(brush, tower);
+            }
+
             g.DrawRectangle(pen, Rectangle.Round(tower));
             for (int row = 0; row < 3; row++)
             {
@@ -1125,7 +1160,7 @@ internal sealed class ConnectionCheckForm : Form
         }
     }
 
-    private void DrawGraduationIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawGraduationIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
         using (Pen pen = new Pen(color, Math.Max(1.2f, S(1))))
         using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 62)))
@@ -1134,8 +1169,12 @@ internal sealed class ConnectionCheckForm : Form
             using (GraphicsPath leftPage = RoundedRectangle(new RectangleF(book.Left, book.Top, book.Width * 0.48f, book.Height), book.Height * 0.12f))
             using (GraphicsPath rightPage = RoundedRectangle(new RectangleF(book.Left + book.Width * 0.52f, book.Top, book.Width * 0.48f, book.Height), book.Height * 0.12f))
             {
-                g.FillPath(brush, leftPage);
-                g.FillPath(brush, rightPage);
+                if (!suppressDecorativeFill)
+                {
+                    g.FillPath(brush, leftPage);
+                    g.FillPath(brush, rightPage);
+                }
+
                 g.DrawPath(pen, leftPage);
                 g.DrawPath(pen, rightPage);
             }
@@ -1146,14 +1185,18 @@ internal sealed class ConnectionCheckForm : Form
         }
     }
 
-    private void DrawLandmarkIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawLandmarkIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
         using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
         using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 64)))
         using (SolidBrush nodeBrush = new SolidBrush(color))
         {
             RectangleF seal = new RectangleF(rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.14f, rect.Width * 0.64f, rect.Height * 0.64f);
-            g.FillEllipse(brush, seal);
+            if (!suppressDecorativeFill)
+            {
+                g.FillEllipse(brush, seal);
+            }
+
             g.DrawEllipse(pen, seal);
             for (int i = 0; i < 3; i++)
             {
@@ -1178,7 +1221,7 @@ internal sealed class ConnectionCheckForm : Form
         }
     }
 
-    private void DrawServerIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawServerIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
         using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
         using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 58)))
@@ -1189,7 +1232,11 @@ internal sealed class ConnectionCheckForm : Form
                 RectangleF rack = new RectangleF(rect.Left + rect.Width * 0.20f, rect.Top + rect.Height * (0.14f + i * 0.24f), rect.Width * 0.60f, rect.Height * 0.17f);
                 using (GraphicsPath path = RoundedRectangle(rack, rack.Height * 0.22f))
                 {
-                    g.FillPath(fill, path);
+                    if (!suppressDecorativeFill)
+                    {
+                        g.FillPath(fill, path);
+                    }
+
                     g.DrawPath(pen, path);
                 }
 
@@ -1244,7 +1291,7 @@ internal sealed class ConnectionCheckForm : Form
         }
     }
 
-    private void DrawQuestionIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawQuestionIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
         Font font = this.fontCache.GetUi(Math.Max(10.0f, rect.Height * 0.62f), FontStyle.Bold);
         using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
@@ -1262,7 +1309,11 @@ internal sealed class ConnectionCheckForm : Form
                     new PointF(rect.Left + rect.Width * 0.08f, rect.Top + rect.Height * 0.50f)
                 });
                 diamond.CloseFigure();
-                g.FillPath(brush, diamond);
+                if (!suppressDecorativeFill)
+                {
+                    g.FillPath(brush, diamond);
+                }
+
                 g.DrawPath(pen, diamond);
             }
 
@@ -1275,6 +1326,71 @@ internal sealed class ConnectionCheckForm : Form
     private static string EmptyToDash(string value)
     {
         return string.IsNullOrWhiteSpace(value) ? "--" : value.Trim();
+    }
+
+    internal static void RunHiddenModeBadgeRenderingSelfTest()
+    {
+        ConnectionCheckForm form = new ConnectionCheckForm(new WidgetSettings());
+        try
+        {
+            using (Bitmap bitmap = new Bitmap(96, 48, System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
+            using (Graphics graphics = Graphics.FromImage(bitmap))
+            {
+                BurnInProtection.ConfigureGraphics(graphics, true);
+                Color text = Color.FromArgb(220, 53, 169, 82);
+                Color border = Color.FromArgb(210, 150, 210, 160);
+                Color fill = Color.FromArgb(34, 53, 169, 82);
+                RectangleF badgeRect = new RectangleF(4.0f, 4.0f, 88.0f, 40.0f);
+
+                graphics.Clear(Color.Transparent);
+                form.DrawCleanIpBadge(
+                    graphics,
+                    badgeRect,
+                    "fa-solid fa-shield-halved",
+                    "OK",
+                    text,
+                    border,
+                    fill,
+                    false);
+                AssertConnectionCheckSelfTest(bitmap.GetPixel(84, 24).A > 0, "normal badge fill sample");
+
+                graphics.Clear(Color.Transparent);
+                form.DrawCleanIpBadge(
+                    graphics,
+                    badgeRect,
+                    "fa-solid fa-shield-halved",
+                    "OK",
+                    text,
+                    border,
+                    fill,
+                    true);
+                AssertConnectionCheckSelfTest(bitmap.GetPixel(84, 24).A == 0, "hidden badge fill suppression");
+
+                RectangleF iconRect = new RectangleF(8.0f, 4.0f, 40.0f, 40.0f);
+                graphics.Clear(Color.Transparent);
+                form.DrawShieldIcon(graphics, iconRect, text, false);
+                AssertConnectionCheckSelfTest(bitmap.GetPixel(23, 18).A > 0, "normal icon fill sample");
+
+                graphics.Clear(Color.Transparent);
+                form.DrawShieldIcon(graphics, iconRect, text, true);
+                AssertConnectionCheckSelfTest(bitmap.GetPixel(23, 18).A == 0, "hidden icon fill suppression");
+            }
+        }
+        finally
+        {
+            form.Close();
+            form.Dispose();
+        }
+    }
+
+    private static void AssertConnectionCheckSelfTest(bool condition, string message)
+    {
+        if (!condition)
+        {
+            throw new InvalidOperationException(
+                "Connection check self-test failed: " +
+                message);
+        }
     }
 
     private static bool HasSameDisplayData(CleanIpConnectionSnapshot left, CleanIpConnectionSnapshot right)

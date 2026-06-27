@@ -32,6 +32,7 @@ internal sealed class GfwProbeReader
     private DateTime lastProbeStartedUtc;
     private DateTime lastDetailedLogUtc;
     private bool requestRunning;
+    private bool localNetworkGateActive;
     private int lastManualRefreshToken;
 
     public void RequestRefresh()
@@ -42,7 +43,11 @@ internal sealed class GfwProbeReader
         }
     }
 
-    public GfwProbeSnapshot GetSnapshot(WidgetSettings settings, NetworkAccessState networkState)
+    public GfwProbeSnapshot GetSnapshot(
+        WidgetSettings settings,
+        NetworkAccessState networkState,
+        bool localNetworkDegraded,
+        string localNetworkDegradedReason)
     {
         if (settings == null || !settings.GfwProbeEnabled)
         {
@@ -56,6 +61,7 @@ internal sealed class GfwProbeReader
                     Detail = "关闭",
                     Reason = string.Empty
                 };
+                this.localNetworkGateActive = false;
 
                 return this.snapshot.Clone();
             }
@@ -68,13 +74,30 @@ internal sealed class GfwProbeReader
             lock (this.sync)
             {
                 this.lastProbeStartedUtc = DateTime.MinValue;
+                this.localNetworkGateActive = false;
                 ApplyUnavailableNetworkSnapshot(networkState);
 
                 return this.snapshot.Clone();
             }
         }
 
+        if (localNetworkDegraded)
+        {
+            lock (this.sync)
+            {
+                this.lastProbeStartedUtc = DateTime.MinValue;
+                ApplyLocalNetworkDegradedSnapshot(localNetworkDegradedReason);
+
+                return this.snapshot.Clone();
+            }
+        }
+
         DateTime now = DateTime.UtcNow;
+        lock (this.sync)
+        {
+            this.localNetworkGateActive = false;
+        }
+
         bool manualRefresh = settings.GfwProbeManualRefreshToken != this.lastManualRefreshToken;
         int intervalMinutes = Math.Max(WidgetSettings.MinGfwProbeIntervalMinutes, settings.GfwProbeIntervalMinutes);
         bool due = this.lastProbeStartedUtc == DateTime.MinValue ||
@@ -147,6 +170,31 @@ internal sealed class GfwProbeReader
         this.snapshot.CheckedAtLocal = DateTime.MinValue;
         this.snapshot.CheckedAtKnown = false;
         this.snapshot.CloudEndpoints = CreateUnavailableCloudEndpointSnapshots(reason);
+    }
+
+    private void ApplyLocalNetworkDegradedSnapshot(string reason)
+    {
+        reason = FormatLocalNetworkDegradedReason(reason);
+        if (this.snapshot.Enabled &&
+            this.snapshot.Status == GfwProbeStatus.Inconclusive &&
+            string.Equals(this.snapshot.Detail, "不可判定", StringComparison.Ordinal) &&
+            string.Equals(this.snapshot.Reason, reason, StringComparison.Ordinal))
+        {
+            this.snapshot.Running = this.requestRunning;
+            this.localNetworkGateActive = true;
+            return;
+        }
+
+        this.snapshot.Enabled = true;
+        this.snapshot.Running = this.requestRunning;
+        this.snapshot.Status = GfwProbeStatus.Inconclusive;
+        this.snapshot.Detail = "不可判定";
+        this.snapshot.Reason = reason;
+        this.snapshot.CheckedAtLocal = DateTime.Now;
+        this.snapshot.CheckedAtKnown = true;
+        this.snapshot.DomainsTested = 0;
+        this.snapshot.AnomalyCount = 0;
+        this.localNetworkGateActive = true;
     }
 
     private static CloudEndpointSnapshot[] CreateUnavailableCloudEndpointSnapshots(string reason)
@@ -230,6 +278,12 @@ internal sealed class GfwProbeReader
             bool shouldWriteDetailedLog;
             lock (this.sync)
             {
+                if (this.localNetworkGateActive)
+                {
+                    this.requestRunning = false;
+                    return;
+                }
+
                 // Stable automatic probes remain in memory and only checkpoint every six
                 // hours. Manual probes, first results, and state transitions remain immediate.
                 bool manualProbe = string.Equals(trigger, "手动测试按钮", StringComparison.Ordinal);
@@ -330,6 +384,25 @@ internal sealed class GfwProbeReader
         int anomalies = summary.DnsAnomalies + summary.TcpAnomalies + summary.TlsAnomalies + summary.HttpAnomalies;
         if (anomalies > 0)
         {
+            int maxLayerAnomalies = Math.Max(
+                Math.Max(summary.DnsAnomalies, summary.TcpAnomalies),
+                Math.Max(summary.TlsAnomalies, summary.HttpAnomalies));
+            if (maxLayerAnomalies < 2)
+            {
+                return new GfwProbeSnapshot
+                {
+                    Enabled = true,
+                    Running = false,
+                    Status = GfwProbeStatus.Inconclusive,
+                    Detail = "不可判定",
+                    Reason = "候选站点少量异常 " + FormatCount(anomalies, summary.DomainsTested),
+                    CheckedAtLocal = DateTime.Now,
+                    CheckedAtKnown = true,
+                    DomainsTested = summary.DomainsTested,
+                    AnomalyCount = anomalies
+                };
+            }
+
             if (summary.DnsAnomalies >= summary.TcpAnomalies &&
                 summary.DnsAnomalies >= summary.TlsAnomalies &&
                 summary.DnsAnomalies >= summary.HttpAnomalies)
@@ -376,6 +449,11 @@ internal sealed class GfwProbeReader
     private static string FormatCount(int count, int total)
     {
         return count.ToString(CultureInfo.InvariantCulture) + "/" + total.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static string FormatLocalNetworkDegradedReason(string reason)
+    {
+        return string.IsNullOrWhiteSpace(reason) ? "本地网络不稳定" : reason.Trim();
     }
 
     private static string FormatProbeResult(DomainProbeResult result)

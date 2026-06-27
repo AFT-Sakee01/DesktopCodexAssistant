@@ -19,6 +19,9 @@ internal sealed class NetworkMonitorReader : IDisposable
     private const int PingCount = 4;
     private const int PingTimeoutMs = 1000;
     private const int HttpTimeoutMs = 4000;
+    private const int DegradedPacketLossPercent = 15;
+    private const double DegradedLatencyMs = 800.0;
+    private const double DegradedJitterMs = 250.0;
     private const string DnsKnownDomain = "www.msftconnecttest.com";
     private const int DnsQueryTimeoutMs = 1000;
     private const int MaxDnsProbeConcurrency = 2;
@@ -75,6 +78,8 @@ internal sealed class NetworkMonitorReader : IDisposable
                 this.snapshot.ConnectivityOnline = false;
                 this.snapshot.AccessState = NetworkAccessState.Unknown;
                 this.snapshot.AccessReason = "正在刷新";
+                this.snapshot.LocalNetworkDegraded = false;
+                this.snapshot.LocalNetworkDegradedReason = string.Empty;
             }
         }
 
@@ -109,6 +114,8 @@ internal sealed class NetworkMonitorReader : IDisposable
         string dnsSignature;
         string lastDnsSignature;
         DnsServerStatus worstDnsStatus;
+        bool localNetworkDegraded;
+        string localNetworkDegradedReason;
         lock (this.sync)
         {
             connected = this.snapshot.Connected;
@@ -119,6 +126,8 @@ internal sealed class NetworkMonitorReader : IDisposable
             dnsSignature = BuildDnsAddressSignature(this.snapshot.DnsServerDetails);
             lastDnsSignature = this.lastDnsProbeSignature;
             worstDnsStatus = GetWorstDnsStatus(this.snapshot.DnsServerDetails);
+            localNetworkDegraded = this.snapshot.LocalNetworkDegraded;
+            localNetworkDegradedReason = this.snapshot.LocalNetworkDegradedReason;
         }
 
         int connectivityIntervalMs = WidgetSettings.GetNetworkConnectivityIntervalMs(mode, accessState);
@@ -145,8 +154,8 @@ internal sealed class NetworkMonitorReader : IDisposable
             StartDnsRefresh(now);
         }
 
-        GfwProbeSnapshot gfwProbe = this.gfwProbeReader.GetSnapshot(settings, accessState);
-        gfwProbe.CloudEndpoints = this.cloudEndpointProbeReader.GetSnapshot(settings, accessState);
+        GfwProbeSnapshot gfwProbe = this.gfwProbeReader.GetSnapshot(settings, accessState, localNetworkDegraded, localNetworkDegradedReason);
+        gfwProbe.CloudEndpoints = this.cloudEndpointProbeReader.GetSnapshot(settings, accessState, localNetworkDegraded, localNetworkDegradedReason);
         lock (this.sync)
         {
             this.snapshot.GfwProbe = gfwProbe;
@@ -201,6 +210,8 @@ internal sealed class NetworkMonitorReader : IDisposable
                 local.LatencyMs = this.snapshot.LatencyMs;
                 local.JitterMs = this.snapshot.JitterMs;
                 local.PacketLossPercent = this.snapshot.PacketLossPercent;
+                local.LocalNetworkDegraded = this.snapshot.LocalNetworkDegraded;
+                local.LocalNetworkDegradedReason = this.snapshot.LocalNetworkDegradedReason;
                 local.ConnectivityTarget = this.snapshot.ConnectivityTarget;
                 local.DnsServerDetails = CloneDnsServerDetails(this.snapshot.DnsServerDetails);
             }
@@ -218,6 +229,8 @@ internal sealed class NetworkMonitorReader : IDisposable
                 local.LatencyMs = 0.0;
                 local.JitterMs = 0.0;
                 local.PacketLossPercent = 100;
+                local.LocalNetworkDegraded = false;
+                local.LocalNetworkDegradedReason = string.Empty;
                 local.AccessReason = local.InterfaceKnown ? "网卡未连接" : "网卡未识别";
                 local.LastError = local.InterfaceKnown ? "Selected interface is not up" : "No active interface";
                 local.DnsServerDetails = MarkDnsServers(local.DnsServerDetails, DnsServerStatus.Unavailable, "网卡未连接");
@@ -234,6 +247,8 @@ internal sealed class NetworkMonitorReader : IDisposable
                 local.LatencyMs = 0.0;
                 local.JitterMs = 0.0;
                 local.PacketLossPercent = 0;
+                local.LocalNetworkDegraded = false;
+                local.LocalNetworkDegradedReason = string.Empty;
             }
 
             this.snapshot = local;
@@ -335,6 +350,8 @@ internal sealed class NetworkMonitorReader : IDisposable
                 this.snapshot.ConnectivityOnline = false;
                 this.snapshot.AccessState = NetworkAccessState.Unknown;
                 this.snapshot.AccessReason = "网络已变化";
+                this.snapshot.LocalNetworkDegraded = false;
+                this.snapshot.LocalNetworkDegradedReason = string.Empty;
             }
 
             requestGfwRefresh = true;
@@ -830,6 +847,9 @@ internal sealed class NetworkMonitorReader : IDisposable
         string requestInterfaceId;
         string[] addresses;
         string signature;
+        DnsServerSnapshot[] previousDetails;
+        bool localNetworkDegraded;
+        string localNetworkDegradedReason;
         lock (this.sync)
         {
             if (this.disposed || this.dnsProbeRunning)
@@ -848,6 +868,9 @@ internal sealed class NetworkMonitorReader : IDisposable
             requestGeneration = this.networkGeneration;
             requestInterfaceId = this.snapshot.InterfaceId;
             signature = BuildDnsAddressSignature(this.snapshot.DnsServerDetails);
+            previousDetails = CloneDnsServerDetails(this.snapshot.DnsServerDetails);
+            localNetworkDegraded = this.snapshot.LocalNetworkDegraded;
+            localNetworkDegradedReason = this.snapshot.LocalNetworkDegradedReason;
         }
 
         Task.Run(delegate
@@ -855,11 +878,11 @@ internal sealed class NetworkMonitorReader : IDisposable
             DnsServerSnapshot[] result;
             try
             {
-                result = ProbeDnsServers(addresses);
+                result = ProbeDnsServers(addresses, previousDetails, localNetworkDegraded, localNetworkDegradedReason);
             }
             catch (Exception ex)
             {
-                result = CreateDnsFailureSnapshots(addresses, ex);
+                result = CreateDnsFailureSnapshots(addresses, ex, previousDetails, localNetworkDegraded, localNetworkDegradedReason);
             }
 
             lock (this.sync)
@@ -880,7 +903,12 @@ internal sealed class NetworkMonitorReader : IDisposable
         });
     }
 
-    private static DnsServerSnapshot[] CreateDnsFailureSnapshots(string[] addresses, Exception ex)
+    private static DnsServerSnapshot[] CreateDnsFailureSnapshots(
+        string[] addresses,
+        Exception ex,
+        DnsServerSnapshot[] previousDetails,
+        bool localNetworkDegraded,
+        string localNetworkDegradedReason)
     {
         if (addresses == null || addresses.Length == 0)
         {
@@ -900,6 +928,11 @@ internal sealed class NetworkMonitorReader : IDisposable
                 CheckedAtLocal = now,
                 CheckedAtKnown = true
             };
+            snapshots[i] = ApplyDnsUnavailabilityGate(
+                snapshots[i],
+                FindDnsSnapshot(previousDetails, addresses[i]),
+                localNetworkDegraded,
+                localNetworkDegradedReason);
         }
 
         return snapshots;
@@ -925,7 +958,11 @@ internal sealed class NetworkMonitorReader : IDisposable
         return addresses.ToArray();
     }
 
-    private static DnsServerSnapshot[] ProbeDnsServers(string[] addresses)
+    private static DnsServerSnapshot[] ProbeDnsServers(
+        string[] addresses,
+        DnsServerSnapshot[] previousDetails,
+        bool localNetworkDegraded,
+        string localNetworkDegradedReason)
     {
         if (addresses == null || addresses.Length == 0)
         {
@@ -950,11 +987,15 @@ internal sealed class NetworkMonitorReader : IDisposable
 
                     try
                     {
-                        result[index] = ProbeDnsServer(addresses[index]);
+                        result[index] = ApplyDnsUnavailabilityGate(
+                            ProbeDnsServer(addresses[index]),
+                            FindDnsSnapshot(previousDetails, addresses[index]),
+                            localNetworkDegraded,
+                            localNetworkDegradedReason);
                     }
                     catch (Exception ex)
                     {
-                        result[index] = new DnsServerSnapshot
+                        DnsServerSnapshot failure = new DnsServerSnapshot
                         {
                             Address = addresses[index] ?? string.Empty,
                             Status = DnsServerStatus.Unavailable,
@@ -962,6 +1003,11 @@ internal sealed class NetworkMonitorReader : IDisposable
                             CheckedAtLocal = DateTime.Now,
                             CheckedAtKnown = true
                         };
+                        result[index] = ApplyDnsUnavailabilityGate(
+                            failure,
+                            FindDnsSnapshot(previousDetails, addresses[index]),
+                            localNetworkDegraded,
+                            localNetworkDegradedReason);
                     }
                 }
             });
@@ -972,7 +1018,7 @@ internal sealed class NetworkMonitorReader : IDisposable
         {
             if (result[i] == null)
             {
-                result[i] = new DnsServerSnapshot
+                DnsServerSnapshot failure = new DnsServerSnapshot
                 {
                     Address = addresses[i] ?? string.Empty,
                     Status = DnsServerStatus.Unavailable,
@@ -980,10 +1026,91 @@ internal sealed class NetworkMonitorReader : IDisposable
                     CheckedAtLocal = DateTime.Now,
                     CheckedAtKnown = true
                 };
+                result[i] = ApplyDnsUnavailabilityGate(
+                    failure,
+                    FindDnsSnapshot(previousDetails, addresses[i]),
+                    localNetworkDegraded,
+                    localNetworkDegradedReason);
             }
         }
 
         return result;
+    }
+
+    private static DnsServerSnapshot FindDnsSnapshot(DnsServerSnapshot[] details, string address)
+    {
+        if (details == null || string.IsNullOrWhiteSpace(address))
+        {
+            return null;
+        }
+
+        string normalized = address.Trim();
+        for (int i = 0; i < details.Length; i++)
+        {
+            DnsServerSnapshot item = details[i];
+            if (item != null && string.Equals(item.Address, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                return item;
+            }
+        }
+
+        return null;
+    }
+
+    private static DnsServerSnapshot ApplyDnsUnavailabilityGate(
+        DnsServerSnapshot current,
+        DnsServerSnapshot previous,
+        bool localNetworkDegraded,
+        string localNetworkDegradedReason)
+    {
+        if (current == null)
+        {
+            return new DnsServerSnapshot();
+        }
+
+        if (current.Status != DnsServerStatus.Unavailable)
+        {
+            current.FailureCount = 0;
+            return current;
+        }
+
+        if (IsPermanentDnsUnavailableReason(current.Reason))
+        {
+            current.FailureCount = 1;
+            return current;
+        }
+
+        int previousFailureCount = previous == null ? 0 : previous.FailureCount;
+        if (previous != null && previous.Status == DnsServerStatus.Unavailable && previousFailureCount <= 0)
+        {
+            previousFailureCount = 1;
+        }
+
+        int failureCount = Math.Min(1000, previousFailureCount + 1);
+        current.FailureCount = failureCount;
+
+        // DNS UDP/TCP timeouts are also affected by packet loss. During a degraded
+        // local link window we keep the DNS row yellow until the link itself recovers;
+        // outside that window, a second consecutive failed round confirms grey.
+        if (localNetworkDegraded)
+        {
+            current.Status = DnsServerStatus.Problem;
+            current.Reason = FormatLocalNetworkDegradedReason(localNetworkDegradedReason);
+            return current;
+        }
+
+        if (failureCount < 2)
+        {
+            current.Status = DnsServerStatus.Problem;
+            current.Reason = EmptyFallback(current.Reason, "无响应") + "待确认";
+        }
+
+        return current;
+    }
+
+    private static bool IsPermanentDnsUnavailableReason(string reason)
+    {
+        return string.Equals(reason, "地址无效", StringComparison.Ordinal);
     }
 
     private static DnsServerSnapshot ProbeDnsServer(string address)
@@ -1382,6 +1509,8 @@ internal sealed class NetworkMonitorReader : IDisposable
                 this.snapshot.LatencyMs = result.LatencyMs;
                 this.snapshot.JitterMs = result.JitterMs;
                 this.snapshot.PacketLossPercent = result.PacketLossPercent;
+                this.snapshot.LocalNetworkDegraded = result.LocalNetworkDegraded;
+                this.snapshot.LocalNetworkDegradedReason = result.LocalNetworkDegradedReason;
                 if (!result.Online)
                 {
                     this.snapshot.LastError = string.IsNullOrEmpty(result.AccessReason) ? "Connectivity failed" : result.AccessReason;
@@ -1405,6 +1534,8 @@ internal sealed class NetworkMonitorReader : IDisposable
         // reader snapshot or they would alter real scheduling and GFW/public-IP requests.
         snapshot.ConnectivityKnown = true;
         snapshot.AccessReason = "测试模式";
+        snapshot.LocalNetworkDegraded = false;
+        snapshot.LocalNetworkDegradedReason = string.Empty;
         switch (settings.NetworkStatusTestMode)
         {
             case NetworkStatusTestMode.Online:
@@ -1588,6 +1719,7 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
 
         ApplyPingStats(ref result, roundTrips);
+        ApplyLocalNetworkQuality(ref result);
         return result;
     }
 
@@ -1648,6 +1780,43 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
 
         result.JitterMs = jitterSum / (roundTrips.Count - 1);
+    }
+
+    private static void ApplyLocalNetworkQuality(ref ConnectivityResult result)
+    {
+        result.LocalNetworkDegraded = false;
+        result.LocalNetworkDegradedReason = string.Empty;
+        if (result.AccessState != NetworkAccessState.Online)
+        {
+            return;
+        }
+
+        // This flag does not change Online/Offline. It only tells higher level probes
+        // that a remote failure may be caused by local packet loss or extreme latency.
+        if (result.PacketLossPercent >= DegradedPacketLossPercent)
+        {
+            result.LocalNetworkDegraded = true;
+            result.LocalNetworkDegradedReason = "本地丢包高 " + result.PacketLossPercent.ToString(CultureInfo.InvariantCulture) + "%";
+            return;
+        }
+
+        if (result.JitterMs >= DegradedJitterMs)
+        {
+            result.LocalNetworkDegraded = true;
+            result.LocalNetworkDegradedReason = "本地抖动高 " + Math.Round(result.JitterMs).ToString(CultureInfo.InvariantCulture) + "ms";
+            return;
+        }
+
+        if (result.LatencyMs >= DegradedLatencyMs)
+        {
+            result.LocalNetworkDegraded = true;
+            result.LocalNetworkDegradedReason = "本地延迟高 " + Math.Round(result.LatencyMs).ToString(CultureInfo.InvariantCulture) + "ms";
+        }
+    }
+
+    private static string FormatLocalNetworkDegradedReason(string reason)
+    {
+        return string.IsNullOrWhiteSpace(reason) ? "本地网络不稳定" : reason.Trim();
     }
 
     private static CaptivePortalResult CheckCaptivePortal()
@@ -1837,6 +2006,8 @@ internal sealed class NetworkMonitorReader : IDisposable
         public double LatencyMs;
         public double JitterMs;
         public int PacketLossPercent;
+        public bool LocalNetworkDegraded;
+        public string LocalNetworkDegradedReason;
     }
 
     private struct CaptivePortalResult

@@ -12,6 +12,13 @@ Backups/
 *_backup*/
 *.zip
 
+# Local validation and debug dumps
+_validation/
+settings_layout_dump.txt
+dump_error.txt
+test.cs
+test_output.txt
+
 # Runtime logs and local state
 *.log
 settings.ini

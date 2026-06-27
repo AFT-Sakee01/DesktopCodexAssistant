@@ -1442,8 +1442,7 @@ internal sealed class NetworkMonitorForm : Form
         return gfw.Status == GfwProbeStatus.SuspectedDns ||
             gfw.Status == GfwProbeStatus.SuspectedTcp ||
             gfw.Status == GfwProbeStatus.SuspectedTlsSni ||
-            gfw.Status == GfwProbeStatus.SuspectedHttp ||
-            gfw.Status == GfwProbeStatus.Inconclusive;
+            gfw.Status == GfwProbeStatus.SuspectedHttp;
     }
 
     private static Color GetAccessStateColor(NetworkAccessState state)

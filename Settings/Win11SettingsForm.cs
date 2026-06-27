@@ -17,7 +17,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private const int NavItemHeight = 60;
 
     private static readonly Color MicaBase = DesignTokens.NeonGeekTheme.WindowBase;
-    private static readonly Color MicaLayer = DesignTokens.NeonGeekTheme.WindowBase;
+    private static readonly Color MicaLayer = DesignTokens.NeonGeekTheme.InputBackground;
     private static readonly Color CardRest = DesignTokens.NeonGeekTheme.CardGlassRest;
     private static readonly Color CardHover = DesignTokens.NeonGeekTheme.CardGlassHover;
     private static readonly Color StrokeColor = DesignTokens.NeonGeekTheme.DividerLines;
@@ -33,6 +33,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private static readonly Color ErrorClr = DesignTokens.SettingsTheme.ErrorText;
 
     private readonly WidgetForm owner;
+    private readonly UiFontCache fontCache = new UiFontCache();
     private readonly Timer previewTimer;
     private readonly Timer statusTimer;
     private readonly Dictionary<string, SettingEditor> editors = new Dictionary<string, SettingEditor>(StringComparer.Ordinal);
@@ -72,7 +73,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         this.MinimizeBox = false;
         this.MinimumSize = GetMinimumWindowSizeForScreen();
         this.ClientSize = FitClientSizeToScreen(new Size(1888, 1312));
-        this.Font = DesignTokens.CreateUIFont(10.0f);
+        this.Font = GetUiFont(10.0f);
         this.BackColor = MicaBase;
         this.ForeColor = TextSecondary;
 
@@ -120,6 +121,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         this.previewTimer.Dispose();
         this.statusTimer.Tick -= OnStatusTimerTick;
         this.statusTimer.Dispose();
+        this.fontCache.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -141,22 +143,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         return page != null && page.ScrollByMouseWheelDelta(delta);
     }
 
-    protected override void WndProc(ref Message m)
-    {
-        base.WndProc(ref m);
-        const int WM_NCHITTEST = 0x0084;
-        const int HTCLIENT = 1;
-        const int HTCAPTION = 2;
-        if (m.Msg == WM_NCHITTEST && (int)m.Result == HTCLIENT)
-        {
-            Point screenPoint = new Point(m.LParam.ToInt32());
-            Point clientPoint = this.PointToClient(screenPoint);
-            if (clientPoint.Y <= 60 && clientPoint.X < this.Width - 60)
-            {
-                m.Result = (IntPtr)HTCAPTION;
-            }
-        }
-    }
+
 
     // ── DWM Round Corners (Win11) ────────────────────────────────────────
     private void TryEnableDwmRoundCorners()
@@ -189,7 +176,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         Label closeBtn = new Label();
         closeBtn.Text = "✕";
-        closeBtn.Font = DesignTokens.CreateUIFont(14.0f, FontStyle.Regular);
+        closeBtn.Font = GetUiFont(14.0f, FontStyle.Regular);
         closeBtn.ForeColor = TextSecondary;
         closeBtn.BackColor = MicaBase;
         closeBtn.Cursor = Cursors.Hand;
@@ -229,7 +216,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         title.AutoSize = true;
         title.Margin = new Padding(0);
         title.Padding = new Padding(0, 0, 20, 0);
-        title.Font = DesignTokens.CreateUIFont(22.0f, FontStyle.Bold);
+        title.Font = GetUiFont(22.0f, FontStyle.Bold);
         title.ForeColor = TextPrimary;
         title.BackColor = MicaBase;
         title.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Bottom;
@@ -239,7 +226,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         subtitle.Text = "按 Windows 11 设置结构重建，提供全局跨组件配置支持";
         subtitle.AutoSize = true;
         subtitle.Margin = new Padding(0, 10, 0, 50); // 10px below title, 50px below subtitle
-        subtitle.Font = DesignTokens.CreateUIFont(9.5f);
+        subtitle.Font = GetUiFont(9.5f);
         subtitle.ForeColor = TextTertiary;
         subtitle.BackColor = MicaBase;
 
@@ -250,7 +237,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         this.searchBox.BackColor = MicaLayer;
         this.searchBox.ForeColor = TextSecondary;
         this.searchBox.BorderStyle = BorderStyle.FixedSingle;
-        this.searchBox.Font = DesignTokens.CreateUIFont(10.0f);
+        this.searchBox.Font = GetUiFont(10.0f);
         this.searchBox.TextChanged += delegate { ApplySearchFilter(); };
         this.searchBox.HandleCreated += delegate
         {
@@ -341,7 +328,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         this.statusLabel = new Label();
         this.statusLabel.TextAlign = ContentAlignment.MiddleLeft;
-        this.statusLabel.Font = DesignTokens.CreateUIFont(9.5f, FontStyle.Bold);
+        this.statusLabel.Font = GetUiFont(9.5f, FontStyle.Bold);
         this.statusLabel.ForeColor = AccentClr;
         this.statusLabel.BackColor = MicaBase;
         this.statusLabel.Dock = DockStyle.Fill;
@@ -383,7 +370,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         return footer;
     }
 
-    private static Button BuildCommandButton(string text, bool primary)
+    private Button BuildCommandButton(string text, bool primary)
     {
         Button button = new Button();
         button.Text = text; // Keep text so AutoSize works
@@ -393,7 +380,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         button.Margin = new Padding(0, 0, 12, 0);
         button.FlatStyle = FlatStyle.Flat;
         button.FlatAppearance.BorderSize = 0;
-        button.Font = DesignTokens.CreateUIFont(9.5f, FontStyle.Bold);
+        button.Font = GetUiFont(9.5f, FontStyle.Bold);
         button.Cursor = Cursors.Hand;
         button.BackColor = MicaBase;
         button.ForeColor = primary ? Color.Black : TextSecondary;
@@ -413,7 +400,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         button.Paint += (s, e) =>
         {
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            e.Graphics.Clear(MicaBase); // Clear default drawn text/background
+            e.Graphics.Clear(button.Parent != null ? button.Parent.BackColor : MicaBase);
             Color currentBack = down ? backDown : (hover ? backHover : backBase);
             using (GraphicsPath path = CreateRoundRectangle(new Rectangle(0, 0, button.Width - 1, button.Height - 1), 6))
             {
@@ -443,14 +430,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "恢复与保护", "SeelenDockForegroundPulseEnabled", "WinDRecoveryPulseEnabled", "PowerResumeRestartEnabled" }
         });
 
-        {
-            CategoryPage sysPage = this.pages[this.pages.Count - 1];
-            Button dumpBtn = BuildCommandButton("记录窗口排版日志", false);
-            dumpBtn.Width = 200;
-            dumpBtn.Margin = new Padding(0, 16, 0, 32);
-            dumpBtn.Click += delegate { DumpLayout(); };
-            sysPage.Stack.Controls.Add(dumpBtn);
-        }
         AddPageGrouped("\uE7B3", "隐藏与鼠标", "悬停透明、判定范围、延迟显现和防烧屏。", new string[][]
         {
             new string[] { "悬停透明", "HoverOpacityEnabled", "SensitiveMouseModeEnabled", "SensitiveMouseRangePixels" },
@@ -537,7 +516,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             // Group title label (above the card, Win11 style)
             Label titleLabel = new Label();
             titleLabel.Text = groupTitle;
-            titleLabel.Font = DesignTokens.CreateUIFont(10.0f, FontStyle.Bold);
+            titleLabel.Font = GetUiFont(10.0f, FontStyle.Bold);
             titleLabel.ForeColor = TextPrimary;
             titleLabel.BackColor = MicaBase;
             titleLabel.AutoSize = false;
@@ -576,7 +555,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         nav.Width = NavWidth - 24;
         nav.Height = NavItemHeight;
         nav.Margin = new Padding(6, 3, 6, 3);
-        nav.Font = DesignTokens.CreateUIFont(10.0f);
+        nav.Font = GetUiFont(10.0f);
         nav.Cursor = Cursors.Hand;
         nav.Click += delegate { SelectPage(pageIndex); };
         page.NavItem = nav;
@@ -596,7 +575,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         Label title = new Label();
         title.Text = titleText;
-        title.Font = DesignTokens.CreateUIFont(18.0f, FontStyle.Bold);
+        title.Font = GetUiFont(18.0f, FontStyle.Bold);
         title.ForeColor = TextPrimary;
         title.BackColor = MicaBase;
         title.Location = new Point(0, 0);
@@ -605,7 +584,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         Label subtitle = new Label();
         subtitle.Text = description;
-        subtitle.Font = DesignTokens.CreateUIFont(9.5f);
+        subtitle.Font = GetUiFont(9.5f);
         subtitle.ForeColor = TextTertiary;
         subtitle.BackColor = MicaBase;
         subtitle.Location = new Point(1, title.Bottom + 16);
@@ -633,7 +612,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         Control control = BuildValueControl(property);
-        SettingRow card = new SettingRow(control);
+        SettingRow card = new SettingRow(control, GetUiFont(10.0f), GetUiFont(8.5f));
         card.Width = 1152;
         card.Margin = new Padding(0);
         card.TitleLabel.Text = GetSettingTitle(propertyName);
@@ -661,7 +640,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             combo.FlatStyle = FlatStyle.Flat;
             combo.BackColor = ControlBg;
             combo.ForeColor = TextSecondary;
-            combo.Font = DesignTokens.CreateUIFont(9.5f);
+            combo.Font = GetUiFont(9.5f);
             Array values = Enum.GetValues(type);
             for (int i = 0; i < values.Length; i++)
             {
@@ -684,7 +663,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             box.BackColor = ControlBg;
             box.ForeColor = TextSecondary;
             box.BorderStyle = BorderStyle.FixedSingle;
-            box.Font = DesignTokens.CreateUIFont(9.5f);
+            box.Font = GetUiFont(9.5f);
             box.ValueChanged += delegate { OnSettingChanged(); };
             return box;
         }
@@ -695,7 +674,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         text.BackColor = ControlBg;
         text.ForeColor = TextSecondary;
         text.BorderStyle = BorderStyle.FixedSingle;
-        text.Font = DesignTokens.CreateUIFont(9.5f);
+        text.Font = GetUiFont(9.5f);
         text.TextChanged += delegate { OnSettingChanged(); };
         return text;
     }
@@ -1098,6 +1077,16 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             Math.Min(992, Math.Max(896, workArea.Height - 128)));
     }
 
+    private Font GetUiFont(float size)
+    {
+        return GetUiFont(size, FontStyle.Regular);
+    }
+
+    private Font GetUiFont(float size, FontStyle style)
+    {
+        return this.fontCache.GetUiPoint(size, style);
+    }
+
     private static Font GetIconFont()
     {
         if (iconFontCache != null) return iconFontCache;
@@ -1134,21 +1123,33 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     {
         try
         {
-            using (System.IO.StreamWriter w = new System.IO.StreamWriter("settings_layout_dump.txt"))
+            string dir = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                ProductIdentity.MachineName);
+            if (!System.IO.Directory.Exists(dir)) System.IO.Directory.CreateDirectory(dir);
+            string path = System.IO.Path.Combine(dir, "settings_layout_dump.txt");
+            using (System.IO.StreamWriter w = new System.IO.StreamWriter(path))
             {
                 DumpControl(this, w, 0);
             }
         }
         catch (Exception ex)
         {
-            System.IO.File.WriteAllText("dump_error.txt", ex.ToString());
+            try
+            {
+                string dir = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    ProductIdentity.MachineName);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "dump_error.txt"), ex.ToString());
+            }
+            catch { }
         }
     }
 
     private void DumpControl(Control c, System.IO.StreamWriter w, int indent)
     {
         string ind = new string(' ', indent * 2);
-        w.WriteLine($"{ind}{c.GetType().Name} '{c.Text}' - Bounds: {c.Bounds}, PrefSize: {c.GetPreferredSize(new Size(c.Width, 0))}, ClientSize: {c.ClientSize}, Margin: {c.Margin}, Padding: {c.Padding}, AutoSize: {c.AutoSize}, Dock: {c.Dock}, Visible: {c.Visible}");
+        w.WriteLine($"{ind}{c.GetType().Name} '{c.Text}' - Bounds: {c.Bounds}, ClientSize: {c.ClientSize}, Margin: {c.Margin}, Padding: {c.Padding}, AutoSize: {c.AutoSize}, Dock: {c.Dock}, Visible: {c.Visible}");
         if (c is TableLayoutPanel tlp)
         {
             w.WriteLine($"{ind}  RowStyles: {tlp.RowStyles.Count}, ColStyles: {tlp.ColumnStyles.Count}, AutoSizeMode: {tlp.AutoSizeMode}");
@@ -1600,6 +1601,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private sealed class SettingGroupCard : Panel
     {
         private readonly List<SettingRow> rows = new List<SettingRow>();
+        private bool layoutInProgress;
 
         public SettingGroupCard()
         {
@@ -1616,19 +1618,28 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         public void LayoutRows()
         {
-            int y = 0;
-            bool first = true;
-            for (int i = 0; i < this.rows.Count; i++)
+            if (this.layoutInProgress) return;
+            this.layoutInProgress = true;
+            try
             {
-                SettingRow row = this.rows[i];
-                row.ShowTopDivider = !first;
-                int h = row.ComputeDesiredHeight(this.Width);
-                row.SetBounds(0, y, this.Width, h);
-                y += h;
-                first = false;
+                int y = 0;
+                bool first = true;
+                for (int i = 0; i < this.rows.Count; i++)
+                {
+                    SettingRow row = this.rows[i];
+                    row.ShowTopDivider = !first;
+                    int h = row.ComputeDesiredHeight(this.Width);
+                    row.SetBounds(0, y, this.Width, h);
+                    y += h;
+                    first = false;
+                }
+                this.Height = Math.Max(1, y);
+                UpdateClipRegion();
             }
-            this.Height = Math.Max(1, y);
-            UpdateClipRegion();
+            finally
+            {
+                this.layoutInProgress = false;
+            }
         }
 
         private void UpdateClipRegion()
@@ -1666,7 +1677,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         protected override void OnResize(EventArgs eventargs)
         {
             base.OnResize(eventargs);
-            LayoutRows();
+            if (!this.layoutInProgress) LayoutRows();
         }
     }
 
@@ -1676,11 +1687,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     // Draws hover highlight and optional top divider.
     private sealed class SettingRow : Panel
     {
+        private const int CompactLayoutWidthThreshold = 928;
+        private const int CompactLayoutRemainingTextThreshold = 320;
+
         private readonly Control valueControl;
         private bool hover;
         public bool ShowTopDivider;
 
-        public SettingRow(Control valueControl)
+        public SettingRow(Control valueControl, Font titleFont, Font hintFont)
         {
             this.valueControl = valueControl;
             this.SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
@@ -1693,14 +1707,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 DesignTokens.Spacing.SettingsCardPaddingY);
 
             this.TitleLabel = new Label();
-            this.TitleLabel.Font = DesignTokens.CreateUIFont(10.0f);
+            this.TitleLabel.Font = titleFont;
             this.TitleLabel.ForeColor = TextPrimary;
             this.TitleLabel.BackColor = Color.Transparent;
             this.TitleLabel.TextAlign = ContentAlignment.MiddleLeft;
             this.TitleLabel.AutoSize = true;
 
             this.HintLabel = new Label();
-            this.HintLabel.Font = DesignTokens.CreateUIFont(8.5f);
+            this.HintLabel.Font = hintFont;
             this.HintLabel.ForeColor = TextTertiary;
             this.HintLabel.BackColor = Color.Transparent;
             this.HintLabel.TextAlign = ContentAlignment.TopLeft;
@@ -1718,7 +1732,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             int pad = this.Padding.Top + this.Padding.Bottom;
             int controlWidth = Math.Min(this.valueControl.Width, Math.Max(44, width - this.Padding.Left - this.Padding.Right));
-            bool compact = width < 928 || width - this.Padding.Left - this.Padding.Right - controlWidth < 320;
+            bool compact = ShouldUseCompactLayout(width, controlWidth);
 
             if (compact)
             {
@@ -1811,7 +1825,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             int top = this.Padding.Top;
             int right = this.Width - this.Padding.Right;
             int controlWidth = Math.Min(this.valueControl.Width, Math.Max(44, this.Width - this.Padding.Left - this.Padding.Right));
-            bool compact = this.Width < 580 || this.Width - this.Padding.Left - this.Padding.Right - controlWidth < 320;
+            bool compact = ShouldUseCompactLayout(this.Width, controlWidth);
 
             if (compact)
             {
@@ -1836,6 +1850,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 this.TitleLabel.SetBounds(left, top, textWidth, titleHeight);
                 this.HintLabel.SetBounds(left, top + titleHeight, textWidth, hintHeight);
             }
+        }
+
+        private bool ShouldUseCompactLayout(int width, int controlWidth)
+        {
+            int availableWidth = width - this.Padding.Left - this.Padding.Right;
+            return width < CompactLayoutWidthThreshold || availableWidth - controlWidth < CompactLayoutRemainingTextThreshold;
         }
     }
 
