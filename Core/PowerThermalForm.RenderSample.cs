@@ -29,7 +29,7 @@ internal sealed partial class PowerThermalForm
 
             using (PowerThermalForm form = new PowerThermalForm(settings))
             {
-                form.scale = 2.0f;
+                form.SetLayerScale(2.0f);
                 form.MaximumSize = new Size(4000, 4000);
                 // PowerThermalWidth/Height are already the real physical pixel size; an earlier *2
                 // here rendered a double-size canvas that hid true-width truncation. Same fix as
@@ -61,7 +61,7 @@ internal sealed partial class PowerThermalForm
         WidgetSettings settings = WidgetSettings.Load();
         using (PowerThermalForm form = new PowerThermalForm(settings))
         {
-            form.scale = 2.0f;
+            form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.PowerThermalWidth, settings.PowerThermalHeight);
             form.cachedPowerReading = BuildSamplePowerReading();

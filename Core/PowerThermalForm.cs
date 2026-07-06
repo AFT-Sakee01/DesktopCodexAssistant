@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-internal sealed partial class PowerThermalForm : Form
+internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 {
     private const int RenderSecondBoundaryOffsetMs = 30;
     private readonly System.Windows.Forms.Timer timer;
@@ -20,9 +20,7 @@ internal sealed partial class PowerThermalForm : Form
     private readonly Dictionary<string, DateTime> thermalCriticalSinceUtc = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> thermalAlertNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private WidgetSettings currentSettings;
-    private float scale;
     private bool hiddenForFullscreen;
-    private bool layeredUpdateFailureLogged;
     private bool samplingWorkerRunning;
     private bool pendingPowerSample;
     private bool pendingThermalSample;
@@ -48,15 +46,7 @@ internal sealed partial class PowerThermalForm : Form
     private DateTime reverseHoverRevealUntilUtc;
     private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool sharedInteractionPolling;
-    // Layered-window content is reused until data or size changes. Alpha-only hover updates
-    // can submit the existing bitmap without rebuilding paths, fonts, and brushes.
-    private Bitmap renderBitmap;
-    private Graphics renderGraphics;
-    private bool renderBufferValid;
-    private bool lastRenderedBurnInColorProtectionActive;
     private long burnInShiftSlot = long.MinValue;
-    // The native surface keeps the HBITMAP alive across alpha-only hover updates.
-    private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
     private readonly UiFontCache fontCache = new UiFontCache();
 
     private struct PowerReading
@@ -114,10 +104,7 @@ internal sealed partial class PowerThermalForm : Form
             ControlStyles.UserPaint,
             true);
 
-        using (Graphics g = this.CreateGraphics())
-        {
-            this.scale = Math.Max(1.0f, g.DpiX / 96.0f);
-        }
+        InitializeLayerScaleFromCurrentDpi();
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
@@ -136,21 +123,6 @@ internal sealed partial class PowerThermalForm : Form
         this.hoverTimer.Tick += OnHoverTimerTick;
         this.effectivePowerModeCallback = OnEffectivePowerModeChanged;
         SystemEvents.SessionSwitch += OnSystemSessionSwitch;
-    }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            CreateParams cp = base.CreateParams;
-            cp.ExStyle |= NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_LAYERED;
-            return cp;
-        }
-    }
-
-    protected override bool ShowWithoutActivation
-    {
-        get { return true; }
     }
 
     protected override void OnShown(EventArgs e)
@@ -213,9 +185,7 @@ internal sealed partial class PowerThermalForm : Form
         this.hoverTimer.Stop();
         this.hoverTimer.Tick -= OnHoverTimerTick;
         this.hoverTimer.Dispose();
-        DisposeRenderBuffer();
         this.fontCache.Dispose();
-        this.layeredSurface.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -1095,7 +1065,7 @@ internal sealed partial class PowerThermalForm : Form
 
     private Font CreateThermalChipFont()
     {
-        return DesignTokens.CreateUIFont(Math.Max(9.0f, 10.0f * this.scale), FontStyle.Bold, GraphicsUnit.Pixel);
+        return DesignTokens.CreateUIFont(Math.Max(9.0f, 10.0f * this.LayerScale), FontStyle.Bold, GraphicsUnit.Pixel);
     }
 
     private int GetMaxVisibleThermalAlerts()
@@ -1207,6 +1177,16 @@ internal sealed partial class PowerThermalForm : Form
     {
         DrawBackground(g);
         DrawContentLayer(g);
+    }
+
+    protected override void DrawWindowContent(Graphics g)
+    {
+        DrawPowerThermalWindow(g);
+    }
+
+    protected override bool IsLayeredBurnInColorProtectionActive()
+    {
+        return IsBurnInColorProtectionActive();
     }
 
     private void ConfigureGraphics(Graphics g)
@@ -1422,7 +1402,7 @@ internal sealed partial class PowerThermalForm : Form
         using (GraphicsPath nubPath = RoundedRectangle(nubRect, Math.Min(radius, nubRect.Height / 2.0f)))
         using (SolidBrush surfaceBrush = new SolidBrush(bodySurfaceColor))
         using (SolidBrush nubBrush = new SolidBrush(DesignTokens.WithAlpha(borderColor, pluggedIn ? 210 : 145)))
-        using (Pen borderPen = new Pen(DesignTokens.WithAlpha(borderColor, pluggedIn ? 245 : 180), Math.Max(1.0f, this.scale)))
+        using (Pen borderPen = new Pen(DesignTokens.WithAlpha(borderColor, pluggedIn ? 245 : 180), Math.Max(1.0f, this.LayerScale)))
         {
             g.FillPath(surfaceBrush, bodyPath);
             g.DrawPath(borderPen, bodyPath);
@@ -1469,7 +1449,7 @@ internal sealed partial class PowerThermalForm : Form
         }
 
         RectangleF modeRect = new RectangleF(bounds.Left, bodyRect.Bottom + S(1), bounds.Width, Math.Max(S(10), bounds.Bottom - bodyRect.Bottom - S(1)));
-        Font modeFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.scale), FontStyle.Bold);
+        Font modeFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.LayerScale), FontStyle.Bold);
         using (SolidBrush modeBrush = new SolidBrush(GetSystemPowerModeColor(powerModeText)))
         {
             DrawFittedText(g, powerModeText, modeFont, modeBrush, modeRect, StringAlignment.Center);
@@ -1526,7 +1506,7 @@ internal sealed partial class PowerThermalForm : Form
     private void DrawBatteryCarePauseBadge(Graphics g, RectangleF rect)
     {
         float size = Math.Min(rect.Width, rect.Height);
-        float stroke = Math.Max(1.0f, 1.05f * this.scale);
+        float stroke = Math.Max(1.0f, 1.05f * this.LayerScale);
         RectangleF body = new RectangleF(
             rect.Left + size * 0.12f,
             rect.Top + size * 0.20f,
@@ -1693,7 +1673,7 @@ internal sealed partial class PowerThermalForm : Form
         using (GraphicsPath path = RoundedRectangle(rect, radius))
         using (SolidBrush baseBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.ThermalChipSurface, 160)))
         using (SolidBrush redBrush = new SolidBrush(DesignTokens.DangerStrong(redAlpha)))
-        using (Pen border = new Pen(borderColor, Math.Max(1.0f, this.scale)))
+        using (Pen border = new Pen(borderColor, Math.Max(1.0f, this.LayerScale)))
         {
             g.FillPath(baseBrush, path);
             g.FillPath(redBrush, path);
@@ -1783,7 +1763,7 @@ internal sealed partial class PowerThermalForm : Form
             new PointF(centerX + size * 0.48f, centerY + size * 0.42f)
         };
 
-        using (Pen pen = new Pen(DesignTokens.Warning(warningAlpha), Math.Max(1.0f, 2.0f * this.scale)))
+        using (Pen pen = new Pen(DesignTokens.Warning(warningAlpha), Math.Max(1.0f, 2.0f * this.LayerScale)))
         {
             pen.LineJoin = LineJoin.Round;
             g.DrawPolygon(pen, triangle);
@@ -1813,14 +1793,14 @@ internal sealed partial class PowerThermalForm : Form
             Font drawFont = baseFont;
             bool disposeFont = false;
             float size = baseFont.Size;
-            while (size > 8.0f * this.scale && g.MeasureString(text, drawFont).Width > rect.Width)
+            while (size > 8.0f * this.LayerScale && g.MeasureString(text, drawFont).Width > rect.Width)
             {
                 if (disposeFont)
                 {
                     drawFont.Dispose();
                 }
 
-                size -= 0.8f * this.scale;
+                size -= 0.8f * this.LayerScale;
                 drawFont = new Font(baseFont.FontFamily, size, baseFont.Style, GraphicsUnit.Pixel);
                 disposeFont = true;
             }
@@ -2574,112 +2554,11 @@ internal sealed partial class PowerThermalForm : Form
         return trimmed.Length == 0 ? "TZ" : trimmed;
     }
 
-    private void RenderLayeredWindow()
-    {
-        RenderLayeredWindow(true);
-    }
-
-    private void RenderLayeredWindow(bool redrawContent)
-    {
-        if (!this.IsHandleCreated || this.Width <= 0 || this.Height <= 0)
-        {
-            return;
-        }
-
-        try
-        {
-            EnsureRenderBuffer();
-            bool burnInColorProtectionActive = IsBurnInColorProtectionActive();
-            bool refreshNativeBitmap =
-                redrawContent ||
-                !this.renderBufferValid ||
-                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive;
-            if (refreshNativeBitmap)
-            {
-                this.renderGraphics.Clear(Color.Transparent);
-                DrawBackground(this.renderGraphics);
-                DrawContentLayer(this.renderGraphics);
-                if (burnInColorProtectionActive)
-                {
-                    BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
-                }
-
-                this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
-                this.renderBufferValid = true;
-            }
-
-            // Hover opacity changes only the global alpha, so redrawContent can be false.
-            if (!this.layeredSurface.Update(
-                this.Handle,
-                this.Location,
-                this.renderBitmap,
-                GetApplicationOpacityAlpha(),
-                refreshNativeBitmap))
-            {
-                if (!this.layeredUpdateFailureLogged)
-                {
-                    this.layeredUpdateFailureLogged = true;
-                    Program.LogInfo("PowerThermal UpdateLayeredWindow failed; falling back to normal paint.");
-                }
-
-                this.Invalidate();
-            }
-        }
-        catch (Exception ex)
-        {
-            if (!this.layeredUpdateFailureLogged)
-            {
-                this.layeredUpdateFailureLogged = true;
-                Program.LogException(ex);
-            }
-        }
-    }
-
-    private void EnsureRenderBuffer()
-    {
-        if (this.renderBitmap != null &&
-            this.renderGraphics != null &&
-            this.renderBitmap.Width == this.Width &&
-            this.renderBitmap.Height == this.Height)
-        {
-            return;
-        }
-
-        DisposeRenderBuffer();
-        this.renderBitmap = new Bitmap(this.Width, this.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-        this.renderGraphics = Graphics.FromImage(this.renderBitmap);
-        this.renderBufferValid = false;
-    }
-
     private bool IsBurnInColorProtectionActive()
     {
         return BurnInProtection.ShouldApplyHiddenModeColorProtection(
             this.currentSettings,
             IsHoverOpacityTargetActive());
-    }
-
-    private void DisposeRenderBuffer()
-    {
-        if (this.renderGraphics != null)
-        {
-            this.renderGraphics.Dispose();
-            this.renderGraphics = null;
-        }
-
-        if (this.renderBitmap != null)
-        {
-            this.renderBitmap.Dispose();
-            this.renderBitmap = null;
-        }
-
-        this.renderBufferValid = false;
-    }
-
-    private void ResetDisplayRenderResources()
-    {
-        DisposeRenderBuffer();
-        this.layeredSurface.Reset();
-        this.layeredUpdateFailureLogged = false;
     }
 
     private int GetBackgroundOpacityAlpha()
@@ -2694,7 +2573,7 @@ internal sealed partial class PowerThermalForm : Form
         return Math.Max(0, Math.Min(255, alpha));
     }
 
-    private byte GetApplicationOpacityAlpha()
+    protected override byte GetApplicationOpacityAlpha()
     {
         return (byte)ApplyHoverTransparencyTarget(255);
     }
@@ -2716,20 +2595,4 @@ internal sealed partial class PowerThermalForm : Form
         return Math.Max(0, Math.Min(255, (int)Math.Round(animated)));
     }
 
-    private int S(int value)
-    {
-        return (int)Math.Round(value * this.scale);
-    }
-
-    private static GraphicsPath RoundedRectangle(RectangleF bounds, float radius)
-    {
-        float diameter = radius * 2.0f;
-        GraphicsPath path = new GraphicsPath();
-        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
 }
