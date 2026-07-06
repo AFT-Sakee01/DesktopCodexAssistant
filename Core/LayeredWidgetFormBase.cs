@@ -108,6 +108,8 @@ internal abstract class LayeredWidgetFormBase : Form
 
     protected void DisposeRenderBuffer()
     {
+        DisposeAdditionalRenderBuffers();
+
         if (this.renderGraphics != null)
         {
             this.renderGraphics.Dispose();
@@ -155,6 +157,10 @@ internal abstract class LayeredWidgetFormBase : Form
     protected virtual bool IsLayeredBurnInColorProtectionActive()
     {
         return false;
+    }
+
+    protected virtual void DisposeAdditionalRenderBuffers()
+    {
     }
 
     protected abstract void DrawWindowContent(Graphics g);

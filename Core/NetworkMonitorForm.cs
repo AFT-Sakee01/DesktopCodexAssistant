@@ -9,7 +9,7 @@ using System.Windows.Forms;
 
 // UI-only projection of NetworkMonitorSnapshot. I/O stays in NetworkMonitorReader;
 // this form is responsible for change detection and layered-window resource ownership.
-internal sealed partial class NetworkMonitorForm : Form
+internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 {
     private const int RenderSecondBoundaryOffsetMs = 55;
     private const int DnsAlertOverlayRowIndex = 6;
@@ -18,9 +18,7 @@ internal sealed partial class NetworkMonitorForm : Form
     private readonly NetworkMonitorReader reader;
     private WidgetSettings currentSettings;
     private NetworkMonitorSnapshot snapshot;
-    private float scale;
     private bool hiddenForFullscreen;
-    private bool layeredUpdateFailureLogged;
     private bool cloudEndpointCheckingBlink;
     private string cloudEndpointAlertSignature = string.Empty;
     private int cloudEndpointAlertIndex;
@@ -33,18 +31,10 @@ internal sealed partial class NetworkMonitorForm : Form
     private DateTime reverseHoverRevealUntilUtc;
     private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool sharedInteractionPolling;
-    // Buffers are reused until size changes. renderBufferValid distinguishes a content
-    // redraw from an alpha-only UpdateLayeredWindow submission.
-    private Bitmap renderBitmap;
-    private Graphics renderGraphics;
     private Bitmap contentBitmap;
     private Graphics contentGraphics;
-    private bool renderBufferValid;
-    private bool lastRenderedBurnInColorProtectionActive;
     private long burnInShiftSlot = long.MinValue;
     private readonly Dictionary<string, Font> fontCache = new Dictionary<string, Font>(StringComparer.Ordinal);
-    // The native surface keeps the HBITMAP alive across alpha-only hover updates.
-    private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
 
     public NetworkMonitorForm(WidgetSettings settings)
     {
@@ -61,10 +51,7 @@ internal sealed partial class NetworkMonitorForm : Form
             ControlStyles.UserPaint,
             true);
 
-        using (Graphics g = this.CreateGraphics())
-        {
-            this.scale = Math.Max(1.0f, g.DpiX / 96.0f);
-        }
+        InitializeLayerScaleFromCurrentDpi();
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
@@ -81,21 +68,6 @@ internal sealed partial class NetworkMonitorForm : Form
         this.hoverTimer = new System.Windows.Forms.Timer();
         this.hoverTimer.Interval = WidgetSettings.GetNetworkIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
         this.hoverTimer.Tick += OnHoverTimerTick;
-    }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            CreateParams cp = base.CreateParams;
-            cp.ExStyle |= NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_LAYERED;
-            return cp;
-        }
-    }
-
-    protected override bool ShowWithoutActivation
-    {
-        get { return true; }
     }
 
     protected override void OnShown(EventArgs e)
@@ -116,9 +88,8 @@ internal sealed partial class NetworkMonitorForm : Form
         this.hoverTimer.Tick -= OnHoverTimerTick;
         this.hoverTimer.Dispose();
         this.reader.Dispose();
-        DisposeRenderBuffers();
+        DisposeRenderBuffer();
         DisposeFontCache();
-        this.layeredSurface.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -127,7 +98,7 @@ internal sealed partial class NetworkMonitorForm : Form
         base.OnSizeChanged(e);
         // Font sizes and bitmap dimensions are layout-dependent; clearing both caches
         // prevents stale dimensions and unbounded font growth during repeated resizing.
-        DisposeRenderBuffers();
+        DisposeRenderBuffer();
         DisposeFontCache();
         using (GraphicsPath path = RoundedRectangle(new RectangleF(0, 0, this.Width, this.Height), S(12)))
         {
@@ -548,6 +519,16 @@ internal sealed partial class NetworkMonitorForm : Form
         DrawContentLayer(g);
     }
 
+    protected override void DrawWindowContent(Graphics g)
+    {
+        DrawNetworkMonitorWindow(g);
+    }
+
+    protected override bool IsLayeredBurnInColorProtectionActive()
+    {
+        return IsBurnInColorProtectionActive();
+    }
+
     private void ConfigureGraphics(Graphics g)
     {
         BurnInProtection.ConfigureGraphics(g, IsBurnInColorProtectionActive());
@@ -755,9 +736,9 @@ internal sealed partial class NetworkMonitorForm : Form
             Font drawFont = baseFont;
             float size = baseFont.Size;
             float maxWidth = Math.Max(1.0f, rect.Width * 0.94f);
-            while (size > 4.5f * this.scale && g.MeasureString(text, drawFont).Width > maxWidth)
+            while (size > 4.5f * this.LayerScale && g.MeasureString(text, drawFont).Width > maxWidth)
             {
-                size -= 0.5f * this.scale;
+                size -= 0.5f * this.LayerScale;
                 drawFont = GetCachedUiFont(size, baseFont.Style);
             }
 
@@ -1562,9 +1543,9 @@ internal sealed partial class NetworkMonitorForm : Form
         Font drawFont = baseFont;
         float size = baseFont.Size;
         float totalWidth = MeasureDnsSegments(g, segments, drawFont);
-        while (size > 7.0f * this.scale && totalWidth > rect.Width)
+        while (size > 7.0f * this.LayerScale && totalWidth > rect.Width)
         {
-            size -= 0.7f * this.scale;
+            size -= 0.7f * this.LayerScale;
             drawFont = GetCachedUiFont(size, baseFont.Style);
             totalWidth = MeasureDnsSegments(g, segments, drawFont);
         }
@@ -2341,9 +2322,9 @@ internal sealed partial class NetworkMonitorForm : Form
 
             Font drawFont = baseFont;
             float size = baseFont.Size;
-            while (size > 7.0f * this.scale && g.MeasureString(text, drawFont).Width > rect.Width)
+            while (size > 7.0f * this.LayerScale && g.MeasureString(text, drawFont).Width > rect.Width)
             {
-                size -= 0.7f * this.scale;
+                size -= 0.7f * this.LayerScale;
                 drawFont = GetCachedUiFont(size, baseFont.Style);
             }
 
@@ -2565,92 +2546,6 @@ internal sealed partial class NetworkMonitorForm : Form
         return true;
     }
 
-    private void RenderLayeredWindow()
-    {
-        RenderLayeredWindow(true);
-    }
-
-    private void RenderLayeredWindow(bool redrawContent)
-    {
-        if (!this.IsHandleCreated || this.Width <= 0 || this.Height <= 0)
-        {
-            return;
-        }
-
-        try
-        {
-            EnsureRenderBuffer();
-            // Alpha-only hover updates can submit the cached bitmap without rebuilding the content layer.
-            bool burnInColorProtectionActive = IsBurnInColorProtectionActive();
-            bool refreshNativeBitmap =
-                redrawContent ||
-                !this.renderBufferValid ||
-                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive;
-            if (refreshNativeBitmap)
-            {
-                this.renderGraphics.Clear(Color.Transparent);
-                DrawNetworkMonitorWindow(this.renderGraphics);
-                if (burnInColorProtectionActive)
-                {
-                    BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
-                }
-
-                this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
-                this.renderBufferValid = true;
-            }
-
-            if (!this.layeredSurface.Update(
-                this.Handle,
-                this.Location,
-                this.renderBitmap,
-                GetApplicationOpacityAlpha(),
-                refreshNativeBitmap))
-            {
-                if (!this.layeredUpdateFailureLogged)
-                {
-                    this.layeredUpdateFailureLogged = true;
-                    Program.LogInfo("NetworkMonitor UpdateLayeredWindow failed; falling back to normal paint.");
-                }
-
-                this.Invalidate();
-            }
-        }
-        catch (Exception ex)
-        {
-            if (!this.layeredUpdateFailureLogged)
-            {
-                this.layeredUpdateFailureLogged = true;
-                Program.LogException(ex);
-            }
-        }
-    }
-
-    private void EnsureRenderBuffer()
-    {
-        if (this.renderBitmap != null &&
-            this.renderGraphics != null &&
-            this.renderBitmap.Width == this.Width &&
-            this.renderBitmap.Height == this.Height)
-        {
-            return;
-        }
-
-        if (this.renderGraphics != null)
-        {
-            this.renderGraphics.Dispose();
-        }
-
-        if (this.renderBitmap != null)
-        {
-            this.renderBitmap.Dispose();
-        }
-
-        // PArgb matches UpdateLayeredWindow and avoids per-frame format conversion.
-        this.renderBitmap = new Bitmap(this.Width, this.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-        this.renderGraphics = Graphics.FromImage(this.renderBitmap);
-        this.renderBufferValid = false;
-    }
-
     private bool IsBurnInColorProtectionActive()
     {
         return BurnInProtection.ShouldApplyHiddenModeColorProtection(
@@ -2682,21 +2577,8 @@ internal sealed partial class NetworkMonitorForm : Form
         this.contentGraphics = Graphics.FromImage(this.contentBitmap);
     }
 
-    private void DisposeRenderBuffers()
+    protected override void DisposeAdditionalRenderBuffers()
     {
-        this.renderBufferValid = false;
-        if (this.renderGraphics != null)
-        {
-            this.renderGraphics.Dispose();
-            this.renderGraphics = null;
-        }
-
-        if (this.renderBitmap != null)
-        {
-            this.renderBitmap.Dispose();
-            this.renderBitmap = null;
-        }
-
         if (this.contentGraphics != null)
         {
             this.contentGraphics.Dispose();
@@ -2708,13 +2590,6 @@ internal sealed partial class NetworkMonitorForm : Form
             this.contentBitmap.Dispose();
             this.contentBitmap = null;
         }
-    }
-
-    private void ResetDisplayRenderResources()
-    {
-        DisposeRenderBuffers();
-        this.layeredSurface.Reset();
-        this.layeredUpdateFailureLogged = false;
     }
 
     private Font GetCachedUiFont(float size, FontStyle style)
@@ -2775,7 +2650,7 @@ internal sealed partial class NetworkMonitorForm : Form
         return Math.Max(0, Math.Min(255, alpha));
     }
 
-    private byte GetApplicationOpacityAlpha()
+    protected override byte GetApplicationOpacityAlpha()
     {
         return (byte)ApplyHoverTransparencyTarget(255);
     }
@@ -2795,11 +2670,6 @@ internal sealed partial class NetworkMonitorForm : Form
 
         double animated = alpha + (hoverAlpha - alpha) * this.hoverOpacityProgress;
         return Math.Max(0, Math.Min(255, (int)Math.Round(animated)));
-    }
-
-    private int S(int value)
-    {
-        return (int)Math.Round(value * this.scale);
     }
 
     internal static void RunNetworkMonitorDisplaySelfTest()
@@ -3068,15 +2938,4 @@ internal sealed partial class NetworkMonitorForm : Form
         public DnsServerSnapshot Detail;
     }
 
-    private static GraphicsPath RoundedRectangle(RectangleF bounds, float radius)
-    {
-        float diameter = radius * 2.0f;
-        GraphicsPath path = new GraphicsPath();
-        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
 }

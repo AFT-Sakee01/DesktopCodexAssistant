@@ -28,7 +28,7 @@ internal sealed partial class NetworkMonitorForm
 
             using (NetworkMonitorForm form = new NetworkMonitorForm(settings))
             {
-                form.scale = 2.0f;
+                form.SetLayerScale(2.0f);
                 form.MaximumSize = new Size(4000, 4000);
                 // NetworkMonitorWidth/Height are already the real physical pixel size (runtime
                 // GetDesiredSize() applies them 1:1); an earlier *2 here rendered a canvas twice as
@@ -58,7 +58,7 @@ internal sealed partial class NetworkMonitorForm
         WidgetSettings settings = WidgetSettings.Load();
         using (NetworkMonitorForm form = new NetworkMonitorForm(settings))
         {
-            form.scale = 2.0f;
+            form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.NetworkMonitorWidth, settings.NetworkMonitorHeight);
             form.snapshot = BuildSampleSnapshot();
