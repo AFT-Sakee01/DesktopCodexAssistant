@@ -35,7 +35,7 @@ internal sealed partial class WidgetForm
 
                 using (WidgetForm form = new WidgetForm(sampler, stopEvent, settings, false))
                 {
-                    form.scale = 2.0f;
+                    form.SetLayerScale(2.0f);
                     form.MaximumSize = new Size(4000, 4000);
                     form.Size = new Size(220 * 2, 120 * 2);
                     form.snapshot = BuildSampleSnapshot();
@@ -68,7 +68,7 @@ internal sealed partial class WidgetForm
         using (EventWaitHandle stopEvent = new EventWaitHandle(false, EventResetMode.ManualReset))
         using (WidgetForm form = new WidgetForm(sampler, stopEvent, settings, false))
         {
-            form.scale = 2.0f;
+            form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.Width, settings.Height);
             try

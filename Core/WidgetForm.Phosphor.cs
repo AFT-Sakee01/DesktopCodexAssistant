@@ -66,7 +66,7 @@ internal sealed partial class WidgetForm
             DesignTokens.OledPhosphor.Danger,
             DesignTokens.OledPhosphor.Base);
         string value = GetPanelHeadline(panel);
-        float fittedSize = OledVariantPainting.FitFontSize(g, value, DesignTokens.MonoFontFamily, FontStyle.Regular, 12.5f * this.scale, 7.0f * this.scale, textRect.Width * 0.96f);
+        float fittedSize = OledVariantPainting.FitFontSize(g, value, DesignTokens.MonoFontFamily, FontStyle.Regular, 12.5f * this.LayerScale, 7.0f * this.LayerScale, textRect.Width * 0.96f);
         Font valueFont = GetCachedMonoFont(fittedSize, FontStyle.Regular);
         using (SolidBrush brush = new SolidBrush(valueColor))
         using (StringFormat format = new StringFormat())

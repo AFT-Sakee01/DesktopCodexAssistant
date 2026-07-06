@@ -82,7 +82,7 @@ internal sealed partial class WidgetForm
         float textX = graphRect.Right + S(7);
         RectangleF textRect = new RectangleF(textX, inner.Y, Math.Max(20, inner.Right - textX), inner.Height);
         string value = GetPanelHeadline(panel);
-        float fittedSize = OledVariantPainting.FitFontSize(g, value, DesignTokens.MonoFontFamily, FontStyle.Bold, 13.0f * this.scale, 5.5f * this.scale, textRect.Width * 0.94f);
+        float fittedSize = OledVariantPainting.FitFontSize(g, value, DesignTokens.MonoFontFamily, FontStyle.Bold, 13.0f * this.LayerScale, 5.5f * this.LayerScale, textRect.Width * 0.94f);
         Font valueFont = GetCachedMonoFont(fittedSize, FontStyle.Bold);
         using (SolidBrush brush = new SolidBrush(lineColor))
         using (StringFormat format = new StringFormat())

@@ -66,7 +66,7 @@ internal sealed partial class WidgetForm
             DesignTokens.OledTypographic.AccentDanger,
             DesignTokens.OledTypographic.Primary);
         string value = GetPanelHeadline(panel);
-        float fittedSize = OledVariantPainting.FitFontSize(g, value, DesignTokens.UiFontFamily, FontStyle.Regular, 15.0f * this.scale, 6.0f * this.scale, textRect.Width * 0.94f);
+        float fittedSize = OledVariantPainting.FitFontSize(g, value, DesignTokens.UiFontFamily, FontStyle.Regular, 15.0f * this.LayerScale, 6.0f * this.LayerScale, textRect.Width * 0.94f);
         Font valueFont = GetCachedFont(fittedSize, FontStyle.Regular);
         using (SolidBrush brush = new SolidBrush(valueColor))
         using (StringFormat format = new StringFormat())
@@ -81,7 +81,7 @@ internal sealed partial class WidgetForm
 
     private void DrawNoMetricsMessage(Graphics g, Color color)
     {
-        Font font = GetCachedFont(13.0f * this.scale, FontStyle.Regular);
+        Font font = GetCachedFont(13.0f * this.LayerScale, FontStyle.Regular);
         using (SolidBrush brush = new SolidBrush(color))
         using (StringFormat format = new StringFormat())
         {

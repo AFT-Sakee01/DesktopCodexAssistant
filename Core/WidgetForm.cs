@@ -16,7 +16,7 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-internal sealed partial class WidgetForm : Form
+internal sealed partial class WidgetForm : LayeredWidgetFormBase
 {
     private const int DisplayRecoveryDelayMs = 350;
     private const int DisplayRecoveryRetryDelayMs = 1500;
@@ -88,7 +88,6 @@ internal sealed partial class WidgetForm : Form
     private WidgetSettings savedSettings;
     private WidgetSettings currentSettings;
     private PerfSnapshot snapshot;
-    private float scale;
     private int tickCount;
     private DateTime memoryCriticalSinceUtc;
     private DateTime diskCriticalSinceUtc;
@@ -101,7 +100,6 @@ internal sealed partial class WidgetForm : Form
     private bool desktopAttached;
     private bool hiddenForFullscreen;
     private bool globalLayoutEditActive;
-    private bool layeredUpdateFailureLogged;
     private bool childWindowLifecycleStarted;
     private CodexRadarForm codexRadarForm;
     private ClaudeRadarForm claudeRadarForm;
@@ -131,12 +129,6 @@ internal sealed partial class WidgetForm : Form
     private bool lastLoggedDesktopAttached;
     private bool positionLogInitialized;
     private long burnInShiftSlot = long.MinValue;
-    private Bitmap renderBitmap;
-    private Graphics renderGraphics;
-    private bool renderBufferValid;
-    private bool lastRenderedBurnInColorProtectionActive;
-    // The native surface keeps the HBITMAP alive across alpha-only hover updates.
-    private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
     private readonly Dictionary<string, Font> fontCache = new Dictionary<string, Font>(StringComparer.Ordinal);
     private readonly CodexQuotaGoalPlanner codexQuotaGoalPlanner;
     private bool formClosing;
@@ -202,10 +194,7 @@ internal sealed partial class WidgetForm : Form
             ControlStyles.UserPaint,
             true);
 
-        using (Graphics g = this.CreateGraphics())
-        {
-            this.scale = Math.Max(1.0f, g.DpiX / 96.0f);
-        }
+        InitializeLayerScaleFromCurrentDpi();
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
@@ -227,21 +216,6 @@ internal sealed partial class WidgetForm : Form
         this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
         this.hoverTimer.Tick += OnHoverTimerTick;
         SystemEvents.SessionSwitch += OnSystemSessionSwitch;
-    }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            CreateParams cp = base.CreateParams;
-            cp.ExStyle |= NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_LAYERED;
-            return cp;
-        }
-    }
-
-    protected override bool ShowWithoutActivation
-    {
-        get { return true; }
     }
 
     protected override void OnShown(EventArgs e)
@@ -531,7 +505,6 @@ internal sealed partial class WidgetForm : Form
 
         DisposeRenderBuffer();
         DisposeFontCache();
-        this.layeredSurface.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -2685,6 +2658,21 @@ internal sealed partial class WidgetForm : Form
         DrawWidgetContentLayer(g);
     }
 
+    protected override string LayeredRenderTimingName
+    {
+        get { return "widget.render"; }
+    }
+
+    protected override void DrawWindowContent(Graphics g)
+    {
+        DrawWidget(g);
+    }
+
+    protected override bool IsLayeredBurnInColorProtectionActive()
+    {
+        return IsBurnInColorProtectionActive();
+    }
+
     private void ConfigureWidgetGraphics(Graphics g)
     {
         BurnInProtection.ConfigureGraphics(g, IsBurnInColorProtectionActive());
@@ -2765,7 +2753,7 @@ internal sealed partial class WidgetForm : Form
         List<MetricPanel> panels = BuildMetricPanels();
         if (panels.Count == 0)
         {
-            Font font = GetCachedFont(13.0f * this.scale, FontStyle.Bold);
+            Font font = GetCachedFont(13.0f * this.LayerScale, FontStyle.Bold);
             using (SolidBrush brush = new SolidBrush(DesignTokens.Colors.TextMuted))
             using (StringFormat format = new StringFormat())
             {
@@ -2795,116 +2783,11 @@ internal sealed partial class WidgetForm : Form
         }
     }
 
-    private void RenderLayeredWindow()
-    {
-        RenderLayeredWindow(true);
-    }
-
-    private void RenderLayeredWindow(bool redrawContent)
-    {
-        if (!this.IsHandleCreated || this.Width <= 0 || this.Height <= 0)
-        {
-            return;
-        }
-
-        long renderStart = TimingStats.StartTimestamp();
-        try
-        {
-            EnsureRenderBuffer();
-            bool burnInColorProtectionActive = IsBurnInColorProtectionActive();
-            bool refreshNativeBitmap =
-                redrawContent ||
-                !this.renderBufferValid ||
-                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive;
-            if (refreshNativeBitmap)
-            {
-                this.renderGraphics.Clear(Color.Transparent);
-                DrawWidgetBackground(this.renderGraphics);
-                DrawWidgetContentLayer(this.renderGraphics);
-                if (burnInColorProtectionActive)
-                {
-                    BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
-                }
-
-                this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
-                this.renderBufferValid = true;
-            }
-
-            if (!this.layeredSurface.Update(
-                this.Handle,
-                this.Location,
-                this.renderBitmap,
-                GetApplicationOpacityAlpha(),
-                refreshNativeBitmap))
-            {
-                if (!this.layeredUpdateFailureLogged)
-                {
-                    this.layeredUpdateFailureLogged = true;
-                    Program.LogInfo("UpdateLayeredWindow failed; falling back to normal paint.");
-                }
-
-                this.Invalidate();
-            }
-        }
-        catch (Exception ex)
-        {
-            if (!this.layeredUpdateFailureLogged)
-            {
-                this.layeredUpdateFailureLogged = true;
-                Program.LogException(ex);
-            }
-        }
-        finally
-        {
-            TimingStats.RecordElapsed("widget.render", renderStart);
-        }
-    }
-
-    private void EnsureRenderBuffer()
-    {
-        if (this.renderBitmap != null &&
-            this.renderGraphics != null &&
-            this.renderBitmap.Width == this.Width &&
-            this.renderBitmap.Height == this.Height)
-        {
-            return;
-        }
-
-        DisposeRenderBuffer();
-        this.renderBitmap = new Bitmap(this.Width, this.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-        this.renderGraphics = Graphics.FromImage(this.renderBitmap);
-        this.renderBufferValid = false;
-    }
-
     private bool IsBurnInColorProtectionActive()
     {
         return BurnInProtection.ShouldApplyHiddenModeColorProtection(
             this.currentSettings,
             IsHoverOpacityTargetActive());
-    }
-
-    private void DisposeRenderBuffer()
-    {
-        if (this.renderGraphics != null)
-        {
-            this.renderGraphics.Dispose();
-            this.renderGraphics = null;
-        }
-
-        if (this.renderBitmap != null)
-        {
-            this.renderBitmap.Dispose();
-            this.renderBitmap = null;
-        }
-
-        this.renderBufferValid = false;
-    }
-
-    private void ResetDisplayRenderResources()
-    {
-        DisposeRenderBuffer();
-        this.layeredSurface.Reset();
-        this.layeredUpdateFailureLogged = false;
     }
 
     private List<MetricPanel> BuildMetricPanels()
@@ -3087,9 +2970,9 @@ internal sealed partial class WidgetForm : Form
         int textLineCount = panel.TextLines != null && panel.TextLines.Length >= 4 ? 4 : 3;
         float lineH = Math.Max(1.0f, area.Height / textLineCount);
 
-        Font smallFont = GetCachedFont(10.5f * this.scale, FontStyle.Bold);
-        Font valueFont = GetCachedFont(11.5f * this.scale, FontStyle.Bold);
-        Font compactFont = GetCachedFont(10.0f * this.scale, FontStyle.Bold);
+        Font smallFont = GetCachedFont(10.5f * this.LayerScale, FontStyle.Bold);
+        Font valueFont = GetCachedFont(11.5f * this.LayerScale, FontStyle.Bold);
+        Font compactFont = GetCachedFont(10.0f * this.LayerScale, FontStyle.Bold);
         using (SolidBrush titleBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
         using (SolidBrush valueBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
         using (SolidBrush alertBrush = new SolidBrush(DesignTokens.Colors.Danger))
@@ -3133,7 +3016,7 @@ internal sealed partial class WidgetForm : Form
         int fillAlpha = dimmed ? Math.Min(backgroundAlpha, 128) : backgroundAlpha;
         int borderAlpha = dimmed ? 90 : 180;
         using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, fillAlpha)))
-        using (Pen border = new Pen(DesignTokens.WithAlpha(borderColor, borderAlpha), Math.Max(1.0f, 1.5f * this.scale)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(borderColor, borderAlpha), Math.Max(1.0f, 1.5f * this.LayerScale)))
         {
             g.FillRectangle(fill, rect);
             g.DrawRectangle(border, rect.X, rect.Y, rect.Width, rect.Height);
@@ -3171,7 +3054,7 @@ internal sealed partial class WidgetForm : Form
                 accent = DesignTokens.WithAlpha(accent, 110);
             }
 
-            using (Pen line = new Pen(accent, Math.Max(1.0f, 2.0f * this.scale)))
+            using (Pen line = new Pen(accent, Math.Max(1.0f, 2.0f * this.LayerScale)))
             {
                 line.LineJoin = LineJoin.Round;
                 g.DrawLines(line, points);
@@ -3191,7 +3074,7 @@ internal sealed partial class WidgetForm : Form
         return Math.Max(0, Math.Min(255, alpha));
     }
 
-    private byte GetApplicationOpacityAlpha()
+    protected override byte GetApplicationOpacityAlpha()
     {
         return (byte)ApplyHoverTransparencyTarget(255);
     }
@@ -3233,7 +3116,7 @@ internal sealed partial class WidgetForm : Form
         }
 
         float size = Math.Min(rect.Width, rect.Height) * 0.48f;
-        size = Math.Max(14.0f * this.scale, Math.Min(size, 28.0f * this.scale));
+        size = Math.Max(14.0f * this.LayerScale, Math.Min(size, 28.0f * this.LayerScale));
         float centerX = rect.Left + rect.Width * 0.5f;
         float centerY = rect.Top + rect.Height * 0.52f;
         PointF[] triangle = new PointF[]
@@ -3244,7 +3127,7 @@ internal sealed partial class WidgetForm : Form
         };
 
         int warningAlpha = (this.tickCount % 2 == 0) ? 77 : 179;
-        using (Pen triangleBorder = new Pen(DesignTokens.Warning(warningAlpha), Math.Max(1.0f, 3.0f * this.scale)))
+        using (Pen triangleBorder = new Pen(DesignTokens.Warning(warningAlpha), Math.Max(1.0f, 3.0f * this.LayerScale)))
         {
             triangleBorder.LineJoin = LineJoin.Round;
             g.DrawPolygon(triangleBorder, triangle);
@@ -3268,12 +3151,12 @@ internal sealed partial class WidgetForm : Form
             return;
         }
 
-        float left = rect.Left + Math.Max(2.0f, 2.0f * this.scale);
-        float bottom = rect.Bottom - Math.Max(2.0f, 2.0f * this.scale);
-        float width = Math.Max(1.0f, rect.Width - Math.Max(4.0f, 4.0f * this.scale));
-        float height = Math.Max(1.0f, rect.Height - Math.Max(4.0f, 4.0f * this.scale));
+        float left = rect.Left + Math.Max(2.0f, 2.0f * this.LayerScale);
+        float bottom = rect.Bottom - Math.Max(2.0f, 2.0f * this.LayerScale);
+        float width = Math.Max(1.0f, rect.Width - Math.Max(4.0f, 4.0f * this.LayerScale));
+        float height = Math.Max(1.0f, rect.Height - Math.Max(4.0f, 4.0f * this.LayerScale));
         float slot = width / values.Length;
-        float gap = slot >= 4.0f ? Math.Min(2.0f * this.scale, slot * 0.28f) : 0.0f;
+        float gap = slot >= 4.0f ? Math.Min(2.0f * this.LayerScale, slot * 0.28f) : 0.0f;
         float barWidth = Math.Max(1.0f, slot - gap);
 
         using (SolidBrush normalBrush = new SolidBrush(DesignTokens.Accent(115)))
@@ -3311,8 +3194,8 @@ internal sealed partial class WidgetForm : Form
 
     private void DrawDisconnectedCross(Graphics g, RectangleF rect)
     {
-        float padding = Math.Max(3.0f, 4.0f * this.scale);
-        using (Pen cross = new Pen(DesignTokens.Colors.DangerGlyph, Math.Max(2.0f, 3.2f * this.scale)))
+        float padding = Math.Max(3.0f, 4.0f * this.LayerScale);
+        using (Pen cross = new Pen(DesignTokens.Colors.DangerGlyph, Math.Max(2.0f, 3.2f * this.LayerScale)))
         {
             cross.StartCap = LineCap.Round;
             cross.EndCap = LineCap.Round;
@@ -3411,14 +3294,14 @@ internal sealed partial class WidgetForm : Form
             Font drawFont = baseFont;
             bool disposeFont = false;
             float size = baseFont.Size;
-            while (size > 7.0f * this.scale && !TitleTextFits(g, lines, drawFont, rect))
+            while (size > 7.0f * this.LayerScale && !TitleTextFits(g, lines, drawFont, rect))
             {
                 if (disposeFont)
                 {
                     drawFont.Dispose();
                 }
 
-                size -= 0.6f * this.scale;
+                size -= 0.6f * this.LayerScale;
                 drawFont = new Font(baseFont.FontFamily, size, baseFont.Style, GraphicsUnit.Pixel);
                 disposeFont = true;
             }
@@ -3465,14 +3348,14 @@ internal sealed partial class WidgetForm : Form
             bool disposeFont = false;
             float size = baseFont.Size;
 
-            while (size > 8.0f * this.scale && g.MeasureString(text, drawFont).Width > rect.Width)
+            while (size > 8.0f * this.LayerScale && g.MeasureString(text, drawFont).Width > rect.Width)
             {
                 if (disposeFont)
                 {
                     drawFont.Dispose();
                 }
 
-                size -= 0.7f * this.scale;
+                size -= 0.7f * this.LayerScale;
                 drawFont = new Font(baseFont.FontFamily, size, baseFont.Style, GraphicsUnit.Pixel);
                 disposeFont = true;
             }
@@ -3693,20 +3576,4 @@ internal sealed partial class WidgetForm : Form
         return value;
     }
 
-    private int S(int value)
-    {
-        return (int)Math.Round(value * this.scale);
-    }
-
-    private static GraphicsPath RoundedRectangle(RectangleF bounds, float radius)
-    {
-        float diameter = radius * 2.0f;
-        GraphicsPath path = new GraphicsPath();
-        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
 }

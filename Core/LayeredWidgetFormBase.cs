@@ -34,6 +34,11 @@ internal abstract class LayeredWidgetFormBase : Form
         get { return this.GetType().Name; }
     }
 
+    protected virtual string LayeredRenderTimingName
+    {
+        get { return string.Empty; }
+    }
+
     protected void InitializeLayerScaleFromCurrentDpi()
     {
         using (Graphics g = this.CreateGraphics())
@@ -59,6 +64,8 @@ internal abstract class LayeredWidgetFormBase : Form
             return;
         }
 
+        string timingName = this.LayeredRenderTimingName;
+        long renderStart = string.IsNullOrEmpty(timingName) ? 0L : TimingStats.StartTimestamp();
         try
         {
             EnsureRenderBuffer();
@@ -103,6 +110,13 @@ internal abstract class LayeredWidgetFormBase : Form
             {
                 this.layeredUpdateFailureLogged = true;
                 Program.LogException(ex);
+            }
+        }
+        finally
+        {
+            if (!string.IsNullOrEmpty(timingName))
+            {
+                TimingStats.RecordElapsed(timingName, renderStart);
             }
         }
     }
