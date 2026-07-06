@@ -11,7 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-internal sealed class OperationForm : Form
+internal sealed partial class OperationForm : Form
 {
     private const int ButtonCount = 13;
     private const int StartButtonIndex = 0;
@@ -41,6 +41,8 @@ internal sealed class OperationForm : Form
     private const string SeelenUiProcessName = "seelen-ui";
     private const string SeelenUiExecutableName = "seelen-ui.exe";
     private const string SeelenInstallRelativePath = @"Seelen\Seelen UI";
+    private const int SeelenStatusRefreshIntervalMs = 2000;
+    private const int MemoryPieRefreshIntervalMs = 2000;
     private const double HoverStepPerSecond = 7.5;
     private const double PressAnimationMs = 150.0;
     private readonly Action openSettingsAction;
@@ -49,9 +51,11 @@ internal sealed class OperationForm : Form
     private readonly Action<string, string, ToolTipIcon> notificationAction;
     private readonly Func<bool> toggleHoverOpacityAction;
     private readonly Func<bool> pulseSeelenDockAction;
+    private readonly Func<bool> manualAiBlockAction;
     private readonly System.Windows.Forms.Timer animationTimer;
     private readonly System.Windows.Forms.Timer foregroundFpsTimer;
     private readonly System.Windows.Forms.Timer restartSingleClickTimer;
+    private readonly System.Windows.Forms.Timer appSettingsSingleClickTimer;
     private readonly ForegroundFpsReader foregroundFpsReader;
     private readonly ToolTip hoverToolTip;
     private readonly bool isAsusZenbookDevice;
@@ -69,20 +73,25 @@ internal sealed class OperationForm : Form
     private bool myAsusInstalled;
     private bool windowsAiStudioAvailable;
     private bool liveCaptionsAvailable;
+    private bool seelenUiRunning;
     private int hoveredButton = -1;
     private int toolTipButton = -1;
     private int pressedButton = -1;
     private int pressAnimationButton = -1;
     private bool batteryCarePauseRunning;
     private bool batteryLimitRestoreRunning;
+    private int ctfmonRestartRequestRunning;
     private int seelenPowerMenuRequestRunning;
     private int foregroundFpsReadRunning;
     private DateTime animationLastUtc;
     private DateTime pressAnimationStartUtc;
     private DateTime reverseHoverRevealUntilUtc;
+    private DateTime seelenStatusNextRefreshUtc;
+    private DateTime memoryPieNextRefreshUtc;
     private bool lastReverseHoverRevealActive;
     private bool suppressReverseHoverRevealUntilCursorLeaves;
     private int? foregroundFrameRate;
+    private MemoryPieSnapshot memoryPieSnapshot = MemoryPieSnapshot.Empty;
     private long burnInShiftSlot = long.MinValue;
     private readonly double[] hoverProgress = new double[ButtonCount];
     private RectangleF[] buttonRects;
@@ -91,7 +100,7 @@ internal sealed class OperationForm : Form
     private Graphics renderGraphics;
     private Bitmap interactionHitMask;
 
-    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction)
+    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction)
     {
         this.currentSettings = settings.Clone();
         this.currentSettings.Normalize();
@@ -101,9 +110,12 @@ internal sealed class OperationForm : Form
         this.notificationAction = notificationAction;
         this.toggleHoverOpacityAction = toggleHoverOpacityAction;
         this.pulseSeelenDockAction = pulseSeelenDockAction;
+        this.manualAiBlockAction = manualAiBlockAction;
+        ApplicationIcon.ApplyTo(this);
         this.isAsusZenbookDevice = DetectAsusZenbookDevice();
         this.myAsusInstalled = DetectMyAsusInstalled();
         bool seelenUiRunningAtStartup = IsSeelenUiRunning();
+        this.seelenUiRunning = seelenUiRunningAtStartup;
         this.windowsAiStudioAvailable = NativeMethods.IsWindowsAiStudioAvailable();
         this.liveCaptionsAvailable = NativeMethods.IsLiveCaptionsAvailable();
         Program.LogInfo(
@@ -149,6 +161,9 @@ internal sealed class OperationForm : Form
         this.restartSingleClickTimer = new System.Windows.Forms.Timer();
         this.restartSingleClickTimer.Interval = Math.Max(1, SystemInformation.DoubleClickTime);
         this.restartSingleClickTimer.Tick += OnRestartSingleClickTimerTick;
+        this.appSettingsSingleClickTimer = new System.Windows.Forms.Timer();
+        this.appSettingsSingleClickTimer.Interval = Math.Max(1, SystemInformation.DoubleClickTime);
+        this.appSettingsSingleClickTimer.Tick += OnAppSettingsSingleClickTimerTick;
 
         this.hoverToolTip = new ToolTip();
         this.hoverToolTip.ShowAlways = true;
@@ -193,6 +208,9 @@ internal sealed class OperationForm : Form
         this.restartSingleClickTimer.Stop();
         this.restartSingleClickTimer.Tick -= OnRestartSingleClickTimerTick;
         this.restartSingleClickTimer.Dispose();
+        this.appSettingsSingleClickTimer.Stop();
+        this.appSettingsSingleClickTimer.Tick -= OnAppSettingsSingleClickTimerTick;
+        this.appSettingsSingleClickTimer.Dispose();
         if (Interlocked.CompareExchange(ref this.foregroundFpsReadRunning, 0, 0) == 0)
         {
             this.foregroundFpsReader.Dispose();
@@ -311,7 +329,34 @@ internal sealed class OperationForm : Form
 
         PositionOperationWindow();
         UpdateForegroundFpsTimer();
+        RefreshSeelenUiStatus(DateTime.UtcNow, true);
+        RefreshMemoryPieSnapshot(DateTime.UtcNow, true);
         RenderLayeredWindow();
+    }
+
+    public void ClearTransientInteractionState()
+    {
+        bool changed =
+            this.hoveredButton != -1 ||
+            this.pressedButton != -1 ||
+            this.pressAnimationButton != -1 ||
+            this.toolTipButton != -1 ||
+            this.Capture;
+        HideHoverToolTip();
+        this.hoveredButton = -1;
+        this.pressedButton = -1;
+        this.pressAnimationButton = -1;
+        this.pressAnimationStartUtc = DateTime.MinValue;
+        if (this.Capture)
+        {
+            this.Capture = false;
+        }
+
+        if (changed)
+        {
+            EnsureAnimationTimer();
+            RenderLayeredWindow();
+        }
     }
 
     public void SetHiddenForFullscreen(bool hidden)
@@ -377,6 +422,121 @@ internal sealed class OperationForm : Form
         {
             PositionOperationWindow();
         }
+
+        DateTime now = DateTime.UtcNow;
+        RefreshSeelenUiStatus(now, false);
+        RefreshMemoryPieSnapshot(now, false);
+    }
+
+    private void RefreshSeelenUiStatus(DateTime now, bool force)
+    {
+        if (!force && now < this.seelenStatusNextRefreshUtc)
+        {
+            return;
+        }
+
+        this.seelenStatusNextRefreshUtc = now.AddMilliseconds(SeelenStatusRefreshIntervalMs);
+        bool next = IsSeelenUiRunning();
+        if (next == this.seelenUiRunning)
+        {
+            return;
+        }
+
+        this.seelenUiRunning = next;
+        DisposeInteractionHitMask();
+        if (!ShouldShowStartButton())
+        {
+            if (this.hoveredButton == StartButtonIndex)
+            {
+                this.hoveredButton = -1;
+                HideHoverToolTip();
+            }
+
+            if (this.pressedButton == StartButtonIndex)
+            {
+                this.pressedButton = -1;
+            }
+        }
+
+        RefreshMemoryPieSnapshot(now, true);
+        RenderLayeredWindow();
+    }
+
+    private void RefreshMemoryPieSnapshot(DateTime now, bool force)
+    {
+        if (!ShouldDrawMemoryPiePanel())
+        {
+            return;
+        }
+
+        if (!force && now < this.memoryPieNextRefreshUtc)
+        {
+            return;
+        }
+
+        this.memoryPieNextRefreshUtc = now.AddMilliseconds(MemoryPieRefreshIntervalMs);
+        this.memoryPieSnapshot = ReadMemoryPieSnapshot();
+        RenderLayeredWindow();
+    }
+
+    private static MemoryPieSnapshot ReadMemoryPieSnapshot()
+    {
+        try
+        {
+            NativeMethods.MEMORYSTATUSEX memory = new NativeMethods.MEMORYSTATUSEX();
+            if (!NativeMethods.GlobalMemoryStatusEx(memory))
+            {
+                return MemoryPieSnapshot.Empty;
+            }
+
+            ulong physicalTotal = memory.ullTotalPhys;
+            ulong physicalUsed = SubtractClamped(memory.ullTotalPhys, memory.ullAvailPhys);
+            ulong commitLimit = memory.ullTotalPageFile;
+            ulong commitUsed = SubtractClamped(memory.ullTotalPageFile, memory.ullAvailPageFile);
+            ulong virtualTotal = commitLimit > physicalTotal ? commitLimit - physicalTotal : 0UL;
+            ulong virtualUsed = commitUsed > physicalUsed ? commitUsed - physicalUsed : 0UL;
+            virtualUsed = Math.Min(virtualUsed, virtualTotal);
+            ulong total = AddClamped(physicalTotal, virtualTotal);
+            ulong foregroundBytes = Math.Min(total, TryReadForegroundWorkingSetBytes());
+            return new MemoryPieSnapshot(total, physicalUsed, virtualUsed, foregroundBytes);
+        }
+        catch
+        {
+            return MemoryPieSnapshot.Empty;
+        }
+    }
+
+    private static ulong TryReadForegroundWorkingSetBytes()
+    {
+        try
+        {
+            IntPtr foreground = NativeMethods.GetForegroundWindowHandle();
+            int processId;
+            if (!NativeMethods.TryGetWindowProcessId(foreground, out processId))
+            {
+                return 0UL;
+            }
+
+            using (Process process = Process.GetProcessById(processId))
+            {
+                long workingSet = process.WorkingSet64;
+                return workingSet > 0L ? (ulong)workingSet : 0UL;
+            }
+        }
+        catch
+        {
+            return 0UL;
+        }
+    }
+
+    private static ulong SubtractClamped(ulong left, ulong right)
+    {
+        return left > right ? left - right : 0UL;
+    }
+
+    private static ulong AddClamped(ulong left, ulong right)
+    {
+        return ulong.MaxValue - left < right ? ulong.MaxValue : left + right;
     }
 
     public bool ProcessSharedInteractionTick()
@@ -485,7 +645,7 @@ internal sealed class OperationForm : Form
 
         if (button == RestartButtonIndex)
         {
-            return "单击：拉到前 Seelen Dock\r\n双击：重启 SeelenUI 和本程序";
+            return "单击：拉到前 Seelen Dock，并重启 CTF 输入服务\r\n双击：重启 SeelenUI 和本程序";
         }
 
         if (button == BatteryCarePauseButtonIndex)
@@ -500,7 +660,7 @@ internal sealed class OperationForm : Form
 
         if (button == AppSettingsButtonIndex)
         {
-            return "程序设置";
+            return "程序设置\r\n双击切换 AI 阻断";
         }
 
         if (button == TaskManagerButtonIndex)
@@ -587,6 +747,12 @@ internal sealed class OperationForm : Form
             return;
         }
 
+        if (button == AppSettingsButtonIndex)
+        {
+            HandleAppSettingsButtonClick();
+            return;
+        }
+
         ExecuteButton(button, e.Button);
     }
 
@@ -659,16 +825,6 @@ internal sealed class OperationForm : Form
         if (button == WindowsPowerMenuButtonIndex)
         {
             BeginOpenSeelenPowerMenu();
-            return;
-        }
-
-        if (button == AppSettingsButtonIndex)
-        {
-            if (this.openSettingsAction != null)
-            {
-                this.openSettingsAction();
-            }
-
             return;
         }
 
@@ -763,6 +919,60 @@ internal sealed class OperationForm : Form
     private void OnRestartSingleClickTimerTick(object sender, EventArgs e)
     {
         this.restartSingleClickTimer.Stop();
+        ExecuteRestartButtonSingleClick();
+    }
+
+    private void HandleAppSettingsButtonClick()
+    {
+        if (this.appSettingsSingleClickTimer.Enabled)
+        {
+            this.appSettingsSingleClickTimer.Stop();
+            ExecuteAppSettingsButtonDoubleClick();
+            return;
+        }
+
+        this.appSettingsSingleClickTimer.Interval = Math.Max(1, SystemInformation.DoubleClickTime);
+        this.appSettingsSingleClickTimer.Start();
+    }
+
+    private void OnAppSettingsSingleClickTimerTick(object sender, EventArgs e)
+    {
+        this.appSettingsSingleClickTimer.Stop();
+        ExecuteAppSettingsButtonSingleClick();
+    }
+
+    private void ExecuteAppSettingsButtonSingleClick()
+    {
+        if (this.openSettingsAction != null)
+        {
+            this.openSettingsAction();
+        }
+    }
+
+    private void ExecuteAppSettingsButtonDoubleClick()
+    {
+        if (this.manualAiBlockAction == null)
+        {
+            return;
+        }
+
+        try
+        {
+            this.manualAiBlockAction();
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            ShowOperationNotification(
+                "AI 快速选单",
+                "AI 快速选单打开失败。",
+                ToolTipIcon.Warning);
+        }
+    }
+
+    private void ExecuteRestartButtonSingleClick()
+    {
+        BeginRestartCtfmonFromOperationPanel();
         PulseSeelenDockFromOperationPanel();
     }
 
@@ -787,6 +997,83 @@ internal sealed class OperationForm : Form
                 "Seelen Dock",
                 "未能找到或拉前 Seelen Dock。",
                 ToolTipIcon.Warning);
+        }
+    }
+
+    private void BeginRestartCtfmonFromOperationPanel()
+    {
+        if (!TryBeginSingleFlight(ref this.ctfmonRestartRequestRunning))
+        {
+            Program.LogInfo("operation_ctfmon_restart_skipped reason=already_running");
+            return;
+        }
+
+        string correlationId = Guid.NewGuid().ToString("N");
+        Program.LogInfo("operation_ctfmon_restart_requested correlation_id=" + correlationId);
+
+        // Restarting CTF can drop the active IME composition buffer, so this recovery
+        // action is only wired to the explicit Seelen Dock button click and is
+        // single-flighted to avoid stacked process kills from repeated clicks.
+        Task.Run((Action)delegate
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            bool success = false;
+            string detail = string.Empty;
+            try
+            {
+                success = NativeMethods.RestartCtfmonTextServices(out detail);
+            }
+            catch (Exception ex)
+            {
+                Program.LogException(ex);
+                detail = ex.GetType().Name + ": " + ex.Message;
+            }
+            finally
+            {
+                stopwatch.Stop();
+                Program.LogInfo(
+                    "operation_ctfmon_restart_completed correlation_id=" +
+                    correlationId +
+                    ", success=" +
+                    success.ToString() +
+                    ", elapsed_ms=" +
+                    stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    ", detail=" +
+                    detail);
+                EndSingleFlight(ref this.ctfmonRestartRequestRunning);
+            }
+
+            if (!success)
+            {
+                TryShowCtfmonRestartFailureNotification();
+            }
+        });
+    }
+
+    private void TryShowCtfmonRestartFailureNotification()
+    {
+        try
+        {
+            if (this.formClosing || this.IsDisposed || !this.IsHandleCreated)
+            {
+                return;
+            }
+
+            this.BeginInvoke((MethodInvoker)delegate
+            {
+                if (this.IsDisposed)
+                {
+                    return;
+                }
+
+                ShowOperationNotification(
+                    "CTF 输入服务",
+                    "未能重启 CTF 输入服务，详见日志。",
+                    ToolTipIcon.Warning);
+            });
+        }
+        catch (InvalidOperationException)
+        {
         }
     }
 
@@ -1882,6 +2169,11 @@ internal sealed class OperationForm : Form
             return false;
         }
 
+        if (button == StartButtonIndex && !ShouldShowStartButton())
+        {
+            return false;
+        }
+
         if ((button == BatteryCarePauseButtonIndex || button == BatteryLimitRestoreButtonIndex) &&
             !ShouldShowBatteryCareButtons())
         {
@@ -1951,6 +2243,40 @@ internal sealed class OperationForm : Form
         return false;
     }
 
+    private bool ShouldShowStartButton()
+    {
+        return GetResolvedPrimaryPanelMode() == OperationPrimaryPanelMode.WindowsButton;
+    }
+
+    private bool ShouldDrawStartFallbackPanel()
+    {
+        return GetResolvedPrimaryPanelMode() == OperationPrimaryPanelMode.MemoryPie;
+    }
+
+    private bool ShouldDrawMemoryPiePanel()
+    {
+        return GetResolvedPrimaryPanelMode() == OperationPrimaryPanelMode.MemoryPie;
+    }
+
+    private bool ShouldReservePrimaryPanelArea()
+    {
+        return GetResolvedPrimaryPanelMode() != OperationPrimaryPanelMode.Hidden;
+    }
+
+    private OperationPrimaryPanelMode GetResolvedPrimaryPanelMode()
+    {
+        OperationPrimaryPanelMode mode = this.currentSettings.OperationPrimaryPanelMode;
+        if (mode == OperationPrimaryPanelMode.Auto ||
+            !Enum.IsDefined(typeof(OperationPrimaryPanelMode), mode))
+        {
+            return this.seelenUiRunning
+                ? OperationPrimaryPanelMode.WindowsButton
+                : OperationPrimaryPanelMode.MemoryPie;
+        }
+
+        return mode;
+    }
+
     private bool ShouldShowBatteryCareButtons()
     {
         return this.isAsusZenbookDevice &&
@@ -2008,9 +2334,12 @@ internal sealed class OperationForm : Form
         int startSize = GetStartButtonSize();
         int smallSize = GetSmallButtonSize();
         RectangleF[] rects = new RectangleF[ButtonCount];
-        rects[StartButtonIndex] = new RectangleF(margin, margin, startSize, startSize);
+        bool reservePrimaryPanel = ShouldReservePrimaryPanelArea();
+        rects[StartButtonIndex] = reservePrimaryPanel
+            ? new RectangleF(margin, margin, startSize, startSize)
+            : RectangleF.Empty;
 
-        int columnLeft = margin + startSize;
+        int columnLeft = margin + (reservePrimaryPanel ? startSize : 0);
         rects[WindowsSettingsButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
         rects[WindowsPowerMenuButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
 
@@ -2043,7 +2372,8 @@ internal sealed class OperationForm : Form
         int margin = S(3);
         int startSize = GetStartButtonSize();
         int smallSize = GetSmallButtonSize();
-        return new Size(margin * 2 + startSize + smallSize * SmallColumnCount, margin * 2 + startSize);
+        int primaryWidth = ShouldReservePrimaryPanelArea() ? startSize : 0;
+        return new Size(margin * 2 + primaryWidth + smallSize * SmallColumnCount, margin * 2 + startSize);
     }
 
     private int GetStartButtonSize()
@@ -2063,7 +2393,7 @@ internal sealed class OperationForm : Form
             return;
         }
 
-        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+        Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
         int left = workArea.Left + Math.Max(0, this.currentSettings.OperationLeftOffset);
         int top = workArea.Bottom - this.Height - Math.Max(0, this.currentSettings.OperationBottomOffset);
         left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
@@ -2182,11 +2512,43 @@ internal sealed class OperationForm : Form
         }
     }
 
+    // Render-variant dispatch (mirrors CodexRadarForm). Only Classic exists today; add a case and a
+    // sibling partial file (OperationForm.<Name>.cs) to introduce an alternate layout.
     private void DrawOperationWindow(Graphics g)
+    {
+        switch (this.currentSettings.OperationRenderVariant)
+        {
+            case OperationRenderVariant.Typographic:
+                DrawOperationWindowTypographic(g);
+                return;
+            case OperationRenderVariant.AmberHud:
+                DrawOperationWindowAmberHud(g);
+                return;
+            case OperationRenderVariant.WarmCard:
+                DrawOperationWindowWarmCard(g);
+                return;
+            case OperationRenderVariant.Phosphor:
+                DrawOperationWindowPhosphor(g);
+                return;
+            default:
+                DrawOperationWindowClassic(g);
+                return;
+        }
+    }
+
+    private void DrawOperationWindowClassic(Graphics g)
     {
         ConfigureGraphics(g);
         RectangleF[] rects = GetButtonRects();
-        DrawButton(g, rects[StartButtonIndex], StartButtonIndex, true, false, false, true);
+        if (ShouldDrawStartFallbackPanel())
+        {
+            DrawStartFallbackPanel(g, rects[StartButtonIndex]);
+        }
+        else
+        {
+            DrawButton(g, rects[StartButtonIndex], StartButtonIndex, true, false, false, true);
+        }
+
         DrawButton(g, rects[WindowsSettingsButtonIndex], WindowsSettingsButtonIndex, false, false, false, false);
         DrawButton(g, rects[HoverOpacityToggleButtonIndex], HoverOpacityToggleButtonIndex, false, false, false, false);
         DrawButton(g, rects[AppSettingsButtonIndex], AppSettingsButtonIndex, false, false, false, false);
@@ -2216,7 +2578,118 @@ internal sealed class OperationForm : Form
         return RectangleF.FromLTRB(left.Left, left.Top, right.Right, left.Bottom);
     }
 
+    private void DrawStartFallbackPanel(Graphics g, RectangleF rect)
+    {
+        DrawStartFallbackPanel(g, rect, DesignTokens.Colors.Accent);
+    }
+
+    // pieForegroundColor lets the four OLED-safe restyle schemes (added in 1.0.3.44) swap the memory
+    // pie's foreground-app slice away from its classic blue - the 2-arg overload keeps Classic's color.
+    private void DrawStartFallbackPanel(Graphics g, RectangleF rect, Color pieForegroundColor)
+    {
+        if (rect.Width <= 0.0f || rect.Height <= 0.0f)
+        {
+            return;
+        }
+
+        int backgroundAlpha = GetBackgroundOpacityAlpha();
+        float radius = Math.Max(S(5), rect.Height * 0.24f);
+        using (GraphicsPath path = RoundedSegment(rect, radius, true, false, false))
+        using (SolidBrush fillBrush = new SolidBrush(DesignTokens.White(ScaleAlpha(58, backgroundAlpha))))
+        using (Pen borderPen = new Pen(DesignTokens.White(ScaleAlpha(44, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+        {
+            g.FillPath(fillBrush, path);
+            g.DrawPath(borderPen, path);
+        }
+
+        if (this.currentSettings.OperationMemoryPieEnabled)
+        {
+            DrawMemoryPie(g, rect, pieForegroundColor);
+        }
+    }
+
+    private void DrawMemoryPie(Graphics g, RectangleF rect)
+    {
+        DrawMemoryPie(g, rect, DesignTokens.Colors.Accent);
+    }
+
+    // foregroundColor lets the four OLED-safe restyle schemes (added in 1.0.3.44) swap the
+    // foreground-app slice away from its classic blue - the 2-arg overload keeps Classic's color.
+    private void DrawMemoryPie(Graphics g, RectangleF rect, Color foregroundColor)
+    {
+        MemoryPieSnapshot snapshot = this.memoryPieSnapshot;
+        float inset = Math.Max(S(8), Math.Min(rect.Width, rect.Height) * 0.13f);
+        RectangleF bounds = RectangleF.Inflate(rect, -inset, -inset);
+        float diameter = Math.Max(1.0f, Math.Min(bounds.Width, bounds.Height));
+        RectangleF circle = new RectangleF(
+            bounds.Left + (bounds.Width - diameter) / 2.0f,
+            bounds.Top + (bounds.Height - diameter) / 2.0f,
+            diameter,
+            diameter);
+        int backgroundAlpha = GetBackgroundOpacityAlpha();
+        using (SolidBrush baseBrush = new SolidBrush(DesignTokens.White(ScaleAlpha(30, backgroundAlpha))))
+        using (Pen borderPen = new Pen(DesignTokens.White(ScaleAlpha(80, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+        {
+            g.FillEllipse(baseBrush, circle);
+            if (snapshot.IsValid)
+            {
+                float startAngle = -90.0f;
+                float physicalSweep = GetPieSweep(snapshot.PhysicalUsedBytes, snapshot.TotalBytes);
+                float virtualSweep = GetPieSweep(snapshot.VirtualUsedBytes, snapshot.TotalBytes);
+                DrawPieSlice(g, circle, startAngle, physicalSweep, DesignTokens.WithAlpha(DesignTokens.Colors.SuccessSoft, ScaleAlpha(222, backgroundAlpha)));
+                DrawPieSlice(g, circle, startAngle + physicalSweep, virtualSweep, DesignTokens.WithAlpha(DesignTokens.Colors.Warning, ScaleAlpha(218, backgroundAlpha)));
+                DrawPieSlice(g, circle, startAngle, GetPieSweep(snapshot.ForegroundBytes, snapshot.TotalBytes), DesignTokens.WithAlpha(foregroundColor, ScaleAlpha(236, backgroundAlpha)));
+            }
+
+            g.DrawEllipse(borderPen, circle);
+        }
+
+        if (!snapshot.IsValid)
+        {
+            RectangleF icon = RectangleF.Inflate(circle, -circle.Width * 0.26f, -circle.Height * 0.26f);
+            using (Pen pen = new Pen(DesignTokens.White(ScaleAlpha(150, backgroundAlpha)), Math.Max(1.0f, 1.4f * this.scale)))
+            {
+                pen.StartCap = LineCap.Round;
+                pen.EndCap = LineCap.Round;
+                g.DrawLine(pen, icon.Left, icon.Top, icon.Right, icon.Bottom);
+                g.DrawLine(pen, icon.Right, icon.Top, icon.Left, icon.Bottom);
+            }
+        }
+    }
+
+    private static void DrawPieSlice(Graphics g, RectangleF circle, float startAngle, float sweepAngle, Color color)
+    {
+        if (sweepAngle <= 0.1f || color.A <= 0)
+        {
+            return;
+        }
+
+        using (SolidBrush brush = new SolidBrush(color))
+        {
+            g.FillPie(brush, circle.Left, circle.Top, circle.Width, circle.Height, startAngle, Math.Min(360.0f, sweepAngle));
+        }
+    }
+
+    private static float GetPieSweep(ulong value, ulong total)
+    {
+        if (value == 0UL || total == 0UL)
+        {
+            return 0.0f;
+        }
+
+        double ratio = Math.Max(0.0, Math.Min(1.0, (double)value / (double)total));
+        return (float)(ratio * 360.0);
+    }
+
     private void DrawFpsPanel(Graphics g, RectangleF rect)
+    {
+        DrawFpsPanel(g, rect, DesignTokens.Colors.AccentSoft, DesignTokens.Colors.AccentBorder, DesignTokens.Colors.Accent);
+    }
+
+    // accentFill/accentBorder/accentRing let the four OLED-safe restyle schemes (added in 1.0.3.44)
+    // swap this panel's forced-FPS highlight away from its classic blue - the 3-arg overload keeps
+    // Classic's exact colors for existing callers.
+    private void DrawFpsPanel(Graphics g, RectangleF rect, Color accentFill, Color accentBorder, Color accentRing)
     {
         if (rect.Width <= 0.0f || rect.Height <= 0.0f)
         {
@@ -2228,10 +2701,10 @@ internal sealed class OperationForm : Form
         bool forcedFps = this.currentSettings.ForceShowForegroundFpsEnabled;
         using (GraphicsPath path = RoundedSegment(rect, radius, false, true, false))
         using (SolidBrush fillBrush = new SolidBrush(forcedFps
-            ? DesignTokens.WithAlpha(DesignTokens.Colors.AccentSoft, ScaleAlpha(72, backgroundAlpha))
+            ? DesignTokens.WithAlpha(accentFill, ScaleAlpha(72, backgroundAlpha))
             : DesignTokens.White(ScaleAlpha(46, backgroundAlpha))))
         using (Pen borderPen = new Pen(forcedFps
-            ? DesignTokens.WithAlpha(DesignTokens.Colors.AccentBorder, ScaleAlpha(132, backgroundAlpha))
+            ? DesignTokens.WithAlpha(accentBorder, ScaleAlpha(132, backgroundAlpha))
             : DesignTokens.White(ScaleAlpha(52, backgroundAlpha)), Math.Max(1.0f, this.scale)))
         {
             g.FillPath(fillBrush, path);
@@ -2242,7 +2715,7 @@ internal sealed class OperationForm : Form
         {
             RectangleF ringRect = RectangleF.Inflate(rect, -Math.Max(1.0f, this.scale), -Math.Max(1.0f, this.scale));
             using (GraphicsPath ringPath = RoundedSegment(ringRect, Math.Max(S(4), ringRect.Height * 0.22f), false, true, false))
-            using (Pen ringPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, ScaleAlpha(150, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+            using (Pen ringPen = new Pen(DesignTokens.WithAlpha(accentRing, ScaleAlpha(150, backgroundAlpha)), Math.Max(1.0f, this.scale)))
             {
                 g.DrawPath(ringPen, ringPath);
             }
@@ -2462,10 +2935,17 @@ internal sealed class OperationForm : Form
 
     private void DrawStartGlyph(Graphics g, RectangleF icon)
     {
+        DrawStartGlyph(g, icon, DesignTokens.Colors.AccentGradientEnd);
+    }
+
+    // accentColor lets the four OLED-safe restyle schemes (added in 1.0.3.44) swap the Start glyph's
+    // gradient away from its classic blue - the 2-arg overload keeps Classic's exact gradient.
+    private void DrawStartGlyph(Graphics g, RectangleF icon, Color accentColor)
+    {
         float gap = Math.Max(2.0f, icon.Width * 0.07f);
         float paneWidth = (icon.Width - gap) / 2.0f;
         float paneHeight = (icon.Height - gap) / 2.0f;
-        using (LinearGradientBrush brush = new LinearGradientBrush(icon, DesignTokens.White(248), DesignTokens.WithAlpha(DesignTokens.Colors.AccentGradientEnd, 248), LinearGradientMode.ForwardDiagonal))
+        using (LinearGradientBrush brush = new LinearGradientBrush(icon, DesignTokens.White(248), DesignTokens.WithAlpha(accentColor, 248), LinearGradientMode.ForwardDiagonal))
         {
             g.FillRectangle(brush, icon.Left, icon.Top, paneWidth, paneHeight);
             g.FillRectangle(brush, icon.Left + paneWidth + gap, icon.Top, paneWidth, paneHeight);
@@ -2520,6 +3000,13 @@ internal sealed class OperationForm : Form
 
     private void DrawAppSettingsGlyph(Graphics g, RectangleF rect)
     {
+        DrawAppSettingsGlyph(g, rect, DesignTokens.Colors.Accent);
+    }
+
+    // knobColor lets the four OLED-safe restyle schemes (added in 1.0.3.44) swap this glyph's slider
+    // knobs away from their classic blue - the 2-arg overload keeps Classic's exact color.
+    private void DrawAppSettingsGlyph(Graphics g, RectangleF rect, Color knobColor)
+    {
         float size = Math.Min(rect.Width, rect.Height);
         float inset = size * 0.08f;
         RectangleF panel = new RectangleF(
@@ -2532,7 +3019,7 @@ internal sealed class OperationForm : Form
         using (GraphicsPath path = RoundedRectangle(panel, Math.Max(1.5f, size * 0.12f)))
         using (Pen panelPen = new Pen(DesignTokens.White(246), stroke))
         using (Pen sliderPen = new Pen(DesignTokens.White(222), Math.Max(1.0f, 1.05f * this.scale)))
-        using (SolidBrush knobBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 255)))
+        using (SolidBrush knobBrush = new SolidBrush(DesignTokens.WithAlpha(knobColor, 255)))
         {
             panelPen.StartCap = LineCap.Round;
             panelPen.EndCap = LineCap.Round;
@@ -2558,6 +3045,13 @@ internal sealed class OperationForm : Form
 
     private void DrawRefreshGlyph(Graphics g, RectangleF rect)
     {
+        DrawRefreshGlyph(g, rect, DesignTokens.Colors.Accent);
+    }
+
+    // accentColor lets the four OLED-safe restyle schemes (added in 1.0.3.44) swap this glyph's
+    // accent fill away from its classic blue - the 2-arg overload keeps Classic's exact color.
+    private void DrawRefreshGlyph(Graphics g, RectangleF rect, Color accentColor)
+    {
         float cx = rect.Left + rect.Width / 2.0f;
         float cy = rect.Top + rect.Height / 2.0f;
         float size = Math.Min(rect.Width, rect.Height);
@@ -2568,7 +3062,7 @@ internal sealed class OperationForm : Form
         float top = cy - gridSize / 2.0f;
         using (SolidBrush tileBrush = new SolidBrush(DesignTokens.Glyph(210)))
         using (Pen tilePen = new Pen(DesignTokens.White(246), Math.Max(1.0f, 1.15f * this.scale)))
-        using (SolidBrush boltBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 255)))
+        using (SolidBrush boltBrush = new SolidBrush(DesignTokens.WithAlpha(accentColor, 255)))
         {
             for (int row = 0; row < 2; row++)
             {
@@ -2723,6 +3217,13 @@ internal sealed class OperationForm : Form
 
     private void DrawTaskManagerGlyph(Graphics g, RectangleF rect)
     {
+        DrawTaskManagerGlyph(g, rect, DesignTokens.Colors.Accent);
+    }
+
+    // trendColor lets the four OLED-safe restyle schemes (added in 1.0.3.44) swap this glyph's trend
+    // line away from its classic blue - the 2-arg overload keeps Classic's exact color.
+    private void DrawTaskManagerGlyph(Graphics g, RectangleF rect, Color trendColor)
+    {
         float size = Math.Min(rect.Width, rect.Height);
         float stroke = Math.Max(1.0f, 1.15f * this.scale);
         RectangleF panel = new RectangleF(
@@ -2733,7 +3234,7 @@ internal sealed class OperationForm : Form
         float titleBarY = panel.Top + panel.Height * 0.25f;
         using (GraphicsPath panelPath = RoundedRectangle(panel, Math.Max(1.5f, size * 0.10f)))
         using (Pen panelPen = new Pen(DesignTokens.White(244), stroke))
-        using (Pen graphPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 255), Math.Max(1.0f, 1.35f * this.scale)))
+        using (Pen graphPen = new Pen(DesignTokens.WithAlpha(trendColor, 255), Math.Max(1.0f, 1.35f * this.scale)))
         using (SolidBrush barBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.SuccessSoft, 238)))
         {
             panelPen.StartCap = LineCap.Round;
@@ -2765,6 +3266,14 @@ internal sealed class OperationForm : Form
 
     private void DrawWindowsAiStudioGlyph(Graphics g, RectangleF rect)
     {
+        DrawWindowsAiStudioGlyph(g, rect, DesignTokens.Colors.AccentAlt, DesignTokens.Colors.Accent);
+    }
+
+    // sparkleLineColor/sparkleFillColor let the four OLED-safe restyle schemes (added in 1.0.3.44)
+    // swap this glyph's sparkle away from its classic purple/blue - the 2-arg overload keeps
+    // Classic's exact colors.
+    private void DrawWindowsAiStudioGlyph(Graphics g, RectangleF rect, Color sparkleLineColor, Color sparkleFillColor)
+    {
         float size = Math.Min(rect.Width, rect.Height);
         float stroke = Math.Max(1.0f, 1.15f * this.scale);
         RectangleF chip = new RectangleF(
@@ -2775,8 +3284,8 @@ internal sealed class OperationForm : Form
         using (GraphicsPath chipPath = RoundedRectangle(chip, Math.Max(1.5f, size * 0.11f)))
         using (Pen chipPen = new Pen(DesignTokens.White(236), stroke))
         using (Pen pinPen = new Pen(DesignTokens.White(214), Math.Max(1.0f, 0.95f * this.scale)))
-        using (Pen sparklePen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.AccentAlt, 255), Math.Max(1.0f, 1.35f * this.scale)))
-        using (SolidBrush sparkleBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 255)))
+        using (Pen sparklePen = new Pen(DesignTokens.WithAlpha(sparkleLineColor, 255), Math.Max(1.0f, 1.35f * this.scale)))
+        using (SolidBrush sparkleBrush = new SolidBrush(DesignTokens.WithAlpha(sparkleFillColor, 255)))
         {
             chipPen.StartCap = LineCap.Round;
             chipPen.EndCap = LineCap.Round;
@@ -2812,6 +3321,13 @@ internal sealed class OperationForm : Form
 
     private void DrawQuickSettingsGlyph(Graphics g, RectangleF rect)
     {
+        DrawQuickSettingsGlyph(g, rect, DesignTokens.Colors.Accent);
+    }
+
+    // activeTileColor lets the four OLED-safe restyle schemes (added in 1.0.3.44) swap this glyph's
+    // active tile away from its classic blue - the 2-arg overload keeps Classic's exact color.
+    private void DrawQuickSettingsGlyph(Graphics g, RectangleF rect, Color activeTileColor)
+    {
         float size = Math.Min(rect.Width, rect.Height);
         float stroke = Math.Max(1.0f, 1.1f * this.scale);
         RectangleF panel = new RectangleF(
@@ -2840,7 +3356,7 @@ internal sealed class OperationForm : Form
         using (Pen panelPen = new Pen(DesignTokens.White(232), stroke))
         using (Pen linePen = new Pen(DesignTokens.White(225), Math.Max(1.0f, 1.0f * this.scale)))
         using (Pen subtlePen = new Pen(DesignTokens.White(154), Math.Max(1.0f, 0.9f * this.scale)))
-        using (SolidBrush activeBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 230)))
+        using (SolidBrush activeBrush = new SolidBrush(DesignTokens.WithAlpha(activeTileColor, 230)))
         using (SolidBrush inactiveBrush = new SolidBrush(DesignTokens.White(82)))
         using (SolidBrush knobBrush = new SolidBrush(DesignTokens.White(244)))
         {
@@ -2903,6 +3419,14 @@ internal sealed class OperationForm : Form
 
     private void DrawHoverOpacityGlyph(Graphics g, RectangleF rect)
     {
+        DrawHoverOpacityGlyph(g, rect, DesignTokens.Colors.Accent);
+    }
+
+    // inactiveSlashColor lets the four OLED-safe restyle schemes (added in 1.0.3.44) swap this
+    // glyph's inactive-state slash away from its classic blue - the 2-arg overload keeps Classic's
+    // exact color (the active state already uses TextOnAccent/black, which is not a blue-safety concern).
+    private void DrawHoverOpacityGlyph(Graphics g, RectangleF rect, Color inactiveSlashColor)
+    {
         float size = Math.Min(rect.Width, rect.Height);
         float stroke = Math.Max(1.0f, 1.1f * this.scale);
         RectangleF backPanel = new RectangleF(
@@ -2922,7 +3446,7 @@ internal sealed class OperationForm : Form
         using (Pen slashPen = new Pen(
             this.currentSettings.ForceHoverOpacityActive
                 ? DesignTokens.WithAlpha(DesignTokens.Colors.TextOnAccent, 232)
-                : DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 248),
+                : DesignTokens.WithAlpha(inactiveSlashColor, 248),
             Math.Max(1.0f, 1.35f * this.scale)))
         using (SolidBrush frontBrush = new SolidBrush(DesignTokens.White(this.currentSettings.ForceHoverOpacityActive ? 90 : 42)))
         {
@@ -3240,6 +3764,20 @@ internal sealed class OperationForm : Form
             graphics.Clear(Color.Transparent);
             graphics.SmoothingMode = SmoothingMode.None;
             RectangleF[] rects = GetButtonRects();
+            if (ShouldDrawStartFallbackPanel())
+            {
+                float fallbackRadius = Math.Max(S(5), rects[StartButtonIndex].Height * 0.24f);
+                using (GraphicsPath fallbackPath = RoundedSegment(
+                    rects[StartButtonIndex],
+                    fallbackRadius,
+                    true,
+                    false,
+                    false))
+                {
+                    graphics.FillPath(brush, fallbackPath);
+                }
+            }
+
             for (int button = 0; button < rects.Length; button++)
             {
                 if (!IsButtonVisible(button))
@@ -3449,6 +3987,29 @@ internal sealed class OperationForm : Form
             throw new InvalidOperationException(
                 "Operation panel self-test failed: " +
                 message);
+        }
+    }
+
+    private sealed class MemoryPieSnapshot
+    {
+        public static readonly MemoryPieSnapshot Empty = new MemoryPieSnapshot(0UL, 0UL, 0UL, 0UL);
+
+        public MemoryPieSnapshot(ulong totalBytes, ulong physicalUsedBytes, ulong virtualUsedBytes, ulong foregroundBytes)
+        {
+            this.TotalBytes = totalBytes;
+            this.PhysicalUsedBytes = Math.Min(physicalUsedBytes, totalBytes);
+            this.VirtualUsedBytes = Math.Min(virtualUsedBytes, totalBytes);
+            this.ForegroundBytes = Math.Min(foregroundBytes, totalBytes);
+        }
+
+        public ulong TotalBytes { get; private set; }
+        public ulong PhysicalUsedBytes { get; private set; }
+        public ulong VirtualUsedBytes { get; private set; }
+        public ulong ForegroundBytes { get; private set; }
+
+        public bool IsValid
+        {
+            get { return this.TotalBytes > 0UL; }
         }
     }
 

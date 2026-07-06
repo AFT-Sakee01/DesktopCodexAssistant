@@ -5,7 +5,7 @@ using System.Globalization;
 using System.Text;
 using System.Windows.Forms;
 
-internal sealed class ConnectionCheckForm : Form
+internal sealed partial class ConnectionCheckForm : Form
 {
     private const int RenderSecondBoundaryOffsetMs = 75;
     private readonly System.Windows.Forms.Timer timer;
@@ -36,6 +36,7 @@ internal sealed class ConnectionCheckForm : Form
         this.currentSettings.Normalize();
         this.reader = new CleanIpConnectionReader();
         this.snapshot = new CleanIpConnectionSnapshot();
+        ApplicationIcon.ApplyTo(this);
 
         this.SetStyle(
             ControlStyles.AllPaintingInWmPaint |
@@ -468,7 +469,7 @@ internal sealed class ConnectionCheckForm : Form
             return;
         }
 
-        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+        Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModuleConnectionCheck);
         Size desiredSize = GetDesiredSize();
         if (this.Size != desiredSize)
         {
@@ -558,7 +559,128 @@ internal sealed class ConnectionCheckForm : Form
         }
     }
 
+    // Render-variant dispatch (mirrors CodexRadarForm). Only Classic exists today; add a case and a
+    // sibling partial file (ConnectionCheckForm.<Name>.cs) to introduce an alternate layout.
     private void DrawContent(Graphics g)
+    {
+        switch (this.currentSettings.ConnectionCheckRenderVariant)
+        {
+            case ConnectionCheckRenderVariant.Typographic:
+                DrawContentTypographic(g);
+                return;
+            case ConnectionCheckRenderVariant.AmberHud:
+                DrawContentAmberHud(g);
+                return;
+            case ConnectionCheckRenderVariant.WarmCard:
+                DrawContentWarmCard(g);
+                return;
+            case ConnectionCheckRenderVariant.Phosphor:
+                DrawContentPhosphor(g);
+                return;
+            default:
+                DrawContentClassic(g);
+                return;
+        }
+    }
+
+    // Shared across the four OLED-safe variants: classify the same three data points the Classic
+    // badges already show (score / native attribution / IP type) into a coarse severity so each
+    // scheme's shared primitive (OledVariantPainting) can pick its own color for that severity,
+    // instead of every variant re-deriving the score thresholds independently.
+    private OledVariantPainting.Severity GetScoreSeverity()
+    {
+        int score = this.snapshot != null && this.snapshot.ScoreKnown ? this.snapshot.Score : -1;
+        if (score < 0)
+        {
+            return OledVariantPainting.Severity.Neutral;
+        }
+
+        if (score >= 70)
+        {
+            return OledVariantPainting.Severity.Good;
+        }
+
+        if (score >= 25)
+        {
+            return OledVariantPainting.Severity.Warn;
+        }
+
+        return OledVariantPainting.Severity.Danger;
+    }
+
+    private static OledVariantPainting.Severity GetNativeSeverity(string key)
+    {
+        if (string.Equals(key, "native", StringComparison.OrdinalIgnoreCase))
+        {
+            return OledVariantPainting.Severity.Good;
+        }
+
+        if (string.Equals(key, "broadcast", StringComparison.OrdinalIgnoreCase))
+        {
+            return OledVariantPainting.Severity.Warn;
+        }
+
+        return OledVariantPainting.Severity.Neutral;
+    }
+
+    private static OledVariantPainting.Severity GetIpTypeSeverity(string key)
+    {
+        if (key == "Residential IP" || key == "Mobile IP" || key == "Business IP" ||
+            key == "Education IP" || key == "Government IP")
+        {
+            return OledVariantPainting.Severity.Good;
+        }
+
+        if (key == "Tor IP" || key == "Tor Exit" || key == "VPN IP" || key == "Proxy IP")
+        {
+            return OledVariantPainting.Severity.Danger;
+        }
+
+        if (key == "Residential Proxy" || key == "IDC" || key == "Datacenter IP" || key == "Relay IP")
+        {
+            return OledVariantPainting.Severity.Warn;
+        }
+
+        return OledVariantPainting.Severity.Neutral;
+    }
+
+    // Common to all four OLED-safe variants: the three (label, value, severity) items to render,
+    // in the same order as the Classic badge triplet, including the waiting/checking/failed states.
+    private void GetOledDisplayItems(out string firstLabel, out string firstValue, out OledVariantPainting.Severity firstSeverity, out string secondLabel, out string secondValue, out OledVariantPainting.Severity secondSeverity, out string thirdLabel, out string thirdValue, out OledVariantPainting.Severity thirdSeverity)
+    {
+        bool waiting = this.snapshot == null || (!this.snapshot.CheckedAtKnown && !this.snapshot.Running);
+        bool firstRun = this.snapshot == null || (!this.snapshot.CheckedAtKnown && this.snapshot.Running);
+        bool failed = this.snapshot != null && !this.snapshot.Success && !this.snapshot.Running && this.snapshot.CheckedAtKnown;
+
+        if (waiting || firstRun || failed)
+        {
+            OledVariantPainting.Severity state = failed
+                ? OledVariantPainting.Severity.Danger
+                : (firstRun ? OledVariantPainting.Severity.Warn : OledVariantPainting.Severity.Neutral);
+            firstLabel = "评分";
+            firstValue = failed ? "ERR" : "--";
+            firstSeverity = state;
+            secondLabel = "归属";
+            secondValue = failed ? "失败" : (firstRun ? "检测中" : "等待");
+            secondSeverity = state;
+            thirdLabel = "类型";
+            thirdValue = failed ? GetCompactErrorLabel(this.snapshot.Error) : "--";
+            thirdSeverity = state;
+            return;
+        }
+
+        firstLabel = "评分";
+        firstValue = this.snapshot.ScoreLabel;
+        firstSeverity = GetScoreSeverity();
+        secondLabel = "归属";
+        secondValue = this.snapshot.NativeLabel;
+        secondSeverity = GetNativeSeverity(this.snapshot.NativeKey);
+        thirdLabel = "类型";
+        thirdValue = this.snapshot.IpTypeLabel;
+        thirdSeverity = GetIpTypeSeverity(this.snapshot.IpTypeKey);
+    }
+
+    private void DrawContentClassic(Graphics g)
     {
         ConfigureGraphics(g);
         using (GraphicsPath shell = RoundedRectangle(new RectangleF(0, 0, this.Width - 1, this.Height - 1), S(DesignTokens.Radius.Panel)))
@@ -911,7 +1033,7 @@ internal sealed class ConnectionCheckForm : Form
         string icon = (iconClass ?? string.Empty).ToLowerInvariant();
         if (icon.IndexOf("location-check", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawLocationCheckIcon(g, rect, color);
+            DrawLocationCheckIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
@@ -959,7 +1081,7 @@ internal sealed class ConnectionCheckForm : Form
 
         if (icon.IndexOf("network-wired", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawNetworkIcon(g, rect, color);
+            DrawNetworkIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
@@ -972,13 +1094,13 @@ internal sealed class ConnectionCheckForm : Form
         if (icon.IndexOf("user-secret", StringComparison.OrdinalIgnoreCase) >= 0 ||
             icon.IndexOf("mask", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawMaskIcon(g, rect, color);
+            DrawMaskIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
         if (icon.IndexOf("filter", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            DrawFilterIcon(g, rect, color);
+            DrawFilterIcon(g, rect, color, suppressDecorativeFill);
             return;
         }
 
@@ -997,240 +1119,323 @@ internal sealed class ConnectionCheckForm : Form
         DrawQuestionIcon(g, rect, color, suppressDecorativeFill);
     }
 
+    private Pen CreateIconPen(Color color)
+    {
+        Pen pen = new Pen(color, Math.Max(1.2f, S(2)));
+        pen.StartCap = LineCap.Round;
+        pen.EndCap = LineCap.Round;
+        pen.LineJoin = LineJoin.Round;
+        return pen;
+    }
+
     private void DrawShieldIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 54)))
-        using (GraphicsPath outer = new GraphicsPath())
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 46)))
+        using (SolidBrush halfFill = new SolidBrush(DesignTokens.WithAlpha(color, 84)))
+        using (GraphicsPath outline = new GraphicsPath())
+        using (GraphicsPath leftHalf = new GraphicsPath())
         {
-            outer.AddPolygon(new PointF[]
+            PointF top = new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.06f);
+            PointF bottom = new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.94f);
+            outline.AddPolygon(new PointF[]
             {
-                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.08f),
-                new PointF(rect.Right - rect.Width * 0.16f, rect.Top + rect.Height * 0.24f),
-                new PointF(rect.Right - rect.Width * 0.26f, rect.Bottom - rect.Height * 0.14f),
-                new PointF(rect.Left + rect.Width * 0.50f, rect.Bottom - rect.Height * 0.02f),
-                new PointF(rect.Left + rect.Width * 0.26f, rect.Bottom - rect.Height * 0.14f),
-                new PointF(rect.Left + rect.Width * 0.16f, rect.Top + rect.Height * 0.24f)
+                top,
+                new PointF(rect.Left + rect.Width * 0.84f, rect.Top + rect.Height * 0.18f),
+                new PointF(rect.Left + rect.Width * 0.84f, rect.Top + rect.Height * 0.44f),
+                new PointF(rect.Left + rect.Width * 0.74f, rect.Top + rect.Height * 0.70f),
+                bottom,
+                new PointF(rect.Left + rect.Width * 0.26f, rect.Top + rect.Height * 0.70f),
+                new PointF(rect.Left + rect.Width * 0.16f, rect.Top + rect.Height * 0.44f),
+                new PointF(rect.Left + rect.Width * 0.16f, rect.Top + rect.Height * 0.18f)
+            });
+            leftHalf.AddPolygon(new PointF[]
+            {
+                top,
+                bottom,
+                new PointF(rect.Left + rect.Width * 0.26f, rect.Top + rect.Height * 0.70f),
+                new PointF(rect.Left + rect.Width * 0.16f, rect.Top + rect.Height * 0.44f),
+                new PointF(rect.Left + rect.Width * 0.16f, rect.Top + rect.Height * 0.18f)
             });
             if (!suppressDecorativeFill)
             {
-                g.FillPath(brush, outer);
+                g.FillPath(fill, outline);
+                g.FillPath(halfFill, leftHalf);
             }
 
-            g.DrawPath(pen, outer);
-            g.DrawLine(pen, rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.16f, rect.Left + rect.Width * 0.50f, rect.Bottom - rect.Height * 0.18f);
-            g.DrawLine(pen, rect.Left + rect.Width * 0.33f, rect.Top + rect.Height * 0.48f, rect.Right - rect.Width * 0.33f, rect.Top + rect.Height * 0.48f);
+            g.DrawPath(pen, outline);
+            g.DrawLine(pen, top, bottom);
         }
     }
 
-    private void DrawLocationCheckIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawLocationCheckIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
-        using (SolidBrush brush = new SolidBrush(color))
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 58)))
+        using (GraphicsPath pin = new GraphicsPath())
         {
-            PointF center = new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.50f);
-            float node = Math.Max(S(3), rect.Width * 0.13f);
-            PointF left = new PointF(rect.Left + rect.Width * 0.22f, rect.Top + rect.Height * 0.68f);
-            PointF right = new PointF(rect.Right - rect.Width * 0.20f, rect.Top + rect.Height * 0.26f);
-            PointF top = new PointF(rect.Left + rect.Width * 0.42f, rect.Top + rect.Height * 0.16f);
-            g.DrawLine(pen, left, center);
-            g.DrawLine(pen, center, right);
-            g.DrawLine(pen, top, center);
-            g.FillEllipse(brush, center.X - node, center.Y - node, node * 2.0f, node * 2.0f);
-            g.FillEllipse(brush, left.X - node * 0.75f, left.Y - node * 0.75f, node * 1.5f, node * 1.5f);
-            g.FillEllipse(brush, right.X - node * 0.75f, right.Y - node * 0.75f, node * 1.5f, node * 1.5f);
-            g.FillEllipse(brush, top.X - node * 0.65f, top.Y - node * 0.65f, node * 1.3f, node * 1.3f);
+            float head = rect.Width * 0.27f;
+            PointF headCenter = new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.38f);
+            pin.AddArc(headCenter.X - head, headCenter.Y - head, head * 2.0f, head * 2.0f, 150f, 240f);
+            pin.AddLine(
+                new PointF(headCenter.X + head * 0.866f, headCenter.Y + head * 0.5f),
+                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.94f));
+            pin.CloseFigure();
+            if (!suppressDecorativeFill)
+            {
+                g.FillPath(fill, pin);
+            }
+
+            g.DrawPath(pen, pin);
+            g.DrawLines(pen, new PointF[]
+            {
+                new PointF(rect.Left + rect.Width * 0.38f, rect.Top + rect.Height * 0.38f),
+                new PointF(rect.Left + rect.Width * 0.47f, rect.Top + rect.Height * 0.47f),
+                new PointF(rect.Left + rect.Width * 0.64f, rect.Top + rect.Height * 0.28f)
+            });
         }
     }
 
     private void DrawRouterIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 72)))
-        using (SolidBrush nodeBrush = new SolidBrush(color))
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 62)))
+        using (SolidBrush node = new SolidBrush(color))
         {
-            RectangleF core = new RectangleF(rect.Left + rect.Width * 0.32f, rect.Top + rect.Height * 0.34f, rect.Width * 0.36f, rect.Height * 0.32f);
-            using (GraphicsPath corePath = RoundedRectangle(core, core.Height * 0.22f))
+            RectangleF body = new RectangleF(rect.Left + rect.Width * 0.14f, rect.Top + rect.Height * 0.58f, rect.Width * 0.72f, rect.Height * 0.26f);
+            using (GraphicsPath path = RoundedRectangle(body, body.Height * 0.35f))
             {
                 if (!suppressDecorativeFill)
                 {
-                    g.FillPath(brush, corePath);
-                }
-
-                g.DrawPath(pen, corePath);
-            }
-
-            PointF origin = new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.50f);
-            PointF[] ends = new PointF[]
-            {
-                new PointF(rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.22f),
-                new PointF(rect.Right - rect.Width * 0.16f, rect.Top + rect.Height * 0.22f),
-                new PointF(rect.Left + rect.Width * 0.18f, rect.Bottom - rect.Height * 0.18f),
-                new PointF(rect.Right - rect.Width * 0.16f, rect.Bottom - rect.Height * 0.18f)
-            };
-            for (int i = 0; i < ends.Length; i++)
-            {
-                g.DrawLine(pen, origin, ends[i]);
-                g.FillEllipse(nodeBrush, ends[i].X - rect.Width * 0.045f, ends[i].Y - rect.Width * 0.045f, rect.Width * 0.09f, rect.Width * 0.09f);
-            }
-        }
-    }
-
-    private void DrawCircleMinusIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
-    {
-        using (Pen pen = new Pen(color, Math.Max(1.4f, S(2))))
-        {
-            RectangleF ring = new RectangleF(rect.Left + rect.Width * 0.14f, rect.Top + rect.Height * 0.14f, rect.Width * 0.72f, rect.Height * 0.72f);
-            g.DrawArc(pen, ring, 25, 275);
-            if (!suppressDecorativeFill)
-            {
-                using (Pen gap = new Pen(DesignTokens.Colors.AppBackground, Math.Max(1.5f, S(3))))
-                {
-                    g.DrawArc(gap, ring, 306, 34);
-                }
-            }
-
-            g.DrawLine(pen, rect.Left + rect.Width * 0.28f, rect.Top + rect.Height * 0.62f, rect.Right - rect.Width * 0.28f, rect.Top + rect.Height * 0.38f);
-        }
-    }
-
-    private void DrawHouseIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
-    {
-        using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 62)))
-        using (SolidBrush nodeBrush = new SolidBrush(color))
-        {
-            RectangleF arch = new RectangleF(rect.Left + rect.Width * 0.26f, rect.Top + rect.Height * 0.20f, rect.Width * 0.48f, rect.Height * 0.64f);
-            using (GraphicsPath path = RoundedRectangle(arch, arch.Width * 0.22f))
-            {
-                if (!suppressDecorativeFill)
-                {
-                    g.FillPath(brush, path);
+                    g.FillPath(fill, path);
                 }
 
                 g.DrawPath(pen, path);
             }
 
-            g.DrawLine(pen, rect.Left + rect.Width * 0.18f, rect.Bottom - rect.Height * 0.16f, rect.Right - rect.Width * 0.18f, rect.Bottom - rect.Height * 0.16f);
-            g.FillEllipse(nodeBrush, rect.Left + rect.Width * 0.44f, rect.Top + rect.Height * 0.54f, rect.Width * 0.06f, rect.Width * 0.06f);
+            PointF leftTip = new PointF(rect.Left + rect.Width * 0.22f, rect.Top + rect.Height * 0.14f);
+            PointF rightTip = new PointF(rect.Left + rect.Width * 0.78f, rect.Top + rect.Height * 0.14f);
+            g.DrawLine(pen, rect.Left + rect.Width * 0.32f, body.Top, leftTip.X, leftTip.Y);
+            g.DrawLine(pen, rect.Left + rect.Width * 0.68f, body.Top, rightTip.X, rightTip.Y);
+            float tip = rect.Width * 0.05f;
+            g.FillEllipse(node, leftTip.X - tip, leftTip.Y - tip, tip * 2.0f, tip * 2.0f);
+            g.FillEllipse(node, rightTip.X - tip, rightTip.Y - tip, tip * 2.0f, tip * 2.0f);
+
+            float led = rect.Width * 0.04f;
+            float ledY = body.Top + body.Height * 0.50f;
+            g.FillEllipse(node, rect.Left + rect.Width * 0.26f - led, ledY - led, led * 2.0f, led * 2.0f);
+            g.FillEllipse(node, rect.Left + rect.Width * 0.40f - led, ledY - led, led * 2.0f, led * 2.0f);
+            g.DrawLine(pen, rect.Left + rect.Width * 0.54f, ledY, rect.Left + rect.Width * 0.76f, ledY);
+        }
+    }
+
+    private void DrawCircleMinusIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
+    {
+        using (Pen pen = CreateIconPen(color))
+        using (Pen bar = new Pen(color, Math.Max(1.8f, S(3))))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 48)))
+        {
+            RectangleF ring = new RectangleF(rect.Left + rect.Width * 0.13f, rect.Top + rect.Height * 0.13f, rect.Width * 0.74f, rect.Height * 0.74f);
+            if (!suppressDecorativeFill)
+            {
+                g.FillEllipse(fill, ring);
+            }
+
+            g.DrawEllipse(pen, ring);
+            bar.StartCap = LineCap.Round;
+            bar.EndCap = LineCap.Round;
+            g.DrawLine(bar, rect.Left + rect.Width * 0.32f, rect.Top + rect.Height * 0.50f, rect.Left + rect.Width * 0.68f, rect.Top + rect.Height * 0.50f);
+        }
+    }
+
+    private void DrawHouseIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
+    {
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 56)))
+        using (GraphicsPath body = new GraphicsPath())
+        {
+            body.AddPolygon(new PointF[]
+            {
+                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.10f),
+                new PointF(rect.Left + rect.Width * 0.92f, rect.Top + rect.Height * 0.48f),
+                new PointF(rect.Left + rect.Width * 0.80f, rect.Top + rect.Height * 0.48f),
+                new PointF(rect.Left + rect.Width * 0.80f, rect.Top + rect.Height * 0.88f),
+                new PointF(rect.Left + rect.Width * 0.20f, rect.Top + rect.Height * 0.88f),
+                new PointF(rect.Left + rect.Width * 0.20f, rect.Top + rect.Height * 0.48f),
+                new PointF(rect.Left + rect.Width * 0.08f, rect.Top + rect.Height * 0.48f)
+            });
+            if (!suppressDecorativeFill)
+            {
+                g.FillPath(fill, body);
+            }
+
+            g.DrawPath(pen, body);
+            using (GraphicsPath door = RoundedRectangle(new RectangleF(rect.Left + rect.Width * 0.42f, rect.Top + rect.Height * 0.60f, rect.Width * 0.16f, rect.Height * 0.28f), rect.Width * 0.05f))
+            {
+                g.DrawPath(pen, door);
+            }
         }
     }
 
     private void DrawMobileIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 66)))
-        using (SolidBrush nodeBrush = new SolidBrush(color))
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 56)))
+        using (SolidBrush node = new SolidBrush(color))
         {
-            RectangleF body = new RectangleF(rect.Left + rect.Width * 0.32f, rect.Top + rect.Height * 0.10f, rect.Width * 0.36f, rect.Height * 0.76f);
-            using (GraphicsPath phone = RoundedRectangle(body, body.Width * 0.22f))
+            RectangleF body = new RectangleF(rect.Left + rect.Width * 0.30f, rect.Top + rect.Height * 0.08f, rect.Width * 0.40f, rect.Height * 0.84f);
+            using (GraphicsPath phone = RoundedRectangle(body, rect.Width * 0.09f))
             {
                 if (!suppressDecorativeFill)
                 {
-                    g.FillPath(brush, phone);
+                    g.FillPath(fill, phone);
                 }
 
                 g.DrawPath(pen, phone);
             }
 
-            g.DrawLine(pen, body.Left + body.Width * 0.26f, body.Top + body.Height * 0.16f, body.Right - body.Width * 0.26f, body.Top + body.Height * 0.16f);
-            g.FillEllipse(nodeBrush, body.Left + body.Width * 0.43f, body.Bottom - body.Height * 0.14f, body.Width * 0.14f, body.Width * 0.14f);
+            g.DrawLine(pen, body.Left + body.Width * 0.28f, body.Top + body.Height * 0.12f, body.Right - body.Width * 0.28f, body.Top + body.Height * 0.12f);
+            float dot = rect.Width * 0.045f;
+            g.FillEllipse(node, body.Left + body.Width * 0.50f - dot, body.Bottom - body.Height * 0.12f - dot, dot * 2.0f, dot * 2.0f);
         }
     }
 
     private void DrawBriefcaseIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 62)))
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 56)))
+        using (SolidBrush node = new SolidBrush(color))
         {
-            RectangleF tower = new RectangleF(rect.Left + rect.Width * 0.24f, rect.Top + rect.Height * 0.16f, rect.Width * 0.52f, rect.Height * 0.68f);
-            if (!suppressDecorativeFill)
+            using (GraphicsPath handle = RoundedRectangle(new RectangleF(rect.Left + rect.Width * 0.36f, rect.Top + rect.Height * 0.14f, rect.Width * 0.28f, rect.Height * 0.20f), rect.Width * 0.06f))
             {
-                g.FillRectangle(brush, tower);
+                g.DrawPath(pen, handle);
             }
 
-            g.DrawRectangle(pen, Rectangle.Round(tower));
-            for (int row = 0; row < 3; row++)
+            RectangleF body = new RectangleF(rect.Left + rect.Width * 0.12f, rect.Top + rect.Height * 0.30f, rect.Width * 0.76f, rect.Height * 0.56f);
+            using (GraphicsPath box = RoundedRectangle(body, rect.Width * 0.08f))
             {
-                float y = tower.Top + tower.Height * (0.20f + row * 0.23f);
-                g.DrawLine(pen, tower.Left + tower.Width * 0.20f, y, tower.Right - tower.Width * 0.20f, y);
+                if (!suppressDecorativeFill)
+                {
+                    g.FillPath(fill, box);
+                }
+
+                g.DrawPath(pen, box);
             }
 
-            g.DrawLine(pen, tower.Left + tower.Width * 0.50f, tower.Top, tower.Left + tower.Width * 0.50f, tower.Bottom);
+            g.DrawLine(pen, body.Left, body.Top + body.Height * 0.42f, body.Right, body.Top + body.Height * 0.42f);
+            float clasp = rect.Width * 0.055f;
+            g.FillEllipse(node, rect.Left + rect.Width * 0.50f - clasp, body.Top + body.Height * 0.42f - clasp, clasp * 2.0f, clasp * 2.0f);
         }
     }
 
     private void DrawGraduationIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.2f, S(1))))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 62)))
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 60)))
+        using (SolidBrush node = new SolidBrush(color))
+        using (GraphicsPath board = new GraphicsPath())
         {
-            RectangleF book = new RectangleF(rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.24f, rect.Width * 0.64f, rect.Height * 0.52f);
-            using (GraphicsPath leftPage = RoundedRectangle(new RectangleF(book.Left, book.Top, book.Width * 0.48f, book.Height), book.Height * 0.12f))
-            using (GraphicsPath rightPage = RoundedRectangle(new RectangleF(book.Left + book.Width * 0.52f, book.Top, book.Width * 0.48f, book.Height), book.Height * 0.12f))
+            board.AddPolygon(new PointF[]
             {
-                if (!suppressDecorativeFill)
-                {
-                    g.FillPath(brush, leftPage);
-                    g.FillPath(brush, rightPage);
-                }
-
-                g.DrawPath(pen, leftPage);
-                g.DrawPath(pen, rightPage);
+                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.10f),
+                new PointF(rect.Left + rect.Width * 0.94f, rect.Top + rect.Height * 0.32f),
+                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.54f),
+                new PointF(rect.Left + rect.Width * 0.06f, rect.Top + rect.Height * 0.32f)
+            });
+            if (!suppressDecorativeFill)
+            {
+                g.FillPath(fill, board);
             }
 
-            g.DrawLine(pen, rect.Left + rect.Width * 0.50f, book.Top + book.Height * 0.08f, rect.Left + rect.Width * 0.50f, book.Bottom - book.Height * 0.06f);
-            g.DrawLine(pen, book.Left + book.Width * 0.18f, book.Top + book.Height * 0.30f, book.Left + book.Width * 0.40f, book.Top + book.Height * 0.22f);
-            g.DrawLine(pen, book.Right - book.Width * 0.18f, book.Top + book.Height * 0.30f, book.Right - book.Width * 0.40f, book.Top + book.Height * 0.22f);
+            g.DrawPath(pen, board);
+            g.DrawLines(pen, new PointF[]
+            {
+                new PointF(rect.Left + rect.Width * 0.28f, rect.Top + rect.Height * 0.44f),
+                new PointF(rect.Left + rect.Width * 0.28f, rect.Top + rect.Height * 0.66f),
+                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.78f),
+                new PointF(rect.Left + rect.Width * 0.72f, rect.Top + rect.Height * 0.66f),
+                new PointF(rect.Left + rect.Width * 0.72f, rect.Top + rect.Height * 0.44f)
+            });
+
+            g.DrawLine(pen, rect.Left + rect.Width * 0.94f, rect.Top + rect.Height * 0.32f, rect.Left + rect.Width * 0.94f, rect.Top + rect.Height * 0.56f);
+            float tassel = rect.Width * 0.045f;
+            g.FillEllipse(node, rect.Left + rect.Width * 0.94f - tassel, rect.Top + rect.Height * 0.60f - tassel, tassel * 2.0f, tassel * 2.0f);
         }
     }
 
     private void DrawLandmarkIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 64)))
-        using (SolidBrush nodeBrush = new SolidBrush(color))
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 60)))
+        using (GraphicsPath pediment = new GraphicsPath())
         {
-            RectangleF seal = new RectangleF(rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.14f, rect.Width * 0.64f, rect.Height * 0.64f);
+            pediment.AddPolygon(new PointF[]
+            {
+                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.08f),
+                new PointF(rect.Left + rect.Width * 0.88f, rect.Top + rect.Height * 0.30f),
+                new PointF(rect.Left + rect.Width * 0.12f, rect.Top + rect.Height * 0.30f)
+            });
             if (!suppressDecorativeFill)
             {
-                g.FillEllipse(brush, seal);
+                g.FillPath(fill, pediment);
             }
 
-            g.DrawEllipse(pen, seal);
-            for (int i = 0; i < 3; i++)
+            g.DrawPath(pen, pediment);
+            float columnTop = rect.Top + rect.Height * 0.38f;
+            float columnBottom = rect.Top + rect.Height * 0.72f;
+            float[] columns = { 0.25f, 0.50f, 0.75f };
+            for (int i = 0; i < columns.Length; i++)
             {
-                double angle = (-90 + i * 120) * Math.PI / 180.0;
-                PointF p = new PointF(
-                    seal.Left + seal.Width * 0.50f + (float)Math.Cos(angle) * seal.Width * 0.25f,
-                    seal.Top + seal.Height * 0.50f + (float)Math.Sin(angle) * seal.Height * 0.25f);
-                g.FillEllipse(nodeBrush, p.X - seal.Width * 0.055f, p.Y - seal.Width * 0.055f, seal.Width * 0.11f, seal.Width * 0.11f);
+                float x = rect.Left + rect.Width * columns[i];
+                g.DrawLine(pen, x, columnTop, x, columnBottom);
             }
+
+            g.DrawLine(pen, rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.80f, rect.Left + rect.Width * 0.82f, rect.Top + rect.Height * 0.80f);
+            g.DrawLine(pen, rect.Left + rect.Width * 0.10f, rect.Top + rect.Height * 0.90f, rect.Left + rect.Width * 0.90f, rect.Top + rect.Height * 0.90f);
         }
     }
 
-    private void DrawNetworkIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawNetworkIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 58)))
         {
-            RectangleF globe = new RectangleF(rect.Left + rect.Width * 0.16f, rect.Top + rect.Height * 0.16f, rect.Width * 0.68f, rect.Height * 0.68f);
-            g.DrawEllipse(pen, globe);
-            g.DrawArc(pen, globe.Left + globe.Width * 0.22f, globe.Top, globe.Width * 0.56f, globe.Height, 90, 180);
-            g.DrawArc(pen, globe.Left + globe.Width * 0.22f, globe.Top, globe.Width * 0.56f, globe.Height, 270, 180);
-            g.DrawLine(pen, globe.Left + globe.Width * 0.12f, globe.Top + globe.Height * 0.50f, globe.Right - globe.Width * 0.12f, globe.Top + globe.Height * 0.50f);
+            RectangleF topBox = new RectangleF(rect.Left + rect.Width * 0.35f, rect.Top + rect.Height * 0.08f, rect.Width * 0.30f, rect.Height * 0.22f);
+            RectangleF leftBox = new RectangleF(rect.Left + rect.Width * 0.06f, rect.Top + rect.Height * 0.62f, rect.Width * 0.30f, rect.Height * 0.22f);
+            RectangleF rightBox = new RectangleF(rect.Left + rect.Width * 0.64f, rect.Top + rect.Height * 0.62f, rect.Width * 0.30f, rect.Height * 0.22f);
+
+            float busY = rect.Top + rect.Height * 0.46f;
+            g.DrawLine(pen, rect.Left + rect.Width * 0.50f, topBox.Bottom, rect.Left + rect.Width * 0.50f, busY);
+            g.DrawLine(pen, rect.Left + rect.Width * 0.21f, busY, rect.Left + rect.Width * 0.79f, busY);
+            g.DrawLine(pen, rect.Left + rect.Width * 0.21f, busY, rect.Left + rect.Width * 0.21f, leftBox.Top);
+            g.DrawLine(pen, rect.Left + rect.Width * 0.79f, busY, rect.Left + rect.Width * 0.79f, rightBox.Top);
+
+            RectangleF[] boxes = { topBox, leftBox, rightBox };
+            for (int i = 0; i < boxes.Length; i++)
+            {
+                using (GraphicsPath path = RoundedRectangle(boxes[i], rect.Width * 0.04f))
+                {
+                    if (!suppressDecorativeFill)
+                    {
+                        g.FillPath(fill, path);
+                    }
+
+                    g.DrawPath(pen, path);
+                }
+            }
         }
     }
 
     private void DrawServerIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
-        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 58)))
-        using (SolidBrush dot = new SolidBrush(color))
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 56)))
+        using (SolidBrush node = new SolidBrush(color))
         {
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < 2; i++)
             {
-                RectangleF rack = new RectangleF(rect.Left + rect.Width * 0.20f, rect.Top + rect.Height * (0.14f + i * 0.24f), rect.Width * 0.60f, rect.Height * 0.17f);
-                using (GraphicsPath path = RoundedRectangle(rack, rack.Height * 0.22f))
+                RectangleF rack = new RectangleF(rect.Left + rect.Width * 0.12f, rect.Top + rect.Height * (0.16f + i * 0.40f), rect.Width * 0.76f, rect.Height * 0.28f);
+                using (GraphicsPath path = RoundedRectangle(rack, rack.Height * 0.28f))
                 {
                     if (!suppressDecorativeFill)
                     {
@@ -1240,83 +1445,102 @@ internal sealed class ConnectionCheckForm : Form
                     g.DrawPath(pen, path);
                 }
 
-                g.FillEllipse(dot, rack.Right - rack.Height * 0.42f, rack.Top + rack.Height * 0.34f, rack.Height * 0.28f, rack.Height * 0.28f);
+                float led = rect.Width * 0.04f;
+                float y = rack.Top + rack.Height * 0.50f;
+                g.FillEllipse(node, rect.Left + rect.Width * 0.24f - led, y - led, led * 2.0f, led * 2.0f);
+                g.DrawLine(pen, rect.Left + rect.Width * 0.44f, y, rect.Left + rect.Width * 0.76f, y);
             }
         }
     }
 
-    private void DrawMaskIcon(Graphics g, RectangleF rect, Color color)
+    private void DrawMaskIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 56)))
+        using (GraphicsPath mask = new GraphicsPath())
         {
-            RectangleF outer = new RectangleF(rect.Left + rect.Width * 0.18f, rect.Top + rect.Height * 0.14f, rect.Width * 0.64f, rect.Height * 0.72f);
-            g.DrawEllipse(pen, outer);
-            g.DrawArc(pen, outer.Left + outer.Width * 0.18f, outer.Top + outer.Height * 0.08f, outer.Width * 0.64f, outer.Height * 0.84f, 90, 280);
-            g.DrawArc(pen, outer.Left + outer.Width * 0.34f, outer.Top + outer.Height * 0.18f, outer.Width * 0.34f, outer.Height * 0.64f, 90, 280);
-        }
-    }
-
-    private void DrawFilterIcon(Graphics g, RectangleF rect, Color color)
-    {
-        using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
-        {
-            PointF left = new PointF(rect.Left + rect.Width * 0.20f, rect.Top + rect.Height * 0.30f);
-            PointF center = new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.50f);
-            PointF right = new PointF(rect.Right - rect.Width * 0.20f, rect.Bottom - rect.Height * 0.30f);
-            g.DrawLine(pen, left, center);
-            g.DrawLine(pen, center, right);
-            g.DrawLine(pen, rect.Left + rect.Width * 0.20f, rect.Bottom - rect.Height * 0.30f, rect.Right - rect.Width * 0.20f, rect.Top + rect.Height * 0.30f);
-            using (SolidBrush brush = new SolidBrush(color))
+            mask.AddClosedCurve(new PointF[]
             {
-                g.FillEllipse(brush, left.X - rect.Width * 0.045f, left.Y - rect.Width * 0.045f, rect.Width * 0.09f, rect.Width * 0.09f);
-                g.FillEllipse(brush, center.X - rect.Width * 0.045f, center.Y - rect.Width * 0.045f, rect.Width * 0.09f, rect.Width * 0.09f);
-                g.FillEllipse(brush, right.X - rect.Width * 0.045f, right.Y - rect.Width * 0.045f, rect.Width * 0.09f, rect.Width * 0.09f);
+                new PointF(rect.Left + rect.Width * 0.08f, rect.Top + rect.Height * 0.42f),
+                new PointF(rect.Left + rect.Width * 0.30f, rect.Top + rect.Height * 0.30f),
+                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.40f),
+                new PointF(rect.Left + rect.Width * 0.70f, rect.Top + rect.Height * 0.30f),
+                new PointF(rect.Left + rect.Width * 0.92f, rect.Top + rect.Height * 0.42f),
+                new PointF(rect.Left + rect.Width * 0.74f, rect.Top + rect.Height * 0.68f),
+                new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.60f),
+                new PointF(rect.Left + rect.Width * 0.26f, rect.Top + rect.Height * 0.68f)
+            }, 0.45f);
+            mask.AddEllipse(rect.Left + rect.Width * 0.22f, rect.Top + rect.Height * 0.40f, rect.Width * 0.16f, rect.Height * 0.13f);
+            mask.AddEllipse(rect.Left + rect.Width * 0.62f, rect.Top + rect.Height * 0.40f, rect.Width * 0.16f, rect.Height * 0.13f);
+            if (!suppressDecorativeFill)
+            {
+                g.FillPath(fill, mask);
             }
+
+            g.DrawPath(pen, mask);
+        }
+    }
+
+    private void DrawFilterIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
+    {
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 56)))
+        using (GraphicsPath funnel = new GraphicsPath())
+        {
+            funnel.AddPolygon(new PointF[]
+            {
+                new PointF(rect.Left + rect.Width * 0.10f, rect.Top + rect.Height * 0.12f),
+                new PointF(rect.Left + rect.Width * 0.90f, rect.Top + rect.Height * 0.12f),
+                new PointF(rect.Left + rect.Width * 0.58f, rect.Top + rect.Height * 0.52f),
+                new PointF(rect.Left + rect.Width * 0.58f, rect.Top + rect.Height * 0.90f),
+                new PointF(rect.Left + rect.Width * 0.42f, rect.Top + rect.Height * 0.78f),
+                new PointF(rect.Left + rect.Width * 0.42f, rect.Top + rect.Height * 0.52f)
+            });
+            if (!suppressDecorativeFill)
+            {
+                g.FillPath(fill, funnel);
+            }
+
+            g.DrawPath(pen, funnel);
         }
     }
 
     private void DrawLinkIcon(Graphics g, RectangleF rect, Color color)
     {
-        using (Pen pen = new Pen(color, Math.Max(1.3f, S(2))))
-        using (SolidBrush brush = new SolidBrush(color))
+        GraphicsState state = g.Save();
+        try
         {
-            PointF a = new PointF(rect.Left + rect.Width * 0.24f, rect.Top + rect.Height * 0.30f);
-            PointF b = new PointF(rect.Left + rect.Width * 0.52f, rect.Top + rect.Height * 0.50f);
-            PointF c = new PointF(rect.Right - rect.Width * 0.20f, rect.Bottom - rect.Height * 0.24f);
-            g.DrawLine(pen, a, b);
-            g.DrawLine(pen, b, c);
-            g.FillEllipse(brush, a.X - rect.Width * 0.075f, a.Y - rect.Width * 0.075f, rect.Width * 0.15f, rect.Width * 0.15f);
-            g.FillEllipse(brush, b.X - rect.Width * 0.06f, b.Y - rect.Width * 0.06f, rect.Width * 0.12f, rect.Width * 0.12f);
-            g.FillEllipse(brush, c.X - rect.Width * 0.075f, c.Y - rect.Width * 0.075f, rect.Width * 0.15f, rect.Width * 0.15f);
+            g.TranslateTransform(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.50f);
+            g.RotateTransform(-45f);
+            using (Pen pen = CreateIconPen(color))
+            using (GraphicsPath left = RoundedRectangle(new RectangleF(-rect.Width * 0.44f, -rect.Height * 0.13f, rect.Width * 0.48f, rect.Height * 0.26f), rect.Height * 0.12f))
+            using (GraphicsPath right = RoundedRectangle(new RectangleF(-rect.Width * 0.04f, -rect.Height * 0.13f, rect.Width * 0.48f, rect.Height * 0.26f), rect.Height * 0.12f))
+            {
+                g.DrawPath(pen, left);
+                g.DrawPath(pen, right);
+            }
+        }
+        finally
+        {
+            g.Restore(state);
         }
     }
 
     private void DrawQuestionIcon(Graphics g, RectangleF rect, Color color, bool suppressDecorativeFill)
     {
-        Font font = this.fontCache.GetUi(Math.Max(10.0f, rect.Height * 0.62f), FontStyle.Bold);
-        using (Pen pen = new Pen(color, Math.Max(1.2f, S(2))))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 58)))
+        Font font = this.fontCache.GetUi(Math.Max(10.0f, rect.Height * 0.56f), FontStyle.Bold);
+        using (Pen pen = CreateIconPen(color))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 50)))
         using (SolidBrush text = new SolidBrush(color))
         using (StringFormat format = new StringFormat())
         {
-            using (GraphicsPath diamond = new GraphicsPath())
+            RectangleF ring = new RectangleF(rect.Left + rect.Width * 0.10f, rect.Top + rect.Height * 0.10f, rect.Width * 0.80f, rect.Height * 0.80f);
+            if (!suppressDecorativeFill)
             {
-                diamond.AddPolygon(new PointF[]
-                {
-                    new PointF(rect.Left + rect.Width * 0.50f, rect.Top + rect.Height * 0.08f),
-                    new PointF(rect.Right - rect.Width * 0.08f, rect.Top + rect.Height * 0.50f),
-                    new PointF(rect.Left + rect.Width * 0.50f, rect.Bottom - rect.Height * 0.08f),
-                    new PointF(rect.Left + rect.Width * 0.08f, rect.Top + rect.Height * 0.50f)
-                });
-                diamond.CloseFigure();
-                if (!suppressDecorativeFill)
-                {
-                    g.FillPath(brush, diamond);
-                }
-
-                g.DrawPath(pen, diamond);
+                g.FillEllipse(fill, ring);
             }
 
+            g.DrawEllipse(pen, ring);
             format.Alignment = StringAlignment.Center;
             format.LineAlignment = StringAlignment.Center;
             g.DrawString("?", font, text, rect, format);

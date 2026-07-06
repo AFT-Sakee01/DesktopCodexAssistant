@@ -16,17 +16,42 @@ internal sealed class NetworkMonitorReader : IDisposable
     private const string ConnectivityTarget = "1.1.1.1";
     private const string CaptivePortalTestUrl = "http://www.msftconnecttest.com/connecttest.txt";
     private const string CaptivePortalExpectedText = "Microsoft Connect Test";
+    private const string PublicIpv4Endpoint = "https://api.ipify.org";
     private const int PingCount = 4;
     private const int PingTimeoutMs = 1000;
     private const int HttpTimeoutMs = 4000;
     private const int DegradedPacketLossPercent = 15;
     private const double DegradedLatencyMs = 800.0;
     private const double DegradedJitterMs = 250.0;
+    private const int RollingPingMinSamples = 10;
+    private const int RollingPingMaxSamples = 60;
+    private const int RollingPingPublicTimeoutMs = 1000;
+    private const int RollingPingGatewayTimeoutMs = 500;
+    private const double RollingPingLossWarningPercent = 2.0;
+    private const double RollingPingLossErrorPercent = 10.0;
+    private const double RollingPingGatewayLatencyWarningMs = 30.0;
+    private const double RollingPingGatewayJitterWarningMs = 20.0;
+    private const double RollingPingPublicLatencyWarningMs = 300.0;
+    private const double RollingPingPublicJitterWarningMs = 120.0;
+    private const double RollingPingBaiduLatencyWarningMs = 150.0;
+    private const double RollingPingBaiduJitterWarningMs = 80.0;
     private const string DnsKnownDomain = "www.msftconnecttest.com";
     private const int DnsQueryTimeoutMs = 1000;
     private const int MaxDnsProbeConcurrency = 2;
     private const ushort DnsQueryTypeA = 1;
     private const ushort DnsQueryTypeAaaa = 28;
+    private static readonly TimeSpan NetworkChangeDebounceInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RollingPingSampleTtl = TimeSpan.FromMinutes(15);
+    private static readonly string[] RollingPublicTargets = new string[]
+    {
+        "1.1.1.1",
+        "1.0.0.1",
+        "8.8.8.8",
+        "8.8.4.4",
+        "9.9.9.9",
+        "149.112.112.112"
+    };
+    private const string RollingBaiduTarget = "www.baidu.com";
     private readonly object sync = new object();
     private readonly GfwProbeReader gfwProbeReader = new GfwProbeReader();
     private readonly CloudEndpointProbeReader cloudEndpointProbeReader = new CloudEndpointProbeReader();
@@ -40,11 +65,24 @@ internal sealed class NetworkMonitorReader : IDisposable
     private bool publicIpRequestRunning;
     private bool connectivityRequestRunning;
     private bool dnsProbeRunning;
+    private bool rollingPingRequestRunning;
     // Incremented whenever the selected adapter or its addresses may have changed.
     // Background results must match this generation and InterfaceId before commit.
     private long networkGeneration;
     private string selectedAdapterId = string.Empty;
     private string lastDnsProbeSignature = string.Empty;
+    private readonly PingSampleWindow rollingGatewaySamples = new PingSampleWindow();
+    private readonly PingSampleWindow rollingPublicSamples = new PingSampleWindow();
+    private readonly PingSampleWindow rollingBaiduSamples = new PingSampleWindow();
+    private DateTime lastRollingPingRefreshUtc = DateTime.MinValue;
+    private int nextPublicPingTargetIndex;
+    private string rollingPingIdentitySignature = string.Empty;
+    private string lastRollingPingDiagnosisSignature = string.Empty;
+    private string rollingLossGroup = string.Empty;
+    private int rollingLossAboveCount;
+    private int rollingLossBelowCount;
+    private bool rollingLossConfirmed;
+    private DateTime lastNetworkChangeAcceptedUtc = DateTime.MinValue;
     private bool disposed;
 
     public NetworkMonitorReader()
@@ -70,6 +108,7 @@ internal sealed class NetworkMonitorReader : IDisposable
             this.lastConnectivityRefreshUtc = DateTime.MinValue;
             this.lastDnsRefreshUtc = DateTime.MinValue;
             this.lastDnsProbeSignature = string.Empty;
+            ClearRollingPingStateLocked("手动刷新");
             this.networkGeneration++;
             this.snapshot.PublicIpRefreshing = false;
             if (this.snapshot.Connected)
@@ -83,8 +122,8 @@ internal sealed class NetworkMonitorReader : IDisposable
             }
         }
 
-        this.gfwProbeReader.RequestRefresh();
-        this.cloudEndpointProbeReader.RequestRefresh();
+        this.gfwProbeReader.RequestRefresh("手动刷新");
+        this.cloudEndpointProbeReader.RequestRefresh("云服务手动刷新");
     }
 
     public NetworkMonitorSnapshot GetSnapshot(WidgetSettings settings)
@@ -103,7 +142,12 @@ internal sealed class NetworkMonitorReader : IDisposable
 
         if (refreshLocal)
         {
-            RefreshLocalSnapshot(now, requestedAdapterId);
+            bool refreshRemoteProbes = RefreshLocalSnapshot(now, requestedAdapterId);
+            if (refreshRemoteProbes)
+            {
+                this.gfwProbeReader.RequestRefresh("网络身份变化");
+                this.cloudEndpointProbeReader.RequestRefresh("云服务网络身份变化");
+            }
         }
 
         bool connected;
@@ -116,6 +160,8 @@ internal sealed class NetworkMonitorReader : IDisposable
         DnsServerStatus worstDnsStatus;
         bool localNetworkDegraded;
         string localNetworkDegradedReason;
+        PingRollingSnapshot rollingForGfwGate;
+        bool rollingLossConfirmedForGfwGate;
         lock (this.sync)
         {
             connected = this.snapshot.Connected;
@@ -128,6 +174,8 @@ internal sealed class NetworkMonitorReader : IDisposable
             worstDnsStatus = GetWorstDnsStatus(this.snapshot.DnsServerDetails);
             localNetworkDegraded = this.snapshot.LocalNetworkDegraded;
             localNetworkDegradedReason = this.snapshot.LocalNetworkDegradedReason;
+            rollingForGfwGate = this.snapshot.PingRolling == null ? null : this.snapshot.PingRolling.Clone();
+            rollingLossConfirmedForGfwGate = this.rollingLossConfirmed;
         }
 
         int connectivityIntervalMs = WidgetSettings.GetNetworkConnectivityIntervalMs(mode, accessState);
@@ -135,31 +183,53 @@ internal sealed class NetworkMonitorReader : IDisposable
             connectivityIntervalMs != int.MaxValue &&
             (now - connectivityStartedUtc).TotalMilliseconds >= connectivityIntervalMs)
         {
-            StartConnectivityRefresh(now);
+            string trigger = connectivityStartedUtc == DateTime.MinValue ? "首次或强制刷新" : "定时间隔";
+            StartConnectivityRefresh(now, trigger);
         }
 
         if (connected &&
             accessState == NetworkAccessState.Online &&
             (now - publicIpStartedUtc).TotalMinutes >= WidgetSettings.GetNetworkPublicIpRefreshIntervalMinutes(mode))
         {
-            StartPublicIpRefresh(now);
+            string trigger = publicIpStartedUtc == DateTime.MinValue ? "首次或强制刷新" : "定时间隔";
+            StartPublicIpRefresh(now, trigger);
         }
 
         int dnsProbeIntervalMs = WidgetSettings.GetNetworkDnsProbeIntervalMs(mode, worstDnsStatus);
+        bool dnsAddressChanged = !string.Equals(dnsSignature, lastDnsSignature, StringComparison.OrdinalIgnoreCase);
         if (connected &&
             dnsSignature.Length > 0 &&
-            (!string.Equals(dnsSignature, lastDnsSignature, StringComparison.OrdinalIgnoreCase) ||
+            (dnsAddressChanged ||
              (now - dnsStartedUtc).TotalMilliseconds >= dnsProbeIntervalMs))
         {
-            StartDnsRefresh(now);
+            string trigger = dnsAddressChanged
+                ? "DNS地址变化"
+                : (dnsStartedUtc == DateTime.MinValue ? "首次或强制刷新" : "定时间隔");
+            StartDnsRefresh(now, trigger);
         }
 
-        GfwProbeSnapshot gfwProbe = this.gfwProbeReader.GetSnapshot(settings, accessState, localNetworkDegraded, localNetworkDegradedReason);
+        string gfwLocalNetworkGateReason;
+        bool gfwLocalNetworkGate = TryBuildGfwLocalNetworkGate(
+            rollingForGfwGate,
+            rollingLossConfirmedForGfwGate,
+            out gfwLocalNetworkGateReason);
+        GfwProbeSnapshot gfwProbe = this.gfwProbeReader.GetSnapshot(settings, accessState, gfwLocalNetworkGate, gfwLocalNetworkGateReason);
         gfwProbe.CloudEndpoints = this.cloudEndpointProbeReader.GetSnapshot(settings, accessState, localNetworkDegraded, localNetworkDegradedReason);
+        bool insideWall = IsExplicitGfwBlock(gfwProbe, accessState);
+        AiRequestProtection.UpdateGfwSignal(
+            insideWall,
+            gfwProbe == null
+                ? "GFW 状态不可用"
+                : (gfwProbe.Status.ToString() + ":" + (gfwProbe.Reason ?? string.Empty)));
+        RollingPingHistoryEntry rollingHistory;
         lock (this.sync)
         {
             this.snapshot.GfwProbe = gfwProbe;
+            rollingHistory = ApplyRollingPingSnapshotLocked(accessState, insideWall, insideWall ? "墙内回退" : "状态变化");
         }
+
+        WriteRollingPingHistory(rollingHistory);
+        StartRollingPingRefresh(now, mode, accessState, insideWall);
 
         lock (this.sync)
         {
@@ -170,7 +240,7 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
     }
 
-    private void RefreshLocalSnapshot(DateTime now, string requestedAdapterId)
+    private bool RefreshLocalSnapshot(DateTime now, string requestedAdapterId)
     {
         long generationAtStart;
         lock (this.sync)
@@ -182,12 +252,16 @@ internal sealed class NetworkMonitorReader : IDisposable
         NetworkMonitorSnapshot local = BuildLocalSnapshot(requestedAdapterId);
         local.PublicIp = "--";
         local.ConnectivityTarget = ConnectivityTarget;
+        bool refreshRemoteProbes = false;
 
         lock (this.sync)
         {
             // A network event during enumeration keeps the refresh pending for one more stable pass.
             bool eventDuringRefresh = generationAtStart != this.networkGeneration;
-            bool identityChanged = HasNetworkIdentityChanged(this.snapshot, local);
+            bool hadLocalSnapshot = this.lastLocalRefreshUtc != DateTime.MinValue;
+            NetworkMonitorSnapshot previous = this.snapshot;
+            bool identityChanged = HasNetworkIdentityChanged(previous, local);
+            refreshRemoteProbes = hadLocalSnapshot && HasRemoteProbeIdentityChanged(previous, local);
             if (identityChanged)
             {
                 this.networkGeneration++;
@@ -195,6 +269,7 @@ internal sealed class NetworkMonitorReader : IDisposable
                 this.lastConnectivityRefreshUtc = DateTime.MinValue;
                 this.lastDnsRefreshUtc = DateTime.MinValue;
                 this.lastDnsProbeSignature = string.Empty;
+                ClearRollingPingStateLocked("网络身份变化");
             }
 
             if (!identityChanged)
@@ -214,6 +289,7 @@ internal sealed class NetworkMonitorReader : IDisposable
                 local.LocalNetworkDegradedReason = this.snapshot.LocalNetworkDegradedReason;
                 local.ConnectivityTarget = this.snapshot.ConnectivityTarget;
                 local.DnsServerDetails = CloneDnsServerDetails(this.snapshot.DnsServerDetails);
+                local.PingRolling = this.snapshot.PingRolling == null ? new PingRollingSnapshot() : this.snapshot.PingRolling.Clone();
             }
 
             local.GfwProbe = this.snapshot.GfwProbe == null ? new GfwProbeSnapshot() : this.snapshot.GfwProbe.Clone();
@@ -256,6 +332,8 @@ internal sealed class NetworkMonitorReader : IDisposable
             this.localRefreshRequested = eventDuringRefresh;
             this.selectedAdapterId = requestedAdapterId;
         }
+
+        return refreshRemoteProbes;
     }
 
     private static NetworkMonitorSnapshot BuildLocalSnapshot(string requestedAdapterId)
@@ -288,6 +366,7 @@ internal sealed class NetworkMonitorReader : IDisposable
             IPInterfaceProperties properties = best.GetIPProperties();
             result.IPv4 = JoinUnicastAddresses(properties, AddressFamily.InterNetwork);
             result.IPv6 = JoinUnicastAddresses(properties, AddressFamily.InterNetworkV6);
+            result.DefaultGatewayAddress = SelectDefaultGatewayAddress(properties);
             List<string> dnsServers = CollectDnsServers(properties);
             result.DnsServers = dnsServers.Count == 0 ? "--" : JoinLimited(dnsServers, 3);
             result.DnsServerDetails = DnsServerSnapshot.CreateUnknown(dnsServers);
@@ -325,7 +404,7 @@ internal sealed class NetworkMonitorReader : IDisposable
 
     private void MarkNetworkChanged()
     {
-        bool requestGfwRefresh = false;
+        DateTime now = DateTime.UtcNow;
         lock (this.sync)
         {
             if (this.disposed)
@@ -333,13 +412,23 @@ internal sealed class NetworkMonitorReader : IDisposable
                 return;
             }
 
-            // Incrementing the generation prevents old-network tasks from publishing stale results.
             this.localRefreshRequested = true;
+            if (this.lastNetworkChangeAcceptedUtc != DateTime.MinValue &&
+                now - this.lastNetworkChangeAcceptedUtc < NetworkChangeDebounceInterval)
+            {
+                return;
+            }
+
+            this.lastNetworkChangeAcceptedUtc = now;
+            // Incrementing the generation prevents old-network tasks from publishing stale results.
+            // GFW/cloud refresh is deferred until RefreshLocalSnapshot confirms a real network
+            // identity change, so DNS churn or repeated Windows events cannot reset their cadence.
             this.lastLocalRefreshUtc = DateTime.MinValue;
             this.lastPublicIpRefreshUtc = DateTime.MinValue;
             this.lastConnectivityRefreshUtc = DateTime.MinValue;
             this.lastDnsRefreshUtc = DateTime.MinValue;
             this.lastDnsProbeSignature = string.Empty;
+            ClearRollingPingStateLocked("网络身份变化");
             this.networkGeneration++;
             this.snapshot.PublicIp = "--";
             this.snapshot.PublicIpKnown = false;
@@ -353,14 +442,6 @@ internal sealed class NetworkMonitorReader : IDisposable
                 this.snapshot.LocalNetworkDegraded = false;
                 this.snapshot.LocalNetworkDegradedReason = string.Empty;
             }
-
-            requestGfwRefresh = true;
-        }
-
-        if (requestGfwRefresh)
-        {
-            this.gfwProbeReader.RequestRefresh();
-            this.cloudEndpointProbeReader.RequestRefresh();
         }
     }
 
@@ -396,7 +477,27 @@ internal sealed class NetworkMonitorReader : IDisposable
             !string.Equals(previous.InterfaceId, current.InterfaceId, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(previous.IPv4, current.IPv4, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(previous.IPv6, current.IPv6, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(previous.DefaultGatewayAddress, current.DefaultGatewayAddress, StringComparison.OrdinalIgnoreCase) ||
             !HasSameDnsServerAddresses(previous.DnsServerDetails, current.DnsServerDetails);
+    }
+
+    private static bool HasRemoteProbeIdentityChanged(NetworkMonitorSnapshot previous, NetworkMonitorSnapshot current)
+    {
+        if (current == null || !current.Connected)
+        {
+            return false;
+        }
+
+        if (previous == null || !previous.Connected)
+        {
+            return true;
+        }
+
+        return previous.InterfaceKnown != current.InterfaceKnown ||
+            !string.Equals(previous.InterfaceId, current.InterfaceId, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(previous.DefaultGatewayAddress, current.DefaultGatewayAddress, StringComparison.OrdinalIgnoreCase) ||
+            !HasSameAddressText(previous.IPv4, current.IPv4) ||
+            !HasSameAddressText(previous.IPv6, current.IPv6);
     }
 
     private static bool HasSameDnsServerAddresses(DnsServerSnapshot[] left, DnsServerSnapshot[] right)
@@ -406,22 +507,89 @@ internal sealed class NetworkMonitorReader : IDisposable
             return true;
         }
 
-        if (left == null || right == null || left.Length != right.Length)
+        List<string> leftValues = ExtractDnsServerAddresses(left);
+        List<string> rightValues = ExtractDnsServerAddresses(right);
+        if (leftValues.Count != rightValues.Count)
         {
             return false;
         }
 
-        for (int i = 0; i < left.Length; i++)
+        leftValues.Sort(StringComparer.OrdinalIgnoreCase);
+        rightValues.Sort(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < leftValues.Count; i++)
         {
-            string leftAddress = left[i] == null ? string.Empty : left[i].Address;
-            string rightAddress = right[i] == null ? string.Empty : right[i].Address;
-            if (!string.Equals(leftAddress, rightAddress, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(leftValues[i], rightValues[i], StringComparison.OrdinalIgnoreCase))
             {
                 return false;
             }
         }
 
         return true;
+    }
+
+    private static List<string> ExtractDnsServerAddresses(DnsServerSnapshot[] details)
+    {
+        List<string> values = new List<string>();
+        if (details == null)
+        {
+            return values;
+        }
+
+        for (int i = 0; i < details.Length; i++)
+        {
+            string address = details[i] == null ? string.Empty : details[i].Address;
+            if (!string.IsNullOrWhiteSpace(address))
+            {
+                AddDistinct(values, address.Trim());
+            }
+        }
+
+        return values;
+    }
+
+    private static bool HasSameAddressText(string left, string right)
+    {
+        List<string> leftValues = SplitAddressText(left);
+        List<string> rightValues = SplitAddressText(right);
+        if (leftValues.Count != rightValues.Count)
+        {
+            return false;
+        }
+
+        leftValues.Sort(StringComparer.OrdinalIgnoreCase);
+        rightValues.Sort(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < leftValues.Count; i++)
+        {
+            if (!string.Equals(leftValues[i], rightValues[i], StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static List<string> SplitAddressText(string value)
+    {
+        List<string> result = new List<string>();
+        if (string.IsNullOrWhiteSpace(value) || string.Equals(value.Trim(), "--", StringComparison.Ordinal))
+        {
+            return result;
+        }
+
+        string[] parts = value.Split(',');
+        for (int i = 0; i < parts.Length; i++)
+        {
+            string part = parts[i] == null ? string.Empty : parts[i].Trim();
+            if (part.Length == 0 || part[0] == '+')
+            {
+                continue;
+            }
+
+            AddDistinct(result, part);
+        }
+
+        return result;
     }
 
     private static NetworkInterface SelectPrimaryInterface(string requestedAdapterId)
@@ -531,6 +699,36 @@ internal sealed class NetworkMonitorReader : IDisposable
         return false;
     }
 
+    private static string SelectDefaultGatewayAddress(IPInterfaceProperties properties)
+    {
+        if (properties == null || properties.GatewayAddresses == null)
+        {
+            return string.Empty;
+        }
+
+        string fallback = string.Empty;
+        foreach (GatewayIPAddressInformation gateway in properties.GatewayAddresses)
+        {
+            if (gateway == null || gateway.Address == null || IPAddress.Any.Equals(gateway.Address) || IsIgnorableAddress(gateway.Address))
+            {
+                continue;
+            }
+
+            string address = gateway.Address.ToString();
+            if (gateway.Address.AddressFamily == AddressFamily.InterNetwork)
+            {
+                return address;
+            }
+
+            if (fallback.Length == 0)
+            {
+                fallback = address;
+            }
+        }
+
+        return fallback;
+    }
+
     private static bool HasUnicastAddress(IPInterfaceProperties properties, AddressFamily family)
     {
         if (properties == null || properties.UnicastAddresses == null)
@@ -573,6 +771,7 @@ internal sealed class NetworkMonitorReader : IDisposable
             AddDistinct(values, address.Address.ToString());
         }
 
+        values.Sort(StringComparer.OrdinalIgnoreCase);
         return values.Count == 0 ? "--" : JoinLimited(values, 2);
     }
 
@@ -594,6 +793,7 @@ internal sealed class NetworkMonitorReader : IDisposable
             AddDistinct(values, address.ToString());
         }
 
+        values.Sort(StringComparer.OrdinalIgnoreCase);
         return values;
     }
 
@@ -765,7 +965,528 @@ internal sealed class NetworkMonitorReader : IDisposable
         return 0;
     }
 
-    private void StartPublicIpRefresh(DateTime now)
+    private void StartRollingPingRefresh(DateTime now, WidgetPerformanceMode mode, NetworkAccessState accessState, bool insideWall)
+    {
+        RollingPingRequest request;
+        lock (this.sync)
+        {
+            if (this.disposed || this.rollingPingRequestRunning)
+            {
+                return;
+            }
+
+            if (!this.snapshot.Connected || accessState != NetworkAccessState.Online)
+            {
+                this.lastRollingPingRefreshUtc = DateTime.MinValue;
+                return;
+            }
+
+            string identity = BuildRollingPingIdentitySignatureLocked();
+            if (!string.Equals(identity, this.rollingPingIdentitySignature, StringComparison.Ordinal))
+            {
+                ClearRollingPingStateLocked("网络身份变化");
+                this.rollingPingIdentitySignature = identity;
+            }
+
+            bool firstRollingRefresh = this.lastRollingPingRefreshUtc == DateTime.MinValue;
+            int intervalMs = GetRollingPingIntervalMs(mode);
+            if (!firstRollingRefresh &&
+                (now - this.lastRollingPingRefreshUtc).TotalMilliseconds < intervalMs)
+            {
+                return;
+            }
+
+            string target;
+            string activeProfile;
+            string activeGroup;
+            if (insideWall)
+            {
+                target = RollingBaiduTarget;
+                activeProfile = "BAIDU";
+                activeGroup = "baidu";
+            }
+            else
+            {
+                int index = this.nextPublicPingTargetIndex % RollingPublicTargets.Length;
+                if (index < 0)
+                {
+                    index = 0;
+                }
+
+                target = RollingPublicTargets[index];
+                this.nextPublicPingTargetIndex = (index + 1) % RollingPublicTargets.Length;
+                activeProfile = "PUB";
+                activeGroup = "public";
+            }
+
+            this.rollingPingRequestRunning = true;
+            this.lastRollingPingRefreshUtc = now;
+            request = new RollingPingRequest
+            {
+                Generation = this.networkGeneration,
+                InterfaceId = this.snapshot.InterfaceId,
+                IdentitySignature = identity,
+                Gateway = this.snapshot.DefaultGatewayAddress,
+                Target = target,
+                ActiveProfile = activeProfile,
+                ActiveGroup = activeGroup,
+                InsideWall = insideWall,
+                Trigger = insideWall ? "墙内回退" : (firstRollingRefresh ? "首次或强制刷新" : "定时间隔")
+            };
+        }
+
+        Task.Run(delegate
+        {
+            PingProbeResult gatewayResult = string.IsNullOrWhiteSpace(request.Gateway)
+                ? PingProbeResult.CreateSkipped()
+                : ProbePingOnce(request.Gateway, RollingPingGatewayTimeoutMs);
+            PingProbeResult activeResult = ProbePingOnce(request.Target, RollingPingPublicTimeoutMs);
+            DateTime completedUtc = DateTime.UtcNow;
+            RollingPingHistoryEntry history = null;
+            RollingPingHistoryEntry lossHistory = null;
+
+            lock (this.sync)
+            {
+                this.rollingPingRequestRunning = false;
+                if (this.disposed ||
+                    request.Generation != this.networkGeneration ||
+                    !string.Equals(request.InterfaceId, this.snapshot.InterfaceId, StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(request.IdentitySignature, BuildRollingPingIdentitySignatureLocked(), StringComparison.Ordinal))
+                {
+                    this.lastRollingPingRefreshUtc = DateTime.MinValue;
+                    return;
+                }
+
+                if (!gatewayResult.Skipped)
+                {
+                    this.rollingGatewaySamples.Add(gatewayResult.Success, gatewayResult.LatencyMs, completedUtc);
+                }
+
+                if (string.Equals(request.ActiveGroup, "baidu", StringComparison.Ordinal))
+                {
+                    this.rollingBaiduSamples.Add(activeResult.Success, activeResult.LatencyMs, completedUtc);
+                }
+                else
+                {
+                    this.rollingPublicSamples.Add(activeResult.Success, activeResult.LatencyMs, completedUtc);
+                }
+
+                NetworkAccessState currentAccessState = GetActualAccessState(this.snapshot);
+                bool currentInsideWall = IsExplicitGfwBlock(this.snapshot.GfwProbe, currentAccessState);
+                history = ApplyRollingPingSnapshotLocked(currentAccessState, currentInsideWall, request.Trigger);
+                lossHistory = ApplyRollingLossConfirmationLocked(this.snapshot.PingRolling, request.Trigger);
+            }
+
+            WriteRollingPingHistory(history);
+            WriteRollingPingHistory(lossHistory);
+        });
+    }
+
+    private RollingPingHistoryEntry ApplyRollingPingSnapshotLocked(NetworkAccessState accessState, bool insideWall, string trigger)
+    {
+        PingGroupStats gateway = this.rollingGatewaySamples.BuildStats("gateway", DateTime.UtcNow);
+        PingGroupStats publicStats = this.rollingPublicSamples.BuildStats("public", DateTime.UtcNow);
+        PingGroupStats baiduStats = this.rollingBaiduSamples.BuildStats("baidu", DateTime.UtcNow);
+        PingGroupStats active = insideWall ? baiduStats : publicStats;
+
+        PingRollingSnapshot rolling = BuildRollingPingSnapshot(accessState, insideWall, gateway, active);
+        this.snapshot.PingRolling = rolling;
+        this.snapshot.ConnectivityTarget = rolling.ActiveProfile;
+        if (rolling.StatsReady && !rolling.IcmpBlocked)
+        {
+            this.snapshot.LatencyMs = rolling.LatencyMs;
+            if (rolling.JitterKnown)
+            {
+                this.snapshot.JitterMs = rolling.JitterMs;
+            }
+
+            this.snapshot.PacketLossPercent = Math.Max(0, Math.Min(100, (int)Math.Round(rolling.LossPercent)));
+        }
+
+        string signature = BuildRollingPingDiagnosisSignature(rolling);
+        if (string.Equals(signature, this.lastRollingPingDiagnosisSignature, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        this.lastRollingPingDiagnosisSignature = signature;
+        if (rolling.Diagnosis == PingPathDiagnosis.None && rolling.SampleCount == 0)
+        {
+            return null;
+        }
+
+        return BuildRollingPingHistoryEntry("rolling_ping", trigger, rolling);
+    }
+
+    private RollingPingHistoryEntry ApplyRollingLossConfirmationLocked(PingRollingSnapshot rolling, string trigger)
+    {
+        if (rolling == null || !rolling.StatsReady || rolling.IcmpBlocked)
+        {
+            this.rollingLossAboveCount = 0;
+            if (!this.rollingLossConfirmed)
+            {
+                this.rollingLossBelowCount = 0;
+            }
+
+            return null;
+        }
+
+        string group = rolling.Group ?? string.Empty;
+        if (!string.Equals(group, this.rollingLossGroup, StringComparison.Ordinal))
+        {
+            this.rollingLossGroup = group;
+            this.rollingLossAboveCount = 0;
+            this.rollingLossBelowCount = 0;
+            this.rollingLossConfirmed = false;
+        }
+
+        if (rolling.LossPercent >= RollingPingLossWarningPercent)
+        {
+            this.rollingLossAboveCount++;
+            this.rollingLossBelowCount = 0;
+            bool confirmed = this.rollingLossAboveCount >= 2 ||
+                (rolling.LossPercent >= RollingPingLossErrorPercent && rolling.SampleCount >= 20);
+            if (confirmed && !this.rollingLossConfirmed)
+            {
+                this.rollingLossConfirmed = true;
+                RollingPingHistoryEntry entry = BuildRollingPingHistoryEntry("rolling_ping_loss_confirmed", trigger, rolling);
+                entry.Result = "丢包确认 " + FormatLossPercent(rolling.LossPercent);
+                entry.Success = false;
+                return entry;
+            }
+
+            return null;
+        }
+
+        this.rollingLossAboveCount = 0;
+        if (this.rollingLossConfirmed)
+        {
+            this.rollingLossBelowCount++;
+            if (this.rollingLossBelowCount >= 2)
+            {
+                this.rollingLossConfirmed = false;
+                this.rollingLossBelowCount = 0;
+                RollingPingHistoryEntry entry = BuildRollingPingHistoryEntry("rolling_ping_loss_confirmed", "丢包恢复", rolling);
+                entry.Result = "丢包恢复 " + FormatLossPercent(rolling.LossPercent);
+                entry.Success = true;
+                return entry;
+            }
+        }
+
+        return null;
+    }
+
+    private static PingRollingSnapshot BuildRollingPingSnapshot(
+        NetworkAccessState accessState,
+        bool insideWall,
+        PingGroupStats gateway,
+        PingGroupStats active)
+    {
+        PingRollingSnapshot rolling = new PingRollingSnapshot
+        {
+            ActiveProfile = insideWall ? "BAIDU" : "PUB",
+            ActiveTargetLabel = insideWall ? "BAIDU" : "PUB",
+            Group = insideWall ? "baidu" : "public",
+            SampleCount = active.TotalCount,
+            LostCount = active.LostCount,
+            LossPercent = active.LossPercent,
+            LatencyMs = active.LatencyMs,
+            JitterMs = active.JitterMs,
+            JitterKnown = active.JitterKnown,
+            StatsReady = active.StatsReady
+        };
+
+        bool gatewayHealthyEnough = gateway.SuccessCount > 0 &&
+            (!gateway.StatsReady ||
+             (gateway.LossPercent < RollingPingLossWarningPercent &&
+              gateway.LatencyMs < RollingPingGatewayLatencyWarningMs &&
+              (!gateway.JitterKnown || gateway.JitterMs < RollingPingGatewayJitterWarningMs)));
+        rolling.IcmpBlocked = accessState == NetworkAccessState.Online &&
+            gateway.SuccessCount > 0 &&
+            active.StatsReady &&
+            active.SuccessCount == 0;
+
+        if (accessState == NetworkAccessState.AdapterMissing)
+        {
+            SetRollingDiagnosis(rolling, PingPathDiagnosis.AdapterMissing, PingDiagnosisSeverity.Error, "ADAPTER");
+            return rolling;
+        }
+
+        if (accessState == NetworkAccessState.NeedsValidation)
+        {
+            SetRollingDiagnosis(rolling, PingPathDiagnosis.CaptivePortal, PingDiagnosisSeverity.Warning, "CAPTIVE");
+            return rolling;
+        }
+
+        if (accessState == NetworkAccessState.Offline)
+        {
+            SetRollingDiagnosis(rolling, PingPathDiagnosis.Offline, PingDiagnosisSeverity.Error, "OFFLINE");
+            return rolling;
+        }
+
+        if (gateway.StatsReady && gateway.LossPercent >= RollingPingLossWarningPercent)
+        {
+            SetRollingDiagnosis(
+                rolling,
+                PingPathDiagnosis.LocalLoss,
+                gateway.LossPercent >= RollingPingLossErrorPercent ? PingDiagnosisSeverity.Error : PingDiagnosisSeverity.Warning,
+                "LOCAL LOSS");
+            return rolling;
+        }
+
+        if (gateway.SuccessCount > 0 &&
+            (gateway.LatencyMs >= RollingPingGatewayLatencyWarningMs ||
+             (gateway.JitterKnown && gateway.JitterMs >= RollingPingGatewayJitterWarningMs)))
+        {
+            SetRollingDiagnosis(rolling, PingPathDiagnosis.LocalLatency, PingDiagnosisSeverity.Warning, "LOCAL LAT");
+            return rolling;
+        }
+
+        if (rolling.IcmpBlocked)
+        {
+            SetRollingDiagnosis(rolling, PingPathDiagnosis.IcmpBlocked, PingDiagnosisSeverity.Warning, "ICMP BLOCK");
+            return rolling;
+        }
+
+        double latencyThreshold = insideWall ? RollingPingBaiduLatencyWarningMs : RollingPingPublicLatencyWarningMs;
+        double jitterThreshold = insideWall ? RollingPingBaiduJitterWarningMs : RollingPingPublicJitterWarningMs;
+        if (gatewayHealthyEnough && active.StatsReady && active.LossPercent >= RollingPingLossWarningPercent)
+        {
+            SetRollingDiagnosis(
+                rolling,
+                insideWall ? PingPathDiagnosis.BaiduLoss : PingPathDiagnosis.WanLoss,
+                active.LossPercent >= RollingPingLossErrorPercent ? PingDiagnosisSeverity.Error : PingDiagnosisSeverity.Warning,
+                insideWall ? "BAIDU LOSS" : "WAN LOSS");
+            return rolling;
+        }
+
+        if (gatewayHealthyEnough &&
+            active.SuccessCount > 0 &&
+            (active.LatencyMs >= latencyThreshold || (active.JitterKnown && active.JitterMs >= jitterThreshold)))
+        {
+            SetRollingDiagnosis(
+                rolling,
+                insideWall ? PingPathDiagnosis.BaiduLatency : PingPathDiagnosis.WanLatency,
+                PingDiagnosisSeverity.Warning,
+                insideWall ? "BAIDU LAT" : "WAN LAT");
+            return rolling;
+        }
+
+        if (insideWall)
+        {
+            SetRollingDiagnosis(rolling, PingPathDiagnosis.GlobalBlock, PingDiagnosisSeverity.Warning, "GLOBAL BLOCK");
+        }
+
+        return rolling;
+    }
+
+    private static void SetRollingDiagnosis(
+        PingRollingSnapshot rolling,
+        PingPathDiagnosis diagnosis,
+        PingDiagnosisSeverity severity,
+        string text)
+    {
+        if (rolling == null)
+        {
+            return;
+        }
+
+        rolling.Diagnosis = diagnosis;
+        rolling.Severity = severity;
+        rolling.DiagnosisText = text ?? string.Empty;
+    }
+
+    private static string BuildRollingPingDiagnosisSignature(PingRollingSnapshot rolling)
+    {
+        if (rolling == null)
+        {
+            return string.Empty;
+        }
+
+        string lossBand = "cold";
+        if (rolling.StatsReady)
+        {
+            lossBand = rolling.LossPercent >= RollingPingLossErrorPercent
+                ? "loss_error"
+                : (rolling.LossPercent >= RollingPingLossWarningPercent ? "loss_warn" : "loss_ok");
+        }
+
+        return (rolling.ActiveProfile ?? string.Empty) + "|" +
+            rolling.Diagnosis.ToString() + "|" +
+            rolling.Severity.ToString() + "|" +
+            lossBand + "|" +
+            rolling.IcmpBlocked.ToString();
+    }
+
+    private RollingPingHistoryEntry BuildRollingPingHistoryEntry(string checkName, string trigger, PingRollingSnapshot rolling)
+    {
+        bool success = rolling != null &&
+            rolling.Diagnosis != PingPathDiagnosis.AdapterMissing &&
+            rolling.Diagnosis != PingPathDiagnosis.Offline &&
+            rolling.Diagnosis != PingPathDiagnosis.IcmpBlocked;
+        string result = rolling == null
+            ? "无状态"
+            : EmptyFallback(rolling.DiagnosisText, "OK") + " " + rolling.ActiveProfile + " loss " + FormatLossPercent(rolling.LossPercent);
+        return new RollingPingHistoryEntry
+        {
+            CheckName = checkName,
+            Trigger = trigger,
+            Result = result,
+            Success = success,
+            Detail = new Dictionary<string, object>
+            {
+                { "active_profile", rolling == null ? string.Empty : rolling.ActiveProfile },
+                { "group", rolling == null ? string.Empty : rolling.Group },
+                { "sample_count", rolling == null ? 0 : rolling.SampleCount },
+                { "lost_count", rolling == null ? 0 : rolling.LostCount },
+                { "loss_percent", rolling == null ? 0.0 : Math.Round(rolling.LossPercent, 1) },
+                { "latency_ms", rolling == null ? 0.0 : Math.Round(rolling.LatencyMs, 1) },
+                { "jitter_ms", rolling == null ? 0.0 : Math.Round(rolling.JitterMs, 1) },
+                { "diagnosis", rolling == null ? string.Empty : rolling.Diagnosis.ToString() }
+            }
+        };
+    }
+
+    private static void WriteRollingPingHistory(RollingPingHistoryEntry entry)
+    {
+        if (entry == null)
+        {
+            return;
+        }
+
+        NetworkCheckHistoryLogger.LogCompleted(
+            "network_monitor",
+            entry.CheckName,
+            entry.Trigger,
+            entry.Result,
+            entry.Success,
+            -1,
+            entry.Detail);
+    }
+
+    private void ClearRollingPingStateLocked(string trigger)
+    {
+        this.rollingGatewaySamples.Clear();
+        this.rollingPublicSamples.Clear();
+        this.rollingBaiduSamples.Clear();
+        this.lastRollingPingRefreshUtc = DateTime.MinValue;
+        this.rollingPingIdentitySignature = string.Empty;
+        this.lastRollingPingDiagnosisSignature = string.Empty;
+        this.rollingLossGroup = string.Empty;
+        this.rollingLossAboveCount = 0;
+        this.rollingLossBelowCount = 0;
+        this.rollingLossConfirmed = false;
+        if (this.snapshot != null)
+        {
+            this.snapshot.PingRolling = new PingRollingSnapshot
+            {
+                DiagnosisText = string.Equals(trigger, "网络身份变化", StringComparison.Ordinal) ? "RESET" : string.Empty
+            };
+        }
+    }
+
+    private string BuildRollingPingIdentitySignatureLocked()
+    {
+        return this.networkGeneration.ToString(CultureInfo.InvariantCulture) + "|" +
+            (this.snapshot == null ? string.Empty : this.snapshot.InterfaceId ?? string.Empty) + "|" +
+            (this.snapshot == null ? string.Empty : this.snapshot.IPv4 ?? string.Empty) + "|" +
+            (this.snapshot == null ? string.Empty : this.snapshot.DefaultGatewayAddress ?? string.Empty);
+    }
+
+    private static int GetRollingPingIntervalMs(WidgetPerformanceMode mode)
+    {
+        if (mode == WidgetPerformanceMode.Smooth)
+        {
+            return 2000;
+        }
+
+        if (mode == WidgetPerformanceMode.BatterySaver)
+        {
+            return 10000;
+        }
+
+        return 5000;
+    }
+
+    private static bool IsExplicitGfwBlock(GfwProbeSnapshot gfw, NetworkAccessState accessState)
+    {
+        if (accessState != NetworkAccessState.Online || gfw == null || !gfw.Enabled || !gfw.CheckedAtKnown)
+        {
+            return false;
+        }
+
+        return gfw.Status == GfwProbeStatus.SuspectedDns ||
+            gfw.Status == GfwProbeStatus.SuspectedTcp ||
+            gfw.Status == GfwProbeStatus.SuspectedTlsSni ||
+            gfw.Status == GfwProbeStatus.SuspectedHttp;
+    }
+
+    private static bool TryBuildGfwLocalNetworkGate(
+        PingRollingSnapshot rolling,
+        bool rollingLossConfirmed,
+        out string reason)
+    {
+        reason = string.Empty;
+        if (rolling == null || !rolling.StatsReady || rolling.IcmpBlocked)
+        {
+            return false;
+        }
+
+        // GFW gating must only consume confirmed packet loss on the active
+        // public/Baidu rolling window. Gateway-only ICMP loss and latency/jitter
+        // diagnostics are shown on the PING line, but they are too coarse to
+        // suppress GFW probes.
+        if (rolling.Diagnosis == PingPathDiagnosis.WanLoss ||
+            rolling.Diagnosis == PingPathDiagnosis.BaiduLoss ||
+            rolling.Diagnosis == PingPathDiagnosis.LocalLoss)
+        {
+            if (!rollingLossConfirmed || rolling.LossPercent < RollingPingLossWarningPercent)
+            {
+                return false;
+            }
+
+            reason = "滚动PING确认丢包 " + FormatLossPercent(rolling.LossPercent);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static PingProbeResult ProbePingOnce(string target, int timeoutMs)
+    {
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return PingProbeResult.CreateSkipped();
+        }
+
+        try
+        {
+            using (Ping ping = new Ping())
+            {
+                PingReply reply = ping.Send(target, timeoutMs);
+                if (reply != null && reply.Status == IPStatus.Success)
+                {
+                    return new PingProbeResult
+                    {
+                        Success = true,
+                        LatencyMs = (int)Math.Min(int.MaxValue, Math.Max(0L, reply.RoundtripTime))
+                    };
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return new PingProbeResult();
+    }
+
+    private static string FormatLossPercent(double value)
+    {
+        return Math.Max(0.0, Math.Min(100.0, value)).ToString("0.0", CultureInfo.InvariantCulture) + "%";
+    }
+
+    private void StartPublicIpRefresh(DateTime now, string trigger)
     {
         long requestGeneration;
         string requestInterfaceId;
@@ -787,32 +1508,28 @@ internal sealed class NetworkMonitorReader : IDisposable
         // rebuilds the same generation path; InterfaceId provides a second identity guard.
         Task.Run(delegate
         {
+            Stopwatch stopwatch = Stopwatch.StartNew();
             string ip = string.Empty;
             string error = string.Empty;
             bool success = false;
+            int endpointAttempts = 0;
             try
             {
-                ip = FetchText("https://api64.ipify.org");
-                success = !string.IsNullOrWhiteSpace(ip);
+                endpointAttempts++;
+                string response = FetchText(PublicIpv4Endpoint);
+                success = TryNormalizePublicIpv4Response(response, out ip);
+                if (!success)
+                {
+                    error = "非IPv4公网响应";
+                }
             }
             catch (Exception ex)
             {
                 error = ex.GetType().Name;
             }
 
-            if (!success)
-            {
-                try
-                {
-                    ip = FetchText("https://api.ipify.org");
-                    success = !string.IsNullOrWhiteSpace(ip);
-                }
-                catch (Exception ex)
-                {
-                    error = ex.GetType().Name;
-                }
-            }
-
+            stopwatch.Stop();
+            bool committed = false;
             lock (this.sync)
             {
                 this.publicIpRequestRunning = false;
@@ -828,7 +1545,7 @@ internal sealed class NetworkMonitorReader : IDisposable
                 this.snapshot.PublicIpRefreshing = false;
                 if (success)
                 {
-                    this.snapshot.PublicIp = ip.Trim();
+                    this.snapshot.PublicIp = ip;
                     this.snapshot.PublicIpKnown = true;
                     this.snapshot.LastError = string.Empty;
                 }
@@ -837,11 +1554,27 @@ internal sealed class NetworkMonitorReader : IDisposable
                     this.snapshot.PublicIpKnown = false;
                     this.snapshot.LastError = error;
                 }
+                committed = true;
+            }
+
+            if (committed)
+            {
+                NetworkCheckHistoryLogger.LogCompleted(
+                    "network_monitor",
+                    "public_ip",
+                    trigger,
+                    success ? "成功" : EmptyFallback(error, "失败"),
+                    success,
+                    (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
+                    new Dictionary<string, object>
+                    {
+                        { "endpoint_attempts", endpointAttempts }
+                    });
             }
         });
     }
 
-    private void StartDnsRefresh(DateTime now)
+    private void StartDnsRefresh(DateTime now, string trigger)
     {
         long requestGeneration;
         string requestInterfaceId;
@@ -875,6 +1608,7 @@ internal sealed class NetworkMonitorReader : IDisposable
 
         Task.Run(delegate
         {
+            Stopwatch stopwatch = Stopwatch.StartNew();
             DnsServerSnapshot[] result;
             try
             {
@@ -885,6 +1619,8 @@ internal sealed class NetworkMonitorReader : IDisposable
                 result = CreateDnsFailureSnapshots(addresses, ex, previousDetails, localNetworkDegraded, localNetworkDegradedReason);
             }
 
+            stopwatch.Stop();
+            bool committed = false;
             lock (this.sync)
             {
                 this.dnsProbeRunning = false;
@@ -899,6 +1635,26 @@ internal sealed class NetworkMonitorReader : IDisposable
 
                 this.snapshot.DnsServerDetails = result;
                 this.lastDnsProbeSignature = signature;
+                committed = true;
+            }
+
+            if (committed)
+            {
+                DnsServerStatus worstStatus = GetWorstDnsStatus(result);
+                NetworkCheckHistoryLogger.LogCompleted(
+                    "network_monitor",
+                    "dns",
+                    trigger,
+                    BuildDnsHistorySummary(result),
+                    result != null && result.Length > 0 && worstStatus == DnsServerStatus.Normal,
+                    (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
+                    new Dictionary<string, object>
+                    {
+                        { "dns_count", result == null ? 0 : result.Length },
+                        { "worst_status", worstStatus.ToString() },
+                        { "status_detail", BuildDnsHistoryStatusDetail(result) },
+                        { "abnormal_detail", BuildDnsHistoryAbnormalDetail(result) }
+                    });
             }
         });
     }
@@ -1468,7 +2224,7 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
     }
 
-    private void StartConnectivityRefresh(DateTime now)
+    private void StartConnectivityRefresh(DateTime now, string trigger)
     {
         long requestGeneration;
         string requestInterfaceId;
@@ -1489,7 +2245,10 @@ internal sealed class NetworkMonitorReader : IDisposable
         // The running flag also prevents slow offline probes from accumulating.
         Task.Run(delegate
         {
+            Stopwatch stopwatch = Stopwatch.StartNew();
             ConnectivityResult result = MeasureConnectivity(ConnectivityTarget);
+            stopwatch.Stop();
+            bool committed = false;
             lock (this.sync)
             {
                 this.connectivityRequestRunning = false;
@@ -1519,8 +2278,201 @@ internal sealed class NetworkMonitorReader : IDisposable
                 {
                     this.snapshot.LastError = string.Empty;
                 }
+                committed = true;
+            }
+
+            if (committed)
+            {
+                NetworkCheckHistoryLogger.LogCompleted(
+                    "network_monitor",
+                    "connectivity",
+                    trigger,
+                    FormatConnectivityHistoryResult(result),
+                    result.Online,
+                    (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
+                    new Dictionary<string, object>
+                    {
+                        { "access_state", result.AccessState.ToString() },
+                        { "latency_ms", Math.Round(result.LatencyMs, 1) },
+                        { "jitter_ms", Math.Round(result.JitterMs, 1) },
+                        { "packet_loss_percent", result.PacketLossPercent },
+                        { "local_network_degraded", result.LocalNetworkDegraded }
+                    });
             }
         });
+    }
+
+    private static string BuildDnsHistorySummary(DnsServerSnapshot[] details)
+    {
+        if (details == null || details.Length == 0)
+        {
+            return "无DNS";
+        }
+
+        int normal = 0;
+        int problem = 0;
+        int hijacked = 0;
+        int unavailable = 0;
+        int unknown = 0;
+        for (int i = 0; i < details.Length; i++)
+        {
+            DnsServerStatus status = details[i] == null ? DnsServerStatus.Unknown : details[i].Status;
+            switch (status)
+            {
+                case DnsServerStatus.Normal:
+                    normal++;
+                    break;
+                case DnsServerStatus.Problem:
+                    problem++;
+                    break;
+                case DnsServerStatus.Hijacked:
+                    hijacked++;
+                    break;
+                case DnsServerStatus.Unavailable:
+                    unavailable++;
+                    break;
+                default:
+                    unknown++;
+                    break;
+            }
+        }
+
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            "正常{0} 问题{1} 劫持{2} 不可用{3} 未知{4}",
+            normal,
+            problem,
+            hijacked,
+            unavailable,
+            unknown) + BuildDnsHistoryAbnormalSummarySuffix(details);
+    }
+
+    private static string BuildDnsHistoryAbnormalSummarySuffix(DnsServerSnapshot[] details)
+    {
+        string abnormal = BuildDnsHistoryAbnormalDetail(details);
+        return string.Equals(abnormal, "none", StringComparison.Ordinal)
+            ? string.Empty
+            : " 异常:" + abnormal;
+    }
+
+    private static string BuildDnsHistoryStatusDetail(DnsServerSnapshot[] details)
+    {
+        if (details == null || details.Length == 0)
+        {
+            return "none";
+        }
+
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < details.Length; i++)
+        {
+            DnsServerSnapshot item = details[i];
+            if (item == null)
+            {
+                continue;
+            }
+
+            if (builder.Length > 0)
+            {
+                builder.Append("; ");
+            }
+
+            builder.Append(item.Status.ToString());
+            string reason = NormalizeDnsHistoryReason(item);
+            if (reason.Length > 0)
+            {
+                builder.Append(":");
+                builder.Append(reason);
+            }
+
+            if (item.LatencyMs > 0)
+            {
+                builder.Append("@");
+                builder.Append(item.LatencyMs.ToString(CultureInfo.InvariantCulture));
+                builder.Append("ms");
+            }
+
+            if (item.FailureCount > 0)
+            {
+                builder.Append("/fail");
+                builder.Append(item.FailureCount.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        return builder.Length == 0 ? "none" : TrimHistoryText(builder.ToString(), 220);
+    }
+
+    private static string BuildDnsHistoryAbnormalDetail(DnsServerSnapshot[] details)
+    {
+        if (details == null || details.Length == 0)
+        {
+            return "none";
+        }
+
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < details.Length; i++)
+        {
+            DnsServerSnapshot item = details[i];
+            if (item == null ||
+                (item.Status != DnsServerStatus.Problem &&
+                 item.Status != DnsServerStatus.Hijacked &&
+                 item.Status != DnsServerStatus.Unavailable))
+            {
+                continue;
+            }
+
+            if (builder.Length > 0)
+            {
+                builder.Append("; ");
+            }
+
+            builder.Append(item.Status.ToString());
+            string reason = NormalizeDnsHistoryReason(item);
+            if (reason.Length > 0)
+            {
+                builder.Append(":");
+                builder.Append(reason);
+            }
+        }
+
+        return builder.Length == 0 ? "none" : TrimHistoryText(builder.ToString(), 160);
+    }
+
+    private static string NormalizeDnsHistoryReason(DnsServerSnapshot item)
+    {
+        if (item == null)
+        {
+            return string.Empty;
+        }
+
+        string reason = string.IsNullOrWhiteSpace(item.Reason) ? item.Status.ToString() : item.Reason.Trim();
+        StringBuilder builder = new StringBuilder(reason.Length);
+        for (int i = 0; i < reason.Length; i++)
+        {
+            char ch = reason[i];
+            if (!char.IsWhiteSpace(ch))
+            {
+                builder.Append(ch);
+            }
+        }
+
+        return TrimHistoryText(builder.ToString(), 48);
+    }
+
+    private static string TrimHistoryText(string value, int maxLength)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length <= maxLength)
+        {
+            return value ?? string.Empty;
+        }
+
+        return value.Substring(0, Math.Max(1, maxLength - 1)) + "…";
+    }
+
+    private static string FormatConnectivityHistoryResult(ConnectivityResult result)
+    {
+        string prefix = result.Online ? "在线" : "离线";
+        string reason = EmptyFallback(result.AccessReason, result.AccessState.ToString());
+        return prefix + " " + reason;
     }
 
     private static void ApplyNetworkStatusTestMode(NetworkMonitorSnapshot snapshot, WidgetSettings settings)
@@ -1686,6 +2638,25 @@ internal sealed class NetworkMonitorReader : IDisposable
         {
             return reader.ReadToEnd();
         }
+    }
+
+    private static bool TryNormalizePublicIpv4Response(string response, out string ipv4)
+    {
+        ipv4 = string.Empty;
+        if (string.IsNullOrWhiteSpace(response))
+        {
+            return false;
+        }
+
+        IPAddress address;
+        string value = response.Trim();
+        if (!IPAddress.TryParse(value, out address) || address.AddressFamily != AddressFamily.InterNetwork)
+        {
+            return false;
+        }
+
+        ipv4 = address.ToString();
+        return true;
     }
 
     private static ConnectivityResult MeasureConnectivity(string target)
@@ -1971,6 +2942,339 @@ internal sealed class NetworkMonitorReader : IDisposable
         // NetworkChange events are static and would otherwise keep the reader/window alive.
         NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
+    }
+
+    internal static void RunRollingPingSelfTest()
+    {
+        string publicIpv4;
+        if (!TryNormalizePublicIpv4Response("203.0.113.10", out publicIpv4) ||
+            !string.Equals(publicIpv4, "203.0.113.10", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Public IP self-test: IPv4 normalization failed.");
+        }
+
+        if (TryNormalizePublicIpv4Response("2001:db8::1", out publicIpv4) ||
+            TryNormalizePublicIpv4Response("not an ip", out publicIpv4))
+        {
+            throw new InvalidOperationException("Public IP self-test: non-IPv4 response must be rejected.");
+        }
+
+        DnsServerSnapshot[] dnsHistoryFixture = new DnsServerSnapshot[]
+        {
+            new DnsServerSnapshot { Address = "1.1.1.1", Status = DnsServerStatus.Normal, Reason = "正常", LatencyMs = 12 },
+            new DnsServerSnapshot { Address = "8.8.8.8", Status = DnsServerStatus.Problem, Reason = "UDP失败/TCP可用", FailureCount = 1 },
+            new DnsServerSnapshot { Address = "2001:4860:4860::8888", Status = DnsServerStatus.Unavailable, Reason = "无响应", FailureCount = 2 }
+        };
+        string dnsSummary = BuildDnsHistorySummary(dnsHistoryFixture);
+        string dnsStatusDetail = BuildDnsHistoryStatusDetail(dnsHistoryFixture);
+        string dnsAbnormalDetail = BuildDnsHistoryAbnormalDetail(dnsHistoryFixture);
+        if (dnsSummary.IndexOf("异常:Problem:UDP失败/TCP可用", StringComparison.Ordinal) < 0 ||
+            dnsStatusDetail.IndexOf("Problem:UDP失败/TCP可用", StringComparison.Ordinal) < 0 ||
+            dnsAbnormalDetail.IndexOf("Unavailable:无响应", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("DNS history self-test: concrete DNS reasons must be logged.");
+        }
+
+        if (dnsSummary.IndexOf("1.1.1.1", StringComparison.Ordinal) >= 0 ||
+            dnsStatusDetail.IndexOf("8.8.8.8", StringComparison.Ordinal) >= 0 ||
+            dnsAbnormalDetail.IndexOf("2001:4860", StringComparison.Ordinal) >= 0)
+        {
+            throw new InvalidOperationException("DNS history self-test: DNS server addresses must stay out of history detail.");
+        }
+
+        PingGroupStats gateway = PingSampleWindow.BuildStatsForTest("gateway", new bool[] { true, true, true, true, true, true, true, true, true, true }, new int[] { 2, 3, 2, 2, 3, 2, 2, 3, 2, 2 });
+        PingGroupStats publicLoss = PingSampleWindow.BuildStatsForTest("public", new bool[] { true, true, true, true, true, true, true, true, true, false }, new int[] { 40, 41, 42, 39, 40, 41, 40, 42, 41, 0 });
+        PingRollingSnapshot wanLoss = BuildRollingPingSnapshot(NetworkAccessState.Online, false, gateway, publicLoss);
+        if (!wanLoss.StatsReady || Math.Abs(wanLoss.LossPercent - 10.0) > 0.01 || wanLoss.Diagnosis != PingPathDiagnosis.WanLoss)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: WAN loss classification failed.");
+        }
+
+        PingGroupStats warming = PingSampleWindow.BuildStatsForTest("public", new bool[] { true, false, true }, new int[] { 20, 0, 21 });
+        PingRollingSnapshot cold = BuildRollingPingSnapshot(NetworkAccessState.Online, false, gateway, warming);
+        if (cold.StatsReady || cold.Diagnosis != PingPathDiagnosis.None)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: warm-up state failed.");
+        }
+
+        string gfwGateReason;
+        if (TryBuildGfwLocalNetworkGate(cold, false, out gfwGateReason))
+        {
+            throw new InvalidOperationException("Rolling ping self-test: GFW gate must ignore warm-up samples.");
+        }
+
+        if (TryBuildGfwLocalNetworkGate(wanLoss, false, out gfwGateReason))
+        {
+            throw new InvalidOperationException("Rolling ping self-test: GFW gate must wait for confirmed WAN loss.");
+        }
+
+        if (!TryBuildGfwLocalNetworkGate(wanLoss, true, out gfwGateReason) ||
+            gfwGateReason.IndexOf("确认丢包", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: GFW gate confirmed WAN loss failed.");
+        }
+
+        PingGroupStats publicClean = PingSampleWindow.BuildStatsForTest("public", new bool[] { true, true, true, true, true, true, true, true, true, true }, new int[] { 40, 41, 42, 39, 40, 41, 40, 42, 41, 40 });
+        PingGroupStats unstableGateway = PingSampleWindow.BuildStatsForTest("gateway", new bool[] { true, true, true, true, true, true, true, true, true, false }, new int[] { 2, 2, 2, 3, 2, 2, 2, 2, 3, 0 });
+        PingRollingSnapshot localOnlyLoss = BuildRollingPingSnapshot(NetworkAccessState.Online, false, unstableGateway, publicClean);
+        if (localOnlyLoss.Diagnosis != PingPathDiagnosis.LocalLoss || Math.Abs(localOnlyLoss.LossPercent) > 0.01)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: local-only loss fixture failed.");
+        }
+
+        if (TryBuildGfwLocalNetworkGate(localOnlyLoss, true, out gfwGateReason))
+        {
+            throw new InvalidOperationException("Rolling ping self-test: GFW gate must ignore local-only loss when active loss is below threshold.");
+        }
+
+        PingGroupStats slowGateway = PingSampleWindow.BuildStatsForTest("gateway", new bool[] { true, true, true, true, true, true, true, true, true, true }, new int[] { 50, 55, 52, 54, 56, 53, 55, 52, 54, 55 });
+        PingRollingSnapshot localLatency = BuildRollingPingSnapshot(NetworkAccessState.Online, false, slowGateway, publicClean);
+        if (localLatency.Diagnosis != PingPathDiagnosis.LocalLatency)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: local latency fixture failed.");
+        }
+
+        if (TryBuildGfwLocalNetworkGate(localLatency, true, out gfwGateReason))
+        {
+            throw new InvalidOperationException("Rolling ping self-test: GFW gate must ignore latency without packet loss.");
+        }
+
+        PingGroupStats blockedPublic = PingSampleWindow.BuildStatsForTest("public", new bool[] { false, false, false, false, false, false, false, false, false, false }, new int[] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+        PingRollingSnapshot icmpBlocked = BuildRollingPingSnapshot(NetworkAccessState.Online, false, gateway, blockedPublic);
+        if (!icmpBlocked.IcmpBlocked || icmpBlocked.Diagnosis != PingPathDiagnosis.IcmpBlocked)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: ICMP blocked classification failed.");
+        }
+
+        PingRollingSnapshot localLoss = BuildRollingPingSnapshot(NetworkAccessState.Online, false, unstableGateway, publicLoss);
+        if (localLoss.Diagnosis != PingPathDiagnosis.LocalLoss)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: local priority failed.");
+        }
+
+        if (!TryBuildGfwLocalNetworkGate(localLoss, true, out gfwGateReason) ||
+            gfwGateReason.IndexOf("确认丢包", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: GFW gate local loss failed.");
+        }
+
+        PingRollingSnapshot baidu = BuildRollingPingSnapshot(NetworkAccessState.Online, true, gateway, warming);
+        if (!string.Equals(baidu.ActiveProfile, "BAIDU", StringComparison.Ordinal) ||
+            baidu.Diagnosis != PingPathDiagnosis.GlobalBlock)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: GFW fallback failed.");
+        }
+
+        PingRollingSnapshot clone = publicLoss.ToSnapshot("PUB", PingPathDiagnosis.WanLoss, PingDiagnosisSeverity.Warning, "WAN LOSS");
+        PingRollingSnapshot cloneCopy = clone.Clone();
+        cloneCopy.ActiveProfile = "CHANGED";
+        if (string.Equals(clone.ActiveProfile, cloneCopy.ActiveProfile, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Rolling ping self-test: clone isolation failed.");
+        }
+    }
+
+    private sealed class RollingPingRequest
+    {
+        public long Generation;
+        public string InterfaceId;
+        public string IdentitySignature;
+        public string Gateway;
+        public string Target;
+        public string ActiveProfile;
+        public string ActiveGroup;
+        public bool InsideWall;
+        public string Trigger;
+    }
+
+    private sealed class RollingPingHistoryEntry
+    {
+        public string CheckName;
+        public string Trigger;
+        public string Result;
+        public bool Success;
+        public Dictionary<string, object> Detail;
+    }
+
+    private struct PingProbeResult
+    {
+        public bool Success;
+        public int LatencyMs;
+        public bool Skipped;
+
+        public static PingProbeResult CreateSkipped()
+        {
+            return new PingProbeResult { Skipped = true };
+        }
+    }
+
+    private sealed class PingSampleWindow
+    {
+        private readonly List<RollingPingSample> samples = new List<RollingPingSample>();
+
+        public void Add(bool success, int latencyMs, DateTime timestampUtc)
+        {
+            this.Prune(timestampUtc);
+            this.samples.Add(new RollingPingSample
+            {
+                TimestampUtc = timestampUtc,
+                Success = success,
+                LatencyMs = success ? Math.Max(0, latencyMs) : 0
+            });
+
+            while (this.samples.Count > RollingPingMaxSamples)
+            {
+                this.samples.RemoveAt(0);
+            }
+        }
+
+        public void Clear()
+        {
+            this.samples.Clear();
+        }
+
+        public PingGroupStats BuildStats(string group, DateTime nowUtc)
+        {
+            this.Prune(nowUtc);
+            return BuildStats(group, this.samples);
+        }
+
+        private void Prune(DateTime nowUtc)
+        {
+            if (this.samples.Count == 0)
+            {
+                return;
+            }
+
+            DateTime cutoff = nowUtc - RollingPingSampleTtl;
+            int removeCount = 0;
+            for (int i = 0; i < this.samples.Count; i++)
+            {
+                if (this.samples[i].TimestampUtc >= cutoff)
+                {
+                    break;
+                }
+
+                removeCount++;
+            }
+
+            if (removeCount > 0)
+            {
+                this.samples.RemoveRange(0, removeCount);
+            }
+        }
+
+        public static PingGroupStats BuildStatsForTest(string group, bool[] successes, int[] latencies)
+        {
+            List<RollingPingSample> values = new List<RollingPingSample>();
+            DateTime now = DateTime.UtcNow;
+            for (int i = 0; successes != null && i < successes.Length; i++)
+            {
+                values.Add(new RollingPingSample
+                {
+                    TimestampUtc = now.AddSeconds(i),
+                    Success = successes[i],
+                    LatencyMs = latencies != null && i < latencies.Length ? latencies[i] : 0
+                });
+            }
+
+            return BuildStats(group, values);
+        }
+
+        private static PingGroupStats BuildStats(string group, List<RollingPingSample> values)
+        {
+            PingGroupStats stats = new PingGroupStats();
+            stats.Group = group ?? string.Empty;
+            if (values == null || values.Count == 0)
+            {
+                return stats;
+            }
+
+            List<int> successes = new List<int>();
+            stats.TotalCount = values.Count;
+            for (int i = 0; i < values.Count; i++)
+            {
+                RollingPingSample sample = values[i];
+                if (sample.Success)
+                {
+                    stats.SuccessCount++;
+                    successes.Add(sample.LatencyMs);
+                }
+            }
+
+            stats.LostCount = stats.TotalCount - stats.SuccessCount;
+            stats.StatsReady = stats.TotalCount >= RollingPingMinSamples;
+            stats.LossPercent = stats.TotalCount <= 0 ? 0.0 : stats.LostCount * 100.0 / stats.TotalCount;
+
+            if (successes.Count > 0)
+            {
+                double sum = 0.0;
+                for (int i = 0; i < successes.Count; i++)
+                {
+                    sum += successes[i];
+                }
+
+                stats.LatencyMs = sum / successes.Count;
+            }
+
+            if (successes.Count >= 3)
+            {
+                double jitterSum = 0.0;
+                for (int i = 1; i < successes.Count; i++)
+                {
+                    jitterSum += Math.Abs(successes[i] - successes[i - 1]);
+                }
+
+                stats.JitterMs = jitterSum / (successes.Count - 1);
+                stats.JitterKnown = true;
+            }
+
+            return stats;
+        }
+    }
+
+    private struct RollingPingSample
+    {
+        public DateTime TimestampUtc;
+        public bool Success;
+        public int LatencyMs;
+    }
+
+    private struct PingGroupStats
+    {
+        public string Group;
+        public int TotalCount;
+        public int SuccessCount;
+        public int LostCount;
+        public double LossPercent;
+        public double LatencyMs;
+        public double JitterMs;
+        public bool JitterKnown;
+        public bool StatsReady;
+
+        public PingRollingSnapshot ToSnapshot(
+            string activeProfile,
+            PingPathDiagnosis diagnosis,
+            PingDiagnosisSeverity severity,
+            string diagnosisText)
+        {
+            return new PingRollingSnapshot
+            {
+                ActiveProfile = activeProfile,
+                ActiveTargetLabel = activeProfile,
+                Group = this.Group,
+                SampleCount = this.TotalCount,
+                LostCount = this.LostCount,
+                LossPercent = this.LossPercent,
+                LatencyMs = this.LatencyMs,
+                JitterMs = this.JitterMs,
+                JitterKnown = this.JitterKnown,
+                StatsReady = this.StatsReady,
+                Diagnosis = diagnosis,
+                Severity = severity,
+                DiagnosisText = diagnosisText ?? string.Empty
+            };
+        }
     }
 
     private struct PingMeasurement

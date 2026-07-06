@@ -29,6 +29,8 @@ internal static class Program
     private static int Main(string[] args)
     {
         MigrateLegacyStorage();
+        NetworkCheckHistoryLogger.Initialize();
+        QuotaDecisionHistoryLogger.Initialize();
 
         int restartAfterPid;
         if (TryGetIntArg(args, "--restart-after-pid", out restartAfterPid))
@@ -87,9 +89,19 @@ internal static class Program
             return TestSettingsBindingPolicy();
         }
 
+        if (HasArg(args, "--test-settings-open-close"))
+        {
+            return TestSettingsOpenClosePolicy(args);
+        }
+
         if (HasArg(args, "--test-display-recovery"))
         {
             return TestDisplayRecoveryPolicy();
+        }
+
+        if (HasArg(args, "--test-radar-display-lifecycle"))
+        {
+            return TestRadarDisplayLifecyclePolicy(args);
         }
 
         if (HasArg(args, "--test-operation-panel"))
@@ -97,9 +109,49 @@ internal static class Program
             return TestOperationPanelPolicy();
         }
 
+        if (HasArg(args, "--render-codexradar"))
+        {
+            return RenderCodexRadarSamples(args);
+        }
+
+        if (HasArg(args, "--render-clauderadar"))
+        {
+            return RenderClaudeRadarSamples(args);
+        }
+
+        if (HasArg(args, "--render-connectioncheck"))
+        {
+            return RenderConnectionCheckSamples(args);
+        }
+
+        if (HasArg(args, "--render-networkmonitor"))
+        {
+            return RenderNetworkMonitorSamples(args);
+        }
+
+        if (HasArg(args, "--render-powerthermal"))
+        {
+            return RenderPowerThermalSamples(args);
+        }
+
+        if (HasArg(args, "--render-widget"))
+        {
+            return RenderWidgetSamples(args);
+        }
+
+        if (HasArg(args, "--render-operation"))
+        {
+            return RenderOperationSamples(args);
+        }
+
         if (HasArg(args, "--diagnose-idle-cpu"))
         {
             return RunIdleCpuDiagnosisCommand(args);
+        }
+
+        if (HasArg(args, "--diagnose-radar-runtime"))
+        {
+            return RunRadarRuntimeDiagnosisCommand(args);
         }
 
         // Stop pre-rename processes before acquiring the new product mutex.
@@ -125,6 +177,7 @@ internal static class Program
 
             WidgetSettings settings = WidgetSettings.Load();
             ApplyPerformanceMode(settings.PerformanceMode);
+            UiHangWatchdog.Start();
             using (PdhSampler sampler = new PdhSampler())
             using (WidgetForm form = new WidgetForm(sampler, stopEvent, settings, useDesktopParent))
             {
@@ -167,6 +220,9 @@ internal static class Program
             }
 
             mutex.Dispose();
+            UiHangWatchdog.Shutdown();
+            NetworkCheckHistoryLogger.Shutdown();
+            QuotaDecisionHistoryLogger.Shutdown();
             Logger.Shutdown();
         }
     }
@@ -433,6 +489,13 @@ internal static class Program
                 Console.WriteLine("Process: {0}", NativeMethods.DescribeProcessMachine());
             }
 
+            NetworkMonitorReader.RunRollingPingSelfTest();
+            CloudEndpointProbe.RunSelfTest();
+            ClaudeRadarReader.RunSelfTest();
+            ClaudeCodeUsageReader.RunSelfTest();
+            CodexRadarForm.RunSoftwareModeGateSelfTest();
+            CodexQuotaGoalPlanner.RunSelfTest();
+            RadarRuntimeDiagnostics.RunSelfTest();
             return 0;
         }
         catch (Exception ex)
@@ -449,6 +512,9 @@ internal static class Program
         try
         {
             Logger.RunStoragePolicySelfTest();
+            UiHangWatchdog.RunSelfTest();
+            NetworkCheckHistoryLogger.RunSelfTest();
+            QuotaDecisionHistoryLogger.RunSelfTest();
             Console.WriteLine("Logger storage policy: PASS");
             return 0;
         }
@@ -467,7 +533,9 @@ internal static class Program
         {
             WidgetSettings.RunLayoutScalingSelfTest();
             CodexRadarForm.RunStatusAndQuotaSelfTest();
+            ClaudeRadarForm.RunRenderResourceSelfTest();
             ConnectionCheckForm.RunHiddenModeBadgeRenderingSelfTest();
+            NetworkMonitorForm.RunNetworkMonitorDisplaySelfTest();
             Console.WriteLine("Layout scaling policy: PASS");
             return 0;
         }
@@ -502,6 +570,236 @@ internal static class Program
         }
     }
 
+    private static int TestSettingsOpenClosePolicy(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            int iterations;
+            if (!TryGetIntArg(args, "--iterations", out iterations))
+            {
+                iterations = 50;
+            }
+
+            string summary = Win11SettingsForm.RunOpenCloseStressSelfTest(iterations);
+            Console.WriteLine(summary);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RenderCodexRadarSamples(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir))
+            {
+                outputDir = ".";
+            }
+
+            CodexRadarForm.RenderVariantSamples(outputDir);
+            CodexRadarForm.RenderRadarSolo(outputDir);
+            CodexRadarForm.RenderCurrentSample(outputDir);
+            Console.WriteLine("Rendered CodexRadar variant samples to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RenderClaudeRadarSamples(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir))
+            {
+                outputDir = ".";
+            }
+
+            ClaudeRadarForm.RenderVariantSamples(outputDir);
+            ClaudeRadarForm.RenderCurrentSample(outputDir);
+            Console.WriteLine("Rendered ClaudeRadar variant samples to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RenderConnectionCheckSamples(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir))
+            {
+                outputDir = ".";
+            }
+
+            ConnectionCheckForm.RenderCleanIpIconSamples(outputDir);
+            ConnectionCheckForm.RenderRestyleVariantSamples(outputDir);
+            ConnectionCheckForm.RenderCurrentSample(outputDir);
+            Console.WriteLine("Rendered CleanIP badge icon and restyle variant samples to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RenderNetworkMonitorSamples(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir))
+            {
+                outputDir = ".";
+            }
+
+            NetworkMonitorForm.RenderVariantSamples(outputDir);
+            NetworkMonitorForm.RenderCurrentSample(outputDir);
+            Console.WriteLine("Rendered NetworkMonitor variant samples to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RenderPowerThermalSamples(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir))
+            {
+                outputDir = ".";
+            }
+
+            PowerThermalForm.RenderVariantSamples(outputDir);
+            PowerThermalForm.RenderCurrentSample(outputDir);
+            Console.WriteLine("Rendered PowerThermal variant samples to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RenderWidgetSamples(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir))
+            {
+                outputDir = ".";
+            }
+
+            WidgetForm.RenderVariantSamples(outputDir);
+            WidgetForm.RenderCurrentSample(outputDir);
+            Console.WriteLine("Rendered main widget variant samples to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RenderOperationSamples(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir))
+            {
+                outputDir = ".";
+            }
+
+            OperationForm.RenderVariantSamples(outputDir);
+            OperationForm.RenderCurrentSample(outputDir);
+            Console.WriteLine("Rendered operation panel variant samples to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static string GetStringArg(string[] args, string name)
+    {
+        for (int i = 0; i + 1 < args.Length; i++)
+        {
+            if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
+            {
+                return args[i + 1];
+            }
+        }
+
+        return null;
+    }
+
     private static int RunIdleCpuDiagnosisCommand(string[] args)
     {
         NativeMethods.AttachToParentConsole();
@@ -516,6 +814,34 @@ internal static class Program
             IdleCpuDiagnostics.Report report = IdleCpuDiagnostics.Run(minutes);
             Console.WriteLine(report.Summary);
             Console.WriteLine(report.ReportPath);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RunRadarRuntimeDiagnosisCommand(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            int seconds;
+            if (!TryGetIntArg(args, "--diagnose-seconds", out seconds))
+            {
+                seconds = 10;
+            }
+
+            int targetPid;
+            TryGetIntArg(args, "--diagnose-target-pid", out targetPid);
+            string label = GetStringArg(args, "--diagnose-label");
+            RadarRuntimeDiagnostics.Report report = RadarRuntimeDiagnostics.Run(seconds, targetPid, label);
+            Console.WriteLine(report.Summary);
+            Console.WriteLine(report.TextPath);
+            Console.WriteLine(report.JsonPath);
             return 0;
         }
         catch (Exception ex)
@@ -590,6 +916,109 @@ internal static class Program
             LogException(ex);
             return 1;
         }
+    }
+
+    private static int TestRadarDisplayLifecyclePolicy(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            int iterations;
+            if (!TryGetIntArg(args, "--iterations", out iterations))
+            {
+                iterations = 50;
+            }
+
+            iterations = Math.Max(1, Math.Min(500, iterations));
+            WidgetSettings settings = WidgetSettings.CreateDefaults();
+            settings.CodexRadarEnabled = true;
+            settings.ClaudeRadarEnabled = true;
+            settings.CodexRadarPublicJsonEnabled = false;
+            settings.CodexRadarHtmlFallbackEnabled = false;
+            settings.CodexRadarRssFallbackEnabled = false;
+            settings.ClaudeRadarJsonEnabled = false;
+            settings.ClaudeRadarHomepageFallbackEnabled = false;
+            settings.ClaudeRadarCommunityRatingsEnabled = false;
+            settings.ClaudeRadarLocalQuotaFallbackEnabled = false;
+            settings.CodexRadarRandomTestEnabled = true;
+            settings.ClaudeRadarRandomTestEnabled = true;
+            settings.Normalize();
+
+            using (CodexRadarForm codex = new CodexRadarForm(settings, null))
+            using (ClaudeRadarForm claude = new ClaudeRadarForm(settings, null))
+            {
+                codex.StartPosition = FormStartPosition.Manual;
+                claude.StartPosition = FormStartPosition.Manual;
+                codex.Location = new Point(-30000, -30000);
+                claude.Location = new Point(-30000, -29800);
+                codex.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
+                claude.Size = new Size(settings.ClaudeRadarWidth, settings.ClaudeRadarHeight);
+
+                IntPtr codexHandle = codex.Handle;
+                IntPtr claudeHandle = claude.Handle;
+                if (codexHandle == IntPtr.Zero || claudeHandle == IntPtr.Zero)
+                {
+                    throw new InvalidOperationException("Radar display lifecycle self-test failed to create window handles.");
+                }
+
+                Application.DoEvents();
+                ForceResourceCleanup();
+                RadarRuntimeDiagnostics.ResourceCounters before = RadarRuntimeDiagnostics.CaptureCurrentProcessResources();
+                for (int i = 0; i < iterations; i++)
+                {
+                    codex.PrepareForDisplaySuspend();
+                    claude.PrepareForDisplaySuspend();
+                    Application.DoEvents();
+                    codex.RecoverAfterDisplayResume();
+                    claude.RecoverAfterDisplayResume();
+                    Application.DoEvents();
+                }
+
+                ForceResourceCleanup();
+                RadarRuntimeDiagnostics.ResourceCounters after = RadarRuntimeDiagnostics.CaptureCurrentProcessResources();
+                int handleDelta = after.HandleCount - before.HandleCount;
+                int gdiDelta = after.GdiObjects - before.GdiObjects;
+                int userDelta = after.UserObjects - before.UserObjects;
+                if (handleDelta > 100 || gdiDelta > 10 || userDelta > 20)
+                {
+                    throw new InvalidOperationException(
+                        "Radar display lifecycle resource growth exceeded threshold. Iterations=" +
+                        iterations.ToString(CultureInfo.InvariantCulture) +
+                        ", HandlesDelta=" +
+                        handleDelta.ToString(CultureInfo.InvariantCulture) +
+                        ", GdiDelta=" +
+                        gdiDelta.ToString(CultureInfo.InvariantCulture) +
+                        ", UserDelta=" +
+                        userDelta.ToString(CultureInfo.InvariantCulture));
+                }
+
+                Console.WriteLine(
+                    "Radar display lifecycle policy: PASS iterations={0} handles_delta={1} gdi_delta={2} user_delta={3}",
+                    iterations,
+                    handleDelta,
+                    gdiDelta,
+                    userDelta);
+            }
+
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static void ForceResourceCleanup()
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        Application.DoEvents();
     }
 
     private static int TestOperationPanelPolicy()

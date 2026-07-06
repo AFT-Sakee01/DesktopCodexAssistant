@@ -73,6 +73,9 @@ internal static class NativeMethods
     private const byte AC_SRC_ALPHA = 0x01;
     private const int ULW_ALPHA = 0x00000002;
     private const int ATTACH_PARENT_PROCESS = -1;
+    private const string CtfmonProcessName = "ctfmon";
+    private const string CtfmonExecutableName = "ctfmon.exe";
+    private const int CtfmonRestartProcessExitWaitMs = 2500;
     private const string LiveCaptionsAppsFolderPath = @"shell:AppsFolder\{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\LiveCaptions.exe";
     private const string WindowsAiStudioProtocol = "ms-clicktodo";
     private const string WindowsAiStudioAppsFolderPath = @"shell:AppsFolder\MicrosoftWindows.Client.CoreAI_cw5n1h2txyewy!ClickToDoApp";
@@ -2478,6 +2481,118 @@ internal static class NativeMethods
         return OpenShellUri("ms-inputapp:");
     }
 
+    public static bool RestartCtfmonTextServices(out string detail)
+    {
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        Process[] processes;
+        try
+        {
+            processes = Process.GetProcessesByName(CtfmonProcessName);
+        }
+        catch (Exception ex)
+        {
+            bool startedAfterEnumerationFailure = TryStartCtfmonTextServices(out detail);
+            detail = "Process enumeration failed: " +
+                ex.GetType().Name +
+                ": " +
+                ex.Message +
+                "; started=" +
+                startedAfterEnumerationFailure.ToString() +
+                "; start_detail=" +
+                detail;
+            return startedAfterEnumerationFailure;
+        }
+
+        int found = 0;
+        int killed = 0;
+        int exitedBeforeKill = 0;
+        int timedOut = 0;
+        int failed = 0;
+        StringBuilder failures = new StringBuilder();
+        for (int i = 0; i < processes.Length; i++)
+        {
+            Process process = processes[i];
+            if (process == null)
+            {
+                continue;
+            }
+
+            try
+            {
+                int processId = process.Id;
+                if (process.HasExited)
+                {
+                    exitedBeforeKill++;
+                    continue;
+                }
+
+                found++;
+                process.Kill();
+                if (process.WaitForExit(CtfmonRestartProcessExitWaitMs))
+                {
+                    killed++;
+                }
+                else
+                {
+                    timedOut++;
+                    AppendProcessFailure(failures, processId, "wait_timeout");
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                exitedBeforeKill++;
+            }
+            catch (Exception ex)
+            {
+                failed++;
+                int processId = 0;
+                try
+                {
+                    processId = process.Id;
+                }
+                catch
+                {
+                }
+
+                AppendProcessFailure(
+                    failures,
+                    processId,
+                    ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+
+        string startDetail;
+        bool started = TryStartCtfmonTextServices(out startDetail);
+        stopwatch.Stop();
+        detail =
+            "found=" +
+            found.ToString(CultureInfo.InvariantCulture) +
+            ", killed=" +
+            killed.ToString(CultureInfo.InvariantCulture) +
+            ", exited_before_kill=" +
+            exitedBeforeKill.ToString(CultureInfo.InvariantCulture) +
+            ", timed_out=" +
+            timedOut.ToString(CultureInfo.InvariantCulture) +
+            ", failed=" +
+            failed.ToString(CultureInfo.InvariantCulture) +
+            ", started=" +
+            started.ToString() +
+            ", elapsed_ms=" +
+            stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
+            ", start_detail=" +
+            startDetail;
+        if (failures.Length > 0)
+        {
+            detail += ", failures=" + failures;
+        }
+
+        return started && timedOut == 0 && failed == 0;
+    }
+
     public static bool OpenActionCenterControl(string controlName)
     {
         if (string.IsNullOrEmpty(controlName))
@@ -2584,6 +2699,54 @@ internal static class NativeMethods
         {
             return false;
         }
+    }
+
+    private static bool TryStartCtfmonTextServices(out string detail)
+    {
+        string systemPath = Path.Combine(Environment.SystemDirectory, CtfmonExecutableName);
+        string fileName = File.Exists(systemPath) ? systemPath : CtfmonExecutableName;
+        try
+        {
+            ProcessStartInfo startInfo = new ProcessStartInfo();
+            startInfo.FileName = fileName;
+            startInfo.UseShellExecute = false;
+            startInfo.CreateNoWindow = true;
+            startInfo.WindowStyle = ProcessWindowStyle.Hidden;
+            if (File.Exists(systemPath))
+            {
+                startInfo.WorkingDirectory = Environment.SystemDirectory;
+            }
+
+            Process process = Process.Start(startInfo);
+            if (process == null)
+            {
+                detail = "Process.Start returned null for " + fileName;
+                return false;
+            }
+
+            int processId = process.Id;
+            process.Dispose();
+            detail = "started " + fileName + " pid=" + processId.ToString(CultureInfo.InvariantCulture);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            detail = ex.GetType().Name + ": " + ex.Message;
+            return false;
+        }
+    }
+
+    private static void AppendProcessFailure(StringBuilder builder, int processId, string message)
+    {
+        if (builder.Length > 0)
+        {
+            builder.Append("; ");
+        }
+
+        builder.Append("pid=");
+        builder.Append(processId.ToString(CultureInfo.InvariantCulture));
+        builder.Append(": ");
+        builder.Append(message);
     }
 
     private static bool OpenWindowsPowerUserMenu()

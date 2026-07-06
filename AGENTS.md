@@ -2,7 +2,7 @@
 
 The global `C:\Users\GengH\.codex\AGENTS.md` rules apply. This file only records project-specific constraints and overrides; do not duplicate global rules or maintenance history here.
 
-Current version: `1.0.2.97`
+Current version: `1.0.4.18`
 
 ## Project AI
 
@@ -39,13 +39,15 @@ Current version: `1.0.2.97`
 
 ## Verification
 
-- Use the narrowest relevant checks first; run ARM64 build or binary self-tests only when required by the change or requested by the user.
+- Use the narrowest relevant checks first, then deploy by the default rule below whenever the change affects source code or runtime behavior.
 - Relevant executable checks include `--test`, `--test-logger`, `--test-layout`, `--test-settings-bindings`, and `--test-display-recovery`.
 - For documentation-only changes, JSONL parsing, path/reference checks, version checks, and `git diff --check` are sufficient.
+- After completed source-code or runtime-affecting changes, build ARM64, back up the existing formal executable, overwrite the formal executable, and restart it by default unless the user explicitly says this turn should not compile, overwrite, deploy, or restart.
 - Never overwrite the formal executable merely to validate documentation or metadata.
 
 ## Records
 
+- Documentation naming, index schemas, changelog format, doc lifecycle, and the docs validation gate are governed by `Docs/AGENTS.md`; follow it for any `Docs/**` or index change.
 - Append completed changes and confirmed issues to `Docs/Maintenance/CHANGELOG.jsonl`; never place maintenance entries back in this file.
 - Keep `Core/ProductIdentity.cs`, artifacts, and each new changelog record on the same version.
 - Update `Docs/Indexes/FEATURE_INDEX.jsonl` when a feature is added, moved, renamed, deprecated, or its recommended tests change.

@@ -277,6 +277,8 @@ internal static class HoverInteractionPolicy
     internal static void RunSelfTest()
     {
         WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.SensitiveMouseModeEnabled = true;
+        settings.SensitiveMouseRangePixels = 100;
         Rectangle bounds = new Rectangle(100, 100, 40, 40);
         AssertPolicy(!IsPointInActivationRange(settings, new Point(20, 20), bounds), "far cursor should miss");
         AssertPolicy(IsPointInActivationRange(settings, new Point(60, 120), bounds), "100-pixel square should intersect");
@@ -303,6 +305,7 @@ internal static class HoverInteractionPolicy
         settings.HoverOpacityEnabled = true;
         settings.ForceHoverOpacityActive = false;
         settings.ManualHoverOpacityActive = false;
+        settings.HoverOpacityRevealDelayEnabled = true;
         settings.HoverOpacityRevealDelaySeconds = 3.0;
         settings.HoverOpacityRevealResetSeconds = 1.0;
         AssertPolicy(IsDelayedHoverOpacityActiveAt(settings, true, now, delayState), "hover delay should hide while inside");

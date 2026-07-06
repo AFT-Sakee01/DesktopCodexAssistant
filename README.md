@@ -47,6 +47,12 @@ Operation panel self-test:
 .\DesktopCodexAssistant.exe --test-operation-panel
 ```
 
+Radar runtime diagnosis:
+
+```powershell
+.\DesktopCodexAssistant.exe --diagnose-radar-runtime --diagnose-seconds 30
+```
+
 Logs and settings are stored under `%LOCALAPPDATA%\DesktopCodexAssistant`.
 
 When the renamed application starts for the first time, it migrates existing settings from `%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA` or `%LOCALAPPDATA%\DesktopPerfWidget-Lite` without overwriting newer files.
@@ -58,6 +64,7 @@ When the renamed application starts for the first time, it migrates existing set
 - [Performance modes and window runtime](Docs/Performance-And-Window-Runtime.md)
 - [Component refresh rules](Docs/Component-Refresh-Rules.md)
 - [Codex monitor architecture](Docs/CodexRadar-Architecture.md)
+- [Claude Radar architecture](Docs/Codex-ClaudeRadar-Architecture.md)
 - [Power and thermal window architecture](Docs/PowerThermal-Architecture.md)
 - [Network monitor architecture](Docs/NetworkMonitor-Architecture.md)
 - [Interface and reusable resource summary](Docs/Interface-And-Reuse-Resources.md)

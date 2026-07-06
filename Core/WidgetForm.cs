@@ -16,7 +16,7 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-internal sealed class WidgetForm : Form
+internal sealed partial class WidgetForm : Form
 {
     private const int DisplayRecoveryDelayMs = 350;
     private const int DisplayRecoveryRetryDelayMs = 1500;
@@ -84,6 +84,7 @@ internal sealed class WidgetForm : Form
     private NotifyIcon notifyIcon;
     private Icon notifyIconImage;
     private Form settingsForm;
+    private Form aiQuickMenuForm;
     private WidgetSettings savedSettings;
     private WidgetSettings currentSettings;
     private PerfSnapshot snapshot;
@@ -99,8 +100,11 @@ internal sealed class WidgetForm : Form
     private bool npuAlertIconActive;
     private bool desktopAttached;
     private bool hiddenForFullscreen;
+    private bool globalLayoutEditActive;
     private bool layeredUpdateFailureLogged;
+    private bool childWindowLifecycleStarted;
     private CodexRadarForm codexRadarForm;
+    private ClaudeRadarForm claudeRadarForm;
     private PowerThermalForm powerThermalForm;
     private NetworkMonitorForm networkMonitorForm;
     private ConnectionCheckForm connectionCheckForm;
@@ -134,6 +138,7 @@ internal sealed class WidgetForm : Form
     // The native surface keeps the HBITMAP alive across alpha-only hover updates.
     private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
     private readonly Dictionary<string, Font> fontCache = new Dictionary<string, Font>(StringComparer.Ordinal);
+    private readonly CodexQuotaGoalPlanner codexQuotaGoalPlanner;
     private bool formClosing;
     private IntPtr displayPowerNotificationHandle;
     private IntPtr acDcPowerNotificationHandle;
@@ -157,6 +162,7 @@ internal sealed class WidgetForm : Form
         this.useDesktopParent = useDesktopParent;
         this.savedSettings = settings.Clone();
         this.currentSettings = settings.Clone();
+        this.codexQuotaGoalPlanner = new CodexQuotaGoalPlanner();
         this.manualForceHoverOpacityActive = this.currentSettings.ForceHoverOpacityActive;
         this.currentSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.lastMouseActivityPosition = Cursor.Position;
@@ -210,6 +216,7 @@ internal sealed class WidgetForm : Form
         this.MinimumSize = new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight);
         this.MaximumSize = new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight);
         this.Size = new Size(this.currentSettings.Width, this.currentSettings.Height);
+        ApplicationIcon.ApplyTo(this);
         this.ContextMenuStrip = BuildContextMenu();
         BuildNotifyIcon();
 
@@ -254,9 +261,8 @@ internal sealed class WidgetForm : Form
             Program.LogInfo("Desktop parent mode disabled; using stable visible desktop mode.");
         }
 
-        this.codexRadarForm = new CodexRadarForm(this.currentSettings, ShowWindowsNotification);
-        this.codexRadarForm.SetSharedInteractionPolling(true);
-        this.codexRadarForm.Show(this);
+        this.childWindowLifecycleStarted = true;
+        EnsureRadarChildWindows();
         this.powerThermalForm = new PowerThermalForm(this.currentSettings);
         this.powerThermalForm.SetSharedInteractionPolling(true);
         this.powerThermalForm.Show(this);
@@ -273,11 +279,107 @@ internal sealed class WidgetForm : Form
             delegate { RestartCurrentProcess(); },
             ShowWindowsNotification,
             delegate { return ToggleForcedHoverOpacity(); },
-            delegate { return PulseSeelenDockToFront("operation panel", false, false); });
+            delegate { return PulseSeelenDockToFront("operation panel", false, false); },
+            delegate { return PromptToggleAiRequestBlockingFromOperationPanel(); });
         this.operationForm.Show(this);
         this.timer.Start();
         UpdateSeelenDockPulseTimer();
         UpdateWinDRecoveryWatcher();
+    }
+
+    private void EnsureRadarChildWindows()
+    {
+        if (!this.childWindowLifecycleStarted || this.formClosing || this.currentSettings == null)
+        {
+            return;
+        }
+
+        EnsureCodexRadarWindow();
+        EnsureClaudeRadarWindow();
+    }
+
+    private void EnsureCodexRadarWindow()
+    {
+        if (!this.currentSettings.CodexRadarEnabled)
+        {
+            CloseCodexRadarWindow();
+            return;
+        }
+
+        if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
+        {
+            return;
+        }
+
+        this.codexRadarForm = new CodexRadarForm(this.currentSettings, ShowWindowsNotification);
+        this.codexRadarForm.SetSharedInteractionPolling(true);
+        this.codexRadarForm.Show(this);
+        this.codexRadarForm.ApplyRuntimeSettings(this.currentSettings);
+        if (this.hiddenForFullscreen)
+        {
+            this.codexRadarForm.SetHiddenForFullscreen(true);
+        }
+
+        Program.LogInfo("Codex Radar window created from enabled setting.");
+    }
+
+    private void EnsureClaudeRadarWindow()
+    {
+        if (!this.currentSettings.ClaudeRadarEnabled)
+        {
+            CloseClaudeRadarWindow();
+            return;
+        }
+
+        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
+        {
+            return;
+        }
+
+        this.claudeRadarForm = new ClaudeRadarForm(this.currentSettings, ShowWindowsNotification);
+        this.claudeRadarForm.SetSharedInteractionPolling(true);
+        this.claudeRadarForm.Show(this);
+        this.claudeRadarForm.ApplyRuntimeSettings(this.currentSettings);
+        if (this.hiddenForFullscreen)
+        {
+            this.claudeRadarForm.SetHiddenForFullscreen(true);
+        }
+
+        Program.LogInfo("Claude Radar window created from enabled setting.");
+    }
+
+    private void CloseCodexRadarWindow()
+    {
+        if (this.codexRadarForm == null)
+        {
+            return;
+        }
+
+        CodexRadarForm form = this.codexRadarForm;
+        this.codexRadarForm = null;
+        if (!form.IsDisposed)
+        {
+            form.Close();
+        }
+
+        Program.LogInfo("Codex Radar window closed from disabled setting.");
+    }
+
+    private void CloseClaudeRadarWindow()
+    {
+        if (this.claudeRadarForm == null)
+        {
+            return;
+        }
+
+        ClaudeRadarForm form = this.claudeRadarForm;
+        this.claudeRadarForm = null;
+        if (!form.IsDisposed)
+        {
+            form.Close();
+        }
+
+        Program.LogInfo("Claude Radar window closed from disabled setting.");
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -340,6 +442,7 @@ internal sealed class WidgetForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         this.formClosing = true;
+        this.childWindowLifecycleStarted = false;
         SystemEvents.SessionSwitch -= OnSystemSessionSwitch;
         this.displayRecoveryTimer.Stop();
         this.displayRecoveryTimer.Tick -= OnDisplayRecoveryTimerTick;
@@ -371,10 +474,22 @@ internal sealed class WidgetForm : Form
             this.settingsForm = null;
         }
 
+        if (this.aiQuickMenuForm != null)
+        {
+            this.aiQuickMenuForm.Close();
+            this.aiQuickMenuForm = null;
+        }
+
         if (this.codexRadarForm != null)
         {
             this.codexRadarForm.Close();
             this.codexRadarForm = null;
+        }
+
+        if (this.claudeRadarForm != null)
+        {
+            this.claudeRadarForm.Close();
+            this.claudeRadarForm = null;
         }
 
         if (this.powerThermalForm != null)
@@ -658,6 +773,11 @@ internal sealed class WidgetForm : Form
             this.codexRadarForm.RecoverAfterDisplayResume();
         }
 
+        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
+        {
+            this.claudeRadarForm.RecoverAfterDisplayResume();
+        }
+
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
         {
             this.powerThermalForm.RecoverAfterDisplayResume();
@@ -694,6 +814,11 @@ internal sealed class WidgetForm : Form
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
         {
             this.codexRadarForm.PrepareForDisplaySuspend();
+        }
+
+        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
+        {
+            this.claudeRadarForm.PrepareForDisplaySuspend();
         }
 
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
@@ -973,6 +1098,7 @@ internal sealed class WidgetForm : Form
 
         PulseFormToTopMost(this);
         PulseFormToTopMost(this.codexRadarForm);
+        PulseFormToTopMost(this.claudeRadarForm);
         PulseFormToTopMost(this.powerThermalForm);
         PulseFormToTopMost(this.networkMonitorForm);
         PulseFormToTopMost(this.connectionCheckForm);
@@ -1029,7 +1155,7 @@ internal sealed class WidgetForm : Form
 
     private void BuildNotifyIcon()
     {
-        this.notifyIconImage = CreateNotifyIcon();
+        this.notifyIconImage = ApplicationIcon.CreateIcon();
         this.notifyIcon = new NotifyIcon();
         this.notifyIcon.Icon = this.notifyIconImage;
         this.notifyIcon.Text = ProductIdentity.DisplayName;
@@ -1055,26 +1181,38 @@ internal sealed class WidgetForm : Form
     private void OnTimerTick(object sender, EventArgs e)
     {
         long tickStart = TimingStats.StartTimestamp();
+        UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:start");
         if (this.stopEvent.WaitOne(0))
         {
             TimingStats.RecordElapsed("widget.main_tick", tickStart);
+            UiHangWatchdog.MarkUiHeartbeat("widget.main_tick:stop_requested");
             this.Close();
             return;
         }
 
         try
         {
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:reload_settings");
             ReloadSettingsIfChanged();
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:update_visibility");
             UpdateVisibilityForMode();
             if (!this.hiddenForFullscreen &&
                 BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
             {
+                UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:position_burn_in_shift");
                 PositionWidget();
             }
 
             if (this.operationForm != null && !this.operationForm.IsDisposed)
             {
+                UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:operation_maintenance");
                 this.operationForm.ProcessSharedMaintenanceTick();
+            }
+
+            if (this.codexQuotaGoalPlanner != null)
+            {
+                UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:codex_quota_goal_plan");
+                this.codexQuotaGoalPlanner.ProcessMaintenanceTick(this.currentSettings, ShowWindowsNotification);
             }
 
             if (this.hiddenForFullscreen &&
@@ -1087,6 +1225,7 @@ internal sealed class WidgetForm : Form
             long sampleStart = TimingStats.StartTimestamp();
             try
             {
+                UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:pdh_sample");
                 this.snapshot = this.sampler.Sample(
                     WidgetSettings.GetExpensiveHardwareSampleIntervalMs(this.currentSettings.PerformanceMode));
             }
@@ -1110,7 +1249,9 @@ internal sealed class WidgetForm : Form
             AddHistory(this.gpuMemoryHistory, this.snapshot.GpuMemoryPercent);
             AddHistory(this.npuHistory, this.snapshot.NpuPercent);
             AddHistory(this.npuMemoryHistory, this.snapshot.NpuMemoryPercent);
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:update_alerts");
             UpdateAlertIconStates();
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:render");
             RenderLayeredWindow();
 
             DateTime nowUtc = DateTime.UtcNow;
@@ -1140,15 +1281,21 @@ internal sealed class WidgetForm : Form
         finally
         {
             TimingStats.RecordElapsed("widget.main_tick", tickStart);
+            UiHangWatchdog.MarkUiHeartbeat("widget.main_tick:complete");
         }
 
         try
         {
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:timing_summary");
             TimingStats.TryLogSummary(DateTime.UtcNow);
         }
         catch (Exception ex)
         {
             Program.LogException(ex);
+        }
+        finally
+        {
+            UiHangWatchdog.MarkUiHeartbeat("widget.main_tick:post_summary_complete");
         }
 
         this.tickCount++;
@@ -1278,7 +1425,7 @@ internal sealed class WidgetForm : Form
 
     private void PositionWidget()
     {
-        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+        Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModuleMain);
         Point location = CalculateLocation(workArea);
         int left = location.X;
         int top = location.Y;
@@ -1362,6 +1509,63 @@ internal sealed class WidgetForm : Form
         Program.LogInfo("Settings saved.");
     }
 
+    internal bool TryEditGlobalLayout(WidgetSettings settings, out WidgetSettings editedSettings)
+    {
+        editedSettings = null;
+        WidgetSettings editingBaseline = settings.Clone();
+        editingBaseline.Normalize();
+        bool previousGlobalLayoutEditActive = this.globalLayoutEditActive;
+        Program.LogInfo("Global layout edit requested from settings.");
+
+        this.globalLayoutEditActive = true;
+        try
+        {
+            ApplyRuntimeSettings(CreateGlobalLayoutEditRuntimeSettings(editingBaseline));
+            RestoreApplicationTopMostPriority();
+
+            using (GlobalLayoutEditorForm editor = new GlobalLayoutEditorForm(
+                editingBaseline,
+                delegate(WidgetSettings previewSettings)
+                {
+                    PreviewSettings(CreateGlobalLayoutEditRuntimeSettings(previewSettings));
+                    RestoreApplicationTopMostPriority();
+                },
+                delegate { RestoreApplicationTopMostPriority(); }))
+            {
+                DialogResult result = editor.ShowDialog();
+                if (result == DialogResult.OK && editor.EditedSettings != null)
+                {
+                    this.globalLayoutEditActive = previousGlobalLayoutEditActive;
+                    SaveSettings(editor.EditedSettings);
+                    editedSettings = this.savedSettings.Clone();
+                    Program.LogInfo("Global layout edit saved.");
+                    return true;
+                }
+            }
+        }
+        finally
+        {
+            this.globalLayoutEditActive = previousGlobalLayoutEditActive;
+        }
+
+        ApplyRuntimeSettings(editingBaseline);
+        Program.LogInfo("Global layout edit canceled.");
+        return false;
+    }
+
+    private WidgetSettings CreateGlobalLayoutEditRuntimeSettings(WidgetSettings settings)
+    {
+        WidgetSettings runtimeSettings = settings.Clone();
+        runtimeSettings.Normalize();
+        runtimeSettings.VisibilityMode = WidgetVisibilityMode.AlwaysVisible;
+        runtimeSettings.HoverOpacityEnabled = false;
+        runtimeSettings.ForceHoverOpacityActive = false;
+        runtimeSettings.ManualHoverOpacityActive = false;
+        runtimeSettings.AutoHoverOpacityIdleEnabled = false;
+        runtimeSettings.AutoHoverOpacityMaximizedEnabled = false;
+        return runtimeSettings;
+    }
+
     internal void ExitCurrentProcess()
     {
         Program.LogInfo("Exit requested from settings.");
@@ -1384,6 +1588,11 @@ internal sealed class WidgetForm : Form
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
         {
             this.codexRadarForm.ForceRefresh();
+        }
+
+        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
+        {
+            this.claudeRadarForm.ForceRefresh("操作面板刷新");
         }
 
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
@@ -1410,6 +1619,127 @@ internal sealed class WidgetForm : Form
             this.manualForceHoverOpacityActive.ToString());
         ApplyCombinedHoverOpacityState("operation panel toggle");
         return this.currentSettings.ForceHoverOpacityActive;
+    }
+
+    internal bool PromptToggleAiRequestBlockingFromOperationPanel()
+    {
+        ShowAiQuickMenuFromOperationPanel();
+        return true;
+    }
+
+    internal bool SetAiRequestBlockingFromOperationPanel(bool enabled)
+    {
+        bool currentlyBlocked = this.currentSettings != null &&
+            this.currentSettings.AiRequestProtectionManualBlockEnabled;
+        if (currentlyBlocked == enabled)
+        {
+            return true;
+        }
+
+        WidgetSettings nextSettings = this.savedSettings == null
+            ? this.currentSettings.Clone()
+            : this.savedSettings.Clone();
+        nextSettings.AiRequestProtectionManualBlockEnabled = enabled;
+        SaveSettings(nextSettings);
+
+        if (enabled)
+        {
+            AiExternalToolBlockResult blockResult = AiExternalToolBlocker.TryStopKnownTools();
+            ShowWindowsNotification(
+                "AI 阻断已启用",
+                blockResult == null ? "手动阻断已开启。" : blockResult.Summary,
+                blockResult != null && blockResult.FailedCount > 0 ? ToolTipIcon.Warning : ToolTipIcon.Info);
+        }
+        else
+        {
+            ShowWindowsNotification(
+                "AI 阻断已关闭",
+                "手动阻断已关闭，自动模式仍按设置工作。",
+                ToolTipIcon.Info);
+        }
+
+        return true;
+    }
+
+    private void ShowAiQuickMenuFromOperationPanel()
+    {
+        if (IsReusableSettingsWindow(this.aiQuickMenuForm))
+        {
+            ShowSettingsWindow(this.aiQuickMenuForm, "existing AI quick menu");
+            return;
+        }
+
+        CleanupAiQuickMenuReference(this.aiQuickMenuForm, "stale AI quick menu before open");
+        WidgetSettings baseline = this.savedSettings == null ? this.currentSettings.Clone() : this.savedSettings.Clone();
+        baseline.Normalize();
+        Form quickMenu = new AiQuickMenuForm(this, baseline);
+        this.aiQuickMenuForm = quickMenu;
+        quickMenu.FormClosed += OnAiQuickMenuFormClosed;
+        quickMenu.Disposed += OnAiQuickMenuFormDisposed;
+        PositionAiQuickMenu(quickMenu);
+        try
+        {
+            quickMenu.Show(this);
+            ShowSettingsWindow(quickMenu, "new AI quick menu");
+        }
+        catch
+        {
+            CleanupAiQuickMenuReference(quickMenu, "AI quick menu open failed");
+            throw;
+        }
+    }
+
+    private void PositionAiQuickMenu(Form quickMenu)
+    {
+        if (quickMenu == null)
+        {
+            return;
+        }
+
+        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+        if (this.operationForm != null && !this.operationForm.IsDisposed)
+        {
+            workArea = Screen.FromControl(this.operationForm).WorkingArea;
+            Point operationTopLeft = this.operationForm.PointToScreen(Point.Empty);
+            int left = operationTopLeft.X;
+            int top = operationTopLeft.Y - quickMenu.Height - 10;
+            if (top < workArea.Top)
+            {
+                top = operationTopLeft.Y + this.operationForm.Height + 10;
+            }
+
+            left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - quickMenu.Width));
+            top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - quickMenu.Height));
+            quickMenu.Location = new Point(left, top);
+            return;
+        }
+
+        quickMenu.Location = new Point(
+            Math.Max(workArea.Left, Math.Min(this.Left, workArea.Right - quickMenu.Width)),
+            Math.Max(workArea.Top, Math.Min(this.Top, workArea.Bottom - quickMenu.Height)));
+    }
+
+    private void OnAiQuickMenuFormClosed(object sender, FormClosedEventArgs e)
+    {
+        CleanupAiQuickMenuReference(sender as Form, "AI quick menu closed");
+    }
+
+    private void OnAiQuickMenuFormDisposed(object sender, EventArgs e)
+    {
+        CleanupAiQuickMenuReference(sender as Form, "AI quick menu disposed");
+    }
+
+    private void CleanupAiQuickMenuReference(Form form, string reason)
+    {
+        if (form == null || !object.ReferenceEquals(form, this.aiQuickMenuForm))
+        {
+            return;
+        }
+
+        form.FormClosed -= OnAiQuickMenuFormClosed;
+        form.Disposed -= OnAiQuickMenuFormDisposed;
+        this.aiQuickMenuForm = null;
+        Program.LogInfo("AI quick menu reference cleared. Reason=" + reason + ".");
     }
 
     private void ShowWindowsNotification(string title, string message, ToolTipIcon icon)
@@ -1511,6 +1841,7 @@ internal sealed class WidgetForm : Form
 
     private void ApplyRuntimeSettings(WidgetSettings settings)
     {
+        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:start");
         WidgetSettings nextSettings = settings.Clone();
         nextSettings.Normalize();
         if (!this.applyingAutomaticHoverOpacityState)
@@ -1534,6 +1865,7 @@ internal sealed class WidgetForm : Form
         nextSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.currentSettings = nextSettings;
         Program.ApplyPerformanceMode(this.currentSettings.PerformanceMode);
+        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:timers");
         ApplyPerformanceTimerIntervals();
         UpdateSeelenDockPulseTimer();
         UpdateWinDRecoveryWatcher();
@@ -1550,9 +1882,12 @@ internal sealed class WidgetForm : Form
             this.TopMost = shouldBeTopMost;
         }
 
+        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:click_through");
         ApplyClickThroughStyle();
+        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:hover_timer");
         UpdateHoverAnimationTimer();
 
+        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:set_window_pos");
         NativeMethods.SetWindowPos(
             this.Handle,
             shouldBeTopMost ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST,
@@ -1564,34 +1899,51 @@ internal sealed class WidgetForm : Form
             NativeMethods.SWP_NOMOVE |
             NativeMethods.SWP_NOSIZE);
 
+        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:position_widget");
         PositionWidget();
+        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:update_visibility");
         UpdateVisibilityForMode();
+        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:radar_lifecycle");
+        EnsureRadarChildWindows();
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
         {
+            UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_codex_radar");
             this.codexRadarForm.ApplyRuntimeSettings(this.currentSettings);
+        }
+
+        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
+        {
+            UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_claude_radar");
+            this.claudeRadarForm.ApplyRuntimeSettings(this.currentSettings);
         }
 
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
         {
+            UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_power_thermal");
             this.powerThermalForm.ApplyRuntimeSettings(this.currentSettings);
         }
 
         if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
         {
+            UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_network");
             this.networkMonitorForm.ApplyRuntimeSettings(this.currentSettings);
         }
 
         if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
         {
+            UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_connection");
             this.connectionCheckForm.ApplyRuntimeSettings(this.currentSettings);
         }
 
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
+            UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_operation");
             this.operationForm.ApplyRuntimeSettings(this.currentSettings);
         }
 
+        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:render");
         RenderLayeredWindow();
+        UiHangWatchdog.MarkUiHeartbeat("apply_runtime_settings:complete");
     }
 
     private void ApplyPerformanceTimerIntervals()
@@ -1737,51 +2089,68 @@ internal sealed class WidgetForm : Form
 
     private void OnHoverTimerTick(object sender, EventArgs e)
     {
-        bool automaticStateChanged = UpdateAutomaticHoverOpacityTriggers();
-        ApplyClickThroughStyle();
-        bool opacityChanged = UpdateHoverOpacityAnimation();
-        bool hoverTarget = IsHoverOpacityTargetActive();
-        bool animationActive =
-            automaticStateChanged ||
-            Math.Abs(this.hoverOpacityProgress - (hoverTarget ? 1.0 : 0.0)) > 0.001;
-        // All passive panels share this UI-thread timer so hover support costs one
-        // message-pump wakeup instead of one wakeup per window.
-        if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
+        UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:start");
+        try
         {
-            animationActive |= this.codexRadarForm.ProcessSharedInteractionTick();
-        }
+            UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:update_automatic_triggers");
+            bool automaticStateChanged = UpdateAutomaticHoverOpacityTriggers();
+            UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:apply_click_through");
+            ApplyClickThroughStyle();
+            UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:update_animation");
+            bool opacityChanged = UpdateHoverOpacityAnimation();
+            bool hoverTarget = IsHoverOpacityTargetActive();
+            bool animationActive =
+                automaticStateChanged ||
+                Math.Abs(this.hoverOpacityProgress - (hoverTarget ? 1.0 : 0.0)) > 0.001;
+            // All passive panels share this UI-thread timer so hover support costs one
+            // message-pump wakeup instead of one wakeup per window.
+            if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
+            {
+                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:codex_radar_shared_tick");
+                animationActive |= this.codexRadarForm.ProcessSharedInteractionTick();
+            }
 
-        if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
-        {
-            animationActive |= this.powerThermalForm.ProcessSharedInteractionTick();
-        }
+            if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
+            {
+                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:power_shared_tick");
+                animationActive |= this.powerThermalForm.ProcessSharedInteractionTick();
+            }
 
-        if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
-        {
-            animationActive |= this.networkMonitorForm.ProcessSharedInteractionTick();
-        }
+            if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
+            {
+                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:network_shared_tick");
+                animationActive |= this.networkMonitorForm.ProcessSharedInteractionTick();
+            }
 
-        if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
-        {
-            animationActive |= this.connectionCheckForm.ProcessSharedInteractionTick();
-        }
+            if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
+            {
+                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:connection_shared_tick");
+                animationActive |= this.connectionCheckForm.ProcessSharedInteractionTick();
+            }
 
-        if (this.operationForm != null && !this.operationForm.IsDisposed)
-        {
-            animationActive |= this.operationForm.ProcessSharedInteractionTick();
-        }
+            if (this.operationForm != null && !this.operationForm.IsDisposed)
+            {
+                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:operation_shared_tick");
+                animationActive |= this.operationForm.ProcessSharedInteractionTick();
+            }
 
-        int desiredInterval = animationActive
-            ? WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode)
-            : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
-        if (this.hoverTimer.Interval != desiredInterval)
-        {
-            this.hoverTimer.Interval = desiredInterval;
-        }
+            int desiredInterval = animationActive
+                ? WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode)
+                : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+            if (this.hoverTimer.Interval != desiredInterval)
+            {
+                this.hoverTimer.Interval = desiredInterval;
+            }
 
-        if (opacityChanged)
+            if (opacityChanged)
+            {
+                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:render_opacity");
+                RenderLayeredWindow(false);
+            }
+        }
+        finally
         {
-            RenderLayeredWindow(false);
+            UiHangWatchdog.MarkUiHeartbeat("widget.hover_tick:complete");
         }
     }
 
@@ -1825,6 +2194,7 @@ internal sealed class WidgetForm : Form
             maximizedActive.ToString() +
             ", ManualActive=" +
             this.manualForceHoverOpacityActive.ToString());
+        UiHangWatchdog.MarkUiCheckpoint("hover.apply_combined:automatic trigger");
         ApplyCombinedHoverOpacityState("automatic trigger");
         return true;
     }
@@ -1882,6 +2252,7 @@ internal sealed class WidgetForm : Form
     {
         return IsPointInFormActivationRange(this.currentSettings, this, cursor) ||
             IsPointInFormActivationRange(this.currentSettings, this.codexRadarForm, cursor) ||
+            IsPointInFormActivationRange(this.currentSettings, this.claudeRadarForm, cursor) ||
             IsPointInFormActivationRange(this.currentSettings, this.powerThermalForm, cursor) ||
             IsPointInFormActivationRange(this.currentSettings, this.networkMonitorForm, cursor) ||
             IsPointInFormActivationRange(this.currentSettings, this.connectionCheckForm, cursor) ||
@@ -1912,6 +2283,7 @@ internal sealed class WidgetForm : Form
 
         WidgetSettings nextSettings = this.currentSettings.Clone();
         nextSettings.ForceHoverOpacityActive = combined;
+        UiHangWatchdog.MarkUiCheckpoint("hover.apply_combined:" + reason);
         this.applyingAutomaticHoverOpacityState = true;
         try
         {
@@ -1927,6 +2299,11 @@ internal sealed class WidgetForm : Form
 
     private bool IsCombinedHoverOpacityActive()
     {
+        if (this.globalLayoutEditActive)
+        {
+            return false;
+        }
+
         return this.manualForceHoverOpacityActive ||
             this.autoIdleHoverOpacityActive ||
             this.autoMaximizedHoverOpacityActive;
@@ -2054,6 +2431,31 @@ internal sealed class WidgetForm : Form
 
     private void UpdateVisibilityForMode()
     {
+        if (this.globalLayoutEditActive)
+        {
+            bool hiddenChanged = this.hiddenForFullscreen;
+            this.hiddenForFullscreen = false;
+            if (!this.Visible)
+            {
+                this.Show();
+            }
+
+            if (!this.TopMost)
+            {
+                this.TopMost = true;
+            }
+
+            if (hiddenChanged)
+            {
+                SetChildWindowsHiddenForFullscreen(false);
+                ApplyPerformanceTimerIntervals();
+                UpdateHoverAnimationTimer();
+            }
+
+            RestoreApplicationTopMostPriority();
+            return;
+        }
+
         bool foregroundWindowFullscreen = NativeMethods.IsForegroundWindowFullscreen(this.Handle);
         bool hideForFullscreen =
             this.currentSettings.VisibilityMode == WidgetVisibilityMode.HideWhenFullscreen &&
@@ -2107,6 +2509,11 @@ internal sealed class WidgetForm : Form
             this.codexRadarForm.SetHiddenForFullscreen(hidden);
         }
 
+        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
+        {
+            this.claudeRadarForm.SetHiddenForFullscreen(hidden);
+        }
+
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
         {
             this.powerThermalForm.SetHiddenForFullscreen(hidden);
@@ -2130,18 +2537,29 @@ internal sealed class WidgetForm : Form
 
     private void OpenSettings()
     {
-        if (this.settingsForm != null && !this.settingsForm.IsDisposed)
+        if (IsReusableSettingsWindow(this.settingsForm))
         {
-            this.settingsForm.Activate();
+            ShowSettingsWindow(this.settingsForm, "existing settings window");
             return;
         }
 
+        CleanupSettingsWindowReference(this.settingsForm, "stale settings window before open");
         WidgetSettings baseline = this.savedSettings.Clone();
         baseline.Normalize();
-        this.settingsForm = CreateSettingsWindow(baseline);
-        this.settingsForm.FormClosed += delegate { this.settingsForm = null; };
-        this.settingsForm.Show();
-        this.settingsForm.Activate();
+        Form nextSettingsForm = CreateSettingsWindow(baseline);
+        this.settingsForm = nextSettingsForm;
+        nextSettingsForm.FormClosed += OnSettingsFormClosed;
+        nextSettingsForm.Disposed += OnSettingsFormDisposed;
+        try
+        {
+            nextSettingsForm.Show();
+            ShowSettingsWindow(nextSettingsForm, "new settings window");
+        }
+        catch
+        {
+            CleanupSettingsWindowReference(nextSettingsForm, "settings open failed");
+            throw;
+        }
     }
 
     private Form CreateSettingsWindow(WidgetSettings baseline)
@@ -2149,39 +2567,110 @@ internal sealed class WidgetForm : Form
         return new Win11SettingsForm(this, baseline);
     }
 
-    private Icon CreateNotifyIcon()
+    private void ShowSettingsWindow(Form form, string reason)
     {
-        using (Bitmap bitmap = new Bitmap(32, 32))
-        using (Graphics g = Graphics.FromImage(bitmap))
+        if (form == null || form.IsDisposed)
         {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (SolidBrush background = new SolidBrush(DesignTokens.Colors.NotifyIconSurface))
-            using (Pen border = new Pen(DesignTokens.White(120), 2.0f))
-            {
-                g.FillEllipse(background, 2, 2, 28, 28);
-                g.DrawEllipse(border, 2, 2, 28, 28);
-            }
+            return;
+        }
 
-            using (Pen cpu = new Pen(DesignTokens.Colors.Accent, 3.0f))
-            using (Pen memory = new Pen(DesignTokens.Colors.AccentAlt, 3.0f))
-            using (Pen disk = new Pen(DesignTokens.Colors.Success, 3.0f))
-            {
-                g.DrawLine(cpu, 9, 21, 9, 12);
-                g.DrawLine(memory, 16, 21, 16, 8);
-                g.DrawLine(disk, 23, 21, 23, 15);
-            }
+        ClearOperationPanelTransientInteractionState();
+        if (!form.Visible)
+        {
+            form.Show();
+        }
 
-            IntPtr handle = bitmap.GetHicon();
+        if (form.WindowState == FormWindowState.Minimized)
+        {
+            form.WindowState = FormWindowState.Normal;
+        }
+
+        form.BringToFront();
+        bool activated = false;
+        if (form.IsHandleCreated)
+        {
+            activated = NativeMethods.ActivateWindow(form.Handle);
+        }
+
+        if (!activated)
+        {
+            form.Activate();
+        }
+
+        Program.LogInfo("Settings foreground requested. Reason=" + reason + ", Activated=" + activated.ToString() + ".");
+    }
+
+    private void OnSettingsFormClosed(object sender, FormClosedEventArgs e)
+    {
+        CleanupSettingsWindowReference(sender as Form, "settings form closed");
+    }
+
+    private void OnSettingsFormDisposed(object sender, EventArgs e)
+    {
+        CleanupSettingsWindowReference(sender as Form, "settings form disposed");
+    }
+
+    private static bool IsReusableSettingsWindow(Form form)
+    {
+        return form != null &&
+            !form.IsDisposed &&
+            form.IsHandleCreated &&
+            form.Visible;
+    }
+
+    private void CleanupSettingsWindowReference(Form form, string reason)
+    {
+        if (form == null)
+        {
+            return;
+        }
+
+        form.FormClosed -= OnSettingsFormClosed;
+        form.Disposed -= OnSettingsFormDisposed;
+
+        ISettingsWindow settingsWindow = form as ISettingsWindow;
+        WidgetSettings revertSettings;
+        if (settingsWindow != null && settingsWindow.TryConsumeUnsavedPreview(out revertSettings))
+        {
+            Program.LogInfo("Unsaved settings preview reverted during " + reason + ".");
             try
             {
-                Icon icon = (Icon)Icon.FromHandle(handle).Clone();
-                return icon;
+                RevertSettings(revertSettings);
             }
-            finally
+            catch (Exception ex)
             {
-                NativeMethods.DestroyIcon(handle);
+                Program.LogException(ex);
             }
         }
+
+        if (object.ReferenceEquals(this.settingsForm, form))
+        {
+            this.settingsForm = null;
+        }
+
+        try
+        {
+            RecoverOperationPanelAfterSettingsWindowClosed();
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+        }
+    }
+
+    private void RecoverOperationPanelAfterSettingsWindowClosed()
+    {
+        ClearOperationPanelTransientInteractionState();
+    }
+
+    private void ClearOperationPanelTransientInteractionState()
+    {
+        if (this.operationForm == null || this.operationForm.IsDisposed)
+        {
+            return;
+        }
+
+        this.operationForm.ClearTransientInteractionState();
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -2236,7 +2725,31 @@ internal sealed class WidgetForm : Form
         }
     }
 
+    // Render-variant dispatch (mirrors CodexRadarForm). Only Classic exists today; add a case and a
+    // sibling partial file (WidgetForm.<Name>.cs) to introduce an alternate main-window layout.
     private void DrawWidgetContent(Graphics g)
+    {
+        switch (this.currentSettings.MainWidgetRenderVariant)
+        {
+            case MainWidgetRenderVariant.Typographic:
+                DrawWidgetContentTypographic(g);
+                return;
+            case MainWidgetRenderVariant.AmberHud:
+                DrawWidgetContentAmberHud(g);
+                return;
+            case MainWidgetRenderVariant.WarmCard:
+                DrawWidgetContentWarmCard(g);
+                return;
+            case MainWidgetRenderVariant.Phosphor:
+                DrawWidgetContentPhosphor(g);
+                return;
+            default:
+                DrawWidgetContentClassic(g);
+                return;
+        }
+    }
+
+    private void DrawWidgetContentClassic(Graphics g)
     {
         ConfigureWidgetGraphics(g);
 
@@ -2828,6 +3341,23 @@ internal sealed class WidgetForm : Form
         if (!this.fontCache.TryGetValue(key, out font))
         {
             font = DesignTokens.CreateUIFont(normalizedSize, style, GraphicsUnit.Pixel);
+            this.fontCache[key] = font;
+        }
+
+        return font;
+    }
+
+    // Mono counterpart of GetCachedFont, needed by the AmberHud/Phosphor OLED-safe restyle schemes
+    // (added in 1.0.3.44). Shares the same cache dictionary via an "M:" key prefix so it cannot
+    // collide with the UI-font entries GetCachedFont writes.
+    private Font GetCachedMonoFont(float size, FontStyle style)
+    {
+        float normalizedSize = (float)Math.Round(Math.Max(1.0f, size), 2);
+        string key = "M:" + normalizedSize.ToString("0.00", CultureInfo.InvariantCulture) + "|" + ((int)style).ToString(CultureInfo.InvariantCulture);
+        Font font;
+        if (!this.fontCache.TryGetValue(key, out font))
+        {
+            font = DesignTokens.CreateMonoFont(normalizedSize, style, GraphicsUnit.Pixel);
             this.fontCache[key] = font;
         }
 

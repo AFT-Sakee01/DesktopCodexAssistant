@@ -99,6 +99,11 @@ $compilerArgs = @(
     "/out:$OutputPath"
 ) + $sourceFiles
 
+$iconPath = Join-Path $PSScriptRoot "Assets\AppIcon.ico"
+if (Test-Path -LiteralPath $iconPath) {
+    $compilerArgs = @("/win32icon:$iconPath") + $compilerArgs
+}
+
 & $compiler @compilerArgs
 
 if ($LASTEXITCODE -ne 0) {

@@ -20,16 +20,23 @@ internal sealed class CloudEndpointProbeReader
     private int lastManualRefreshToken;
     private int lastCloudStatusRegionMask = -1;
     private string pendingStateSignature = string.Empty;
+    private string pendingForcedTrigger = string.Empty;
     private CancellationTokenSource requestCancellation;
     private bool requestRunning;
 
     public void RequestRefresh()
+    {
+        RequestRefresh("云服务强制刷新");
+    }
+
+    public void RequestRefresh(string trigger)
     {
         CancellationTokenSource cancellation;
         lock (this.sync)
         {
             this.lastProbeStartedUtc = DateTime.MinValue;
             this.nextProbeDueUtc = DateTime.MinValue;
+            this.pendingForcedTrigger = NormalizeRefreshTrigger(trigger, "云服务强制刷新");
             cancellation = this.requestCancellation;
         }
 
@@ -47,16 +54,15 @@ internal sealed class CloudEndpointProbeReader
     {
         if (networkState != NetworkAccessState.Online)
         {
-            CloudEndpointSnapshot[] unavailable;
+            CloudEndpointSnapshot[] unavailable = CreateUnavailableSnapshots(GetUnavailableNetworkReason(networkState));
             CancellationTokenSource cancellation;
             lock (this.sync)
             {
-                this.lastProbeStartedUtc = DateTime.MinValue;
-                this.nextProbeDueUtc = DateTime.MinValue;
-                this.snapshots = CreateUnavailableSnapshots(GetUnavailableNetworkReason(networkState));
-                ClearPendingStateLocked();
-                unavailable = CloneSnapshots(this.snapshots);
                 cancellation = this.requestCancellation;
+                this.snapshots = CloneSnapshots(unavailable);
+                this.requestRunning = false;
+                this.requestCancellation = null;
+                ClearPendingStateLocked();
             }
 
             CancelRequest(cancellation);
@@ -73,6 +79,8 @@ internal sealed class CloudEndpointProbeReader
         bool manualAccepted = false;
         bool regionChanged;
         bool due;
+        string trigger = string.Empty;
+        bool shouldStart = false;
 
         lock (this.sync)
         {
@@ -95,13 +103,18 @@ internal sealed class CloudEndpointProbeReader
                     manualAccepted = true;
                 }
             }
+            if (manualAccepted || regionChanged || due)
+            {
+                shouldStart = true;
+                trigger = manualAccepted
+                    ? "云服务手动刷新"
+                    : (regionChanged ? "云服务地区设置变化" : SelectAutomaticTrigger(this.pendingForcedTrigger));
+                this.pendingForcedTrigger = string.Empty;
+            }
         }
 
-        if (manualAccepted || regionChanged || due)
+        if (shouldStart)
         {
-            string trigger = manualAccepted
-                ? "云服务手动刷新"
-                : (regionChanged ? "云服务地区设置变化" : "云服务定时间隔");
             StartProbe(now, trigger, regionMask, intervalMinutes, manualAccepted, regionChanged, localNetworkDegraded, localNetworkDegradedReason);
         }
 
@@ -172,6 +185,8 @@ internal sealed class CloudEndpointProbeReader
 
             bool shouldWriteDetailedLog = false;
             bool staleResult = false;
+            CloudEndpointSnapshot[] historySnapshots = null;
+            string historyTrigger = trigger ?? "自动检测";
             lock (this.sync)
             {
                 if (!object.ReferenceEquals(this.requestCancellation, cancellation))
@@ -191,8 +206,9 @@ internal sealed class CloudEndpointProbeReader
                             this.snapshots = CloneSnapshots(previous);
                         }
 
-                        this.lastProbeStartedUtc = DateTime.MinValue;
-                        this.nextProbeDueUtc = DateTime.MinValue;
+                        // Cancellation can be caused by a confirmed offline transition. Do not
+                        // erase the schedule here; explicit RequestRefresh already cleared the
+                        // timestamps before cancellation when an immediate retry is intended.
                         ClearPendingStateLocked();
                     }
                     else
@@ -216,14 +232,32 @@ internal sealed class CloudEndpointProbeReader
                         {
                             this.lastDetailedLogUtc = completedUtc;
                         }
+
+                        historySnapshots = CloneSnapshots(committed);
                     }
                 }
+            }
+
+            if (!staleResult && historySnapshots != null)
+            {
+                NetworkCheckHistoryLogger.LogCompleted(
+                    "network_monitor",
+                    "cloud_endpoints",
+                    historyTrigger,
+                    BuildCloudEndpointsSummary(historySnapshots),
+                    AreAllCloudEndpointsNormal(historySnapshots),
+                    -1,
+                    new Dictionary<string, object>
+                    {
+                        { "endpoint_count", historySnapshots.Length },
+                        { "all_normal", AreAllCloudEndpointsNormal(historySnapshots) }
+                    });
             }
 
             cancellation.Dispose();
             if (!staleResult && shouldWriteDetailedLog)
             {
-                Logger.GfwProbe(trigger, logLines);
+                Logger.CloudEndpointProbe(trigger, logLines);
             }
         });
     }
@@ -303,6 +337,19 @@ internal sealed class CloudEndpointProbeReader
         }
 
         return "断网";
+    }
+
+    private static string NormalizeRefreshTrigger(string trigger, string fallback)
+    {
+        trigger = trigger == null ? string.Empty : trigger.Trim();
+        return trigger.Length == 0 ? fallback : trigger;
+    }
+
+    private static string SelectAutomaticTrigger(string pendingForcedTrigger)
+    {
+        return string.IsNullOrWhiteSpace(pendingForcedTrigger)
+            ? "云服务定时间隔"
+            : pendingForcedTrigger.Trim();
     }
 
     private static void CancelRequest(CancellationTokenSource cancellation)
@@ -439,6 +486,50 @@ internal sealed class CloudEndpointProbeReader
         }
 
         return builder.ToString();
+    }
+
+    private static string BuildCloudEndpointsSummary(CloudEndpointSnapshot[] snapshots)
+    {
+        if (snapshots == null || snapshots.Length == 0)
+        {
+            return "无端点";
+        }
+
+        int normal = 0;
+        int slow = 0;
+        int down = 0;
+        int abnormal = 0;
+        for (int i = 0; i < snapshots.Length; i++)
+        {
+            if (snapshots[i] == null) continue;
+            switch (snapshots[i].Status)
+            {
+                case CloudEndpointStatus.Normal: normal++; break;
+                case CloudEndpointStatus.Slow: slow++; break;
+                case CloudEndpointStatus.Down: down++; break;
+                default: abnormal++; break;
+            }
+        }
+
+        return string.Format("正常{0} 慢{1} 断{2} 异常{3}", normal, slow, down, abnormal);
+    }
+
+    private static bool AreAllCloudEndpointsNormal(CloudEndpointSnapshot[] snapshots)
+    {
+        if (snapshots == null || snapshots.Length == 0)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < snapshots.Length; i++)
+        {
+            if (snapshots[i] == null || snapshots[i].Status != CloudEndpointStatus.Normal)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static CloudEndpointSnapshot[] CloneSnapshots(CloudEndpointSnapshot[] source)

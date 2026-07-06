@@ -1,21 +1,20 @@
 # Hardware Support
 
-This repository branch is maintained as the UX3407N / UX3607O tuned edition with public ARM64 and x64 builds.
+适用版本：1.0.4.18
+
+This repository branch is the UX3407N / UX3607O dedicated Windows on Arm edition. ARM64 is the only default build and test architecture; x64 is built only on explicit request and is not part of routine releases (see root `AGENTS.md`, Product Scope).
 
 ## Supported Target
 
 - ASUS UX3407N
 - ASUS UX3607O
-- Windows on Arm
-- ARM64 build output
-- 64-bit Windows
-- x64 build output
+- Windows on Arm, ARM64 build output
 
 ## Support Policy
 
 The current UI layout, power behavior, thermal sampling policy, and hardware-monitoring assumptions are primarily tuned for UX3407N / UX3607O systems.
 
-Other Windows machines may start and display generic data. Hardware-specific readings depend on each device's firmware, Windows providers, and performance counters, so some values can be unavailable or less complete outside the tuned ASUS device family.
+Other Windows machines may start and display generic data. Hardware-specific readings depend on each device's firmware, Windows providers, and performance counters, so some values can be unavailable or less complete outside the tuned ASUS device family. Generic fallbacks must not silently replace the UX3407N / UX3607O calibrated behavior.
 
 ## Hardware-Specific Areas
 
@@ -26,4 +25,4 @@ Other Windows machines may start and display generic data. Hardware-specific rea
 
 ## Release Rule
 
-Label builds and archives as UX3407N / UX3607O tuned artifacts, with separate ARM64 and x64 binaries.
+Label builds and archives as UX3407N / UX3607O tuned artifacts. Routine releases ship the ARM64 binary only; do not describe this branch or its artifacts as a generic Windows hardware monitor.

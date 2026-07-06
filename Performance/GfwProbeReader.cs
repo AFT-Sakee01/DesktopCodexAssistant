@@ -34,12 +34,19 @@ internal sealed class GfwProbeReader
     private bool requestRunning;
     private bool localNetworkGateActive;
     private int lastManualRefreshToken;
+    private string pendingForcedTrigger = string.Empty;
 
     public void RequestRefresh()
+    {
+        RequestRefresh("强制刷新");
+    }
+
+    public void RequestRefresh(string trigger)
     {
         lock (this.sync)
         {
             this.lastProbeStartedUtc = DateTime.MinValue;
+            this.pendingForcedTrigger = NormalizeRefreshTrigger(trigger);
         }
     }
 
@@ -68,16 +75,15 @@ internal sealed class GfwProbeReader
         }
 
         // Do not spend DNS/TCP/TLS/HTTP probes when Internet access is not established.
-        // Manual refresh and network changes must not leave stale cloud tiles visible.
+        // Unknown is often a short bridge while NetworkMonitorReader verifies a Windows
+        // network event. Preserve the in-memory schedule so a transient state cannot turn
+        // the next online tick into another first automatic probe.
         if (networkState != NetworkAccessState.Online)
         {
             lock (this.sync)
             {
-                this.lastProbeStartedUtc = DateTime.MinValue;
                 this.localNetworkGateActive = false;
-                ApplyUnavailableNetworkSnapshot(networkState);
-
-                return this.snapshot.Clone();
+                return CreateUnavailableNetworkClone(this.snapshot, this.requestRunning, networkState);
             }
         }
 
@@ -85,31 +91,36 @@ internal sealed class GfwProbeReader
         {
             lock (this.sync)
             {
-                this.lastProbeStartedUtc = DateTime.MinValue;
-                ApplyLocalNetworkDegradedSnapshot(localNetworkDegradedReason);
-
-                return this.snapshot.Clone();
+                this.localNetworkGateActive = true;
+                return CreateLocalNetworkDegradedClone(this.snapshot, this.requestRunning, localNetworkDegradedReason);
             }
         }
 
         DateTime now = DateTime.UtcNow;
+        bool shouldStart = false;
+        string startTrigger = string.Empty;
         lock (this.sync)
         {
             this.localNetworkGateActive = false;
+            bool manualRefresh = settings.GfwProbeManualRefreshToken != this.lastManualRefreshToken;
+            int intervalMinutes = Math.Max(WidgetSettings.MinGfwProbeIntervalMinutes, settings.GfwProbeIntervalMinutes);
+            bool due = this.lastProbeStartedUtc == DateTime.MinValue ||
+                (now - this.lastProbeStartedUtc).TotalMinutes >= intervalMinutes;
+
+            if (manualRefresh || due)
+            {
+                shouldStart = true;
+                startTrigger = manualRefresh
+                    ? "手动测试按钮"
+                    : SelectAutomaticTrigger(this.lastProbeStartedUtc, this.pendingForcedTrigger);
+                this.lastManualRefreshToken = settings.GfwProbeManualRefreshToken;
+                this.pendingForcedTrigger = string.Empty;
+            }
         }
 
-        bool manualRefresh = settings.GfwProbeManualRefreshToken != this.lastManualRefreshToken;
-        int intervalMinutes = Math.Max(WidgetSettings.MinGfwProbeIntervalMinutes, settings.GfwProbeIntervalMinutes);
-        bool due = this.lastProbeStartedUtc == DateTime.MinValue ||
-            (now - this.lastProbeStartedUtc).TotalMinutes >= intervalMinutes;
-
-        if (manualRefresh || due)
+        if (shouldStart)
         {
-            string trigger = manualRefresh
-                ? "手动测试按钮"
-                : (this.lastProbeStartedUtc == DateTime.MinValue ? "首次自动检测" : "定时间隔");
-            this.lastManualRefreshToken = settings.GfwProbeManualRefreshToken;
-            StartProbe(now, trigger);
+            StartProbe(now, startTrigger);
         }
 
         lock (this.sync)
@@ -148,53 +159,74 @@ internal sealed class GfwProbeReader
         return "断网";
     }
 
-    private void ApplyUnavailableNetworkSnapshot(NetworkAccessState networkState)
+    private static string NormalizeRefreshTrigger(string trigger)
     {
-        string reason = GetUnavailableNetworkReason(networkState);
-        if (this.snapshot.Enabled &&
-            !this.snapshot.Running &&
-            this.snapshot.Status == GfwProbeStatus.Inconclusive &&
-            !this.snapshot.CheckedAtKnown &&
-            string.Equals(this.snapshot.Detail, "不可判定", StringComparison.Ordinal) &&
-            string.Equals(this.snapshot.Reason, reason, StringComparison.Ordinal) &&
-            HasCloudEndpointStatus(this.snapshot.CloudEndpoints, CloudEndpointStatus.Unknown))
-        {
-            return;
-        }
-
-        this.snapshot.Enabled = true;
-        this.snapshot.Running = false;
-        this.snapshot.Status = GfwProbeStatus.Inconclusive;
-        this.snapshot.Detail = "不可判定";
-        this.snapshot.Reason = reason;
-        this.snapshot.CheckedAtLocal = DateTime.MinValue;
-        this.snapshot.CheckedAtKnown = false;
-        this.snapshot.CloudEndpoints = CreateUnavailableCloudEndpointSnapshots(reason);
+        trigger = trigger == null ? string.Empty : trigger.Trim();
+        return trigger.Length == 0 ? "强制刷新" : trigger;
     }
 
-    private void ApplyLocalNetworkDegradedSnapshot(string reason)
+    private static string SelectAutomaticTrigger(DateTime lastProbeStartedUtc, string pendingForcedTrigger)
     {
-        reason = FormatLocalNetworkDegradedReason(reason);
-        if (this.snapshot.Enabled &&
-            this.snapshot.Status == GfwProbeStatus.Inconclusive &&
-            string.Equals(this.snapshot.Detail, "不可判定", StringComparison.Ordinal) &&
-            string.Equals(this.snapshot.Reason, reason, StringComparison.Ordinal))
+        if (!string.IsNullOrWhiteSpace(pendingForcedTrigger))
         {
-            this.snapshot.Running = this.requestRunning;
-            this.localNetworkGateActive = true;
-            return;
+            return pendingForcedTrigger.Trim();
         }
 
-        this.snapshot.Enabled = true;
-        this.snapshot.Running = this.requestRunning;
-        this.snapshot.Status = GfwProbeStatus.Inconclusive;
-        this.snapshot.Detail = "不可判定";
-        this.snapshot.Reason = reason;
-        this.snapshot.CheckedAtLocal = DateTime.Now;
-        this.snapshot.CheckedAtKnown = true;
-        this.snapshot.DomainsTested = 0;
-        this.snapshot.AnomalyCount = 0;
-        this.localNetworkGateActive = true;
+        return lastProbeStartedUtc == DateTime.MinValue ? "首次自动检测" : "定时间隔";
+    }
+
+    private static bool HasKnownProbeSnapshot(GfwProbeSnapshot value)
+    {
+        return value != null &&
+            value.Enabled &&
+            value.CheckedAtKnown &&
+            value.Status != GfwProbeStatus.Disabled &&
+            value.Status != GfwProbeStatus.Unknown;
+    }
+
+    private static GfwProbeSnapshot CreateUnavailableNetworkClone(
+        GfwProbeSnapshot current,
+        bool requestRunning,
+        NetworkAccessState networkState)
+    {
+        GfwProbeSnapshot clone = current == null ? new GfwProbeSnapshot() : current.Clone();
+        if (networkState == NetworkAccessState.Unknown && HasKnownProbeSnapshot(clone))
+        {
+            clone.Enabled = true;
+            clone.Running = requestRunning;
+            return clone;
+        }
+
+        string reason = GetUnavailableNetworkReason(networkState);
+        clone.Enabled = true;
+        clone.Running = false;
+        clone.Status = GfwProbeStatus.Inconclusive;
+        clone.Detail = "不可判定";
+        clone.Reason = reason;
+        clone.CheckedAtLocal = DateTime.MinValue;
+        clone.CheckedAtKnown = false;
+        clone.DomainsTested = 0;
+        clone.AnomalyCount = 0;
+        clone.CloudEndpoints = CreateUnavailableCloudEndpointSnapshots(reason);
+        return clone;
+    }
+
+    private static GfwProbeSnapshot CreateLocalNetworkDegradedClone(
+        GfwProbeSnapshot current,
+        bool requestRunning,
+        string reason)
+    {
+        GfwProbeSnapshot clone = current == null ? new GfwProbeSnapshot() : current.Clone();
+        clone.Enabled = true;
+        clone.Running = requestRunning;
+        clone.Status = GfwProbeStatus.Inconclusive;
+        clone.Detail = "不可判定";
+        clone.Reason = FormatLocalNetworkDegradedReason(reason);
+        clone.CheckedAtLocal = DateTime.Now;
+        clone.CheckedAtKnown = true;
+        clone.DomainsTested = 0;
+        clone.AnomalyCount = 0;
+        return clone;
     }
 
     private static CloudEndpointSnapshot[] CreateUnavailableCloudEndpointSnapshots(string reason)
@@ -207,24 +239,6 @@ internal sealed class GfwProbeReader
         }
 
         return snapshots;
-    }
-
-    private static bool HasCloudEndpointStatus(CloudEndpointSnapshot[] snapshots, CloudEndpointStatus status)
-    {
-        if (snapshots == null || snapshots.Length == 0)
-        {
-            return false;
-        }
-
-        for (int i = 0; i < snapshots.Length; i++)
-        {
-            if (snapshots[i] == null || snapshots[i].Status != status)
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private void StartProbe(DateTime now, string trigger)
@@ -306,6 +320,20 @@ internal sealed class GfwProbeReader
                 this.snapshot = result;
                 this.requestRunning = false;
             }
+
+            NetworkCheckHistoryLogger.LogCompleted(
+                "network_monitor",
+                "gfw",
+                trigger ?? "自动检测",
+                result.Detail + " " + result.Reason,
+                result.Status == GfwProbeStatus.Normal || result.Status == GfwProbeStatus.Inconclusive,
+                -1,
+                new Dictionary<string, object>
+                {
+                    { "status", result.Status.ToString() },
+                    { "anomaly_count", result.AnomalyCount },
+                    { "domains_tested", result.DomainsTested }
+                });
 
             if (shouldWriteDetailedLog)
             {

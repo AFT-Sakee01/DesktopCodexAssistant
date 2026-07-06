@@ -223,6 +223,17 @@ internal sealed class CleanIpConnectionReader : IDisposable
             next.CheckedAtKnown = true;
             next.Running = false;
 
+            NetworkCheckHistoryLogger.LogCompleted(
+                "connection_check",
+                "clean_ip",
+                next.RefreshTrigger ?? "自动刷新",
+                next.Success
+                    ? "分数" + (next.ScoreKnown ? next.Score.ToString(CultureInfo.InvariantCulture) : "?") + " " + (next.Grade ?? "?")
+                    : (next.Error ?? "未知错误"),
+                next.Success,
+                next.LatencyMs,
+                null);
+
             lock (this.sync)
             {
                 this.snapshot = next;

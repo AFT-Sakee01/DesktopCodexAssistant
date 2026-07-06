@@ -61,6 +61,60 @@ internal enum ThermalTestMode
     Simulate100
 }
 
+// Selects which coexisting CodexRadarForm draw-path variant renders the window. All variants
+// are compiled into the same binary (Core/CodexRadarForm.cs plus a CodexRadarForm.<Name>.cs
+// sibling partial file per variant); this only switches which paint method DrawCodexRadarModules
+// calls, so it never touches the shared data layer, threading, or persisted quota state.
+internal enum CodexRadarRenderVariant
+{
+    // Core/CodexRadarForm.cs: DrawCodexRadarWidget/DrawQuotaWidget widget tree.
+    Classic,
+    // Core/CodexRadarForm.EvenGrid.cs: 6-cell top band + 3-cell status band, all equal width.
+    EvenGrid,
+    // Core/CodexRadarForm.EvenRow.cs: single row of 7 equal-width cells.
+    EvenRow,
+    // Core/CodexRadarForm.Typographic.cs: OLED-safe, no fills/borders, stacked value+label typography.
+    Typographic,
+    // Core/CodexRadarForm.AmberHud.cs: OLED-safe single amber hue, thin hairline chips, mono labels.
+    AmberHud,
+    // Core/CodexRadarForm.WarmCard.cs: OLED-safe warm-gray low-luminance filled cards + status dot.
+    WarmCard,
+    // Core/CodexRadarForm.Phosphor.cs: OLED-safe single green hue, borderless terminal-style rows.
+    Phosphor
+}
+
+// Per-window render-variant switches, mirroring CodexRadarRenderVariant. Each window has its own
+// enum so a variant added to one window never appears in another window's dropdown. Classic is the
+// original layout; add a member plus a sibling partial file (e.g. WidgetForm.<Name>.cs) and a case in
+// that window's Draw*Content dispatcher to introduce an alternate layout. Paint-only switch.
+//
+// Typographic/AmberHud/WarmCard/Phosphor are the four OLED-safe restyle schemes added in 1.0.3.44:
+// no blue-dominant hues, no peak-white/saturated fills, background stays the existing semi-transparent
+// AppBackground. Burn-in mitigation for all four relies on the existing BurnInProtection.ApplyRuntimeOffset
+// periodic whole-window position shift (uniform screen wear), not on any per-scheme trick.
+internal enum MainWidgetRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor }
+
+internal enum NetworkMonitorRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor }
+
+internal enum PowerThermalRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor }
+
+internal enum ConnectionCheckRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor }
+
+internal enum OperationRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor }
+
+internal enum CodexQuotaPlanComparison
+{
+    LessThan,
+    GreaterThan
+}
+
+internal enum CodexQuotaPlanResumeConditionMode
+{
+    Both,
+    WeeklyOnly,
+    FiveHourOnly
+}
+
 internal enum PowerThermalAutoDirection
 {
     Left,
@@ -122,10 +176,25 @@ internal enum CodexRadarModelVersion
     Gpt54
 }
 
+internal enum CodexRadarSoftwareMode
+{
+    Auto,
+    Codex,
+    Claude
+}
+
 internal enum DisplayTimeZoneMode
 {
     Automatic,
     Manual
+}
+
+internal enum OperationPrimaryPanelMode
+{
+    Auto,
+    WindowsButton,
+    MemoryPie,
+    Hidden
 }
 
 internal sealed class WidgetSettings
@@ -144,6 +213,11 @@ internal sealed class WidgetSettings
     public const int MaxCodexRadarWidth = 900;
     public const int MinCodexRadarHeight = 44;
     public const int MaxCodexRadarHeight = 240;
+    public const int DefaultCodexRadarWidth = 580;
+    private const int PreviousDefaultCodexRadarWidth = 620;
+    private const int CodexRadarEvenRowWidthReduction = 40;
+    public const int CodexRadarHiddenServiceHealthPanelWidthReduction = 76;
+    public const int CodexRadarCompactQuotaWidthReduction = 122;
     public const int MinPowerThermalWidth = 90;
     public const int MaxPowerThermalWidth = 900;
     public const int MinPowerThermalHeight = 44;
@@ -197,14 +271,17 @@ internal sealed class WidgetSettings
     public const double MinHoverOpacityRevealResetSeconds = 0.1;
     public const double MaxHoverOpacityRevealResetSeconds = 5.0;
     public const double DefaultHoverOpacityRevealResetSeconds = 0.5;
-    private const int CurrentSettingsVersion = 25;
+    private const int CurrentSettingsVersion = 49;
     private const int EffectivePerformanceModeCacheMs = 2000;
     private static readonly object EffectivePerformanceModeSync = new object();
     private static DateTime effectivePerformanceModeCacheUtc = DateTime.MinValue;
     private static WidgetPerformanceMode effectivePerformanceModeCache = WidgetPerformanceMode.Balanced;
     public const int MinCodexModelIqPassed = 0;
-    public const int MaxCodexModelIqPassed = 12;
-    public const int DefaultCodexModelIqBaselinePassed = 8;
+    public const int MaxCodexModelIqPassed = 10;
+    public const int PreviousDefaultCodexModelIqBaselinePassed = 8;
+    public const int PreviousTwelveTaskCodexModelIqBaselinePassed = 7;
+    public const int PreviousTenTaskLocalCodexModelIqBaselinePassed = 6;
+    public const int DefaultCodexModelIqBaselinePassed = 7;
     public const int MinCodexModelEfficiencyPercent = 0;
     public const int MaxCodexModelEfficiencyPercent = 200;
     public const int DefaultCodexModelEfficiencyPercent = 100;
@@ -214,6 +291,33 @@ internal sealed class WidgetSettings
     public const int MinCodexModelEfficiencyLowThresholdPercent = 0;
     public const int MaxCodexModelEfficiencyLowThresholdPercent = 200;
     public const int DefaultCodexModelEfficiencyLowThresholdPercent = 80;
+    public const int MinCodexQuotaPlanThresholdPercent = 0;
+    public const int MaxCodexQuotaPlanThresholdPercent = 100;
+    public const int DefaultCodexQuotaPlanWeeklyThresholdPercent = 3;
+    public const int DefaultCodexQuotaPlanFiveHourThresholdPercent = 90;
+    public const int MinCodexRadarManualLeftPercent = 35;
+    public const int MaxCodexRadarManualLeftPercent = 78;
+    public const int DefaultCodexRadarManualLeftPercent = 53;
+    public const int MinCodexRadarManualGapPixels = 0;
+    public const int MaxCodexRadarManualGapPixels = 18;
+    public const int DefaultCodexRadarManualGapPixels = 4;
+    public const int MinCodexRadarManualEfficiencyTextWidthPixels = 32;
+    public const int MaxCodexRadarManualEfficiencyTextWidthPixels = 86;
+    public const int DefaultCodexRadarManualEfficiencyTextWidthPixels = 48;
+    public const int MinCodexRadarManualQuotaRowsWidthPixels = 88;
+    public const int MaxCodexRadarManualQuotaRowsWidthPixels = 190;
+    public const int DefaultCodexRadarManualQuotaRowsWidthPixels = 108;
+    public const int MinCodexRadarManualIqStatusWidthPixels = 36;
+    public const int MaxCodexRadarManualIqStatusWidthPixels = 92;
+    public const int DefaultCodexRadarManualIqStatusWidthPixels = 52;
+    public const int MinCodexRadarManualTextScalePercent = 70;
+    public const int MaxCodexRadarManualTextScalePercent = 140;
+    public const int DefaultCodexRadarManualTextScalePercent = 100;
+    public const int MinCodexRadarManualRingScalePercent = 70;
+    public const int MaxCodexRadarManualRingScalePercent = 135;
+    public const int DefaultCodexRadarManualRingScalePercent = 100;
+    public const int MinCodexRadarManualElementOffsetPixels = -240;
+    public const int MaxCodexRadarManualElementOffsetPixels = 240;
     public static readonly string[] DefaultMetricOrder = new string[]
     {
         MetricCpu,
@@ -223,6 +327,13 @@ internal sealed class WidgetSettings
         MetricGpu,
         MetricNpu
     };
+    public const string ModuleMain = "Main";
+    public const string ModuleCodexRadar = "CodexRadar";
+    public const string ModuleClaudeRadar = "ClaudeRadar";
+    public const string ModulePowerThermal = "PowerThermal";
+    public const string ModuleNetworkMonitor = "NetworkMonitor";
+    public const string ModuleConnectionCheck = "ConnectionCheck";
+    public const string ModuleOperation = "Operation";
 
     public int Width { get; set; }
     public int Height { get; set; }
@@ -235,6 +346,49 @@ internal sealed class WidgetSettings
     public int CodexRadarLeftX { get; set; }
     public int CodexRadarBottomY { get; set; }
     public int CodexRadarTransparencyPercent { get; set; }
+    public bool CodexRadarEnabled { get; set; }
+    public bool ClaudeRadarEnabled { get; set; }
+    public int ClaudeRadarWidth { get; set; }
+    public int ClaudeRadarHeight { get; set; }
+    public int ClaudeRadarLeftX { get; set; }
+    public int ClaudeRadarBottomY { get; set; }
+    public int ClaudeRadarTransparencyPercent { get; set; }
+    public bool CodexRadarManualLayoutEnabled { get; set; }
+    public int CodexRadarManualLeftPercent { get; set; }
+    public int CodexRadarManualGapPixels { get; set; }
+    public int CodexRadarManualEfficiencyTextWidthPixels { get; set; }
+    public int CodexRadarManualQuotaRowsWidthPixels { get; set; }
+    public int CodexRadarManualIqStatusWidthPixels { get; set; }
+    public int CodexRadarManualTextScalePercent { get; set; }
+    public int CodexRadarManualRingScalePercent { get; set; }
+    public int CodexRadarTimeEfficiencyRingOffsetX { get; set; }
+    public int CodexRadarTimeEfficiencyRingOffsetY { get; set; }
+    public int CodexRadarTimeEfficiencyTextOffsetX { get; set; }
+    public int CodexRadarTimeEfficiencyTextOffsetY { get; set; }
+    public int CodexRadarTokenEfficiencyRingOffsetX { get; set; }
+    public int CodexRadarTokenEfficiencyRingOffsetY { get; set; }
+    public int CodexRadarTokenEfficiencyTextOffsetX { get; set; }
+    public int CodexRadarTokenEfficiencyTextOffsetY { get; set; }
+    public int CodexRadarConnectionTopTextOffsetX { get; set; }
+    public int CodexRadarConnectionTopTextOffsetY { get; set; }
+    public int CodexRadarConnectionLineOffsetX { get; set; }
+    public int CodexRadarConnectionLineOffsetY { get; set; }
+    public int CodexRadarConnectionBottomTextOffsetX { get; set; }
+    public int CodexRadarConnectionBottomTextOffsetY { get; set; }
+    public int CodexRadarFiveHourQuotaRingOffsetX { get; set; }
+    public int CodexRadarFiveHourQuotaRingOffsetY { get; set; }
+    public int CodexRadarFiveHourQuotaTextOffsetX { get; set; }
+    public int CodexRadarFiveHourQuotaTextOffsetY { get; set; }
+    public int CodexRadarWeeklyQuotaRingOffsetX { get; set; }
+    public int CodexRadarWeeklyQuotaRingOffsetY { get; set; }
+    public int CodexRadarWeeklyQuotaTextOffsetX { get; set; }
+    public int CodexRadarWeeklyQuotaTextOffsetY { get; set; }
+    public int CodexRadarQuotaRadarLineOffsetX { get; set; }
+    public int CodexRadarQuotaRadarLineOffsetY { get; set; }
+    public int CodexRadarIqRingOffsetX { get; set; }
+    public int CodexRadarIqRingOffsetY { get; set; }
+    public int CodexRadarIqTextOffsetX { get; set; }
+    public int CodexRadarIqTextOffsetY { get; set; }
     public int PowerThermalWidth { get; set; }
     public int PowerThermalHeight { get; set; }
     public int PowerThermalLeftX { get; set; }
@@ -267,14 +421,49 @@ internal sealed class WidgetSettings
     public int OperationLeftOffset { get; set; }
     public int OperationBottomOffset { get; set; }
     public int OperationBackgroundTransparencyPercent { get; set; }
+    public OperationPrimaryPanelMode OperationPrimaryPanelMode { get; set; }
+    public bool OperationWindowsButtonEnabled { get; set; }
+    public bool OperationMemoryPieEnabled { get; set; }
     public bool ForceShowForegroundFpsEnabled { get; set; }
     public bool SeelenDockForegroundPulseEnabled { get; set; }
     public bool WinDRecoveryPulseEnabled { get; set; }
     public bool PowerResumeRestartEnabled { get; set; }
+    public bool FallbackDisconnectedDisplaysEnabled { get; set; }
+    public string MainDisplayDeviceName { get; set; }
+    public string CodexRadarDisplayDeviceName { get; set; }
+    public string ClaudeRadarDisplayDeviceName { get; set; }
+    public string PowerThermalDisplayDeviceName { get; set; }
+    public string NetworkMonitorDisplayDeviceName { get; set; }
+    public string ConnectionCheckDisplayDeviceName { get; set; }
+    public string OperationDisplayDeviceName { get; set; }
     public int LayoutWorkAreaLeft { get; set; }
     public int LayoutWorkAreaTop { get; set; }
     public int LayoutWorkAreaWidth { get; set; }
     public int LayoutWorkAreaHeight { get; set; }
+    public int CodexRadarLayoutWorkAreaLeft { get; set; }
+    public int CodexRadarLayoutWorkAreaTop { get; set; }
+    public int CodexRadarLayoutWorkAreaWidth { get; set; }
+    public int CodexRadarLayoutWorkAreaHeight { get; set; }
+    public int ClaudeRadarLayoutWorkAreaLeft { get; set; }
+    public int ClaudeRadarLayoutWorkAreaTop { get; set; }
+    public int ClaudeRadarLayoutWorkAreaWidth { get; set; }
+    public int ClaudeRadarLayoutWorkAreaHeight { get; set; }
+    public int PowerThermalLayoutWorkAreaLeft { get; set; }
+    public int PowerThermalLayoutWorkAreaTop { get; set; }
+    public int PowerThermalLayoutWorkAreaWidth { get; set; }
+    public int PowerThermalLayoutWorkAreaHeight { get; set; }
+    public int NetworkMonitorLayoutWorkAreaLeft { get; set; }
+    public int NetworkMonitorLayoutWorkAreaTop { get; set; }
+    public int NetworkMonitorLayoutWorkAreaWidth { get; set; }
+    public int NetworkMonitorLayoutWorkAreaHeight { get; set; }
+    public int ConnectionCheckLayoutWorkAreaLeft { get; set; }
+    public int ConnectionCheckLayoutWorkAreaTop { get; set; }
+    public int ConnectionCheckLayoutWorkAreaWidth { get; set; }
+    public int ConnectionCheckLayoutWorkAreaHeight { get; set; }
+    public int OperationLayoutWorkAreaLeft { get; set; }
+    public int OperationLayoutWorkAreaTop { get; set; }
+    public int OperationLayoutWorkAreaWidth { get; set; }
+    public int OperationLayoutWorkAreaHeight { get; set; }
     public WidgetVisibilityMode VisibilityMode { get; set; }
     public ClickThroughMode ClickThroughMode { get; set; }
     public bool StartupEnabled { get; set; }
@@ -291,6 +480,36 @@ internal sealed class WidgetSettings
     public bool CodexRadarRandomTestEnabled { get; set; }
     public bool CodexRadarRandomTestAutoRefresh { get; set; }
     public int CodexRadarRandomTestRefreshToken { get; set; }
+    public CodexRadarRenderVariant CodexRadarRenderVariant { get; set; }
+    public MainWidgetRenderVariant MainWidgetRenderVariant { get; set; }
+    public NetworkMonitorRenderVariant NetworkMonitorRenderVariant { get; set; }
+    public PowerThermalRenderVariant PowerThermalRenderVariant { get; set; }
+    public ConnectionCheckRenderVariant ConnectionCheckRenderVariant { get; set; }
+    public OperationRenderVariant OperationRenderVariant { get; set; }
+    public bool CodexRadarPublicJsonEnabled { get; set; }
+    public bool CodexRadarHtmlFallbackEnabled { get; set; }
+    public bool CodexRadarRssFallbackEnabled { get; set; }
+    public int CodexRadarServiceProbeToken { get; set; }
+    public bool ClaudeRadarJsonEnabled { get; set; }
+    public bool ClaudeRadarHomepageFallbackEnabled { get; set; }
+    public bool ClaudeRadarCommunityRatingsEnabled { get; set; }
+    public bool ClaudeRadarLocalQuotaFallbackEnabled { get; set; }
+    public bool ClaudeRadarRandomTestEnabled { get; set; }
+    public bool ClaudeRadarRandomTestAutoRefresh { get; set; }
+    public int ClaudeRadarRandomTestRefreshToken { get; set; }
+    public int ClaudeRadarServiceProbeToken { get; set; }
+    public int DeepSeekApiKeyRevision { get; set; }
+    public bool AiRequestProtectionAutoEnabled { get; set; }
+    public bool AiRequestProtectionManualBlockEnabled { get; set; }
+    public bool CodexQuotaPlanEnabled { get; set; }
+    public CodexQuotaPlanComparison CodexQuotaPlanWeeklyComparison { get; set; }
+    public int CodexQuotaPlanWeeklyThresholdPercent { get; set; }
+    public CodexQuotaPlanComparison CodexQuotaPlanFiveHourComparison { get; set; }
+    public int CodexQuotaPlanFiveHourThresholdPercent { get; set; }
+    public CodexQuotaPlanResumeConditionMode CodexQuotaPlanResumeConditionMode { get; set; }
+    public bool CodexQuotaPlanAutoResumePausedGoals { get; set; }
+    public string CodexQuotaPlanPauseGoalIds { get; set; }
+    public string CodexQuotaPlanResumeGoalIds { get; set; }
     public CleanIpBadgeTestMode CleanIpBadgeTestMode { get; set; }
     public bool CodexModelIqTestEnabled { get; set; }
     public int CodexModelIqTestPassed { get; set; }
@@ -309,6 +528,9 @@ internal sealed class WidgetSettings
     public int CodexModelTimeEfficiencyLowThresholdPercent { get; set; }
     public CodexRadarModelVersion CodexRadarModelVersion { get; set; }
     public string CodexRadarModelKey { get; set; }
+    public CodexRadarSoftwareMode CodexRadarSoftwareMode { get; set; }
+    public string ClaudeRadarModelKey { get; set; }
+    public CodexRadarRenderVariant ClaudeRadarRenderVariant { get; set; }
     public DisplayTimeZoneMode DisplayTimeZoneMode { get; set; }
     public string DisplayTimeZoneId { get; set; }
     public WidgetPerformanceMode PerformanceMode { get; set; }
@@ -354,6 +576,49 @@ internal sealed class WidgetSettings
         this.CodexRadarLeftX = defaults.CodexRadarLeftX;
         this.CodexRadarBottomY = defaults.CodexRadarBottomY;
         this.CodexRadarTransparencyPercent = defaults.CodexRadarTransparencyPercent;
+        this.CodexRadarEnabled = defaults.CodexRadarEnabled;
+        this.ClaudeRadarEnabled = defaults.ClaudeRadarEnabled;
+        this.ClaudeRadarWidth = defaults.ClaudeRadarWidth;
+        this.ClaudeRadarHeight = defaults.ClaudeRadarHeight;
+        this.ClaudeRadarLeftX = defaults.ClaudeRadarLeftX;
+        this.ClaudeRadarBottomY = defaults.ClaudeRadarBottomY;
+        this.ClaudeRadarTransparencyPercent = defaults.ClaudeRadarTransparencyPercent;
+        this.CodexRadarManualLayoutEnabled = defaults.CodexRadarManualLayoutEnabled;
+        this.CodexRadarManualLeftPercent = defaults.CodexRadarManualLeftPercent;
+        this.CodexRadarManualGapPixels = defaults.CodexRadarManualGapPixels;
+        this.CodexRadarManualEfficiencyTextWidthPixels = defaults.CodexRadarManualEfficiencyTextWidthPixels;
+        this.CodexRadarManualQuotaRowsWidthPixels = defaults.CodexRadarManualQuotaRowsWidthPixels;
+        this.CodexRadarManualIqStatusWidthPixels = defaults.CodexRadarManualIqStatusWidthPixels;
+        this.CodexRadarManualTextScalePercent = defaults.CodexRadarManualTextScalePercent;
+        this.CodexRadarManualRingScalePercent = defaults.CodexRadarManualRingScalePercent;
+        this.CodexRadarTimeEfficiencyRingOffsetX = defaults.CodexRadarTimeEfficiencyRingOffsetX;
+        this.CodexRadarTimeEfficiencyRingOffsetY = defaults.CodexRadarTimeEfficiencyRingOffsetY;
+        this.CodexRadarTimeEfficiencyTextOffsetX = defaults.CodexRadarTimeEfficiencyTextOffsetX;
+        this.CodexRadarTimeEfficiencyTextOffsetY = defaults.CodexRadarTimeEfficiencyTextOffsetY;
+        this.CodexRadarTokenEfficiencyRingOffsetX = defaults.CodexRadarTokenEfficiencyRingOffsetX;
+        this.CodexRadarTokenEfficiencyRingOffsetY = defaults.CodexRadarTokenEfficiencyRingOffsetY;
+        this.CodexRadarTokenEfficiencyTextOffsetX = defaults.CodexRadarTokenEfficiencyTextOffsetX;
+        this.CodexRadarTokenEfficiencyTextOffsetY = defaults.CodexRadarTokenEfficiencyTextOffsetY;
+        this.CodexRadarConnectionTopTextOffsetX = defaults.CodexRadarConnectionTopTextOffsetX;
+        this.CodexRadarConnectionTopTextOffsetY = defaults.CodexRadarConnectionTopTextOffsetY;
+        this.CodexRadarConnectionLineOffsetX = defaults.CodexRadarConnectionLineOffsetX;
+        this.CodexRadarConnectionLineOffsetY = defaults.CodexRadarConnectionLineOffsetY;
+        this.CodexRadarConnectionBottomTextOffsetX = defaults.CodexRadarConnectionBottomTextOffsetX;
+        this.CodexRadarConnectionBottomTextOffsetY = defaults.CodexRadarConnectionBottomTextOffsetY;
+        this.CodexRadarFiveHourQuotaRingOffsetX = defaults.CodexRadarFiveHourQuotaRingOffsetX;
+        this.CodexRadarFiveHourQuotaRingOffsetY = defaults.CodexRadarFiveHourQuotaRingOffsetY;
+        this.CodexRadarFiveHourQuotaTextOffsetX = defaults.CodexRadarFiveHourQuotaTextOffsetX;
+        this.CodexRadarFiveHourQuotaTextOffsetY = defaults.CodexRadarFiveHourQuotaTextOffsetY;
+        this.CodexRadarWeeklyQuotaRingOffsetX = defaults.CodexRadarWeeklyQuotaRingOffsetX;
+        this.CodexRadarWeeklyQuotaRingOffsetY = defaults.CodexRadarWeeklyQuotaRingOffsetY;
+        this.CodexRadarWeeklyQuotaTextOffsetX = defaults.CodexRadarWeeklyQuotaTextOffsetX;
+        this.CodexRadarWeeklyQuotaTextOffsetY = defaults.CodexRadarWeeklyQuotaTextOffsetY;
+        this.CodexRadarQuotaRadarLineOffsetX = defaults.CodexRadarQuotaRadarLineOffsetX;
+        this.CodexRadarQuotaRadarLineOffsetY = defaults.CodexRadarQuotaRadarLineOffsetY;
+        this.CodexRadarIqRingOffsetX = defaults.CodexRadarIqRingOffsetX;
+        this.CodexRadarIqRingOffsetY = defaults.CodexRadarIqRingOffsetY;
+        this.CodexRadarIqTextOffsetX = defaults.CodexRadarIqTextOffsetX;
+        this.CodexRadarIqTextOffsetY = defaults.CodexRadarIqTextOffsetY;
         this.PowerThermalWidth = defaults.PowerThermalWidth;
         this.PowerThermalHeight = defaults.PowerThermalHeight;
         this.PowerThermalLeftX = defaults.PowerThermalLeftX;
@@ -386,14 +651,49 @@ internal sealed class WidgetSettings
         this.OperationLeftOffset = defaults.OperationLeftOffset;
         this.OperationBottomOffset = defaults.OperationBottomOffset;
         this.OperationBackgroundTransparencyPercent = defaults.OperationBackgroundTransparencyPercent;
+        this.OperationPrimaryPanelMode = defaults.OperationPrimaryPanelMode;
+        this.OperationWindowsButtonEnabled = defaults.OperationWindowsButtonEnabled;
+        this.OperationMemoryPieEnabled = defaults.OperationMemoryPieEnabled;
         this.ForceShowForegroundFpsEnabled = defaults.ForceShowForegroundFpsEnabled;
         this.SeelenDockForegroundPulseEnabled = defaults.SeelenDockForegroundPulseEnabled;
         this.WinDRecoveryPulseEnabled = defaults.WinDRecoveryPulseEnabled;
         this.PowerResumeRestartEnabled = defaults.PowerResumeRestartEnabled;
+        this.FallbackDisconnectedDisplaysEnabled = defaults.FallbackDisconnectedDisplaysEnabled;
+        this.MainDisplayDeviceName = defaults.MainDisplayDeviceName;
+        this.CodexRadarDisplayDeviceName = defaults.CodexRadarDisplayDeviceName;
+        this.ClaudeRadarDisplayDeviceName = defaults.ClaudeRadarDisplayDeviceName;
+        this.PowerThermalDisplayDeviceName = defaults.PowerThermalDisplayDeviceName;
+        this.NetworkMonitorDisplayDeviceName = defaults.NetworkMonitorDisplayDeviceName;
+        this.ConnectionCheckDisplayDeviceName = defaults.ConnectionCheckDisplayDeviceName;
+        this.OperationDisplayDeviceName = defaults.OperationDisplayDeviceName;
         this.LayoutWorkAreaLeft = defaults.LayoutWorkAreaLeft;
         this.LayoutWorkAreaTop = defaults.LayoutWorkAreaTop;
         this.LayoutWorkAreaWidth = defaults.LayoutWorkAreaWidth;
         this.LayoutWorkAreaHeight = defaults.LayoutWorkAreaHeight;
+        this.CodexRadarLayoutWorkAreaLeft = defaults.CodexRadarLayoutWorkAreaLeft;
+        this.CodexRadarLayoutWorkAreaTop = defaults.CodexRadarLayoutWorkAreaTop;
+        this.CodexRadarLayoutWorkAreaWidth = defaults.CodexRadarLayoutWorkAreaWidth;
+        this.CodexRadarLayoutWorkAreaHeight = defaults.CodexRadarLayoutWorkAreaHeight;
+        this.ClaudeRadarLayoutWorkAreaLeft = defaults.ClaudeRadarLayoutWorkAreaLeft;
+        this.ClaudeRadarLayoutWorkAreaTop = defaults.ClaudeRadarLayoutWorkAreaTop;
+        this.ClaudeRadarLayoutWorkAreaWidth = defaults.ClaudeRadarLayoutWorkAreaWidth;
+        this.ClaudeRadarLayoutWorkAreaHeight = defaults.ClaudeRadarLayoutWorkAreaHeight;
+        this.PowerThermalLayoutWorkAreaLeft = defaults.PowerThermalLayoutWorkAreaLeft;
+        this.PowerThermalLayoutWorkAreaTop = defaults.PowerThermalLayoutWorkAreaTop;
+        this.PowerThermalLayoutWorkAreaWidth = defaults.PowerThermalLayoutWorkAreaWidth;
+        this.PowerThermalLayoutWorkAreaHeight = defaults.PowerThermalLayoutWorkAreaHeight;
+        this.NetworkMonitorLayoutWorkAreaLeft = defaults.NetworkMonitorLayoutWorkAreaLeft;
+        this.NetworkMonitorLayoutWorkAreaTop = defaults.NetworkMonitorLayoutWorkAreaTop;
+        this.NetworkMonitorLayoutWorkAreaWidth = defaults.NetworkMonitorLayoutWorkAreaWidth;
+        this.NetworkMonitorLayoutWorkAreaHeight = defaults.NetworkMonitorLayoutWorkAreaHeight;
+        this.ConnectionCheckLayoutWorkAreaLeft = defaults.ConnectionCheckLayoutWorkAreaLeft;
+        this.ConnectionCheckLayoutWorkAreaTop = defaults.ConnectionCheckLayoutWorkAreaTop;
+        this.ConnectionCheckLayoutWorkAreaWidth = defaults.ConnectionCheckLayoutWorkAreaWidth;
+        this.ConnectionCheckLayoutWorkAreaHeight = defaults.ConnectionCheckLayoutWorkAreaHeight;
+        this.OperationLayoutWorkAreaLeft = defaults.OperationLayoutWorkAreaLeft;
+        this.OperationLayoutWorkAreaTop = defaults.OperationLayoutWorkAreaTop;
+        this.OperationLayoutWorkAreaWidth = defaults.OperationLayoutWorkAreaWidth;
+        this.OperationLayoutWorkAreaHeight = defaults.OperationLayoutWorkAreaHeight;
         this.VisibilityMode = defaults.VisibilityMode;
         this.ClickThroughMode = defaults.ClickThroughMode;
         this.StartupEnabled = Program.IsStartupEnabled();
@@ -410,6 +710,30 @@ internal sealed class WidgetSettings
         this.CodexRadarRandomTestEnabled = defaults.CodexRadarRandomTestEnabled;
         this.CodexRadarRandomTestAutoRefresh = defaults.CodexRadarRandomTestAutoRefresh;
         this.CodexRadarRandomTestRefreshToken = defaults.CodexRadarRandomTestRefreshToken;
+        this.CodexRadarPublicJsonEnabled = defaults.CodexRadarPublicJsonEnabled;
+        this.CodexRadarHtmlFallbackEnabled = defaults.CodexRadarHtmlFallbackEnabled;
+        this.CodexRadarRssFallbackEnabled = defaults.CodexRadarRssFallbackEnabled;
+        this.CodexRadarServiceProbeToken = defaults.CodexRadarServiceProbeToken;
+        this.ClaudeRadarJsonEnabled = defaults.ClaudeRadarJsonEnabled;
+        this.ClaudeRadarHomepageFallbackEnabled = defaults.ClaudeRadarHomepageFallbackEnabled;
+        this.ClaudeRadarCommunityRatingsEnabled = defaults.ClaudeRadarCommunityRatingsEnabled;
+        this.ClaudeRadarLocalQuotaFallbackEnabled = defaults.ClaudeRadarLocalQuotaFallbackEnabled;
+        this.ClaudeRadarRandomTestEnabled = defaults.ClaudeRadarRandomTestEnabled;
+        this.ClaudeRadarRandomTestAutoRefresh = defaults.ClaudeRadarRandomTestAutoRefresh;
+        this.ClaudeRadarRandomTestRefreshToken = defaults.ClaudeRadarRandomTestRefreshToken;
+        this.ClaudeRadarServiceProbeToken = defaults.ClaudeRadarServiceProbeToken;
+        this.DeepSeekApiKeyRevision = defaults.DeepSeekApiKeyRevision;
+        this.AiRequestProtectionAutoEnabled = defaults.AiRequestProtectionAutoEnabled;
+        this.AiRequestProtectionManualBlockEnabled = defaults.AiRequestProtectionManualBlockEnabled;
+        this.CodexQuotaPlanEnabled = defaults.CodexQuotaPlanEnabled;
+        this.CodexQuotaPlanWeeklyComparison = defaults.CodexQuotaPlanWeeklyComparison;
+        this.CodexQuotaPlanWeeklyThresholdPercent = defaults.CodexQuotaPlanWeeklyThresholdPercent;
+        this.CodexQuotaPlanFiveHourComparison = defaults.CodexQuotaPlanFiveHourComparison;
+        this.CodexQuotaPlanFiveHourThresholdPercent = defaults.CodexQuotaPlanFiveHourThresholdPercent;
+        this.CodexQuotaPlanResumeConditionMode = defaults.CodexQuotaPlanResumeConditionMode;
+        this.CodexQuotaPlanAutoResumePausedGoals = defaults.CodexQuotaPlanAutoResumePausedGoals;
+        this.CodexQuotaPlanPauseGoalIds = defaults.CodexQuotaPlanPauseGoalIds;
+        this.CodexQuotaPlanResumeGoalIds = defaults.CodexQuotaPlanResumeGoalIds;
         this.CleanIpBadgeTestMode = defaults.CleanIpBadgeTestMode;
         this.CodexModelIqTestEnabled = defaults.CodexModelIqTestEnabled;
         this.CodexModelIqTestPassed = defaults.CodexModelIqTestPassed;
@@ -428,6 +752,8 @@ internal sealed class WidgetSettings
         this.CodexModelTimeEfficiencyLowThresholdPercent = defaults.CodexModelTimeEfficiencyLowThresholdPercent;
         this.CodexRadarModelVersion = defaults.CodexRadarModelVersion;
         this.CodexRadarModelKey = defaults.CodexRadarModelKey;
+        this.ClaudeRadarModelKey = defaults.ClaudeRadarModelKey;
+        this.ClaudeRadarRenderVariant = defaults.ClaudeRadarRenderVariant;
         this.DisplayTimeZoneMode = defaults.DisplayTimeZoneMode;
         this.DisplayTimeZoneId = defaults.DisplayTimeZoneId;
         this.PerformanceMode = defaults.PerformanceMode;
@@ -461,11 +787,26 @@ internal sealed class WidgetSettings
         settings.BottomY = 1557;
         settings.BackgroundTransparencyPercent = 40;
         settings.ApplicationTransparencyPercent = 0;
-        settings.CodexRadarWidth = 628;
+        settings.CodexRadarWidth = DefaultCodexRadarWidth;
         settings.CodexRadarHeight = 116;
         settings.CodexRadarLeftX = 2252;
         settings.CodexRadarBottomY = 470;
         settings.CodexRadarTransparencyPercent = 30;
+        settings.CodexRadarEnabled = true;
+        settings.ClaudeRadarEnabled = false;
+        settings.ClaudeRadarWidth = DefaultCodexRadarWidth;
+        settings.ClaudeRadarHeight = 116;
+        settings.ClaudeRadarLeftX = 2252;
+        settings.ClaudeRadarBottomY = 340;
+        settings.ClaudeRadarTransparencyPercent = 30;
+        settings.CodexRadarManualLayoutEnabled = false;
+        settings.CodexRadarManualLeftPercent = DefaultCodexRadarManualLeftPercent;
+        settings.CodexRadarManualGapPixels = DefaultCodexRadarManualGapPixels;
+        settings.CodexRadarManualEfficiencyTextWidthPixels = DefaultCodexRadarManualEfficiencyTextWidthPixels;
+        settings.CodexRadarManualQuotaRowsWidthPixels = DefaultCodexRadarManualQuotaRowsWidthPixels;
+        settings.CodexRadarManualIqStatusWidthPixels = DefaultCodexRadarManualIqStatusWidthPixels;
+        settings.CodexRadarManualTextScalePercent = DefaultCodexRadarManualTextScalePercent;
+        settings.CodexRadarManualRingScalePercent = DefaultCodexRadarManualRingScalePercent;
         settings.PowerThermalWidth = 120;
         settings.PowerThermalHeight = 110;
         settings.PowerThermalLeftX = 2760;
@@ -498,14 +839,49 @@ internal sealed class WidgetSettings
         settings.OperationLeftOffset = 0;
         settings.OperationBottomOffset = 0;
         settings.OperationBackgroundTransparencyPercent = 0;
+        settings.OperationPrimaryPanelMode = OperationPrimaryPanelMode.Auto;
+        settings.OperationWindowsButtonEnabled = true;
+        settings.OperationMemoryPieEnabled = true;
         settings.ForceShowForegroundFpsEnabled = false;
         settings.SeelenDockForegroundPulseEnabled = true;
         settings.WinDRecoveryPulseEnabled = true;
         settings.PowerResumeRestartEnabled = true;
+        settings.FallbackDisconnectedDisplaysEnabled = true;
+        settings.MainDisplayDeviceName = string.Empty;
+        settings.CodexRadarDisplayDeviceName = string.Empty;
+        settings.ClaudeRadarDisplayDeviceName = string.Empty;
+        settings.PowerThermalDisplayDeviceName = string.Empty;
+        settings.NetworkMonitorDisplayDeviceName = string.Empty;
+        settings.ConnectionCheckDisplayDeviceName = string.Empty;
+        settings.OperationDisplayDeviceName = string.Empty;
         settings.LayoutWorkAreaLeft = 0;
         settings.LayoutWorkAreaTop = 60;
         settings.LayoutWorkAreaWidth = 2880;
         settings.LayoutWorkAreaHeight = 1740;
+        settings.CodexRadarLayoutWorkAreaLeft = settings.LayoutWorkAreaLeft;
+        settings.CodexRadarLayoutWorkAreaTop = settings.LayoutWorkAreaTop;
+        settings.CodexRadarLayoutWorkAreaWidth = settings.LayoutWorkAreaWidth;
+        settings.CodexRadarLayoutWorkAreaHeight = settings.LayoutWorkAreaHeight;
+        settings.ClaudeRadarLayoutWorkAreaLeft = settings.LayoutWorkAreaLeft;
+        settings.ClaudeRadarLayoutWorkAreaTop = settings.LayoutWorkAreaTop;
+        settings.ClaudeRadarLayoutWorkAreaWidth = settings.LayoutWorkAreaWidth;
+        settings.ClaudeRadarLayoutWorkAreaHeight = settings.LayoutWorkAreaHeight;
+        settings.PowerThermalLayoutWorkAreaLeft = settings.LayoutWorkAreaLeft;
+        settings.PowerThermalLayoutWorkAreaTop = settings.LayoutWorkAreaTop;
+        settings.PowerThermalLayoutWorkAreaWidth = settings.LayoutWorkAreaWidth;
+        settings.PowerThermalLayoutWorkAreaHeight = settings.LayoutWorkAreaHeight;
+        settings.NetworkMonitorLayoutWorkAreaLeft = settings.LayoutWorkAreaLeft;
+        settings.NetworkMonitorLayoutWorkAreaTop = settings.LayoutWorkAreaTop;
+        settings.NetworkMonitorLayoutWorkAreaWidth = settings.LayoutWorkAreaWidth;
+        settings.NetworkMonitorLayoutWorkAreaHeight = settings.LayoutWorkAreaHeight;
+        settings.ConnectionCheckLayoutWorkAreaLeft = settings.LayoutWorkAreaLeft;
+        settings.ConnectionCheckLayoutWorkAreaTop = settings.LayoutWorkAreaTop;
+        settings.ConnectionCheckLayoutWorkAreaWidth = settings.LayoutWorkAreaWidth;
+        settings.ConnectionCheckLayoutWorkAreaHeight = settings.LayoutWorkAreaHeight;
+        settings.OperationLayoutWorkAreaLeft = settings.LayoutWorkAreaLeft;
+        settings.OperationLayoutWorkAreaTop = settings.LayoutWorkAreaTop;
+        settings.OperationLayoutWorkAreaWidth = settings.LayoutWorkAreaWidth;
+        settings.OperationLayoutWorkAreaHeight = settings.LayoutWorkAreaHeight;
         settings.VisibilityMode = WidgetVisibilityMode.AlwaysVisible;
         settings.ClickThroughMode = ClickThroughMode.Auto;
         settings.StartupEnabled = Program.IsStartupEnabled();
@@ -522,6 +898,36 @@ internal sealed class WidgetSettings
         settings.CodexRadarRandomTestEnabled = false;
         settings.CodexRadarRandomTestAutoRefresh = false;
         settings.CodexRadarRandomTestRefreshToken = 0;
+        settings.CodexRadarRenderVariant = CodexRadarRenderVariant.Classic;
+        settings.MainWidgetRenderVariant = MainWidgetRenderVariant.Classic;
+        settings.NetworkMonitorRenderVariant = NetworkMonitorRenderVariant.Classic;
+        settings.PowerThermalRenderVariant = PowerThermalRenderVariant.Classic;
+        settings.ConnectionCheckRenderVariant = ConnectionCheckRenderVariant.Classic;
+        settings.OperationRenderVariant = OperationRenderVariant.Classic;
+        settings.CodexRadarPublicJsonEnabled = true;
+        settings.CodexRadarHtmlFallbackEnabled = true;
+        settings.CodexRadarRssFallbackEnabled = true;
+        settings.CodexRadarServiceProbeToken = 0;
+        settings.ClaudeRadarJsonEnabled = true;
+        settings.ClaudeRadarHomepageFallbackEnabled = true;
+        settings.ClaudeRadarCommunityRatingsEnabled = true;
+        settings.ClaudeRadarLocalQuotaFallbackEnabled = true;
+        settings.ClaudeRadarRandomTestEnabled = false;
+        settings.ClaudeRadarRandomTestAutoRefresh = false;
+        settings.ClaudeRadarRandomTestRefreshToken = 0;
+        settings.ClaudeRadarServiceProbeToken = 0;
+        settings.DeepSeekApiKeyRevision = 0;
+        settings.AiRequestProtectionAutoEnabled = true;
+        settings.AiRequestProtectionManualBlockEnabled = false;
+        settings.CodexQuotaPlanEnabled = false;
+        settings.CodexQuotaPlanWeeklyComparison = CodexQuotaPlanComparison.LessThan;
+        settings.CodexQuotaPlanWeeklyThresholdPercent = DefaultCodexQuotaPlanWeeklyThresholdPercent;
+        settings.CodexQuotaPlanFiveHourComparison = CodexQuotaPlanComparison.LessThan;
+        settings.CodexQuotaPlanFiveHourThresholdPercent = DefaultCodexQuotaPlanFiveHourThresholdPercent;
+        settings.CodexQuotaPlanResumeConditionMode = CodexQuotaPlanResumeConditionMode.Both;
+        settings.CodexQuotaPlanAutoResumePausedGoals = true;
+        settings.CodexQuotaPlanPauseGoalIds = string.Empty;
+        settings.CodexQuotaPlanResumeGoalIds = string.Empty;
         settings.CleanIpBadgeTestMode = CleanIpBadgeTestMode.Off;
         settings.CodexModelIqTestEnabled = false;
         settings.CodexModelIqTestPassed = DefaultCodexModelIqBaselinePassed;
@@ -540,6 +946,9 @@ internal sealed class WidgetSettings
         settings.CodexModelTimeEfficiencyLowThresholdPercent = DefaultCodexModelEfficiencyLowThresholdPercent;
         settings.CodexRadarModelVersion = CodexRadarModelVersion.Gpt55;
         settings.CodexRadarModelKey = CodexRadarModelCatalog.DefaultModelKey;
+        settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Auto;
+        settings.ClaudeRadarModelKey = string.Empty;
+        settings.ClaudeRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
         settings.DisplayTimeZoneId = TimeZoneInfo.Local.Id;
         settings.PerformanceMode = WidgetPerformanceMode.BatterySaver;
@@ -558,8 +967,222 @@ internal sealed class WidgetSettings
         settings.AutoHoverOpacityMaximizedEnabled = false;
         settings.BurnInHiddenModeColorProtectionEnabled = false;
         settings.MetricOrder = CloneMetricOrder(DefaultMetricOrder);
+        ApplyUserDefaultSnapshot(settings);
         settings.Normalize();
         return settings;
+    }
+
+    private static void ApplyUserDefaultSnapshot(WidgetSettings settings)
+    {
+        // User-confirmed default snapshot captured from settings.ini on 2026-07-06.
+        // Runtime refresh/probe tokens stay on their original zero defaults so a fresh profile
+        // does not inherit stale manual-refresh counters or force network probe side effects.
+        settings.Width = 628;
+        settings.Height = 414;
+        settings.LeftX = 2252;
+        settings.BottomY = 1549;
+        settings.BackgroundTransparencyPercent = 40;
+        settings.ApplicationTransparencyPercent = 0;
+        settings.CodexRadarWidth = 522;
+        settings.CodexRadarHeight = 120;
+        settings.CodexRadarLeftX = 2358;
+        settings.CodexRadarBottomY = 425;
+        settings.CodexRadarTransparencyPercent = 30;
+        settings.CodexRadarEnabled = true;
+        settings.ClaudeRadarEnabled = false;
+        settings.ClaudeRadarWidth = 580;
+        settings.ClaudeRadarHeight = 120;
+        settings.ClaudeRadarLeftX = 2252;
+        settings.ClaudeRadarBottomY = 290;
+        settings.ClaudeRadarTransparencyPercent = 30;
+        settings.CodexRadarManualLayoutEnabled = false;
+        settings.CodexRadarManualLeftPercent = 53;
+        settings.CodexRadarManualGapPixels = 4;
+        settings.CodexRadarManualEfficiencyTextWidthPixels = 48;
+        settings.CodexRadarManualQuotaRowsWidthPixels = 108;
+        settings.CodexRadarManualIqStatusWidthPixels = 52;
+        settings.CodexRadarManualTextScalePercent = 100;
+        settings.CodexRadarManualRingScalePercent = 100;
+        settings.CodexRadarTimeEfficiencyRingOffsetX = 0;
+        settings.CodexRadarTimeEfficiencyRingOffsetY = 0;
+        settings.CodexRadarTimeEfficiencyTextOffsetX = 0;
+        settings.CodexRadarTimeEfficiencyTextOffsetY = 0;
+        settings.CodexRadarTokenEfficiencyRingOffsetX = 0;
+        settings.CodexRadarTokenEfficiencyRingOffsetY = 0;
+        settings.CodexRadarTokenEfficiencyTextOffsetX = 0;
+        settings.CodexRadarTokenEfficiencyTextOffsetY = 0;
+        settings.CodexRadarConnectionTopTextOffsetX = 0;
+        settings.CodexRadarConnectionTopTextOffsetY = 0;
+        settings.CodexRadarConnectionLineOffsetX = 0;
+        settings.CodexRadarConnectionLineOffsetY = 0;
+        settings.CodexRadarConnectionBottomTextOffsetX = 0;
+        settings.CodexRadarConnectionBottomTextOffsetY = 0;
+        settings.CodexRadarFiveHourQuotaRingOffsetX = 0;
+        settings.CodexRadarFiveHourQuotaRingOffsetY = 0;
+        settings.CodexRadarFiveHourQuotaTextOffsetX = 0;
+        settings.CodexRadarFiveHourQuotaTextOffsetY = 0;
+        settings.CodexRadarWeeklyQuotaRingOffsetX = 0;
+        settings.CodexRadarWeeklyQuotaRingOffsetY = 0;
+        settings.CodexRadarWeeklyQuotaTextOffsetX = 0;
+        settings.CodexRadarWeeklyQuotaTextOffsetY = 0;
+        settings.CodexRadarQuotaRadarLineOffsetX = 0;
+        settings.CodexRadarQuotaRadarLineOffsetY = 0;
+        settings.CodexRadarIqRingOffsetX = 0;
+        settings.CodexRadarIqRingOffsetY = 0;
+        settings.CodexRadarIqTextOffsetX = 0;
+        settings.CodexRadarIqTextOffsetY = 0;
+        settings.PowerThermalWidth = 120;
+        settings.PowerThermalHeight = 114;
+        settings.PowerThermalLeftX = 2760;
+        settings.PowerThermalBottomY = 540;
+        settings.PowerThermalTransparencyPercent = 30;
+        settings.PowerThermalAutoSizeEnabled = true;
+        settings.PowerThermalAutoDirection = PowerThermalAutoDirection.Down;
+        settings.PowerThermalVisibleAlertCount = 8;
+        settings.NetworkMonitorWidth = 583;
+        settings.NetworkMonitorHeight = 247;
+        settings.NetworkMonitorLeftX = 2297;
+        settings.NetworkMonitorBottomY = 1799;
+        settings.NetworkMonitorTransparencyPercent = 20;
+        settings.NetworkMonitorAdapterId = "";
+        settings.NetworkStatusTestMode = NetworkStatusTestMode.Off;
+        settings.GfwProbeEnabled = true;
+        settings.GfwProbeIntervalMinutes = 30;
+        settings.CloudEndpointTestSeed = 0;
+        settings.CloudStatusRegionMask = 1;
+        settings.ConnectionCheckWidth = 292;
+        settings.ConnectionCheckHeight = 98;
+        settings.ConnectionCheckLeftX = 2588;
+        settings.ConnectionCheckBottomY = 305;
+        settings.ConnectionCheckTransparencyPercent = 20;
+        settings.ConnectionCheckBorderTransparencyPercent = 100;
+        settings.ConnectionCheckIntervalSeconds = 600;
+        settings.OperationButtonSize = 86;
+        settings.OperationLeftOffset = 0;
+        settings.OperationBottomOffset = 0;
+        settings.OperationBackgroundTransparencyPercent = 0;
+        settings.OperationPrimaryPanelMode = OperationPrimaryPanelMode.Auto;
+        settings.OperationWindowsButtonEnabled = true;
+        settings.OperationMemoryPieEnabled = true;
+        settings.ForceShowForegroundFpsEnabled = false;
+        settings.SeelenDockForegroundPulseEnabled = true;
+        settings.WinDRecoveryPulseEnabled = true;
+        settings.PowerResumeRestartEnabled = true;
+        settings.FallbackDisconnectedDisplaysEnabled = true;
+        settings.MainDisplayDeviceName = "";
+        settings.CodexRadarDisplayDeviceName = "";
+        settings.ClaudeRadarDisplayDeviceName = "";
+        settings.PowerThermalDisplayDeviceName = "";
+        settings.NetworkMonitorDisplayDeviceName = "";
+        settings.ConnectionCheckDisplayDeviceName = "";
+        settings.OperationDisplayDeviceName = "";
+        settings.LayoutWorkAreaLeft = 0;
+        settings.LayoutWorkAreaTop = 0;
+        settings.LayoutWorkAreaWidth = 2880;
+        settings.LayoutWorkAreaHeight = 1800;
+        settings.CodexRadarLayoutWorkAreaLeft = 0;
+        settings.CodexRadarLayoutWorkAreaTop = 0;
+        settings.CodexRadarLayoutWorkAreaWidth = 2880;
+        settings.CodexRadarLayoutWorkAreaHeight = 1800;
+        settings.ClaudeRadarLayoutWorkAreaLeft = 0;
+        settings.ClaudeRadarLayoutWorkAreaTop = 0;
+        settings.ClaudeRadarLayoutWorkAreaWidth = 2880;
+        settings.ClaudeRadarLayoutWorkAreaHeight = 1800;
+        settings.PowerThermalLayoutWorkAreaLeft = 0;
+        settings.PowerThermalLayoutWorkAreaTop = 0;
+        settings.PowerThermalLayoutWorkAreaWidth = 2880;
+        settings.PowerThermalLayoutWorkAreaHeight = 1800;
+        settings.NetworkMonitorLayoutWorkAreaLeft = 0;
+        settings.NetworkMonitorLayoutWorkAreaTop = 0;
+        settings.NetworkMonitorLayoutWorkAreaWidth = 2880;
+        settings.NetworkMonitorLayoutWorkAreaHeight = 1800;
+        settings.ConnectionCheckLayoutWorkAreaLeft = 0;
+        settings.ConnectionCheckLayoutWorkAreaTop = 0;
+        settings.ConnectionCheckLayoutWorkAreaWidth = 2880;
+        settings.ConnectionCheckLayoutWorkAreaHeight = 1800;
+        settings.OperationLayoutWorkAreaLeft = 0;
+        settings.OperationLayoutWorkAreaTop = 0;
+        settings.OperationLayoutWorkAreaWidth = 2880;
+        settings.OperationLayoutWorkAreaHeight = 1800;
+        settings.VisibilityMode = WidgetVisibilityMode.AlwaysVisible;
+        settings.ClickThroughMode = ClickThroughMode.Auto;
+        settings.StartupEnabled = true;
+        settings.SensitiveMouseModeEnabled = true;
+        settings.SensitiveMouseRangePixels = 200;
+        settings.HoverOpacityRevealDelayEnabled = false;
+        settings.HoverOpacityRevealDelaySeconds = 1.0;
+        settings.HoverOpacityRevealResetSeconds = 0.5;
+        settings.HoverOpacityCoverEnabled = true;
+        settings.ReverseHoverOpacityRevealEnabled = false;
+        settings.ReverseHoverOpacityRestoreDelaySeconds = 5;
+        settings.ShowCpu = true;
+        settings.ShowMemory = true;
+        settings.ShowDisk = true;
+        settings.ShowNetwork = true;
+        settings.ShowGpu = true;
+        settings.ShowNpu = true;
+        settings.AlertTestEnabled = false;
+        settings.ThermalTestMode = ThermalTestMode.Off;
+        settings.CodexRadarTestMode = CodexRadarTestMode.Off;
+        settings.ServiceHealthTestMode = ServiceHealthTestMode.Off;
+        settings.CodexRadarRandomTestEnabled = false;
+        settings.CodexRadarRandomTestAutoRefresh = false;
+        settings.CodexRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
+        settings.MainWidgetRenderVariant = MainWidgetRenderVariant.Classic;
+        settings.NetworkMonitorRenderVariant = NetworkMonitorRenderVariant.Classic;
+        settings.PowerThermalRenderVariant = PowerThermalRenderVariant.Classic;
+        settings.ConnectionCheckRenderVariant = ConnectionCheckRenderVariant.Classic;
+        settings.OperationRenderVariant = OperationRenderVariant.Classic;
+        settings.CodexRadarPublicJsonEnabled = true;
+        settings.CodexRadarHtmlFallbackEnabled = true;
+        settings.CodexRadarRssFallbackEnabled = true;
+        settings.ClaudeRadarJsonEnabled = true;
+        settings.ClaudeRadarHomepageFallbackEnabled = true;
+        settings.ClaudeRadarCommunityRatingsEnabled = true;
+        settings.ClaudeRadarLocalQuotaFallbackEnabled = true;
+        settings.ClaudeRadarRandomTestEnabled = false;
+        settings.ClaudeRadarRandomTestAutoRefresh = false;
+        settings.AiRequestProtectionAutoEnabled = true;
+        settings.AiRequestProtectionManualBlockEnabled = false;
+        settings.CodexQuotaPlanEnabled = false;
+        settings.CodexQuotaPlanWeeklyComparison = CodexQuotaPlanComparison.LessThan;
+        settings.CodexQuotaPlanWeeklyThresholdPercent = 3;
+        settings.CodexQuotaPlanFiveHourComparison = CodexQuotaPlanComparison.LessThan;
+        settings.CodexQuotaPlanFiveHourThresholdPercent = 90;
+        settings.CodexQuotaPlanResumeConditionMode = CodexQuotaPlanResumeConditionMode.Both;
+        settings.CodexQuotaPlanAutoResumePausedGoals = true;
+        settings.CodexQuotaPlanPauseGoalIds = "";
+        settings.CodexQuotaPlanResumeGoalIds = "";
+        settings.CleanIpBadgeTestMode = CleanIpBadgeTestMode.Off;
+        settings.CodexModelIqTestEnabled = false;
+        settings.CodexModelIqTestPassed = 7;
+        settings.CodexModelIqBaselinePassed = 7;
+        settings.CodexModelIqBaselineMode = CodexModelBaselineMode.Absolute;
+        settings.CodexModelEfficiencyTestEnabled = false;
+        settings.CodexModelTokenEfficiencyTestPercent = 100;
+        settings.CodexModelTimeEfficiencyTestPercent = 100;
+        settings.CodexModelTokenEfficiencyBaselinePassed = 0;
+        settings.CodexModelTokenEfficiencyBaselineTokens = 0;
+        settings.CodexModelTokenEfficiencyBaselineMode = CodexModelBaselineMode.Absolute;
+        settings.CodexModelTimeEfficiencyBaselinePassed = 0;
+        settings.CodexModelTimeEfficiencyBaselineSeconds = 0;
+        settings.CodexModelTimeEfficiencyBaselineMode = CodexModelBaselineMode.Absolute;
+        settings.CodexModelTokenEfficiencyLowThresholdPercent = 80;
+        settings.CodexModelTimeEfficiencyLowThresholdPercent = 80;
+        settings.CodexRadarModelVersion = CodexRadarModelVersion.Gpt55;
+        settings.CodexRadarModelKey = "gpt_55_xhigh";
+        settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Auto;
+        settings.ClaudeRadarModelKey = "";
+        settings.ClaudeRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
+        settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
+        settings.DisplayTimeZoneId = "Tokyo Standard Time";
+        settings.PerformanceMode = WidgetPerformanceMode.BatterySaver;
+        settings.HoverOpacityEnabled = true;
+        settings.AutoHoverOpacityIdleEnabled = true;
+        settings.AutoHoverOpacityIdleSeconds = 40;
+        settings.AutoHoverOpacityMaximizedEnabled = false;
+        settings.BurnInHiddenModeColorProtectionEnabled = true;
+        settings.MetricOrder = new[] { "CPU", "Memory", "Disk", "Network", "GPU", "NPU" };
     }
 
     public WidgetSettings Clone()
@@ -577,6 +1200,49 @@ internal sealed class WidgetSettings
             CodexRadarLeftX = this.CodexRadarLeftX,
             CodexRadarBottomY = this.CodexRadarBottomY,
             CodexRadarTransparencyPercent = this.CodexRadarTransparencyPercent,
+            CodexRadarEnabled = this.CodexRadarEnabled,
+            ClaudeRadarEnabled = this.ClaudeRadarEnabled,
+            ClaudeRadarWidth = this.ClaudeRadarWidth,
+            ClaudeRadarHeight = this.ClaudeRadarHeight,
+            ClaudeRadarLeftX = this.ClaudeRadarLeftX,
+            ClaudeRadarBottomY = this.ClaudeRadarBottomY,
+            ClaudeRadarTransparencyPercent = this.ClaudeRadarTransparencyPercent,
+            CodexRadarManualLayoutEnabled = this.CodexRadarManualLayoutEnabled,
+            CodexRadarManualLeftPercent = this.CodexRadarManualLeftPercent,
+            CodexRadarManualGapPixels = this.CodexRadarManualGapPixels,
+            CodexRadarManualEfficiencyTextWidthPixels = this.CodexRadarManualEfficiencyTextWidthPixels,
+            CodexRadarManualQuotaRowsWidthPixels = this.CodexRadarManualQuotaRowsWidthPixels,
+            CodexRadarManualIqStatusWidthPixels = this.CodexRadarManualIqStatusWidthPixels,
+            CodexRadarManualTextScalePercent = this.CodexRadarManualTextScalePercent,
+            CodexRadarManualRingScalePercent = this.CodexRadarManualRingScalePercent,
+            CodexRadarTimeEfficiencyRingOffsetX = this.CodexRadarTimeEfficiencyRingOffsetX,
+            CodexRadarTimeEfficiencyRingOffsetY = this.CodexRadarTimeEfficiencyRingOffsetY,
+            CodexRadarTimeEfficiencyTextOffsetX = this.CodexRadarTimeEfficiencyTextOffsetX,
+            CodexRadarTimeEfficiencyTextOffsetY = this.CodexRadarTimeEfficiencyTextOffsetY,
+            CodexRadarTokenEfficiencyRingOffsetX = this.CodexRadarTokenEfficiencyRingOffsetX,
+            CodexRadarTokenEfficiencyRingOffsetY = this.CodexRadarTokenEfficiencyRingOffsetY,
+            CodexRadarTokenEfficiencyTextOffsetX = this.CodexRadarTokenEfficiencyTextOffsetX,
+            CodexRadarTokenEfficiencyTextOffsetY = this.CodexRadarTokenEfficiencyTextOffsetY,
+            CodexRadarConnectionTopTextOffsetX = this.CodexRadarConnectionTopTextOffsetX,
+            CodexRadarConnectionTopTextOffsetY = this.CodexRadarConnectionTopTextOffsetY,
+            CodexRadarConnectionLineOffsetX = this.CodexRadarConnectionLineOffsetX,
+            CodexRadarConnectionLineOffsetY = this.CodexRadarConnectionLineOffsetY,
+            CodexRadarConnectionBottomTextOffsetX = this.CodexRadarConnectionBottomTextOffsetX,
+            CodexRadarConnectionBottomTextOffsetY = this.CodexRadarConnectionBottomTextOffsetY,
+            CodexRadarFiveHourQuotaRingOffsetX = this.CodexRadarFiveHourQuotaRingOffsetX,
+            CodexRadarFiveHourQuotaRingOffsetY = this.CodexRadarFiveHourQuotaRingOffsetY,
+            CodexRadarFiveHourQuotaTextOffsetX = this.CodexRadarFiveHourQuotaTextOffsetX,
+            CodexRadarFiveHourQuotaTextOffsetY = this.CodexRadarFiveHourQuotaTextOffsetY,
+            CodexRadarWeeklyQuotaRingOffsetX = this.CodexRadarWeeklyQuotaRingOffsetX,
+            CodexRadarWeeklyQuotaRingOffsetY = this.CodexRadarWeeklyQuotaRingOffsetY,
+            CodexRadarWeeklyQuotaTextOffsetX = this.CodexRadarWeeklyQuotaTextOffsetX,
+            CodexRadarWeeklyQuotaTextOffsetY = this.CodexRadarWeeklyQuotaTextOffsetY,
+            CodexRadarQuotaRadarLineOffsetX = this.CodexRadarQuotaRadarLineOffsetX,
+            CodexRadarQuotaRadarLineOffsetY = this.CodexRadarQuotaRadarLineOffsetY,
+            CodexRadarIqRingOffsetX = this.CodexRadarIqRingOffsetX,
+            CodexRadarIqRingOffsetY = this.CodexRadarIqRingOffsetY,
+            CodexRadarIqTextOffsetX = this.CodexRadarIqTextOffsetX,
+            CodexRadarIqTextOffsetY = this.CodexRadarIqTextOffsetY,
             PowerThermalWidth = this.PowerThermalWidth,
             PowerThermalHeight = this.PowerThermalHeight,
             PowerThermalLeftX = this.PowerThermalLeftX,
@@ -609,14 +1275,49 @@ internal sealed class WidgetSettings
             OperationLeftOffset = this.OperationLeftOffset,
             OperationBottomOffset = this.OperationBottomOffset,
             OperationBackgroundTransparencyPercent = this.OperationBackgroundTransparencyPercent,
+            OperationPrimaryPanelMode = this.OperationPrimaryPanelMode,
+            OperationWindowsButtonEnabled = this.OperationWindowsButtonEnabled,
+            OperationMemoryPieEnabled = this.OperationMemoryPieEnabled,
             ForceShowForegroundFpsEnabled = this.ForceShowForegroundFpsEnabled,
             SeelenDockForegroundPulseEnabled = this.SeelenDockForegroundPulseEnabled,
             WinDRecoveryPulseEnabled = this.WinDRecoveryPulseEnabled,
             PowerResumeRestartEnabled = this.PowerResumeRestartEnabled,
+            FallbackDisconnectedDisplaysEnabled = this.FallbackDisconnectedDisplaysEnabled,
+            MainDisplayDeviceName = this.MainDisplayDeviceName,
+            CodexRadarDisplayDeviceName = this.CodexRadarDisplayDeviceName,
+            ClaudeRadarDisplayDeviceName = this.ClaudeRadarDisplayDeviceName,
+            PowerThermalDisplayDeviceName = this.PowerThermalDisplayDeviceName,
+            NetworkMonitorDisplayDeviceName = this.NetworkMonitorDisplayDeviceName,
+            ConnectionCheckDisplayDeviceName = this.ConnectionCheckDisplayDeviceName,
+            OperationDisplayDeviceName = this.OperationDisplayDeviceName,
             LayoutWorkAreaLeft = this.LayoutWorkAreaLeft,
             LayoutWorkAreaTop = this.LayoutWorkAreaTop,
             LayoutWorkAreaWidth = this.LayoutWorkAreaWidth,
             LayoutWorkAreaHeight = this.LayoutWorkAreaHeight,
+            CodexRadarLayoutWorkAreaLeft = this.CodexRadarLayoutWorkAreaLeft,
+            CodexRadarLayoutWorkAreaTop = this.CodexRadarLayoutWorkAreaTop,
+            CodexRadarLayoutWorkAreaWidth = this.CodexRadarLayoutWorkAreaWidth,
+            CodexRadarLayoutWorkAreaHeight = this.CodexRadarLayoutWorkAreaHeight,
+            ClaudeRadarLayoutWorkAreaLeft = this.ClaudeRadarLayoutWorkAreaLeft,
+            ClaudeRadarLayoutWorkAreaTop = this.ClaudeRadarLayoutWorkAreaTop,
+            ClaudeRadarLayoutWorkAreaWidth = this.ClaudeRadarLayoutWorkAreaWidth,
+            ClaudeRadarLayoutWorkAreaHeight = this.ClaudeRadarLayoutWorkAreaHeight,
+            PowerThermalLayoutWorkAreaLeft = this.PowerThermalLayoutWorkAreaLeft,
+            PowerThermalLayoutWorkAreaTop = this.PowerThermalLayoutWorkAreaTop,
+            PowerThermalLayoutWorkAreaWidth = this.PowerThermalLayoutWorkAreaWidth,
+            PowerThermalLayoutWorkAreaHeight = this.PowerThermalLayoutWorkAreaHeight,
+            NetworkMonitorLayoutWorkAreaLeft = this.NetworkMonitorLayoutWorkAreaLeft,
+            NetworkMonitorLayoutWorkAreaTop = this.NetworkMonitorLayoutWorkAreaTop,
+            NetworkMonitorLayoutWorkAreaWidth = this.NetworkMonitorLayoutWorkAreaWidth,
+            NetworkMonitorLayoutWorkAreaHeight = this.NetworkMonitorLayoutWorkAreaHeight,
+            ConnectionCheckLayoutWorkAreaLeft = this.ConnectionCheckLayoutWorkAreaLeft,
+            ConnectionCheckLayoutWorkAreaTop = this.ConnectionCheckLayoutWorkAreaTop,
+            ConnectionCheckLayoutWorkAreaWidth = this.ConnectionCheckLayoutWorkAreaWidth,
+            ConnectionCheckLayoutWorkAreaHeight = this.ConnectionCheckLayoutWorkAreaHeight,
+            OperationLayoutWorkAreaLeft = this.OperationLayoutWorkAreaLeft,
+            OperationLayoutWorkAreaTop = this.OperationLayoutWorkAreaTop,
+            OperationLayoutWorkAreaWidth = this.OperationLayoutWorkAreaWidth,
+            OperationLayoutWorkAreaHeight = this.OperationLayoutWorkAreaHeight,
             VisibilityMode = this.VisibilityMode,
             ClickThroughMode = this.ClickThroughMode,
             StartupEnabled = this.StartupEnabled,
@@ -633,6 +1334,36 @@ internal sealed class WidgetSettings
             CodexRadarRandomTestEnabled = this.CodexRadarRandomTestEnabled,
             CodexRadarRandomTestAutoRefresh = this.CodexRadarRandomTestAutoRefresh,
             CodexRadarRandomTestRefreshToken = this.CodexRadarRandomTestRefreshToken,
+            CodexRadarRenderVariant = this.CodexRadarRenderVariant,
+            MainWidgetRenderVariant = this.MainWidgetRenderVariant,
+            NetworkMonitorRenderVariant = this.NetworkMonitorRenderVariant,
+            PowerThermalRenderVariant = this.PowerThermalRenderVariant,
+            ConnectionCheckRenderVariant = this.ConnectionCheckRenderVariant,
+            OperationRenderVariant = this.OperationRenderVariant,
+            CodexRadarPublicJsonEnabled = this.CodexRadarPublicJsonEnabled,
+            CodexRadarHtmlFallbackEnabled = this.CodexRadarHtmlFallbackEnabled,
+            CodexRadarRssFallbackEnabled = this.CodexRadarRssFallbackEnabled,
+            CodexRadarServiceProbeToken = this.CodexRadarServiceProbeToken,
+            ClaudeRadarJsonEnabled = this.ClaudeRadarJsonEnabled,
+            ClaudeRadarHomepageFallbackEnabled = this.ClaudeRadarHomepageFallbackEnabled,
+            ClaudeRadarCommunityRatingsEnabled = this.ClaudeRadarCommunityRatingsEnabled,
+            ClaudeRadarLocalQuotaFallbackEnabled = this.ClaudeRadarLocalQuotaFallbackEnabled,
+            ClaudeRadarRandomTestEnabled = this.ClaudeRadarRandomTestEnabled,
+            ClaudeRadarRandomTestAutoRefresh = this.ClaudeRadarRandomTestAutoRefresh,
+            ClaudeRadarRandomTestRefreshToken = this.ClaudeRadarRandomTestRefreshToken,
+            ClaudeRadarServiceProbeToken = this.ClaudeRadarServiceProbeToken,
+            DeepSeekApiKeyRevision = this.DeepSeekApiKeyRevision,
+            AiRequestProtectionAutoEnabled = this.AiRequestProtectionAutoEnabled,
+            AiRequestProtectionManualBlockEnabled = this.AiRequestProtectionManualBlockEnabled,
+            CodexQuotaPlanEnabled = this.CodexQuotaPlanEnabled,
+            CodexQuotaPlanWeeklyComparison = this.CodexQuotaPlanWeeklyComparison,
+            CodexQuotaPlanWeeklyThresholdPercent = this.CodexQuotaPlanWeeklyThresholdPercent,
+            CodexQuotaPlanFiveHourComparison = this.CodexQuotaPlanFiveHourComparison,
+            CodexQuotaPlanFiveHourThresholdPercent = this.CodexQuotaPlanFiveHourThresholdPercent,
+            CodexQuotaPlanResumeConditionMode = this.CodexQuotaPlanResumeConditionMode,
+            CodexQuotaPlanAutoResumePausedGoals = this.CodexQuotaPlanAutoResumePausedGoals,
+            CodexQuotaPlanPauseGoalIds = this.CodexQuotaPlanPauseGoalIds,
+            CodexQuotaPlanResumeGoalIds = this.CodexQuotaPlanResumeGoalIds,
             CleanIpBadgeTestMode = this.CleanIpBadgeTestMode,
             CodexModelIqTestEnabled = this.CodexModelIqTestEnabled,
             CodexModelIqTestPassed = this.CodexModelIqTestPassed,
@@ -651,6 +1382,9 @@ internal sealed class WidgetSettings
             CodexModelTimeEfficiencyLowThresholdPercent = this.CodexModelTimeEfficiencyLowThresholdPercent,
             CodexRadarModelVersion = this.CodexRadarModelVersion,
             CodexRadarModelKey = this.CodexRadarModelKey,
+            CodexRadarSoftwareMode = this.CodexRadarSoftwareMode,
+            ClaudeRadarModelKey = this.ClaudeRadarModelKey,
+            ClaudeRadarRenderVariant = this.ClaudeRadarRenderVariant,
             DisplayTimeZoneMode = this.DisplayTimeZoneMode,
             DisplayTimeZoneId = this.DisplayTimeZoneId,
             PerformanceMode = this.PerformanceMode,
@@ -682,6 +1416,32 @@ internal sealed class WidgetSettings
         this.CodexRadarWidth = Clamp(this.CodexRadarWidth, MinCodexRadarWidth, MaxCodexRadarWidth);
         this.CodexRadarHeight = Clamp(this.CodexRadarHeight, MinCodexRadarHeight, MaxCodexRadarHeight);
         this.CodexRadarTransparencyPercent = Clamp(this.CodexRadarTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
+        this.ClaudeRadarWidth = Clamp(this.ClaudeRadarWidth, MinCodexRadarWidth, MaxCodexRadarWidth);
+        this.ClaudeRadarHeight = Clamp(this.ClaudeRadarHeight, MinCodexRadarHeight, MaxCodexRadarHeight);
+        this.ClaudeRadarTransparencyPercent = Clamp(this.ClaudeRadarTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
+        this.CodexRadarManualLeftPercent = Clamp(this.CodexRadarManualLeftPercent, MinCodexRadarManualLeftPercent, MaxCodexRadarManualLeftPercent);
+        this.CodexRadarManualGapPixels = Clamp(this.CodexRadarManualGapPixels, MinCodexRadarManualGapPixels, MaxCodexRadarManualGapPixels);
+        this.CodexRadarManualEfficiencyTextWidthPixels = Clamp(
+            this.CodexRadarManualEfficiencyTextWidthPixels,
+            MinCodexRadarManualEfficiencyTextWidthPixels,
+            MaxCodexRadarManualEfficiencyTextWidthPixels);
+        this.CodexRadarManualQuotaRowsWidthPixels = Clamp(
+            this.CodexRadarManualQuotaRowsWidthPixels,
+            MinCodexRadarManualQuotaRowsWidthPixels,
+            MaxCodexRadarManualQuotaRowsWidthPixels);
+        this.CodexRadarManualIqStatusWidthPixels = Clamp(
+            this.CodexRadarManualIqStatusWidthPixels,
+            MinCodexRadarManualIqStatusWidthPixels,
+            MaxCodexRadarManualIqStatusWidthPixels);
+        this.CodexRadarManualTextScalePercent = Clamp(
+            this.CodexRadarManualTextScalePercent,
+            MinCodexRadarManualTextScalePercent,
+            MaxCodexRadarManualTextScalePercent);
+        this.CodexRadarManualRingScalePercent = Clamp(
+            this.CodexRadarManualRingScalePercent,
+            MinCodexRadarManualRingScalePercent,
+            MaxCodexRadarManualRingScalePercent);
+        ClampCodexRadarManualElementOffsets(this);
         this.PowerThermalWidth = Clamp(this.PowerThermalWidth, MinPowerThermalWidth, MaxPowerThermalWidth);
         this.PowerThermalHeight = Clamp(this.PowerThermalHeight, MinPowerThermalHeight, MaxPowerThermalHeight);
         this.PowerThermalTransparencyPercent = Clamp(this.PowerThermalTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
@@ -709,6 +1469,11 @@ internal sealed class WidgetSettings
 
         this.OperationButtonSize = Clamp(this.OperationButtonSize, MinOperationButtonSize, MaxOperationButtonSize);
         this.OperationBackgroundTransparencyPercent = Clamp(this.OperationBackgroundTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
+        if (!Enum.IsDefined(typeof(OperationPrimaryPanelMode), this.OperationPrimaryPanelMode))
+        {
+            this.OperationPrimaryPanelMode = OperationPrimaryPanelMode.Auto;
+        }
+
         this.SensitiveMouseRangePixels = Clamp(
             this.SensitiveMouseRangePixels,
             MinSensitiveMouseRangePixels,
@@ -792,6 +1557,17 @@ internal sealed class WidgetSettings
         this.CodexRadarModelVersion =
             CodexRadarModelCatalog.LegacyVersionFromKey(this.CodexRadarModelKey);
 
+        if (!Enum.IsDefined(typeof(CodexRadarSoftwareMode), this.CodexRadarSoftwareMode))
+        {
+            this.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Auto;
+        }
+
+        this.ClaudeRadarModelKey = NormalizeClaudeRadarModelKey(this.ClaudeRadarModelKey);
+        if (!Enum.IsDefined(typeof(CodexRadarRenderVariant), this.ClaudeRadarRenderVariant))
+        {
+            this.ClaudeRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
+        }
+
         if (!Enum.IsDefined(typeof(DisplayTimeZoneMode), this.DisplayTimeZoneMode))
         {
             this.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
@@ -821,6 +1597,33 @@ internal sealed class WidgetSettings
         // The legacy per-module website tests no longer have UI controls.
         this.CodexRadarTestMode = CodexRadarTestMode.Off;
         this.ServiceHealthTestMode = ServiceHealthTestMode.Off;
+        this.CodexRadarServiceProbeToken = Clamp(this.CodexRadarServiceProbeToken, 0, int.MaxValue);
+        this.DeepSeekApiKeyRevision = Clamp(this.DeepSeekApiKeyRevision, 0, int.MaxValue);
+        if (!Enum.IsDefined(typeof(CodexQuotaPlanComparison), this.CodexQuotaPlanWeeklyComparison))
+        {
+            this.CodexQuotaPlanWeeklyComparison = CodexQuotaPlanComparison.LessThan;
+        }
+
+        if (!Enum.IsDefined(typeof(CodexQuotaPlanComparison), this.CodexQuotaPlanFiveHourComparison))
+        {
+            this.CodexQuotaPlanFiveHourComparison = CodexQuotaPlanComparison.LessThan;
+        }
+
+        if (!Enum.IsDefined(typeof(CodexQuotaPlanResumeConditionMode), this.CodexQuotaPlanResumeConditionMode))
+        {
+            this.CodexQuotaPlanResumeConditionMode = CodexQuotaPlanResumeConditionMode.Both;
+        }
+
+        this.CodexQuotaPlanWeeklyThresholdPercent = Clamp(
+            this.CodexQuotaPlanWeeklyThresholdPercent,
+            MinCodexQuotaPlanThresholdPercent,
+            MaxCodexQuotaPlanThresholdPercent);
+        this.CodexQuotaPlanFiveHourThresholdPercent = Clamp(
+            this.CodexQuotaPlanFiveHourThresholdPercent,
+            MinCodexQuotaPlanThresholdPercent,
+            MaxCodexQuotaPlanThresholdPercent);
+        this.CodexQuotaPlanPauseGoalIds = NormalizeGoalIdList(this.CodexQuotaPlanPauseGoalIds);
+        this.CodexQuotaPlanResumeGoalIds = NormalizeGoalIdList(this.CodexQuotaPlanResumeGoalIds);
 
         if (!Enum.IsDefined(typeof(CleanIpBadgeTestMode), this.CleanIpBadgeTestMode))
         {
@@ -832,11 +1635,18 @@ internal sealed class WidgetSettings
             this.NetworkStatusTestMode = NetworkStatusTestMode.Off;
         }
 
+        this.MainDisplayDeviceName = NormalizeDisplayDeviceName(this.MainDisplayDeviceName);
+        this.CodexRadarDisplayDeviceName = NormalizeDisplayDeviceName(this.CodexRadarDisplayDeviceName);
+        this.ClaudeRadarDisplayDeviceName = NormalizeDisplayDeviceName(this.ClaudeRadarDisplayDeviceName);
+        this.PowerThermalDisplayDeviceName = NormalizeDisplayDeviceName(this.PowerThermalDisplayDeviceName);
+        this.NetworkMonitorDisplayDeviceName = NormalizeDisplayDeviceName(this.NetworkMonitorDisplayDeviceName);
+        this.ConnectionCheckDisplayDeviceName = NormalizeDisplayDeviceName(this.ConnectionCheckDisplayDeviceName);
+        this.OperationDisplayDeviceName = NormalizeDisplayDeviceName(this.OperationDisplayDeviceName);
         this.MetricOrder = NormalizeMetricOrder(this.MetricOrder);
         Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
         EnsureUsableWorkArea(ref workArea);
-        EnsureLayoutWorkAreaReference(workArea);
-        ClampLayoutToWorkArea(workArea, GetPrimaryScale());
+        EnsureAllLayoutWorkAreaReferences(workArea);
+        ClampLayoutToTargetWorkAreas(GetPrimaryScale());
     }
 
     public static WidgetSettings Load()
@@ -844,6 +1654,7 @@ internal sealed class WidgetSettings
         WidgetSettings settings = new WidgetSettings();
         bool hasPixelPosition = false;
         int settingsVersion = 0;
+        bool saveAfterMigration = false;
 
         try
         {
@@ -898,11 +1709,90 @@ internal sealed class WidgetSettings
         if (settingsVersion > 0 && settingsVersion < 6)
         {
             ApplyCleanIpBadgeSizeMigration(settings);
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 27)
+        {
+            settings.OperationPrimaryPanelMode = InferOperationPrimaryPanelModeFromLegacyBooleans(settings);
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion < 28)
+        {
+            ApplyMultiDisplayLayoutReferenceMigration(settings);
+            saveAfterMigration = settingsVersion > 0;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 29)
+        {
+            ApplyCodexRadarServiceHealthPanelMigration(settings);
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 30)
+        {
+            ApplyCodexRadarCompactQuotaWidthMigration(settings);
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 31)
+        {
+            ApplyCodexRadarBalancedWidthMigration(settings);
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 32)
+        {
+            ApplyCodexRadarBalancedWidthMigration(settings);
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 39)
+        {
+            ApplyCodexRadarEvenRowWidthMigration(settings);
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 40)
+        {
+            ApplyCodexModelIqBaselineMigration(settings);
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 41)
+        {
+            settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Auto;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 43)
+        {
+            ApplyCodexModelIqTenTaskMigration(settings);
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion >= 43 && settingsVersion < 44)
+        {
+            ApplyCodexModelIqWebsiteScoreMigration(settings);
+            saveAfterMigration = true;
         }
 
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
+        if (saveAfterMigration)
+        {
+            try
+            {
+                settings.Save();
+            }
+            catch (Exception ex)
+            {
+                Program.LogException(ex);
+            }
+        }
+
         return settings;
     }
 
@@ -912,6 +1802,132 @@ internal sealed class WidgetSettings
         settings.ConnectionCheckWidth = Clamp((int)Math.Round(settings.NetworkMonitorWidth * 0.5f), MinConnectionCheckWidth, MaxConnectionCheckWidth);
         settings.ConnectionCheckHeight = Clamp((int)Math.Round(settings.NetworkMonitorHeight * 0.5f), MinConnectionCheckHeight, MaxConnectionCheckHeight);
         settings.ConnectionCheckLeftX = oldRight - settings.ConnectionCheckWidth;
+    }
+
+    private static OperationPrimaryPanelMode InferOperationPrimaryPanelModeFromLegacyBooleans(WidgetSettings settings)
+    {
+        if (settings.OperationWindowsButtonEnabled && settings.OperationMemoryPieEnabled)
+        {
+            return OperationPrimaryPanelMode.Auto;
+        }
+
+        if (settings.OperationWindowsButtonEnabled)
+        {
+            return OperationPrimaryPanelMode.WindowsButton;
+        }
+
+        if (settings.OperationMemoryPieEnabled)
+        {
+            return OperationPrimaryPanelMode.MemoryPie;
+        }
+
+        return OperationPrimaryPanelMode.Hidden;
+    }
+
+    private static void ApplyMultiDisplayLayoutReferenceMigration(WidgetSettings settings)
+    {
+        Rectangle workArea = new Rectangle(
+            settings.LayoutWorkAreaLeft,
+            settings.LayoutWorkAreaTop,
+            settings.LayoutWorkAreaWidth,
+            settings.LayoutWorkAreaHeight);
+        EnsureUsableWorkArea(ref workArea);
+        settings.CaptureAllModuleLayoutWorkAreas(workArea);
+    }
+
+    private static void ApplyCodexRadarServiceHealthPanelMigration(WidgetSettings settings)
+    {
+        // The Rader/Claude/ChatGPT panel is hidden but retained for rollback; reclaim its
+        // previous strip exactly once for saved configs so the window does not keep dead space.
+        settings.CodexRadarWidth = Clamp(
+            settings.CodexRadarWidth - CodexRadarHiddenServiceHealthPanelWidthReduction,
+            MinCodexRadarWidth,
+            MaxCodexRadarWidth);
+    }
+
+    private static void ApplyCodexRadarCompactQuotaWidthMigration(WidgetSettings settings)
+    {
+        // After the service panel is hidden, the quota rows only need their ring, reset text
+        // and IQ status column. Reclaim the remaining blank strip once for saved configs.
+        settings.CodexRadarWidth = Clamp(
+            settings.CodexRadarWidth - CodexRadarCompactQuotaWidthReduction,
+            MinCodexRadarWidth,
+            MaxCodexRadarWidth);
+    }
+
+    private static void ApplyCodexRadarBalancedWidthMigration(WidgetSettings settings)
+    {
+        // The compact 430 px width clipped the quota module on high-DPI screens. Keep larger
+        // user widths, but raise compact migrated configs back to the balanced default.
+        settings.CodexRadarWidth = Clamp(
+            Math.Max(settings.CodexRadarWidth, DefaultCodexRadarWidth),
+            MinCodexRadarWidth,
+            MaxCodexRadarWidth);
+    }
+
+    private static void ApplyCodexRadarEvenRowWidthMigration(WidgetSettings settings)
+    {
+        // Only compress the current EvenRow default-width layout once. Smaller user-tuned
+        // windows are left untouched so a manual compact layout does not get squeezed again.
+        if (settings.CodexRadarRenderVariant != CodexRadarRenderVariant.EvenRow ||
+            settings.CodexRadarWidth < PreviousDefaultCodexRadarWidth)
+        {
+            return;
+        }
+
+        settings.CodexRadarWidth = Clamp(
+            settings.CodexRadarWidth - CodexRadarEvenRowWidthReduction,
+            MinCodexRadarWidth,
+            MaxCodexRadarWidth);
+    }
+
+    private static void ApplyCodexModelIqBaselineMigration(WidgetSettings settings)
+    {
+        if (settings.CodexModelIqBaselinePassed == PreviousDefaultCodexModelIqBaselinePassed)
+        {
+            settings.CodexModelIqBaselinePassed = DefaultCodexModelIqBaselinePassed;
+        }
+
+        if (settings.CodexModelIqTestPassed == PreviousDefaultCodexModelIqBaselinePassed)
+        {
+            settings.CodexModelIqTestPassed = DefaultCodexModelIqBaselinePassed;
+        }
+    }
+
+    private static void ApplyCodexModelIqTenTaskMigration(WidgetSettings settings)
+    {
+        if (settings.CodexModelIqBaselinePassed == PreviousTwelveTaskCodexModelIqBaselinePassed)
+        {
+            settings.CodexModelIqBaselinePassed = DefaultCodexModelIqBaselinePassed;
+        }
+
+        if (settings.CodexModelIqTestPassed == PreviousTwelveTaskCodexModelIqBaselinePassed)
+        {
+            settings.CodexModelIqTestPassed = DefaultCodexModelIqBaselinePassed;
+        }
+    }
+
+    private static void ApplyCodexModelIqWebsiteScoreMigration(WidgetSettings settings)
+    {
+        if (settings.CodexModelIqBaselinePassed == PreviousTenTaskLocalCodexModelIqBaselinePassed)
+        {
+            settings.CodexModelIqBaselinePassed = DefaultCodexModelIqBaselinePassed;
+        }
+
+        if (settings.CodexModelIqTestPassed == PreviousTenTaskLocalCodexModelIqBaselinePassed)
+        {
+            settings.CodexModelIqTestPassed = DefaultCodexModelIqBaselinePassed;
+        }
+    }
+
+    private static bool GetLegacyOperationWindowsButtonEnabled(OperationPrimaryPanelMode mode)
+    {
+        return mode == OperationPrimaryPanelMode.Auto || mode == OperationPrimaryPanelMode.WindowsButton;
+    }
+
+    private static bool GetLegacyOperationMemoryPieEnabled(OperationPrimaryPanelMode mode)
+    {
+        return mode == OperationPrimaryPanelMode.Auto || mode == OperationPrimaryPanelMode.MemoryPie;
     }
 
     public void Save()
@@ -934,6 +1950,49 @@ internal sealed class WidgetSettings
             "CodexRadarLeftX=" + this.CodexRadarLeftX,
             "CodexRadarBottomY=" + this.CodexRadarBottomY,
             "CodexRadarTransparencyPercent=" + this.CodexRadarTransparencyPercent,
+            "CodexRadarEnabled=" + this.CodexRadarEnabled,
+            "ClaudeRadarEnabled=" + this.ClaudeRadarEnabled,
+            "ClaudeRadarWidth=" + this.ClaudeRadarWidth,
+            "ClaudeRadarHeight=" + this.ClaudeRadarHeight,
+            "ClaudeRadarLeftX=" + this.ClaudeRadarLeftX,
+            "ClaudeRadarBottomY=" + this.ClaudeRadarBottomY,
+            "ClaudeRadarTransparencyPercent=" + this.ClaudeRadarTransparencyPercent,
+            "CodexRadarManualLayoutEnabled=" + this.CodexRadarManualLayoutEnabled,
+            "CodexRadarManualLeftPercent=" + this.CodexRadarManualLeftPercent,
+            "CodexRadarManualGapPixels=" + this.CodexRadarManualGapPixels,
+            "CodexRadarManualEfficiencyTextWidthPixels=" + this.CodexRadarManualEfficiencyTextWidthPixels,
+            "CodexRadarManualQuotaRowsWidthPixels=" + this.CodexRadarManualQuotaRowsWidthPixels,
+            "CodexRadarManualIqStatusWidthPixels=" + this.CodexRadarManualIqStatusWidthPixels,
+            "CodexRadarManualTextScalePercent=" + this.CodexRadarManualTextScalePercent,
+            "CodexRadarManualRingScalePercent=" + this.CodexRadarManualRingScalePercent,
+            "CodexRadarTimeEfficiencyRingOffsetX=" + this.CodexRadarTimeEfficiencyRingOffsetX,
+            "CodexRadarTimeEfficiencyRingOffsetY=" + this.CodexRadarTimeEfficiencyRingOffsetY,
+            "CodexRadarTimeEfficiencyTextOffsetX=" + this.CodexRadarTimeEfficiencyTextOffsetX,
+            "CodexRadarTimeEfficiencyTextOffsetY=" + this.CodexRadarTimeEfficiencyTextOffsetY,
+            "CodexRadarTokenEfficiencyRingOffsetX=" + this.CodexRadarTokenEfficiencyRingOffsetX,
+            "CodexRadarTokenEfficiencyRingOffsetY=" + this.CodexRadarTokenEfficiencyRingOffsetY,
+            "CodexRadarTokenEfficiencyTextOffsetX=" + this.CodexRadarTokenEfficiencyTextOffsetX,
+            "CodexRadarTokenEfficiencyTextOffsetY=" + this.CodexRadarTokenEfficiencyTextOffsetY,
+            "CodexRadarConnectionTopTextOffsetX=" + this.CodexRadarConnectionTopTextOffsetX,
+            "CodexRadarConnectionTopTextOffsetY=" + this.CodexRadarConnectionTopTextOffsetY,
+            "CodexRadarConnectionLineOffsetX=" + this.CodexRadarConnectionLineOffsetX,
+            "CodexRadarConnectionLineOffsetY=" + this.CodexRadarConnectionLineOffsetY,
+            "CodexRadarConnectionBottomTextOffsetX=" + this.CodexRadarConnectionBottomTextOffsetX,
+            "CodexRadarConnectionBottomTextOffsetY=" + this.CodexRadarConnectionBottomTextOffsetY,
+            "CodexRadarFiveHourQuotaRingOffsetX=" + this.CodexRadarFiveHourQuotaRingOffsetX,
+            "CodexRadarFiveHourQuotaRingOffsetY=" + this.CodexRadarFiveHourQuotaRingOffsetY,
+            "CodexRadarFiveHourQuotaTextOffsetX=" + this.CodexRadarFiveHourQuotaTextOffsetX,
+            "CodexRadarFiveHourQuotaTextOffsetY=" + this.CodexRadarFiveHourQuotaTextOffsetY,
+            "CodexRadarWeeklyQuotaRingOffsetX=" + this.CodexRadarWeeklyQuotaRingOffsetX,
+            "CodexRadarWeeklyQuotaRingOffsetY=" + this.CodexRadarWeeklyQuotaRingOffsetY,
+            "CodexRadarWeeklyQuotaTextOffsetX=" + this.CodexRadarWeeklyQuotaTextOffsetX,
+            "CodexRadarWeeklyQuotaTextOffsetY=" + this.CodexRadarWeeklyQuotaTextOffsetY,
+            "CodexRadarQuotaRadarLineOffsetX=" + this.CodexRadarQuotaRadarLineOffsetX,
+            "CodexRadarQuotaRadarLineOffsetY=" + this.CodexRadarQuotaRadarLineOffsetY,
+            "CodexRadarIqRingOffsetX=" + this.CodexRadarIqRingOffsetX,
+            "CodexRadarIqRingOffsetY=" + this.CodexRadarIqRingOffsetY,
+            "CodexRadarIqTextOffsetX=" + this.CodexRadarIqTextOffsetX,
+            "CodexRadarIqTextOffsetY=" + this.CodexRadarIqTextOffsetY,
             "PowerThermalWidth=" + this.PowerThermalWidth,
             "PowerThermalHeight=" + this.PowerThermalHeight,
             "PowerThermalLeftX=" + this.PowerThermalLeftX,
@@ -964,14 +2023,49 @@ internal sealed class WidgetSettings
             "OperationLeftOffset=" + this.OperationLeftOffset,
             "OperationBottomOffset=" + this.OperationBottomOffset,
             "OperationBackgroundTransparencyPercent=" + this.OperationBackgroundTransparencyPercent,
+            "OperationPrimaryPanelMode=" + this.OperationPrimaryPanelMode,
+            "OperationWindowsButtonEnabled=" + GetLegacyOperationWindowsButtonEnabled(this.OperationPrimaryPanelMode),
+            "OperationMemoryPieEnabled=" + GetLegacyOperationMemoryPieEnabled(this.OperationPrimaryPanelMode),
             "ForceShowForegroundFpsEnabled=" + this.ForceShowForegroundFpsEnabled,
             "SeelenDockForegroundPulseEnabled=" + this.SeelenDockForegroundPulseEnabled,
             "WinDRecoveryPulseEnabled=" + this.WinDRecoveryPulseEnabled,
             "PowerResumeRestartEnabled=" + this.PowerResumeRestartEnabled,
+            "FallbackDisconnectedDisplaysEnabled=" + this.FallbackDisconnectedDisplaysEnabled,
+            "MainDisplayDeviceName=" + this.MainDisplayDeviceName,
+            "CodexRadarDisplayDeviceName=" + this.CodexRadarDisplayDeviceName,
+            "ClaudeRadarDisplayDeviceName=" + this.ClaudeRadarDisplayDeviceName,
+            "PowerThermalDisplayDeviceName=" + this.PowerThermalDisplayDeviceName,
+            "NetworkMonitorDisplayDeviceName=" + this.NetworkMonitorDisplayDeviceName,
+            "ConnectionCheckDisplayDeviceName=" + this.ConnectionCheckDisplayDeviceName,
+            "OperationDisplayDeviceName=" + this.OperationDisplayDeviceName,
             "LayoutWorkAreaLeft=" + this.LayoutWorkAreaLeft,
             "LayoutWorkAreaTop=" + this.LayoutWorkAreaTop,
             "LayoutWorkAreaWidth=" + this.LayoutWorkAreaWidth,
             "LayoutWorkAreaHeight=" + this.LayoutWorkAreaHeight,
+            "CodexRadarLayoutWorkAreaLeft=" + this.CodexRadarLayoutWorkAreaLeft,
+            "CodexRadarLayoutWorkAreaTop=" + this.CodexRadarLayoutWorkAreaTop,
+            "CodexRadarLayoutWorkAreaWidth=" + this.CodexRadarLayoutWorkAreaWidth,
+            "CodexRadarLayoutWorkAreaHeight=" + this.CodexRadarLayoutWorkAreaHeight,
+            "ClaudeRadarLayoutWorkAreaLeft=" + this.ClaudeRadarLayoutWorkAreaLeft,
+            "ClaudeRadarLayoutWorkAreaTop=" + this.ClaudeRadarLayoutWorkAreaTop,
+            "ClaudeRadarLayoutWorkAreaWidth=" + this.ClaudeRadarLayoutWorkAreaWidth,
+            "ClaudeRadarLayoutWorkAreaHeight=" + this.ClaudeRadarLayoutWorkAreaHeight,
+            "PowerThermalLayoutWorkAreaLeft=" + this.PowerThermalLayoutWorkAreaLeft,
+            "PowerThermalLayoutWorkAreaTop=" + this.PowerThermalLayoutWorkAreaTop,
+            "PowerThermalLayoutWorkAreaWidth=" + this.PowerThermalLayoutWorkAreaWidth,
+            "PowerThermalLayoutWorkAreaHeight=" + this.PowerThermalLayoutWorkAreaHeight,
+            "NetworkMonitorLayoutWorkAreaLeft=" + this.NetworkMonitorLayoutWorkAreaLeft,
+            "NetworkMonitorLayoutWorkAreaTop=" + this.NetworkMonitorLayoutWorkAreaTop,
+            "NetworkMonitorLayoutWorkAreaWidth=" + this.NetworkMonitorLayoutWorkAreaWidth,
+            "NetworkMonitorLayoutWorkAreaHeight=" + this.NetworkMonitorLayoutWorkAreaHeight,
+            "ConnectionCheckLayoutWorkAreaLeft=" + this.ConnectionCheckLayoutWorkAreaLeft,
+            "ConnectionCheckLayoutWorkAreaTop=" + this.ConnectionCheckLayoutWorkAreaTop,
+            "ConnectionCheckLayoutWorkAreaWidth=" + this.ConnectionCheckLayoutWorkAreaWidth,
+            "ConnectionCheckLayoutWorkAreaHeight=" + this.ConnectionCheckLayoutWorkAreaHeight,
+            "OperationLayoutWorkAreaLeft=" + this.OperationLayoutWorkAreaLeft,
+            "OperationLayoutWorkAreaTop=" + this.OperationLayoutWorkAreaTop,
+            "OperationLayoutWorkAreaWidth=" + this.OperationLayoutWorkAreaWidth,
+            "OperationLayoutWorkAreaHeight=" + this.OperationLayoutWorkAreaHeight,
             "VisibilityMode=" + this.VisibilityMode,
             "ClickThroughMode=" + this.ClickThroughMode,
             "StartupEnabled=" + this.StartupEnabled,
@@ -996,6 +2090,36 @@ internal sealed class WidgetSettings
             "CodexRadarRandomTestEnabled=" + this.CodexRadarRandomTestEnabled,
             "CodexRadarRandomTestAutoRefresh=" + this.CodexRadarRandomTestAutoRefresh,
             "CodexRadarRandomTestRefreshToken=" + this.CodexRadarRandomTestRefreshToken,
+            "CodexRadarRenderVariant=" + this.CodexRadarRenderVariant,
+            "MainWidgetRenderVariant=" + this.MainWidgetRenderVariant,
+            "NetworkMonitorRenderVariant=" + this.NetworkMonitorRenderVariant,
+            "PowerThermalRenderVariant=" + this.PowerThermalRenderVariant,
+            "ConnectionCheckRenderVariant=" + this.ConnectionCheckRenderVariant,
+            "OperationRenderVariant=" + this.OperationRenderVariant,
+            "CodexRadarPublicJsonEnabled=" + this.CodexRadarPublicJsonEnabled,
+            "CodexRadarHtmlFallbackEnabled=" + this.CodexRadarHtmlFallbackEnabled,
+            "CodexRadarRssFallbackEnabled=" + this.CodexRadarRssFallbackEnabled,
+            "CodexRadarServiceProbeToken=" + this.CodexRadarServiceProbeToken,
+            "ClaudeRadarJsonEnabled=" + this.ClaudeRadarJsonEnabled,
+            "ClaudeRadarHomepageFallbackEnabled=" + this.ClaudeRadarHomepageFallbackEnabled,
+            "ClaudeRadarCommunityRatingsEnabled=" + this.ClaudeRadarCommunityRatingsEnabled,
+            "ClaudeRadarLocalQuotaFallbackEnabled=" + this.ClaudeRadarLocalQuotaFallbackEnabled,
+            "ClaudeRadarRandomTestEnabled=" + this.ClaudeRadarRandomTestEnabled,
+            "ClaudeRadarRandomTestAutoRefresh=" + this.ClaudeRadarRandomTestAutoRefresh,
+            "ClaudeRadarRandomTestRefreshToken=" + this.ClaudeRadarRandomTestRefreshToken,
+            "ClaudeRadarServiceProbeToken=" + this.ClaudeRadarServiceProbeToken,
+            "DeepSeekApiKeyRevision=" + this.DeepSeekApiKeyRevision,
+            "AiRequestProtectionAutoEnabled=" + this.AiRequestProtectionAutoEnabled,
+            "AiRequestProtectionManualBlockEnabled=" + this.AiRequestProtectionManualBlockEnabled,
+            "CodexQuotaPlanEnabled=" + this.CodexQuotaPlanEnabled,
+            "CodexQuotaPlanWeeklyComparison=" + this.CodexQuotaPlanWeeklyComparison,
+            "CodexQuotaPlanWeeklyThresholdPercent=" + this.CodexQuotaPlanWeeklyThresholdPercent,
+            "CodexQuotaPlanFiveHourComparison=" + this.CodexQuotaPlanFiveHourComparison,
+            "CodexQuotaPlanFiveHourThresholdPercent=" + this.CodexQuotaPlanFiveHourThresholdPercent,
+            "CodexQuotaPlanResumeConditionMode=" + this.CodexQuotaPlanResumeConditionMode,
+            "CodexQuotaPlanAutoResumePausedGoals=" + this.CodexQuotaPlanAutoResumePausedGoals,
+            "CodexQuotaPlanPauseGoalIds=" + this.CodexQuotaPlanPauseGoalIds,
+            "CodexQuotaPlanResumeGoalIds=" + this.CodexQuotaPlanResumeGoalIds,
             "CleanIpBadgeTestMode=" + this.CleanIpBadgeTestMode,
             "CodexModelIqTestEnabled=" + this.CodexModelIqTestEnabled,
             "CodexModelIqTestPassed=" + this.CodexModelIqTestPassed,
@@ -1014,6 +2138,9 @@ internal sealed class WidgetSettings
             "CodexModelTimeEfficiencyLowThresholdPercent=" + this.CodexModelTimeEfficiencyLowThresholdPercent,
             "CodexRadarModelVersion=" + this.CodexRadarModelVersion,
             "CodexRadarModelKey=" + this.CodexRadarModelKey,
+            "CodexRadarSoftwareMode=" + this.CodexRadarSoftwareMode,
+            "ClaudeRadarModelKey=" + this.ClaudeRadarModelKey,
+            "ClaudeRadarRenderVariant=" + this.ClaudeRadarRenderVariant,
             "DisplayTimeZoneMode=" + this.DisplayTimeZoneMode,
             "DisplayTimeZoneId=" + this.DisplayTimeZoneId,
             "PowerSavingEnabled=" + this.PowerSavingEnabled,
@@ -1112,6 +2239,121 @@ internal sealed class WidgetSettings
         {
             settings.CodexRadarTransparencyPercent = intValue;
             return;
+        }
+
+        if (string.Equals(key, "CodexRadarEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.CodexRadarEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.ClaudeRadarEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarWidth", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarHeight", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarHeight = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarLeftX", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarLeftX = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarBottomY", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarBottomY = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarTransparencyPercent", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarTransparencyPercent = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarManualLayoutEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.CodexRadarManualLayoutEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarManualLeftPercent", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarManualLeftPercent = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarManualGapPixels", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarManualGapPixels = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarManualEfficiencyTextWidthPixels", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarManualEfficiencyTextWidthPixels = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarManualQuotaRowsWidthPixels", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarManualQuotaRowsWidthPixels = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarManualIqStatusWidthPixels", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarManualIqStatusWidthPixels = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarManualTextScalePercent", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarManualTextScalePercent = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarManualRingScalePercent", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarManualRingScalePercent = intValue;
+            return;
+        }
+
+        if (IsCodexRadarManualElementOffsetKey(key) && int.TryParse(value, out intValue))
+        {
+            System.Reflection.PropertyInfo property = typeof(WidgetSettings).GetProperty(key);
+            if (property != null && property.PropertyType == typeof(int) && property.CanWrite)
+            {
+                property.SetValue(settings, intValue, null);
+                return;
+            }
         }
 
         if (string.Equals(key, "PowerThermalWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
@@ -1329,6 +2571,32 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "OperationPrimaryPanelMode", StringComparison.OrdinalIgnoreCase) && value.Length > 0)
+        {
+            try
+            {
+                settings.OperationPrimaryPanelMode = (OperationPrimaryPanelMode)Enum.Parse(typeof(OperationPrimaryPanelMode), value, true);
+            }
+            catch
+            {
+                settings.OperationPrimaryPanelMode = OperationPrimaryPanelMode.Auto;
+            }
+
+            return;
+        }
+
+        if (string.Equals(key, "OperationWindowsButtonEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.OperationWindowsButtonEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "OperationMemoryPieEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.OperationMemoryPieEnabled = boolValue;
+            return;
+        }
+
         if (string.Equals(key, "ForceShowForegroundFpsEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.ForceShowForegroundFpsEnabled = boolValue;
@@ -1356,6 +2624,54 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "FallbackDisconnectedDisplaysEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.FallbackDisconnectedDisplaysEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "MainDisplayDeviceName", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.MainDisplayDeviceName = NormalizeDisplayDeviceName(value);
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarDisplayDeviceName", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.CodexRadarDisplayDeviceName = NormalizeDisplayDeviceName(value);
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarDisplayDeviceName", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.ClaudeRadarDisplayDeviceName = NormalizeDisplayDeviceName(value);
+            return;
+        }
+
+        if (string.Equals(key, "PowerThermalDisplayDeviceName", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.PowerThermalDisplayDeviceName = NormalizeDisplayDeviceName(value);
+            return;
+        }
+
+        if (string.Equals(key, "NetworkMonitorDisplayDeviceName", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.NetworkMonitorDisplayDeviceName = NormalizeDisplayDeviceName(value);
+            return;
+        }
+
+        if (string.Equals(key, "ConnectionCheckDisplayDeviceName", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.ConnectionCheckDisplayDeviceName = NormalizeDisplayDeviceName(value);
+            return;
+        }
+
+        if (string.Equals(key, "OperationDisplayDeviceName", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.OperationDisplayDeviceName = NormalizeDisplayDeviceName(value);
+            return;
+        }
+
         if (string.Equals(key, "LayoutWorkAreaLeft", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
         {
             settings.LayoutWorkAreaLeft = intValue;
@@ -1377,6 +2693,150 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "LayoutWorkAreaHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
         {
             settings.LayoutWorkAreaHeight = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarLayoutWorkAreaLeft", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarLayoutWorkAreaLeft = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarLayoutWorkAreaTop", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarLayoutWorkAreaTop = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarLayoutWorkAreaWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarLayoutWorkAreaWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarLayoutWorkAreaHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarLayoutWorkAreaHeight = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarLayoutWorkAreaLeft", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarLayoutWorkAreaLeft = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarLayoutWorkAreaTop", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarLayoutWorkAreaTop = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarLayoutWorkAreaWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarLayoutWorkAreaWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarLayoutWorkAreaHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarLayoutWorkAreaHeight = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "PowerThermalLayoutWorkAreaLeft", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.PowerThermalLayoutWorkAreaLeft = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "PowerThermalLayoutWorkAreaTop", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.PowerThermalLayoutWorkAreaTop = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "PowerThermalLayoutWorkAreaWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.PowerThermalLayoutWorkAreaWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "PowerThermalLayoutWorkAreaHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.PowerThermalLayoutWorkAreaHeight = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "NetworkMonitorLayoutWorkAreaLeft", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.NetworkMonitorLayoutWorkAreaLeft = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "NetworkMonitorLayoutWorkAreaTop", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.NetworkMonitorLayoutWorkAreaTop = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "NetworkMonitorLayoutWorkAreaWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.NetworkMonitorLayoutWorkAreaWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "NetworkMonitorLayoutWorkAreaHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.NetworkMonitorLayoutWorkAreaHeight = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ConnectionCheckLayoutWorkAreaLeft", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ConnectionCheckLayoutWorkAreaLeft = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ConnectionCheckLayoutWorkAreaTop", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ConnectionCheckLayoutWorkAreaTop = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ConnectionCheckLayoutWorkAreaWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ConnectionCheckLayoutWorkAreaWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ConnectionCheckLayoutWorkAreaHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ConnectionCheckLayoutWorkAreaHeight = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "OperationLayoutWorkAreaLeft", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.OperationLayoutWorkAreaLeft = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "OperationLayoutWorkAreaTop", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.OperationLayoutWorkAreaTop = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "OperationLayoutWorkAreaWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.OperationLayoutWorkAreaWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "OperationLayoutWorkAreaHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.OperationLayoutWorkAreaHeight = intValue;
             return;
         }
 
@@ -1527,6 +2987,55 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "CodexRadarRenderVariant", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                settings.CodexRadarRenderVariant = (CodexRadarRenderVariant)Enum.Parse(typeof(CodexRadarRenderVariant), value, true);
+            }
+            catch
+            {
+                settings.CodexRadarRenderVariant = CodexRadarRenderVariant.Classic;
+            }
+
+            return;
+        }
+
+        if (string.Equals(key, "MainWidgetRenderVariant", StringComparison.OrdinalIgnoreCase))
+        {
+            try { settings.MainWidgetRenderVariant = (MainWidgetRenderVariant)Enum.Parse(typeof(MainWidgetRenderVariant), value, true); }
+            catch { settings.MainWidgetRenderVariant = MainWidgetRenderVariant.Classic; }
+            return;
+        }
+
+        if (string.Equals(key, "NetworkMonitorRenderVariant", StringComparison.OrdinalIgnoreCase))
+        {
+            try { settings.NetworkMonitorRenderVariant = (NetworkMonitorRenderVariant)Enum.Parse(typeof(NetworkMonitorRenderVariant), value, true); }
+            catch { settings.NetworkMonitorRenderVariant = NetworkMonitorRenderVariant.Classic; }
+            return;
+        }
+
+        if (string.Equals(key, "PowerThermalRenderVariant", StringComparison.OrdinalIgnoreCase))
+        {
+            try { settings.PowerThermalRenderVariant = (PowerThermalRenderVariant)Enum.Parse(typeof(PowerThermalRenderVariant), value, true); }
+            catch { settings.PowerThermalRenderVariant = PowerThermalRenderVariant.Classic; }
+            return;
+        }
+
+        if (string.Equals(key, "ConnectionCheckRenderVariant", StringComparison.OrdinalIgnoreCase))
+        {
+            try { settings.ConnectionCheckRenderVariant = (ConnectionCheckRenderVariant)Enum.Parse(typeof(ConnectionCheckRenderVariant), value, true); }
+            catch { settings.ConnectionCheckRenderVariant = ConnectionCheckRenderVariant.Classic; }
+            return;
+        }
+
+        if (string.Equals(key, "OperationRenderVariant", StringComparison.OrdinalIgnoreCase))
+        {
+            try { settings.OperationRenderVariant = (OperationRenderVariant)Enum.Parse(typeof(OperationRenderVariant), value, true); }
+            catch { settings.OperationRenderVariant = OperationRenderVariant.Classic; }
+            return;
+        }
+
         if (string.Equals(key, "CodexRadarRandomTestAutoRefresh", StringComparison.OrdinalIgnoreCase) &&
             bool.TryParse(value, out boolValue))
         {
@@ -1538,6 +3047,196 @@ internal sealed class WidgetSettings
             int.TryParse(value, out intValue))
         {
             settings.CodexRadarRandomTestRefreshToken = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarPublicJsonEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.CodexRadarPublicJsonEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarHtmlFallbackEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.CodexRadarHtmlFallbackEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarRssFallbackEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.CodexRadarRssFallbackEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarServiceProbeToken", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarServiceProbeToken = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarJsonEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.ClaudeRadarJsonEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarHomepageFallbackEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.ClaudeRadarHomepageFallbackEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarCommunityRatingsEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.ClaudeRadarCommunityRatingsEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarLocalQuotaFallbackEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.ClaudeRadarLocalQuotaFallbackEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarRandomTestEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.ClaudeRadarRandomTestEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarRandomTestAutoRefresh", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.ClaudeRadarRandomTestAutoRefresh = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarRandomTestRefreshToken", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarRandomTestRefreshToken = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarServiceProbeToken", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarServiceProbeToken = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "DeepSeekApiKeyRevision", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.DeepSeekApiKeyRevision = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "AiRequestProtectionAutoEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.AiRequestProtectionAutoEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "AiRequestProtectionManualBlockEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.AiRequestProtectionManualBlockEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexQuotaPlanEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.CodexQuotaPlanEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexQuotaPlanWeeklyComparison", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                settings.CodexQuotaPlanWeeklyComparison =
+                    (CodexQuotaPlanComparison)Enum.Parse(typeof(CodexQuotaPlanComparison), value, true);
+            }
+            catch
+            {
+                settings.CodexQuotaPlanWeeklyComparison = CodexQuotaPlanComparison.LessThan;
+            }
+
+            return;
+        }
+
+        if (string.Equals(key, "CodexQuotaPlanWeeklyThresholdPercent", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.CodexQuotaPlanWeeklyThresholdPercent = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexQuotaPlanFiveHourComparison", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                settings.CodexQuotaPlanFiveHourComparison =
+                    (CodexQuotaPlanComparison)Enum.Parse(typeof(CodexQuotaPlanComparison), value, true);
+            }
+            catch
+            {
+                settings.CodexQuotaPlanFiveHourComparison = CodexQuotaPlanComparison.LessThan;
+            }
+
+            return;
+        }
+
+        if (string.Equals(key, "CodexQuotaPlanFiveHourThresholdPercent", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, out intValue))
+        {
+            settings.CodexQuotaPlanFiveHourThresholdPercent = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexQuotaPlanResumeConditionMode", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                settings.CodexQuotaPlanResumeConditionMode =
+                    (CodexQuotaPlanResumeConditionMode)Enum.Parse(typeof(CodexQuotaPlanResumeConditionMode), value, true);
+            }
+            catch
+            {
+                settings.CodexQuotaPlanResumeConditionMode = CodexQuotaPlanResumeConditionMode.Both;
+            }
+
+            return;
+        }
+
+        if (string.Equals(key, "CodexQuotaPlanAutoResumePausedGoals", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.CodexQuotaPlanAutoResumePausedGoals = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexQuotaPlanPauseGoalIds", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.CodexQuotaPlanPauseGoalIds = value ?? string.Empty;
+            return;
+        }
+
+        if (string.Equals(key, "CodexQuotaPlanResumeGoalIds", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.CodexQuotaPlanResumeGoalIds = value ?? string.Empty;
             return;
         }
 
@@ -1695,6 +3394,42 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "CodexRadarSoftwareMode", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                settings.CodexRadarSoftwareMode =
+                    (CodexRadarSoftwareMode)Enum.Parse(typeof(CodexRadarSoftwareMode), value, true);
+            }
+            catch
+            {
+                settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Auto;
+            }
+
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarModelKey", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.ClaudeRadarModelKey = NormalizeClaudeRadarModelKey(value);
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeRadarRenderVariant", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                settings.ClaudeRadarRenderVariant =
+                    (CodexRadarRenderVariant)Enum.Parse(typeof(CodexRadarRenderVariant), value, true);
+            }
+            catch
+            {
+                settings.ClaudeRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
+            }
+
+            return;
+        }
+
         if (string.Equals(key, "DisplayTimeZoneMode", StringComparison.OrdinalIgnoreCase))
         {
             try
@@ -1798,19 +3533,25 @@ internal sealed class WidgetSettings
 
     public bool AdaptToCurrentWorkArea()
     {
-        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
-        EnsureUsableWorkArea(ref workArea);
-        return AdaptToWorkArea(workArea);
+        Rectangle primaryWorkArea = Screen.PrimaryScreen.WorkingArea;
+        EnsureUsableWorkArea(ref primaryWorkArea);
+        EnsureAllLayoutWorkAreaReferences(primaryWorkArea);
+
+        bool changed = false;
+        changed |= AdaptMainToWorkArea(GetWorkAreaForModule(ModuleMain));
+        changed |= AdaptCodexRadarToWorkArea(GetWorkAreaForModule(ModuleCodexRadar));
+        changed |= AdaptClaudeRadarToWorkArea(GetWorkAreaForModule(ModuleClaudeRadar));
+        changed |= AdaptPowerThermalToWorkArea(GetWorkAreaForModule(ModulePowerThermal));
+        changed |= AdaptNetworkMonitorToWorkArea(GetWorkAreaForModule(ModuleNetworkMonitor));
+        changed |= AdaptConnectionCheckToWorkArea(GetWorkAreaForModule(ModuleConnectionCheck));
+        changed |= AdaptOperationToWorkArea(GetWorkAreaForModule(ModuleOperation));
+        return changed;
     }
 
     internal bool AdaptToWorkArea(Rectangle currentWorkArea)
     {
         EnsureUsableWorkArea(ref currentWorkArea);
-        if (!HasLayoutWorkAreaReference())
-        {
-            CaptureLayoutWorkArea(currentWorkArea);
-            return false;
-        }
+        EnsureAllLayoutWorkAreaReferences(currentWorkArea);
 
         Rectangle previousWorkArea = new Rectangle(
             this.LayoutWorkAreaLeft,
@@ -1928,24 +3669,330 @@ internal sealed class WidgetSettings
         this.OperationBottomOffset = Clamp(RoundScaled(this.OperationBottomOffset, scaleY), MinOperationOffset, MaxOperationOffset);
 
         CaptureLayoutWorkArea(currentWorkArea);
+        CaptureAllModuleLayoutWorkAreas(currentWorkArea);
         ClampLayoutToWorkArea(currentWorkArea, GetPrimaryScale());
+        return true;
+    }
+
+    public Rectangle GetWorkAreaForModule(string moduleId)
+    {
+        Rectangle workArea;
+        if (TryResolveModuleWorkArea(moduleId, out workArea))
+        {
+            return workArea;
+        }
+
+        workArea = GetModuleLayoutWorkArea(moduleId);
+        EnsureUsableWorkArea(ref workArea);
+        return workArea;
+    }
+
+    private bool AdaptMainToWorkArea(Rectangle currentWorkArea)
+    {
+        EnsureUsableWorkArea(ref currentWorkArea);
+        Rectangle previousWorkArea = GetModuleLayoutWorkArea(ModuleMain);
+        if (SameWorkArea(previousWorkArea, currentWorkArea))
+        {
+            ClampMainLayoutToWorkArea(currentWorkArea);
+            return false;
+        }
+
+        double scaleX = currentWorkArea.Width / (double)Math.Max(1, previousWorkArea.Width);
+        double scaleY = currentWorkArea.Height / (double)Math.Max(1, previousWorkArea.Height);
+        PanelLayout scaledLayout = ScalePanelLayout(
+            this.Width,
+            this.Height,
+            this.LeftX,
+            this.BottomY,
+            previousWorkArea,
+            currentWorkArea,
+            scaleX,
+            scaleY,
+            MinWidth,
+            MaxWidth,
+            MinHeight,
+            MaxHeight);
+        this.Width = scaledLayout.Width;
+        this.Height = scaledLayout.Height;
+        this.LeftX = scaledLayout.LeftX;
+        this.BottomY = scaledLayout.BottomY;
+        CaptureModuleLayoutWorkArea(ModuleMain, currentWorkArea);
+        ClampMainLayoutToWorkArea(currentWorkArea);
+        return true;
+    }
+
+    private bool AdaptCodexRadarToWorkArea(Rectangle currentWorkArea)
+    {
+        PanelLayout scaledLayout;
+        if (!AdaptPanelToWorkArea(
+            ModuleCodexRadar,
+            this.CodexRadarWidth,
+            this.CodexRadarHeight,
+            this.CodexRadarLeftX,
+            this.CodexRadarBottomY,
+            currentWorkArea,
+            MinCodexRadarWidth,
+            MaxCodexRadarWidth,
+            MinCodexRadarHeight,
+            MaxCodexRadarHeight,
+            out scaledLayout))
+        {
+            ClampCodexRadarLayoutToWorkArea(currentWorkArea);
+            return false;
+        }
+
+        this.CodexRadarWidth = scaledLayout.Width;
+        this.CodexRadarHeight = scaledLayout.Height;
+        this.CodexRadarLeftX = scaledLayout.LeftX;
+        this.CodexRadarBottomY = scaledLayout.BottomY;
+        ClampCodexRadarLayoutToWorkArea(currentWorkArea);
+        return true;
+    }
+
+    private bool AdaptClaudeRadarToWorkArea(Rectangle currentWorkArea)
+    {
+        PanelLayout scaledLayout;
+        if (!AdaptPanelToWorkArea(
+            ModuleClaudeRadar,
+            this.ClaudeRadarWidth,
+            this.ClaudeRadarHeight,
+            this.ClaudeRadarLeftX,
+            this.ClaudeRadarBottomY,
+            currentWorkArea,
+            MinCodexRadarWidth,
+            MaxCodexRadarWidth,
+            MinCodexRadarHeight,
+            MaxCodexRadarHeight,
+            out scaledLayout))
+        {
+            ClampClaudeRadarLayoutToWorkArea(currentWorkArea);
+            return false;
+        }
+
+        this.ClaudeRadarWidth = scaledLayout.Width;
+        this.ClaudeRadarHeight = scaledLayout.Height;
+        this.ClaudeRadarLeftX = scaledLayout.LeftX;
+        this.ClaudeRadarBottomY = scaledLayout.BottomY;
+        ClampClaudeRadarLayoutToWorkArea(currentWorkArea);
+        return true;
+    }
+
+    private bool AdaptPowerThermalToWorkArea(Rectangle currentWorkArea)
+    {
+        PanelLayout scaledLayout;
+        if (!AdaptPanelToWorkArea(
+            ModulePowerThermal,
+            this.PowerThermalWidth,
+            this.PowerThermalHeight,
+            this.PowerThermalLeftX,
+            this.PowerThermalBottomY,
+            currentWorkArea,
+            MinPowerThermalWidth,
+            MaxPowerThermalWidth,
+            MinPowerThermalHeight,
+            MaxPowerThermalHeight,
+            out scaledLayout))
+        {
+            ClampPowerThermalLayoutToWorkArea(currentWorkArea);
+            return false;
+        }
+
+        this.PowerThermalWidth = scaledLayout.Width;
+        this.PowerThermalHeight = scaledLayout.Height;
+        this.PowerThermalLeftX = scaledLayout.LeftX;
+        this.PowerThermalBottomY = scaledLayout.BottomY;
+        ClampPowerThermalLayoutToWorkArea(currentWorkArea);
+        return true;
+    }
+
+    private bool AdaptNetworkMonitorToWorkArea(Rectangle currentWorkArea)
+    {
+        PanelLayout scaledLayout;
+        if (!AdaptPanelToWorkArea(
+            ModuleNetworkMonitor,
+            this.NetworkMonitorWidth,
+            this.NetworkMonitorHeight,
+            this.NetworkMonitorLeftX,
+            this.NetworkMonitorBottomY,
+            currentWorkArea,
+            MinNetworkMonitorWidth,
+            MaxNetworkMonitorWidth,
+            MinNetworkMonitorHeight,
+            MaxNetworkMonitorHeight,
+            out scaledLayout))
+        {
+            ClampNetworkMonitorLayoutToWorkArea(currentWorkArea);
+            return false;
+        }
+
+        this.NetworkMonitorWidth = scaledLayout.Width;
+        this.NetworkMonitorHeight = scaledLayout.Height;
+        this.NetworkMonitorLeftX = scaledLayout.LeftX;
+        this.NetworkMonitorBottomY = scaledLayout.BottomY;
+        ClampNetworkMonitorLayoutToWorkArea(currentWorkArea);
+        return true;
+    }
+
+    private bool AdaptConnectionCheckToWorkArea(Rectangle currentWorkArea)
+    {
+        PanelLayout scaledLayout;
+        if (!AdaptPanelToWorkArea(
+            ModuleConnectionCheck,
+            this.ConnectionCheckWidth,
+            this.ConnectionCheckHeight,
+            this.ConnectionCheckLeftX,
+            this.ConnectionCheckBottomY,
+            currentWorkArea,
+            MinConnectionCheckWidth,
+            MaxConnectionCheckWidth,
+            MinConnectionCheckHeight,
+            MaxConnectionCheckHeight,
+            out scaledLayout))
+        {
+            ClampConnectionCheckLayoutToWorkArea(currentWorkArea);
+            return false;
+        }
+
+        this.ConnectionCheckWidth = scaledLayout.Width;
+        this.ConnectionCheckHeight = scaledLayout.Height;
+        this.ConnectionCheckLeftX = scaledLayout.LeftX;
+        this.ConnectionCheckBottomY = scaledLayout.BottomY;
+        ClampConnectionCheckLayoutToWorkArea(currentWorkArea);
+        return true;
+    }
+
+    private bool AdaptOperationToWorkArea(Rectangle currentWorkArea)
+    {
+        EnsureUsableWorkArea(ref currentWorkArea);
+        Rectangle previousWorkArea = GetModuleLayoutWorkArea(ModuleOperation);
+        if (SameWorkArea(previousWorkArea, currentWorkArea))
+        {
+            ClampOperationLayoutToWorkArea(currentWorkArea, GetPrimaryScale());
+            return false;
+        }
+
+        double scaleX = currentWorkArea.Width / (double)Math.Max(1, previousWorkArea.Width);
+        double scaleY = currentWorkArea.Height / (double)Math.Max(1, previousWorkArea.Height);
+        double uniformScale = Math.Min(scaleX, scaleY);
+        this.OperationButtonSize = Clamp(
+            RoundScaled(this.OperationButtonSize, uniformScale),
+            MinOperationButtonSize,
+            MaxOperationButtonSize);
+        this.OperationLeftOffset = Clamp(RoundScaled(this.OperationLeftOffset, scaleX), MinOperationOffset, MaxOperationOffset);
+        this.OperationBottomOffset = Clamp(RoundScaled(this.OperationBottomOffset, scaleY), MinOperationOffset, MaxOperationOffset);
+        CaptureModuleLayoutWorkArea(ModuleOperation, currentWorkArea);
+        ClampOperationLayoutToWorkArea(currentWorkArea, GetPrimaryScale());
+        return true;
+    }
+
+    private bool AdaptPanelToWorkArea(
+        string moduleId,
+        int width,
+        int height,
+        int leftX,
+        int bottomY,
+        Rectangle currentWorkArea,
+        int minWidth,
+        int maxWidth,
+        int minHeight,
+        int maxHeight,
+        out PanelLayout scaledLayout)
+    {
+        EnsureUsableWorkArea(ref currentWorkArea);
+        Rectangle previousWorkArea = GetModuleLayoutWorkArea(moduleId);
+        if (SameWorkArea(previousWorkArea, currentWorkArea))
+        {
+            scaledLayout = new PanelLayout();
+            return false;
+        }
+
+        double scaleX = currentWorkArea.Width / (double)Math.Max(1, previousWorkArea.Width);
+        double scaleY = currentWorkArea.Height / (double)Math.Max(1, previousWorkArea.Height);
+        scaledLayout = ScalePanelLayout(
+            width,
+            height,
+            leftX,
+            bottomY,
+            previousWorkArea,
+            currentWorkArea,
+            scaleX,
+            scaleY,
+            minWidth,
+            maxWidth,
+            minHeight,
+            maxHeight);
+        CaptureModuleLayoutWorkArea(moduleId, currentWorkArea);
         return true;
     }
 
     private void ClampLayoutToWorkArea(Rectangle workArea, float scale)
     {
         EnsureUsableWorkArea(ref workArea);
+        ClampMainLayoutToWorkArea(workArea);
+        ClampCodexRadarLayoutToWorkArea(workArea);
+        ClampClaudeRadarLayoutToWorkArea(workArea);
+        ClampPowerThermalLayoutToWorkArea(workArea);
+        ClampNetworkMonitorLayoutToWorkArea(workArea);
+        ClampConnectionCheckLayoutToWorkArea(workArea);
+        ClampOperationLayoutToWorkArea(workArea, scale);
+    }
+
+    private void ClampLayoutToTargetWorkAreas(float scale)
+    {
+        ClampMainLayoutToWorkArea(GetWorkAreaForModule(ModuleMain));
+        ClampCodexRadarLayoutToWorkArea(GetWorkAreaForModule(ModuleCodexRadar));
+        ClampClaudeRadarLayoutToWorkArea(GetWorkAreaForModule(ModuleClaudeRadar));
+        ClampPowerThermalLayoutToWorkArea(GetWorkAreaForModule(ModulePowerThermal));
+        ClampNetworkMonitorLayoutToWorkArea(GetWorkAreaForModule(ModuleNetworkMonitor));
+        ClampConnectionCheckLayoutToWorkArea(GetWorkAreaForModule(ModuleConnectionCheck));
+        ClampOperationLayoutToWorkArea(GetWorkAreaForModule(ModuleOperation), scale);
+    }
+
+    private void ClampMainLayoutToWorkArea(Rectangle workArea)
+    {
+        EnsureUsableWorkArea(ref workArea);
         this.LeftX = Clamp(this.LeftX, workArea.Left, Math.Max(workArea.Left, workArea.Right - this.Width));
         this.BottomY = Clamp(this.BottomY, Math.Min(workArea.Bottom - 1, workArea.Top + this.Height - 1), Math.Max(workArea.Top, workArea.Bottom - 1));
+    }
+
+    private void ClampCodexRadarLayoutToWorkArea(Rectangle workArea)
+    {
+        EnsureUsableWorkArea(ref workArea);
         this.CodexRadarLeftX = Clamp(this.CodexRadarLeftX, workArea.Left, Math.Max(workArea.Left, workArea.Right - this.CodexRadarWidth));
         this.CodexRadarBottomY = Clamp(this.CodexRadarBottomY, Math.Min(workArea.Bottom - 1, workArea.Top + this.CodexRadarHeight - 1), Math.Max(workArea.Top, workArea.Bottom - 1));
+    }
+
+    private void ClampClaudeRadarLayoutToWorkArea(Rectangle workArea)
+    {
+        EnsureUsableWorkArea(ref workArea);
+        this.ClaudeRadarLeftX = Clamp(this.ClaudeRadarLeftX, workArea.Left, Math.Max(workArea.Left, workArea.Right - this.ClaudeRadarWidth));
+        this.ClaudeRadarBottomY = Clamp(this.ClaudeRadarBottomY, Math.Min(workArea.Bottom - 1, workArea.Top + this.ClaudeRadarHeight - 1), Math.Max(workArea.Top, workArea.Bottom - 1));
+    }
+
+    private void ClampPowerThermalLayoutToWorkArea(Rectangle workArea)
+    {
+        EnsureUsableWorkArea(ref workArea);
         this.PowerThermalLeftX = Clamp(this.PowerThermalLeftX, workArea.Left, Math.Max(workArea.Left, workArea.Right - this.PowerThermalWidth));
         this.PowerThermalBottomY = Clamp(this.PowerThermalBottomY, Math.Min(workArea.Bottom - 1, workArea.Top + this.PowerThermalHeight - 1), Math.Max(workArea.Top, workArea.Bottom - 1));
+    }
+
+    private void ClampNetworkMonitorLayoutToWorkArea(Rectangle workArea)
+    {
+        EnsureUsableWorkArea(ref workArea);
         this.NetworkMonitorLeftX = Clamp(this.NetworkMonitorLeftX, workArea.Left, Math.Max(workArea.Left, workArea.Right - this.NetworkMonitorWidth));
         this.NetworkMonitorBottomY = Clamp(this.NetworkMonitorBottomY, Math.Min(workArea.Bottom - 1, workArea.Top + this.NetworkMonitorHeight - 1), Math.Max(workArea.Top, workArea.Bottom - 1));
+    }
+
+    private void ClampConnectionCheckLayoutToWorkArea(Rectangle workArea)
+    {
+        EnsureUsableWorkArea(ref workArea);
         this.ConnectionCheckLeftX = Clamp(this.ConnectionCheckLeftX, workArea.Left, Math.Max(workArea.Left, workArea.Right - this.ConnectionCheckWidth));
         this.ConnectionCheckBottomY = Clamp(this.ConnectionCheckBottomY, Math.Min(workArea.Bottom - 1, workArea.Top + this.ConnectionCheckHeight - 1), Math.Max(workArea.Top, workArea.Bottom - 1));
+    }
 
+    private void ClampOperationLayoutToWorkArea(Rectangle workArea, float scale)
+    {
+        EnsureUsableWorkArea(ref workArea);
         int operationMaxLeftOffset = Math.Max(0, workArea.Width - GetOperationWindowWidth(this.OperationButtonSize, scale));
         int operationMaxBottomOffset = Math.Max(0, workArea.Height - GetOperationWindowHeight(this.OperationButtonSize, scale));
         this.OperationLeftOffset = Clamp(this.OperationLeftOffset, MinOperationOffset, Math.Min(MaxOperationOffset, operationMaxLeftOffset));
@@ -1997,6 +4044,16 @@ internal sealed class WidgetSettings
         return this.LayoutWorkAreaWidth > 0 && this.LayoutWorkAreaHeight > 0;
     }
 
+    private static bool SameWorkArea(Rectangle left, Rectangle right)
+    {
+        EnsureUsableWorkArea(ref left);
+        EnsureUsableWorkArea(ref right);
+        return left.Left == right.Left &&
+            left.Top == right.Top &&
+            left.Width == right.Width &&
+            left.Height == right.Height;
+    }
+
     private void EnsureLayoutWorkAreaReference(Rectangle workArea)
     {
         if (!HasLayoutWorkAreaReference())
@@ -2005,11 +4062,36 @@ internal sealed class WidgetSettings
         }
     }
 
+    private void EnsureAllLayoutWorkAreaReferences(Rectangle workArea)
+    {
+        EnsureUsableWorkArea(ref workArea);
+        EnsureLayoutWorkAreaReference(workArea);
+        EnsureModuleLayoutWorkAreaReference(ModuleCodexRadar, workArea);
+        EnsureModuleLayoutWorkAreaReference(ModuleClaudeRadar, workArea);
+        EnsureModuleLayoutWorkAreaReference(ModulePowerThermal, workArea);
+        EnsureModuleLayoutWorkAreaReference(ModuleNetworkMonitor, workArea);
+        EnsureModuleLayoutWorkAreaReference(ModuleConnectionCheck, workArea);
+        EnsureModuleLayoutWorkAreaReference(ModuleOperation, workArea);
+    }
+
+    private void EnsureModuleLayoutWorkAreaReference(string moduleId, Rectangle workArea)
+    {
+        Rectangle reference = GetModuleLayoutWorkArea(moduleId);
+        if (reference.Width <= 0 || reference.Height <= 0)
+        {
+            CaptureModuleLayoutWorkArea(moduleId, workArea);
+        }
+    }
+
     private void CaptureCurrentWorkArea()
     {
-        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
-        EnsureUsableWorkArea(ref workArea);
-        CaptureLayoutWorkArea(workArea);
+        CaptureModuleLayoutWorkArea(ModuleMain, GetWorkAreaForModule(ModuleMain));
+        CaptureModuleLayoutWorkArea(ModuleCodexRadar, GetWorkAreaForModule(ModuleCodexRadar));
+        CaptureModuleLayoutWorkArea(ModuleClaudeRadar, GetWorkAreaForModule(ModuleClaudeRadar));
+        CaptureModuleLayoutWorkArea(ModulePowerThermal, GetWorkAreaForModule(ModulePowerThermal));
+        CaptureModuleLayoutWorkArea(ModuleNetworkMonitor, GetWorkAreaForModule(ModuleNetworkMonitor));
+        CaptureModuleLayoutWorkArea(ModuleConnectionCheck, GetWorkAreaForModule(ModuleConnectionCheck));
+        CaptureModuleLayoutWorkArea(ModuleOperation, GetWorkAreaForModule(ModuleOperation));
     }
 
     private void CaptureLayoutWorkArea(Rectangle workArea)
@@ -2019,6 +4101,306 @@ internal sealed class WidgetSettings
         this.LayoutWorkAreaTop = workArea.Top;
         this.LayoutWorkAreaWidth = Math.Max(1, workArea.Width);
         this.LayoutWorkAreaHeight = Math.Max(1, workArea.Height);
+    }
+
+    private void CaptureAllModuleLayoutWorkAreas(Rectangle workArea)
+    {
+        CaptureModuleLayoutWorkArea(ModuleCodexRadar, workArea);
+        CaptureModuleLayoutWorkArea(ModuleClaudeRadar, workArea);
+        CaptureModuleLayoutWorkArea(ModulePowerThermal, workArea);
+        CaptureModuleLayoutWorkArea(ModuleNetworkMonitor, workArea);
+        CaptureModuleLayoutWorkArea(ModuleConnectionCheck, workArea);
+        CaptureModuleLayoutWorkArea(ModuleOperation, workArea);
+    }
+
+    private void CaptureModuleLayoutWorkArea(string moduleId, Rectangle workArea)
+    {
+        EnsureUsableWorkArea(ref workArea);
+        if (string.Equals(moduleId, ModuleMain, StringComparison.Ordinal))
+        {
+            CaptureLayoutWorkArea(workArea);
+            return;
+        }
+
+        int left = workArea.Left;
+        int top = workArea.Top;
+        int width = Math.Max(1, workArea.Width);
+        int height = Math.Max(1, workArea.Height);
+        if (string.Equals(moduleId, ModuleCodexRadar, StringComparison.Ordinal))
+        {
+            this.CodexRadarLayoutWorkAreaLeft = left;
+            this.CodexRadarLayoutWorkAreaTop = top;
+            this.CodexRadarLayoutWorkAreaWidth = width;
+            this.CodexRadarLayoutWorkAreaHeight = height;
+            return;
+        }
+
+        if (string.Equals(moduleId, ModuleClaudeRadar, StringComparison.Ordinal))
+        {
+            this.ClaudeRadarLayoutWorkAreaLeft = left;
+            this.ClaudeRadarLayoutWorkAreaTop = top;
+            this.ClaudeRadarLayoutWorkAreaWidth = width;
+            this.ClaudeRadarLayoutWorkAreaHeight = height;
+            return;
+        }
+
+        if (string.Equals(moduleId, ModulePowerThermal, StringComparison.Ordinal))
+        {
+            this.PowerThermalLayoutWorkAreaLeft = left;
+            this.PowerThermalLayoutWorkAreaTop = top;
+            this.PowerThermalLayoutWorkAreaWidth = width;
+            this.PowerThermalLayoutWorkAreaHeight = height;
+            return;
+        }
+
+        if (string.Equals(moduleId, ModuleNetworkMonitor, StringComparison.Ordinal))
+        {
+            this.NetworkMonitorLayoutWorkAreaLeft = left;
+            this.NetworkMonitorLayoutWorkAreaTop = top;
+            this.NetworkMonitorLayoutWorkAreaWidth = width;
+            this.NetworkMonitorLayoutWorkAreaHeight = height;
+            return;
+        }
+
+        if (string.Equals(moduleId, ModuleConnectionCheck, StringComparison.Ordinal))
+        {
+            this.ConnectionCheckLayoutWorkAreaLeft = left;
+            this.ConnectionCheckLayoutWorkAreaTop = top;
+            this.ConnectionCheckLayoutWorkAreaWidth = width;
+            this.ConnectionCheckLayoutWorkAreaHeight = height;
+            return;
+        }
+
+        if (string.Equals(moduleId, ModuleOperation, StringComparison.Ordinal))
+        {
+            this.OperationLayoutWorkAreaLeft = left;
+            this.OperationLayoutWorkAreaTop = top;
+            this.OperationLayoutWorkAreaWidth = width;
+            this.OperationLayoutWorkAreaHeight = height;
+        }
+    }
+
+    private Rectangle GetModuleLayoutWorkArea(string moduleId)
+    {
+        Rectangle workArea;
+        if (string.Equals(moduleId, ModuleCodexRadar, StringComparison.Ordinal))
+        {
+            workArea = new Rectangle(
+                this.CodexRadarLayoutWorkAreaLeft,
+                this.CodexRadarLayoutWorkAreaTop,
+                this.CodexRadarLayoutWorkAreaWidth,
+                this.CodexRadarLayoutWorkAreaHeight);
+        }
+        else if (string.Equals(moduleId, ModuleClaudeRadar, StringComparison.Ordinal))
+        {
+            workArea = new Rectangle(
+                this.ClaudeRadarLayoutWorkAreaLeft,
+                this.ClaudeRadarLayoutWorkAreaTop,
+                this.ClaudeRadarLayoutWorkAreaWidth,
+                this.ClaudeRadarLayoutWorkAreaHeight);
+        }
+        else if (string.Equals(moduleId, ModulePowerThermal, StringComparison.Ordinal))
+        {
+            workArea = new Rectangle(
+                this.PowerThermalLayoutWorkAreaLeft,
+                this.PowerThermalLayoutWorkAreaTop,
+                this.PowerThermalLayoutWorkAreaWidth,
+                this.PowerThermalLayoutWorkAreaHeight);
+        }
+        else if (string.Equals(moduleId, ModuleNetworkMonitor, StringComparison.Ordinal))
+        {
+            workArea = new Rectangle(
+                this.NetworkMonitorLayoutWorkAreaLeft,
+                this.NetworkMonitorLayoutWorkAreaTop,
+                this.NetworkMonitorLayoutWorkAreaWidth,
+                this.NetworkMonitorLayoutWorkAreaHeight);
+        }
+        else if (string.Equals(moduleId, ModuleConnectionCheck, StringComparison.Ordinal))
+        {
+            workArea = new Rectangle(
+                this.ConnectionCheckLayoutWorkAreaLeft,
+                this.ConnectionCheckLayoutWorkAreaTop,
+                this.ConnectionCheckLayoutWorkAreaWidth,
+                this.ConnectionCheckLayoutWorkAreaHeight);
+        }
+        else if (string.Equals(moduleId, ModuleOperation, StringComparison.Ordinal))
+        {
+            workArea = new Rectangle(
+                this.OperationLayoutWorkAreaLeft,
+                this.OperationLayoutWorkAreaTop,
+                this.OperationLayoutWorkAreaWidth,
+                this.OperationLayoutWorkAreaHeight);
+        }
+        else
+        {
+            workArea = new Rectangle(
+                this.LayoutWorkAreaLeft,
+                this.LayoutWorkAreaTop,
+                this.LayoutWorkAreaWidth,
+                this.LayoutWorkAreaHeight);
+        }
+
+        if (workArea.Width <= 0 || workArea.Height <= 0)
+        {
+            workArea = new Rectangle(
+                this.LayoutWorkAreaLeft,
+                this.LayoutWorkAreaTop,
+                this.LayoutWorkAreaWidth,
+                this.LayoutWorkAreaHeight);
+        }
+
+        EnsureUsableWorkArea(ref workArea);
+        return workArea;
+    }
+
+    private bool TryResolveModuleWorkArea(string moduleId, out Rectangle workArea)
+    {
+        string displayDeviceName = GetModuleDisplayDeviceName(moduleId);
+        return TryResolveDisplayWorkArea(displayDeviceName, this.FallbackDisconnectedDisplaysEnabled, out workArea);
+    }
+
+    private string GetModuleDisplayDeviceName(string moduleId)
+    {
+        if (string.Equals(moduleId, ModuleCodexRadar, StringComparison.Ordinal))
+        {
+            return this.CodexRadarDisplayDeviceName;
+        }
+
+        if (string.Equals(moduleId, ModuleClaudeRadar, StringComparison.Ordinal))
+        {
+            return this.ClaudeRadarDisplayDeviceName;
+        }
+
+        if (string.Equals(moduleId, ModulePowerThermal, StringComparison.Ordinal))
+        {
+            return this.PowerThermalDisplayDeviceName;
+        }
+
+        if (string.Equals(moduleId, ModuleNetworkMonitor, StringComparison.Ordinal))
+        {
+            return this.NetworkMonitorDisplayDeviceName;
+        }
+
+        if (string.Equals(moduleId, ModuleConnectionCheck, StringComparison.Ordinal))
+        {
+            return this.ConnectionCheckDisplayDeviceName;
+        }
+
+        if (string.Equals(moduleId, ModuleOperation, StringComparison.Ordinal))
+        {
+            return this.OperationDisplayDeviceName;
+        }
+
+        return this.MainDisplayDeviceName;
+    }
+
+    public static string NormalizeDisplayDeviceName(string displayDeviceName)
+    {
+        return (displayDeviceName ?? string.Empty).Trim();
+    }
+
+    public static string NormalizeGoalIdList(string goalIds)
+    {
+        if (string.IsNullOrWhiteSpace(goalIds))
+        {
+            return string.Empty;
+        }
+
+        string[] parts = goalIds.Replace("\r", "|").Replace("\n", "|").Split(new char[] { '|', ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
+        List<string> normalized = new List<string>();
+        HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < parts.Length; i++)
+        {
+            string value = (parts[i] ?? string.Empty).Trim();
+            if (value.Length == 0 || value.Length > 160)
+            {
+                continue;
+            }
+
+            bool safe = true;
+            for (int c = 0; c < value.Length; c++)
+            {
+                char ch = value[c];
+                if (!(char.IsLetterOrDigit(ch) || ch == '_' || ch == '-' || ch == ':' || ch == '.'))
+                {
+                    safe = false;
+                    break;
+                }
+            }
+
+            if (!safe || seen.Contains(value))
+            {
+                continue;
+            }
+
+            seen.Add(value);
+            normalized.Add(value);
+        }
+
+        return string.Join("|", normalized.ToArray());
+    }
+
+    public static string NormalizeClaudeRadarModelKey(string modelKey)
+    {
+        string key = (modelKey ?? string.Empty).Trim().ToLowerInvariant();
+        if (key.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (key[0] != 'm')
+        {
+            return string.Empty;
+        }
+
+        for (int i = 1; i < key.Length; i++)
+        {
+            if (key[i] < '0' || key[i] > '9')
+            {
+                return string.Empty;
+            }
+        }
+
+        return key;
+    }
+
+    private static bool TryResolveDisplayWorkArea(string displayDeviceName, bool fallbackToAvailableDisplay, out Rectangle workArea)
+    {
+        string normalized = NormalizeDisplayDeviceName(displayDeviceName);
+        Screen[] screens = Screen.AllScreens;
+        if (screens == null || screens.Length == 0)
+        {
+            workArea = Screen.PrimaryScreen.WorkingArea;
+            EnsureUsableWorkArea(ref workArea);
+            return true;
+        }
+
+        if (normalized.Length == 0)
+        {
+            workArea = Screen.PrimaryScreen.WorkingArea;
+            EnsureUsableWorkArea(ref workArea);
+            return true;
+        }
+
+        for (int i = 0; i < screens.Length; i++)
+        {
+            if (string.Equals(screens[i].DeviceName, normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                workArea = screens[i].WorkingArea;
+                EnsureUsableWorkArea(ref workArea);
+                return true;
+            }
+        }
+
+        if (fallbackToAvailableDisplay)
+        {
+            workArea = Screen.PrimaryScreen.WorkingArea;
+            EnsureUsableWorkArea(ref workArea);
+            return true;
+        }
+
+        workArea = Rectangle.Empty;
+        return false;
     }
 
     private static void EnsureUsableWorkArea(ref Rectangle workArea)
@@ -2069,6 +4451,8 @@ internal sealed class WidgetSettings
         Rectangle current = new Rectangle(0, 0, 1920, 1080);
         AssertLayout(settings.AdaptToWorkArea(current), "first adaptation should change layout");
         AssertLayout(settings.LayoutWorkAreaWidth == 1920 && settings.LayoutWorkAreaHeight == 1080, "layout reference should update");
+        AssertLayout(settings.CodexRadarLayoutWorkAreaWidth == 1920 && settings.CodexRadarLayoutWorkAreaHeight == 1080, "codex radar layout reference should update");
+        AssertLayout(settings.OperationLayoutWorkAreaWidth == 1920 && settings.OperationLayoutWorkAreaHeight == 1080, "operation layout reference should update");
         AssertLayout(settings.Width == 288, "widget width ratio");
         AssertLayout(settings.Height == 86, "widget height minimum clamp");
         AssertLayout(settings.LeftX == 1600, "widget left ratio");
@@ -2098,11 +4482,79 @@ internal sealed class WidgetSettings
         ApplyValue(legacy, "WinDRecoveryPulseEnabled", "True");
         AssertLayout(legacy.WinDRecoveryPulseEnabled, "Win+D setting should override the migrated value");
 
+        ApplyValue(legacy, "CodexRadarSoftwareMode", "Claude");
+        AssertLayout(legacy.CodexRadarSoftwareMode == CodexRadarSoftwareMode.Claude, "Codex Radar software mode should parse Claude");
+        ApplyValue(legacy, "CodexRadarSoftwareMode", "InvalidMode");
+        AssertLayout(legacy.CodexRadarSoftwareMode == CodexRadarSoftwareMode.Auto, "invalid Codex Radar software mode should normalize to Auto");
+        ApplyValue(legacy, "CodexRadarEnabled", "False");
+        AssertLayout(!legacy.CodexRadarEnabled, "codex radar enabled setting should parse false");
+        ApplyValue(legacy, "CodexRadarEnabled", "True");
+        AssertLayout(legacy.CodexRadarEnabled, "codex radar enabled setting should parse true");
+        ApplyValue(legacy, "AiRequestProtectionAutoEnabled", "False");
+        ApplyValue(legacy, "AiRequestProtectionManualBlockEnabled", "True");
+        AssertLayout(
+            !legacy.AiRequestProtectionAutoEnabled && legacy.AiRequestProtectionManualBlockEnabled,
+            "AI request protection switches should load");
+        ApplyValue(legacy, "CodexQuotaPlanEnabled", "True");
+        ApplyValue(legacy, "CodexQuotaPlanWeeklyComparison", "GreaterThan");
+        ApplyValue(legacy, "CodexQuotaPlanWeeklyThresholdPercent", "103");
+        ApplyValue(legacy, "CodexQuotaPlanFiveHourComparison", "LessThan");
+        ApplyValue(legacy, "CodexQuotaPlanFiveHourThresholdPercent", "-4");
+        ApplyValue(legacy, "CodexQuotaPlanResumeConditionMode", "FiveHourOnly");
+        ApplyValue(legacy, "CodexQuotaPlanAutoResumePausedGoals", "False");
+        ApplyValue(legacy, "CodexQuotaPlanPauseGoalIds", "thr_1|bad id|thr_1|thr-2");
+        legacy.Normalize();
+        AssertLayout(
+            legacy.CodexQuotaPlanEnabled &&
+            legacy.CodexQuotaPlanWeeklyComparison == CodexQuotaPlanComparison.GreaterThan &&
+            legacy.CodexQuotaPlanWeeklyThresholdPercent == MaxCodexQuotaPlanThresholdPercent &&
+            legacy.CodexQuotaPlanFiveHourThresholdPercent == MinCodexQuotaPlanThresholdPercent &&
+            legacy.CodexQuotaPlanResumeConditionMode == CodexQuotaPlanResumeConditionMode.FiveHourOnly &&
+            !legacy.CodexQuotaPlanAutoResumePausedGoals &&
+            string.Equals(legacy.CodexQuotaPlanPauseGoalIds, "thr_1|thr-2", StringComparison.Ordinal),
+            "Codex quota plan settings should load and normalize");
+
+        WidgetSettings iqTenTask = CreateDefaults();
+        iqTenTask.CodexModelIqBaselinePassed = PreviousTwelveTaskCodexModelIqBaselinePassed;
+        iqTenTask.CodexModelIqTestPassed = PreviousTwelveTaskCodexModelIqBaselinePassed;
+        ApplyCodexModelIqTenTaskMigration(iqTenTask);
+        AssertLayout(
+            iqTenTask.CodexModelIqBaselinePassed == DefaultCodexModelIqBaselinePassed &&
+            iqTenTask.CodexModelIqTestPassed == DefaultCodexModelIqBaselinePassed,
+            "codex model iq twelve-task defaults should migrate to ten-task defaults");
+
+        WidgetSettings iqWebsiteScore = CreateDefaults();
+        iqWebsiteScore.CodexModelIqBaselinePassed = PreviousTenTaskLocalCodexModelIqBaselinePassed;
+        iqWebsiteScore.CodexModelIqTestPassed = PreviousTenTaskLocalCodexModelIqBaselinePassed;
+        ApplyCodexModelIqWebsiteScoreMigration(iqWebsiteScore);
+        AssertLayout(
+            iqWebsiteScore.CodexModelIqBaselinePassed == DefaultCodexModelIqBaselinePassed &&
+            iqWebsiteScore.CodexModelIqTestPassed == DefaultCodexModelIqBaselinePassed,
+            "codex model iq website-score defaults should migrate from 6/10 to 7/10");
+
+        WidgetSettings iqClamp = CreateDefaults();
+        ApplyValue(iqClamp, "CodexModelIqBaselinePassed", "12");
+        ApplyValue(iqClamp, "CodexModelIqTestPassed", "12");
+        ApplyValue(iqClamp, "CodexModelTokenEfficiencyBaselinePassed", "12");
+        ApplyValue(iqClamp, "CodexModelTimeEfficiencyBaselinePassed", "12");
+        iqClamp.Normalize();
+        AssertLayout(
+            iqClamp.CodexModelIqBaselinePassed == MaxCodexModelIqPassed &&
+            iqClamp.CodexModelIqTestPassed == MaxCodexModelIqPassed &&
+            iqClamp.CodexModelTokenEfficiencyBaselinePassed == MaxCodexModelIqPassed &&
+            iqClamp.CodexModelTimeEfficiencyBaselinePassed == MaxCodexModelIqPassed,
+            "codex model iq passed settings should clamp to ten tasks");
+
         ApplyValue(legacy, "SensitiveMouseRangePixels", "500");
         ApplyValue(legacy, "HoverOpacityRevealDelayEnabled", "False");
         ApplyValue(legacy, "ReverseHoverOpacityRestoreDelaySeconds", "0");
         ApplyValue(legacy, "HoverOpacityRevealDelaySeconds", "20");
         ApplyValue(legacy, "HoverOpacityRevealResetSeconds", "0.01");
+        ApplyValue(legacy, "CodexRadarManualLayoutEnabled", "True");
+        ApplyValue(legacy, "CodexRadarManualLeftPercent", "500");
+        ApplyValue(legacy, "CodexRadarManualTextScalePercent", "10");
+        ApplyValue(legacy, "CodexRadarConnectionLineOffsetX", "-999");
+        ApplyValue(legacy, "CodexRadarIqTextOffsetY", "999");
         legacy.Normalize();
         AssertLayout(
             legacy.SensitiveMouseRangePixels == MaxSensitiveMouseRangePixels,
@@ -2119,6 +4571,48 @@ internal sealed class WidgetSettings
         AssertLayout(
             Math.Abs(legacy.HoverOpacityRevealResetSeconds - MinHoverOpacityRevealResetSeconds) < 0.001,
             "hover reveal reset should clamp low");
+        AssertLayout(
+            legacy.CodexRadarManualLayoutEnabled &&
+            legacy.CodexRadarManualLeftPercent == MaxCodexRadarManualLeftPercent &&
+            legacy.CodexRadarManualTextScalePercent == MinCodexRadarManualTextScalePercent,
+            "codex radar manual layout settings should load and clamp");
+        AssertLayout(
+            legacy.CodexRadarConnectionLineOffsetX == MinCodexRadarManualElementOffsetPixels &&
+            legacy.CodexRadarIqTextOffsetY == MaxCodexRadarManualElementOffsetPixels,
+            "codex radar manual element offsets should load and clamp");
+
+        WidgetSettings compactRadar = CreateDefaults();
+        compactRadar.CodexRadarWidth = 628;
+        ApplyCodexRadarServiceHealthPanelMigration(compactRadar);
+        AssertLayout(
+            compactRadar.CodexRadarWidth == 552,
+            "codex radar hidden service panel migration should reclaim width once");
+        ApplyCodexRadarCompactQuotaWidthMigration(compactRadar);
+        AssertLayout(
+            compactRadar.CodexRadarWidth == 430,
+            "codex radar compact quota migration should reclaim right-side blank once");
+        ApplyCodexRadarBalancedWidthMigration(compactRadar);
+        AssertLayout(
+            compactRadar.CodexRadarWidth == DefaultCodexRadarWidth,
+            "codex radar balanced width migration should restore quota visibility");
+
+        WidgetSettings display = CreateDefaults();
+        ApplyValue(display, "FallbackDisconnectedDisplaysEnabled", "False");
+        ApplyValue(display, "CodexRadarDisplayDeviceName", "  \\\\.\\DISPLAY-DOES-NOT-EXIST  ");
+        display.CodexRadarLayoutWorkAreaLeft = 40;
+        display.CodexRadarLayoutWorkAreaTop = 80;
+        display.CodexRadarLayoutWorkAreaWidth = 900;
+        display.CodexRadarLayoutWorkAreaHeight = 600;
+        Rectangle missingDisplayWorkArea = display.GetWorkAreaForModule(ModuleCodexRadar);
+        AssertLayout(
+            string.Equals(display.CodexRadarDisplayDeviceName, "\\\\.\\DISPLAY-DOES-NOT-EXIST", StringComparison.Ordinal),
+            "display device name should trim");
+        AssertLayout(
+            missingDisplayWorkArea.Left == 40 &&
+            missingDisplayWorkArea.Top == 80 &&
+            missingDisplayWorkArea.Width == 900 &&
+            missingDisplayWorkArea.Height == 600,
+            "missing display without fallback should keep module work area");
     }
 
     private static void AssertLayout(bool condition, string message)
@@ -2453,6 +4947,41 @@ internal sealed class WidgetSettings
         }
 
         return value;
+    }
+
+    private static bool IsCodexRadarManualElementOffsetKey(string key)
+    {
+        return key != null &&
+            key.StartsWith("CodexRadar", StringComparison.OrdinalIgnoreCase) &&
+            (key.EndsWith("OffsetX", StringComparison.OrdinalIgnoreCase) ||
+             key.EndsWith("OffsetY", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void ClampCodexRadarManualElementOffsets(WidgetSettings settings)
+    {
+        if (settings == null)
+        {
+            return;
+        }
+
+        System.Reflection.PropertyInfo[] properties = typeof(WidgetSettings).GetProperties();
+        for (int i = 0; i < properties.Length; i++)
+        {
+            System.Reflection.PropertyInfo property = properties[i];
+            if (property.PropertyType != typeof(int) ||
+                !property.Name.StartsWith("CodexRadar", StringComparison.Ordinal) ||
+                !(property.Name.EndsWith("OffsetX", StringComparison.Ordinal) ||
+                  property.Name.EndsWith("OffsetY", StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            int value = (int)property.GetValue(settings, null);
+            property.SetValue(
+                settings,
+                Clamp(value, MinCodexRadarManualElementOffsetPixels, MaxCodexRadarManualElementOffsetPixels),
+                null);
+        }
     }
 
     private static double Clamp(double value, double min, double max)

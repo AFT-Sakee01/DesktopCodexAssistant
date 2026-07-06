@@ -1,5 +1,7 @@
 # 接口与复用资源汇总
 
+适用版本：1.0.4.18
+
 ## 1. 文档用途
 
 本汇总以当前源码为准，帮助后续修改在新增实现前优先找到可复用接口、服务、组件、命令和持久化资源。
@@ -25,9 +27,12 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | --- | --- | --- | --- |
 | `external_api.codex_radar.current` | Codex Radar current.json | `CodexRadarForm` | 北京时间整点调度、半日 IQ 窗口、速蹬窗口、RSS 链接、动态模型目录、JSON/HTML 回退和模型缓存 |
 | `external_api.codex_radar.feed` | Codex Radar RSS | `CodexRadarForm` | 只跟随 current.json 成功响应读取，用 GUID/pubDate 去重额外重置 |
-| `external_api.claude.status` | Claude Statuspage | `CodexRadarForm` | 服务健康状态映射 |
-| `external_api.openai.status` | OpenAI Statuspage | `CodexRadarForm` | 五阶段连接诊断 |
-| `external_api.chatgpt.probe` | ChatGPT HTTPS | `CodexRadarForm` | 仅做连接判断，不读取用户会话 |
+| `external_api.claude.status` | Claude Statuspage | `CodexRadarForm` | 单行 API 摘要和服务健康状态映射 |
+| `external_api.codex_provider.usage` | ChatGPT Codex usage | `CodexRadarForm` | 当前软件为 `CODEX` 时优先读取 5h/7d 用量；单飞、5 min 正常周期、429 15 min 冷却；旧 session/quota.ini 作为 fallback |
+| `external_api.claude_code.usage` | Claude Code OAuth usage | `CodexRadarForm` | 保留的非默认回退路径；默认 Claude 用量读取改走 statusline 本地缓存，避免检测动作额外消耗 Claude token |
+| `external_api.openai.status` | OpenAI Statuspage | `CodexRadarForm` | 五阶段连接诊断的回滚接口；当前 `CodexConnectionFlowEnabled=false` 时不调度 |
+| `external_api.deepseek.balance` | DeepSeek user balance | `CodexRadarForm` | DeepSeek 余额行、API 摘要异常候选和本地 24 小时消耗估算 |
+| `external_api.chatgpt.probe` | ChatGPT HTTPS | `CodexRadarForm` | 五阶段连接诊断的回滚接口；当前停用时不调度 |
 | `external_api.cleanip.me` | CleanIP | `CleanIpConnectionReader` | 整点抖动、错误重试和测试快照 |
 | `external_api.ipify.public_ip` | ipify | `NetworkMonitorReader` | 单飞和 network generation 校验 |
 | `external_api.microsoft.connecttest` | Microsoft NCSI | `NetworkMonitorReader` | 与 Ping 组合判断门户和离线 |
@@ -128,8 +133,15 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `file_format.runtime_logs` | 主日志、错误日志、GFW 日志 | 运行和诊断 |
 | `file_format.idle_cpu_diagnosis_report` | `idle-cpu-diagnosis-*.txt/.json` | 空闲 CPU 归因报告 |
 | `file_format.codex_radar_cache` | `codex-radar-cache.ini` | 动态模型快照和历史基准 |
-| `file_format.codex_radar_model_catalog` | `codex-radar-models.ini` | 模型按钮目录、可用状态和增删去重 |
+| `file_format.codex_radar_model_catalog` | `codex-radar-models.ini` | 模型下拉目录、可用状态和增删去重 |
+| `file_format.deepseek_api_key` | `deepseek-api-key.txt` | DeepSeek 本地 API key；设置页可写入/清除，禁止写入日志和 settings.ini |
+| `file_format.codex_auth_json` | `%USERPROFILE%\.codex\auth.json` 或 `CODEX_HOME\auth.json` | Codex access token 只读来源；不写回、不刷新、不记录敏感内容 |
+| `file_format.claude_statusline_quota` | `claude-statusline-quota.ini` | Claude Code statusline 桥接脚本写入的只读额度快照；默认 Claude 用量来源，不含 token |
+| `command.claude_statusline_bridge` | `%USERPROFILE%\.claude\desktop-codex-statusline-bridge.ps1` | Claude Code `statusLine` 命令；程序仅在没有自定义 statusline 时自动安装，不覆盖用户已有命令 |
+| `file_format.claude_code_credentials` | `CLAUDE_CODE_OAUTH_TOKEN` 或 `%LOCALAPPDATA%\DesktopCodexAssistant\claude-code-oauth-token.txt` | `claude setup-token` 生成 token 的保留回退来源；默认调度不调用，不自动执行命令、不读取 `.credentials.json`、不写回、不刷新、不记录敏感内容 |
+| `file_format.application_icon_ico` | `Assets/AppIcon.ico` | 编译时嵌入 exe 的 Win32 图标，和 `ApplicationIcon` 运行时绘制保持同款 |
 | `file_format.codex_quota` | `quota.ini` | Codex 额度缓存 |
+| `file_format.claude_quota` | `claude-quota.ini` | Claude Code 用量缓存；格式与 `quota.ini` 相同但文件隔离 |
 | `file_format.quota_reset_state` | `quota-reset-state.ini` | 本地 reset 保护、RSS 重置和速蹬开启去重 |
 | `file_format.install_log` | `install.log` | 安装和卸载记录 |
 | `resource_directory.codex_sessions` | `%USERPROFILE%\.codex\sessions` | 只读 Codex rollout 数据源 |

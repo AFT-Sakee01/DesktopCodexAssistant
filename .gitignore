@@ -10,7 +10,11 @@ _build/
 # Local backups and generated archives
 Backups/
 *_backup*/
+*.bak
+*.bak.zip
 *.zip
+replace*.py
+*_DesktopCodexAssistant.exe
 
 # Local validation and debug dumps
 _validation/

@@ -10,7 +10,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-internal sealed class PowerThermalForm : Form
+internal sealed partial class PowerThermalForm : Form
 {
     private const int RenderSecondBoundaryOffsetMs = 30;
     private readonly System.Windows.Forms.Timer timer;
@@ -105,6 +105,7 @@ internal sealed class PowerThermalForm : Form
     {
         this.currentSettings = settings.Clone();
         this.currentSettings.Normalize();
+        ApplicationIcon.ApplyTo(this);
 
         this.SetStyle(
             ControlStyles.AllPaintingInWmPaint |
@@ -948,7 +949,7 @@ internal sealed class PowerThermalForm : Form
             return;
         }
 
-        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+        Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModulePowerThermal);
         Size desiredSize = GetDesiredSize();
         if (this.Size != desiredSize)
         {
@@ -1248,7 +1249,31 @@ internal sealed class PowerThermalForm : Form
         }
     }
 
+    // Render-variant dispatch (mirrors CodexRadarForm). Only Classic exists today; add a case and a
+    // sibling partial file (PowerThermalForm.<Name>.cs) to introduce an alternate layout.
     private void DrawContent(Graphics g)
+    {
+        switch (this.currentSettings.PowerThermalRenderVariant)
+        {
+            case PowerThermalRenderVariant.Typographic:
+                DrawContentTypographic(g);
+                return;
+            case PowerThermalRenderVariant.AmberHud:
+                DrawContentAmberHud(g);
+                return;
+            case PowerThermalRenderVariant.WarmCard:
+                DrawContentWarmCard(g);
+                return;
+            case PowerThermalRenderVariant.Phosphor:
+                DrawContentPhosphor(g);
+                return;
+            default:
+                DrawContentClassic(g);
+                return;
+        }
+    }
+
+    private void DrawContentClassic(Graphics g)
     {
         ConfigureGraphics(g);
 

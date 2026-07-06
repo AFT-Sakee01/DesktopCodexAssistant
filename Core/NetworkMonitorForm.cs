@@ -3,13 +3,16 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Windows.Forms;
 
 // UI-only projection of NetworkMonitorSnapshot. I/O stays in NetworkMonitorReader;
 // this form is responsible for change detection and layered-window resource ownership.
-internal sealed class NetworkMonitorForm : Form
+internal sealed partial class NetworkMonitorForm : Form
 {
     private const int RenderSecondBoundaryOffsetMs = 55;
+    private const int DnsAlertOverlayRowIndex = 6;
     private readonly System.Windows.Forms.Timer timer;
     private readonly System.Windows.Forms.Timer hoverTimer;
     private readonly NetworkMonitorReader reader;
@@ -22,6 +25,9 @@ internal sealed class NetworkMonitorForm : Form
     private string cloudEndpointAlertSignature = string.Empty;
     private int cloudEndpointAlertIndex;
     private bool cloudEndpointAlertNamePhase = true;
+    private string dnsAlertSignature = string.Empty;
+    private int dnsAlertIndex;
+    private string dnsAlertCandidateKey = string.Empty;
     private double hoverOpacityProgress;
     private DateTime hoverOpacityLastUtc;
     private DateTime reverseHoverRevealUntilUtc;
@@ -46,6 +52,7 @@ internal sealed class NetworkMonitorForm : Form
         this.currentSettings.Normalize();
         this.reader = new NetworkMonitorReader();
         this.snapshot = new NetworkMonitorSnapshot();
+        ApplicationIcon.ApplyTo(this);
 
         this.SetStyle(
             ControlStyles.AllPaintingInWmPaint |
@@ -241,7 +248,8 @@ internal sealed class NetworkMonitorForm : Form
             // The reader owns I/O; this timer consumes snapshots and redraws only visible changes.
             NetworkMonitorSnapshot nextSnapshot = this.reader.GetSnapshot(this.currentSettings);
             bool displayChanged = !HasSameDisplayData(this.snapshot, nextSnapshot);
-            bool blinkChanged = HasCheckingCloudEndpoint(nextSnapshot);
+            bool blinkChanged = GetDisplayAccessState(nextSnapshot) == NetworkAccessState.Online &&
+                HasCheckingCloudEndpoint(nextSnapshot);
             if (blinkChanged)
             {
                 this.cloudEndpointCheckingBlink = !this.cloudEndpointCheckingBlink;
@@ -249,6 +257,7 @@ internal sealed class NetworkMonitorForm : Form
 
             this.snapshot = nextSnapshot;
             bool alertChanged = AdvanceCloudEndpointAlertRotation();
+            bool dnsAlertChanged = AdvanceDnsAlertRotation();
             Size desiredSize = GetDesiredSize();
             bool sizeChanged = false;
             if (this.Size != desiredSize)
@@ -267,7 +276,7 @@ internal sealed class NetworkMonitorForm : Form
                 positionChanged = true;
             }
 
-            if (!this.hiddenForFullscreen && this.Visible && (displayChanged || sizeChanged || positionChanged || blinkChanged || alertChanged))
+            if (!this.hiddenForFullscreen && this.Visible && (displayChanged || sizeChanged || positionChanged || blinkChanged || alertChanged || dnsAlertChanged))
             {
                 RenderLayeredWindow();
             }
@@ -488,7 +497,7 @@ internal sealed class NetworkMonitorForm : Form
             return;
         }
 
-        Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
+        Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModuleNetworkMonitor);
         Size desiredSize = GetDesiredSize();
         if (this.Size != desiredSize)
         {
@@ -606,7 +615,31 @@ internal sealed class NetworkMonitorForm : Form
         DrawingUtil.DrawImageWithAlpha(g, this.contentBitmap, contentAlpha);
     }
 
+    // Render-variant dispatch (mirrors CodexRadarForm). Only Classic exists today; add a case and a
+    // sibling partial file (NetworkMonitorForm.<Name>.cs) to introduce an alternate layout.
     private void DrawContent(Graphics g)
+    {
+        switch (this.currentSettings.NetworkMonitorRenderVariant)
+        {
+            case NetworkMonitorRenderVariant.Typographic:
+                DrawContentTypographic(g);
+                return;
+            case NetworkMonitorRenderVariant.AmberHud:
+                DrawContentAmberHud(g);
+                return;
+            case NetworkMonitorRenderVariant.WarmCard:
+                DrawContentWarmCard(g);
+                return;
+            case NetworkMonitorRenderVariant.Phosphor:
+                DrawContentPhosphor(g);
+                return;
+            default:
+                DrawContentClassic(g);
+                return;
+        }
+    }
+
+    private void DrawContentClassic(Graphics g)
     {
         ConfigureGraphics(g);
         using (GraphicsPath shell = RoundedRectangle(new RectangleF(0, 0, this.Width - 1, this.Height - 1), S(DesignTokens.Radius.Panel)))
@@ -623,13 +656,14 @@ internal sealed class NetworkMonitorForm : Form
 
         float rowTop = header.Bottom + S(1);
         float rowHeight = Math.Max(S(12), (content.Bottom - rowTop) / 7.0f);
-        DrawInfoRow(g, 0, "IP4", EmptyToDash(this.snapshot.IPv4), rowTop, rowHeight, DesignTokens.Colors.TextStrong);
-        DrawInfoRow(g, 1, "IP6", EmptyToDash(this.snapshot.IPv6), rowTop, rowHeight, DesignTokens.Colors.TextStrong);
+        DrawInfoRow(g, 0, "IP4", this.snapshot.IPv4, rowTop, rowHeight, DesignTokens.Colors.TextStrong);
+        DrawInfoRow(g, 1, "IP6", this.snapshot.IPv6, rowTop, rowHeight, DesignTokens.Colors.TextStrong);
         DrawInfoRow(g, 2, "IF", BuildInterfaceText(), rowTop, rowHeight, DesignTokens.Colors.TextStrong);
         DrawDnsRow(g, 3, rowTop, rowHeight);
         DrawInfoRow(g, 4, "WIFI", BuildWifiText(), rowTop, rowHeight, this.snapshot.IsWifi ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted);
         DrawInfoRow(g, 5, "PING", BuildConnectivityText(), rowTop, rowHeight, GetConnectivityColor());
         DrawInfoRow(g, 6, "GFW", BuildGfwProbeText(), rowTop, rowHeight, GetGfwProbeColor());
+        DrawDnsAlertOverlay(g, rowTop, rowHeight);
     }
 
     private void DrawHeader(Graphics g, RectangleF rect)
@@ -641,14 +675,14 @@ internal sealed class NetworkMonitorForm : Form
         Font statusFont = GetCachedUiFont(Math.Max(8.0f, rect.Height * 0.42f), FontStyle.Bold);
         using (SolidBrush titleBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
         using (SolidBrush statusBrush = new SolidBrush(statusColor))
-        using (SolidBrush publicBrush = new SolidBrush(this.snapshot.PublicIpKnown ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted))
+        using (SolidBrush publicBrush = new SolidBrush(HasPublicAddressDisplayValue() ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted))
         {
             RectangleF titleRect = new RectangleF(rect.Left, rect.Top, rect.Width * 0.26f, rect.Height);
             DrawFittedText(g, "NETWORK", titleFont, titleBrush, titleRect, StringAlignment.Near);
 
             RectangleF statusRect = new RectangleF(titleRect.Right + S(4), rect.Top, rect.Width * 0.36f, rect.Height);
             CloudEndpointAlert alert = GetCloudEndpointAlert(accessState);
-            string publicIp = "公网 " + (this.snapshot.PublicIpRefreshing && !this.snapshot.PublicIpKnown ? "..." : EmptyToDash(this.snapshot.PublicIp));
+            string publicIp = BuildPublicAddressText("公网");
             RectangleF rightTop = new RectangleF(statusRect.Right, rect.Top, rect.Right - statusRect.Right, rect.Height);
             RectangleF publicRect = rightTop;
             RectangleF statusTextRect = statusRect;
@@ -767,14 +801,14 @@ internal sealed class NetworkMonitorForm : Form
         CloudEndpointStatus status = GetEffectiveCloudEndpointStatus(endpoint, accessState);
         if (status == CloudEndpointStatus.Normal)
         {
-            return endpoint != null && endpoint.Domestic ? DesignTokens.Colors.SuccessText : DesignTokens.Colors.Success;
+            return DesignTokens.Colors.Success;
         }
 
         if (status == CloudEndpointStatus.Slow || status == CloudEndpointStatus.Checking)
         {
             if (status == CloudEndpointStatus.Checking && this.cloudEndpointCheckingBlink)
             {
-                return endpoint != null && endpoint.Domestic ? DesignTokens.Colors.SuccessText : DesignTokens.Colors.Success;
+                return DesignTokens.Colors.Success;
             }
 
             return DesignTokens.Colors.Warning;
@@ -810,6 +844,11 @@ internal sealed class NetworkMonitorForm : Form
 
     private CloudEndpointAlert GetCloudEndpointAlert(NetworkAccessState accessState)
     {
+        if (accessState != NetworkAccessState.Online)
+        {
+            return new CloudEndpointAlert();
+        }
+
         if (HasCheckingCloudEndpoint(this.snapshot))
         {
             return new CloudEndpointAlert
@@ -872,6 +911,11 @@ internal sealed class NetworkMonitorForm : Form
 
     private CloudEndpointAlertCandidate[] GetCloudEndpointAlertCandidates(NetworkAccessState accessState)
     {
+        if (accessState != NetworkAccessState.Online)
+        {
+            return new CloudEndpointAlertCandidate[0];
+        }
+
         CloudEndpointSnapshot[] endpoints = GetDisplayCloudEndpoints();
         List<CloudEndpointAlertCandidate> candidates = new List<CloudEndpointAlertCandidate>();
         for (int i = 0; i < endpoints.Length; i++)
@@ -949,7 +993,7 @@ internal sealed class NetworkMonitorForm : Form
 
         if (string.Equals(endpoint.Key, "google", StringComparison.OrdinalIgnoreCase))
         {
-            return "Google Cloud";
+            return "Google";
         }
 
         if (string.Equals(endpoint.Key, "github", StringComparison.OrdinalIgnoreCase))
@@ -957,14 +1001,14 @@ internal sealed class NetworkMonitorForm : Form
             return "Github";
         }
 
-        if (string.Equals(endpoint.Key, "aliyun", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(endpoint.Key, "akamai", StringComparison.OrdinalIgnoreCase))
         {
-            return "Aliyun";
+            return "Akamai";
         }
 
-        if (string.Equals(endpoint.Key, "tencent", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(endpoint.Key, "azure", StringComparison.OrdinalIgnoreCase))
         {
-            return "Tencent";
+            return "Azure";
         }
 
         return EmptyToDash(endpoint.DisplayName);
@@ -1020,18 +1064,448 @@ internal sealed class NetworkMonitorForm : Form
         return Math.Min(desired, maxWidth);
     }
 
+    private string GetPingDiagnosisTextSuffix()
+    {
+        PingRollingSnapshot rolling = this.snapshot == null ? null : this.snapshot.PingRolling;
+        if (rolling == null || rolling.Diagnosis == PingPathDiagnosis.None || string.IsNullOrWhiteSpace(rolling.DiagnosisText))
+        {
+            return string.Empty;
+        }
+
+        return " | " + rolling.DiagnosisText.Trim();
+    }
+
+    private float GetDnsAlertStripWidth(Graphics g, float rowHeight)
+    {
+        DnsAlertCandidate[] candidates = GetDnsAlertCandidates();
+        if (candidates.Length == 0)
+        {
+            return 0.0f;
+        }
+
+        float cloudWidth = GetCloudEndpointTileStripWidth(rowHeight);
+        float textWidth = GetMaxDnsAlertTextWidth(g, candidates, rowHeight);
+        float desired = Math.Max(Math.Max(cloudWidth, textWidth + S(10)), S(76));
+        float maxWidth = Math.Max(S(76), this.Width - S(92));
+        return Math.Min(desired, maxWidth);
+    }
+
+    private float GetMaxDnsAlertTextWidth(Graphics g, DnsAlertCandidate[] candidates, float rowHeight)
+    {
+        if (g == null || candidates == null || candidates.Length == 0)
+        {
+            return 0.0f;
+        }
+
+        Font font = GetDnsAlertFont(rowHeight);
+        float width = 0.0f;
+        for (int i = 0; i < candidates.Length; i++)
+        {
+            string text = candidates[i] == null ? string.Empty : candidates[i].Text;
+            if (string.IsNullOrEmpty(text))
+            {
+                continue;
+            }
+
+            width = Math.Max(width, g.MeasureString(text, font).Width);
+        }
+
+        return width;
+    }
+
+    private Font GetDnsAlertFont(float rowHeight)
+    {
+        return GetCachedUiFont(Math.Max(7.5f, rowHeight * 0.50f), FontStyle.Bold);
+    }
+
+    private void DrawDnsAlertStrip(Graphics g, RectangleF rect, float rowHeight)
+    {
+        DnsAlertCandidate[] candidates = GetDnsAlertCandidates();
+        if (candidates.Length == 0 || rect.Width <= 0.0f || rect.Height <= 0.0f)
+        {
+            return;
+        }
+
+        int index = Math.Max(0, Math.Min(this.dnsAlertIndex, candidates.Length - 1));
+        DnsAlertCandidate candidate = candidates[index];
+        Font font = GetDnsAlertFont(rowHeight);
+        using (SolidBrush brush = new SolidBrush(candidate.Color))
+        {
+            DrawFittedText(g, candidate.Text, font, brush, rect, StringAlignment.Far);
+        }
+    }
+
+    private void DrawDnsAlertOverlay(Graphics g, float rowTop, float rowHeight)
+    {
+        RectangleF rect = GetDnsAlertOverlayRect(g, rowTop, rowHeight);
+        if (rect.Width <= 0.0f || rect.Height <= 0.0f)
+        {
+            return;
+        }
+
+        DrawDnsAlertStrip(g, rect, rowHeight);
+    }
+
+    private RectangleF GetDnsAlertOverlayRect(Graphics g, float rowTop, float rowHeight)
+    {
+        float width = GetDnsAlertStripWidth(g, rowHeight);
+        if (width <= 0.0f)
+        {
+            return RectangleF.Empty;
+        }
+
+        // DNS status is a top-layer badge aligned with the GFW row. It must not
+        // change the GFW row's layout; only the IP4 cloud tiles reserve row width.
+        return new RectangleF(
+            Math.Max(S(10), this.Width - S(10) - width),
+            rowTop + DnsAlertOverlayRowIndex * rowHeight,
+            width,
+            rowHeight);
+    }
+
+    private bool AdvanceDnsAlertRotation()
+    {
+        DnsAlertCandidate[] candidates = GetDnsAlertCandidates();
+        if (candidates.Length == 0)
+        {
+            bool hadAlert = !string.IsNullOrEmpty(this.dnsAlertSignature);
+            this.dnsAlertSignature = string.Empty;
+            this.dnsAlertIndex = 0;
+            this.dnsAlertCandidateKey = string.Empty;
+            return hadAlert;
+        }
+
+        string signature = BuildDnsAlertSignature(candidates);
+        bool signatureChanged = !string.Equals(signature, this.dnsAlertSignature, StringComparison.Ordinal);
+        if (signatureChanged)
+        {
+            this.dnsAlertSignature = signature;
+        }
+
+        if (candidates.Length <= 1)
+        {
+            bool changed = signatureChanged || this.dnsAlertIndex != 0;
+            this.dnsAlertIndex = 0;
+            this.dnsAlertCandidateKey = candidates[0].Key;
+            return changed;
+        }
+
+        if (string.IsNullOrEmpty(this.dnsAlertCandidateKey))
+        {
+            this.dnsAlertIndex = Math.Max(0, Math.Min(this.dnsAlertIndex, candidates.Length - 1));
+            this.dnsAlertCandidateKey = candidates[this.dnsAlertIndex].Key;
+            return true;
+        }
+
+        int previousIndex = FindDnsAlertCandidateIndex(candidates, this.dnsAlertCandidateKey);
+        int baseIndex = previousIndex >= 0
+            ? previousIndex
+            : Math.Max(0, Math.Min(this.dnsAlertIndex, candidates.Length - 1));
+        this.dnsAlertIndex = (baseIndex + 1) % candidates.Length;
+        this.dnsAlertCandidateKey = candidates[this.dnsAlertIndex].Key;
+        return true;
+    }
+
+    private static int FindDnsAlertCandidateIndex(DnsAlertCandidate[] candidates, string key)
+    {
+        if (candidates == null || candidates.Length == 0 || string.IsNullOrEmpty(key))
+        {
+            return -1;
+        }
+
+        for (int i = 0; i < candidates.Length; i++)
+        {
+            if (string.Equals(candidates[i].Key, key, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private DnsAlertCandidate[] GetDnsAlertCandidates()
+    {
+        return BuildDnsAlertCandidates(this.snapshot == null ? null : this.snapshot.DnsServerDetails);
+    }
+
+    private static DnsAlertCandidate[] BuildDnsAlertCandidates(DnsServerSnapshot[] details)
+    {
+        if (details == null || details.Length == 0)
+        {
+            return CreateDnsNormalAlertCandidates();
+        }
+
+        DnsDisplayItem[] items = BuildDnsDisplayItems(details);
+        List<DnsAlertCandidate> candidates = new List<DnsAlertCandidate>();
+        for (int i = 0; i < items.Length; i++)
+        {
+            DnsServerSnapshot detail = items[i].Detail;
+            if (detail == null ||
+                (detail.Status != DnsServerStatus.Problem &&
+                 detail.Status != DnsServerStatus.Hijacked &&
+                 detail.Status != DnsServerStatus.Unavailable))
+            {
+                continue;
+            }
+
+            candidates.Add(new DnsAlertCandidate
+            {
+                Key = GetDnsAlertCandidateKey(detail, i),
+                Address = detail.Address == null ? string.Empty : detail.Address.Trim(),
+                Text = "DNS" + GetDnsAlertReasonText(detail),
+                Color = GetDnsStatusColor(detail.Status),
+                Status = detail.Status
+            });
+        }
+
+        DisambiguateDuplicateDnsAlertText(candidates);
+        return candidates.Count == 0 ? CreateDnsNormalAlertCandidates() : candidates.ToArray();
+    }
+
+    private static string GetDnsAlertCandidateKey(DnsServerSnapshot detail, int index)
+    {
+        string address = detail == null || string.IsNullOrWhiteSpace(detail.Address)
+            ? string.Empty
+            : detail.Address.Trim();
+        if (address.Length > 0)
+        {
+            return address;
+        }
+
+        return "dns-" + index.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static void DisambiguateDuplicateDnsAlertText(List<DnsAlertCandidate> candidates)
+    {
+        if (candidates == null || candidates.Count <= 1)
+        {
+            return;
+        }
+
+        string[] originalTexts = new string[candidates.Count];
+        DnsServerStatus[] originalStatuses = new DnsServerStatus[candidates.Count];
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            originalTexts[i] = candidates[i].Text;
+            originalStatuses[i] = candidates[i].Status;
+        }
+
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            DnsAlertCandidate current = candidates[i];
+            bool duplicate = false;
+            for (int j = 0; j < candidates.Count; j++)
+            {
+                if (i == j)
+                {
+                    continue;
+                }
+
+                if (originalStatuses[i] == originalStatuses[j] &&
+                    string.Equals(originalTexts[i], originalTexts[j], StringComparison.Ordinal))
+                {
+                    duplicate = true;
+                    break;
+                }
+            }
+
+            if (duplicate && !string.IsNullOrWhiteSpace(current.Address))
+            {
+                current.Text = current.Text + "@" + GetCompactDnsAlertAddress(current.Address);
+            }
+        }
+    }
+
+    private static string GetCompactDnsAlertAddress(string address)
+    {
+        string value = string.IsNullOrWhiteSpace(address) ? string.Empty : address.Trim();
+        if (value.Length <= 15)
+        {
+            return value;
+        }
+
+        return "…" + value.Substring(value.Length - 10);
+    }
+
+    private static DnsAlertCandidate[] CreateDnsNormalAlertCandidates()
+    {
+        return new DnsAlertCandidate[]
+        {
+            new DnsAlertCandidate
+            {
+                Key = "normal",
+                Address = string.Empty,
+                Text = "DNS正常",
+                Color = GetDnsStatusColor(DnsServerStatus.Normal),
+                Status = DnsServerStatus.Normal
+            }
+        };
+    }
+
+    private static string GetDnsAlertReasonText(DnsServerSnapshot detail)
+    {
+        if (detail == null)
+        {
+            return "异常";
+        }
+
+        if (detail.Status == DnsServerStatus.Hijacked)
+        {
+            return "污染";
+        }
+
+        string reason = GetDnsAlertCompactReason(detail.Reason);
+        if (detail.Status == DnsServerStatus.Unavailable)
+        {
+            return string.IsNullOrEmpty(reason) ? "不可用" : reason;
+        }
+
+        return string.IsNullOrEmpty(reason) ? "异常" : reason;
+    }
+
+    private static string GetDnsAlertCompactReason(string reason)
+    {
+        string value = string.IsNullOrWhiteSpace(reason) ? string.Empty : reason.Trim();
+        if (value.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (value.IndexOf("TCP", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            value.IndexOf("仅TCP", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return "仅TCP";
+        }
+
+        if (string.Equals(value, "无响应", StringComparison.Ordinal))
+        {
+            return "无响应";
+        }
+
+        if (string.Equals(value, "地址无效", StringComparison.Ordinal))
+        {
+            return "地址无效";
+        }
+
+        if (string.Equals(value, "无地址答案", StringComparison.Ordinal))
+        {
+            return "无地址";
+        }
+
+        if (string.Equals(value, "NXDOMAIN验证失败", StringComparison.Ordinal))
+        {
+            return "NX验证失败";
+        }
+
+        if (string.Equals(value, "NXDOMAIN一次异常", StringComparison.Ordinal))
+        {
+            return "NX一次异常";
+        }
+
+        const string nxdomainPrefix = "NXDOMAIN异常 ";
+        if (value.StartsWith(nxdomainPrefix, StringComparison.Ordinal))
+        {
+            return TrimDnsAlertReason("NX异常" + value.Substring(nxdomainPrefix.Length));
+        }
+
+        const string returnedPrefix = "返回 ";
+        if (value.StartsWith(returnedPrefix, StringComparison.Ordinal))
+        {
+            return TrimDnsAlertReason("返回" + value.Substring(returnedPrefix.Length));
+        }
+
+        if (string.Equals(value, "TimeoutException", StringComparison.Ordinal) ||
+            value.IndexOf("timeout", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return "超时";
+        }
+
+        if (string.Equals(value, "SocketException", StringComparison.Ordinal))
+        {
+            return "Socket异常";
+        }
+
+        if (string.Equals(value, "InvalidOperationException", StringComparison.Ordinal))
+        {
+            return "响应异常";
+        }
+
+        return TrimDnsAlertReason(value);
+    }
+
+    private static string TrimDnsAlertReason(string reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            return string.Empty;
+        }
+
+        System.Text.StringBuilder compact = new System.Text.StringBuilder(reason.Length);
+        for (int i = 0; i < reason.Length; i++)
+        {
+            char ch = reason[i];
+            if (!char.IsWhiteSpace(ch))
+            {
+                compact.Append(ch);
+            }
+        }
+
+        const int maxLength = 12;
+        if (compact.Length <= maxLength)
+        {
+            return compact.ToString();
+        }
+
+        return compact.ToString(0, maxLength - 1) + "…";
+    }
+
+    private static string BuildDnsAlertSignature(DnsAlertCandidate[] candidates)
+    {
+        if (candidates == null || candidates.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        System.Text.StringBuilder builder = new System.Text.StringBuilder();
+        for (int i = 0; i < candidates.Length; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append("|");
+            }
+
+            builder.Append(candidates[i].Key);
+            builder.Append(":");
+            builder.Append(candidates[i].Text);
+            builder.Append(":");
+            builder.Append(candidates[i].Status.ToString());
+        }
+
+        return builder.ToString();
+    }
+
     private void DrawInfoRow(Graphics g, int row, string label, string value, float rowTop, float rowHeight, Color valueColor)
     {
         float y = rowTop + row * rowHeight;
         float labelLeft = S(10);
         RectangleF labelRect = new RectangleF(labelLeft, y, S(42), rowHeight);
         bool drawCloudTiles = string.Equals(label, "IP4", StringComparison.Ordinal);
-        float cloudWidth = drawCloudTiles ? GetCloudEndpointTileStripWidth(rowHeight) : 0.0f;
-        float cloudGap = drawCloudTiles && cloudWidth > 0.0f ? S(4) : 0.0f;
-        float valueWidth = Math.Max(S(28), this.Width - labelRect.Right - S(13) - cloudWidth - cloudGap);
+        float rightWidth = GetInfoRowReservedRightWidth(label, rowHeight);
+        float rightGap = rightWidth > 0.0f ? S(4) : 0.0f;
+        float valueWidth = Math.Max(S(28), this.Width - labelRect.Right - S(13) - rightWidth - rightGap);
         RectangleF valueRect = new RectangleF(labelRect.Right + S(3), y, valueWidth, rowHeight);
         Font labelFont = GetCachedUiFont(Math.Max(8.0f, rowHeight * 0.52f), FontStyle.Bold);
         Font valueFont = GetCachedUiFont(Math.Max(8.5f, rowHeight * 0.58f), FontStyle.Bold);
+        if (string.Equals(label, "IP4", StringComparison.Ordinal))
+        {
+            value = BuildMeasuredAddressRowText(g, value, valueFont, valueRect.Width, 15);
+        }
+        else if (string.Equals(label, "IP6", StringComparison.Ordinal))
+        {
+            value = BuildMeasuredAddressRowText(g, value, valueFont, valueRect.Width, 24);
+        }
+
         using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
         using (SolidBrush valueBrush = new SolidBrush(valueColor))
         {
@@ -1039,11 +1513,21 @@ internal sealed class NetworkMonitorForm : Form
             DrawFittedText(g, value, valueFont, valueBrush, valueRect, StringAlignment.Near);
         }
 
-        if (drawCloudTiles && cloudWidth > 0.0f)
+        if (drawCloudTiles && rightWidth > 0.0f)
         {
-            RectangleF cloudRect = new RectangleF(Math.Max(S(10), this.Width - S(10) - cloudWidth), y, cloudWidth, rowHeight);
+            RectangleF cloudRect = new RectangleF(Math.Max(S(10), this.Width - S(10) - rightWidth), y, rightWidth, rowHeight);
             DrawCloudEndpointTiles(g, cloudRect, GetDisplayAccessState());
         }
+    }
+
+    private float GetInfoRowReservedRightWidth(string label, float rowHeight)
+    {
+        if (string.Equals(label, "IP4", StringComparison.Ordinal))
+        {
+            return GetCloudEndpointTileStripWidth(rowHeight);
+        }
+
+        return 0.0f;
     }
 
     private void DrawDnsRow(Graphics g, int row, float rowTop, float rowHeight)
@@ -1187,6 +1671,11 @@ internal sealed class NetworkMonitorForm : Form
     private DnsDisplayItem[] BuildDnsDisplayItems()
     {
         DnsServerSnapshot[] details = this.snapshot == null ? null : this.snapshot.DnsServerDetails;
+        return BuildDnsDisplayItems(details);
+    }
+
+    private static DnsDisplayItem[] BuildDnsDisplayItems(DnsServerSnapshot[] details)
+    {
         if (details == null || details.Length == 0)
         {
             return new DnsDisplayItem[0];
@@ -1205,21 +1694,11 @@ internal sealed class NetworkMonitorForm : Form
             {
                 Address = detail.Address.Trim(),
                 Status = detail.Status,
-                OriginalIndex = i
+                Detail = detail
             });
         }
 
-        items.Sort(delegate(DnsDisplayItem left, DnsDisplayItem right)
-        {
-            int priority = GetDnsStatusPriority(right.Status).CompareTo(GetDnsStatusPriority(left.Status));
-            if (priority != 0)
-            {
-                return priority;
-            }
-
-            return left.OriginalIndex.CompareTo(right.OriginalIndex);
-        });
-
+        // DNS servers are already ordered by adapter priority; status only colors the row.
         return items.ToArray();
     }
 
@@ -1252,7 +1731,7 @@ internal sealed class NetworkMonitorForm : Form
     {
         if (status == DnsServerStatus.Normal)
         {
-            return DesignTokens.Colors.SuccessText;
+            return DesignTokens.Colors.Success;
         }
 
         if (status == DnsServerStatus.Problem)
@@ -1310,7 +1789,7 @@ internal sealed class NetworkMonitorForm : Form
         NetworkAccessState accessState = GetDisplayAccessState();
         if (accessState == NetworkAccessState.NeedsValidation)
         {
-            return "需要验证 | " + EmptyToDash(this.snapshot.AccessReason);
+            return "需要验证 | " + EmptyToDash(this.snapshot.AccessReason) + GetPingDiagnosisTextSuffix();
         }
 
         if (accessState == NetworkAccessState.Offline)
@@ -1321,12 +1800,52 @@ internal sealed class NetworkMonitorForm : Form
                 reason = "loss " + Math.Max(0, this.snapshot.PacketLossPercent).ToString(CultureInfo.InvariantCulture) + "%";
             }
 
-            return "FAIL " + NetworkMonitorTarget() + " | " + reason;
+            return "FAIL " + NetworkMonitorTarget() + " | " + reason + GetPingDiagnosisTextSuffix();
         }
 
         if (accessState == NetworkAccessState.AdapterMissing)
         {
-            return "网卡未识别 | " + EmptyToDash(this.snapshot.AccessReason);
+            return "网卡未识别 | " + EmptyToDash(this.snapshot.AccessReason) + GetPingDiagnosisTextSuffix();
+        }
+
+        PingRollingSnapshot rolling = this.snapshot.PingRolling;
+        if (rolling != null)
+        {
+            string profile = EmptyToDash(rolling.ActiveProfile);
+            if (profile == "--")
+            {
+                profile = NetworkMonitorTarget();
+            }
+
+            if (rolling.IcmpBlocked)
+            {
+                return "FAIL " + profile + " | ICMP不可用" + GetPingDiagnosisTextSuffix();
+            }
+
+            if (!rolling.StatsReady)
+            {
+                return string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0} {1} | 采样中 ({2}/{3})",
+                    this.snapshot.ConnectivityOnline ? "OK" : "FAIL",
+                    profile,
+                    Math.Max(0, rolling.SampleCount),
+                    RollingPingMinSamplesForDisplay()) + GetPingDiagnosisTextSuffix();
+            }
+
+            string jitter = rolling.JitterKnown
+                ? Math.Max(0.0, rolling.JitterMs).ToString("0", CultureInfo.InvariantCulture) + "ms"
+                : "--";
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0} {1} | {2:0}ms | jitter {3} | loss {4:0.0}% ({5}/{6})",
+                this.snapshot.ConnectivityOnline ? "OK" : "FAIL",
+                profile,
+                Math.Max(0.0, rolling.LatencyMs),
+                jitter,
+                Math.Max(0.0, Math.Min(100.0, rolling.LossPercent)),
+                Math.Max(0, rolling.LostCount),
+                Math.Max(0, rolling.SampleCount)) + GetPingDiagnosisTextSuffix();
         }
 
         string state = this.snapshot.ConnectivityOnline ? "OK" : "FAIL";
@@ -1342,7 +1861,17 @@ internal sealed class NetworkMonitorForm : Form
 
     private string NetworkMonitorTarget()
     {
+        if (this.snapshot != null && this.snapshot.PingRolling != null && !string.IsNullOrWhiteSpace(this.snapshot.PingRolling.ActiveProfile))
+        {
+            return this.snapshot.PingRolling.ActiveProfile.Trim();
+        }
+
         return this.snapshot == null ? "1.1.1.1" : EmptyToDash(this.snapshot.ConnectivityTarget);
+    }
+
+    private static int RollingPingMinSamplesForDisplay()
+    {
+        return 10;
     }
 
     private Color GetConnectivityColor()
@@ -1358,32 +1887,37 @@ internal sealed class NetworkMonitorForm : Form
 
     private NetworkAccessState GetDisplayAccessState()
     {
-        if (this.snapshot == null)
+        return GetDisplayAccessState(this.snapshot);
+    }
+
+    private static NetworkAccessState GetDisplayAccessState(NetworkMonitorSnapshot snapshot)
+    {
+        if (snapshot == null)
         {
             return NetworkAccessState.Unknown;
         }
 
-        if (!this.snapshot.Connected)
+        if (!snapshot.Connected)
         {
             return NetworkAccessState.AdapterMissing;
         }
 
-        if (this.snapshot.AccessState == NetworkAccessState.AdapterMissing)
+        if (snapshot.AccessState == NetworkAccessState.AdapterMissing)
         {
             return NetworkAccessState.Unknown;
         }
 
-        if (!this.snapshot.ConnectivityKnown)
+        if (!snapshot.ConnectivityKnown)
         {
             return NetworkAccessState.Unknown;
         }
 
-        if (this.snapshot.AccessState != NetworkAccessState.Unknown)
+        if (snapshot.AccessState != NetworkAccessState.Unknown)
         {
-            return this.snapshot.AccessState;
+            return snapshot.AccessState;
         }
 
-        return this.snapshot.ConnectivityOnline ? NetworkAccessState.Online : NetworkAccessState.Offline;
+        return snapshot.ConnectivityOnline ? NetworkAccessState.Online : NetworkAccessState.Offline;
     }
 
     private static string GetAccessStateText(NetworkAccessState state)
@@ -1569,6 +2103,233 @@ internal sealed class NetworkMonitorForm : Form
         return string.IsNullOrWhiteSpace(value) ? "--" : value.Trim();
     }
 
+    private string BuildPublicAddressText(string prefix)
+    {
+        return EmptyToDash(prefix) + " " + BuildPublicAddressValue();
+    }
+
+    private string BuildPublicAddressValue()
+    {
+        string publicIpv6;
+        if (TryGetPrimaryPublicIpv6(this.snapshot == null ? null : this.snapshot.IPv6, out publicIpv6))
+        {
+            return CompactIpAddressForDisplay(publicIpv6, 16);
+        }
+
+        if (this.snapshot != null && this.snapshot.PublicIpRefreshing && !this.snapshot.PublicIpKnown)
+        {
+            return "...";
+        }
+
+        return EmptyToDash(this.snapshot == null ? null : this.snapshot.PublicIp);
+    }
+
+    private bool HasPublicAddressDisplayValue()
+    {
+        string publicIpv6;
+        if (TryGetPrimaryPublicIpv6(this.snapshot == null ? null : this.snapshot.IPv6, out publicIpv6))
+        {
+            return true;
+        }
+
+        return this.snapshot != null && this.snapshot.PublicIpKnown;
+    }
+
+    private string BuildMeasuredAddressRowText(Graphics g, string value, Font font, float maxWidth, int maxAddressLength)
+    {
+        string text = BuildSingleAddressRowText(value, int.MaxValue);
+        if (DoesTextFit(g, text, font, maxWidth))
+        {
+            return text;
+        }
+
+        text = BuildSingleAddressRowText(value, maxAddressLength);
+        if (DoesTextFit(g, text, font, maxWidth))
+        {
+            return text;
+        }
+
+        for (int length = Math.Max(8, maxAddressLength - 2); length >= 8; length -= 2)
+        {
+            text = BuildSingleAddressRowText(value, length);
+            if (DoesTextFit(g, text, font, maxWidth))
+            {
+                return text;
+            }
+        }
+
+        return text;
+    }
+
+    private static bool DoesTextFit(Graphics g, string text, Font font, float maxWidth)
+    {
+        if (g == null || font == null || maxWidth <= 0.0f)
+        {
+            return false;
+        }
+
+        return g.MeasureString(text ?? string.Empty, font).Width <= maxWidth;
+    }
+
+    private static string BuildSingleAddressRowText(string value, int maxAddressLength)
+    {
+        List<string> addresses = ExtractAddressList(value);
+        if (addresses.Count == 0)
+        {
+            return "--";
+        }
+
+        string first = maxAddressLength == int.MaxValue
+            ? NormalizeIpAddressForDisplay(addresses[0])
+            : CompactIpAddressForDisplay(addresses[0], maxAddressLength);
+        int hiddenCount = Math.Max(0, addresses.Count - 1) + ExtractHiddenAddressCount(value);
+        if (hiddenCount <= 0)
+        {
+            return first;
+        }
+
+        return first + " +" + hiddenCount.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static string NormalizeIpAddressForDisplay(string value)
+    {
+        string text = EmptyToDash(value);
+        if (text == "--")
+        {
+            return text;
+        }
+
+        IPAddress address;
+        return IPAddress.TryParse(text, out address) ? address.ToString() : text;
+    }
+
+    private static bool TryGetPrimaryPublicIpv6(string value, out string publicIpv6)
+    {
+        publicIpv6 = string.Empty;
+        List<string> addresses = ExtractAddressList(value);
+        for (int i = 0; i < addresses.Count; i++)
+        {
+            IPAddress address;
+            if (IPAddress.TryParse(addresses[i], out address) && IsPublicRoutableIpv6(address))
+            {
+                publicIpv6 = address.ToString();
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsPublicRoutableIpv6(IPAddress address)
+    {
+        if (address == null || address.AddressFamily != AddressFamily.InterNetworkV6)
+        {
+            return false;
+        }
+
+        if (address.IsIPv6LinkLocal || address.IsIPv6Multicast || address.IsIPv6SiteLocal)
+        {
+            return false;
+        }
+
+        byte[] bytes = address.GetAddressBytes();
+        if (bytes == null || bytes.Length == 0 || bytes[0] == 0)
+        {
+            return false;
+        }
+
+        // fc00::/7 is ULA. It is valid on a local network but should not be
+        // shown as the public address in the compact header.
+        return (bytes[0] & 0xFE) != 0xFC;
+    }
+
+    private static List<string> ExtractAddressList(string value)
+    {
+        List<string> addresses = new List<string>();
+        if (string.IsNullOrWhiteSpace(value) || string.Equals(value.Trim(), "--", StringComparison.Ordinal))
+        {
+            return addresses;
+        }
+
+        string[] parts = value.Split(',');
+        for (int i = 0; i < parts.Length; i++)
+        {
+            string part = StripHiddenAddressSuffix(parts[i]);
+            if (part.Length == 0 || part[0] == '+')
+            {
+                continue;
+            }
+
+            addresses.Add(part);
+        }
+
+        return addresses;
+    }
+
+    private static int ExtractHiddenAddressCount(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return 0;
+        }
+
+        int index = value.LastIndexOf(" +", StringComparison.Ordinal);
+        if (index < 0 || index + 2 >= value.Length)
+        {
+            return 0;
+        }
+
+        int count;
+        return int.TryParse(value.Substring(index + 2).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out count)
+            ? Math.Max(0, count)
+            : 0;
+    }
+
+    private static string StripHiddenAddressSuffix(string value)
+    {
+        string text = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+        int index = text.LastIndexOf(" +", StringComparison.Ordinal);
+        if (index < 0 || index + 2 >= text.Length)
+        {
+            return text;
+        }
+
+        int count;
+        return int.TryParse(text.Substring(index + 2).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out count)
+            ? text.Substring(0, index).Trim()
+            : text;
+    }
+
+    private static string CompactIpAddressForDisplay(string value, int maxLength)
+    {
+        string text = EmptyToDash(value);
+        if (text == "--")
+        {
+            return text;
+        }
+
+        IPAddress address;
+        if (IPAddress.TryParse(text, out address))
+        {
+            text = address.ToString();
+        }
+
+        maxLength = Math.Max(8, maxLength);
+        if (text.Length <= maxLength)
+        {
+            return text;
+        }
+
+        int head = Math.Max(4, (maxLength - 1) / 2);
+        int tail = Math.Max(4, maxLength - head - 1);
+        if (head + tail + 1 >= text.Length)
+        {
+            return text;
+        }
+
+        return text.Substring(0, head) + "…" + text.Substring(text.Length - tail);
+    }
+
     private void DrawFittedText(Graphics g, string text, Font baseFont, Brush brush, RectangleF rect, StringAlignment alignment)
     {
         using (StringFormat format = new StringFormat())
@@ -1659,7 +2420,34 @@ internal sealed class NetworkMonitorForm : Form
             string.Equals(left.AccessReason, right.AccessReason, StringComparison.Ordinal) &&
             string.Equals(left.ConnectivityTarget, right.ConnectivityTarget, StringComparison.Ordinal) &&
             HasSameWifiData(left.WifiDetails, right.WifiDetails) &&
-            HasSameGfwData(left.GfwProbe, right.GfwProbe);
+            HasSameGfwData(left.GfwProbe, right.GfwProbe) &&
+            HasSamePingRollingData(left.PingRolling, right.PingRolling);
+    }
+
+    private static bool HasSamePingRollingData(PingRollingSnapshot left, PingRollingSnapshot right)
+    {
+        if (ReferenceEquals(left, right))
+        {
+            return true;
+        }
+
+        if (left == null || right == null)
+        {
+            return false;
+        }
+
+        return left.SampleCount == right.SampleCount &&
+            left.LostCount == right.LostCount &&
+            left.StatsReady == right.StatsReady &&
+            left.IcmpBlocked == right.IcmpBlocked &&
+            left.JitterKnown == right.JitterKnown &&
+            left.Diagnosis == right.Diagnosis &&
+            left.Severity == right.Severity &&
+            Math.Abs(left.LossPercent - right.LossPercent) < 0.05 &&
+            Math.Abs(left.LatencyMs - right.LatencyMs) < 0.5 &&
+            Math.Abs(left.JitterMs - right.JitterMs) < 0.5 &&
+            string.Equals(left.ActiveProfile, right.ActiveProfile, StringComparison.Ordinal) &&
+            string.Equals(left.DiagnosisText, right.DiagnosisText, StringComparison.Ordinal);
     }
 
     private static bool HasSameDnsServerData(DnsServerSnapshot[] left, DnsServerSnapshot[] right)
@@ -1945,6 +2733,26 @@ internal sealed class NetworkMonitorForm : Form
         return font;
     }
 
+    // Mono counterpart of GetCachedUiFont, needed by the AmberHud/Phosphor OLED-safe restyle
+    // schemes (added in 1.0.3.44). Shares the same cache dictionary; the style+size key does not
+    // collide with UI-font entries because callers never request the exact same normalized
+    // size+style pair for both families in practice, and correctness does not depend on that anyway
+    // since this uses its own "M:" prefix.
+    private Font GetCachedMonoFont(float size, FontStyle style)
+    {
+        float normalizedSize = Math.Max(1.0f, (float)Math.Round(size, 2));
+        string key = "M:" + ((int)style).ToString(CultureInfo.InvariantCulture) + ":" +
+            normalizedSize.ToString("0.00", CultureInfo.InvariantCulture);
+        Font font;
+        if (!this.fontCache.TryGetValue(key, out font))
+        {
+            font = DesignTokens.CreateMonoFont(normalizedSize, style, GraphicsUnit.Pixel);
+            this.fontCache[key] = font;
+        }
+
+        return font;
+    }
+
     private void DisposeFontCache()
     {
         foreach (Font font in this.fontCache.Values)
@@ -1994,6 +2802,234 @@ internal sealed class NetworkMonitorForm : Form
         return (int)Math.Round(value * this.scale);
     }
 
+    internal static void RunNetworkMonitorDisplaySelfTest()
+    {
+        CloudEndpointSnapshot[] endpoints = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Normal);
+        string order = string.Empty;
+        for (int i = 0; i < endpoints.Length; i++)
+        {
+            if (i > 0)
+            {
+                order += " ";
+            }
+
+            order += endpoints[i].ShortLabel;
+        }
+
+        if (!string.Equals(order, "Cf Ak Gi Aw Az Go", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Network monitor display self-test: cloud tile order mismatch: " + order);
+        }
+
+        if (GetCloudEndpointAlertName(endpoints[5]) != "Google")
+        {
+            throw new InvalidOperationException("Network monitor display self-test: Google alert name mismatch.");
+        }
+
+        string singleIpv4 = BuildSingleAddressRowText("192.168.1.42, 10.0.0.4", int.MaxValue);
+        if (!string.Equals(singleIpv4, "192.168.1.42 +1", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Network monitor display self-test: IPv4 row must show only the first full address plus hidden count.");
+        }
+
+        string singleIpv6 = BuildSingleAddressRowText("2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890, fd00::1 +1", int.MaxValue);
+        if (singleIpv6.IndexOf(",", StringComparison.Ordinal) >= 0 ||
+            singleIpv6.IndexOf("2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890", StringComparison.Ordinal) < 0 ||
+            singleIpv6.IndexOf("+2", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("Network monitor display self-test: IPv6 row must prefer one full address plus hidden count.");
+        }
+
+        string compactIpv6 = BuildSingleAddressRowText("2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890, fd00::1 +1", 16);
+        if (compactIpv6.IndexOf(",", StringComparison.Ordinal) >= 0 ||
+            compactIpv6.IndexOf("2406:da18:7c3:8f00", StringComparison.Ordinal) >= 0 ||
+            compactIpv6.IndexOf("…", StringComparison.Ordinal) < 0 ||
+            compactIpv6.IndexOf("+2", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("Network monitor display self-test: IPv6 compact row must keep one address and hidden count.");
+        }
+
+        string publicIpv6;
+        if (!TryGetPrimaryPublicIpv6("fd00::1234, 2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890", out publicIpv6) ||
+            publicIpv6.IndexOf("2406:da18", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("Network monitor display self-test: public IPv6 priority failed.");
+        }
+
+        DnsServerSnapshot[] dns = new DnsServerSnapshot[]
+        {
+            new DnsServerSnapshot { Address = "dns-a", Status = DnsServerStatus.Hijacked, Reason = "不存在域名被解析" },
+            new DnsServerSnapshot { Address = "dns-b", Status = DnsServerStatus.Unavailable, Reason = "无响应" },
+            new DnsServerSnapshot { Address = "dns-c", Status = DnsServerStatus.Problem, Reason = "UDP失败/TCP可用" },
+            new DnsServerSnapshot { Address = "dns-d", Status = DnsServerStatus.Problem, Reason = "返回 SERVFAIL" },
+            new DnsServerSnapshot { Address = "dns-e", Status = DnsServerStatus.Problem, Reason = "无地址答案" },
+            new DnsServerSnapshot { Address = "dns-f", Status = DnsServerStatus.Problem, Reason = "NXDOMAIN验证失败" },
+            new DnsServerSnapshot { Address = "dns-g", Status = DnsServerStatus.Problem, Reason = "NXDOMAIN异常 FORMERR" },
+            new DnsServerSnapshot { Address = "dns-h", Status = DnsServerStatus.Unavailable, Reason = "地址无效" },
+            new DnsServerSnapshot { Address = "dns-i", Status = DnsServerStatus.Problem, Reason = "TimeoutException" }
+        };
+        DnsAlertCandidate[] candidates = BuildDnsAlertCandidates(dns);
+        if (candidates.Length != 9 ||
+            !string.Equals(candidates[0].Text, "DNS污染", StringComparison.Ordinal) ||
+            !string.Equals(candidates[1].Text, "DNS无响应", StringComparison.Ordinal) ||
+            !string.Equals(candidates[2].Text, "DNS仅TCP", StringComparison.Ordinal) ||
+            !string.Equals(candidates[3].Text, "DNS返回SERVFAIL", StringComparison.Ordinal) ||
+            !string.Equals(candidates[4].Text, "DNS无地址", StringComparison.Ordinal) ||
+            !string.Equals(candidates[5].Text, "DNSNX验证失败", StringComparison.Ordinal) ||
+            !string.Equals(candidates[6].Text, "DNSNX异常FORMERR", StringComparison.Ordinal) ||
+            !string.Equals(candidates[7].Text, "DNS地址无效", StringComparison.Ordinal) ||
+            !string.Equals(candidates[8].Text, "DNS超时", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Network monitor display self-test: DNS alert text mapping failed.");
+        }
+
+        DnsServerSnapshot[] orderedDns = new DnsServerSnapshot[]
+        {
+            new DnsServerSnapshot { Address = "dns-a", Status = DnsServerStatus.Normal, Reason = "正常" },
+            new DnsServerSnapshot { Address = "dns-b", Status = DnsServerStatus.Problem, Reason = "UDP失败/TCP可用" }
+        };
+        DnsDisplayItem[] orderedItems = BuildDnsDisplayItems(orderedDns);
+        if (orderedItems.Length != 2 ||
+            !string.Equals(orderedItems[0].Address, "dns-a", StringComparison.Ordinal) ||
+            !string.Equals(orderedItems[1].Address, "dns-b", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Network monitor display self-test: DNS row must keep adapter priority order.");
+        }
+
+        DnsAlertCandidate[] reorderedCandidates = BuildDnsAlertCandidates(orderedDns);
+        if (reorderedCandidates.Length != 1 ||
+            !string.Equals(reorderedCandidates[0].Text, "DNS仅TCP", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Network monitor display self-test: DNS alert text must not include positional numbering.");
+        }
+
+        DnsServerSnapshot[] duplicateDns = new DnsServerSnapshot[]
+        {
+            new DnsServerSnapshot { Address = "1.1.1.1", Status = DnsServerStatus.Problem, Reason = "UDP失败/TCP可用" },
+            new DnsServerSnapshot { Address = "8.8.8.8", Status = DnsServerStatus.Problem, Reason = "UDP失败/TCP可用" }
+        };
+        DnsAlertCandidate[] duplicateCandidates = BuildDnsAlertCandidates(duplicateDns);
+        if (duplicateCandidates.Length != 2 ||
+            string.Equals(duplicateCandidates[0].Text, duplicateCandidates[1].Text, StringComparison.Ordinal) ||
+            duplicateCandidates[0].Text.IndexOf("@1.1.1.1", StringComparison.Ordinal) < 0 ||
+            duplicateCandidates[1].Text.IndexOf("@8.8.8.8", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("Network monitor display self-test: duplicate DNS alert reasons must remain visually distinguishable.");
+        }
+
+        using (NetworkMonitorForm form = new NetworkMonitorForm(new WidgetSettings()))
+        {
+            form.snapshot = new NetworkMonitorSnapshot
+            {
+                IPv6 = "fd00::1234, 2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890",
+                PublicIp = "203.0.113.10",
+                PublicIpKnown = true
+            };
+            string publicText = form.BuildPublicAddressText("公网");
+            if (publicText.IndexOf("203.0.113.10", StringComparison.Ordinal) >= 0 ||
+                publicText.IndexOf("2406:", StringComparison.Ordinal) < 0 ||
+                publicText.Length > 22)
+            {
+                throw new InvalidOperationException("Network monitor display self-test: compact public IPv6 must override IPv4.");
+            }
+
+            form.Width = 360;
+            form.snapshot = new NetworkMonitorSnapshot { DnsServerDetails = duplicateDns };
+            float testRowTop = 24.0f;
+            float testRowHeight = 18.0f;
+            using (Bitmap testBitmap = new Bitmap(form.Width, 120))
+            using (Graphics testGraphics = Graphics.FromImage(testBitmap))
+            {
+                RectangleF dnsOverlay = form.GetDnsAlertOverlayRect(testGraphics, testRowTop, testRowHeight);
+                if (dnsOverlay.IsEmpty ||
+                    Math.Abs(dnsOverlay.Top - (testRowTop + DnsAlertOverlayRowIndex * testRowHeight)) > 0.01f)
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: DNS alert overlay must align with the GFW row.");
+                }
+
+                if (form.GetInfoRowReservedRightWidth("GFW", testRowHeight) != 0.0f ||
+                    form.GetInfoRowReservedRightWidth("IP6", testRowHeight) != 0.0f)
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: DNS overlay must not change GFW or IP6 row layout width.");
+                }
+
+                form.snapshot = new NetworkMonitorSnapshot
+                {
+                    DnsServerDetails = new DnsServerSnapshot[]
+                    {
+                        new DnsServerSnapshot { Address = "1.1.1.1", Status = DnsServerStatus.Problem, Reason = "返回 SERVFAIL" }
+                    }
+                };
+                RectangleF shortAlertOverlay = form.GetDnsAlertOverlayRect(testGraphics, testRowTop, testRowHeight);
+                Font shortAlertFont = form.GetDnsAlertFont(testRowHeight);
+                float requiredShortAlertWidth = testGraphics.MeasureString("DNS返回SERVFAIL", shortAlertFont).Width;
+                if (shortAlertOverlay.Width < requiredShortAlertWidth)
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: DNS short alert text must have enough overlay width.");
+                }
+
+                Font addressFont = form.GetCachedUiFont(10.0f, FontStyle.Bold);
+                string measuredFullIpv6 = form.BuildMeasuredAddressRowText(
+                    testGraphics,
+                    "2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890, fd00::1",
+                    addressFont,
+                    1000.0f,
+                    24);
+                if (measuredFullIpv6.IndexOf("2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890", StringComparison.Ordinal) < 0 ||
+                    measuredFullIpv6.IndexOf("+1", StringComparison.Ordinal) < 0 ||
+                    measuredFullIpv6.IndexOf(",", StringComparison.Ordinal) >= 0)
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: measured IPv6 row must keep one full address when it fits.");
+                }
+
+                string measuredCompactIpv6 = form.BuildMeasuredAddressRowText(
+                    testGraphics,
+                    "2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890, fd00::1",
+                    addressFont,
+                    90.0f,
+                    24);
+                if (measuredCompactIpv6.IndexOf("2406:da18:7c3:8f00", StringComparison.Ordinal) >= 0 ||
+                    measuredCompactIpv6.IndexOf("…", StringComparison.Ordinal) < 0 ||
+                    measuredCompactIpv6.IndexOf("+1", StringComparison.Ordinal) < 0 ||
+                    measuredCompactIpv6.IndexOf(",", StringComparison.Ordinal) >= 0)
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: measured IPv6 row must compact only the first address when width is tight.");
+                }
+            }
+
+            form.snapshot = new NetworkMonitorSnapshot { DnsServerDetails = duplicateDns };
+            if (!form.AdvanceDnsAlertRotation() || form.dnsAlertIndex != 0)
+            {
+                throw new InvalidOperationException("Network monitor display self-test: DNS alert rotation initial index failed.");
+            }
+
+            form.snapshot = new NetworkMonitorSnapshot
+            {
+                DnsServerDetails = new DnsServerSnapshot[]
+                {
+                    new DnsServerSnapshot { Address = "1.1.1.1", Status = DnsServerStatus.Problem, Reason = "返回 SERVFAIL" },
+                    new DnsServerSnapshot { Address = "8.8.8.8", Status = DnsServerStatus.Problem, Reason = "UDP失败/TCP可用" }
+                }
+            };
+            if (!form.AdvanceDnsAlertRotation() || form.dnsAlertIndex != 1)
+            {
+                throw new InvalidOperationException("Network monitor display self-test: DNS alert rotation must advance through signature changes.");
+            }
+        }
+
+        DnsAlertCandidate[] normalCandidates = BuildDnsAlertCandidates(new DnsServerSnapshot[]
+        {
+            new DnsServerSnapshot { Address = "dns-a", Status = DnsServerStatus.Normal, Reason = "正常" }
+        });
+        if (normalCandidates.Length != 1 ||
+            !string.Equals(normalCandidates[0].Text, "DNS正常", StringComparison.Ordinal) ||
+            normalCandidates[0].Color.ToArgb() != DesignTokens.Colors.Success.ToArgb() ||
+            GetDnsStatusColor(DnsServerStatus.Normal).ToArgb() != DesignTokens.Colors.Success.ToArgb())
+        {
+            throw new InvalidOperationException("Network monitor display self-test: DNS normal alert mapping failed.");
+        }
+    }
+
     private sealed class CloudEndpointAlert
     {
         public bool Active;
@@ -2010,6 +3046,15 @@ internal sealed class NetworkMonitorForm : Form
         public Color Color;
     }
 
+    private sealed class DnsAlertCandidate
+    {
+        public string Key;
+        public string Address;
+        public string Text;
+        public DnsServerStatus Status;
+        public Color Color;
+    }
+
     private sealed class DnsDisplaySegment
     {
         public string Text;
@@ -2020,7 +3065,7 @@ internal sealed class NetworkMonitorForm : Form
     {
         public string Address;
         public DnsServerStatus Status;
-        public int OriginalIndex;
+        public DnsServerSnapshot Detail;
     }
 
     private static GraphicsPath RoundedRectangle(RectangleF bounds, float radius)

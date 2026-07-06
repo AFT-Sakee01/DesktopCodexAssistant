@@ -1,8 +1,10 @@
 # 性能模式、主窗口与指标运行机制
 
+适用版本：1.0.4.18
+
 ## 1. 文档范围
 
-本文以 Desktop Codex Assistant 当前源码为准，说明性能数据从 Windows 采样到界面显示的完整链路、三档性能模式、近期优化，以及以下窗口的共同运行机制：
+本文以 Desktop Codex Assistant 当前源码为准，说明性能数据从 Windows 采样到界面显示的完整链路、三档性能模式，以及以下窗口的共同运行机制：
 
 - 主性能窗口 `WidgetForm`
 - Codex 监测窗口 `CodexRadarForm`
@@ -78,22 +80,7 @@ flowchart LR
 
 ### 3.1 通用时间策略
 
-下表参数由 `WidgetSettings` 统一提供：
-
-| 策略 | 性能 | 均衡 | 省电 |
-| --- | ---: | ---: | ---: |
-| 主性能采样 | 500 ms | 1000 ms | 2500 ms |
-| 普通面板调度 | 500 ms | 1000 ms | 3000 ms |
-| 悬停动画帧间隔 | 16 ms | 33 ms | 100 ms |
-| 无动画交互轮询 | 30 ms | 100 ms | 250 ms |
-| 本地网络信息刷新 | 2 s | 5 s | 网络事件驱动 |
-| 在线连通性检测 | 10 s | 30 s | 60 s |
-| 需要认证时重试 | 5 s | 10 s | 30 s |
-| 离线时重试 | 3 s | 5 s | 10 s |
-| 公网 IP 刷新 | 5 min | 10 min | 15 min |
-| DNS 未知复查 | 15 s | 30 s | 60 s |
-| DNS 异常复查 | 30 s | 60 s | 120 s |
-| DNS 全正常复查 | 5 min | 10 min | 15 min |
+时间参数由 `WidgetSettings` 统一提供；各策略在三档模式下的具体数值以 `Docs/Component-Refresh-Rules.md` §2 为唯一权威表，本文不重复维护。
 
 `AdapterMissing` 状态不进行周期连通性检测，等待网络地址或可用性事件重新触发。
 
@@ -105,7 +92,7 @@ flowchart LR
 
 该策略只改变调度优先级，不改变检测结果或告警阈值。
 
-## 4. 本轮优化
+## 4. 绘制与调度机制
 
 ### 4.1 只在内容变化时绘制
 
@@ -142,18 +129,19 @@ flowchart LR
 - `NetworkChange.NetworkAddressChanged`
 - `NetworkChange.NetworkAvailabilityChanged`
 
-网络变化时只设置失效标记。真正的网卡枚举和网络请求仍由各自调度路径执行，避免在系统事件线程中阻塞。
+网络变化时只设置失效标记，并由 `NetworkMonitorReader` 对事件做 30 秒防抖。真正的网卡枚举和网络请求仍由各自调度路径执行，避免在系统事件线程中阻塞。GFW 和云服务不会因每个 `NetworkChange` 事件直接重置周期；只有本地快照确认连接恢复、网卡 ID、默认网关或主 IP 地址变化时，才作为网络身份变化刷新远端探测。PING 滚动窗口也随这些身份变化清空。
 
 省电模式下，本地 IP、DNS、Wi-Fi 等信息主要由网络事件触发刷新，而不是固定轮询。
 
 ### 4.5 异步任务与过期结果保护
 
-网络监控将公网 IP 和连通性检测放入后台任务。每次网络身份变化都会增加 `networkGeneration`。
+网络监控将公网 IP、连通性检测和 PING 滚动采样放入后台任务。每次网络身份变化都会增加 `networkGeneration`。
 
 后台任务完成时必须同时满足：
 
 - generation 与任务启动时一致；
 - 网卡 ID 与任务启动时一致；
+- PING 滚动采样还要求主 IP 和默认网关签名一致；
 - reader 尚未释放。
 
 否则结果被丢弃，避免旧网络的公网 IP 或延迟覆盖新网络状态。
@@ -235,6 +223,14 @@ diskAlertPercent = min(writeBusyPercent, readBusyPercent)
 
 统计器只保存内存样本，不新增持久化文件。每 15 分钟最多写入一条 `TimingStats12h` 摘要到主日志，包含样本数、平均耗时、p95 和最大耗时，用于后续判断是否需要把 PDH 采样或 Codex 本地读取迁移到后台 worker。
 
+### 4.12 UI 无响应看门狗
+
+`UiHangWatchdog` 随主程序启动，在后台线程每 2 秒检查一次 UI 线程心跳。`WidgetForm` 在主控制 tick、悬停交互 tick、自动透明度合并、运行时设置分发和关键子窗口设置应用前后更新心跳检查点。
+
+当 UI 心跳超过 10 秒未更新时，看门狗直接向 `%LOCALAPPDATA%\DesktopCodexAssistant\ui-hang-watchdog.jsonl` 追加 `ui_thread_unresponsive` JSONL 记录；若无响应持续存在，每 30 秒追加一次重复记录，UI 恢复后追加 `ui_thread_responsive_again`。记录包含当前操作、操作开始时间、最后一次已完成操作、延迟毫秒、进程 ID 和程序版本。
+
+该文件独立于普通 `Logger`，目的是覆盖 Windows `AppHangB1` 这类“UI 线程卡死但后台线程仍可运行”的故障。它不会捕获完整调用栈，也无法在所有线程都被挂起或进程被系统立即终止时写入；这类场景仍需要 WER dump 或外部调试器。休眠/息屏导致的 5 分钟以上心跳间隔会被视为系统挂起空洞，不写误报。
+
 ## 5. 各窗口运行机制
 
 ### 5.1 主性能窗口
@@ -295,14 +291,16 @@ Wi-Fi RSSI 读取方式：
 
 `NetworkMonitorReader`：
 
-- 同步读取本地网卡、IPv4/IPv6、DNS、Wi-Fi 认证和 PHY；
+- 同步读取本地网卡、IPv4/IPv6、DNS、Wi-Fi 认证和 PHY；IP 行只显示第一个地址，后续地址折叠为 `+n`，第一个地址放得下时不显示第二个地址；
 - 支持设置页指定当前网卡；未指定时继续按默认网关、地址、接口类型和链路速率自动选择；
-- 异步读取公网 IP；
+- 异步读取公网 IPv4；标题栏公网显示优先使用本地可公开路由 IPv6 的短显，没有 IPv6 时回退到公网 IPv4；
 - 异步检测 DNS 可用性、错误返回和随机不存在域名劫持，并按正常/异常状态自适应复查周期；
 - 异步执行 Ping、NCSI 门户检测、延迟、抖动和丢包率测量；
-- 在 `Online` 时根据丢包、抖动和延迟生成内部本地链路劣化标记，供 GFW、DNS 和云服务检测降低高丢包误判；
-- 调用 `GfwProbeReader` 获取防火墙检测结果；
-- 调用 `CloudEndpointProbeReader` 独立获取云服务检测结果，GFW 失败结论不会使云服务检测跳过或置灰；
+- 单飞执行 PING 滚动采样，保留网关、公网和百度回退窗口，用于 PING 行 1 位小数丢包、ICMP 禁用和 loss 后缀链路诊断；
+- 在 `Online` 时根据丢包、抖动和延迟生成内部本地链路劣化标记，供 DNS 和云服务检测降低高丢包误判；
+- 调用 `GfwProbeReader` 获取防火墙检测结果；GFW 的本地链路门控只来自当前活动目标滚动 PING 丢包率 `>= 2%` 且已确认，不直接使用 4 包连通性丢包，也不使用网关侧 ICMP 丢包、延迟或抖动诊断，`Unknown`、离线和该门控只影响本轮显示，不清空 GFW 周期；
+- 调用 `CloudEndpointProbeReader` 独立获取云服务检测结果，GFW 失败结论不会使云服务检测跳过或置灰；真实状态非 `Online` 时停止/取消云服务探测并隐藏标题右侧云服务告警；
+- Classic 布局的 DNS 告警覆盖层只消费已有 DNS 快照，不增加额外网络请求；覆盖层右对齐到窗口最右下角并对齐 `GFW` 行，但不参与 `GFW` 或 `IP6` 行宽度计算，不会让这两行预留、收窄或重排；IP 行和公网标题使用压缩短显，完整地址只留在快照中；IP 行优先显示第一个完整地址，后续地址折叠为 `+n`，第一个地址放得下时不显示第二个地址；DNS 行保留网卡返回的 DNS 优先级顺序，错误状态只改变颜色，不把报错项提前；无错误时显示绿色 `DNS正常`，异常时按 DNS 行从左到右的原始优先级顺序随绘制节拍轮换无编号提示，并显示污染、无响应、仅 TCP、返回码、无地址、NXDOMAIN 验证失败或地址无效等具体短原因；当多条异常文字相同且状态相同时，只在屏幕提示中追加紧凑 DNS 地址后缀以保证轮换可见；DNS 历史 JSONL 记录按顺序写入脱敏的 `status_detail`/`abnormal_detail`，保留具体原因但不写 DNS 地址；
 - 返回快照副本，禁止 UI 直接修改内部状态。
 
 连通性状态判定：
@@ -329,16 +327,25 @@ Wi-Fi RSSI 读取方式：
 | CodexRadar 失败重试 | 10 min |
 | Claude 失败重试 | 2 min |
 | Claude 官方状态 | 15 min |
-| 五阶段连接诊断 | 性能 3 min / 均衡 5 min / 省电 10 min |
-| 五阶段异常重试 | 1 min |
+| Claude Code 用量 | 仅 `SF:CLAUDE` 时正常 5 min；失败 10 min；429 冷却 15 min |
+| 检测软件 Auto | 前台窗口识别，性能/均衡/省电为 2/5/10 s；不发网络请求 |
+| 五阶段连接诊断 | 当前停用，不调度 |
+| 五阶段异常重试 | 当前停用 |
+| DeepSeek 余额 | 正常 60 s；失败 5 min |
 
-性能模式影响额度读取、进程检测和五阶段连接诊断的正常周期：
+当前 `EvenRow` 布局隐藏五点连接摘要和旧三行服务健康面板；Rader、Claude、DeepSeek 以及 OpenAI 兜底状态用于单行 API 摘要。正常显示 `API无异常`，异常按服务名和原因轮播。当前检测软件为 `CLAUDE` 时，Claude Code 用量接口的未登录、鉴权失败、限流、不可达或解析失败也进入该摘要；`CODEX` 模式不会被 Claude 用量探测状态影响。五阶段连接诊断的网络/DNS/隧道/OpenAI/本地 Codex 请求链保留为回滚代码，但当前不调度。右侧状态格同时显示网页短数据标签和 IQ 更新时间，二者跟随同一次 CodexRadar 网站刷新；若公开 JSON 已成功但缺少这些展示字段，首页 HTML 只作为轻量补齐来源，不触发额外高频轮询。`1.0.3.58` 起右侧状态列加宽并提高最小字号，避免三行共同拟合后比旧版更小。
+
+DeepSeek 余额行使用官方余额接口实时读取 `CNY total_balance`。由于官方余额接口不提供 24 小时消费明细，程序通过本地 48 小时余额样本估算最近 24 小时消耗；该历史只含时间和余额，不含 API key。当前 Codex Radar 底部 DS 元信息不再按余额、24 小时估算消耗或高低峰改变颜色，而与 `RC/LLM/SF` 共用中性灰白；文案右侧追加按北京时间 `09:00-12:00`、`14:00-18:00` 判定的 `高峰` 或 `低谷`。底部四项按实际文本拆成独立绘制矩形，并使用灰线到窗口底边之间的整段高度上下居中绘制，不再共用一条硬等分文字层，也不依赖灰线下方剩余高度，避免 `DS:... 高峰/低谷` 被相邻项、分隔线或实际窗口高度裁掉。`1.0.3.59` 起底部元信息字体基准在 `1.0.3.58` 基础上再放大 30%。设置页的 DeepSeek 配置入口只写本地 key 文件，并通过 `DeepSeekApiKeyRevision` 让运行中的 Codex Radar 立即刷新，不把密钥写入 `settings.ini`。
+
+性能模式影响额度读取和进程检测的正常周期；五阶段连接诊断当前停用：
 
 | 项目 | 性能 | 均衡 | 省电 |
 | --- | ---: | ---: | ---: |
 | Codex 活跃时额度刷新 | 10 s | 15 s | 30 s |
 | Codex 进程检查 | 3 s | 5 s | 10 s |
 | Codex 不活跃时额度刷新 | 10 min | 20 min | 60 min |
+| Auto 软件识别 | 2 s | 5 s | 10 s |
+| Claude Code 用量 | 5 min | 5 min | 5 min |
 
 时间显示最多每秒重绘一次。网站请求完成、测试状态变化或额度变化可以立即触发绘制。
 
@@ -375,18 +382,23 @@ Codex Radar 整窗随机测试启用后会暂停真实网站、额度、Claude �
 
 ### 5.7 操作窗口
 
-操作窗口没有常驻进程状态轮询。它主要处理：
+操作窗口主要处理：
 
 - Windows/SeelenUI 开始菜单操作；
 - 打开设置；
 - 系统快捷操作、刷新和重启；
-- 按压与悬停动画。
+- 按压与悬停动画；
+- 左侧主区域的 Windows 按钮、内存饼图、自动切换和隐藏收缩布局。
 
 Windows 开始菜单左键不发送 Win 键，因为 SeelenUI 会捕获 Win 键并打开自己的应用菜单；也不能直接启动 `StartMenuExperienceHost` 的 AppsFolder 项，因为它会生成独立的 `ApplicationFrameWindow/StartDocked` 白窗。左键优先尝试原生任务栏 UI Automation；当 SeelenUI 隐藏 `Shell_TrayWnd` 导致 UIA 根树不可见时，回退到隐藏 `Shell_TrayWnd` 下的原生 `Start` 子窗口并发送 `BM_CLICK`。右键优先尝试原生任务栏 UIA，失败时回退 `Win+X` 打开 Windows Power User 菜单。
 
 SeelenUI 电源菜单通过后台单飞任务启动 `slu.exe` 并等待最多 1.5 秒，UI 线程只更新按钮状态和执行 Windows 安全菜单回退。快速重复点击不会并发启动多个命令。
 
-动画结束后停止动画定时器。原每 2.5 秒一次的 SeelenUI 进程扫描已删除，7 分钟防烧屏位移检查复用主窗口协调 tick。
+动画结束后停止动画定时器。左侧主区域由 `OperationPrimaryPanelMode` 控制：自动模式按 SeelenUI 运行态在 Windows 按钮和内存饼图之间切换；Windows 按钮、内存饼图和隐藏模式分别强制显示对应状态。隐藏模式不保留左侧大按钮宽度，右侧小按钮从最左侧 margin 开始布局。SeelenUI 运行态和左侧内存饼图只在操作面板可见时复用主窗口协调 tick 低频刷新：SeelenUI 进程状态最多每 2 秒检查一次；当左侧主区域解析为内存饼图时，最多每 2 秒读取一次 `GlobalMemoryStatusEx` 和前台进程 Working Set。隐藏模式命中遮罩只覆盖实际可见按钮和内存饼图区域。7 分钟防烧屏位移检查同样复用主窗口协调 tick。
+
+设置窗口关闭、异常销毁或被宿主清理时，主窗口会主动调用 `OperationForm.ClearTransientInteractionState()` 清除 hover、pressed、tooltip 和鼠标捕获状态。这是一次性生命周期清理，不新增常驻定时器或后台轮询。
+
+操作窗口自身使用 `WS_EX_NOACTIVATE`，点击它不会让本程序成为前台进程。因此操作面板的程序设置按钮不能只调用 `Form.Activate()`；宿主会先清理操作面板瞬态交互状态，再对已有设置窗执行 `ShowWindow`/`SetForegroundWindow` 激活。这样用户从设置页 Alt+Tab 到浏览器复制内容后，既可以通过 Alt+Tab 回到设置页，也可以再次点操作面板按钮把设置页拉回。
 
 FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞读取性能计数器。性能、均衡、省电模式的刷新间隔分别为 1、2、5 秒；值未变化时不重绘。
 
@@ -415,16 +427,18 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 
 ### 6.3 分辨率与工作区比例适配
 
-`settings.ini` 从 Version 9 起写入 `LayoutWorkAreaLeft`、`LayoutWorkAreaTop`、`LayoutWorkAreaWidth` 和 `LayoutWorkAreaHeight`。这些值记录上次保存或适配时的主屏工作区，不包含任务栏占用区域。
+`settings.ini` 从 Version 9 起写入 `LayoutWorkAreaLeft`、`LayoutWorkAreaTop`、`LayoutWorkAreaWidth` 和 `LayoutWorkAreaHeight`。Version 28 起继续为 Codex Radar、功耗温度、网络监控、连接检测和操作面板分别写入独立 `*LayoutWorkArea*` 基准，并写入 `*DisplayDeviceName` 目标显示器。
 
-加载设置、收到 `WM_DISPLAYCHANGE`、收到系统设置变化、息屏恢复和会话解锁恢复时，`WidgetSettings.AdaptToCurrentWorkArea` 会比较旧工作区与当前工作区：
+加载设置、收到 `WM_DISPLAYCHANGE`、收到系统设置变化、息屏恢复和会话解锁恢复时，`WidgetSettings.AdaptToCurrentWorkArea` 会按模块比较旧工作区与目标显示器当前工作区：
 
 - 宽度、左侧坐标按 X 比例换算；
 - 高度、底边坐标按 Y 比例换算；
 - 操作面板的按钮尺寸使用较小轴比例，保持正方形；
-- 所有窗口最终再裁剪到当前工作区，避免低分辨率或任务栏变化后跑出屏幕。
+- 所有窗口最终再裁剪到各自目标显示器的工作区，避免低分辨率或任务栏变化后跑出屏幕。
 
-因此用户在当前分辨率下调整好的屏占比，会在切换分辨率、外接显示器模式变化或息屏唤醒后尽量保持一致。
+目标显示器留空时使用当前主显示器。指定显示器断开时，`FallbackDisconnectedDisplaysEnabled` 默认让对应模块回退到当前主显示器；关闭后保留该模块上次记录的显示器工作区，不强制挤回已有显示器。因此用户在当前分辨率和显示器组合下调整好的屏占比，会在切换分辨率、外接显示器模式变化或息屏唤醒后尽量保持一致。
+
+设置页“全局编辑”使用 `GlobalLayoutEditorForm` 打开全屏编辑层。底层遮罩为 50% 黑色，顶层透明交互层显示模块边框、顶部提示和拖拽辅助线。进入编辑模式后，`WidgetForm` 使用临时运行态设置禁用所有隐藏/悬停透明规则，并通过窗口层级刷新回调把所有模块保持在遮罩之上；拖拽过程中每次鼠标移动都会实时调用预览并刷新窗口层级。拖拽时，活动窗口四边中点会连接到当前屏幕四边并标注像素距离；与其他模块在水平或垂直方向可直线连接且间距小于 `500 px` 时，每个其他模块最多绘制一根连接线。Enter 保存并退出，Esc 放弃并还原进入编辑前的预览设置。
 
 ### 6.4 鼠标穿透与防遮挡
 
@@ -451,10 +465,14 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 
 设置窗口编辑时把临时设置实时应用到各窗口：
 
-- 调整尺寸、位置、透明度、Codex Radar 模型按钮和基准模式会立即预览。
+- 调整尺寸、位置、透明度、Codex Radar 模型下拉和基准模式会立即预览。
 - 点击保存后写入 `settings.ini`，并以新值作为后续基准。
 - 点击取消或直接关闭设置窗口时恢复打开设置前的快照。
 - 主窗口也会检查配置文件修改时间，使外部修改能够热加载。
+
+未保存预览的回滚由 `Win11SettingsForm.OnFormClosing` 和宿主 `FormClosed/Disposed` 清理共同兜底。异常销毁路径通过 `ISettingsWindow.TryConsumeUnsavedPreview()` 只消费一次 baseline，避免重复回滚，也避免关闭链路中断后把预览设置留在运行窗口上。
+
+设置窗口作为真实可编辑窗口显示在任务栏和 Alt+Tab 中。离屏自测会临时关闭 `ShowInTaskbar` 避免测试闪烁，但生产窗口必须保持可任务切换，否则浏览器复制 API key 后没有可靠方式回到设置页。程序图标由 `ApplicationIcon` 统一生成并设置到各个 `Form.Icon`；构建脚本把同款 `Assets\AppIcon.ico` 作为 Win32 图标嵌入 exe，保证任务栏、Alt+Tab、任务管理器和托盘使用同一视觉标识。
 
 ### 6.6 空闲 CPU 诊断
 
@@ -505,6 +523,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-X64.ps1
 
 `%LOCALAPPDATA%\DesktopCodexAssistant`
 
+网络检查历史 `network-check-history.jsonl` 采用 15 秒 / 32 KiB / 退出时批量追加，运行中每 6 小时粗粒度修剪旧记录。新增高频网络检查应复用该记录器，避免在采样路径逐条打开文件或自行维护并发写入。
+
 主要验证项：
 
 - 三个模式均能热切换且窗口保持响应；
@@ -533,12 +553,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-X64.ps1
 
 布局自检会模拟工作区尺寸变化并验证比例换算。设置绑定自检会在程序内部创建设置面板对象，验证可见控件能读回到 WidgetSettings，并覆盖位置范围与连接检测刷新间隔。显示恢复自检会用真实 layered-window API 验证 native surface reset 后仍可更新窗口。操作面板自检覆盖隐藏模式命中像素、动画停止条件、单飞状态、FPS 三档间隔和 SeelenUI 结果映射。采样自检会输出 CPU、内存、磁盘 WT/RD、网络 UP/DL、GPU 和 NPU 的一次采样结果。
 
-2026-06-07 的 ARM64 调试中，单核等效 CPU 占用观察值如下：
-
-| 模式 | 优化前 | 优化后观察范围 |
-| --- | ---: | ---: |
-| 性能 | 约 14.14% | 约 7.89% 至 8.46% |
-| 均衡 | 约 8.51% | 约 3.67% 至 4.56% |
-| 省电 | 约 5.23% | 约 2.19% 至 2.73% |
-
-这些数值用于回归比较，不是固定性能保证。硬件、网络请求、窗口可见性和传感器驱动都会影响结果。
+历史 CPU 占用基准观察值见 `Docs/Reports/Performance/Performance-Optimization-Evaluation-20260607.md` 附录，用于同机回归比较。

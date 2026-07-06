@@ -1,0 +1,103 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+
+// Test-only render harness for --render-powerthermal: paints one representative frame of each
+// PowerThermalRenderVariant (Classic plus the four OLED-safe schemes added in 1.0.3.44) to a PNG for
+// visual review, mirroring the CodexRadar/ConnectionCheck/NetworkMonitor render harnesses.
+internal sealed partial class PowerThermalForm
+{
+    internal static void RenderVariantSamples(string outputDir)
+    {
+        Directory.CreateDirectory(outputDir);
+        PowerThermalRenderVariant[] variants =
+        {
+            PowerThermalRenderVariant.Classic,
+            PowerThermalRenderVariant.Typographic,
+            PowerThermalRenderVariant.AmberHud,
+            PowerThermalRenderVariant.WarmCard,
+            PowerThermalRenderVariant.Phosphor
+        };
+
+        foreach (PowerThermalRenderVariant variant in variants)
+        {
+            WidgetSettings settings = WidgetSettings.CreateDefaults();
+            settings.PowerThermalRenderVariant = variant;
+            settings.Normalize();
+
+            using (PowerThermalForm form = new PowerThermalForm(settings))
+            {
+                form.scale = 2.0f;
+                form.MaximumSize = new Size(4000, 4000);
+                // PowerThermalWidth/Height are already the real physical pixel size; an earlier *2
+                // here rendered a double-size canvas that hid true-width truncation. Same fix as
+                // CodexRadarForm.RenderSample.cs.
+                form.Size = new Size(settings.PowerThermalWidth, settings.PowerThermalHeight);
+                form.cachedPowerReading = BuildSamplePowerReading();
+                form.cachedThermalReadings = BuildSampleThermalReadings();
+                form.thermalAlertNames.Add("CPU");
+                form.thermalAlertNames.Add("GPU");
+
+                using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
+                using (Graphics g = Graphics.FromImage(bitmap))
+                {
+                    g.Clear(DesignTokens.Colors.AppBackground);
+                    form.DrawContent(g);
+                    string path = Path.Combine(outputDir, "powerthermal-" + variant.ToString().ToLowerInvariant() + ".png");
+                    bitmap.Save(path, ImageFormat.Png);
+                    Console.WriteLine(variant.ToString() + " -> " + path);
+                }
+            }
+        }
+    }
+
+    // Current-mode sample: real settings.ini (size/variant/transparency/alert rows). Live power and
+    // thermal readings are runtime sampler state with no disk cache, so the frame reuses the
+    // synthetic readings while geometry and styling stay the user's real configuration.
+    internal static void RenderCurrentSample(string outputDir)
+    {
+        WidgetSettings settings = WidgetSettings.Load();
+        using (PowerThermalForm form = new PowerThermalForm(settings))
+        {
+            form.scale = 2.0f;
+            form.MaximumSize = new Size(4000, 4000);
+            form.Size = new Size(settings.PowerThermalWidth, settings.PowerThermalHeight);
+            form.cachedPowerReading = BuildSamplePowerReading();
+            form.cachedThermalReadings = BuildSampleThermalReadings();
+            RenderSampleSupport.SaveComposited(
+                outputDir,
+                "powerthermal-current.png",
+                form.Width,
+                form.Height,
+                form.GetApplicationOpacityAlpha(),
+                form.DrawPowerThermalWindow);
+        }
+    }
+
+    private static PowerReading BuildSamplePowerReading()
+    {
+        PowerReading reading = new PowerReading();
+        reading.StatusKnown = true;
+        reading.IsCharging = true;
+        reading.PluggedInKnown = true;
+        reading.IsPluggedIn = true;
+        reading.WattsKnown = true;
+        reading.Watts = 45.0;
+        reading.BatteryPercentKnown = true;
+        reading.BatteryPercent = 68;
+        reading.SystemPowerModeKnown = true;
+        reading.SystemPowerModeText = "均衡";
+        return reading;
+    }
+
+    private static List<ThermalReading> BuildSampleThermalReadings()
+    {
+        return new List<ThermalReading>
+        {
+            new ThermalReading { Name = "CPU", Celsius = 82.0, CriticalActive = true },
+            new ThermalReading { Name = "GPU", Celsius = 71.0, CriticalActive = false }
+        };
+    }
+}

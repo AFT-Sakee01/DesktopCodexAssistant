@@ -99,6 +99,16 @@ internal static class Logger
 
     public static void GfwProbe(string trigger, IEnumerable<string> lines)
     {
+        ProbeDetail("GFW检测", trigger, lines);
+    }
+
+    public static void CloudEndpointProbe(string trigger, IEnumerable<string> lines)
+    {
+        ProbeDetail("云服务检测", trigger, lines);
+    }
+
+    private static void ProbeDetail(string label, string trigger, IEnumerable<string> lines)
+    {
         try
         {
             lock (SyncRoot)
@@ -107,7 +117,9 @@ internal static class Logger
                 StringBuilder builder = new StringBuilder();
                 builder.AppendLine();
                 builder.Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
-                builder.Append(" GFW检测 触发=");
+                builder.Append(" ");
+                builder.Append(string.IsNullOrWhiteSpace(label) ? "网络检测" : label.Trim());
+                builder.Append(" 触发=");
                 builder.AppendLine(string.IsNullOrWhiteSpace(trigger) ? "未知" : trigger.Trim());
 
                 if (lines != null)

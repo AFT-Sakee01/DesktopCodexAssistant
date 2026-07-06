@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
+using System.Xml;
 
 internal static class CloudEndpointProbe
 {
@@ -26,11 +27,11 @@ internal static class CloudEndpointProbe
     private static readonly CloudTarget[] Targets = new CloudTarget[]
     {
         CloudTarget.Statuspage("cloudflare", "https://www.cloudflarestatus.com/api/v2/summary.json"),
-        CloudTarget.Http("aws", "aws.amazon.com"),
-        CloudTarget.GoogleServiceHealth("google", "https://status.cloud.google.com/incidents.json"),
+        CloudTarget.Statuspage("akamai", "https://www.akamaistatus.com/api/v2/summary.json"),
         CloudTarget.Statuspage("github", "https://www.githubstatus.com/api/v2/summary.json"),
-        CloudTarget.Http("aliyun", "www.aliyun.com"),
-        CloudTarget.Http("tencent", "cloud.tencent.com")
+        CloudTarget.Http("aws", "aws.amazon.com"),
+        CloudTarget.AzureStatusRss("azure", "https://azure.status.microsoft/en-us/status/feed/"),
+        CloudTarget.GoogleServiceHealth("google", "https://status.cloud.google.com/incidents.json")
     };
 
     public static CloudEndpointSnapshot[] CreateCheckingSnapshots()
@@ -75,6 +76,68 @@ internal static class CloudEndpointProbe
         return RunAsync(logLines, regionMask, previous, forceRefresh, regionChanged, false, string.Empty, CancellationToken.None)
             .GetAwaiter()
             .GetResult();
+    }
+
+    public static void RunSelfTest()
+    {
+        CloudEndpointSnapshot[] defaults = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Normal);
+        string order = string.Empty;
+        for (int i = 0; i < defaults.Length; i++)
+        {
+            if (i > 0)
+            {
+                order += " ";
+            }
+
+            order += defaults[i].ShortLabel;
+            if (string.Equals(defaults[i].Key, "aliyun", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(defaults[i].Key, "tencent", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Cloud endpoint self-test: removed provider still present.");
+            }
+        }
+
+        if (!string.Equals(order, "Cf Ak Gi Aw Az Go", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Cloud endpoint self-test: tile order mismatch.");
+        }
+
+        string azureOutage =
+            "<rss><channel><item><title>Service interruption in Japan</title><description>Azure services are unavailable in Japan.</description></item></channel></rss>";
+        CloudEndpointSample azureOutageSample = ClassifyAzureStatusRss("azure", azureOutage, WidgetSettings.CloudStatusRegionJapan);
+        if (azureOutageSample == null || azureOutageSample.Status != CloudEndpointStatus.Down || azureOutageSample.AlertReason != "服务中断")
+        {
+            throw new InvalidOperationException("Cloud endpoint self-test: Azure outage mapping failed.");
+        }
+
+        string azureNorthAmerica =
+            "<rss><channel><item><title>Service issue in Canada</title><description>Impact in Canada.</description></item></channel></rss>";
+        if (ClassifyAzureStatusRss("azure", azureNorthAmerica, WidgetSettings.CloudStatusRegionJapan) != null)
+        {
+            throw new InvalidOperationException("Cloud endpoint self-test: Azure region filtering failed.");
+        }
+
+        string azureGlobal =
+            "<rss><channel><item><title>Global advisory</title><description>Information update for all regions.</description></item></channel></rss>";
+        CloudEndpointSample azureGlobalSample = ClassifyAzureStatusRss("azure", azureGlobal, WidgetSettings.CloudStatusRegionJapan);
+        if (azureGlobalSample == null || azureGlobalSample.Status != CloudEndpointStatus.Abnormal || azureGlobalSample.AlertReason != "状态公告")
+        {
+            throw new InvalidOperationException("Cloud endpoint self-test: Azure global advisory mapping failed.");
+        }
+
+        Dictionary<string, object> akamai = Json.DeserializeObject(
+            "{\"status\":{\"indicator\":\"minor\",\"description\":\"Partially Degraded Service\"},\"incidents\":[{\"name\":\"Akamai edge degraded performance\",\"status\":\"investigating\",\"impact\":\"minor\"}],\"components\":[{\"name\":\"Global Edge Network\",\"status\":\"degraded_performance\"}]}") as Dictionary<string, object>;
+        CloudEndpointSample akamaiSample = PickStatuspageActiveItem("akamai", akamai, WidgetSettings.CloudStatusRegionJapan);
+        if (akamaiSample == null || akamaiSample.Status != CloudEndpointStatus.Abnormal || akamaiSample.AlertReason != "性能下降")
+        {
+            throw new InvalidOperationException("Cloud endpoint self-test: Akamai incident mapping failed.");
+        }
+
+        CloudEndpointSample componentSample = PickStatuspageComponentState("akamai", akamai, WidgetSettings.CloudStatusRegionJapan);
+        if (componentSample == null || componentSample.AlertReason != "性能下降")
+        {
+            throw new InvalidOperationException("Cloud endpoint self-test: Akamai component mapping failed.");
+        }
     }
 
     public static async Task<CloudEndpointSnapshot[]> RunAsync(
@@ -175,6 +238,11 @@ internal static class CloudEndpointProbe
         if (target.Kind == CloudTargetKind.GoogleServiceHealth)
         {
             return ProbeGoogleServiceHealthAsync(target, regionMask, cancellationToken);
+        }
+
+        if (target.Kind == CloudTargetKind.AzureStatusRss)
+        {
+            return ProbeAzureStatusRssAsync(target, regionMask, cancellationToken);
         }
 
         return ProbeHttpHostAsync(target.Key, "https://" + target.Host + "/", target.Key, cancellationToken);
@@ -302,23 +370,35 @@ internal static class CloudEndpointProbe
             Dictionary<string, object> status = GetDictionary(root, "status");
             string indicator = GetString(status, "indicator").ToLowerInvariant();
             string description = GetString(status, "description");
+            if (target.UsesRegionFilter && !IsStatuspageRelevant(target.Key, root, regionMask))
+            {
+                return CloudEndpointSample.CreateNormal(target.Key, ClampLatency(stopwatch.ElapsedMilliseconds), "Statuspage", response.FromCache ? "官方其他地区异常 304缓存" : "官方其他地区异常");
+            }
+
+            CloudEndpointSample activeItem = PickStatuspageActiveItem(target.Key, root, regionMask);
+            if (activeItem != null)
+            {
+                return activeItem;
+            }
+
+            CloudEndpointSample componentSample = PickStatuspageComponentState(target.Key, root, regionMask);
+            if (componentSample != null)
+            {
+                return componentSample;
+            }
+
             if (indicator == "none" || indicator.Length == 0)
             {
                 return CloudEndpointSample.CreateNormal(target.Key, ClampLatency(stopwatch.ElapsedMilliseconds), "Statuspage", response.FromCache ? "官方正常 304缓存" : "官方正常");
             }
 
-            if (string.Equals(target.Key, "cloudflare", StringComparison.OrdinalIgnoreCase) &&
-                !IsCloudflareStatusRelevant(root, regionMask))
-            {
-                return CloudEndpointSample.CreateNormal(target.Key, ClampLatency(stopwatch.ElapsedMilliseconds), "Statuspage", response.FromCache ? "官方其他地区异常 304缓存" : "官方其他地区异常");
-            }
-
             if (indicator == "major" || indicator == "critical")
             {
-                return CloudEndpointSample.CreateDown(target.Key, "官方故障", "Statuspage:" + indicator, EmptyToFallback(description, "官方重大故障"));
+                return CloudEndpointSample.CreateDown(target.Key, "重大中断", "Statuspage:" + indicator, EmptyToFallback(description, "官方重大故障"));
             }
 
-            return CloudEndpointSample.CreateAbnormal(target.Key, "官方降级", "Statuspage:" + indicator, EmptyToFallback(description, "官方状态异常"));
+            string alert = ContainsAny(description, "degraded", "performance", "slow", "latency") ? "性能下降" : "官方降级";
+            return CloudEndpointSample.CreateAbnormal(target.Key, alert, "Statuspage:" + indicator, EmptyToFallback(description, "官方状态异常"));
         }
         catch (OperationCanceledException ex)
         {
@@ -335,6 +415,238 @@ internal static class CloudEndpointProbe
             stopwatch.Stop();
             return CloudEndpointSample.CreateDown(target.Key, "状态API失败", FormatException(ex), "Statuspage API 失败");
         }
+    }
+
+    private static async Task<CloudEndpointSample> ProbeAzureStatusRssAsync(CloudTarget target, int regionMask, CancellationToken cancellationToken)
+    {
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        try
+        {
+            HttpTextResult response = await FetchTextAsync(target, "GET", cancellationToken).ConfigureAwait(false);
+            stopwatch.Stop();
+            CloudEndpointSample statusSample = ClassifyHttpStatus(target.Key, response.StatusCode, response.ElapsedMs, "AzureStatusRss");
+            if (statusSample.Status != CloudEndpointStatus.Normal)
+            {
+                return statusSample;
+            }
+
+            CloudEndpointSample rssSample = ClassifyAzureStatusRss(target.Key, response.Text, regionMask);
+            if (rssSample != null)
+            {
+                return rssSample;
+            }
+
+            return CloudEndpointSample.CreateNormal(target.Key, ClampLatency(stopwatch.ElapsedMilliseconds), "AzureStatusRss", response.FromCache ? "官方无当前公告 304缓存" : "官方无当前公告");
+        }
+        catch (OperationCanceledException ex)
+        {
+            stopwatch.Stop();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+
+            return CloudEndpointSample.CreateDown(target.Key, "请求超时", FormatException(ex), "Azure Status RSS 超时");
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            return CloudEndpointSample.CreateDown(target.Key, "状态API失败", FormatException(ex), "Azure Status RSS 失败");
+        }
+    }
+
+    private static CloudEndpointSample PickStatuspageActiveItem(string key, Dictionary<string, object> root, int regionMask)
+    {
+        CloudEndpointSample worst = null;
+        worst = PickWorse(worst, PickStatuspageIncidentItems(key, GetArray(root, "incidents"), regionMask));
+        worst = PickWorse(worst, PickStatuspageMaintenanceItems(key, GetArray(root, "scheduled_maintenances"), regionMask));
+        return worst;
+    }
+
+    private static CloudEndpointSample PickStatuspageIncidentItems(string key, object[] items, int regionMask)
+    {
+        CloudEndpointSample worst = null;
+        for (int i = 0; items != null && i < items.Length; i++)
+        {
+            Dictionary<string, object> item = items[i] as Dictionary<string, object>;
+            if (item == null)
+            {
+                continue;
+            }
+
+            string status = GetString(item, "status").ToLowerInvariant();
+            if (status == "resolved" || status == "postmortem" || status == "completed")
+            {
+                continue;
+            }
+
+            string text = GetString(item, "name") + " " + GetString(item, "impact") + " " + GetString(item, "impact_override") + " " + GetString(item, "body");
+            if (!IsGenericRegionRelevant(text, regionMask))
+            {
+                continue;
+            }
+
+            string impact = (GetString(item, "impact_override") + " " + GetString(item, "impact")).ToLowerInvariant();
+            string name = EmptyToFallback(GetString(item, "name"), "官方事件");
+            CloudEndpointSample sample;
+            if (ContainsAny(impact + " " + text, "critical", "major", "outage", "unavailable"))
+            {
+                sample = CloudEndpointSample.CreateDown(key, "重大中断", "StatuspageIncident:" + impact.Trim(), name);
+            }
+            else if (ContainsAny(impact + " " + text, "minor", "degraded", "performance", "latency", "slow"))
+            {
+                sample = CloudEndpointSample.CreateAbnormal(key, "性能下降", "StatuspageIncident:" + impact.Trim(), name);
+            }
+            else
+            {
+                sample = CloudEndpointSample.CreateAbnormal(key, "状态异常", "StatuspageIncident:" + status, name);
+            }
+
+            worst = PickWorse(worst, sample);
+        }
+
+        return worst;
+    }
+
+    private static CloudEndpointSample PickStatuspageMaintenanceItems(string key, object[] items, int regionMask)
+    {
+        CloudEndpointSample worst = null;
+        for (int i = 0; items != null && i < items.Length; i++)
+        {
+            Dictionary<string, object> item = items[i] as Dictionary<string, object>;
+            if (item == null)
+            {
+                continue;
+            }
+
+            string status = GetString(item, "status").ToLowerInvariant();
+            if (status != "scheduled" && status != "in_progress" && status != "verifying")
+            {
+                continue;
+            }
+
+            string text = GetString(item, "name") + " " + GetString(item, "body") + " " + GetString(item, "impact");
+            if (!IsGenericRegionRelevant(text, regionMask))
+            {
+                continue;
+            }
+
+            CloudEndpointSample sample = CloudEndpointSample.CreateAbnormal(
+                key,
+                "计划维护",
+                "StatuspageMaintenance:" + status,
+                EmptyToFallback(GetString(item, "name"), "官方维护"));
+            worst = PickWorse(worst, sample);
+        }
+
+        return worst;
+    }
+
+    private static CloudEndpointSample PickStatuspageComponentState(string key, Dictionary<string, object> root, int regionMask)
+    {
+        CloudEndpointSample worst = null;
+        object[] components = GetArray(root, "components");
+        for (int i = 0; components != null && i < components.Length; i++)
+        {
+            Dictionary<string, object> component = components[i] as Dictionary<string, object>;
+            if (component == null)
+            {
+                continue;
+            }
+
+            string status = GetString(component, "status").ToLowerInvariant();
+            if (status == "operational" || status.Length == 0)
+            {
+                continue;
+            }
+
+            string name = EmptyToFallback(GetString(component, "name"), "组件");
+            if (!IsGenericRegionRelevant(name, regionMask))
+            {
+                continue;
+            }
+
+            CloudEndpointSample sample;
+            if (status == "major_outage")
+            {
+                sample = CloudEndpointSample.CreateDown(key, "重大中断", "StatuspageComponent:" + status, name);
+            }
+            else if (status == "partial_outage")
+            {
+                sample = CloudEndpointSample.CreateAbnormal(key, "部分中断", "StatuspageComponent:" + status, name);
+            }
+            else if (status == "degraded_performance")
+            {
+                sample = CloudEndpointSample.CreateAbnormal(key, "性能下降", "StatuspageComponent:" + status, name);
+            }
+            else if (status == "under_maintenance")
+            {
+                sample = CloudEndpointSample.CreateAbnormal(key, "计划维护", "StatuspageComponent:" + status, name);
+            }
+            else
+            {
+                sample = CloudEndpointSample.CreateAbnormal(key, "状态异常", "StatuspageComponent:" + status, name);
+            }
+
+            worst = PickWorse(worst, sample);
+        }
+
+        return worst;
+    }
+
+    private static CloudEndpointSample ClassifyAzureStatusRss(string key, string xml, int regionMask)
+    {
+        if (string.IsNullOrWhiteSpace(xml))
+        {
+            return null;
+        }
+
+        XmlDocument document = new XmlDocument();
+        document.XmlResolver = null;
+        document.LoadXml(xml);
+        XmlNodeList items = document.SelectNodes("//item");
+        CloudEndpointSample worst = null;
+        for (int i = 0; items != null && i < items.Count; i++)
+        {
+            XmlNode item = items[i];
+            if (item == null)
+            {
+                continue;
+            }
+
+            string title = GetChildText(item, "title");
+            string description = StripXmlText(GetChildText(item, "description"));
+            string text = title + " " + description;
+            if (string.IsNullOrWhiteSpace(text) ||
+                ContainsAny(text, "resolved", "mitigated", "closed", "restored", "healthy") ||
+                !IsGenericRegionRelevant(text, regionMask))
+            {
+                continue;
+            }
+
+            string lower = text.ToLowerInvariant();
+            CloudEndpointSample sample = null;
+            if (ContainsAny(lower, "outage", "unavailable", "down", "not available", "service interruption", "service disruption"))
+            {
+                sample = CloudEndpointSample.CreateDown(key, "服务中断", "AzureRss:outage", EmptyToFallback(title, "Azure 服务中断"));
+            }
+            else if (ContainsAny(lower, "degrad", "impact", "issue", "incident", "fail", "latency", "performance"))
+            {
+                sample = CloudEndpointSample.CreateAbnormal(key, "服务异常", "AzureRss:issue", EmptyToFallback(title, "Azure 服务异常"));
+            }
+            else if (ContainsAny(lower, "maintenance", "scheduled"))
+            {
+                sample = CloudEndpointSample.CreateAbnormal(key, "计划维护", "AzureRss:maintenance", EmptyToFallback(title, "Azure 计划维护"));
+            }
+            else if (ContainsAny(lower, "advisory", "information", "notice", "update"))
+            {
+                sample = CloudEndpointSample.CreateAbnormal(key, "状态公告", "AzureRss:advisory", EmptyToFallback(title, "Azure 状态公告"));
+            }
+
+            worst = PickWorse(worst, sample);
+        }
+
+        return worst;
     }
 
     private static async Task<CloudEndpointSample> ProbeGoogleServiceHealthAsync(CloudTarget target, int regionMask, CancellationToken cancellationToken)
@@ -1325,6 +1637,77 @@ internal static class CloudEndpointProbe
         return !sawRegionalSignal;
     }
 
+    private static bool IsStatuspageRelevant(string key, Dictionary<string, object> root, int regionMask)
+    {
+        if (string.Equals(key, "cloudflare", StringComparison.OrdinalIgnoreCase))
+        {
+            return IsCloudflareStatusRelevant(root, regionMask);
+        }
+
+        if (!string.Equals(key, "akamai", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        bool sawRegionalSignal = false;
+        if (HasRelevantGenericStatuspageText(GetArray(root, "incidents"), regionMask, ref sawRegionalSignal) ||
+            HasRelevantGenericStatuspageText(GetArray(root, "scheduled_maintenances"), regionMask, ref sawRegionalSignal) ||
+            HasRelevantGenericStatuspageText(GetArray(root, "components"), regionMask, ref sawRegionalSignal))
+        {
+            return true;
+        }
+
+        return !sawRegionalSignal;
+    }
+
+    private static bool HasRelevantGenericStatuspageText(object[] items, int regionMask, ref bool sawRegionalSignal)
+    {
+        for (int i = 0; items != null && i < items.Length; i++)
+        {
+            Dictionary<string, object> item = items[i] as Dictionary<string, object>;
+            if (item == null)
+            {
+                continue;
+            }
+
+            string text = GetString(item, "name") + " " + GetString(item, "body") + " " + GetString(item, "description");
+            int mask = GetCloudflareRegionMask(text);
+            if (IsGlobalCloudStatusText(text))
+            {
+                return true;
+            }
+
+            if (mask == 0)
+            {
+                continue;
+            }
+
+            sawRegionalSignal = true;
+            if ((mask & regionMask) != 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsGenericRegionRelevant(string text, int regionMask)
+    {
+        if (string.IsNullOrWhiteSpace(text) || IsGlobalCloudStatusText(text))
+        {
+            return true;
+        }
+
+        int mask = GetCloudflareRegionMask(text);
+        return mask == 0 || (mask & regionMask) != 0;
+    }
+
+    private static bool IsGlobalCloudStatusText(string text)
+    {
+        return ContainsAny(text ?? string.Empty, "global", "worldwide", "all regions", "all locations", "multiple regions", "multi-region");
+    }
+
     private static bool HasRelevantCloudflareItems(object[] items, int regionMask, ref bool sawRegionalSignal)
     {
         for (int i = 0; items != null && i < items.Length; i++)
@@ -1546,6 +1929,51 @@ internal static class CloudEndpointProbe
         return Convert.ToString(dictionary[key], CultureInfo.InvariantCulture);
     }
 
+    private static string GetChildText(XmlNode node, string childName)
+    {
+        if (node == null || string.IsNullOrEmpty(childName))
+        {
+            return string.Empty;
+        }
+
+        XmlNode child = node.SelectSingleNode(childName);
+        return child == null ? string.Empty : (child.InnerText ?? string.Empty).Trim();
+    }
+
+    private static string StripXmlText(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        StringBuilder builder = new StringBuilder();
+        bool inTag = false;
+        for (int i = 0; i < value.Length; i++)
+        {
+            char ch = value[i];
+            if (ch == '<')
+            {
+                inTag = true;
+                continue;
+            }
+
+            if (ch == '>')
+            {
+                inTag = false;
+                builder.Append(' ');
+                continue;
+            }
+
+            if (!inTag)
+            {
+                builder.Append(ch);
+            }
+        }
+
+        return WebUtility.HtmlDecode(builder.ToString()).Replace("\r", " ").Replace("\n", " ").Trim();
+    }
+
     private static string EmptyToFallback(string value, string fallback)
     {
         return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
@@ -1577,7 +2005,8 @@ internal static class CloudEndpointProbe
     {
         Http,
         Statuspage,
-        GoogleServiceHealth
+        GoogleServiceHealth,
+        AzureStatusRss
     }
 
     private sealed class CloudTarget
@@ -1596,7 +2025,7 @@ internal static class CloudEndpointProbe
         public CloudTargetKind Kind;
         public bool UsesOfficialApi
         {
-            get { return this.Kind == CloudTargetKind.Statuspage || this.Kind == CloudTargetKind.GoogleServiceHealth; }
+            get { return this.Kind == CloudTargetKind.Statuspage || this.Kind == CloudTargetKind.GoogleServiceHealth || this.Kind == CloudTargetKind.AzureStatusRss; }
         }
 
         public bool UsesRegionFilter
@@ -1604,6 +2033,8 @@ internal static class CloudEndpointProbe
             get
             {
                 return string.Equals(this.Key, "cloudflare", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(this.Key, "akamai", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(this.Key, "azure", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(this.Key, "google", StringComparison.OrdinalIgnoreCase);
             }
         }
@@ -1621,6 +2052,11 @@ internal static class CloudEndpointProbe
         public static CloudTarget GoogleServiceHealth(string key, string apiUrl)
         {
             return new CloudTarget(key, string.Empty, apiUrl, CloudTargetKind.GoogleServiceHealth);
+        }
+
+        public static CloudTarget AzureStatusRss(string key, string apiUrl)
+        {
+            return new CloudTarget(key, string.Empty, apiUrl, CloudTargetKind.AzureStatusRss);
         }
 
     }

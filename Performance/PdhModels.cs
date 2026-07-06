@@ -115,6 +115,30 @@ internal enum DnsServerStatus
     Unavailable
 }
 
+internal enum PingPathDiagnosis
+{
+    None,
+    AdapterMissing,
+    CaptivePortal,
+    Offline,
+    LocalLoss,
+    LocalLatency,
+    GlobalBlock,
+    WanLoss,
+    WanLatency,
+    BaiduLoss,
+    BaiduLatency,
+    IcmpBlocked
+}
+
+internal enum PingDiagnosisSeverity
+{
+    None,
+    Info,
+    Warning,
+    Error
+}
+
 internal sealed class DnsServerSnapshot
 {
     public string Address { get; set; }
@@ -222,11 +246,11 @@ internal sealed class CloudEndpointSnapshot
         return new CloudEndpointSnapshot[]
         {
             Create("cloudflare", "Cf", "Cloudflare", false, status),
-            Create("aws", "Aw", "AWS", false, status),
-            Create("google", "Go", "Google Cloud", false, status),
+            Create("akamai", "Ak", "Akamai", false, status),
             Create("github", "Gi", "GitHub", false, status),
-            Create("aliyun", "Al", "阿里云", true, status),
-            Create("tencent", "Tx", "腾讯云", true, status)
+            Create("aws", "Aw", "AWS", false, status),
+            Create("azure", "Az", "Azure", false, status),
+            Create("google", "Go", "Google", false, status)
         };
     }
 
@@ -307,6 +331,53 @@ internal sealed class GfwProbeSnapshot
     }
 }
 
+internal sealed class PingRollingSnapshot
+{
+    public string ActiveProfile { get; set; }
+    public string ActiveTargetLabel { get; set; }
+    public string Group { get; set; }
+    public int SampleCount { get; set; }
+    public int LostCount { get; set; }
+    public double LossPercent { get; set; }
+    public double LatencyMs { get; set; }
+    public double JitterMs { get; set; }
+    public bool JitterKnown { get; set; }
+    public bool StatsReady { get; set; }
+    public bool IcmpBlocked { get; set; }
+    public string DiagnosisText { get; set; }
+    public PingPathDiagnosis Diagnosis { get; set; }
+    public PingDiagnosisSeverity Severity { get; set; }
+
+    public PingRollingSnapshot()
+    {
+        this.ActiveProfile = "PUB";
+        this.ActiveTargetLabel = "PUB";
+        this.Group = "public";
+        this.DiagnosisText = string.Empty;
+    }
+
+    public PingRollingSnapshot Clone()
+    {
+        return new PingRollingSnapshot
+        {
+            ActiveProfile = this.ActiveProfile,
+            ActiveTargetLabel = this.ActiveTargetLabel,
+            Group = this.Group,
+            SampleCount = this.SampleCount,
+            LostCount = this.LostCount,
+            LossPercent = this.LossPercent,
+            LatencyMs = this.LatencyMs,
+            JitterMs = this.JitterMs,
+            JitterKnown = this.JitterKnown,
+            StatsReady = this.StatsReady,
+            IcmpBlocked = this.IcmpBlocked,
+            DiagnosisText = this.DiagnosisText,
+            Diagnosis = this.Diagnosis,
+            Severity = this.Severity
+        };
+    }
+}
+
 // Immutable-by-convention transfer object. NetworkMonitorReader returns a deep clone
 // and NetworkMonitorForm treats the instance as read-only until the next timer tick.
 internal sealed class NetworkMonitorSnapshot
@@ -323,6 +394,7 @@ internal sealed class NetworkMonitorSnapshot
     public bool IsWifi { get; set; }
     public string IPv4 { get; set; }
     public string IPv6 { get; set; }
+    public string DefaultGatewayAddress { get; set; }
     public string DnsServers { get; set; }
     public DnsServerSnapshot[] DnsServerDetails { get; set; }
     public WifiConnectionDetails WifiDetails { get; set; }
@@ -340,6 +412,7 @@ internal sealed class NetworkMonitorSnapshot
     public bool LocalNetworkDegraded { get; set; }
     public string LocalNetworkDegradedReason { get; set; }
     public GfwProbeSnapshot GfwProbe { get; set; }
+    public PingRollingSnapshot PingRolling { get; set; }
     public string LastError { get; set; }
 
     public NetworkMonitorSnapshot()
@@ -352,6 +425,7 @@ internal sealed class NetworkMonitorSnapshot
         this.MacAddress = "--";
         this.IPv4 = "--";
         this.IPv6 = "--";
+        this.DefaultGatewayAddress = string.Empty;
         this.DnsServers = "--";
         this.DnsServerDetails = new DnsServerSnapshot[0];
         this.WifiDetails = new WifiConnectionDetails();
@@ -361,6 +435,7 @@ internal sealed class NetworkMonitorSnapshot
         this.ConnectivityTarget = "1.1.1.1";
         this.LocalNetworkDegradedReason = string.Empty;
         this.GfwProbe = new GfwProbeSnapshot();
+        this.PingRolling = new PingRollingSnapshot();
         this.LastError = string.Empty;
     }
 
@@ -380,6 +455,7 @@ internal sealed class NetworkMonitorSnapshot
             IsWifi = this.IsWifi,
             IPv4 = this.IPv4,
             IPv6 = this.IPv6,
+            DefaultGatewayAddress = this.DefaultGatewayAddress,
             DnsServers = this.DnsServers,
             DnsServerDetails = CloneDnsServerDetails(this.DnsServerDetails),
             WifiDetails = CloneWifiDetails(this.WifiDetails),
@@ -397,6 +473,7 @@ internal sealed class NetworkMonitorSnapshot
             LocalNetworkDegraded = this.LocalNetworkDegraded,
             LocalNetworkDegradedReason = this.LocalNetworkDegradedReason,
             GfwProbe = this.GfwProbe == null ? new GfwProbeSnapshot() : this.GfwProbe.Clone(),
+            PingRolling = this.PingRolling == null ? new PingRollingSnapshot() : this.PingRolling.Clone(),
             LastError = this.LastError
         };
     }

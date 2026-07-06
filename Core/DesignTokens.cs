@@ -129,6 +129,76 @@ internal static class DesignTokens
         public static readonly Color ButtonPressed = Color.FromArgb(42, 42, 42);
     }
 
+    // OLED-safe restyle palettes: no blue-dominant hues (blue subpixels age fastest on OLED),
+    // peak brightness kept below pure white/saturated primaries, and every ramp pairs with the
+    // existing semi-transparent AppBackground rather than an opaque black panel.
+    public static class OledTypographic
+    {
+        public static readonly Color Primary = Color.FromArgb(216, 211, 200);
+        public static readonly Color Secondary = Color.FromArgb(181, 176, 166);
+        public static readonly Color Muted = Color.FromArgb(122, 117, 107);
+        public static readonly Color AccentGood = Color.FromArgb(201, 230, 184);
+        public static readonly Color AccentWarn = Color.FromArgb(227, 178, 106);
+        public static readonly Color AccentDanger = Color.FromArgb(224, 85, 72);
+        public static readonly Color Hairline = Color.FromArgb(26, 216, 211, 200);
+    }
+
+    public static class OledAmber
+    {
+        public static readonly Color Bright = Color.FromArgb(232, 163, 61);
+        public static readonly Color Base = Color.FromArgb(214, 154, 58);
+        public static readonly Color Dim = Color.FromArgb(168, 134, 47);
+        public static readonly Color Glow = Color.FromArgb(90, 214, 154, 58);
+        public static readonly Color Danger = Color.FromArgb(224, 85, 72);
+    }
+
+    public static class OledCard
+    {
+        public static readonly Color CardFill = Color.FromArgb(150, 40, 37, 33);
+        public static readonly Color Text = Color.FromArgb(207, 201, 189);
+        public static readonly Color Muted = Color.FromArgb(138, 133, 124);
+        public static readonly Color DotGood = Color.FromArgb(127, 200, 102);
+        public static readonly Color DotWarn = Color.FromArgb(214, 154, 58);
+        public static readonly Color DotDanger = Color.FromArgb(224, 85, 72);
+    }
+
+    public static class OledPhosphor
+    {
+        public static readonly Color Bright = Color.FromArgb(111, 207, 111);
+        public static readonly Color Base = Color.FromArgb(88, 182, 88);
+        public static readonly Color Dim = Color.FromArgb(74, 143, 74);
+        public static readonly Color Faint = Color.FromArgb(46, 92, 46);
+        public static readonly Color Warn = Color.FromArgb(214, 154, 58);
+        public static readonly Color Danger = Color.FromArgb(224, 85, 72);
+    }
+
+    // Warm settings-window theme: aligns the settings UI with the OLED-safe WarmCard floating-window
+    // scheme — warm-gray fills, the OledCard text ramp, and the OledAmber accent, with no blue hue
+    // anywhere. Colors are opaque because the settings window is a normal (non-layered) form.
+    public static class SettingsWarmTheme
+    {
+        public static readonly Color WindowBase = Color.FromArgb(26, 24, 21);
+        public static readonly Color InputBackground = Color.FromArgb(36, 33, 29);
+        public static readonly Color CardRest = Color.FromArgb(40, 37, 33);
+        public static readonly Color CardHover = Color.FromArgb(52, 48, 42);
+        public static readonly Color DividerLines = Color.FromArgb(60, 55, 48);
+        public static readonly Color TextPrimary = Color.FromArgb(224, 218, 206);
+        public static readonly Color TextSecondary = Color.FromArgb(196, 190, 178);
+        public static readonly Color TextMuted = Color.FromArgb(138, 133, 124);
+        public static readonly Color Accent = OledAmber.Base;
+        public static readonly Color AccentHover = OledAmber.Bright;
+        public static readonly Color AccentPressed = OledAmber.Dim;
+        public static readonly Color NavSelectedBg = Color.FromArgb(30, 214, 154, 58);
+        public static readonly Color NavHoverBg = Color.FromArgb(46, 42, 37);
+        public static readonly Color ToggleTrackOff = Color.FromArgb(58, 53, 46);
+        public static readonly Color ToggleTrackHover = Color.FromArgb(72, 66, 57);
+        public static readonly Color ToggleKnob = Color.FromArgb(226, 220, 208);
+        public static readonly Color ButtonRest = Color.FromArgb(48, 44, 39);
+        public static readonly Color ButtonHover = Color.FromArgb(58, 53, 46);
+        public static readonly Color ButtonPressed = Color.FromArgb(40, 37, 33);
+        public static readonly Color ErrorText = OledCard.DotDanger;
+    }
+
     public static class NeonGeekTheme
     {
         public static readonly Color WindowBase = Color.FromArgb(12, 12, 14);
