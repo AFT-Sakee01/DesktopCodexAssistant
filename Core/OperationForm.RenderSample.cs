@@ -37,7 +37,7 @@ internal sealed partial class OperationForm
                 () => true,
                 () => true))
             {
-                form.scale = 2.0f;
+                form.SetLayerScale(2.0f);
                 form.MaximumSize = new Size(4000, 4000);
                 form.Size = form.GetDesiredSize();
 
@@ -69,7 +69,7 @@ internal sealed partial class OperationForm
             () => true,
             () => true))
         {
-            form.scale = 2.0f;
+            form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);
             form.Size = form.GetDesiredSize();
             RenderSampleSupport.SaveComposited(

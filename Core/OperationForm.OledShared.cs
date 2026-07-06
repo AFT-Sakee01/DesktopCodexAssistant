@@ -189,16 +189,16 @@ internal sealed partial class OperationForm
                 g.FillPath(brush, path);
             }
 
-            using (Pen pen = new Pen(border, Math.Max(1.0f, this.scale)))
+            using (Pen pen = new Pen(border, Math.Max(1.0f, this.LayerScale)))
             {
                 g.DrawPath(pen, path);
             }
 
             if (active)
             {
-                RectangleF ringRect = RectangleF.Inflate(rect, -Math.Max(1.0f, this.scale), -Math.Max(1.0f, this.scale));
+                RectangleF ringRect = RectangleF.Inflate(rect, -Math.Max(1.0f, this.LayerScale), -Math.Max(1.0f, this.LayerScale));
                 using (GraphicsPath ringPath = RoundedSegment(ringRect, Math.Max(S(4), ringRect.Height * 0.22f), leftSegment, topRight, bottomRight))
-                using (Pen ringPen = new Pen(palette.ActiveRing, Math.Max(1.0f, this.scale)))
+                using (Pen ringPen = new Pen(palette.ActiveRing, Math.Max(1.0f, this.LayerScale)))
                 {
                     g.DrawPath(ringPen, ringPath);
                 }

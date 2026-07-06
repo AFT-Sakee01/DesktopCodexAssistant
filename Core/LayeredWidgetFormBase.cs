@@ -76,6 +76,7 @@ internal abstract class LayeredWidgetFormBase : Form
                     BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
                 }
 
+                OnLayeredBitmapPrepared(this.renderBitmap, burnInColorProtectionActive);
                 this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
                 this.renderBufferValid = true;
             }
@@ -160,6 +161,10 @@ internal abstract class LayeredWidgetFormBase : Form
     }
 
     protected virtual void DisposeAdditionalRenderBuffers()
+    {
+    }
+
+    protected virtual void OnLayeredBitmapPrepared(Bitmap bitmap, bool burnInColorProtectionActive)
     {
     }
 

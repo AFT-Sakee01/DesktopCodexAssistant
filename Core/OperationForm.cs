@@ -11,7 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-internal sealed partial class OperationForm : Form
+internal sealed partial class OperationForm : LayeredWidgetFormBase
 {
     private const int ButtonCount = 13;
     private const int StartButtonIndex = 0;
@@ -59,16 +59,10 @@ internal sealed partial class OperationForm : Form
     private readonly ForegroundFpsReader foregroundFpsReader;
     private readonly ToolTip hoverToolTip;
     private readonly bool isAsusZenbookDevice;
-    private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
     private readonly UiFontCache fontCache = new UiFontCache();
     private WidgetSettings currentSettings;
-    private float scale;
     private bool hiddenForFullscreen;
     private bool displaySuspended;
-    private bool layeredUpdateFailureLogged;
-    private bool renderBufferValid;
-    private bool lastRenderedBurnInColorProtectionActive;
-    private bool lastRenderedHitMaskActive;
     private volatile bool formClosing;
     private bool myAsusInstalled;
     private bool windowsAiStudioAvailable;
@@ -96,8 +90,6 @@ internal sealed partial class OperationForm : Form
     private readonly double[] hoverProgress = new double[ButtonCount];
     private RectangleF[] buttonRects;
     private bool buttonRectsValid;
-    private Bitmap renderBitmap;
-    private Graphics renderGraphics;
     private Bitmap interactionHitMask;
 
     public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction)
@@ -137,10 +129,7 @@ internal sealed partial class OperationForm : Form
             ControlStyles.UserPaint,
             true);
 
-        using (Graphics g = this.CreateGraphics())
-        {
-            this.scale = Math.Max(1.0f, g.DpiX / 96.0f);
-        }
+        InitializeLayerScaleFromCurrentDpi();
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
@@ -170,21 +159,6 @@ internal sealed partial class OperationForm : Form
         this.hoverToolTip.InitialDelay = 450;
         this.hoverToolTip.ReshowDelay = 100;
         this.hoverToolTip.AutoPopDelay = 5000;
-    }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            CreateParams cp = base.CreateParams;
-            cp.ExStyle |= NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_LAYERED;
-            return cp;
-        }
-    }
-
-    protected override bool ShowWithoutActivation
-    {
-        get { return true; }
     }
 
     protected override void OnShown(EventArgs e)
@@ -217,10 +191,7 @@ internal sealed partial class OperationForm : Form
         }
         this.hoverToolTip.Hide(this);
         this.hoverToolTip.Dispose();
-        DisposeRenderBuffer();
-        DisposeInteractionHitMask();
         this.fontCache.Dispose();
-        this.layeredSurface.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -229,8 +200,7 @@ internal sealed partial class OperationForm : Form
         base.OnSizeChanged(e);
         ResetLayoutCaches();
         this.fontCache.Dispose();
-        DisposeRenderBuffer();
-        this.layeredSurface.Reset();
+        ResetDisplayRenderResources();
         using (GraphicsPath path = RoundedRectangle(new RectangleF(0, 0, this.Width, this.Height), S(9)))
         {
             Region oldRegion = this.Region;
@@ -2536,6 +2506,37 @@ internal sealed partial class OperationForm : Form
         }
     }
 
+    protected override void DrawWindowContent(Graphics g)
+    {
+        DrawOperationWindow(g);
+    }
+
+    protected override byte GetApplicationOpacityAlpha()
+    {
+        return GetLayeredWindowOpacityAlpha();
+    }
+
+    protected override bool IsLayeredBurnInColorProtectionActive()
+    {
+        return IsBurnInColorProtectionActive();
+    }
+
+    protected override void OnLayeredBitmapPrepared(Bitmap bitmap, bool burnInColorProtectionActive)
+    {
+        if (!burnInColorProtectionActive)
+        {
+            return;
+        }
+
+        EnsureInteractionHitMask();
+        ApplyInteractionHitMask(bitmap, this.interactionHitMask);
+    }
+
+    protected override void DisposeAdditionalRenderBuffers()
+    {
+        DisposeInteractionHitMask();
+    }
+
     private void DrawOperationWindowClassic(Graphics g)
     {
         ConfigureGraphics(g);
@@ -2596,7 +2597,7 @@ internal sealed partial class OperationForm : Form
         float radius = Math.Max(S(5), rect.Height * 0.24f);
         using (GraphicsPath path = RoundedSegment(rect, radius, true, false, false))
         using (SolidBrush fillBrush = new SolidBrush(DesignTokens.White(ScaleAlpha(58, backgroundAlpha))))
-        using (Pen borderPen = new Pen(DesignTokens.White(ScaleAlpha(44, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+        using (Pen borderPen = new Pen(DesignTokens.White(ScaleAlpha(44, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
         {
             g.FillPath(fillBrush, path);
             g.DrawPath(borderPen, path);
@@ -2628,7 +2629,7 @@ internal sealed partial class OperationForm : Form
             diameter);
         int backgroundAlpha = GetBackgroundOpacityAlpha();
         using (SolidBrush baseBrush = new SolidBrush(DesignTokens.White(ScaleAlpha(30, backgroundAlpha))))
-        using (Pen borderPen = new Pen(DesignTokens.White(ScaleAlpha(80, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+        using (Pen borderPen = new Pen(DesignTokens.White(ScaleAlpha(80, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
         {
             g.FillEllipse(baseBrush, circle);
             if (snapshot.IsValid)
@@ -2647,7 +2648,7 @@ internal sealed partial class OperationForm : Form
         if (!snapshot.IsValid)
         {
             RectangleF icon = RectangleF.Inflate(circle, -circle.Width * 0.26f, -circle.Height * 0.26f);
-            using (Pen pen = new Pen(DesignTokens.White(ScaleAlpha(150, backgroundAlpha)), Math.Max(1.0f, 1.4f * this.scale)))
+            using (Pen pen = new Pen(DesignTokens.White(ScaleAlpha(150, backgroundAlpha)), Math.Max(1.0f, 1.4f * this.LayerScale)))
             {
                 pen.StartCap = LineCap.Round;
                 pen.EndCap = LineCap.Round;
@@ -2705,7 +2706,7 @@ internal sealed partial class OperationForm : Form
             : DesignTokens.White(ScaleAlpha(46, backgroundAlpha))))
         using (Pen borderPen = new Pen(forcedFps
             ? DesignTokens.WithAlpha(accentBorder, ScaleAlpha(132, backgroundAlpha))
-            : DesignTokens.White(ScaleAlpha(52, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+            : DesignTokens.White(ScaleAlpha(52, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
         {
             g.FillPath(fillBrush, path);
             g.DrawPath(borderPen, path);
@@ -2713,9 +2714,9 @@ internal sealed partial class OperationForm : Form
 
         if (forcedFps)
         {
-            RectangleF ringRect = RectangleF.Inflate(rect, -Math.Max(1.0f, this.scale), -Math.Max(1.0f, this.scale));
+            RectangleF ringRect = RectangleF.Inflate(rect, -Math.Max(1.0f, this.LayerScale), -Math.Max(1.0f, this.LayerScale));
             using (GraphicsPath ringPath = RoundedSegment(ringRect, Math.Max(S(4), ringRect.Height * 0.22f), false, true, false))
-            using (Pen ringPen = new Pen(DesignTokens.WithAlpha(accentRing, ScaleAlpha(150, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+            using (Pen ringPen = new Pen(DesignTokens.WithAlpha(accentRing, ScaleAlpha(150, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
             {
                 g.DrawPath(ringPen, ringPath);
             }
@@ -2752,9 +2753,9 @@ internal sealed partial class OperationForm : Form
 
             Font drawFont = baseFont;
             float size = baseFont.Size;
-            while (size > 6.0f * this.scale && g.MeasureString(text, drawFont).Width > rect.Width)
+            while (size > 6.0f * this.LayerScale && g.MeasureString(text, drawFont).Width > rect.Width)
             {
-                size -= 0.5f * this.scale;
+                size -= 0.5f * this.LayerScale;
                 drawFont = this.fontCache.GetMono(size, baseFont.Style);
             }
 
@@ -2834,16 +2835,16 @@ internal sealed partial class OperationForm : Form
                 g.FillPath(brush, path);
             }
 
-            using (Pen pen = new Pen(border, Math.Max(1.0f, this.scale)))
+            using (Pen pen = new Pen(border, Math.Max(1.0f, this.LayerScale)))
             {
                 g.DrawPath(pen, path);
             }
 
             if (active)
             {
-                RectangleF ringRect = RectangleF.Inflate(rect, -Math.Max(1.0f, this.scale), -Math.Max(1.0f, this.scale));
+                RectangleF ringRect = RectangleF.Inflate(rect, -Math.Max(1.0f, this.LayerScale), -Math.Max(1.0f, this.LayerScale));
                 using (GraphicsPath ringPath = RoundedSegment(ringRect, Math.Max(S(4), ringRect.Height * 0.22f), leftSegment, topRight, bottomRight))
-                using (Pen ringPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, ScaleAlpha(154, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+                using (Pen ringPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, ScaleAlpha(154, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
                 {
                     g.DrawPath(ringPen, ringPath);
                 }
@@ -2916,7 +2917,7 @@ internal sealed partial class OperationForm : Form
         float radius = Math.Max(S(5), rect.Height * 0.24f);
         using (GraphicsPath path = RoundedSegment(rect, radius, leftSegment, topRight, bottomRight))
         using (SolidBrush veilBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, ScaleAlpha(116, backgroundAlpha))))
-        using (Pen mutedPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, ScaleAlpha(118, backgroundAlpha)), Math.Max(1.0f, this.scale)))
+        using (Pen mutedPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, ScaleAlpha(118, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
         {
             g.FillPath(veilBrush, path);
             g.DrawPath(mutedPen, path);
@@ -2961,7 +2962,7 @@ internal sealed partial class OperationForm : Form
         float radius = Math.Min(rect.Width, rect.Height) * 0.33f;
         float innerRadius = radius * 0.36f;
         using (SolidBrush brush = new SolidBrush(DesignTokens.Glyph(240)))
-        using (Pen pen = new Pen(DesignTokens.Glyph(240), Math.Max(1.1f, 1.55f * this.scale)))
+        using (Pen pen = new Pen(DesignTokens.Glyph(240), Math.Max(1.1f, 1.55f * this.LayerScale)))
         {
             pen.StartCap = LineCap.Round;
             pen.EndCap = LineCap.Round;
@@ -2989,7 +2990,7 @@ internal sealed partial class OperationForm : Form
         float cy = rect.Top + rect.Height / 2.0f;
         float radius = Math.Min(rect.Width, rect.Height) * 0.38f;
         RectangleF arc = new RectangleF(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f);
-        using (Pen pen = new Pen(DesignTokens.White(246), Math.Max(1.1f, 1.65f * this.scale)))
+        using (Pen pen = new Pen(DesignTokens.White(246), Math.Max(1.1f, 1.65f * this.LayerScale)))
         {
             pen.StartCap = LineCap.Round;
             pen.EndCap = LineCap.Round;
@@ -3015,10 +3016,10 @@ internal sealed partial class OperationForm : Form
             rect.Width - inset * 2.0f,
             rect.Height - inset * 2.0f);
         float titleY = panel.Top + panel.Height * 0.27f;
-        float stroke = Math.Max(1.0f, 1.20f * this.scale);
+        float stroke = Math.Max(1.0f, 1.20f * this.LayerScale);
         using (GraphicsPath path = RoundedRectangle(panel, Math.Max(1.5f, size * 0.12f)))
         using (Pen panelPen = new Pen(DesignTokens.White(246), stroke))
-        using (Pen sliderPen = new Pen(DesignTokens.White(222), Math.Max(1.0f, 1.05f * this.scale)))
+        using (Pen sliderPen = new Pen(DesignTokens.White(222), Math.Max(1.0f, 1.05f * this.LayerScale)))
         using (SolidBrush knobBrush = new SolidBrush(DesignTokens.WithAlpha(knobColor, 255)))
         {
             panelPen.StartCap = LineCap.Round;
@@ -3061,7 +3062,7 @@ internal sealed partial class OperationForm : Form
         float left = cx - gridSize / 2.0f;
         float top = cy - gridSize / 2.0f;
         using (SolidBrush tileBrush = new SolidBrush(DesignTokens.Glyph(210)))
-        using (Pen tilePen = new Pen(DesignTokens.White(246), Math.Max(1.0f, 1.15f * this.scale)))
+        using (Pen tilePen = new Pen(DesignTokens.White(246), Math.Max(1.0f, 1.15f * this.LayerScale)))
         using (SolidBrush boltBrush = new SolidBrush(DesignTokens.WithAlpha(accentColor, 255)))
         {
             for (int row = 0; row < 2; row++)
@@ -3107,8 +3108,8 @@ internal sealed partial class OperationForm : Form
         float radius = Math.Min(window.Width, window.Bottom - titleBarY) * 0.27f;
         RectangleF arc = new RectangleF(cx - radius, cy - radius, radius * 2.0f, radius * 2.0f);
         using (GraphicsPath path = RoundedRectangle(window, Math.Max(1.5f, size * 0.12f)))
-        using (Pen windowPen = new Pen(DesignTokens.White(246), Math.Max(1.0f, 1.20f * this.scale)))
-        using (Pen restartPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 255), Math.Max(1.1f, 1.50f * this.scale)))
+        using (Pen windowPen = new Pen(DesignTokens.White(246), Math.Max(1.0f, 1.20f * this.LayerScale)))
+        using (Pen restartPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 255), Math.Max(1.1f, 1.50f * this.LayerScale)))
         using (SolidBrush restartBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 255)))
         {
             windowPen.StartCap = LineCap.Round;
@@ -3131,7 +3132,7 @@ internal sealed partial class OperationForm : Form
     private void DrawBatteryCareGlyph(Graphics g, RectangleF rect)
     {
         float size = Math.Min(rect.Width, rect.Height);
-        float stroke = Math.Max(1.0f, 1.25f * this.scale);
+        float stroke = Math.Max(1.0f, 1.25f * this.LayerScale);
         RectangleF body = new RectangleF(
             rect.Left + size * 0.12f,
             rect.Top + size * 0.20f,
@@ -3174,7 +3175,7 @@ internal sealed partial class OperationForm : Form
     private void DrawBatteryLimitRestoreGlyph(Graphics g, RectangleF rect)
     {
         float size = Math.Min(rect.Width, rect.Height);
-        float stroke = Math.Max(1.0f, 1.15f * this.scale);
+        float stroke = Math.Max(1.0f, 1.15f * this.LayerScale);
         RectangleF body = new RectangleF(
             rect.Left + size * 0.08f,
             rect.Top + size * 0.19f,
@@ -3225,7 +3226,7 @@ internal sealed partial class OperationForm : Form
     private void DrawTaskManagerGlyph(Graphics g, RectangleF rect, Color trendColor)
     {
         float size = Math.Min(rect.Width, rect.Height);
-        float stroke = Math.Max(1.0f, 1.15f * this.scale);
+        float stroke = Math.Max(1.0f, 1.15f * this.LayerScale);
         RectangleF panel = new RectangleF(
             rect.Left + size * 0.10f,
             rect.Top + size * 0.11f,
@@ -3234,7 +3235,7 @@ internal sealed partial class OperationForm : Form
         float titleBarY = panel.Top + panel.Height * 0.25f;
         using (GraphicsPath panelPath = RoundedRectangle(panel, Math.Max(1.5f, size * 0.10f)))
         using (Pen panelPen = new Pen(DesignTokens.White(244), stroke))
-        using (Pen graphPen = new Pen(DesignTokens.WithAlpha(trendColor, 255), Math.Max(1.0f, 1.35f * this.scale)))
+        using (Pen graphPen = new Pen(DesignTokens.WithAlpha(trendColor, 255), Math.Max(1.0f, 1.35f * this.LayerScale)))
         using (SolidBrush barBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.SuccessSoft, 238)))
         {
             panelPen.StartCap = LineCap.Round;
@@ -3275,7 +3276,7 @@ internal sealed partial class OperationForm : Form
     private void DrawWindowsAiStudioGlyph(Graphics g, RectangleF rect, Color sparkleLineColor, Color sparkleFillColor)
     {
         float size = Math.Min(rect.Width, rect.Height);
-        float stroke = Math.Max(1.0f, 1.15f * this.scale);
+        float stroke = Math.Max(1.0f, 1.15f * this.LayerScale);
         RectangleF chip = new RectangleF(
             rect.Left + size * 0.20f,
             rect.Top + size * 0.23f,
@@ -3283,8 +3284,8 @@ internal sealed partial class OperationForm : Form
             size * 0.56f);
         using (GraphicsPath chipPath = RoundedRectangle(chip, Math.Max(1.5f, size * 0.11f)))
         using (Pen chipPen = new Pen(DesignTokens.White(236), stroke))
-        using (Pen pinPen = new Pen(DesignTokens.White(214), Math.Max(1.0f, 0.95f * this.scale)))
-        using (Pen sparklePen = new Pen(DesignTokens.WithAlpha(sparkleLineColor, 255), Math.Max(1.0f, 1.35f * this.scale)))
+        using (Pen pinPen = new Pen(DesignTokens.White(214), Math.Max(1.0f, 0.95f * this.LayerScale)))
+        using (Pen sparklePen = new Pen(DesignTokens.WithAlpha(sparkleLineColor, 255), Math.Max(1.0f, 1.35f * this.LayerScale)))
         using (SolidBrush sparkleBrush = new SolidBrush(DesignTokens.WithAlpha(sparkleFillColor, 255)))
         {
             chipPen.StartCap = LineCap.Round;
@@ -3329,7 +3330,7 @@ internal sealed partial class OperationForm : Form
     private void DrawQuickSettingsGlyph(Graphics g, RectangleF rect, Color activeTileColor)
     {
         float size = Math.Min(rect.Width, rect.Height);
-        float stroke = Math.Max(1.0f, 1.1f * this.scale);
+        float stroke = Math.Max(1.0f, 1.1f * this.LayerScale);
         RectangleF panel = new RectangleF(
             rect.Left + size * 0.13f,
             rect.Top + size * 0.17f,
@@ -3354,8 +3355,8 @@ internal sealed partial class OperationForm : Form
         using (GraphicsPath firstTilePath = RoundedRectangle(firstTile, Math.Max(1.0f, firstTile.Height * 0.45f)))
         using (GraphicsPath secondTilePath = RoundedRectangle(secondTile, Math.Max(1.0f, secondTile.Height * 0.45f)))
         using (Pen panelPen = new Pen(DesignTokens.White(232), stroke))
-        using (Pen linePen = new Pen(DesignTokens.White(225), Math.Max(1.0f, 1.0f * this.scale)))
-        using (Pen subtlePen = new Pen(DesignTokens.White(154), Math.Max(1.0f, 0.9f * this.scale)))
+        using (Pen linePen = new Pen(DesignTokens.White(225), Math.Max(1.0f, 1.0f * this.LayerScale)))
+        using (Pen subtlePen = new Pen(DesignTokens.White(154), Math.Max(1.0f, 0.9f * this.LayerScale)))
         using (SolidBrush activeBrush = new SolidBrush(DesignTokens.WithAlpha(activeTileColor, 230)))
         using (SolidBrush inactiveBrush = new SolidBrush(DesignTokens.White(82)))
         using (SolidBrush knobBrush = new SolidBrush(DesignTokens.White(244)))
@@ -3386,7 +3387,7 @@ internal sealed partial class OperationForm : Form
     private void DrawLiveCaptionsGlyph(Graphics g, RectangleF rect)
     {
         float size = Math.Min(rect.Width, rect.Height);
-        float stroke = Math.Max(1.0f, 1.15f * this.scale);
+        float stroke = Math.Max(1.0f, 1.15f * this.LayerScale);
         RectangleF bubble = new RectangleF(
             rect.Left + size * 0.10f,
             rect.Top + size * 0.17f,
@@ -3397,7 +3398,7 @@ internal sealed partial class OperationForm : Form
         PointF tailRight = new PointF(bubble.Left + bubble.Width * 0.51f, bubble.Bottom - size * 0.01f);
         using (GraphicsPath bubblePath = RoundedRectangle(bubble, Math.Max(1.5f, size * 0.12f)))
         using (Pen bubblePen = new Pen(DesignTokens.White(240), stroke))
-        using (Pen textPen = new Pen(DesignTokens.White(226), Math.Max(1.0f, 1.05f * this.scale)))
+        using (Pen textPen = new Pen(DesignTokens.White(226), Math.Max(1.0f, 1.05f * this.LayerScale)))
         using (SolidBrush tailBrush = new SolidBrush(DesignTokens.White(222)))
         {
             bubblePen.StartCap = LineCap.Round;
@@ -3428,7 +3429,7 @@ internal sealed partial class OperationForm : Form
     private void DrawHoverOpacityGlyph(Graphics g, RectangleF rect, Color inactiveSlashColor)
     {
         float size = Math.Min(rect.Width, rect.Height);
-        float stroke = Math.Max(1.0f, 1.1f * this.scale);
+        float stroke = Math.Max(1.0f, 1.1f * this.LayerScale);
         RectangleF backPanel = new RectangleF(
             rect.Left + size * 0.18f,
             rect.Top + size * 0.16f,
@@ -3447,7 +3448,7 @@ internal sealed partial class OperationForm : Form
             this.currentSettings.ForceHoverOpacityActive
                 ? DesignTokens.WithAlpha(DesignTokens.Colors.TextOnAccent, 232)
                 : DesignTokens.WithAlpha(inactiveSlashColor, 248),
-            Math.Max(1.0f, 1.35f * this.scale)))
+            Math.Max(1.0f, 1.35f * this.LayerScale)))
         using (SolidBrush frontBrush = new SolidBrush(DesignTokens.White(this.currentSettings.ForceHoverOpacityActive ? 90 : 42)))
         {
             backPen.StartCap = LineCap.Round;
@@ -3482,74 +3483,6 @@ internal sealed partial class OperationForm : Form
     private static void DrawArrowHead(Graphics g, Brush brush, PointF tip, PointF left, PointF right)
     {
         g.FillPolygon(brush, new PointF[] { tip, left, right });
-    }
-
-    private void RenderLayeredWindow()
-    {
-        RenderLayeredWindow(true);
-    }
-
-    private void RenderLayeredWindow(bool redrawContent)
-    {
-        if (!this.IsHandleCreated || this.Width <= 0 || this.Height <= 0)
-        {
-            return;
-        }
-
-        try
-        {
-            EnsureRenderBuffer();
-            bool burnInColorProtectionActive = IsBurnInColorProtectionActive();
-            bool hitMaskActive = burnInColorProtectionActive;
-            bool refreshNativeBitmap =
-                redrawContent ||
-                !this.renderBufferValid ||
-                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive ||
-                hitMaskActive != this.lastRenderedHitMaskActive;
-            if (refreshNativeBitmap)
-            {
-                this.renderGraphics.Clear(Color.Transparent);
-                DrawOperationWindow(this.renderGraphics);
-                if (burnInColorProtectionActive)
-                {
-                    BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
-                }
-
-                if (hitMaskActive)
-                {
-                    EnsureInteractionHitMask();
-                    ApplyInteractionHitMask(this.renderBitmap, this.interactionHitMask);
-                }
-
-                this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
-                this.lastRenderedHitMaskActive = hitMaskActive;
-                this.renderBufferValid = true;
-            }
-
-            if (!this.layeredSurface.Update(
-                this.Handle,
-                this.Location,
-                this.renderBitmap,
-                GetLayeredWindowOpacityAlpha(),
-                refreshNativeBitmap))
-            {
-                if (!this.layeredUpdateFailureLogged)
-                {
-                    this.layeredUpdateFailureLogged = true;
-                    Program.LogInfo("OperationForm UpdateLayeredWindow failed; falling back to normal paint.");
-                }
-
-                this.Invalidate();
-            }
-        }
-        catch (Exception ex)
-        {
-            if (!this.layeredUpdateFailureLogged)
-            {
-                this.layeredUpdateFailureLogged = true;
-                Program.LogException(ex);
-            }
-        }
     }
 
     private void BeginUpdateForegroundFrameRate()
@@ -3694,47 +3627,6 @@ internal sealed partial class OperationForm : Form
             this.currentSettings,
             this.Bounds,
             ref this.reverseHoverRevealUntilUtc);
-    }
-
-    private void EnsureRenderBuffer()
-    {
-        if (this.renderBitmap != null &&
-            this.renderGraphics != null &&
-            this.renderBitmap.Width == this.Width &&
-            this.renderBitmap.Height == this.Height)
-        {
-            return;
-        }
-
-        DisposeRenderBuffer();
-        this.renderBitmap = new Bitmap(this.Width, this.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-        this.renderGraphics = Graphics.FromImage(this.renderBitmap);
-        this.renderBufferValid = false;
-    }
-
-    private void DisposeRenderBuffer()
-    {
-        if (this.renderGraphics != null)
-        {
-            this.renderGraphics.Dispose();
-            this.renderGraphics = null;
-        }
-
-        if (this.renderBitmap != null)
-        {
-            this.renderBitmap.Dispose();
-            this.renderBitmap = null;
-        }
-
-        this.renderBufferValid = false;
-    }
-
-    private void ResetDisplayRenderResources()
-    {
-        DisposeRenderBuffer();
-        DisposeInteractionHitMask();
-        this.layeredSurface.Reset();
-        this.layeredUpdateFailureLogged = false;
     }
 
     private void ResetLayoutCaches()
@@ -4118,11 +4010,6 @@ internal sealed partial class OperationForm : Form
         return RoundedRectangle(rect, radius, topLeft, topRight, bottomRight, bottomLeft);
     }
 
-    private static GraphicsPath RoundedRectangle(RectangleF bounds, float radius)
-    {
-        return RoundedRectangle(bounds, radius, true, true, true, true);
-    }
-
     private static GraphicsPath RoundedRectangle(RectangleF bounds, float radius, bool topLeft, bool topRight, bool bottomRight, bool bottomLeft)
     {
         GraphicsPath path = new GraphicsPath();
@@ -4168,11 +4055,6 @@ internal sealed partial class OperationForm : Form
 
         path.CloseFigure();
         return path;
-    }
-
-    private int S(int value)
-    {
-        return Math.Max(1, (int)Math.Round(value * this.scale));
     }
 
     private static int ClampByte(int value)
