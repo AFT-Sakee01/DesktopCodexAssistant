@@ -32,7 +32,7 @@ internal sealed partial class ConnectionCheckForm
         ConnectionCheckForm form = new ConnectionCheckForm(new WidgetSettings());
         try
         {
-            form.scale = 2.0f;
+            form.SetLayerScale(2.0f);
             int columns = 5;
             int rows = (iconClasses.Length + columns - 1) / columns;
             int cell = 120;
@@ -174,7 +174,7 @@ internal sealed partial class ConnectionCheckForm
                     ConnectionCheckForm form = new ConnectionCheckForm(settings);
                     try
                     {
-                        form.scale = 2.0f;
+                        form.SetLayerScale(2.0f);
                         form.Width = cellWidth;
                         form.Height = cellHeight;
                         form.currentSettings.ConnectionCheckRenderVariant = variants[row];
@@ -221,7 +221,7 @@ internal sealed partial class ConnectionCheckForm
         WidgetSettings settings = WidgetSettings.Load();
         using (ConnectionCheckForm form = new ConnectionCheckForm(settings))
         {
-            form.scale = 2.0f;
+            form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.ConnectionCheckWidth, settings.ConnectionCheckHeight);
             form.snapshot = form.reader.GetSnapshot(form.currentSettings);

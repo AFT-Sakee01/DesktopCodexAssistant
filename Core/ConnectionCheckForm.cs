@@ -5,7 +5,7 @@ using System.Globalization;
 using System.Text;
 using System.Windows.Forms;
 
-internal sealed partial class ConnectionCheckForm : Form
+internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
 {
     private const int RenderSecondBoundaryOffsetMs = 75;
     private readonly System.Windows.Forms.Timer timer;
@@ -13,21 +13,13 @@ internal sealed partial class ConnectionCheckForm : Form
     private readonly CleanIpConnectionReader reader;
     private WidgetSettings currentSettings;
     private CleanIpConnectionSnapshot snapshot;
-    private float scale;
     private bool hiddenForFullscreen;
-    private bool layeredUpdateFailureLogged;
     private double hoverOpacityProgress;
     private DateTime hoverOpacityLastUtc;
     private DateTime reverseHoverRevealUntilUtc;
     private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool sharedInteractionPolling;
-    private Bitmap renderBitmap;
-    private Graphics renderGraphics;
-    private bool renderBufferValid;
-    private bool lastRenderedBurnInColorProtectionActive;
     private long burnInShiftSlot = long.MinValue;
-    // The native surface keeps the HBITMAP alive across alpha-only hover updates.
-    private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
     private readonly UiFontCache fontCache = new UiFontCache();
 
     public ConnectionCheckForm(WidgetSettings settings)
@@ -45,10 +37,7 @@ internal sealed partial class ConnectionCheckForm : Form
             ControlStyles.UserPaint,
             true);
 
-        using (Graphics g = this.CreateGraphics())
-        {
-            this.scale = Math.Max(1.0f, g.DpiX / 96.0f);
-        }
+        InitializeLayerScaleFromCurrentDpi();
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
@@ -65,21 +54,6 @@ internal sealed partial class ConnectionCheckForm : Form
         this.hoverTimer = new System.Windows.Forms.Timer();
         this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
         this.hoverTimer.Tick += OnHoverTimerTick;
-    }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            CreateParams cp = base.CreateParams;
-            cp.ExStyle |= NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_LAYERED;
-            return cp;
-        }
-    }
-
-    protected override bool ShowWithoutActivation
-    {
-        get { return true; }
     }
 
     protected override void OnShown(EventArgs e)
@@ -100,9 +74,7 @@ internal sealed partial class ConnectionCheckForm : Form
         this.hoverTimer.Tick -= OnHoverTimerTick;
         this.hoverTimer.Dispose();
         this.reader.Dispose();
-        DisposeRenderBuffer();
         this.fontCache.Dispose();
-        this.layeredSurface.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -517,6 +489,16 @@ internal sealed partial class ConnectionCheckForm : Form
     {
         DrawBackground(g);
         DrawContentLayer(g);
+    }
+
+    protected override void DrawWindowContent(Graphics g)
+    {
+        DrawConnectionCheckWindow(g);
+    }
+
+    protected override bool IsLayeredBurnInColorProtectionActive()
+    {
+        return IsBurnInColorProtectionActive();
     }
 
     private void ConfigureGraphics(Graphics g)
@@ -1656,14 +1638,14 @@ internal sealed partial class ConnectionCheckForm : Form
             Font drawFont = baseFont;
             bool disposeFont = false;
             float size = baseFont.Size;
-            while (size > 7.0f * this.scale && g.MeasureString(text, drawFont).Width > rect.Width)
+            while (size > 7.0f * this.LayerScale && g.MeasureString(text, drawFont).Width > rect.Width)
             {
                 if (disposeFont)
                 {
                     drawFont.Dispose();
                 }
 
-                size -= 0.7f * this.scale;
+                size -= 0.7f * this.LayerScale;
                 drawFont = new Font(baseFont.FontFamily, size, baseFont.Style, GraphicsUnit.Pixel);
                 disposeFont = true;
             }
@@ -1677,112 +1659,11 @@ internal sealed partial class ConnectionCheckForm : Form
         }
     }
 
-    private void RenderLayeredWindow()
-    {
-        RenderLayeredWindow(true);
-    }
-
-    private void RenderLayeredWindow(bool redrawContent)
-    {
-        if (!this.IsHandleCreated || this.Width <= 0 || this.Height <= 0)
-        {
-            return;
-        }
-
-        try
-        {
-            EnsureRenderBuffer();
-            // Opacity-only changes reuse the cached content bitmap.
-            bool burnInColorProtectionActive = IsBurnInColorProtectionActive();
-            bool refreshNativeBitmap =
-                redrawContent ||
-                !this.renderBufferValid ||
-                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive;
-            if (refreshNativeBitmap)
-            {
-                this.renderGraphics.Clear(Color.Transparent);
-                DrawBackground(this.renderGraphics);
-                DrawContentLayer(this.renderGraphics);
-                if (burnInColorProtectionActive)
-                {
-                    BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
-                }
-
-                this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
-                this.renderBufferValid = true;
-            }
-
-            if (!this.layeredSurface.Update(
-                this.Handle,
-                this.Location,
-                this.renderBitmap,
-                GetApplicationOpacityAlpha(),
-                refreshNativeBitmap))
-            {
-                if (!this.layeredUpdateFailureLogged)
-                {
-                    this.layeredUpdateFailureLogged = true;
-                    Program.LogInfo("ConnectionCheck UpdateLayeredWindow failed; falling back to normal paint.");
-                }
-
-                this.Invalidate();
-            }
-        }
-        catch (Exception ex)
-        {
-            if (!this.layeredUpdateFailureLogged)
-            {
-                this.layeredUpdateFailureLogged = true;
-                Program.LogException(ex);
-            }
-        }
-    }
-
-    private void EnsureRenderBuffer()
-    {
-        if (this.renderBitmap != null &&
-            this.renderGraphics != null &&
-            this.renderBitmap.Width == this.Width &&
-            this.renderBitmap.Height == this.Height)
-        {
-            return;
-        }
-
-        DisposeRenderBuffer();
-        this.renderBitmap = new Bitmap(this.Width, this.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-        this.renderGraphics = Graphics.FromImage(this.renderBitmap);
-        this.renderBufferValid = false;
-    }
-
     private bool IsBurnInColorProtectionActive()
     {
         return BurnInProtection.ShouldApplyHiddenModeColorProtection(
             this.currentSettings,
             IsHoverOpacityTargetActive());
-    }
-
-    private void DisposeRenderBuffer()
-    {
-        if (this.renderGraphics != null)
-        {
-            this.renderGraphics.Dispose();
-            this.renderGraphics = null;
-        }
-
-        if (this.renderBitmap != null)
-        {
-            this.renderBitmap.Dispose();
-            this.renderBitmap = null;
-        }
-
-        this.renderBufferValid = false;
-    }
-
-    private void ResetDisplayRenderResources()
-    {
-        DisposeRenderBuffer();
-        this.layeredSurface.Reset();
-        this.layeredUpdateFailureLogged = false;
     }
 
     private int GetBackgroundOpacityAlpha()
@@ -1803,7 +1684,7 @@ internal sealed partial class ConnectionCheckForm : Form
         return Math.Max(0, Math.Min(255, alpha));
     }
 
-    private byte GetApplicationOpacityAlpha()
+    protected override byte GetApplicationOpacityAlpha()
     {
         return (byte)ApplyHoverTransparencyTarget(255);
     }
@@ -1825,20 +1706,4 @@ internal sealed partial class ConnectionCheckForm : Form
         return Math.Max(0, Math.Min(255, (int)Math.Round(animated)));
     }
 
-    private int S(int value)
-    {
-        return (int)Math.Round(value * this.scale);
-    }
-
-    private static GraphicsPath RoundedRectangle(RectangleF bounds, float radius)
-    {
-        float diameter = radius * 2.0f;
-        GraphicsPath path = new GraphicsPath();
-        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
 }
