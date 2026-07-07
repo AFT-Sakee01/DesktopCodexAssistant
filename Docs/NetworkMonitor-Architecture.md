@@ -1,6 +1,6 @@
 # 网络监控窗口技术说明
 
-适用版本：1.0.4.23
+适用版本：1.0.4.31
 
 ## 1. 文档范围
 
@@ -321,11 +321,9 @@ Cloudflare、Akamai、Azure 和 Google 的官方状态源会按设置页“官�
 - 正常：六个云服务全部使用同一个绿色。
 - 延迟过高：黄色；无法连接：红色；状态异常：橙色。
 
-如果云服务处于检测中，网络状态文字右侧显示黄色 `云服务测试中`。如果存在一个红色或橙色云服务，标题栏告警槽先显示服务名加 `!`，下一次刷新显示失败层级或原因加 `!`，例如 `AWS!` / `拒绝访问!`。服务名映射为 Cloudflare、Akamai、Github、AWS、Azure、Google；Google Cloud 错误显示为 `Google!`。公网文字固定在 `IP4` 行右侧绘制，不参与标题栏云服务方块或告警槽布局。
+云服务方块固定在标题栏最右侧右对齐（分组卡片布局下标题栏只有标题、状态、方块三段）。云服务的异常不再挤进标题栏告警槽：Classic 布局改用分组卡片（见 §12.0），云服务/DNS/连通性的错误分别落在「健康」卡对应的整行里。服务名映射为 Cloudflare、Akamai、Github、AWS、Azure、Google。
 
-如果同时存在多个红色或橙色云服务，标题栏告警槽按方块从左到右轮换，每个服务都按“服务名!”、“原因!”顺序随 UI 刷新切换。红色表示无法连接，橙色表示状态异常。
-
-Classic 布局不再绘制独立的 DNS 右下角覆盖层。DNS 行保留网卡返回的 DNS 优先级顺序，错误状态只改变颜色，不把报错项提前；DNS 全部正常时不占用标题栏告警槽。任一 DNS 为 `Problem`、`Hijacked` 或 `Unavailable` 时，DNS 异常加入标题栏云服务告警队列：先显示 `DNS!`，下一次刷新显示已有 `Reason` 的短原因加 `!`，例如 `仅TCP!`、`返回SERVFAIL!`、`无地址!`、`NX验证失败!` 或 `地址无效!`，不显示 `DNS1` / `DNS2` 编号。多个 DNS 具有相同异常文字和状态时，原因文字追加紧凑 DNS 地址后缀，例如 `仅TCP@1.1.1.1!`，避免无编号后看起来一直停在同一条。告警颜色复用 DNS 行对应状态色，不额外发起 DNS 探测；云服务异常排在 DNS 异常之前，DNS 异常按 DNS 行从左到右追加轮换。
+Classic 分组卡片不绘制独立的 DNS 覆盖层，也没有标题栏告警槽。DNS 状态在「健康」卡的 `DNS` 行以每服务分色段落显示（`DrawDnsSegments`），保留网卡返回的优先级顺序，错误只改变颜色、不把报错项提前，也不发起额外 DNS 探测。连通性/GFW 的长错误文本各自占据「健康」卡的整行（`PING`/`GFW` 行），fit 收缩后仍放不下时在本行矩形内裁剪，永不与其它卡相交。
 
 独立日志：
 
@@ -346,6 +344,20 @@ Classic 布局不再绘制独立的 DNS 右下角覆盖层。DNS 行保留网卡
 DNS 检测写入 `network-check-history.jsonl` 时，`result` 不再只有计数；发现异常时会附带 `异常:<状态>:<原因>` 的紧凑摘要。`detail.status_detail` 和 `detail.abnormal_detail` 按网卡 DNS 顺序记录每个 DNS 的状态、具体原因、延迟和失败次数，但不写 DNS 服务器真实地址，继续满足历史日志不保存 DNS/IP 地址的约束。
 
 ## 12. 绘制与缓存
+
+### 12.0 Classic 分组卡片布局
+
+Classic 布局（`DrawContentClassic`）为分组卡片：固定画布（最大 628×250 物理像素），按最坏情况预算，不做小于该尺寸的收紧。结构自上而下：
+
+- **头部**（`DrawGroupedHeader`）：`NETWORK` 标题 + 状态文字（在线时追加延迟 `· 18ms`，GFW 失败态不追加）+ 右对齐云服务 6 方块；不承载告警文字。
+- **地址卡 + 链路卡**（并排，`DrawAddressCard` / `DrawLinkCard`）：地址卡三行 `IP4 / IP6 / 公网`；链路卡三行（Wi-Fi 名+制式 / SSID / 加密·信号·速率，或有线的名称/制式速率/`有线`）。
+- **健康卡**（全宽，`DrawHealthCard`）：三行 `PING`（连通性）/ `GFW` / `DNS`，每行占整行宽度，长错误文本有整行兜底。
+
+卡片矩形由 `ComputeGroupedCardRects` 一次算出，`RunNetworkMonitorDisplaySelfTest` → `RunGroupedCardLayoutSelfTest` 断言三卡互不相交且在内容区内、空 IPv6 绘制不抛异常。
+
+**IPv6 处理**：reader（`NetworkMonitorReader.IsIgnorableAddress`）过滤链路本地/组播地址，因此只剩 `fe80::` 时 `snapshot.IPv6` 为空。地址卡此时显示灰色「未分配 · 仅本地」占位（不留空行），公网行回退到公网 IPv4；有全局/ULA 地址时按像素测量压缩显示完整地址。
+
+四个 OLED 变体（Typographic/AmberHud/WarmCard/Phosphor）仍使用各自绘制路径，不走分组卡片。
 
 ### 12.1 变化检测
 

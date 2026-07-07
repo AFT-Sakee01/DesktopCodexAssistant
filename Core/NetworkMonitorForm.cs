@@ -628,17 +628,231 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         RectangleF content = new RectangleF(padding, S(6), this.Width - padding * 2.0f, this.Height - S(12));
         float headerHeight = Math.Max(S(18), content.Height * 0.18f);
         RectangleF header = new RectangleF(content.Left, content.Top, content.Width, headerHeight);
-        DrawHeader(g, header);
+        DrawGroupedHeader(g, header);
 
-        float rowTop = header.Bottom + S(1);
-        float rowHeight = Math.Max(S(12), (content.Bottom - rowTop) / 7.0f);
-        DrawInfoRow(g, 0, "IP4", this.snapshot.IPv4, rowTop, rowHeight, DesignTokens.Colors.TextStrong);
-        DrawInfoRow(g, 1, "IP6", this.snapshot.IPv6, rowTop, rowHeight, DesignTokens.Colors.TextStrong);
-        DrawInfoRow(g, 2, "IF", BuildInterfaceText(), rowTop, rowHeight, DesignTokens.Colors.TextStrong);
-        DrawDnsRow(g, 3, rowTop, rowHeight);
-        DrawInfoRow(g, 4, "WIFI", BuildWifiText(), rowTop, rowHeight, this.snapshot.IsWifi ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted);
-        DrawInfoRow(g, 5, "PING", BuildConnectivityText(), rowTop, rowHeight, GetConnectivityColor());
-        DrawInfoRow(g, 6, "GFW", BuildGfwProbeText(), rowTop, rowHeight, GetGfwProbeColor());
+        // Grouped-card layout (方案1): 头部 + 地址/链路 双卡 + 全宽健康卡。窗口是固定画布（最大
+        // 628x250），布局按最坏情况预算。健康卡里连通/GFW/DNS 各占整行，长错误文本有整行宽度兜底，
+        // 不会与其它字段相撞。只剩链路本地 IPv6（reader 已过滤）时地址卡显示灰色"未分配 · 仅本地"，
+        // 不留空行。矩形纯垂直/并排堆叠，互不相交由结构保证。
+        RectangleF addrRect;
+        RectangleF linkRect;
+        RectangleF healthRect;
+        ComputeGroupedCardRects(content, header, out addrRect, out linkRect, out healthRect);
+        DrawAddressCard(g, addrRect);
+        DrawLinkCard(g, linkRect);
+        DrawHealthCard(g, healthRect);
+    }
+
+    // Card geometry is separated so RunGroupedCardLayoutSelfTest can assert the three rects never
+    // overlap and stay inside the content area. 地址/链路 sit side by side; 健康 spans full width below.
+    private void ComputeGroupedCardRects(RectangleF content, RectangleF header, out RectangleF addrRect, out RectangleF linkRect, out RectangleF healthRect)
+    {
+        float cardsTop = header.Bottom + S(4);
+        float cardsArea = Math.Max(S(24), content.Bottom - cardsTop);
+        float rowGap = S(6);
+        float row1Height = Math.Max(S(30), cardsArea * 0.52f - rowGap * 0.5f);
+        float addrWidth = content.Width * 0.56f;
+        float linkWidth = Math.Max(S(40), content.Width - addrWidth - rowGap);
+        addrRect = new RectangleF(content.Left, cardsTop, addrWidth, row1Height);
+        linkRect = new RectangleF(addrRect.Right + rowGap, cardsTop, linkWidth, row1Height);
+        float healthTop = cardsTop + row1Height + rowGap;
+        healthRect = new RectangleF(content.Left, healthTop, content.Width, Math.Max(S(24), content.Bottom - healthTop));
+    }
+
+    private void DrawGroupedHeader(Graphics g, RectangleF rect)
+    {
+        NetworkAccessState accessState = GetDisplayAccessState();
+        string statusText = GetHeaderStatusText(accessState);
+        // Only append latency to the plain online status; when GFW failed the status is already the
+        // long "全球互联网不可用" warning and appending "· 18ms" would just push it into truncation.
+        if (accessState == NetworkAccessState.Online && !HasFailedGfwProbe() && this.snapshot != null && this.snapshot.LatencyMs > 0.0)
+        {
+            statusText += " · " + ((int)Math.Round(this.snapshot.LatencyMs)).ToString(CultureInfo.InvariantCulture) + "ms";
+        }
+
+        Color statusColor = GetHeaderStatusColor(accessState);
+        Font titleFont = GetCachedUiFont(Math.Max(10.0f, rect.Height * 0.56f), FontStyle.Bold);
+        Font statusFont = GetCachedUiFont(Math.Max(8.0f, rect.Height * 0.44f), FontStyle.Bold);
+        using (SolidBrush titleBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
+        using (SolidBrush statusBrush = new SolidBrush(statusColor))
+        {
+            float titleWidth = Math.Min(rect.Width * 0.34f, g.MeasureString("NETWORK", titleFont).Width + S(4));
+            RectangleF titleRect = new RectangleF(rect.Left, rect.Top, titleWidth, rect.Height);
+            DrawFittedText(g, "NETWORK", titleFont, titleBrush, titleRect, StringAlignment.Near);
+
+            float cloudWidth = GetCloudEndpointTileStripWidth(rect.Height);
+            float cloudLeft = cloudWidth > 0.0f ? Math.Max(titleRect.Right, rect.Right - cloudWidth) : rect.Right;
+            RectangleF cloudRect = cloudWidth > 0.0f
+                ? new RectangleF(cloudLeft, rect.Top, Math.Max(0.0f, rect.Right - cloudLeft), rect.Height)
+                : RectangleF.Empty;
+            float statusLeft = titleRect.Right + S(6);
+            float statusRight = cloudRect.IsEmpty ? rect.Right : cloudRect.Left - S(6);
+            RectangleF statusRect = new RectangleF(statusLeft, rect.Top, Math.Max(0.0f, statusRight - statusLeft), rect.Height);
+            if (statusRect.Width > 0.0f)
+            {
+                DrawFittedText(g, statusText, statusFont, statusBrush, statusRect, StringAlignment.Near);
+            }
+
+            DrawCloudEndpointTiles(g, cloudRect, accessState);
+        }
+    }
+
+    // Draws the rounded card background + hairline border and returns the padded inner rect.
+    private RectangleF DrawGroupedCard(Graphics g, RectangleF rect)
+    {
+        if (rect.Width <= 1.0f || rect.Height <= 1.0f)
+        {
+            return rect;
+        }
+
+        using (GraphicsPath path = RoundedRectangle(new RectangleF(rect.X, rect.Y, rect.Width - 1.0f, rect.Height - 1.0f), S(6)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.White(10)))
+        using (Pen border = new Pen(DesignTokens.White(28), Math.Max(1.0f, S(1))))
+        {
+            g.FillPath(fill, path);
+            g.DrawPath(border, path);
+        }
+
+        float padX = S(8);
+        return new RectangleF(rect.X + padX, rect.Y + S(4), Math.Max(S(10), rect.Width - padX * 2.0f), Math.Max(S(10), rect.Height - S(8)));
+    }
+
+    private void DrawCardHeaderLabel(Graphics g, string text, RectangleF body, out float linesTop, out float lineHeight, int lineCount)
+    {
+        float headerHeight = Math.Max(S(9), body.Height * 0.18f);
+        Font headerFont = GetCachedUiFont(Math.Max(7.5f, headerHeight * 0.72f), FontStyle.Bold);
+        using (SolidBrush headerBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
+        {
+            DrawFittedText(g, text, headerFont, headerBrush, new RectangleF(body.X, body.Y, body.Width, headerHeight), StringAlignment.Near);
+        }
+
+        linesTop = body.Y + headerHeight;
+        lineHeight = Math.Max(S(11), (body.Bottom - linesTop) / Math.Max(1, lineCount));
+    }
+
+    private void DrawCardLine(Graphics g, string label, float labelWidth, string value, Color labelColor, Color valueColor, RectangleF rect)
+    {
+        Font labelFont = GetCachedUiFont(Math.Max(8.0f, rect.Height * 0.5f), FontStyle.Bold);
+        Font valueFont = GetCachedUiFont(Math.Max(8.5f, rect.Height * 0.56f), FontStyle.Bold);
+        float valueX = rect.X;
+        using (SolidBrush labelBrush = new SolidBrush(labelColor))
+        using (SolidBrush valueBrush = new SolidBrush(valueColor))
+        {
+            if (!string.IsNullOrEmpty(label))
+            {
+                DrawFittedText(g, label, labelFont, labelBrush, new RectangleF(rect.X, rect.Y, labelWidth, rect.Height), StringAlignment.Near);
+                valueX = rect.X + labelWidth + S(3);
+            }
+
+            DrawFittedText(g, EmptyToDash(value), valueFont, valueBrush, new RectangleF(valueX, rect.Y, Math.Max(S(10), rect.Right - valueX), rect.Height), StringAlignment.Near);
+        }
+    }
+
+    private void DrawAddressCard(Graphics g, RectangleF rect)
+    {
+        RectangleF body = DrawGroupedCard(g, rect);
+        float linesTop;
+        float lineHeight;
+        DrawCardHeaderLabel(g, "地址", body, out linesTop, out lineHeight, 3);
+        float labelWidth = S(24);
+        Font valueFont = GetCachedUiFont(Math.Max(8.5f, lineHeight * 0.56f), FontStyle.Bold);
+        float valueWidth = Math.Max(S(20), body.Right - (body.X + labelWidth + S(3)));
+
+        string ip4 = BuildMeasuredAddressRowText(g, this.snapshot == null ? null : this.snapshot.IPv4, valueFont, valueWidth, 15);
+        DrawCardLine(g, "IP4", labelWidth, ip4, DesignTokens.Colors.TextMuted, DesignTokens.Colors.TextStrong,
+            new RectangleF(body.X, linesTop, body.Width, lineHeight));
+
+        string ip6Raw = this.snapshot == null ? null : this.snapshot.IPv6;
+        string ip6;
+        Color ip6Color;
+        if (string.IsNullOrWhiteSpace(ip6Raw))
+        {
+            ip6 = "未分配 · 仅本地";
+            ip6Color = DesignTokens.Colors.GlyphMuted;
+        }
+        else
+        {
+            ip6 = BuildMeasuredAddressRowText(g, ip6Raw, valueFont, valueWidth, 24);
+            ip6Color = DesignTokens.Colors.TextStrong;
+        }
+
+        DrawCardLine(g, "IP6", labelWidth, ip6, DesignTokens.Colors.TextMuted, ip6Color,
+            new RectangleF(body.X, linesTop + lineHeight, body.Width, lineHeight));
+
+        string wan = BuildPublicAddressValue();
+        Color wanColor = HasPublicAddressDisplayValue() ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted;
+        DrawCardLine(g, "公网", labelWidth, wan, DesignTokens.Colors.TextMuted, wanColor,
+            new RectangleF(body.X, linesTop + lineHeight * 2.0f, body.Width, lineHeight));
+    }
+
+    private void DrawLinkCard(Graphics g, RectangleF rect)
+    {
+        RectangleF body = DrawGroupedCard(g, rect);
+        float linesTop;
+        float lineHeight;
+        DrawCardHeaderLabel(g, "链路", body, out linesTop, out lineHeight, 3);
+
+        string line1;
+        string line2;
+        string line3;
+        Color valueColor = DesignTokens.Colors.TextStrong;
+        if (this.snapshot != null && this.snapshot.IsWifi)
+        {
+            WifiConnectionDetails wifi = this.snapshot.WifiDetails ?? new WifiConnectionDetails();
+            string name = EmptyToDash(this.snapshot.InterfaceName);
+            string type = EmptyToDash(this.snapshot.InterfaceType);
+            line1 = CombineNameAndType(name, type);
+            line2 = EmptyToDash(wifi.Ssid);
+            string auth = EmptyToDash(wifi.AuthAlgorithm);
+            string cipher = EmptyToDash(wifi.CipherAlgorithm);
+            string sec = auth == "--" ? "--" : (cipher == "--" ? auth : auth + "/" + cipher);
+            string signal = wifi.SignalQuality > 0 ? wifi.SignalQuality.ToString(CultureInfo.InvariantCulture) + "%" : "--";
+            string rate = FormatRateMbps(wifi.RxRateKbps) + "/" + FormatRateMbps(wifi.TxRateKbps);
+            line3 = sec + " · " + signal + " · " + rate;
+        }
+        else if (this.snapshot != null && this.snapshot.InterfaceKnown)
+        {
+            line1 = EmptyToDash(this.snapshot.InterfaceName);
+            line2 = EmptyToDash(this.snapshot.InterfaceType) + " · " + FormatLinkSpeed(this.snapshot.LinkSpeedBps);
+            line3 = "有线";
+        }
+        else
+        {
+            line1 = "--";
+            line2 = "--";
+            line3 = "--";
+            valueColor = DesignTokens.Colors.GlyphMuted;
+        }
+
+        DrawCardLine(g, string.Empty, 0.0f, line1, valueColor, valueColor, new RectangleF(body.X, linesTop, body.Width, lineHeight));
+        DrawCardLine(g, string.Empty, 0.0f, line2, valueColor, valueColor, new RectangleF(body.X, linesTop + lineHeight, body.Width, lineHeight));
+        DrawCardLine(g, string.Empty, 0.0f, line3, DesignTokens.Colors.TextMuted, DesignTokens.Colors.TextMuted, new RectangleF(body.X, linesTop + lineHeight * 2.0f, body.Width, lineHeight));
+    }
+
+    private void DrawHealthCard(Graphics g, RectangleF rect)
+    {
+        RectangleF body = DrawGroupedCard(g, rect);
+        float linesTop;
+        float lineHeight;
+        DrawCardHeaderLabel(g, "健康", body, out linesTop, out lineHeight, 3);
+        float labelWidth = S(30);
+
+        DrawCardLine(g, "PING", labelWidth, BuildConnectivityText(), DesignTokens.Colors.TextMuted, GetConnectivityColor(),
+            new RectangleF(body.X, linesTop, body.Width, lineHeight));
+        DrawCardLine(g, "GFW", labelWidth, BuildGfwProbeText(), DesignTokens.Colors.TextMuted, GetGfwProbeColor(),
+            new RectangleF(body.X, linesTop + lineHeight, body.Width, lineHeight));
+
+        // DNS line: colored per-server segments (reuse existing segment renderer) after the label.
+        RectangleF dnsRow = new RectangleF(body.X, linesTop + lineHeight * 2.0f, body.Width, lineHeight);
+        Font dnsLabelFont = GetCachedUiFont(Math.Max(8.0f, dnsRow.Height * 0.5f), FontStyle.Bold);
+        Font dnsValueFont = GetCachedUiFont(Math.Max(8.5f, dnsRow.Height * 0.56f), FontStyle.Bold);
+        using (SolidBrush dnsLabelBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
+        {
+            DrawFittedText(g, "DNS", dnsLabelFont, dnsLabelBrush, new RectangleF(dnsRow.X, dnsRow.Y, labelWidth, dnsRow.Height), StringAlignment.Near);
+        }
+
+        float dnsValueX = dnsRow.X + labelWidth + S(3);
+        DrawDnsSegments(g, BuildDnsDisplaySegments(), dnsValueFont, new RectangleF(dnsValueX, dnsRow.Y, Math.Max(S(20), dnsRow.Right - dnsValueX), dnsRow.Height));
     }
 
     private void DrawHeader(Graphics g, RectangleF rect)
@@ -2823,6 +3037,45 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             GetDnsStatusColor(DnsServerStatus.Normal).ToArgb() != DesignTokens.Colors.Success.ToArgb())
         {
             throw new InvalidOperationException("Network monitor display self-test: DNS normal alert mapping failed.");
+        }
+
+        RunGroupedCardLayoutSelfTest();
+    }
+
+    // Grouped-card layout (方案1): the three cards are a fixed geometry, so disjointness is asserted
+    // directly; the empty-IPv6 draw path must produce the muted placeholder without throwing.
+    private static void RunGroupedCardLayoutSelfTest()
+    {
+        using (NetworkMonitorForm form = new NetworkMonitorForm(new WidgetSettings()))
+        {
+            form.SetLayerScale(2.0f);
+            form.Width = 628;
+            form.Height = 250;
+            float padding = form.S(10);
+            RectangleF content = new RectangleF(padding, form.S(6), form.Width - padding * 2.0f, form.Height - form.S(12));
+            float headerHeight = Math.Max(form.S(18), content.Height * 0.18f);
+            RectangleF header = new RectangleF(content.Left, content.Top, content.Width, headerHeight);
+            RectangleF addr;
+            RectangleF link;
+            RectangleF health;
+            form.ComputeGroupedCardRects(content, header, out addr, out link, out health);
+            if (addr.IntersectsWith(link) || addr.IntersectsWith(health) || link.IntersectsWith(health))
+            {
+                throw new InvalidOperationException("Network monitor display self-test: grouped cards must not overlap.");
+            }
+
+            if (health.Bottom > content.Bottom + 0.5f || link.Right > content.Right + 0.5f || addr.Left < content.Left - 0.5f)
+            {
+                throw new InvalidOperationException("Network monitor display self-test: grouped cards must stay inside the content area.");
+            }
+
+            form.snapshot = new NetworkMonitorSnapshot { IPv4 = "192.168.1.42", IPv6 = string.Empty };
+            using (Bitmap bitmap = new Bitmap(form.Width, form.Height))
+            using (Graphics g = Graphics.FromImage(bitmap))
+            {
+                g.Clear(DesignTokens.Colors.AppBackground);
+                form.DrawContent(g);
+            }
         }
     }
 
