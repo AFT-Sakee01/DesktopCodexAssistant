@@ -115,22 +115,13 @@ internal sealed partial class CodexRadarForm
 
         float segmentWidth = band.Width / 3.0f;
         float padding = S(8);
-        Font font = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.scale), FontStyle.Bold);
+        Font font = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold);
 
         RectangleF ratingRect = new RectangleF(band.Left + padding, band.Top, Math.Max(1.0f, segmentWidth - padding * 2.0f), band.Height);
         using (SolidBrush ratingBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 235)))
         {
             DrawCodexRadarFittedText(g, GetCodexCommunityRatingDisplayText(radarSnapshot), font, ratingBrush, ratingRect, StringAlignment.Center);
         }
-
-        bool connectionRequestRunning;
-        CodexConnectionSnapshot connectionSnapshot = GetCodexConnectionDisplaySnapshot(out connectionRequestRunning);
-        RectangleF connectionRect = new RectangleF(
-            band.Left + segmentWidth + padding,
-            band.Top,
-            Math.Max(1.0f, segmentWidth - padding * 2.0f),
-            band.Height);
-        DrawEvenLayoutConnectionSummary(g, connectionRect, connectionSnapshot, connectionRequestRunning, font, StringAlignment.Center);
 
         RectangleF updateRect = new RectangleF(
             band.Left + segmentWidth * 2.0f + padding,

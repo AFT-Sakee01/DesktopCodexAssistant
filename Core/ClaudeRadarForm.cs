@@ -11,47 +11,53 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-internal sealed class ClaudeRadarForm : Form
+internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 {
     private const int NormalRefreshMinutes = 60;
     private const int FailureRefreshMinutes = 10;
+    private const int ClaudeApiServiceAlertDebounceSeconds = 10;
     private const int RandomRefreshMs = 1000;
     private const int MaxSceneCacheEntries = 6;
     private const int MaxModelIqScore = 200;
     private static readonly Color ClaudeOrange = Color.FromArgb(255, 154, 82);
     private static readonly Color ClaudeOrangeMuted = Color.FromArgb(190, 103, 54);
     private readonly System.Windows.Forms.Timer timer;
-    private readonly NativeMethods.LayeredBitmapSurface layeredSurface = new NativeMethods.LayeredBitmapSurface();
     private readonly UiFontCache fontCache = new UiFontCache();
     private readonly Dictionary<string, Bitmap> renderSceneBitmapCache = new Dictionary<string, Bitmap>(StringComparer.Ordinal);
     private readonly Queue<string> renderSceneBitmapCacheOrder = new Queue<string>();
     private readonly object claudeCodeUsageLock = new object();
     private readonly Action<string, string, ToolTipIcon> notificationAction;
     private readonly Dictionary<string, string> notificationState = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    private readonly object claudeApiServiceAlertDebounceLock = new object();
+    private readonly Dictionary<string, ClaudeServiceAlertDebounceState> claudeApiServiceAlertDebounceStates =
+        new Dictionary<string, ClaudeServiceAlertDebounceState>(StringComparer.OrdinalIgnoreCase);
     private WidgetSettings currentSettings;
     private ClaudeRadarSnapshot snapshot;
     private SoftwareRuntimePresenceSnapshot runtimePresenceSnapshot = SoftwareRuntimePresenceSnapshot.Empty();
-    private float scale;
     private int renderTickCount;
     private bool hiddenForFullscreen;
     private bool displaySuspended;
     private bool requestRunning;
     private bool claudeCodeUsageRequestRunning;
-    private bool layeredUpdateFailureLogged;
-    private bool renderBufferValid;
-    private bool lastRenderedBurnInColorProtectionActive;
     private int lastRandomRefreshToken;
     private long burnInShiftSlot = long.MinValue;
     private DateTime nextRefreshUtc = DateTime.MinValue;
     private DateTime nextClaudeCodeUsageRefreshUtc = DateTime.MinValue;
     private string claudeCodeUsageRefreshTrigger = "首次刷新";
-    private Bitmap renderBitmap;
-    private Graphics renderGraphics;
+    private string lastClockAutoSwitchSignature = string.Empty;
+    private DateTime lastRadarAttemptLocal;
 
     private sealed class ClaudeCodeUsageRefreshOutcome
     {
         public ClaudeCodeUsageReadResult Result { get; set; }
         public long ElapsedMilliseconds { get; set; }
+    }
+
+    private sealed class ClaudeServiceAlertDebounceState
+    {
+        public string Signature { get; set; }
+        public DateTime FirstSeenUtc { get; set; }
+        public ClaudeServiceAlertCandidate ActiveCandidate { get; set; }
     }
 
     public ClaudeRadarForm(WidgetSettings settings)
@@ -66,6 +72,7 @@ internal sealed class ClaudeRadarForm : Form
         this.currentSettings.Normalize();
         this.snapshot = ClaudeRadarReader.LoadCache(this.currentSettings.ClaudeRadarModelKey) ??
             ClaudeRadarSnapshot.CreateDefault();
+        this.lastRadarAttemptLocal = this.snapshot.CheckedAtLocal;
         RefreshRuntimePresenceSnapshot(true);
         LoadNotificationState();
         ApplicationIcon.ApplyTo(this);
@@ -77,10 +84,7 @@ internal sealed class ClaudeRadarForm : Form
             ControlStyles.UserPaint,
             true);
 
-        using (Graphics g = this.CreateGraphics())
-        {
-            this.scale = Math.Max(1.0f, g.DpiX / 96.0f);
-        }
+        InitializeLayerScaleFromCurrentDpi();
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
@@ -94,21 +98,6 @@ internal sealed class ClaudeRadarForm : Form
         this.timer = new System.Windows.Forms.Timer();
         this.timer.Interval = GetTimerIntervalMs();
         this.timer.Tick += OnTimerTick;
-    }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            CreateParams cp = base.CreateParams;
-            cp.ExStyle |= NativeMethods.WS_EX_TOOLWINDOW | NativeMethods.WS_EX_NOACTIVATE | NativeMethods.WS_EX_LAYERED;
-            return cp;
-        }
-    }
-
-    protected override bool ShowWithoutActivation
-    {
-        get { return true; }
     }
 
     protected override void OnShown(EventArgs e)
@@ -127,7 +116,6 @@ internal sealed class ClaudeRadarForm : Form
         DisposeRenderBuffer();
         DisposeSceneCache();
         this.fontCache.Dispose();
-        this.layeredSurface.Dispose();
         base.OnFormClosed(e);
     }
 
@@ -180,7 +168,7 @@ internal sealed class ClaudeRadarForm : Form
         this.timer.Interval = GetTimerIntervalMs();
         if (RefreshRuntimePresenceSnapshot(false))
         {
-            this.renderBufferValid = false;
+            InvalidateLayeredRenderBuffer();
         }
 
         Size desired = GetDesiredSize();
@@ -267,10 +255,7 @@ internal sealed class ClaudeRadarForm : Form
     public void PrepareForDisplaySuspend()
     {
         this.displaySuspended = true;
-        DisposeRenderBuffer();
-        DisposeSceneCache();
-        this.layeredSurface.Reset();
-        this.layeredUpdateFailureLogged = false;
+        ResetDisplayRenderResources();
     }
 
     public void RecoverAfterDisplayResume()
@@ -285,7 +270,7 @@ internal sealed class ClaudeRadarForm : Form
         this.nextRefreshUtc = DateTime.MinValue;
         if (RefreshRuntimePresenceSnapshot(false))
         {
-            this.renderBufferValid = false;
+            InvalidateLayeredRenderBuffer();
         }
 
         RequestClaudeCodeUsageRefresh(trigger);
@@ -311,10 +296,11 @@ internal sealed class ClaudeRadarForm : Form
 
         if (RefreshRuntimePresenceSnapshot(false))
         {
-            this.renderBufferValid = false;
+            InvalidateLayeredRenderBuffer();
         }
 
         StartRefreshIfDue("定时");
+        ApplyClaudeRadarClockAutoSwitchIfNeeded();
         RefreshClaudeCodeUsageIfDue("定时");
         RenderLayeredWindow(false);
     }
@@ -337,7 +323,7 @@ internal sealed class ClaudeRadarForm : Form
                 this.lastRandomRefreshToken = this.currentSettings.ClaudeRadarRandomTestRefreshToken;
                 this.snapshot = ClaudeRadarReader.BuildRandomTestSnapshot(Environment.TickCount);
                 this.nextRefreshUtc = nowUtc.AddMilliseconds(RandomRefreshMs);
-                this.renderBufferValid = false;
+                InvalidateLayeredRenderBuffer();
                 RenderLayeredWindow();
             }
 
@@ -354,12 +340,13 @@ internal sealed class ClaudeRadarForm : Form
             return;
         }
 
+        this.lastRadarAttemptLocal = DateTime.Now;
         ClaudeRadarSnapshot runningSnapshot = this.snapshot == null
             ? ClaudeRadarSnapshot.CreateDefault()
             : this.snapshot.Clone();
         runningSnapshot.RequestRunning = true;
         this.snapshot = runningSnapshot;
-        this.renderBufferValid = false;
+        InvalidateLayeredRenderBuffer();
         RenderLayeredWindow();
 
         WidgetSettings requestSettings = this.currentSettings.Clone();
@@ -529,7 +516,7 @@ internal sealed class ClaudeRadarForm : Form
         }
 
         this.snapshot = current;
-        this.renderBufferValid = false;
+        InvalidateLayeredRenderBuffer();
 
         NetworkCheckHistoryLogger.LogCompleted(
             "claude_radar",
@@ -601,9 +588,121 @@ internal sealed class ClaudeRadarForm : Form
             this.nextRefreshUtc = DateTime.UtcNow.AddMinutes(successMinutes);
         }
 
-        this.renderBufferValid = false;
+        InvalidateLayeredRenderBuffer();
         Program.LogInfo("Claude Radar refreshed. Trigger=" + (trigger ?? string.Empty) + ", Known=" + (this.snapshot != null && this.snapshot.Known).ToString());
+        ApplyClaudeRadarClockAutoSwitchIfNeeded();
         RenderLayeredWindow();
+    }
+
+    private void ApplyClaudeRadarClockAutoSwitchIfNeeded()
+    {
+        if (this.currentSettings == null ||
+            !this.currentSettings.RadarClockAutoSwitchModelEnabled ||
+            this.currentSettings.ClaudeRadarRandomTestEnabled ||
+            this.requestRunning)
+        {
+            return;
+        }
+
+        ClaudeRadarSnapshot local = this.snapshot == null
+            ? ClaudeRadarSnapshot.CreateDefault()
+            : this.snapshot.Clone();
+        const double cycleHours = 24.0;
+        DateTime nowLocal = DateTime.Now;
+        DateTime boundary = GetClaudeEvenRowDialCycleBoundaryLocal(nowLocal, cycleHours);
+        DateTime previousBoundary = boundary.AddHours(-cycleHours);
+        DateTime currentDataLocal = GetClaudeLatestMetricLocalTime(local);
+        if (currentDataLocal != DateTime.MinValue && currentDataLocal >= previousBoundary)
+        {
+            return;
+        }
+
+        string currentKey = WidgetSettings.NormalizeClaudeRadarModelKey(this.currentSettings.ClaudeRadarModelKey);
+        if (currentKey.Length == 0)
+        {
+            currentKey = WidgetSettings.NormalizeClaudeRadarModelKey(local.SelectedModelKey);
+        }
+
+        string targetKey;
+        DateTime targetDataLocal;
+        if (!TryFindClaudeClockAutoSwitchTarget(
+            local,
+            currentKey,
+            previousBoundary,
+            out targetKey,
+            out targetDataLocal))
+        {
+            return;
+        }
+
+        string signature = boundary.Ticks.ToString(CultureInfo.InvariantCulture) + "|" +
+            currentKey + "|" +
+            targetKey + "|" +
+            targetDataLocal.Ticks.ToString(CultureInfo.InvariantCulture);
+        if (string.Equals(this.lastClockAutoSwitchSignature, signature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        this.lastClockAutoSwitchSignature = signature;
+        try
+        {
+            WidgetSettings settings = WidgetSettings.Load();
+            settings.ClaudeRadarModelKey = WidgetSettings.NormalizeClaudeRadarModelKey(targetKey);
+            settings.Save();
+            ApplyRuntimeSettings(settings);
+            ShowClaudeNotification(
+                "Claude Radar 时钟自动切换",
+                "模型切换到 " + targetKey + "。",
+                ToolTipIcon.Info);
+            Program.LogInfo("Claude Radar clock auto-switched model. From=" + currentKey + ", To=" + targetKey + ", PreviousBoundary=" + previousBoundary.ToString("o", CultureInfo.InvariantCulture));
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+        }
+    }
+
+    private static bool TryFindClaudeClockAutoSwitchTarget(
+        ClaudeRadarSnapshot local,
+        string currentKey,
+        DateTime minimumDataLocal,
+        out string targetKey,
+        out DateTime targetDataLocal)
+    {
+        targetKey = string.Empty;
+        targetDataLocal = DateTime.MinValue;
+        if (local == null || local.ModelMetrics == null)
+        {
+            return false;
+        }
+
+        string normalizedCurrent = WidgetSettings.NormalizeClaudeRadarModelKey(currentKey);
+        for (int i = 0; i < local.ModelMetrics.Count; i++)
+        {
+            ClaudeRadarModelMetric metric = local.ModelMetrics[i];
+            if (metric == null || !metric.LatestAtKnown || metric.LatestAtUtc == DateTime.MinValue)
+            {
+                continue;
+            }
+
+            string key = WidgetSettings.NormalizeClaudeRadarModelKey(metric.SourceKey);
+            DateTime latestLocal = metric.LatestAtUtc.ToLocalTime();
+            if (key.Length == 0 ||
+                string.Equals(key, normalizedCurrent, StringComparison.OrdinalIgnoreCase) ||
+                latestLocal < minimumDataLocal)
+            {
+                continue;
+            }
+
+            if (latestLocal > targetDataLocal)
+            {
+                targetKey = key;
+                targetDataLocal = latestLocal;
+            }
+        }
+
+        return targetKey.Length > 0;
     }
 
     private static bool TryBeginSingleFlight(ref bool running)
@@ -766,6 +865,47 @@ internal sealed class ClaudeRadarForm : Form
     {
         DrawBackground(g);
         DrawContentLayer(g);
+    }
+
+    protected override void DrawWindowContent(Graphics g)
+    {
+        DrawWindow(g);
+    }
+
+    protected override bool IsLayeredBurnInColorProtectionActive()
+    {
+        return IsBurnInColorProtectionActive();
+    }
+
+    protected override bool CanRenderLayeredWindow()
+    {
+        return !this.displaySuspended;
+    }
+
+    protected override bool TryDrawCachedWindowContent(Graphics g, bool burnInColorProtectionActive)
+    {
+        string sceneCacheKey = BuildRenderSceneCacheKey(burnInColorProtectionActive);
+        Bitmap cachedScene;
+        if (this.renderSceneBitmapCache.TryGetValue(sceneCacheKey, out cachedScene) &&
+            cachedScene != null &&
+            cachedScene.Width == this.Width &&
+            cachedScene.Height == this.Height)
+        {
+            g.DrawImageUnscaled(cachedScene, 0, 0);
+            return true;
+        }
+
+        return false;
+    }
+
+    protected override void OnLayeredBitmapPrepared(Bitmap bitmap, bool burnInColorProtectionActive)
+    {
+        StoreRenderSceneCache(BuildRenderSceneCacheKey(burnInColorProtectionActive));
+    }
+
+    protected override void DisposeAdditionalRenderBuffers()
+    {
+        DisposeSceneCache();
     }
 
     private void DrawBackground(Graphics g)
@@ -1054,7 +1194,7 @@ internal sealed class ClaudeRadarForm : Form
             GetClaudeModelSingleEfficiencyLabelAndColor(ClampEfficiencyPercent(efficiency), timeEfficiency, out labelText, out labelColor);
         }
 
-        Font labelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.scale), FontStyle.Bold);
+        Font labelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold);
         using (SolidBrush labelBrush = new SolidBrush(labelColor))
         {
             DrawClaudeRadarFittedText(g, labelText, labelFont, labelBrush, textRect, StringAlignment.Center);
@@ -1133,7 +1273,7 @@ internal sealed class ClaudeRadarForm : Form
             g.DrawString(numberText, numberFont, numberBrush, ringRect, center);
         }
 
-        Font labelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.scale), FontStyle.Bold);
+        Font labelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold);
         using (SolidBrush labelBrush = new SolidBrush(displayColor))
         {
             DrawClaudeRadarFittedText(g, string.IsNullOrWhiteSpace(resetText) ? "N/A" : resetText.Trim(), labelFont, labelBrush, textRect, StringAlignment.Center);
@@ -1212,7 +1352,7 @@ internal sealed class ClaudeRadarForm : Form
             }
         }
 
-        Font labelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.scale), FontStyle.Bold);
+        Font labelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold);
         using (SolidBrush labelBrush = new SolidBrush(labelColor))
         {
             DrawClaudeRadarFittedText(g, labelText, labelFont, labelBrush, textRect, StringAlignment.Center);
@@ -1268,19 +1408,21 @@ internal sealed class ClaudeRadarForm : Form
     private void DrawClaudeEvenRowServiceLedColumn(Graphics g, RectangleF rect, ClaudeRadarSnapshot local)
     {
         string[] labels = new string[] { "R", "C", "U" };
+        string[] prefixes = new string[] { "radar", "claude", "usage" };
         ClaudeRadarServiceState[] states = new ClaudeRadarServiceState[]
         {
             local == null ? ClaudeRadarServiceState.Unknown : local.DataState,
             local == null ? ClaudeRadarServiceState.Unknown : local.ClaudeStatusState,
             local == null ? ClaudeRadarServiceState.Unknown : local.ClaudeCodeState
         };
+        List<ClaudeServiceAlertCandidate> candidates = GetClaudeApiServiceAlertCandidates(local);
 
         float rowHeight = rect.Height / labels.Length;
         float dotDiameter = S(5);
-        Font letterFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.scale), FontStyle.Bold);
+        Font letterFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.LayerScale), FontStyle.Bold);
         for (int i = 0; i < labels.Length; i++)
         {
-            Color ledColor;
+            Color ledColor = DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245);
             if (states[i] == ClaudeRadarServiceState.Normal)
             {
                 ledColor = DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245);
@@ -1289,9 +1431,17 @@ internal sealed class ClaudeRadarForm : Form
             {
                 ledColor = DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
             }
-            else
+
+            for (int c = 0; candidates != null && c < candidates.Count; c++)
             {
-                ledColor = GetClaudeServiceAlertColor(states[i]);
+                string key = candidates[c].Key ?? string.Empty;
+                if (!key.StartsWith(prefixes[i], StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                ledColor = candidates[c].Color;
+                break;
             }
 
             if (local != null && local.RequestRunning && (this.renderTickCount & 1) == 0)
@@ -1318,8 +1468,9 @@ internal sealed class ClaudeRadarForm : Form
         }
     }
 
-    // 24h batch dial - mirrors DrawEvenRowBatchDial in CodexRadarForm.EvenRow.cs. Claude tests run
-    // once a day -> 24h cycle for the four-level freshness color.
+    // Claude IQ clock: one 24h clockwise circle per day. The green dot marks the latest selected
+    // model update that is still inside the 24h retention window, and the visible arc connects
+    // that point to "now"; the top tick is only the day-boundary marker.
     private void DrawClaudeEvenRowBatchDial(Graphics g, RectangleF rect, ClaudeRadarSnapshot local)
     {
         string updateText;
@@ -1327,22 +1478,21 @@ internal sealed class ClaudeRadarForm : Form
         GetClaudeModelIqUpdateStatusText(local, out updateText, out legacyUpdateColor);
 
         DateTime nowLocal = DateTime.Now;
+        double cycleHours = 24.0;
+        DateTime cycleBoundaryLocal = GetClaudeEvenRowDialCycleBoundaryLocal(nowLocal, cycleHours);
         DateTime batchTime = GetClaudeLatestMetricLocalTime(local);
         bool batchKnown = batchTime != DateTime.MinValue;
         DateTime localTime = local != null ? local.CheckedAtLocal : DateTime.MinValue;
         bool localKnown = localTime != DateTime.MinValue;
-        Color updateColor = ComputeClaudeEvenRowDialStatusColor(batchKnown, batchTime, localKnown, localTime, 24.0, nowLocal);
+        bool overdue = IsClaudeEvenRowDialOverdue(batchKnown, batchTime, cycleHours, nowLocal);
+        Color updateColor = ComputeClaudeEvenRowDialStatusColor(batchKnown, batchTime, localKnown, localTime, cycleHours, nowLocal);
         if (local != null && local.RequestRunning && (this.renderTickCount & 1) == 0)
         {
             updateColor = DesignTokens.WithAlpha(updateColor, 104);
         }
 
-        string timeText = updateText;
-        int slashIndex = updateText.LastIndexOf('/');
-        if (slashIndex >= 0 && slashIndex < updateText.Length - 1)
-        {
-            timeText = updateText.Substring(slashIndex + 1);
-        }
+        string timeText = GetClaudeEvenRowDialTimeText(local, nowLocal);
+        string modeText = GetClaudeEvenRowDialModeLabel();
 
         string dataLabelText = GetClaudeModelIqDataLabelDisplayText(local);
         string heroMain;
@@ -1353,9 +1503,6 @@ internal sealed class ClaudeRadarForm : Form
         bool secondRun;
         string suffixTimeText;
         ParseClaudeEvenRowBatchSuffix(heroSuffix, out phaseKnown, out night, out secondRun, out suffixTimeText);
-
-        float batchHour;
-        bool batchHourKnown = TryGetClaudeEvenRowBatchHour(phaseKnown, night, suffixTimeText, out batchHour);
 
         float dialDiameter = Math.Min(rect.Width, rect.Height) - S(1);
         dialDiameter = Math.Max(S(20), dialDiameter);
@@ -1377,71 +1524,172 @@ internal sealed class ClaudeRadarForm : Form
             g.DrawArc(trackPen, arcRect, -90.0f, 360.0f);
         }
 
-        if (batchHourKnown)
+        float boundaryAngle = -90.0f;
+        double elapsedHours = (nowLocal - cycleBoundaryLocal).TotalHours;
+        if (elapsedHours < 0.0)
         {
-            float batchAngle = batchHour / 24.0f * 360.0f - 90.0f;
-            DateTime now = DateTime.Now;
-            float nowAngle = (float)((now.Hour + now.Minute / 60.0) / 24.0 * 360.0 - 90.0);
-            float sweep = nowAngle - batchAngle;
-            while (sweep < 0.0f)
+            elapsedHours = 0.0;
+        }
+
+        if (elapsedHours > cycleHours)
+        {
+            elapsedHours = cycleHours;
+        }
+
+        float elapsedSweep = (float)(elapsedHours / cycleHours * 360.0);
+        float currentAngle = boundaryAngle + elapsedSweep;
+        float refreshMarkerAngle;
+        bool refreshMarkerVisible = TryGetClaudeEvenRowClockMarkerAngle(
+            batchTime,
+            nowLocal,
+            cycleBoundaryLocal,
+            cycleHours,
+            out refreshMarkerAngle);
+        float arcStartAngle = refreshMarkerVisible ? refreshMarkerAngle : boundaryAngle;
+        float drawSweep = refreshMarkerVisible
+            ? ComputeClaudeEvenRowClockSweep(refreshMarkerAngle, currentAngle)
+            : (overdue ? elapsedSweep : 0.0f);
+        if (overdue)
+        {
+            using (Pen basePen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 220), stroke))
             {
-                sweep += 360.0f;
+                basePen.StartCap = LineCap.Round;
+                basePen.EndCap = LineCap.Round;
+                g.DrawArc(basePen, arcRect, boundaryAngle, 360.0f);
             }
 
-            if (sweep > 1.0f)
-            {
-                using (Pen arcPen = new Pen(updateColor, stroke))
-                {
-                    arcPen.StartCap = LineCap.Round;
-                    arcPen.EndCap = LineCap.Round;
-                    g.DrawArc(arcPen, arcRect, batchAngle, sweep);
-                }
-            }
+            drawSweep = Math.Max(2.0f, drawSweep);
+        }
 
-            double markerRadians = batchAngle * Math.PI / 180.0;
-            float radius = arcRect.Width / 2.0f;
-            float markerX = arcRect.Left + radius + (float)Math.Cos(markerRadians) * radius;
-            float markerY = arcRect.Top + radius + (float)Math.Sin(markerRadians) * radius;
-            float markerDiameter = Math.Max(3.0f, S(4));
-            using (SolidBrush markerBrush = new SolidBrush(DesignTokens.White(235)))
+        if (drawSweep > 1.0f)
+        {
+            using (Pen arcPen = new Pen(updateColor, stroke))
             {
-                g.FillEllipse(markerBrush, markerX - markerDiameter / 2.0f, markerY - markerDiameter / 2.0f, markerDiameter, markerDiameter);
-            }
-
-            if (secondRun)
-            {
-                Font badgeFont = this.fontCache.GetUi(Math.Max(6.5f, 7.0f * this.scale), FontStyle.Bold);
-                float badgeOffset = markerDiameter + S(2);
-                RectangleF badgeRect = new RectangleF(
-                    markerX - (float)Math.Cos(markerRadians) * badgeOffset - S(4),
-                    markerY - (float)Math.Sin(markerRadians) * badgeOffset - S(4),
-                    S(8),
-                    S(8));
-                using (SolidBrush badgeBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245)))
-                {
-                    DrawClaudeEvenRowStatusText(g, "2", badgeFont, badgeBrush, badgeRect);
-                }
+                arcPen.StartCap = LineCap.Round;
+                arcPen.EndCap = LineCap.Round;
+                g.DrawArc(arcPen, arcRect, arcStartAngle, drawSweep);
             }
         }
 
+        DrawClaudeEvenRowClockBoundaryTick(
+            g,
+            arcRect,
+            Math.Max(1.0f, stroke * 0.74f),
+            DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245));
+
+        if (refreshMarkerVisible)
+        {
+            DrawClaudeEvenRowClockDot(
+                g,
+                arcRect,
+                refreshMarkerAngle,
+                Math.Max(2.5f, S(3)),
+                DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245));
+        }
+
+        DrawClaudeEvenRowClockDot(
+            g,
+            arcRect,
+            currentAngle,
+            Math.Max(3.0f, S(4)),
+                DesignTokens.White(235));
+
+        double markerRadians = boundaryAngle * Math.PI / 180.0;
+        float radius = arcRect.Width / 2.0f;
+        float markerX = arcRect.Left + radius + (float)Math.Cos(markerRadians) * radius;
+        float markerY = arcRect.Top + radius + (float)Math.Sin(markerRadians) * radius;
+        float markerDiameter = Math.Max(3.0f, S(4));
+        if (secondRun)
+        {
+            Font badgeFont = this.fontCache.GetUi(Math.Max(6.5f, 7.0f * this.LayerScale), FontStyle.Bold);
+            float badgeOffset = markerDiameter + S(2);
+            RectangleF badgeRect = new RectangleF(
+                markerX - (float)Math.Cos(markerRadians) * badgeOffset - S(4),
+                markerY - (float)Math.Sin(markerRadians) * badgeOffset - S(4),
+                S(8),
+                S(8));
+            using (SolidBrush badgeBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245)))
+            {
+                DrawClaudeEvenRowStatusText(g, "2", badgeFont, badgeBrush, badgeRect);
+            }
+        }
+
+        // Keep the established date/time rectangles stable; the mode label gets its own narrow
+        // slot below them so adding UTC/LAST/REF/NOW does not shift existing elements.
         float innerWidth = dial.Width * 0.72f;
-        Font dayFont = this.fontCache.GetUi(Math.Max(9.0f, 11.5f * this.scale), FontStyle.Bold);
-        Font timeFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.scale), FontStyle.Bold);
+        Font dayFont = this.fontCache.GetUi(Math.Max(9.0f, 11.5f * this.LayerScale), FontStyle.Bold);
+        Font timeFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.LayerScale), FontStyle.Bold);
+        Font modeFont = this.fontCache.GetUi(Math.Max(5.0f, 5.4f * this.LayerScale), FontStyle.Bold);
         float centerX2 = dial.Left + dial.Width / 2.0f;
         float centerY2 = dial.Top + dial.Height / 2.0f;
         RectangleF dayRect = new RectangleF(centerX2 - innerWidth / 2.0f, centerY2 - S(11), innerWidth, S(11));
         RectangleF timeRect2 = new RectangleF(centerX2 - innerWidth / 2.0f, centerY2 + S(1), innerWidth, S(8));
+        RectangleF modeRect = new RectangleF(centerX2 - innerWidth / 2.0f, centerY2 + S(9), innerWidth, S(6));
         using (SolidBrush dayBrush = new SolidBrush(DesignTokens.White(235)))
         using (SolidBrush timeBrush = new SolidBrush(updateColor))
         {
             DrawClaudeRadarFittedText(g, FormatClaudeEvenRowDialDate(heroMain), dayFont, dayBrush, dayRect, StringAlignment.Center);
             DrawClaudeRadarFittedText(g, timeText, timeFont, timeBrush, timeRect2, StringAlignment.Center);
+            DrawClaudeRadarFittedText(g, modeText, modeFont, timeBrush, modeRect, StringAlignment.Center);
         }
     }
 
-    // Four-level dial freshness color - mirrors ComputeEvenRowDialStatusColor in
-    // CodexRadarForm.EvenRow.cs (green fresh / yellow site-stale / orange local-stale / red when
-    // either side wrapped a full cycle). Claude cycle = 24h.
+    private string GetClaudeEvenRowDialModeLabel()
+    {
+        RadarClockTimeDisplayMode mode = this.currentSettings == null
+            ? RadarClockTimeDisplayMode.Utc
+            : this.currentSettings.RadarClockTimeDisplayMode;
+        switch (mode)
+        {
+            case RadarClockTimeDisplayMode.CurrentLocal:
+                return "NOW";
+            case RadarClockTimeDisplayMode.LastAttemptRefresh:
+                return "LAST";
+            case RadarClockTimeDisplayMode.LastActualRefresh:
+                return "REF";
+            case RadarClockTimeDisplayMode.Utc:
+            default:
+                return "UTC";
+        }
+    }
+
+    private string GetClaudeEvenRowDialTimeText(
+        ClaudeRadarSnapshot local,
+        DateTime nowLocal)
+    {
+        RadarClockTimeDisplayMode mode = this.currentSettings == null
+            ? RadarClockTimeDisplayMode.Utc
+            : this.currentSettings.RadarClockTimeDisplayMode;
+        DateTime candidate;
+        switch (mode)
+        {
+            case RadarClockTimeDisplayMode.CurrentLocal:
+                return nowLocal.ToString("HH:mm", CultureInfo.CurrentCulture);
+            case RadarClockTimeDisplayMode.LastAttemptRefresh:
+                if (this.lastRadarAttemptLocal != DateTime.MinValue)
+                {
+                    return this.lastRadarAttemptLocal.ToString("HH:mm", CultureInfo.CurrentCulture);
+                }
+
+                if (local != null && local.CheckedAtLocal != DateTime.MinValue)
+                {
+                    return local.CheckedAtLocal.ToString("HH:mm", CultureInfo.CurrentCulture);
+                }
+
+                return "--:--";
+            case RadarClockTimeDisplayMode.LastActualRefresh:
+                candidate = GetClaudeLatestMetricLocalTime(local);
+                return candidate == DateTime.MinValue
+                    ? "--:--"
+                    : candidate.ToString("HH:mm", CultureInfo.CurrentCulture);
+            case RadarClockTimeDisplayMode.Utc:
+            default:
+                return DateTime.UtcNow.ToString("HH:mm", CultureInfo.InvariantCulture);
+        }
+    }
+
+    // Boundary-based freshness color. Local request time is not proof of IQ freshness; only the
+    // selected model's own latest_at can turn the clock green.
     private static Color ComputeClaudeEvenRowDialStatusColor(
         bool batchKnown,
         DateTime batchTime,
@@ -1455,29 +1703,136 @@ internal sealed class ClaudeRadarForm : Form
             return DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
         }
 
-        double batchAgeHours = batchKnown ? (now - batchTime).TotalHours : 0.0;
-        double localAgeHours = localKnown ? (now - localTime).TotalHours : 0.0;
-        bool siteStale = batchKnown && batchAgeHours > cycleHours;
-        bool siteWrapped = batchKnown && batchAgeHours > cycleHours * 2.0;
-        bool localStale = localKnown && localAgeHours > 2.0;
-        bool localWrapped = localKnown && localAgeHours > cycleHours;
-
-        if (siteWrapped || localWrapped)
+        DateTime boundary = GetClaudeEvenRowDialCycleBoundaryLocal(now, cycleHours);
+        DateTime previousBoundary = boundary.AddHours(-cycleHours);
+        if (batchTime >= boundary)
         {
-            return DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245);
+            return DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245);
         }
 
-        if (localStale)
-        {
-            return Color.FromArgb(245, 232, 128, 54);
-        }
-
-        if (siteStale)
+        if (batchTime >= previousBoundary)
         {
             return DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245);
         }
 
-        return DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245);
+        return DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245);
+    }
+
+    private static bool IsClaudeEvenRowDialOverdue(
+        bool batchKnown,
+        DateTime batchTime,
+        double cycleHours,
+        DateTime now)
+    {
+        if (!batchKnown)
+        {
+            return false;
+        }
+
+        DateTime boundary = GetClaudeEvenRowDialCycleBoundaryLocal(now, cycleHours);
+        DateTime previousBoundary = boundary.AddHours(-cycleHours);
+        return batchTime < previousBoundary;
+    }
+
+    private static DateTime GetClaudeEvenRowDialCycleBoundaryLocal(DateTime now, double cycleHours)
+    {
+        if (cycleHours >= 23.5)
+        {
+            return now.Date;
+        }
+
+        int cycle = Math.Max(1, (int)Math.Round(cycleHours));
+        int hour = (now.Hour / cycle) * cycle;
+        return now.Date.AddHours(hour);
+    }
+
+    private static bool TryGetClaudeEvenRowClockMarkerAngle(
+        DateTime markerTime,
+        DateTime now,
+        DateTime cycleBoundary,
+        double cycleHours,
+        out float angle)
+    {
+        angle = -90.0f;
+        if (markerTime == DateTime.MinValue || cycleHours <= 0.0)
+        {
+            return false;
+        }
+
+        double ageHours = (now - markerTime).TotalHours;
+        if (ageHours < 0.0 || ageHours >= cycleHours)
+        {
+            return false;
+        }
+
+        double elapsedHours = (markerTime - cycleBoundary).TotalHours;
+        while (elapsedHours < 0.0)
+        {
+            elapsedHours += cycleHours;
+        }
+
+        while (elapsedHours >= cycleHours)
+        {
+            elapsedHours -= cycleHours;
+        }
+
+        angle = -90.0f + (float)(elapsedHours / cycleHours * 360.0);
+        return true;
+    }
+
+    private static float ComputeClaudeEvenRowClockSweep(float startAngle, float endAngle)
+    {
+        float sweep = endAngle - startAngle;
+        while (sweep < 0.0f)
+        {
+            sweep += 360.0f;
+        }
+
+        while (sweep > 360.0f)
+        {
+            sweep -= 360.0f;
+        }
+
+        return sweep;
+    }
+
+    private static void DrawClaudeEvenRowClockDot(
+        Graphics g,
+        RectangleF arcRect,
+        float angle,
+        float diameter,
+        Color color)
+    {
+        double radians = angle * Math.PI / 180.0;
+        float radius = arcRect.Width / 2.0f;
+        float x = arcRect.Left + radius + (float)Math.Cos(radians) * radius;
+        float y = arcRect.Top + radius + (float)Math.Sin(radians) * radius;
+        using (SolidBrush brush = new SolidBrush(color))
+        {
+            g.FillEllipse(brush, x - diameter / 2.0f, y - diameter / 2.0f, diameter, diameter);
+        }
+    }
+
+    private static void DrawClaudeEvenRowClockBoundaryTick(
+        Graphics g,
+        RectangleF arcRect,
+        float stroke,
+        Color color)
+    {
+        if (arcRect.Width <= 0.0f || arcRect.Height <= 0.0f)
+        {
+            return;
+        }
+
+        float x = arcRect.Left + arcRect.Width / 2.0f;
+        float y = arcRect.Top;
+        float length = Math.Max(3.0f, arcRect.Height * 0.18f);
+        using (Pen pen = new Pen(color, stroke))
+        {
+            pen.StartCap = LineCap.Round;
+            pen.EndCap = LineCap.Round;
+            g.DrawLine(pen, x, y - length * 0.35f, x, y + length * 0.65f);
+        }
     }
 
     // "7.6" or "7/6" -> "7月6日" - mirrors FormatEvenRowDialDate in CodexRadarForm.EvenRow.cs.
@@ -1673,14 +2028,15 @@ internal sealed class ClaudeRadarForm : Form
             return result;
         }
 
-        AddClaudeServiceAlertCandidate(result, "Radar", local.DataState, FallbackText(local.ErrorMessage, local.ErrorCode));
-        AddClaudeServiceAlertCandidate(result, "Claude", local.ClaudeStatusState, string.Empty);
-        AddClaudeServiceAlertCandidate(result, "Usage", local.ClaudeCodeState, string.Empty);
-        return result;
+        AddClaudeServiceAlertCandidate(result, "radar", "Radar", local.DataState, FallbackText(local.ErrorMessage, local.ErrorCode));
+        AddClaudeServiceAlertCandidate(result, "claude", "Claude", local.ClaudeStatusState, string.Empty);
+        AddClaudeServiceAlertCandidate(result, "usage", "Usage", local.ClaudeCodeState, string.Empty);
+        return GetDebouncedClaudeServiceAlertCandidates(result);
     }
 
     private void AddClaudeServiceAlertCandidate(
         List<ClaudeServiceAlertCandidate> result,
+        string key,
         string name,
         ClaudeRadarServiceState state,
         string detail)
@@ -1691,9 +2047,179 @@ internal sealed class ClaudeRadarForm : Form
         }
 
         result.Add(new ClaudeServiceAlertCandidate(
+            key,
             name,
             string.IsNullOrWhiteSpace(detail) ? GetClaudeServiceAlertReason(state) : detail.Trim(),
-            GetClaudeServiceAlertColor(state)));
+            GetClaudeServiceAlertColor(state),
+            state));
+    }
+
+    private List<ClaudeServiceAlertCandidate> GetDebouncedClaudeServiceAlertCandidates(
+        List<ClaudeServiceAlertCandidate> candidates)
+    {
+        if (this.currentSettings == null || this.currentSettings.ClaudeRadarRandomTestEnabled)
+        {
+            lock (this.claudeApiServiceAlertDebounceLock)
+            {
+                this.claudeApiServiceAlertDebounceStates.Clear();
+            }
+
+            return CloneClaudeServiceAlertCandidates(candidates);
+        }
+
+        lock (this.claudeApiServiceAlertDebounceLock)
+        {
+            return ApplyClaudeServiceAlertDebounce(
+                this.claudeApiServiceAlertDebounceStates,
+                candidates,
+                DateTime.UtcNow,
+                TimeSpan.FromSeconds(ClaudeApiServiceAlertDebounceSeconds));
+        }
+    }
+
+    private static List<ClaudeServiceAlertCandidate> ApplyClaudeServiceAlertDebounce(
+        Dictionary<string, ClaudeServiceAlertDebounceState> states,
+        List<ClaudeServiceAlertCandidate> candidates,
+        DateTime nowUtc,
+        TimeSpan debounceWindow)
+    {
+        if (states == null)
+        {
+            return CloneClaudeServiceAlertCandidates(candidates);
+        }
+
+        List<ClaudeServiceAlertCandidate> source = candidates ?? new List<ClaudeServiceAlertCandidate>();
+        List<ClaudeServiceAlertCandidate> result = new List<ClaudeServiceAlertCandidate>();
+        HashSet<string> seenServiceKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (int i = 0; i < source.Count; i++)
+        {
+            ClaudeServiceAlertCandidate candidate = source[i];
+            if (candidate == null)
+            {
+                continue;
+            }
+
+            string serviceKey = GetClaudeServiceAlertKey(candidate.Key);
+            if (string.IsNullOrWhiteSpace(serviceKey))
+            {
+                result.Add(CloneClaudeServiceAlertCandidate(candidate));
+                continue;
+            }
+
+            seenServiceKeys.Add(serviceKey);
+            string signature = BuildClaudeServiceAlertSignature(candidate);
+            ClaudeServiceAlertDebounceState state;
+            if (!states.TryGetValue(serviceKey, out state) || state == null)
+            {
+                state = new ClaudeServiceAlertDebounceState();
+                states[serviceKey] = state;
+            }
+
+            if (!string.Equals(state.Signature, signature, StringComparison.Ordinal))
+            {
+                // A new error must survive the debounce window before it replaces the visible
+                // stable state. Recovery is handled by removing unseen service keys below.
+                state.Signature = signature;
+                state.FirstSeenUtc = nowUtc;
+                state.ActiveCandidate = null;
+            }
+
+            if (state.ActiveCandidate != null)
+            {
+                result.Add(CloneClaudeServiceAlertCandidate(state.ActiveCandidate));
+                continue;
+            }
+
+            if (nowUtc - state.FirstSeenUtc >= debounceWindow)
+            {
+                state.ActiveCandidate = CloneClaudeServiceAlertCandidate(candidate);
+                result.Add(CloneClaudeServiceAlertCandidate(candidate));
+            }
+        }
+
+        if (seenServiceKeys.Count == 0)
+        {
+            states.Clear();
+        }
+        else
+        {
+            List<string> staleKeys = new List<string>();
+            foreach (string key in states.Keys)
+            {
+                if (!seenServiceKeys.Contains(key))
+                {
+                    staleKeys.Add(key);
+                }
+            }
+
+            for (int i = 0; i < staleKeys.Count; i++)
+            {
+                states.Remove(staleKeys[i]);
+            }
+        }
+
+        return result;
+    }
+
+    private static string GetClaudeServiceAlertKey(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return string.Empty;
+        }
+
+        int separator = key.IndexOf(':');
+        return (separator >= 0 ? key.Substring(0, separator) : key).Trim().ToLowerInvariant();
+    }
+
+    private static string BuildClaudeServiceAlertSignature(ClaudeServiceAlertCandidate candidate)
+    {
+        if (candidate == null)
+        {
+            return string.Empty;
+        }
+
+        return string.Join(
+            "|",
+            candidate.Key ?? string.Empty,
+            candidate.Name ?? string.Empty,
+            candidate.Reason ?? string.Empty,
+            candidate.State.ToString(),
+            candidate.Color.ToArgb().ToString(CultureInfo.InvariantCulture));
+    }
+
+    private static List<ClaudeServiceAlertCandidate> CloneClaudeServiceAlertCandidates(
+        List<ClaudeServiceAlertCandidate> candidates)
+    {
+        List<ClaudeServiceAlertCandidate> clone = new List<ClaudeServiceAlertCandidate>();
+        if (candidates == null)
+        {
+            return clone;
+        }
+
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            clone.Add(CloneClaudeServiceAlertCandidate(candidates[i]));
+        }
+
+        return clone;
+    }
+
+    private static ClaudeServiceAlertCandidate CloneClaudeServiceAlertCandidate(
+        ClaudeServiceAlertCandidate candidate)
+    {
+        if (candidate == null)
+        {
+            return null;
+        }
+
+        return new ClaudeServiceAlertCandidate(
+            candidate.Key,
+            candidate.Name,
+            candidate.Reason,
+            candidate.Color,
+            candidate.State);
     }
 
     private static string GetClaudeServiceAlertReason(ClaudeRadarServiceState state)
@@ -1775,16 +2301,6 @@ internal sealed class ClaudeRadarForm : Form
         if (metric != null && metric.LatestAtKnown && metric.LatestAtUtc != DateTime.MinValue)
         {
             return metric.LatestAtUtc.ToLocalTime();
-        }
-
-        if (local != null && local.SiteUpdatedAtKnown && local.SiteUpdatedAtUtc != DateTime.MinValue)
-        {
-            return local.SiteUpdatedAtUtc.ToLocalTime();
-        }
-
-        if (local != null && local.CheckedAtLocal != DateTime.MinValue)
-        {
-            return local.CheckedAtLocal;
         }
 
         return DateTime.MinValue;
@@ -2260,9 +2776,9 @@ internal sealed class ClaudeRadarForm : Form
 
     private Font GetClaudeEvenRowBottomInfoSharedFont(Graphics g, string[] texts, float available)
     {
-        float baseSize = Math.Max(8.5f, 10.5f * this.scale * 1.56f);
-        float minSize = Math.Max(4.5f, 4.5f * this.scale);
-        float step = Math.Max(0.3f, 0.3f * this.scale);
+        float baseSize = Math.Max(8.5f, 10.5f * this.LayerScale * 1.56f);
+        float minSize = Math.Max(4.5f, 4.5f * this.LayerScale);
+        float step = Math.Max(0.3f, 0.3f * this.LayerScale);
         return GetClaudeEvenRowSharedFont(g, texts, null, baseSize, minSize, step, available);
     }
 
@@ -2365,15 +2881,29 @@ internal sealed class ClaudeRadarForm : Form
     private sealed class ClaudeServiceAlertCandidate
     {
         public ClaudeServiceAlertCandidate(string name, string reason, Color color)
+            : this(name, name, reason, color, ClaudeRadarServiceState.Unknown)
         {
+        }
+
+        public ClaudeServiceAlertCandidate(
+            string key,
+            string name,
+            string reason,
+            Color color,
+            ClaudeRadarServiceState state)
+        {
+            this.Key = key ?? string.Empty;
             this.Name = name ?? string.Empty;
             this.Reason = reason ?? string.Empty;
             this.Color = color;
+            this.State = state;
         }
 
+        public string Key { get; private set; }
         public string Name { get; private set; }
         public string Reason { get; private set; }
         public Color Color { get; private set; }
+        public ClaudeRadarServiceState State { get; private set; }
     }
 
     private void DrawStatusPanel(Graphics g, RectangleF rect, ClaudeRadarSnapshot local, ClaudeRadarModelMetric metric)
@@ -2825,113 +3355,6 @@ internal sealed class ClaudeRadarForm : Form
         }
     }
 
-    private void RenderLayeredWindow()
-    {
-        RenderLayeredWindow(true);
-    }
-
-    private void RenderLayeredWindow(bool redrawContent)
-    {
-        if (!this.IsHandleCreated || this.Width <= 0 || this.Height <= 0 || this.displaySuspended)
-        {
-            return;
-        }
-
-        try
-        {
-            EnsureRenderBuffer();
-            bool burnInColorProtectionActive = IsBurnInColorProtectionActive();
-            bool refreshNativeBitmap =
-                redrawContent ||
-                !this.renderBufferValid ||
-                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive;
-            if (refreshNativeBitmap)
-            {
-                string sceneCacheKey = BuildRenderSceneCacheKey(burnInColorProtectionActive);
-                Bitmap cachedScene;
-                if (this.renderSceneBitmapCache.TryGetValue(sceneCacheKey, out cachedScene) &&
-                    cachedScene != null &&
-                    cachedScene.Width == this.Width &&
-                    cachedScene.Height == this.Height)
-                {
-                    this.renderGraphics.Clear(Color.Transparent);
-                    this.renderGraphics.DrawImageUnscaled(cachedScene, 0, 0);
-                }
-                else
-                {
-                    this.renderGraphics.Clear(Color.Transparent);
-                    DrawWindow(this.renderGraphics);
-                    if (burnInColorProtectionActive)
-                    {
-                        BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
-                    }
-
-                    StoreRenderSceneCache(sceneCacheKey);
-                }
-
-                this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
-                this.renderBufferValid = true;
-            }
-
-            if (!this.layeredSurface.Update(
-                this.Handle,
-                this.Location,
-                this.renderBitmap,
-                GetApplicationOpacityAlpha(),
-                refreshNativeBitmap))
-            {
-                if (!this.layeredUpdateFailureLogged)
-                {
-                    this.layeredUpdateFailureLogged = true;
-                    Program.LogInfo("ClaudeRadar UpdateLayeredWindow failed; falling back to normal paint.");
-                }
-
-                this.Invalidate();
-            }
-        }
-        catch (Exception ex)
-        {
-            if (!this.layeredUpdateFailureLogged)
-            {
-                this.layeredUpdateFailureLogged = true;
-                Program.LogException(ex);
-            }
-        }
-    }
-
-    private void EnsureRenderBuffer()
-    {
-        if (this.renderBitmap != null &&
-            this.renderGraphics != null &&
-            this.renderBitmap.Width == this.Width &&
-            this.renderBitmap.Height == this.Height)
-        {
-            return;
-        }
-
-        DisposeRenderBuffer();
-        this.renderBitmap = new Bitmap(this.Width, this.Height, PixelFormat.Format32bppPArgb);
-        this.renderGraphics = Graphics.FromImage(this.renderBitmap);
-        this.renderBufferValid = false;
-    }
-
-    private void DisposeRenderBuffer()
-    {
-        if (this.renderGraphics != null)
-        {
-            this.renderGraphics.Dispose();
-            this.renderGraphics = null;
-        }
-
-        if (this.renderBitmap != null)
-        {
-            this.renderBitmap.Dispose();
-            this.renderBitmap = null;
-        }
-
-        this.renderBufferValid = false;
-    }
-
     private void DisposeSceneCache()
     {
         foreach (Bitmap bitmap in this.renderSceneBitmapCache.Values)
@@ -2948,7 +3371,7 @@ internal sealed class ClaudeRadarForm : Form
 
     private void StoreRenderSceneCache(string cacheKey)
     {
-        if (string.IsNullOrEmpty(cacheKey) || this.renderBitmap == null)
+        if (string.IsNullOrEmpty(cacheKey) || this.LayeredRenderBitmap == null)
         {
             return;
         }
@@ -2961,11 +3384,11 @@ internal sealed class ClaudeRadarForm : Form
                 old.Dispose();
             }
 
-            this.renderSceneBitmapCache[cacheKey] = (Bitmap)this.renderBitmap.Clone();
+            this.renderSceneBitmapCache[cacheKey] = (Bitmap)this.LayeredRenderBitmap.Clone();
             return;
         }
 
-        this.renderSceneBitmapCache[cacheKey] = (Bitmap)this.renderBitmap.Clone();
+        this.renderSceneBitmapCache[cacheKey] = (Bitmap)this.LayeredRenderBitmap.Clone();
         this.renderSceneBitmapCacheOrder.Enqueue(cacheKey);
         while (this.renderSceneBitmapCache.Count > MaxSceneCacheEntries && this.renderSceneBitmapCacheOrder.Count > 0)
         {
@@ -3003,6 +3426,9 @@ internal sealed class ClaudeRadarForm : Form
                 GetBackgroundOpacityAlpha().ToString(CultureInfo.InvariantCulture),
                 GetContentOpacityAlpha().ToString(CultureInfo.InvariantCulture),
                 burnInColorProtectionActive ? "burn1" : "burn0",
+                this.currentSettings.RadarClockTimeDisplayMode.ToString(),
+                DateTime.Now.ToString("yyyyMMddHHmm", CultureInfo.InvariantCulture),
+                this.lastRadarAttemptLocal == DateTime.MinValue ? "0" : this.lastRadarAttemptLocal.Ticks.ToString(CultureInfo.InvariantCulture),
                 presence.AnySupportedAppRunning ? "run1" : "run0",
                 local.RequestRunning ? "req1" : "req0",
                 (this.renderTickCount % 4).ToString(CultureInfo.InvariantCulture),
@@ -3017,6 +3443,7 @@ internal sealed class ClaudeRadarForm : Form
                 metric.IqScore.ToString(CultureInfo.InvariantCulture),
                 metric.TokenEfficiencyPercent.ToString(CultureInfo.InvariantCulture),
                 metric.TimeEfficiencyPercent.ToString(CultureInfo.InvariantCulture),
+                metric.LatestAtKnown ? metric.LatestAtUtc.Ticks.ToString(CultureInfo.InvariantCulture) : "0",
                 metric.StatusText ?? string.Empty,
                 quota.Known ? "q1" : "q0",
                 quota.FiveHourPercent.ToString(CultureInfo.InvariantCulture),
@@ -3056,7 +3483,7 @@ internal sealed class ClaudeRadarForm : Form
         return Math.Max(0, Math.Min(255, alpha));
     }
 
-    private byte GetApplicationOpacityAlpha()
+    protected override byte GetApplicationOpacityAlpha()
     {
         return 255;
     }
@@ -3066,34 +3493,10 @@ internal sealed class ClaudeRadarForm : Form
         BurnInProtection.ConfigureGraphics(g, IsBurnInColorProtectionActive());
     }
 
-    private int S(float value)
-    {
-        return Math.Max(1, (int)Math.Round(value * this.scale));
-    }
-
     private static RectangleF Inflate(RectangleF rect, float amount)
     {
         rect.Inflate(amount, amount);
         return rect;
-    }
-
-    private static GraphicsPath RoundedRectangle(RectangleF rect, float radius)
-    {
-        float d = Math.Max(0.0f, radius * 2.0f);
-        GraphicsPath path = new GraphicsPath();
-        if (d <= 0.0f)
-        {
-            path.AddRectangle(rect);
-            path.CloseFigure();
-            return path;
-        }
-
-        path.AddArc(rect.Left, rect.Top, d, d, 180, 90);
-        path.AddArc(rect.Right - d, rect.Top, d, d, 270, 90);
-        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
-        path.AddArc(rect.Left, rect.Bottom - d, d, d, 90, 90);
-        path.CloseFigure();
-        return path;
     }
 
     private static string FormatLocalTime(DateTime local)
@@ -3122,7 +3525,7 @@ internal sealed class ClaudeRadarForm : Form
             // physical pixel size (see GetDesiredSize() - no separate DPI multiplication happens at
             // runtime), so the canvas must match them 1:1 or overflow/truncation that only appears at
             // the true width goes unnoticed (see CodexRadarForm.RenderSample.cs for the same fix).
-            form.scale = 2.0f;
+            form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.ClaudeRadarWidth, settings.ClaudeRadarHeight);
             ClaudeRadarSnapshot normal = BuildAcceptanceSnapshot("normal", 42);
@@ -3153,6 +3556,8 @@ internal sealed class ClaudeRadarForm : Form
         RunNotificationStateSelfTest();
         RunRefreshStateSelfTest();
         RunBottomLabelSelfTest();
+        RunClaudeEvenRowDialFreshnessSelfTest();
+        RunClaudeServiceAlertDebounceSelfTest();
 
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.ClaudeRadarEnabled = true;
@@ -3163,7 +3568,7 @@ internal sealed class ClaudeRadarForm : Form
 
         using (ClaudeRadarForm form = new ClaudeRadarForm(settings))
         {
-            form.scale = 1.0f;
+            form.SetLayerScale(1.0f);
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.ClaudeRadarWidth, settings.ClaudeRadarHeight);
 
@@ -3196,8 +3601,8 @@ internal sealed class ClaudeRadarForm : Form
             for (int i = 0; i < MaxSceneCacheEntries + 3; i++)
             {
                 form.snapshot = BuildAcceptanceSnapshot(scenarios[i % scenarios.Length], 300 + i);
-                form.renderGraphics.Clear(Color.Transparent);
-                form.DrawWindow(form.renderGraphics);
+                form.LayeredRenderGraphics.Clear(Color.Transparent);
+                form.DrawWindow(form.LayeredRenderGraphics);
                 form.StoreRenderSceneCache("self-test-" + i.ToString(CultureInfo.InvariantCulture));
             }
 
@@ -3207,7 +3612,7 @@ internal sealed class ClaudeRadarForm : Form
             }
 
             form.DisposeSceneCache();
-            form.renderBufferValid = false;
+            form.InvalidateLayeredRenderBuffer();
             int drawCount = 0;
             int cacheHitCount = 0;
             for (int i = 0; i < 120; i++)
@@ -3218,19 +3623,19 @@ internal sealed class ClaudeRadarForm : Form
                 form.snapshot.CheckedAtLocal = form.snapshot.CheckedAtUtc.ToLocalTime();
                 string cacheKey = form.BuildRenderSceneCacheKey(false);
                 Bitmap cached;
-                form.renderGraphics.Clear(Color.Transparent);
+                form.LayeredRenderGraphics.Clear(Color.Transparent);
                 if (form.renderSceneBitmapCache.TryGetValue(cacheKey, out cached) &&
                     cached != null &&
                     cached.Width == form.Width &&
                     cached.Height == form.Height)
                 {
                     cacheHitCount++;
-                    form.renderGraphics.DrawImageUnscaled(cached, 0, 0);
+                    form.LayeredRenderGraphics.DrawImageUnscaled(cached, 0, 0);
                 }
                 else
                 {
                     drawCount++;
-                    form.DrawWindow(form.renderGraphics);
+                    form.DrawWindow(form.LayeredRenderGraphics);
                     form.StoreRenderSceneCache(cacheKey);
                 }
             }
@@ -3256,10 +3661,61 @@ internal sealed class ClaudeRadarForm : Form
             }
 
             form.DisposeRenderBuffer();
-            if (form.renderBitmap != null || form.renderGraphics != null || form.renderBufferValid)
+            if (form.LayeredRenderBitmap != null ||
+                form.LayeredRenderGraphics != null ||
+                form.IsLayeredRenderBufferValid)
             {
                 throw new InvalidOperationException("Claude Radar render buffer dispose did not clear all state.");
             }
+        }
+    }
+
+    private static void RunClaudeEvenRowDialFreshnessSelfTest()
+    {
+        DateTime now = new DateTime(2026, 7, 7, 13, 30, 0);
+        AssertClaudeRadarColor(
+            ComputeClaudeEvenRowDialStatusColor(true, new DateTime(2026, 7, 7, 0, 0, 0), false, DateTime.MinValue, 24.0, now),
+            DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245),
+            "Claude 24h current day should be green");
+        AssertClaudeRadarColor(
+            ComputeClaudeEvenRowDialStatusColor(true, new DateTime(2026, 7, 6, 0, 0, 0), false, DateTime.MinValue, 24.0, now),
+            DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245),
+            "Claude 24h previous day should be yellow");
+        AssertClaudeRadarColor(
+            ComputeClaudeEvenRowDialStatusColor(true, new DateTime(2026, 7, 5, 0, 0, 0), false, DateTime.MinValue, 24.0, now),
+            DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245),
+            "Claude 24h missed full day should be red");
+
+        float markerAngle;
+        DateTime boundary = GetClaudeEvenRowDialCycleBoundaryLocal(now, 24.0);
+        if (!TryGetClaudeEvenRowClockMarkerAngle(new DateTime(2026, 7, 7, 1, 0, 0), now, boundary, 24.0, out markerAngle) ||
+            Math.Abs(markerAngle - (-75.0f)) > 0.01f)
+        {
+            throw new InvalidOperationException("Claude 24h refresh marker angle should advance clockwise from midnight.");
+        }
+
+        if (!TryGetClaudeEvenRowClockMarkerAngle(now.AddHours(-23.9), now, boundary, 24.0, out markerAngle))
+        {
+            throw new InvalidOperationException("Claude 24h refresh marker should remain before one full lap.");
+        }
+
+        float currentAngle = -90.0f + (float)((now - boundary).TotalHours / 24.0 * 360.0);
+        if (Math.Abs(ComputeClaudeEvenRowClockSweep(markerAngle, currentAngle) - 358.5f) > 0.01f)
+        {
+            throw new InvalidOperationException("Claude 24h clock arc should connect the previous refresh marker to the current pointer.");
+        }
+
+        if (TryGetClaudeEvenRowClockMarkerAngle(now.AddHours(-24.0), now, boundary, 24.0, out markerAngle))
+        {
+            throw new InvalidOperationException("Claude 24h refresh marker should expire at one full lap.");
+        }
+    }
+
+    private static void AssertClaudeRadarColor(Color actual, Color expected, string message)
+    {
+        if (actual.ToArgb() != expected.ToArgb())
+        {
+            throw new InvalidOperationException(message);
         }
     }
 
@@ -3343,6 +3799,50 @@ internal sealed class ClaudeRadarForm : Form
         AssertClaudeRadarSelfTest(TryBeginSingleFlight(ref running), "single-flight did not restart after completion");
     }
 
+    private static void RunClaudeServiceAlertDebounceSelfTest()
+    {
+        Dictionary<string, ClaudeServiceAlertDebounceState> states =
+            new Dictionary<string, ClaudeServiceAlertDebounceState>(StringComparer.OrdinalIgnoreCase);
+        DateTime start = new DateTime(2026, 7, 7, 0, 0, 0, DateTimeKind.Utc);
+        List<ClaudeServiceAlertCandidate> raw = new List<ClaudeServiceAlertCandidate>
+        {
+            new ClaudeServiceAlertCandidate(
+                "radar",
+                "Radar",
+                "连接失败",
+                DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245),
+                ClaudeRadarServiceState.Unreachable)
+        };
+
+        AssertClaudeRadarSelfTest(
+            ApplyClaudeServiceAlertDebounce(states, raw, start, TimeSpan.FromSeconds(ClaudeApiServiceAlertDebounceSeconds)).Count == 0,
+            "Claude service alert debounce surfaced a new error immediately");
+        AssertClaudeRadarSelfTest(
+            ApplyClaudeServiceAlertDebounce(
+                states,
+                raw,
+                start.AddSeconds(ClaudeApiServiceAlertDebounceSeconds - 1),
+                TimeSpan.FromSeconds(ClaudeApiServiceAlertDebounceSeconds)).Count == 0,
+            "Claude service alert debounce surfaced an error before the debounce window");
+
+        List<ClaudeServiceAlertCandidate> stable = ApplyClaudeServiceAlertDebounce(
+            states,
+            raw,
+            start.AddSeconds(ClaudeApiServiceAlertDebounceSeconds),
+            TimeSpan.FromSeconds(ClaudeApiServiceAlertDebounceSeconds));
+        AssertClaudeRadarSelfTest(
+            stable.Count == 1 && string.Equals(stable[0].Key, "radar", StringComparison.OrdinalIgnoreCase),
+            "Claude service alert debounce did not surface a stable error");
+
+        AssertClaudeRadarSelfTest(
+            ApplyClaudeServiceAlertDebounce(
+                states,
+                new List<ClaudeServiceAlertCandidate>(),
+                start.AddSeconds(ClaudeApiServiceAlertDebounceSeconds + 1),
+                TimeSpan.FromSeconds(ClaudeApiServiceAlertDebounceSeconds)).Count == 0 && states.Count == 0,
+            "Claude service alert debounce did not clear immediately after recovery");
+    }
+
     private static void RunBottomLabelSelfTest()
     {
         AssertClaudeRadarSelfTest(
@@ -3372,7 +3872,7 @@ internal sealed class ClaudeRadarForm : Form
         WidgetSettings settings = WidgetSettings.Load();
         using (ClaudeRadarForm form = new ClaudeRadarForm(settings))
         {
-            form.scale = 2.0f;
+            form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.ClaudeRadarWidth, settings.ClaudeRadarHeight);
             if (form.snapshot == null)
@@ -3444,8 +3944,6 @@ internal sealed class ClaudeRadarForm : Form
         ClaudeRadarSnapshot snapshot = ClaudeRadarReader.BuildRandomTestSnapshot(seed);
         snapshot.TestMode = false;
         snapshot.Known = true;
-        snapshot.CheckedAtUtc = DateTime.UtcNow;
-        snapshot.CheckedAtLocal = DateTime.Now;
         snapshot.SelectedModelKey = "opus48_high";
         snapshot.SelectedModelName = "Opus 4.8 high";
         snapshot.SelectedModel.SourceKey = snapshot.SelectedModelKey;
@@ -3473,7 +3971,7 @@ internal sealed class ClaudeRadarForm : Form
             snapshot.TestMode = true;
             snapshot.SelectedModelKey = "test";
             snapshot.SelectedModelName = "Claude Test";
-            return snapshot;
+            return CompleteAcceptanceSnapshot(snapshot, seed);
         }
 
         if (string.Equals(normalized, "missing-data", StringComparison.Ordinal))
@@ -3489,7 +3987,7 @@ internal sealed class ClaudeRadarForm : Form
             snapshot.Quota = ClaudeRadarQuotaSnapshot.CreateDefault();
             snapshot.QuotaLine = ClaudeRadarQuotaLineSnapshot.CreateDefault();
             snapshot.Community = ClaudeRadarCommunitySnapshot.CreateDefault();
-            return snapshot;
+            return CompleteAcceptanceSnapshot(snapshot, seed);
         }
 
         if (string.Equals(normalized, "warning", StringComparison.Ordinal))
@@ -3513,7 +4011,7 @@ internal sealed class ClaudeRadarForm : Form
             snapshot.QuotaLine.AverageValue = 1720;
             snapshot.QuotaLine.AverageKnown = true;
             snapshot.QuotaLine.Known = true;
-            return snapshot;
+            return CompleteAcceptanceSnapshot(snapshot, seed);
         }
 
         if (string.Equals(normalized, "error", StringComparison.Ordinal))
@@ -3531,7 +4029,7 @@ internal sealed class ClaudeRadarForm : Form
             snapshot.Quota = ClaudeRadarQuotaSnapshot.CreateDefault();
             snapshot.QuotaLine = ClaudeRadarQuotaLineSnapshot.CreateDefault();
             snapshot.Community = ClaudeRadarCommunitySnapshot.CreateDefault();
-            return snapshot;
+            return CompleteAcceptanceSnapshot(snapshot, seed);
         }
 
         if (string.Equals(normalized, "offline", StringComparison.Ordinal))
@@ -3547,7 +4045,7 @@ internal sealed class ClaudeRadarForm : Form
             snapshot.Quota = ClaudeRadarQuotaSnapshot.CreateDefault();
             snapshot.QuotaLine = ClaudeRadarQuotaLineSnapshot.CreateDefault();
             snapshot.Community = ClaudeRadarCommunitySnapshot.CreateDefault();
-            return snapshot;
+            return CompleteAcceptanceSnapshot(snapshot, seed);
         }
 
         snapshot.SelectedModel.IqScore = 111;
@@ -3569,6 +4067,35 @@ internal sealed class ClaudeRadarForm : Form
         snapshot.QuotaLine.AverageValue = 1735;
         snapshot.QuotaLine.AverageKnown = true;
         snapshot.QuotaLine.Known = true;
+        return CompleteAcceptanceSnapshot(snapshot, seed);
+    }
+
+    private static ClaudeRadarSnapshot CompleteAcceptanceSnapshot(ClaudeRadarSnapshot snapshot, int seed)
+    {
+        if (snapshot == null)
+        {
+            return ClaudeRadarSnapshot.CreateDefault();
+        }
+
+        DateTime fixedUtc = new DateTime(2026, 7, 5, 0, 0, 0, DateTimeKind.Utc)
+            .AddMinutes(Math.Abs(seed % 1440));
+        snapshot.CheckedAtUtc = fixedUtc;
+        snapshot.CheckedAtLocal = fixedUtc.ToLocalTime();
+        snapshot.ModelMetrics = new List<ClaudeRadarModelMetric>();
+        if (snapshot.SelectedModel != null && snapshot.SelectedModel.Known)
+        {
+            snapshot.SelectedModel.SourceKey = string.IsNullOrWhiteSpace(snapshot.SelectedModel.SourceKey)
+                ? snapshot.SelectedModelKey
+                : snapshot.SelectedModel.SourceKey;
+            snapshot.SelectedModel.Name = string.IsNullOrWhiteSpace(snapshot.SelectedModel.Name)
+                ? snapshot.SelectedModelName
+                : snapshot.SelectedModel.Name;
+            snapshot.SelectedModel.LatestAtUtc = fixedUtc;
+            snapshot.SelectedModel.LatestAtKnown = true;
+            snapshot.SelectedModel.LatestLabel = fixedUtc.ToLocalTime().ToString("M/d HH:mm", CultureInfo.CurrentCulture);
+            snapshot.ModelMetrics.Add(snapshot.SelectedModel.Clone());
+        }
+
         return snapshot;
     }
 

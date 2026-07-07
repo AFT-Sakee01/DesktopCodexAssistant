@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：1.0.4.18
+适用版本：1.0.4.27
 
 本文集中记录 Desktop Codex Assistant 各组件的刷新、轮询、手动刷新、网络事件、单飞任务和暂停恢复规则。修改定时器、刷新 token、网络事件、后台任务节流、测试模式或显示恢复逻辑时，应同步更新本文。
 
@@ -80,30 +80,32 @@ DNS 检测：
 | 项目 | 规则 |
 | --- | --- |
 | UI 调度 | 使用普通面板调度 500/1000/3000 ms，并贴近秒边界；网站请求完成后可立即绘制。 |
-| 随机整窗测试 | 测试开启时暂停真实网站、Claude 和额度轮询；手动 token 立即重建，自动刷新最多 1 s 一次。五阶段连接流程当前停用，不参与真实轮询。 |
+| 随机整窗测试 | 测试开启时暂停真实网站、Claude 和额度轮询；手动 token 立即重建，自动刷新最多 1 s 一次。旧五阶段连接流程已删除，不参与真实轮询。 |
 | 检测软件 Auto | `CodexRadarSoftwareMode=Auto` 先读取共享 `SoftwareRuntimePresence` 快照；固定 Codex/Claude、两者都未运行或只有一者运行时不查询前台窗口。只有 Codex 与 Claude 都运行时，才按前台窗口标题/进程名识别 `codex` 或 `claude`；识别不到或命中本程序时保持上一次有效软件。有效软件或模型切换前会把当前 Radar 快照、额度快照、额度来源和 Radar 服务健康态写入内存缓存；切换后优先恢复目标软件同模型的内存缓存，其次读磁盘缓存，仍缺失时保留上一帧内容，直到新网站/额度数据成功返回，避免切换瞬间出现空态或错误态闪烁。`--test` 通过 `RunSoftwareModeGateSelfTest` 覆盖固定模式、无进程、单进程、双进程前台检测失败和 selected-provider 额度刷新门控。 |
 | 运行态快照 | `SoftwareRuntimePresence` 只按明确可执行名查询 Codex/Claude 进程，性能/均衡/省电刷新间隔为 3/5/10 s；绘制路径只读最近快照，不做进程枚举或前台窗口查询。 |
 | 额度进程检查 | Codex 额度路径复用共享运行态快照。两者都未运行时跳过个人额度 provider 和本地 session 额度读取，保留最近快照；启动、恢复、网络变化、手动刷新、软件切换或测试模式恢复只通过统一 selected-provider gate 排队当前有效且正在运行的软件，不再同时 prime Codex provider 与 Claude Code usage。 |
 | Claude Radar 运行态 | 独立 Claude Radar 窗口只在构造、设置应用、手动刷新和性能模式定时器中刷新共享运行态快照；额度数字绘制只读本地缓存快照，已知数值在 Codex/Claude 任一程序运行时为白色，无数值或两者都未运行时才灰显。公共 Claude Radar 网站数据不按本地进程状态门控。 |
-| Claude Radar 场景缓存 | 独立 Claude Radar 窗口最多缓存 6 张预渲染 scene bitmap，key 包含窗口尺寸、渲染变体、透明度、防烧屏、运行态、请求状态、动画/状态轮换相位、模型、底部 `RC` rating key/label、余额、IQ、效率、服务状态和额度线签名；尺寸变化、显示挂起和关闭时释放。底部栏绘制只消费 `ClaudeRadarSnapshot` 已解析字段，禁止在 paint 路径读取 `claude-radar-model-map.ini` 或其它磁盘文件。Claude 家族底部简称使用前两位家族前缀和 Codex 同类档位规则，例如 `Opus 4.8 high` -> `Op4.8H`、`Fable 5 max` -> `Fa5MAX`、`Sonnet 5 ultra` -> `So5Ult`。`--test-layout` 会验证状态矩阵渲染非空、scene cache 超限裁剪、释放清空，以及 120 次高频切换中 6 个 warmed scenes 后续全部命中缓存；`--test-radar-display-lifecycle` 会在禁用远程源的情况下反复运行 Codex/Claude Radar display suspend/resume 并检查 handle/GDI/USER 增量；`--render-clauderadar` 会输出 normal、missing-data、warning、error、offline、test-randomized 及对应 2880x1800 桌面图。 |
+| Claude Radar 场景缓存 | 独立 Claude Radar 窗口最多缓存 6 张预渲染 scene bitmap，key 包含窗口尺寸、渲染变体、透明度、防烧屏、运行态、请求状态、动画/状态轮换相位、模型、模型 `latest_at`、底部 `RC` rating key/label、余额、IQ、效率、服务状态和额度线签名；尺寸变化、显示挂起和关闭时释放。底部栏绘制只消费 `ClaudeRadarSnapshot` 已解析字段，禁止在 paint 路径读取 `claude-radar-model-map.ini` 或其它磁盘文件。Claude 家族底部简称使用前两位家族前缀和 Codex 同类档位规则，例如 `Opus 4.8 high` -> `Op4.8H`、`Fable 5 max` -> `Fa5MAX`、`Sonnet 5 ultra` -> `So5Ult`。`--test-layout` 会验证状态矩阵渲染非空、scene cache 超限裁剪、释放清空，以及 120 次高频切换中 6 个 warmed scenes 后续全部命中缓存；`--test-radar-display-lifecycle` 会在禁用远程源的情况下反复运行 Codex/Claude Radar display suspend/resume 并检查 handle/GDI/USER 增量；`--render-clauderadar` 会输出 normal、missing-data、warning、error、offline、test-randomized 及对应 2880x1800 桌面图。 |
+| Claude Radar 额度线 | 独立窗口额度线读取 `data/claude-code-radar.json` 的 `quota.chart.trend`，兼容 `d7` / `total_7d` 等 7d 图表 key；无图表时退回 `quota.base_d7_trend`，再退回 `claude-radar-quota-history.jsonl` 最近 7 天，最后才用单点当前值。`quota.base_d7` 缺失时从 `quota.metrics` 的 d7/total_7d 行取当前值并按 metric/update/run 签名写历史。`claude-radar-cache.ini` 保存 `QuotaLineKnown/Current/Previous/Min/Max/Average/Metric/SourceMode`，启动和失败合并不清空额度线；paint 路径只消费已解析快照。`--test` 覆盖当前站点 `quota.metrics + chart.key=total_7d` 形状和缓存 round-trip。 |
 | Claude Radar 首页 metadata fallback | 独立窗口优先读取 `data/claude-code-radar.json`；首页 metadata fallback 受 `ClaudeRadarHomepageFallbackEnabled` 门控，关闭时不得读取首页 HTML，也不得因为 JSON 失败或 metadata 不完整而探测首页。开启时只在主 JSON 请求失败、`iq.models` 缺失、模型名缺失或模型名等于 key/key-only 时，才顺序读取首页 HTML 并解析 `MODEL_NAMES` 作为弱 metadata fallback；JSON 已足够时不得预读首页。首页 fallback 只补 source key/display name 等弱 metadata，不伪造 IQ、效率、额度、reset、服务健康或社区评分；homepage-only 目录是弱目录，不参与 `MissingSuccessCount` 或连续缺失计数，不会把未在首页出现的旧模型标记为 temporarily_missing/deleted，也不得触发模型删除。 |
-| Claude Radar 服务健康 | 独立窗口右侧 `R/C/U` 方块分别表示 Claude Radar data/homepage、Claude 官方 Statuspage summary、Claude Code usage。`C` 不再代表社区评分；社区评分只影响体感分数据。官方 Claude 状态只在 Claude Radar 窗口真实网站刷新路径中顺序读取 `https://status.claude.com/api/v2/summary.json`，不探测 Codex/OpenAI/ChatGPT。状态颜色和叉号语义为：正常绿色无叉、离线灰色无叉、元素缺失灰叉、服务响应但不可用黄叉、DNS/TLS/超时/连接失败红叉。 |
+| Claude Radar 服务健康 | 独立窗口右侧 `R/C/U` 方块分别表示 Claude Radar data/homepage、Claude 官方 Statuspage summary、Claude Code usage。`C` 不再代表社区评分；社区评分只影响体感分数据。官方 Claude 状态只在 Claude Radar 窗口真实网站刷新路径中顺序读取 `https://status.claude.com/api/v2/summary.json`，不探测 Codex/OpenAI/ChatGPT。状态颜色和叉号语义为：正常绿色无叉、离线灰色无叉、元素缺失灰叉、服务响应但不可用黄叉、DNS/TLS/超时/连接失败红叉。右侧服务点和 API 摘要共用 `ApplyClaudeServiceAlertDebounce`，新错误需连续存在 10 s 才显示，恢复正常立即清除；随机测试模式旁路防抖。 |
 | Claude Radar 模型目录安全 | 只有 `ok=true` 且 `iq.models` 数组完整、每项都有唯一 key、可解析模型数等于原始模型项数时，才把本次响应视为完整目录并推进 `MissingSuccessCount`/temporarily_missing/deleted。非空但部分损坏的 JSON、`ok=false`、schema 缺失和 homepage-only 弱目录都只更新已见项，不证明旧模型消失。`--test` 通过 reader 失败 fixture 覆盖 HTTP 失败、超时、离线、DISABLED 和 unsupported/unavailable 状态映射。 |
 | Claude Radar 模型目录 | 成功读取 JSON 后更新 `claude-radar-model-map.ini`；首次建表不弹通知，之后新增、暂缺、恢复和连续缺失删除按 `claude-radar-notification-state.ini` 去重后通过托盘通知。设置页的模型选择使用五列按钮网格，空槽显示禁用 `--`，`自动` 映射为空 key，pending/temporarily_missing/deleted/disabled 模型只显示但不可选；“编辑映射”只修改 display_name、rating_key、sort_order 和 enabled。`source_key` 与社区评分 `rating_key` 是两个外部命名空间，新模型或缺失 `rating_key` 的启用项保持 pending，不能按显示名自动合并成 active；旧缓存中 `active` 但缺失 `rating_key` 的行也必须在保存和设置选择器中降级为不可选。`--test-layout` 通过内存状态覆盖通知首次触发、同状态不重复、重启状态不重复、删除和删除后再新增。 |
-| Claude Radar 个人余额 | 独立窗口在启用、可见、未挂起、非随机测试且本地 Claude 进程运行时主动读取 Claude Code usage；成功后写入 `claude-quota.ini` 并立即更新 5h/7d 额度环。启动或网站缓存加载时会叠加最新 `claude-quota.ini`；个人缓存必须同时含 5h 和 7d 百分比才有效，没有个人缓存时才使用带 `QuotaSource=site` 标记的站点公开 quota usage 作为显示 fallback。`claude-radar-cache.ini` 同时保存 `SelectedModelKey/Name` 与 `CommunityKnown/RatingKey/Label/Average`，用于启动和失败合并时稳定回显底部 `RC/LLM`；`RC` 来源为 `model-ratings` 中 `average` 最高的一条，平分时取 `count` 更大的条目。`claude-radar-quota-history.jsonl` 写入按 metric/update/run 全量去重，读取时跳过单行坏 JSON 不阻断后续好行，裁剪只保留有效新行。Reader 存储隔离自测使用临时目录证明随机测试快照不写缓存/模型表/额度/历史，Claude 写入不修改 Codex 哨兵缓存，并校验社区评分元数据可 round-trip。 |
-| Codex provider 用量 | 只由 selected-provider gate 在当前检测软件为 `CODEX` 且 Codex 本地程序运行时读取 `chatgpt.com/backend-api/wham/usage`；正常 5 min，普通失败 10 min，HTTP 429 冷却 15 min，单飞。凭据只读取 `CODEX_ACCESS_TOKEN` 或 `%USERPROFILE%\.codex\auth.json` / `CODEX_HOME\auth.json`，不写回、不刷新本地认证文件。AI 请求保护手动阻断或自动模式命中 GFW 明确阻断时，本轮不读取 token、不发起 HTTP，结果按 `AI_BLOCK` 失败间隔处理。 |
+| Claude Radar 个人余额 | 独立窗口在启用、可见、未挂起、非随机测试且本地 Claude 进程运行时主动读取 Claude Code usage；成功后写入 `claude-quota.ini` 并立即更新 5h/7d 额度环。启动或网站缓存加载时会叠加最新 `claude-quota.ini`；个人缓存必须同时含 5h 和 7d 百分比才有效，没有个人缓存时才使用带 `QuotaSource=site` 标记的站点公开 quota usage 作为显示 fallback。`claude-radar-cache.ini` 同时保存 `SelectedModelKey/Name`、选中模型 `LatestAtUtc`、`CommunityKnown/RatingKey/Label/Average` 与 `QuotaLine*`，用于启动、失败合并、IQ 时钟稳定回显和额度线保留；`RC` 来源为 `model-ratings` 中 `average` 最高的一条，平分时取 `count` 更大的条目。`claude-radar-quota-history.jsonl` 写入按 metric/update/run 全量去重，读取时跳过单行坏 JSON 不阻断后续好行，裁剪只保留有效新行。Reader 存储隔离自测使用临时目录证明随机测试快照不写缓存/模型表/额度/历史，Claude 写入不修改 Codex 哨兵缓存，并校验社区评分元数据与额度线可 round-trip。 |
+| Codex provider 用量 | 只由 selected-provider gate 在当前检测软件为 `CODEX` 且 Codex 本地程序运行时读取 `chatgpt.com/backend-api/wham/usage`；正常 5 min，普通失败 10 min，HTTP 429 冷却 15 min，单飞。凭据只读取 `CODEX_ACCESS_TOKEN` 或 `%USERPROFILE%\.codex\auth.json` / `CODEX_HOME\auth.json`，不写回、不刷新本地认证文件。`used_percent`/`used_percentage` 按百分数解释，`utilization` 的 0–1 值才按比例换算；若单次 provider 样本把 5 小时或周余额从高位直接降为 0 且 reset 时间没有实质推进，则丢弃该快照并继续保留上一帧和缓存。AI 请求保护手动阻断或自动模式命中 GFW 明确阻断时，本轮不读取 token、不发起 HTTP，结果按 `AI_BLOCK` 失败间隔处理。 |
 | 活跃额度 fallback | Codex 正在运行且 provider 无新鲜快照时，10/15/30 s 刷新本地 session 额度。 |
 | 非活跃额度 fallback | 旧的 Codex 不运行低频 session 读取只作为回滚边界保留；当前活动调度在 Codex 未运行、Claude 运行但未选中 Codex、或两者都停时不读取本地 session 额度。reset 到期显示依赖已缓存快照和保护逻辑，不启动额外 session 扫描。 |
 | Claude Code 用量 | Codex Radar 共享过渡窗口只由 selected-provider gate 在当前检测软件为 `CLAUDE` 且 Claude 本地程序运行时读取；独立 Claude Radar 作为固定 Claude family 窗口，有自己的窗口级单飞和 5/10/15 min 退避，但同样要求 Claude 本地程序运行、窗口可见且非随机测试。默认读取链路不发 Claude API 请求：先读 `%LOCALAPPDATA%\DesktopCodexAssistant\claude-statusline-quota.ini`，有效且不超过 360 min 时写入隔离的 `claude-quota.ini` 并刷新 5h/7d 环；没有缓存时尝试安装 `%USERPROFILE%\.claude\desktop-codex-statusline-bridge.ps1` 和 Claude Code `statusLine` 命令，等待 Claude Code 下一次真实 statusline 渲染写入缓存。若用户已有自定义 statusline，程序不覆盖并返回 `STATUSLINE_CUSTOM`，继续使用公开站点 fallback 或旧缓存。保留的 `ReadViaSetupToken` 仅作为非默认回滚路径，里面仍有 `claude setup-token` OAuth usage 与 Messages header 解析，但当前调度不调用，避免为了检测额度额外消耗 Claude token。 |
 | 会话文件 | `%USERPROFILE%\.codex\sessions` watcher 只置失效标记，真实读取仍走额度刷新路径。 |
-| 余额判定日志 | 跟随真实额度读取完成后写一条 `quota-decision-history.jsonl`，记录余额、消耗尾段、基线和原因；不在绘制、动画或测试随机刷新路径写入；日志 15 s/32 KiB 批量落盘，约 48 h 滚动保留。 |
-| CodexRadar 网站 | 启动、恢复、模型切换、数据源设置变化和手动刷新仍触发一次错峰请求；常规自动刷新在北京时间每小时整点执行一次，网站未出新批次不再加密轮询；失败、超时或不可用 10 min 重试；读取链路按设置在公开 `current.json`、首页 HTML 回退和 RSS 回退之间分层执行；公开 JSON 成功但缺少首页额度雷达、网页短数据标签或 IQ 常态区时，也会读取首页 HTML 补齐展示字段，补齐失败不覆盖已成功的 JSON 数据。 |
-| 模型切换 | 优先加载对应模型缓存，并安排约 1 s 后请求；模型目录由成功 `model_iq` 响应或首页 HTML 模型目录更新；网页短数据标签和 IQ 常态区随同一次请求链路补齐。 |
-| CodexRadar 服务检测 | 设置页“检测服务可用性”按钮触发一次性探测公开摘要、授权 API、首页 HTML 和 RSS，结果写入本地诊断文件并追加网络检查历史；不建立额外轮询。旧竖向 Rader/Claude/ChatGPT 健康面板当前隐藏，但 Rader 状态仍随网站刷新更新，用于当前 `EvenRow` 单行 API 摘要。 |
-| Claude 状态 | 用于当前 `EvenRow` 单行 API 摘要；正常 15 min，非正常或失败 2 min 重试，单飞。AI 请求保护命中时不请求 `status.claude.com`，按不可用状态进入异常重试。旧竖向三行面板仍隐藏，不占布局宽度。 |
-| 五阶段连接 | 当前停用。`CodexConnectionFlowEnabled=false` 后，timer、网络变化、显示恢复和操作面板强制刷新都不会启动网络/DNS/隧道/OpenAI/本地 Codex 五段诊断；旧绘制和诊断代码仅作为回滚路径保留。若未来恢复，ChatGPT/OpenAI 阶段必须先走 AI 请求保护守卫。 |
+| 余额判定日志 | 跟随真实额度读取完成后写一条 `quota-decision-history.jsonl`，记录余额、消耗尾段、基线、来源类型、上游 used 字段原值/归一化值和原因；可疑 provider 零值被丢弃时也写一条原因日志。不在绘制、动画或测试随机刷新路径写入；日志 15 s/32 KiB 批量落盘，约 48 h 滚动保留。 |
+| CodexRadar 网站 | 启动、恢复、模型切换、数据源设置变化和手动刷新仍触发一次错峰请求；常规自动刷新在北京时间每小时整点执行一次，网站未出新批次不再加密轮询；失败、超时或不可用 10 min 重试；读取链路按设置在公开 `current.json`、首页 HTML 回退和 RSS 回退之间分层执行；公开 JSON 成功但缺少首页额度雷达、网页短数据标签、IQ 常态区或 IQ 图表显示上限时，也会读取首页 HTML 补齐展示字段，补齐失败不覆盖已成功的 JSON 数据。IQ 显示上限从同一次 `model_iq` 全模型分数或首页 `IQ指数` 历史值提取，不建立额外轮询。 |
+| Model IQ 时钟 | EvenRow 时钟只用模型 IQ 数据窗口或 Claude 模型 `latest_at` 判断新鲜度，不用本地抓取时间冒充数据更新。变黄边界按本机系统时间计算，不按北京时间：Codex 为 12 h 一圈，系统 0:00 和 12:00 边界开始等待当前半日批次；Claude 为 24 h 一圈，系统每天 0:00 开始等待当天模型 IQ。当前时间白点从顶部边界顺时针前进；12 点钟方向固定绘制绿色竖线；小绿点表示上次记录到新 IQ 内容的位置，Codex 保留 12 h、Claude 保留 24 h，当前指针下一圈到达该位置后不再显示。小绿点仍有效时，圆弧从小绿点顺时针连接到当前白点；小绿点过期后不再用旧刷新点绘制连接弧。Codex 抓到同一批旧 IQ 内容时保留旧 `RefreshedUtc`，避免每小时同内容请求移动绿点。时钟中心下方时间由 `RadarClockTimeDisplayMode` 控制，默认 UTC，可切到当前本机时间、上次尝试刷新时间或上次实际 IQ 刷新时间；时间下方同色显示 `UTC`、`NOW`、`LAST` 或 `REF` 短标签，不改变既有日期/时间位置；渲染缓存包含当前分钟签名，避免绿点到期后继续使用旧 bitmap。当前周期数据到达后变绿；只有上一个完整周期仍无数据时才在黄色满环上叠红色。`RadarClockAutoSwitchModelEnabled` 默认开启：过期且当前模型未达上一个周期边界时，Codex 从 7 天模型缓存里找最近达到边界的模型，Claude 从本次 `iq.models` 指标列表里找最近达到边界的模型并写入对应模型 key；没有候选时只变红，不重复写设置。 |
+| 模型切换 | 优先加载对应模型缓存，并安排约 1 s 后请求；模型目录由成功 `model_iq` 响应或首页 HTML 模型目录更新；网页短数据标签、IQ 常态区和 IQ 显示上限随同一次请求链路补齐。 |
+| CodexRadar 服务检测 | 设置页“检测服务可用性”按钮触发一次性探测公开摘要、授权 API、首页 HTML 和 RSS，结果写入本地诊断文件并追加网络检查历史；不建立额外轮询。旧竖向 Rader/Claude/ChatGPT 健康面板已删除，Rader 状态仍随网站刷新更新，用于当前 `EvenRow` API 摘要和 `R/O/C/D` LED 列。API/LED 非检测中错误经过 10 s 防抖，同一服务错误连续存在满窗口才显示；恢复为正常时立即清除。 |
+| Claude 状态 | 用于当前 `EvenRow` 单行 API 摘要；正常 15 min，非正常或失败 2 min 重试，单飞。AI 请求保护命中时不请求 `status.claude.com`，按不可用状态进入异常重试。旧竖向三行面板已删除，不占布局宽度。 |
+| 五阶段连接 | 已删除。timer、网络变化、显示恢复和操作面板强制刷新都不会启动网络/DNS/隧道/OpenAI/本地 Codex 五段诊断；当前代码不再包含旧绘制、快照、调度和 ChatGPT/OpenAI 探测回滚路径。 |
 | DeepSeek 余额 | 读取 `https://api.deepseek.com/user/balance`；正常 60 s，失败 5 min；网络变化和操作面板强制刷新会立即请求。API key 只从 `DEEPSEEK_API_KEY` 环境变量或 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-api-key.txt` 读取，不写入设置或日志。成功余额样本写入 `deepseek-balance-history.jsonl`，保留 48 h，用于估算 24 h 消耗。当前底部 DS 元信息不按余额、24 h 消耗或高低峰改变颜色；文案追加按北京时间 `09:00-12:00`、`14:00-18:00` 判定的 `高峰`，其余为 `低谷`。 |
-| 网络事件 | `NetworkChange` 标记服务网络失效并请求 DeepSeek 余额；个人额度只按当前有效且正在运行的软件排队 Codex provider 或 Claude Code 用量刷新，不再同时触碰两套 provider。下一次 Codex Radar UI 调度刷新单行 API 摘要需要的 Rader/Claude/OpenAI 兜底状态。五阶段连接流程停用时不因网络事件启动五段探测。 |
+| 网络事件 | `NetworkChange` 标记服务网络失效并请求 DeepSeek 余额；个人额度只按当前有效且正在运行的软件排队 Codex provider 或 Claude Code 用量刷新，不再同时触碰两套 provider。下一次 Codex Radar UI 调度刷新单行 API 摘要需要的 Rader/Claude/OpenAI 兜底状态；旧五阶段连接流程已删除，不因网络事件启动五段探测。 |
 | 挂起/锁屏 | 显示器关闭、会话锁定或系统挂起时停止 Codex 轮询；恢复后网站/服务请求错峰启动，个人额度只经 selected-provider gate 排队当前有效且正在运行的软件 provider，不让两套额度请求同时到期。 |
 
 ## 5. 功耗与温度
@@ -161,16 +163,16 @@ GFW：
 - 正常官方 API 缓存 30 min，普通 HTTPS 正常缓存 15 min，异常/慢响应缓存 2 min，无法连接缓存 45 s，未知缓存 30 s。
 - 状态变化需 30 s 滞后确认，避免网络抖动造成频繁日志和 UI 变色。
 - 本地链路劣化时，DNS/TCP/TLS/超时等链路敏感的非全数失败会从红色无法连接降为黄色本地丢包影响；官方故障或官方降级不降级。
-- 同一时间最多一个云服务探测任务；新强制刷新会取消旧请求。真实状态不是 `Online` 时停止/取消云服务探测并返回无告警 `Unknown` 方块，UI 标题右侧云服务报错栏隐藏。
+- 同一时间最多一个云服务探测任务；新强制刷新会取消旧请求。真实状态不是 `Online` 时停止/取消云服务探测并返回无告警 `Unknown` 方块，标题栏云服务告警槽隐藏云服务错误提示。
 - 云服务顺序固定为 `Cf Ak Gi Aw Az Go`；Akamai 使用 Statuspage v2 summary，Azure 使用公开 Azure Status RSS。地区设置变化会刷新 Cloudflare、Akamai、Azure、Google 这类带地区过滤的官方状态源。
 
 DNS 告警：
 
-- DNS 探测仍只由 DNS 行现有调度触发；Classic 布局的 DNS 告警覆盖层仅消费 `DnsServerDetails`，不发起额外探测，也不参与 IP6 行宽计算。
-- 当 DNS 全部正常或尚无可显示错误时，右对齐覆盖层显示绿色 `DNS正常`。
+- DNS 探测仍只由 DNS 行现有调度触发；Classic 布局的 DNS 告警仅消费 `DnsServerDetails`，不发起额外探测，并与云服务错误共用标题栏告警槽，不再绘制独立右下角覆盖层。
+- 当 DNS 全部正常或尚无可显示错误时，不占用标题栏告警槽。
 - DNS 行保留网卡返回的 DNS 优先级顺序，错误状态只改变颜色，不把报错项提前。
-- 当 DNS 为 `Problem`、`Hijacked` 或 `Unavailable` 时，按 DNS 行从左到右的原始优先级顺序随网络窗口绘制节拍轮换具体提示，异常提示不显示 `DNS1` / `DNS2` 编号。提示示例包括 `DNS污染`、`DNS仅TCP`、`DNS返回SERVFAIL`、`DNS无地址`、`DNSNX验证失败`、`DNS地址无效` 等，颜色复用 DNS 行状态色。
-- 如果多个 DNS 的异常提示文字和状态完全相同，右侧告警会追加紧凑 DNS 地址后缀，例如 `DNS仅TCP@1.1.1.1`，使轮换在视觉上可区分；该后缀仅用于屏幕显示，不写入网络检测日志。
+- 当 DNS 为 `Problem`、`Hijacked` 或 `Unavailable` 时，按 DNS 行从左到右的原始优先级顺序追加到标题栏告警队列；显示顺序为 `DNS!`、具体原因 `!`，异常提示不显示 `DNS1` / `DNS2` 编号。原因示例包括 `污染`、`仅TCP`、`返回SERVFAIL`、`无地址`、`NX验证失败`、`地址无效` 等，颜色复用 DNS 行状态色。
+- 如果多个 DNS 的异常提示文字和状态完全相同，标题栏告警会追加紧凑 DNS 地址后缀，例如 `仅TCP@1.1.1.1!`，使轮换在视觉上可区分；该后缀仅用于屏幕显示，不写入网络检测日志。
 
 ## 7. CleanIP 连接检测
 

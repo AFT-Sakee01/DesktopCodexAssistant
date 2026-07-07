@@ -1,6 +1,6 @@
 # Claude Radar Architecture
 
-适用版本：1.0.4.18
+适用版本：1.0.4.27
 
 This document records the current standalone Claude Radar window implementation. It is intentionally separate from the Codex Radar architecture because the two windows must not share cache files, model catalogs, or provider queues.
 
@@ -22,6 +22,8 @@ This document records the current standalone Claude Radar window implementation.
 | Claude Code statusline bridge | `ClaudeCodeUsageReader.Read` | Personal 5h/7d quota rings from Claude Code's own statusline JSON stream. This default path performs no Claude API/model request and spends no extra Claude tokens. | `claude-statusline-quota.ini` -> `claude-quota.ini` |
 
 Public Claude Radar website data is not gated by local Codex/Claude process presence. Personal Claude Code usage is gated by the standalone window being enabled, visible, not suspended, not in random test mode, and the local Claude process being present.
+
+Claude Radar quota line data comes from the public `quota` block. The reader prefers `quota.chart.trend` for the 7d quota trend, accepts the current site `chart.key` values such as `d7` and `total_7d`, then falls back to `base_d7_trend`. When the site has only a single usable point, the reader uses the local `claude-radar-quota-history.jsonl` 7-day values; the current `base_d7` or `quota.metrics` d7 value is recorded with a metric/update/run signature so refreshes do not duplicate the same calibration run.
 
 Claude Code personal quota now defaults to a passive statusline bridge. `ClaudeCodeUsageReader.Read` installs `%USERPROFILE%/.claude/desktop-codex-statusline-bridge.ps1` and a Claude Code `statusLine` command only when no custom statusline exists, then reads `%LOCALAPPDATA%/DesktopCodexAssistant/claude-statusline-quota.ini`. Claude Code writes that cache when it already renders its own statusline during real user activity. If a custom statusline command exists, the program does not overwrite it; the user can merge the bridge manually or continue with public-site fallback data. The older `claude setup-token` path remains in `ClaudeCodeUsageReader.ReadViaSetupToken` as a non-default retained fallback, but the app no longer calls it automatically because its Messages-header fallback can spend a small amount of Claude quota.
 
@@ -48,12 +50,15 @@ The settings page renders the selectable model list as a generated five-column b
 - Right-side three-line service/data/update status panel.
 - Bottom `RC` / `LLM` / software-family metadata row.
 - Orange 3 px software-family inner border.
+- Model IQ clock uses a 24-hour clockwise dial: the white dot is the current-time pointer, a small green vertical tick marks the 12 o'clock/day-boundary position, and the smaller green dot marks the selected model `latest_at` for up to 24 hours, disappearing after the next full lap reaches that position. While the green dot is valid, the visible arc connects that refresh dot clockwise to the current white dot; after expiry the old refresh dot is not reused as an arc origin. `RadarClockTimeDisplayMode` controls the center lower time for both Codex and Claude Radar; the default is UTC, with current local time, last attempt refresh, and last actual IQ refresh as alternatives. `1.0.4.27` also draws the matching short label `UTC`/`NOW`/`LAST`/`REF` below that time in the same status color without moving the existing date or time rectangles.
 
 The visual contract is intentionally shared where possible, but the data contract is not. The standalone Claude window paints only `ClaudeRadarSnapshot` state produced by `ClaudeRadarReader` and `ClaudeCodeUsageReader`; it must not read Codex Radar snapshots, Codex quota caches, Codex public website results, DeepSeek balance state, or Codex provider queues.
 
 The render path reads only cloned snapshot state and cached runtime presence state. It must not perform network I/O, disk I/O, process enumeration, or parser refresh while painting. The bottom `RC/LLM/Claude` band derives its text from `ClaudeRadarSnapshot.SelectedModel*` and `ClaudeRadarSnapshot.Community`; it must not reload `claude-radar-model-map.ini` during paint. `RC` displays the highest `average` row from the website community ratings payload, using `count` as the tie-breaker, while `LLM` displays the selected model. Claude-family short labels use the first two family letters plus version and tier, for example `Op4.8H`, `Fa5MAX`, and `So5Ult`.
 
-The scene cache stores at most six pre-rendered bitmaps. The cache key includes window size, render variant, opacity, burn-in color protection, runtime presence, request/test state, animation/status rotation phase, model/IQ/efficiency/quota/service signatures, bottom community rating key/label, and the quota radar line signature. Size changes, display suspend, and form close release the cache.
+The right-side `R/C/U` service LED column and API summary use the same `ApplyClaudeServiceAlertDebounce` candidates. A new non-normal service error must remain present for 10 seconds before it changes the text or LED color; recovery to normal removes the candidate immediately. Random test mode bypasses the debounce state so generated fixtures remain deterministic.
+
+The scene cache stores at most six pre-rendered bitmaps. The cache key includes window size, render variant, opacity, burn-in color protection, clock time display mode/current minute/last attempt time, runtime presence, request/test state, animation/status rotation phase, model/IQ/efficiency/quota/service signatures, bottom community rating key/label, and the quota radar line signature. Size changes, display suspend, and form close release the cache. `claude-radar-cache.ini` also persists the parsed `QuotaLine*` values so startup or public-data failures keep the last quota line instead of falling back to an empty gray bar.
 
 ## Refresh Rules
 
@@ -68,7 +73,7 @@ The scene cache stores at most six pre-rendered bitmaps. The cache key includes 
 
 - `--test` covers reader parsing, service status mapping, partial catalog deletion guards, failure-state fixtures, storage isolation, quota-history duplicate/bad-line/trim behavior, Claude Code usage parsing, and selected-provider runtime gates.
 - `--test-settings-bindings` covers the Claude Radar settings controls and five-column model selector policy.
-- `--test-layout` covers general layout checks plus `ClaudeRadarForm.RunRenderResourceSelfTest`, including notification-state de-duplication, last-good failure merge, public-refresh single-flight, nonblank render states, scene-cache cap, and render-buffer/cache disposal.
+- `--test-layout` covers general layout checks plus `ClaudeRadarForm.RunRenderResourceSelfTest`, including notification-state de-duplication, last-good failure merge, public-refresh single-flight, Claude service alert debounce, nonblank render states, scene-cache cap, and render-buffer/cache disposal.
 - `--test-settings-open-close --iterations <n>` repeatedly opens and closes the Win11 settings window and asserts bounded handle/GDI/USER deltas.
 - `--test-radar-display-lifecycle --iterations <n>` creates Codex/Claude Radar handles with remote sources disabled, repeatedly runs display suspend/resume on both child windows, and asserts bounded handle/GDI/USER deltas.
 - `--render-clauderadar --out <dir>` writes deterministic normal, missing-data, warning, error, offline, and test-randomized fixture images plus matching 2880x1800 desktop screenshots, and a `clauderadar-current.png` real-configuration sample (see `Docs/Fable5-Frontend-Rendering-Technical.md` for sample-vs-current semantics).

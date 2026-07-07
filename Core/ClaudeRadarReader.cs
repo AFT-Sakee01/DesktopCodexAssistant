@@ -164,6 +164,7 @@ internal static class ClaudeRadarReader
                 ClaudeRadarModelMetric fallbackMetric = FindMetric(fallbackMetrics, fallbackSelectedKey);
                 snapshot.SelectedModelKey = fallbackSelectedKey;
                 snapshot.SelectedModelName = fallbackMetric == null ? string.Empty : fallbackMetric.Name;
+                snapshot.ModelMetrics = CloneModelMetrics(fallbackMetrics);
                 snapshot.SelectedModel = fallbackMetric == null ? ClaudeRadarModelMetric.CreateDefault() : fallbackMetric.Clone();
                 snapshot.DataState = ClaudeRadarServiceState.Incomplete;
                 snapshot.ErrorCode = string.IsNullOrWhiteSpace(dataErrorCode) ? "HOME_METADATA" : dataErrorCode;
@@ -220,6 +221,7 @@ internal static class ClaudeRadarReader
         List<ClaudeRadarModelEntry> entries = mapUpdate.Entries;
         snapshot.Models = entries;
         snapshot.ModelCatalogEvents = mapUpdate.Events;
+        snapshot.ModelMetrics = CloneModelMetrics(metrics);
         string normalizedSelectedKey = NormalizeSourceKey(selectedModelKey);
         if (normalizedSelectedKey.Length == 0 || !ContainsModel(metrics, normalizedSelectedKey))
         {
@@ -340,6 +342,7 @@ internal static class ClaudeRadarReader
             NormalHigh = 110
         };
         ApplyDerivedLabels(snapshot.SelectedModel);
+        snapshot.ModelMetrics.Add(snapshot.SelectedModel.Clone());
         snapshot.Quota = new ClaudeRadarQuotaSnapshot
         {
             Known = true,
@@ -431,9 +434,15 @@ internal static class ClaudeRadarReader
             snapshot.SelectedModel.TokenEfficiencyPercent = ReadIntValue(values, "TokenEfficiencyPercent", 100);
             snapshot.SelectedModel.TimeEfficiencyPercent = ReadIntValue(values, "TimeEfficiencyPercent", 100);
             snapshot.SelectedModel.LatestLabel = ReadIniValue(values, "LatestLabel");
+            snapshot.SelectedModel.LatestAtUtc = ReadDateValue(values, "LatestAtUtc");
+            snapshot.SelectedModel.LatestAtKnown = snapshot.SelectedModel.LatestAtUtc != DateTime.MinValue;
             snapshot.SelectedModel.NormalLow = ReadIntValue(values, "NormalLow", 90);
             snapshot.SelectedModel.NormalHigh = ReadIntValue(values, "NormalHigh", 110);
             ApplyDerivedLabels(snapshot.SelectedModel);
+            if (snapshot.SelectedModel.Known)
+            {
+                snapshot.ModelMetrics.Add(snapshot.SelectedModel.Clone());
+            }
             snapshot.Community.Known = bool.TrueString.Equals(ReadIniValue(values, "CommunityKnown"), StringComparison.OrdinalIgnoreCase);
             snapshot.Community.RatingKey = ReadIniValue(values, "CommunityRatingKey");
             snapshot.Community.Label = ReadIniValue(values, "CommunityLabel");
@@ -448,6 +457,15 @@ internal static class ClaudeRadarReader
                 snapshot.Quota.FiveHourResetText = ReadIniValue(values, "FiveHourResetText");
                 snapshot.Quota.WeeklyResetText = ReadIniValue(values, "WeeklyResetText");
                 snapshot.Quota.Known = snapshot.Quota.FiveHourPercent > 0 || snapshot.Quota.WeeklyPercent > 0;
+            }
+
+            snapshot.QuotaLine = ReadCachedQuotaLine(values);
+            if (snapshot.QuotaLine == null || !snapshot.QuotaLine.Known)
+            {
+                List<double> localLineValues = ReadQuotaHistoryValues("base_d7", DateTime.UtcNow.AddDays(-7.0));
+                snapshot.QuotaLine = localLineValues.Count > 0
+                    ? BuildQuotaLineFromValues(localLineValues, "base_d7", "local7d_cache")
+                    : ClaudeRadarQuotaLineSnapshot.CreateDefault();
             }
 
             ClaudeRadarQuotaSnapshot personalQuota;
@@ -541,6 +559,17 @@ internal static class ClaudeRadarReader
             !string.Equals(line.SourceMode, "site_chart", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Claude Radar quota line parser self-test failed.");
+        }
+
+        string quotaMetricsSample =
+            "{\"quota\":{\"updated_at\":\"2026-07-06T10:59:00+08:00\",\"metrics\":[{\"key\":\"h5\",\"value\":343.06},{\"key\":\"d7\",\"value\":2470}],\"chart\":{\"key\":\"total_7d\",\"trend\":[2270.63,2470]},\"cal\":{\"run_id\":\"site-shape\"}}}";
+        Dictionary<string, object> quotaMetricsRoot = new JavaScriptSerializer().DeserializeObject(quotaMetricsSample) as Dictionary<string, object>;
+        ClaudeRadarQuotaLineSnapshot metricsLine = BuildQuotaLineSnapshot(quotaMetricsRoot, false, false);
+        if (!metricsLine.Known || !metricsLine.PreviousKnown ||
+            Math.Abs(metricsLine.CurrentValue - 2470.0) > 0.01 ||
+            !string.Equals(metricsLine.SourceMode, "site_chart", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Claude Radar quota metrics parser self-test failed.");
         }
 
         Dictionary<string, object> ratingsRoot = new JavaScriptSerializer().DeserializeObject(
@@ -807,6 +836,15 @@ internal static class ClaudeRadarReader
                 Math.Abs(loaded.Community.Average - snapshot.Community.Average) > 0.0001)
             {
                 throw new InvalidOperationException("Claude Radar storage self-test failed: community metadata was not preserved in cache.");
+            }
+
+            if (loaded.QuotaLine == null ||
+                !loaded.QuotaLine.Known ||
+                !loaded.QuotaLine.PreviousKnown ||
+                Math.Abs(loaded.QuotaLine.CurrentValue - snapshot.QuotaLine.CurrentValue) > 0.0001 ||
+                Math.Abs(loaded.QuotaLine.PreviousValue - snapshot.QuotaLine.PreviousValue) > 0.0001)
+            {
+                throw new InvalidOperationException("Claude Radar storage self-test failed: quota line was not preserved in cache.");
             }
 
             if (!File.Exists(CachePath) ||
@@ -1561,6 +1599,10 @@ internal static class ClaudeRadarReader
         string updatedAt = ReadString(quotaRoot, "updated_at");
         string runId = ReadString(ReadObject(quotaRoot, "cal"), "run_id");
         double current = ReadDouble(quotaRoot, metric, 0.0);
+        if (current <= 0.0)
+        {
+            current = ReadQuotaMetricValue(quotaRoot, metric);
+        }
         if (writeHistory && current > 0.0)
         {
             AppendQuotaHistoryIfNew(metric, current, updatedAt, runId);
@@ -2059,6 +2101,7 @@ internal static class ClaudeRadarReader
             lines.Add("TokenEfficiencyPercent=" + metric.TokenEfficiencyPercent.ToString(CultureInfo.InvariantCulture));
             lines.Add("TimeEfficiencyPercent=" + metric.TimeEfficiencyPercent.ToString(CultureInfo.InvariantCulture));
             lines.Add("LatestLabel=" + Escape(metric.LatestLabel));
+            lines.Add("LatestAtUtc=" + (metric.LatestAtKnown && metric.LatestAtUtc != DateTime.MinValue ? metric.LatestAtUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture) : string.Empty));
             lines.Add("NormalLow=" + metric.NormalLow.ToString(CultureInfo.InvariantCulture));
             lines.Add("NormalHigh=" + metric.NormalHigh.ToString(CultureInfo.InvariantCulture));
             ClaudeRadarCommunitySnapshot community = snapshot.Community ?? ClaudeRadarCommunitySnapshot.CreateDefault();
@@ -2075,6 +2118,17 @@ internal static class ClaudeRadarReader
             lines.Add("WeeklyPercent=" + quota.WeeklyPercent.ToString(CultureInfo.InvariantCulture));
             lines.Add("FiveHourResetText=" + Escape(quota.FiveHourResetText));
             lines.Add("WeeklyResetText=" + Escape(quota.WeeklyResetText));
+            ClaudeRadarQuotaLineSnapshot line = snapshot.QuotaLine ?? ClaudeRadarQuotaLineSnapshot.CreateDefault();
+            lines.Add("QuotaLineKnown=" + line.Known.ToString(CultureInfo.InvariantCulture));
+            lines.Add("QuotaLineCurrentValue=" + line.CurrentValue.ToString("R", CultureInfo.InvariantCulture));
+            lines.Add("QuotaLinePreviousKnown=" + line.PreviousKnown.ToString(CultureInfo.InvariantCulture));
+            lines.Add("QuotaLinePreviousValue=" + line.PreviousValue.ToString("R", CultureInfo.InvariantCulture));
+            lines.Add("QuotaLineMinValue=" + line.MinValue.ToString("R", CultureInfo.InvariantCulture));
+            lines.Add("QuotaLineMaxValue=" + line.MaxValue.ToString("R", CultureInfo.InvariantCulture));
+            lines.Add("QuotaLineAverageValue=" + line.AverageValue.ToString("R", CultureInfo.InvariantCulture));
+            lines.Add("QuotaLineAverageKnown=" + line.AverageKnown.ToString(CultureInfo.InvariantCulture));
+            lines.Add("QuotaLineMetric=" + Escape(line.Metric));
+            lines.Add("QuotaLineSourceMode=" + Escape(line.SourceMode));
             File.WriteAllLines(CachePath, lines.ToArray(), new UTF8Encoding(false));
         }
         catch (Exception ex)
@@ -2327,14 +2381,91 @@ internal static class ClaudeRadarReader
         }
 
         string key = ReadString(chart, "key");
-        if (!string.IsNullOrWhiteSpace(key) &&
-            !string.Equals(key, "d7", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(key, metric, StringComparison.OrdinalIgnoreCase))
+        if (!string.IsNullOrWhiteSpace(key) && !IsClaudeQuotaD7MetricKey(key, metric))
         {
             return values;
         }
 
         return ReadNumberArray(chart, "trend");
+    }
+
+    private static ClaudeRadarQuotaLineSnapshot ReadCachedQuotaLine(Dictionary<string, string> values)
+    {
+        ClaudeRadarQuotaLineSnapshot line = ClaudeRadarQuotaLineSnapshot.CreateDefault();
+        if (!bool.TrueString.Equals(ReadIniValue(values, "QuotaLineKnown"), StringComparison.OrdinalIgnoreCase))
+        {
+            return line;
+        }
+
+        line.Known = true;
+        line.CurrentValue = ReadDoubleValue(values, "QuotaLineCurrentValue", 0.0);
+        line.PreviousKnown = bool.TrueString.Equals(ReadIniValue(values, "QuotaLinePreviousKnown"), StringComparison.OrdinalIgnoreCase);
+        line.PreviousValue = ReadDoubleValue(values, "QuotaLinePreviousValue", line.CurrentValue);
+        line.MinValue = ReadDoubleValue(values, "QuotaLineMinValue", Math.Min(line.CurrentValue, line.PreviousValue));
+        line.MaxValue = ReadDoubleValue(values, "QuotaLineMaxValue", Math.Max(line.CurrentValue, line.PreviousValue));
+        line.AverageValue = ReadDoubleValue(values, "QuotaLineAverageValue", line.CurrentValue);
+        line.AverageKnown = bool.TrueString.Equals(ReadIniValue(values, "QuotaLineAverageKnown"), StringComparison.OrdinalIgnoreCase);
+        line.Metric = EmptyFallback(ReadIniValue(values, "QuotaLineMetric"), "base_d7");
+        line.SourceMode = EmptyFallback(ReadIniValue(values, "QuotaLineSourceMode"), "cache");
+        if (line.CurrentValue <= 0.0 || line.MaxValue <= line.MinValue)
+        {
+            return ClaudeRadarQuotaLineSnapshot.CreateDefault();
+        }
+
+        return line;
+    }
+
+    private static double ReadQuotaMetricValue(Dictionary<string, object> quotaRoot, string metric)
+    {
+        object metricsObject;
+        object[] metrics = null;
+        if (quotaRoot != null && quotaRoot.TryGetValue("metrics", out metricsObject))
+        {
+            metrics = metricsObject as object[];
+        }
+
+        if (metrics == null)
+        {
+            return 0.0;
+        }
+
+        for (int i = 0; i < metrics.Length; i++)
+        {
+            Dictionary<string, object> row = metrics[i] as Dictionary<string, object>;
+            if (row == null)
+            {
+                continue;
+            }
+
+            string key = ReadString(row, "key");
+            if (string.IsNullOrWhiteSpace(key) || !IsClaudeQuotaD7MetricKey(key, metric))
+            {
+                continue;
+            }
+
+            double value = ReadDouble(row, "value", 0.0);
+            if (value > 0.0)
+            {
+                return value;
+            }
+        }
+
+        return 0.0;
+    }
+
+    private static bool IsClaudeQuotaD7MetricKey(string key, string metric)
+    {
+        string normalized = NormalizeSourceKey(key);
+        string normalizedMetric = NormalizeSourceKey(metric);
+        return normalized.Length == 0 ||
+            string.Equals(normalized, normalizedMetric, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "d7", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "7d", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "total_7d", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "quota_7d", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "d7_quota", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "weekly", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "week", StringComparison.OrdinalIgnoreCase);
     }
 
     private static HashSet<string> ReadRatingKeys(Dictionary<string, object> ratingsRoot)
@@ -2394,6 +2525,25 @@ internal static class ClaudeRadarReader
     private static bool ContainsModel(List<ClaudeRadarModelMetric> metrics, string key)
     {
         return FindMetric(metrics, key) != null;
+    }
+
+    private static List<ClaudeRadarModelMetric> CloneModelMetrics(List<ClaudeRadarModelMetric> metrics)
+    {
+        List<ClaudeRadarModelMetric> result = new List<ClaudeRadarModelMetric>();
+        if (metrics == null)
+        {
+            return result;
+        }
+
+        for (int i = 0; i < metrics.Count; i++)
+        {
+            if (metrics[i] != null)
+            {
+                result.Add(metrics[i].Clone());
+            }
+        }
+
+        return result;
     }
 
     private static ClaudeRadarModelMetric FindMetric(List<ClaudeRadarModelMetric> metrics, string key)

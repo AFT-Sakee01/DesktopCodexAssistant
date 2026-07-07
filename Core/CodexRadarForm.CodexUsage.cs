@@ -109,23 +109,16 @@ internal sealed partial class CodexRadarForm
             bool sourceKnownAfter;
             lock (this.codexProviderUsageLock)
             {
-                if (result.Success && result.Snapshot != null)
-                {
-                    this.codexProviderQuotaSnapshot = NormalizeQuotaSnapshot(result.Snapshot);
-                    this.codexProviderQuotaSourceKnown = true;
-                }
-
                 this.codexProviderUsageHealth = result.Health;
                 this.codexProviderUsageErrorCode = result.ErrorCode ?? string.Empty;
                 this.codexProviderUsageErrorMessage = result.ErrorMessage ?? string.Empty;
                 this.codexProviderUsageRequestRunning = false;
                 this.nextCodexProviderUsageRefreshUtc = nextRefreshUtc;
-                sourceKnownAfter = this.codexProviderQuotaSourceKnown;
+                sourceKnownAfter = this.codexProviderQuotaSourceKnown || (result.Success && result.Snapshot != null);
             }
 
             if (result.Success && result.Snapshot != null)
             {
-                TryWriteQuotaIniSnapshot(result.Snapshot);
                 ApplyCodexProviderUsageResultOnUiThread(result.Snapshot);
             }
 
@@ -169,7 +162,25 @@ internal sealed partial class CodexRadarForm
 
                 DateTime nowUtc = DateTime.UtcNow;
                 this.lastQuotaRefreshUtc = nowUtc;
-                ApplyCodexQuotaSnapshot(snapshot.Clone(), true, GetLastSoftwareRuntimePresenceSnapshot().CodexRunning, DateTime.Now, nowUtc);
+                CodexQuotaSnapshot providerSnapshot = NormalizeQuotaSnapshot(snapshot.Clone());
+                MarkQuotaSnapshotSource(providerSnapshot, "provider");
+                bool codexRunning = GetLastSoftwareRuntimePresenceSnapshot().CodexRunning;
+                string rejectReason;
+                if (ShouldRejectSuspiciousProviderQuotaSnapshot(providerSnapshot, out rejectReason))
+                {
+                    LogRejectedProviderQuotaSnapshot(providerSnapshot, rejectReason, codexRunning);
+                    RenderLayeredWindow();
+                    return;
+                }
+
+                lock (this.codexProviderUsageLock)
+                {
+                    this.codexProviderQuotaSnapshot = providerSnapshot.Clone();
+                    this.codexProviderQuotaSourceKnown = true;
+                }
+
+                TryWriteQuotaIniSnapshot(providerSnapshot);
+                ApplyCodexQuotaSnapshot(providerSnapshot.Clone(), true, codexRunning, DateTime.Now, nowUtc, "provider");
                 RenderLayeredWindow();
             });
         }
@@ -370,8 +381,10 @@ internal sealed partial class CodexRadarForm
             return false;
         }
 
+        double rawUsedValue;
         double usedPercent;
-        if (!TryGetProviderUsageUsedPercent(slot, out usedPercent))
+        string usedFieldName;
+        if (!TryGetProviderUsageUsedPercent(slot, out usedPercent, out usedFieldName, out rawUsedValue))
         {
             return false;
         }
@@ -385,52 +398,72 @@ internal sealed partial class CodexRadarForm
             snapshot.FiveHourPercent = remaining;
             snapshot.FiveHourResetLocal = resetLocal;
             snapshot.FiveHourResetKnown = resetKnown;
+            SetQuotaUsageDiagnostics(snapshot, true, "provider", usedFieldName, rawUsedValue, usedPercent);
         }
         else
         {
             snapshot.WeeklyPercent = remaining;
             snapshot.WeeklyResetLocal = resetLocal;
             snapshot.WeeklyResetKnown = resetKnown;
+            SetQuotaUsageDiagnostics(snapshot, false, "provider", usedFieldName, rawUsedValue, usedPercent);
         }
 
         return true;
     }
 
-    private static bool TryGetProviderUsageUsedPercent(Dictionary<string, object> slot, out double usedPercent)
+    private static bool TryGetProviderUsageUsedPercent(
+        Dictionary<string, object> slot,
+        out double usedPercent,
+        out string fieldName,
+        out double rawValue)
     {
         usedPercent = 0.0;
+        fieldName = string.Empty;
+        rawValue = 0.0;
         object value;
         if (slot != null && slot.TryGetValue("used_percent", out value) && TryReadQuotaNumber(value, out usedPercent))
         {
-            if (usedPercent <= 1.0)
-            {
-                usedPercent *= 100.0;
-            }
-
+            fieldName = "used_percent";
+            rawValue = usedPercent;
+            usedPercent = NormalizeProviderUsedPercent(rawValue, false);
             return true;
         }
 
         if (slot != null && slot.TryGetValue("used_percentage", out value) && TryReadQuotaNumber(value, out usedPercent))
         {
-            if (usedPercent <= 1.0)
-            {
-                usedPercent *= 100.0;
-            }
-
+            fieldName = "used_percentage";
+            rawValue = usedPercent;
+            usedPercent = NormalizeProviderUsedPercent(rawValue, false);
             return true;
         }
 
         if (slot != null && slot.TryGetValue("utilization", out value) && TryReadQuotaNumber(value, out usedPercent))
         {
-            if (usedPercent <= 1.0)
-            {
-                usedPercent *= 100.0;
-            }
-
+            fieldName = "utilization";
+            rawValue = usedPercent;
+            usedPercent = NormalizeProviderUsedPercent(rawValue, true);
             return true;
         }
 
         return false;
+    }
+
+    private static double NormalizeProviderUsedPercent(double rawValue, bool fractionPreferred)
+    {
+        double percent = fractionPreferred && rawValue >= 0.0 && rawValue <= 1.0
+            ? rawValue * 100.0
+            : rawValue;
+        if (percent < 0.0)
+        {
+            return 0.0;
+        }
+
+        if (percent > 100.0)
+        {
+            return 100.0;
+        }
+
+        return percent;
     }
 
     private static CodexProviderUsageResult BuildCodexProviderUsageError(

@@ -3,9 +3,8 @@ using System.Drawing;
 using System.Globalization;
 
 // Shared data extraction for the four OLED-safe restyle schemes (Typographic, AmberHud, WarmCard,
-// Phosphor) added in 1.0.3.44. Reuses the exact same data-gathering calls as Classic/EvenGrid/EvenRow
-// (GatherQuotaDisplayState, GetCodexRadarDisplaySnapshot, GetCodexConnectionDisplaySnapshot, the IQ
-// baseline helpers) so severity/value only ever derives from real snapshot fields - never from a
+// Phosphor) added in 1.0.3.44. Reuses the same quota/radar data-gathering calls as Classic/EvenGrid/EvenRow
+// (GatherQuotaDisplayState, GetCodexRadarDisplaySnapshot, the IQ baseline helpers) so severity/value only ever derives from real snapshot fields - never from a
 // Classic color helper's specific accent hue, since those are not guaranteed blue-free. The quota
 // radar trend chart is intentionally excluded here (see DrawCodexRadarModulesTypographic and its
 // siblings): it keeps using DrawCodexQuotaRadarVerticalLine directly, with only its current-value dot
@@ -86,22 +85,21 @@ internal sealed partial class CodexRadarForm
     {
         bool known = snapshot != null && snapshot.ModelIqKnown;
         int passRatePercent = known ? Math.Max(0, Math.Min(MaxCodexModelIqScore, snapshot.ModelIqPassRatePercent)) : 0;
-        int passed;
-        int validTasks;
-        bool scoreKnown = TryGetCodexModelIqPassed(snapshot, out passed, out validTasks);
 
         OledRadarItem item = new OledRadarItem();
         item.Label = "模型IQ";
         item.Value = known ? passRatePercent.ToString(CultureInfo.InvariantCulture) : "--";
         item.Severity = OledVariantPainting.Severity.Neutral;
-        if (scoreKnown)
+        if (known)
         {
-            double delta = passed - GetCodexModelIqBaselinePassed(snapshot);
-            if (delta < -0.05)
+            int low;
+            int high;
+            GetCodexModelIqNormalScoreRange(snapshot, out low, out high);
+            if (passRatePercent < low)
             {
                 item.Severity = OledVariantPainting.Severity.Danger;
             }
-            else if (delta > 0.05)
+            else if (passRatePercent > high)
             {
                 item.Severity = OledVariantPainting.Severity.Warn;
             }
@@ -125,24 +123,10 @@ internal sealed partial class CodexRadarForm
 
     private OledRadarItem BuildConnectionItem()
     {
-        bool requestRunning;
-        CodexConnectionSnapshot snapshot = GetCodexConnectionDisplaySnapshot(out requestRunning);
-        string text;
-        Color unusedColor;
-        GetCodexConnectionStatusSummary(snapshot, requestRunning, out text, out unusedColor);
-
         OledRadarItem item = new OledRadarItem();
         item.Label = "连接";
-        item.Value = text;
-        if (snapshot == null || !snapshot.CheckedAtKnown || snapshot.Offline)
-        {
-            item.Severity = OledVariantPainting.Severity.Neutral;
-        }
-        else
-        {
-            item.Severity = text == "已通过" ? OledVariantPainting.Severity.Good : OledVariantPainting.Severity.Warn;
-        }
-
+        item.Value = "等待检测";
+        item.Severity = OledVariantPainting.Severity.Neutral;
         return item;
     }
 

@@ -14,6 +14,21 @@ internal abstract class LayeredWidgetFormBase : Form
 
     protected float LayerScale { get; private set; } = 1.0f;
 
+    protected Bitmap LayeredRenderBitmap
+    {
+        get { return this.renderBitmap; }
+    }
+
+    protected Graphics LayeredRenderGraphics
+    {
+        get { return this.renderGraphics; }
+    }
+
+    protected bool IsLayeredRenderBufferValid
+    {
+        get { return this.renderBufferValid; }
+    }
+
     protected override CreateParams CreateParams
     {
         get
@@ -59,7 +74,7 @@ internal abstract class LayeredWidgetFormBase : Form
 
     protected void RenderLayeredWindow(bool redrawContent)
     {
-        if (!this.IsHandleCreated || this.Width <= 0 || this.Height <= 0)
+        if (!this.IsHandleCreated || this.Width <= 0 || this.Height <= 0 || !CanRenderLayeredWindow())
         {
             return;
         }
@@ -77,14 +92,20 @@ internal abstract class LayeredWidgetFormBase : Form
             if (refreshNativeBitmap)
             {
                 this.renderGraphics.Clear(Color.Transparent);
-                DrawWindowContent(this.renderGraphics);
-                if (burnInColorProtectionActive)
+                bool contentReady = TryDrawCachedWindowContent(this.renderGraphics, burnInColorProtectionActive);
+                if (!contentReady)
                 {
-                    BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
+                    DrawWindowContent(this.renderGraphics);
+                    if (burnInColorProtectionActive)
+                    {
+                        BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
+                    }
+
+                    OnLayeredBitmapPrepared(this.renderBitmap, burnInColorProtectionActive);
                 }
 
-                OnLayeredBitmapPrepared(this.renderBitmap, burnInColorProtectionActive);
                 this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
+                OnLayeredNativeBitmapRefreshed(burnInColorProtectionActive);
                 this.renderBufferValid = true;
             }
 
@@ -140,6 +161,11 @@ internal abstract class LayeredWidgetFormBase : Form
         this.renderBufferValid = false;
     }
 
+    protected void InvalidateLayeredRenderBuffer()
+    {
+        this.renderBufferValid = false;
+    }
+
     protected void ResetDisplayRenderResources()
     {
         DisposeRenderBuffer();
@@ -152,10 +178,22 @@ internal abstract class LayeredWidgetFormBase : Form
         return (int)Math.Round(value * this.LayerScale);
     }
 
+    protected int S(float value)
+    {
+        return Math.Max(1, (int)Math.Round(value * this.LayerScale));
+    }
+
     protected static GraphicsPath RoundedRectangle(RectangleF bounds, float radius)
     {
-        float diameter = radius * 2.0f;
+        float diameter = Math.Max(0.0f, radius * 2.0f);
         GraphicsPath path = new GraphicsPath();
+        if (diameter <= 0.0f)
+        {
+            path.AddRectangle(bounds);
+            path.CloseFigure();
+            return path;
+        }
+
         path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
         path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
         path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
@@ -174,11 +212,25 @@ internal abstract class LayeredWidgetFormBase : Form
         return false;
     }
 
+    protected virtual bool CanRenderLayeredWindow()
+    {
+        return true;
+    }
+
     protected virtual void DisposeAdditionalRenderBuffers()
     {
     }
 
     protected virtual void OnLayeredBitmapPrepared(Bitmap bitmap, bool burnInColorProtectionActive)
+    {
+    }
+
+    protected virtual bool TryDrawCachedWindowContent(Graphics g, bool burnInColorProtectionActive)
+    {
+        return false;
+    }
+
+    protected virtual void OnLayeredNativeBitmapRefreshed(bool burnInColorProtectionActive)
     {
     }
 
@@ -195,7 +247,7 @@ internal abstract class LayeredWidgetFormBase : Form
         base.Dispose(disposing);
     }
 
-    private void EnsureRenderBuffer()
+    protected void EnsureRenderBuffer()
     {
         if (this.renderBitmap != null &&
             this.renderGraphics != null &&

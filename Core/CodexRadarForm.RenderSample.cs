@@ -39,10 +39,9 @@ internal sealed partial class CodexRadarForm
                 // separate DPI multiplication at runtime). An earlier `* 2` here rendered a canvas
                 // twice as wide as any real window ever is, which hid genuine overflow/truncation
                 // (e.g. "13:00" clipping to "13...") that only shows up at the true width.
-                form.scale = 2.0f;
+                form.SetLayerScale(2.0f);
                 form.MaximumSize = new Size(4000, 4000);
                 form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
-                form.codexConnectionSnapshot = form.BuildSampleConnectionSnapshot();
                 // Normalize() force-disables CodexRadarTestMode, so inject a populated snapshot
                 // directly instead - this is what actually exercises the quota radar trend content.
                 form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
@@ -101,7 +100,7 @@ internal sealed partial class CodexRadarForm
         WidgetSettings settings = WidgetSettings.Load();
         using (CodexRadarForm form = new CodexRadarForm(settings, null))
         {
-            form.scale = 2.0f;
+            form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
             if (form.codexRadarSnapshot == null)
@@ -129,7 +128,7 @@ internal sealed partial class CodexRadarForm
         settings.Normalize();
         using (CodexRadarForm form = new CodexRadarForm(settings, null))
         {
-            form.scale = 4.0f;
+            form.SetLayerScale(4.0f);
             form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
             CodexRadarSnapshot snap = form.GetCodexRadarDisplaySnapshot();
             using (Bitmap bmp = new Bitmap(160, 460, PixelFormat.Format32bppPArgb))
@@ -143,21 +142,5 @@ internal sealed partial class CodexRadarForm
                 Console.WriteLine("radar-solo QuotaRadar.Known=" + (snap != null && snap.QuotaRadar != null ? snap.QuotaRadar.Known.ToString() : "null"));
             }
         }
-    }
-
-    private CodexConnectionSnapshot BuildSampleConnectionSnapshot()
-    {
-        CodexConnectionSnapshot snapshot = CodexConnectionSnapshot.CreateDefault();
-        snapshot.CheckedAtKnown = true;
-        snapshot.CheckedAtUtc = DateTime.UtcNow;
-        for (int i = 0; i < snapshot.Stages.Length; i++)
-        {
-            if (snapshot.Stages[i] != null)
-            {
-                snapshot.Stages[i].State = CodexConnectionStageState.Passed;
-            }
-        }
-
-        return snapshot;
     }
 }

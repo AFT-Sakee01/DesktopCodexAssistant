@@ -221,11 +221,11 @@ internal sealed partial class CodexRadarForm
         }
     }
 
-    // Graphical status card, per the user's sketch (proposal 2 + LED column): a 24-hour dial as
-    // the main element - the daily batch time is a marker dot on the dial rim, the arc from that
-    // marker to "now" shows how far the clock has走过 since the batch (color carries the same
-    // updated/stale meaning the old text line had), the center shows the batch date over the small
-    // refresh time. A vertical per-service LED column (R/O/C/D) sits at the right edge.
+    // Graphical status card, per the user's sketch (proposal 2 + LED column): a period dial as
+    // the main element. The small green dot marks the latest actual IQ refresh that is still inside
+    // the retention window, and the visible arc connects that refresh point to "now". The 12
+    // o'clock green tick is only the cycle boundary marker. A vertical per-service LED column
+    // (R/O/C/D) sits at the right edge.
     private void DrawEvenRowStatusCell(Graphics g, RectangleF cellRect, CodexRadarSnapshot radarSnapshot)
     {
         if (cellRect.Width <= 0 || cellRect.Height <= 0)
@@ -271,7 +271,7 @@ internal sealed partial class CodexRadarForm
 
         float rowHeight = rect.Height / labels.Length;
         float dotDiameter = S(5);
-        Font letterFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.scale), FontStyle.Bold);
+        Font letterFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.LayerScale), FontStyle.Bold);
         for (int i = 0; i < labels.Length; i++)
         {
             Color ledColor = DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245);
@@ -316,11 +316,11 @@ internal sealed partial class CodexRadarForm
         }
     }
 
-    // Proposal 2: the 24h batch dial. Track = full circle; marker dot = the batch time on the rim
-    // (am -> 0:00 top, pm -> 12:00 bottom, "HH:mm" suffixes at their clock position, a second
-    // evening test adds a small "2" badge near the marker); arc = from the batch marker clockwise
-    // to the current time; center = batch date ("x月x日") over the small refresh HH:mm. Arc and
-    // time text carry the four-level freshness color (see ComputeEvenRowDialStatusColor).
+    // Period clock for the current radar software: Codex is a 12h circle (00:00 and 12:00
+    // boundaries); Claude-in-shared-window is a 24h circle. The pointer advances clockwise from
+    // the top boundary. Green means this model has IQ data for the current period, yellow means the
+    // current period is still waiting, and red overlays the yellow base after the previous full
+    // period was missed.
     private void DrawEvenRowBatchDial(Graphics g, RectangleF rect, CodexRadarSnapshot radarSnapshot)
     {
         bool radarRequestRunning;
@@ -333,26 +333,24 @@ internal sealed partial class CodexRadarForm
         Color legacyUpdateColor;
         GetCodexModelIqUpdateStatusText(radarSnapshot, radarRequestRunning, out updateText, out legacyUpdateColor);
 
-        // Four-level freshness color. Codex tests run twice a day -> 12h cycle.
         DateTime nowLocal = DateTime.Now;
+        double cycleHours = GetEvenRowDialCycleHours();
+        DateTime cycleBoundaryLocal = GetEvenRowDialCycleBoundaryLocal(nowLocal, cycleHours);
         bool batchKnown = radarSnapshot != null && radarSnapshot.ModelIqDataDateKnown;
         DateTime batchTime = batchKnown
             ? radarSnapshot.ModelIqDataDateLocal.Date.AddHours(radarSnapshot.ModelIqDataWindowStartHourLocal >= 12 ? 12 : 0)
             : DateTime.MinValue;
         bool localKnown = radarSnapshot != null && radarSnapshot.ModelIqRefreshedAtKnown;
         DateTime localTime = localKnown ? radarSnapshot.ModelIqRefreshedAtLocal : DateTime.MinValue;
-        Color updateColor = ComputeEvenRowDialStatusColor(batchKnown, batchTime, localKnown, localTime, 12.0, nowLocal);
+        bool overdue = IsEvenRowDialOverdue(batchKnown, batchTime, cycleHours, nowLocal);
+        Color updateColor = ComputeEvenRowDialStatusColor(batchKnown, batchTime, localKnown, localTime, cycleHours, nowLocal);
         if (radarRequestRunning && (this.renderTickCount & 1) == 0)
         {
             updateColor = DesignTokens.WithAlpha(updateColor, 104);
         }
 
-        string timeText = updateText;
-        int slashIndex = updateText.LastIndexOf('/');
-        if (slashIndex >= 0 && slashIndex < updateText.Length - 1)
-        {
-            timeText = updateText.Substring(slashIndex + 1);
-        }
+        string timeText = GetEvenRowDialTimeText(radarSnapshot, nowLocal);
+        string modeText = GetEvenRowDialModeLabel();
 
         string dataLabelText = GetCodexModelIqDataLabelDisplayText(radarSnapshot);
         string heroMain;
@@ -363,9 +361,6 @@ internal sealed partial class CodexRadarForm
         bool secondRun;
         string suffixTimeText;
         ParseEvenRowBatchSuffix(heroSuffix, out phaseKnown, out night, out secondRun, out suffixTimeText);
-
-        float batchHour;
-        bool batchHourKnown = TryGetEvenRowBatchHour(phaseKnown, night, suffixTimeText, out batchHour);
 
         float dialDiameter = Math.Min(rect.Width, rect.Height) - S(1);
         dialDiameter = Math.Max(S(20), dialDiameter);
@@ -388,77 +383,190 @@ internal sealed partial class CodexRadarForm
             g.DrawArc(trackPen, arcRect, -90.0f, 360.0f);
         }
 
-        if (batchHourKnown)
+        float boundaryAngle = -90.0f;
+        double elapsedHours = (nowLocal - cycleBoundaryLocal).TotalHours;
+        if (elapsedHours < 0.0)
         {
-            float batchAngle = batchHour / 24.0f * 360.0f - 90.0f;
-            DateTime now = DateTime.Now;
-            float nowAngle = (float)((now.Hour + now.Minute / 60.0) / 24.0 * 360.0 - 90.0);
-            float sweep = nowAngle - batchAngle;
-            while (sweep < 0.0f)
+            elapsedHours = 0.0;
+        }
+
+        if (elapsedHours > cycleHours)
+        {
+            elapsedHours = cycleHours;
+        }
+
+        float elapsedSweep = (float)(elapsedHours / cycleHours * 360.0);
+        float currentAngle = boundaryAngle + elapsedSweep;
+        float refreshMarkerAngle;
+        bool refreshMarkerVisible = TryGetEvenRowClockMarkerAngle(
+            localTime,
+            nowLocal,
+            cycleBoundaryLocal,
+            cycleHours,
+            out refreshMarkerAngle);
+        float arcStartAngle = refreshMarkerVisible ? refreshMarkerAngle : boundaryAngle;
+        float drawSweep = refreshMarkerVisible
+            ? ComputeEvenRowClockSweep(refreshMarkerAngle, currentAngle)
+            : (overdue ? elapsedSweep : 0.0f);
+        if (overdue)
+        {
+            using (Pen basePen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 220), stroke))
             {
-                sweep += 360.0f;
+                basePen.StartCap = LineCap.Round;
+                basePen.EndCap = LineCap.Round;
+                g.DrawArc(basePen, arcRect, boundaryAngle, 360.0f);
             }
 
-            if (sweep > 1.0f)
-            {
-                using (Pen arcPen = new Pen(updateColor, stroke))
-                {
-                    arcPen.StartCap = LineCap.Round;
-                    arcPen.EndCap = LineCap.Round;
-                    g.DrawArc(arcPen, arcRect, batchAngle, sweep);
-                }
-            }
+            drawSweep = Math.Max(2.0f, drawSweep);
+        }
 
-            double markerRadians = batchAngle * Math.PI / 180.0;
-            float radius = arcRect.Width / 2.0f;
-            float markerX = arcRect.Left + radius + (float)Math.Cos(markerRadians) * radius;
-            float markerY = arcRect.Top + radius + (float)Math.Sin(markerRadians) * radius;
-            float markerDiameter = Math.Max(3.0f, S(4));
-            using (SolidBrush markerBrush = new SolidBrush(DesignTokens.White(235)))
+        if (drawSweep > 1.0f)
+        {
+            using (Pen arcPen = new Pen(updateColor, stroke))
             {
-                g.FillEllipse(markerBrush, markerX - markerDiameter / 2.0f, markerY - markerDiameter / 2.0f, markerDiameter, markerDiameter);
-            }
-
-            if (secondRun)
-            {
-                // Second evening test: a small warning-colored "2" just inside the marker.
-                Font badgeFont = this.fontCache.GetUi(Math.Max(6.5f, 7.0f * this.scale), FontStyle.Bold);
-                float badgeOffset = markerDiameter + S(2);
-                RectangleF badgeRect = new RectangleF(
-                    markerX - (float)Math.Cos(markerRadians) * badgeOffset - S(4),
-                    markerY - (float)Math.Sin(markerRadians) * badgeOffset - S(4),
-                    S(8),
-                    S(8));
-                using (SolidBrush badgeBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245)))
-                {
-                    DrawEvenRowStatusText(g, "2", badgeFont, badgeBrush, badgeRect);
-                }
+                arcPen.StartCap = LineCap.Round;
+                arcPen.EndCap = LineCap.Round;
+                g.DrawArc(arcPen, arcRect, arcStartAngle, drawSweep);
             }
         }
 
-        // Center: batch date as "x月x日" over the refresh time, fit inside the dial's inner circle.
+        DrawEvenRowClockBoundaryTick(
+            g,
+            arcRect,
+            Math.Max(1.0f, stroke * 0.74f),
+            DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245));
+
+        if (refreshMarkerVisible)
+        {
+            DrawEvenRowClockDot(
+                g,
+                arcRect,
+                refreshMarkerAngle,
+                Math.Max(2.5f, S(3)),
+                DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245));
+        }
+
+        DrawEvenRowClockDot(
+            g,
+            arcRect,
+            currentAngle,
+            Math.Max(3.0f, S(4)),
+                DesignTokens.White(235));
+
+        double markerRadians = boundaryAngle * Math.PI / 180.0;
+        float radius = arcRect.Width / 2.0f;
+        float markerX = arcRect.Left + radius + (float)Math.Cos(markerRadians) * radius;
+        float markerY = arcRect.Top + radius + (float)Math.Sin(markerRadians) * radius;
+        float markerDiameter = Math.Max(3.0f, S(4));
+        if (secondRun)
+        {
+            // Second evening test: a small warning-colored "2" just inside the marker.
+            Font badgeFont = this.fontCache.GetUi(Math.Max(6.5f, 7.0f * this.LayerScale), FontStyle.Bold);
+            float badgeOffset = markerDiameter + S(2);
+            RectangleF badgeRect = new RectangleF(
+                markerX - (float)Math.Cos(markerRadians) * badgeOffset - S(4),
+                markerY - (float)Math.Sin(markerRadians) * badgeOffset - S(4),
+                S(8),
+                S(8));
+            using (SolidBrush badgeBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245)))
+            {
+                DrawEvenRowStatusText(g, "2", badgeFont, badgeBrush, badgeRect);
+            }
+        }
+
+        // Center: keep the established date/time rectangles stable; the mode label gets its own
+        // narrow slot below them so adding UTC/LAST/REF/NOW does not shift existing elements.
         float innerWidth = dial.Width * 0.72f;
-        Font dayFont = this.fontCache.GetUi(Math.Max(9.0f, 11.5f * this.scale), FontStyle.Bold);
-        Font timeFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.scale), FontStyle.Bold);
+        Font dayFont = this.fontCache.GetUi(Math.Max(9.0f, 11.5f * this.LayerScale), FontStyle.Bold);
+        Font timeFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.LayerScale), FontStyle.Bold);
+        Font modeFont = this.fontCache.GetUi(Math.Max(5.0f, 5.4f * this.LayerScale), FontStyle.Bold);
         float centerX2 = dial.Left + dial.Width / 2.0f;
         float centerY2 = dial.Top + dial.Height / 2.0f;
         RectangleF dayRect = new RectangleF(centerX2 - innerWidth / 2.0f, centerY2 - S(11), innerWidth, S(11));
         RectangleF timeRect = new RectangleF(centerX2 - innerWidth / 2.0f, centerY2 + S(1), innerWidth, S(8));
+        RectangleF modeRect = new RectangleF(centerX2 - innerWidth / 2.0f, centerY2 + S(9), innerWidth, S(6));
         using (SolidBrush dayBrush = new SolidBrush(DesignTokens.White(235)))
         using (SolidBrush timeBrush = new SolidBrush(updateColor))
         {
             DrawCodexRadarFittedText(g, FormatEvenRowDialDate(heroMain), dayFont, dayBrush, dayRect, StringAlignment.Center, 6.0f);
             DrawCodexRadarFittedText(g, timeText, timeFont, timeBrush, timeRect, StringAlignment.Center, 6.0f);
+            DrawCodexRadarFittedText(g, modeText, modeFont, timeBrush, modeRect, StringAlignment.Center, 4.5f);
         }
     }
 
-    // Four-level dial freshness color ("颜色规则"):
-    //   green  - fresh (updated within one cycle, local fetch healthy)
-    //   yellow - the SITE has not published the expected new batch (batch older than one cycle)
-    //   orange - the LOCAL fetch is stale (no successful refresh for 2h+, site state unknown-ish)
-    //   red    - either side has "wrapped a circle": no successful local fetch for a full cycle,
-    //            or the site batch is more than TWO cycles old (a whole extra cycle missed).
-    // Cycle: Codex tests twice a day -> 12h; Claude once a day -> 24h (passed in by the caller).
+    private string GetEvenRowDialModeLabel()
+    {
+        RadarClockTimeDisplayMode mode = this.currentSettings == null
+            ? RadarClockTimeDisplayMode.Utc
+            : this.currentSettings.RadarClockTimeDisplayMode;
+        return GetRadarClockTimeDisplayModeShortLabel(mode);
+    }
+
+    private static string GetRadarClockTimeDisplayModeShortLabel(RadarClockTimeDisplayMode mode)
+    {
+        switch (mode)
+        {
+            case RadarClockTimeDisplayMode.CurrentLocal:
+                return "NOW";
+            case RadarClockTimeDisplayMode.LastAttemptRefresh:
+                return "LAST";
+            case RadarClockTimeDisplayMode.LastActualRefresh:
+                return "REF";
+            case RadarClockTimeDisplayMode.Utc:
+            default:
+                return "UTC";
+        }
+    }
+
+    private string GetEvenRowDialTimeText(
+        CodexRadarSnapshot snapshot,
+        DateTime nowLocal)
+    {
+        RadarClockTimeDisplayMode mode = this.currentSettings == null
+            ? RadarClockTimeDisplayMode.Utc
+            : this.currentSettings.RadarClockTimeDisplayMode;
+        DateTime candidate;
+        bool known;
+        switch (mode)
+        {
+            case RadarClockTimeDisplayMode.CurrentLocal:
+                return nowLocal.ToString("HH:mm", CultureInfo.CurrentCulture);
+            case RadarClockTimeDisplayMode.LastAttemptRefresh:
+                known = TryGetEvenRowLastAttemptRefreshLocal(snapshot, out candidate);
+                return known ? candidate.ToString("HH:mm", CultureInfo.CurrentCulture) : "--:--";
+            case RadarClockTimeDisplayMode.LastActualRefresh:
+                known = snapshot != null &&
+                    snapshot.ModelIqRefreshedAtKnown &&
+                    snapshot.ModelIqRefreshedAtLocal != DateTime.MinValue;
+                return known ? snapshot.ModelIqRefreshedAtLocal.ToString("HH:mm", CultureInfo.CurrentCulture) : "--:--";
+            case RadarClockTimeDisplayMode.Utc:
+            default:
+                return DateTime.UtcNow.ToString("HH:mm", CultureInfo.InvariantCulture);
+        }
+    }
+
+    private bool TryGetEvenRowLastAttemptRefreshLocal(CodexRadarSnapshot snapshot, out DateTime localTime)
+    {
+        if (this.lastCodexRadarStatusAttemptLocal != DateTime.MinValue)
+        {
+            localTime = this.lastCodexRadarStatusAttemptLocal;
+            return true;
+        }
+
+        if (snapshot != null &&
+            snapshot.CheckedAtKnown &&
+            snapshot.CheckedAtLocal != DateTime.MinValue)
+        {
+            localTime = snapshot.CheckedAtLocal;
+            return true;
+        }
+
+        localTime = DateTime.MinValue;
+        return false;
+    }
+
+    // Boundary-based freshness color. The local fetch timestamp is intentionally not treated as
+    // proof of IQ freshness: only the model's own IQ data window can turn the clock green.
     private static Color ComputeEvenRowDialStatusColor(
         bool batchKnown,
         DateTime batchTime,
@@ -472,30 +580,141 @@ internal sealed partial class CodexRadarForm
             return DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
         }
 
-        double batchAgeHours = batchKnown ? (now - batchTime).TotalHours : 0.0;
-        double localAgeHours = localKnown ? (now - localTime).TotalHours : 0.0;
-        bool siteStale = batchKnown && batchAgeHours > cycleHours;
-        bool siteWrapped = batchKnown && batchAgeHours > cycleHours * 2.0;
-        bool localStale = localKnown && localAgeHours > 2.0;
-        bool localWrapped = localKnown && localAgeHours > cycleHours;
-
-        if (siteWrapped || localWrapped)
+        DateTime boundary = GetEvenRowDialCycleBoundaryLocal(now, cycleHours);
+        DateTime previousBoundary = boundary.AddHours(-cycleHours);
+        if (batchTime >= boundary)
         {
-            return DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245);
+            return DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245);
         }
 
-        if (localStale)
-        {
-            // Brand-orange (same hue as the Claude chrome) - distinct from the yellow Warning.
-            return Color.FromArgb(245, 232, 128, 54);
-        }
-
-        if (siteStale)
+        if (batchTime >= previousBoundary)
         {
             return DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245);
         }
 
-        return DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245);
+        return DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245);
+    }
+
+    private double GetEvenRowDialCycleHours()
+    {
+        return GetEffectiveCodexRadarSoftwareMode() == CodexRadarSoftwareMode.Claude ? 24.0 : 12.0;
+    }
+
+    private static bool IsEvenRowDialOverdue(
+        bool batchKnown,
+        DateTime batchTime,
+        double cycleHours,
+        DateTime now)
+    {
+        if (!batchKnown)
+        {
+            return false;
+        }
+
+        DateTime boundary = GetEvenRowDialCycleBoundaryLocal(now, cycleHours);
+        DateTime previousBoundary = boundary.AddHours(-cycleHours);
+        return batchTime < previousBoundary;
+    }
+
+    private static DateTime GetEvenRowDialCycleBoundaryLocal(DateTime now, double cycleHours)
+    {
+        if (cycleHours >= 23.5)
+        {
+            return now.Date;
+        }
+
+        int cycle = Math.Max(1, (int)Math.Round(cycleHours));
+        int hour = (now.Hour / cycle) * cycle;
+        return now.Date.AddHours(hour);
+    }
+
+    private static bool TryGetEvenRowClockMarkerAngle(
+        DateTime markerTime,
+        DateTime now,
+        DateTime cycleBoundary,
+        double cycleHours,
+        out float angle)
+    {
+        angle = -90.0f;
+        if (markerTime == DateTime.MinValue || cycleHours <= 0.0)
+        {
+            return false;
+        }
+
+        double ageHours = (now - markerTime).TotalHours;
+        if (ageHours < 0.0 || ageHours >= cycleHours)
+        {
+            return false;
+        }
+
+        double elapsedHours = (markerTime - cycleBoundary).TotalHours;
+        while (elapsedHours < 0.0)
+        {
+            elapsedHours += cycleHours;
+        }
+
+        while (elapsedHours >= cycleHours)
+        {
+            elapsedHours -= cycleHours;
+        }
+
+        angle = -90.0f + (float)(elapsedHours / cycleHours * 360.0);
+        return true;
+    }
+
+    private static float ComputeEvenRowClockSweep(float startAngle, float endAngle)
+    {
+        float sweep = endAngle - startAngle;
+        while (sweep < 0.0f)
+        {
+            sweep += 360.0f;
+        }
+
+        while (sweep > 360.0f)
+        {
+            sweep -= 360.0f;
+        }
+
+        return sweep;
+    }
+
+    private static void DrawEvenRowClockDot(
+        Graphics g,
+        RectangleF arcRect,
+        float angle,
+        float diameter,
+        Color color)
+    {
+        double radians = angle * Math.PI / 180.0;
+        float radius = arcRect.Width / 2.0f;
+        float x = arcRect.Left + radius + (float)Math.Cos(radians) * radius;
+        float y = arcRect.Top + radius + (float)Math.Sin(radians) * radius;
+        using (SolidBrush brush = new SolidBrush(color))
+        {
+            g.FillEllipse(brush, x - diameter / 2.0f, y - diameter / 2.0f, diameter, diameter);
+        }
+    }
+
+    private static void DrawEvenRowClockBoundaryTick(
+        Graphics g,
+        RectangleF arcRect,
+        float stroke,
+        Color color)
+    {
+        if (arcRect.Width <= 0.0f || arcRect.Height <= 0.0f)
+        {
+            return;
+        }
+
+        float x = arcRect.Left + arcRect.Width / 2.0f;
+        float y = arcRect.Top;
+        float length = Math.Max(3.0f, arcRect.Height * 0.18f);
+        using (Pen pen = new Pen(color, stroke))
+        {
+            pen.StartCap = LineCap.Round;
+            pen.EndCap = LineCap.Round;
+            g.DrawLine(pen, x, y - length * 0.35f, x, y + length * 0.65f);
+        }
     }
 
     // "7.6" or "7/6" -> "7月6日"; anything unparseable (or already containing 月) stays as-is.
@@ -663,9 +882,9 @@ internal sealed partial class CodexRadarForm
     // total width in the available row width. Guarantees no per-item ellipsis for typical data.
     private Font GetEvenRowBottomInfoSharedFont(Graphics g, string[] texts, float available)
     {
-        float baseSize = Math.Max(8.5f, 10.5f * this.scale * 1.56f);
-        float minSize = Math.Max(4.5f, 4.5f * this.scale);
-        float step = Math.Max(0.3f, 0.3f * this.scale);
+        float baseSize = Math.Max(8.5f, 10.5f * this.LayerScale * 1.56f);
+        float minSize = Math.Max(4.5f, 4.5f * this.LayerScale);
+        float step = Math.Max(0.3f, 0.3f * this.LayerScale);
         float size = baseSize;
         while (size > minSize)
         {
@@ -790,11 +1009,11 @@ internal sealed partial class CodexRadarForm
 
     private Font GetEvenRowStatusSharedFont(Graphics g, string[] texts, RectangleF[] rects)
     {
-        float baseSize = Math.Max(9.0f, 12.5f * this.scale * 1.50f);
+        float baseSize = Math.Max(9.0f, 12.5f * this.LayerScale * 1.50f);
         // Lowered from 7.6 so the status column can shrink enough to actually fit once the radar bar
         // is pinned at its right-quarter target (which leaves this column less room than before).
-        float minSize = Math.Max(4.5f, 4.5f * this.scale);
-        float step = Math.Max(0.35f, 0.35f * this.scale);
+        float minSize = Math.Max(4.5f, 4.5f * this.LayerScale);
+        float step = Math.Max(0.35f, 0.35f * this.LayerScale);
         return GetEvenRowSharedFont(g, texts, rects, baseSize, minSize, step);
     }
 

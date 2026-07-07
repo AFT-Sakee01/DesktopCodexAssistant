@@ -1,7 +1,7 @@
 # Claude-EvenRow-DialCard-Technical.md — EvenRow 表盘状态卡技术说明
 
 > 作者模型：Claude（按项目规则，非 Codex 模型生成的文档使用模型名前缀）
-> 适用版本：1.0.4.18
+> 适用版本：1.0.4.27
 > 适用窗口：CodexRadar EvenRow 变体（`Core/CodexRadarForm.EvenRow.cs`）、独立 Claude Radar EvenRow（`Core/ClaudeRadarForm.cs`）
 
 ## 1. 概览
@@ -30,12 +30,12 @@ EvenRow 变体右侧的状态区域是**图形化状态卡**，由两部分组�
 - **左对齐 + 左移**：表盘在其区域内左对齐，并整体左移 `S(3)*0.5`（默认200%缩放下约3物理像素），使其在"额度线—LED灯柱"之间视觉居中。LED灯柱锚定在单元格**右缘**（`cellRect.Right - rightPad - ledColumnWidth`），表盘移动不影响灯柱位置。
 - 轨道：整圆，`DesignTokens.White(46)`，线宽 `S(2)`。
 
-### 2.2 批次标记与弧
-- **标记点**（白色小圆点，`White(235)`，直径 `S(4)`）落在表盘边缘的批次时刻位置：
-  - 24小时映射：0:00 在正上方（-90°），12:00 在正下方，角度 = `小时/24*360-90`。
-  - 后缀 `am` → 0:00；`pm` → 12:00；`HH:mm` 形态（如 Claude 标签 "7/6 10:59" 的时间部分）→ 真实钟面位置。
+### 2.2 当前指针、刷新标记与弧
+- **当前指针**（白色小圆点，`White(235)`，直径 `S(4)`）落在当前时刻位置：0:00 在正上方（-90°），12:00 在正下方，角度按周期内已过时间顺时针增加。
+- **刷新标记**（绿色小圆点，`Success`，直径 `S(3)`）落在上次记录到新 IQ 内容的位置；Codex 共享窗口保留 12 小时，Claude 保留 24 小时，下一圈指针到达该位置后不再绘制。Codex 同内容重复请求会保留旧 `RefreshedUtc`，不移动刷新标记。
+- **时间模式短标**（`UTC` / `LAST` / `REF` / `NOW`）绘制在圈内时间下方，颜色与时间一致；短标使用新增矩形，不能挤压或移动既有日期、时间、外环、绿点和白点。
 - **晚测第二次**：后缀 `pm2` / `pm_2` / `pm-2`（尾数≥2）时，在标记点内侧绘制黄色小"2"角标（`ParseEvenRowBatchSuffix` / `ParseClaudeEvenRowBatchSuffix`）。
-- **弧**：从批次标记顺时针扫到"当前时刻"的钟面位置（`sweep = (now角度 - 批次角度) mod 360`），线宽同轨道、圆头端帽。弧长即"批次距今在钟面上走过的距离"；颜色见 §3。
+- **弧**：从周期顶部边界顺时针扫到当前时刻位置，线宽同轨道、圆头端帽。弧长即当前周期已走过的距离；颜色见 §3。
 
 ### 2.3 中心文字
 - 上行：批次日期，统一格式化为 **"x月x日"**（`FormatEvenRowDialDate` / `FormatClaudeEvenRowDialDate`：`"7.6"` 或 `"7/6"` → `"7月6日"`；已含"月"或无法解析则原样显示，shrink-to-fit 防溢出）。白色 `White(235)`。
@@ -48,24 +48,23 @@ EvenRow 变体右侧的状态区域是**图形化状态卡**，由两部分组�
 → 主体走日期格式化，后缀走 `ParseEvenRowBatchSuffix`（am/pm/pm2/时间/未知）。
 未知形态安全回退：主体整体 shrink-fit 显示在表盘中心，无标记点无弧。
 
-## 3. 四级新鲜度颜色规则（用户定义）
+## 3. 边界新鲜度颜色规则
 
 实现：`ComputeEvenRowDialStatusColor`（Codex）/ `ComputeClaudeEvenRowDialStatusColor`（Claude），作用于**弧 + 中心时间文字**。
 
-**更新周期**：Codex 一天两测 → `cycle = 12h`；Claude 一天一测 → `cycle = 24h`。
+**更新周期**：Codex 一天两测 → `cycle = 12h`；Claude 一天一测 → `cycle = 24h`。边界使用本机系统时间：Codex 为系统 0:00/12:00，Claude 为系统 0:00。
 
 | 优先级 | 条件 | 颜色 |
 |---|---|---|
-| 1 | 本地"套圈"：本地成功刷新距今 > 1×cycle；或网站"套圈"：批次距今 > 2×cycle | **红** `Danger` |
-| 2 | 本地未更新：本地成功刷新距今 > 2小时（应用正常时几分钟就刷一次，超2小时=本地抓取故障） | **橙** `(232,128,54)`（品牌橙，与黄区分） |
-| 3 | 网站未更新：批次距今 > 1×cycle（站点没按节奏发布新批次） | **黄** `Warning` |
-| 4 | 已更新（批次在周期内且本地抓取健康） | **绿** `Success` |
+| 1 | 当前周期已有对应模型 IQ 数据窗口或 Claude `latest_at` | **绿** `Success` |
+| 2 | 当前周期还没有，但上一个周期有数据 | **黄** `Warning` |
+| 3 | 上一个完整周期也没有数据 | **红** `Danger`，并在黄色满环上叠加 |
 | — | 批次与本地时间都未知 | 灰 `GlyphMuted` |
 
-- "网站未更新且套了一圈"取 2×cycle：第一个 cycle 过后进入黄（未更新），再整整多错过一个 cycle 才升红。
+- 红色只在错过上一个完整周期后出现；本地抓取时间不再作为“已更新”或“本地故障”的颜色依据。
 - 数据来源：
-  - Codex 批次时刻 = `ModelIqDataDateLocal.Date + (WindowStartHour>=12 ? 12h : 0h)`（`ModelIqDataDateKnown` 守卫）；本地刷新 = `ModelIqRefreshedAtLocal`（`ModelIqRefreshedAtKnown` 守卫）。
-  - Claude 批次时刻 = `GetClaudeLatestMetricLocalTime(local)`；本地刷新 = `local.CheckedAtLocal`。
+  - Codex 批次时刻 = `ModelIqDataDateLocal.Date + (WindowStartHour>=12 ? 12h : 0h)`（`ModelIqDataDateKnown` 守卫）；绿色刷新标记 = `ModelIqRefreshedAtLocal`（`ModelIqRefreshedAtKnown` 守卫）。
+  - Claude 批次时刻与绿色刷新标记 = `GetClaudeLatestMetricLocalTime(local)`。
 - 刷新请求进行中沿用原闪烁机制（`renderTickCount` 奇偶帧 alpha 104）。
 
 ## 4. 服务 LED 灯柱
@@ -101,7 +100,6 @@ EvenRow 变体右侧的状态区域是**图形化状态卡**，由两部分组�
 
 ## 7. 已知边界与残留风险
 
-- 弧表达的是"钟面距离"：批次超过一个表盘周期（24h）后弧回绕视觉变短，此时以颜色（红/黄）为准。
+- 弧表达的是当前周期进度，始终从顶部边界顺时针前进；批次是否过期以颜色（红/黄/绿）为准。
 - `pm2` 后缀的具体形态是按合理猜测兼容的（`pm2`/`pm_2`/`pm-2`），站点实际发布后如格式不同会安全回退为文字，不破版。
-- "本地未更新"的 2 小时阈值是工程判断值（正常刷新间隔为分钟级），如需调整只改 `ComputeEvenRowDialStatusColor` / `ComputeClaudeEvenRowDialStatusColor` 中的 `2.0`。
 - 表盘/灯柱颜色仅使用既有 OLED 安全色板（Success/Warning/Danger/GlyphMuted/品牌橙 232,128,54），无蓝色。

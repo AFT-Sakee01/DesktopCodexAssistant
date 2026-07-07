@@ -26,6 +26,7 @@ internal sealed class ClaudeRadarSnapshot
     public string SelectedModelKey { get; set; }
     public string SelectedModelName { get; set; }
     public List<ClaudeRadarModelEntry> Models { get; set; }
+    public List<ClaudeRadarModelMetric> ModelMetrics { get; set; }
     public ClaudeRadarModelMetric SelectedModel { get; set; }
     public ClaudeRadarQuotaSnapshot Quota { get; set; }
     public ClaudeRadarQuotaLineSnapshot QuotaLine { get; set; }
@@ -53,6 +54,7 @@ internal sealed class ClaudeRadarSnapshot
             SelectedModelKey = string.Empty,
             SelectedModelName = string.Empty,
             Models = new List<ClaudeRadarModelEntry>(),
+            ModelMetrics = new List<ClaudeRadarModelMetric>(),
             SelectedModel = ClaudeRadarModelMetric.CreateDefault(),
             Quota = ClaudeRadarQuotaSnapshot.CreateDefault(),
             QuotaLine = ClaudeRadarQuotaLineSnapshot.CreateDefault(),
@@ -82,6 +84,7 @@ internal sealed class ClaudeRadarSnapshot
             SelectedModelKey = this.SelectedModelKey,
             SelectedModelName = this.SelectedModelName,
             Models = new List<ClaudeRadarModelEntry>(),
+            ModelMetrics = new List<ClaudeRadarModelMetric>(),
             SelectedModel = this.SelectedModel == null ? ClaudeRadarModelMetric.CreateDefault() : this.SelectedModel.Clone(),
             Quota = this.Quota == null ? ClaudeRadarQuotaSnapshot.CreateDefault() : this.Quota.Clone(),
             QuotaLine = this.QuotaLine == null ? ClaudeRadarQuotaLineSnapshot.CreateDefault() : this.QuotaLine.Clone(),
@@ -101,6 +104,17 @@ internal sealed class ClaudeRadarSnapshot
                 if (this.Models[i] != null)
                 {
                     clone.Models.Add(this.Models[i].Clone());
+                }
+            }
+        }
+
+        if (this.ModelMetrics != null)
+        {
+            for (int i = 0; i < this.ModelMetrics.Count; i++)
+            {
+                if (this.ModelMetrics[i] != null)
+                {
+                    clone.ModelMetrics.Add(this.ModelMetrics[i].Clone());
                 }
             }
         }

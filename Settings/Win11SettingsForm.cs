@@ -497,10 +497,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             // 对应 WidgetSettings 属性仍保留，Classic 布局若通过 settings.ini 设置仍生效；
             // 均布变体本就忽略这些设置。恢复入口时把下方分组加回，并同步 VerifySelfTest 必需绑定。
             new string[] { "窗口", "CodexRadarEnabled", "CodexRadarTransparencyPercent" },
-            new string[] { "模型与时区", "CodexRadarSoftwareMode", "CodexRadarModelKey", "CodexRadarModelVersion", "DeepSeekApiKeyRevision", "DisplayTimeZoneMode", "DisplayTimeZoneId" },
+            new string[] { "模型与时区", "CodexRadarSoftwareMode", "CodexRadarModelKey", "CodexRadarModelVersion", "RadarClockAutoSwitchModelEnabled", "RadarClockTimeDisplayMode", "DeepSeekApiKeyRevision", "DisplayTimeZoneMode", "DisplayTimeZoneId" },
             new string[] { "外观风格", "CodexRadarRenderVariant" },
             new string[] { "!网站数据源", "CodexRadarPublicJsonEnabled", "CodexRadarHtmlFallbackEnabled", "CodexRadarRssFallbackEnabled", "CodexRadarServiceProbeToken" },
-            new string[] { "!IQ 测试覆盖", "CodexModelIqTestEnabled", "CodexModelIqTestPassed", "CodexModelIqBaselineMode", "CodexModelIqBaselinePassed" },
+            new string[] { "!IQ 测试覆盖", "CodexModelIqTestEnabled", "CodexModelIqTestPassed", "CodexModelIqBaselineAutoEnabled", "CodexModelIqBaselinePassed", "CodexModelIqBaselineValidTasks" },
             new string[] { "!效率测试覆盖", "CodexModelEfficiencyTestEnabled", "CodexModelTokenEfficiencyTestPercent", "CodexModelTimeEfficiencyTestPercent",
                            "CodexModelTokenEfficiencyBaselineMode", "CodexModelTokenEfficiencyBaselinePassed", "CodexModelTokenEfficiencyBaselineTokens",
                            "CodexModelTimeEfficiencyBaselineMode", "CodexModelTimeEfficiencyBaselinePassed", "CodexModelTimeEfficiencyBaselineSeconds",
@@ -2961,6 +2961,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexRadarEnabled",
             "CodexRadarSoftwareMode",
             "CodexRadarModelKey",
+            "RadarClockAutoSwitchModelEnabled",
+            "RadarClockTimeDisplayMode",
             "CodexRadarHtmlFallbackEnabled",
             "CodexRadarServiceProbeToken",
             "ClaudeRadarEnabled",
@@ -3256,6 +3258,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexQuotaPlanFiveHourThresholdPercent", new NumericRange(WidgetSettings.MinCodexQuotaPlanThresholdPercent, WidgetSettings.MaxCodexQuotaPlanThresholdPercent) },
         { "CodexModelIqTestPassed", new NumericRange(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed) },
         { "CodexModelIqBaselinePassed", new NumericRange(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed) },
+        { "CodexModelIqBaselineValidTasks", new NumericRange(WidgetSettings.MinCodexModelIqValidTasks, WidgetSettings.MaxCodexModelIqValidTasks) },
         { "CodexModelTokenEfficiencyBaselinePassed", new NumericRange(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed) },
         { "CodexModelTimeEfficiencyBaselinePassed", new NumericRange(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed) }
     };
@@ -3337,6 +3340,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarSoftwareMode", "监控哪个软件" },
         { "CodexRadarModelKey", "Codex Radar 模型" },
         { "CodexRadarModelVersion", "模型版本" },
+        { "RadarClockAutoSwitchModelEnabled", "时钟过期自动切模型" },
+        { "RadarClockTimeDisplayMode", "时钟时间来源" },
         { "CodexRadarEnabled", "启用 Codex Radar" },
         { "CodexRadarTransparencyPercent", "Codex Radar 透明度" },
         { "ClaudeRadarEnabled", "启用 Claude Radar" },
@@ -3407,8 +3412,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "DeepSeekApiKeyRevision", "DeepSeek 配置" },
         { "CodexModelIqTestEnabled", "用测试值代替实时 IQ（调试用）" },
         { "CodexModelIqTestPassed", "IQ 测试通过数" },
+        { "CodexModelIqBaselineAutoEnabled", "IQ 基准自动跟随网站" },
         { "CodexModelIqBaselineMode", "IQ 基准模式" },
         { "CodexModelIqBaselinePassed", "IQ 基准通过数" },
+        { "CodexModelIqBaselineValidTasks", "IQ 基准总题数" },
         { "CodexModelEfficiencyTestEnabled", "用测试值代替实时效率（调试用）" },
         { "CodexModelTokenEfficiencyTestPercent", "Token 效率测试百分比" },
         { "CodexModelTimeEfficiencyTestPercent", "时间效率测试百分比" },
@@ -3477,6 +3484,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarSoftwareMode", "自动按前台窗口选择 CODEX 或 CLAUDE；也可强制固定检测软件。" },
         { "CodexRadarModelKey", "动态模型目录中的当前模型键。" },
         { "CodexRadarModelVersion", "模型目录版本，日常保持默认。" },
+        { "RadarClockAutoSwitchModelEnabled", "当 Codex/Claude 时钟跨过完整周期仍未获取当前模型 IQ 更新时，自动切到同站点当天最近刷新 IQ 的模型。" },
+        { "RadarClockTimeDisplayMode", "控制 Codex/Claude Radar 时钟中心下方时间：UTC、当前本机时间、上次尝试刷新，或上次实际 IQ 刷新。" },
         { "CodexRadarPublicJsonEnabled", "读取 current.json 的公开摘要层，包含窗口、预测和 API 可用性说明。" },
         { "CodexRadarHtmlFallbackEnabled", "当公开 JSON 不含 model_iq 时，从首页明文模块补齐 IQ、效率和模型目录。" },
         { "CodexRadarRssFallbackEnabled", "读取 feed.xml 的重置提醒；关闭后不会用 RSS 触发额度重置保护。" },
@@ -3486,8 +3495,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarRandomTestRefreshToken", "点击后让随机测试数据立刻换一组。" },
         { "CodexModelIqTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
         { "CodexModelIqTestPassed", "手动指定 IQ 测试通过数。" },
+        { "CodexModelIqBaselineAutoEnabled", "开启时自动读取网站有效题数和常态区推导 n/N；关闭后使用下方手动 n/N。" },
         { "CodexModelIqBaselineMode", "选择 IQ 对比基准的来源。" },
-        { "CodexModelIqBaselinePassed", "手动指定 IQ 基准通过数。" },
+        { "CodexModelIqBaselinePassed", "手动指定 IQ 基准通过数 n。" },
+        { "CodexModelIqBaselineValidTasks", "手动指定 IQ 基准总题数 N；仅在关闭自动基准时用于 IQ 环。" },
         { "CodexModelEfficiencyTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
         { "CodexModelTokenEfficiencyTestPercent", "手动指定 Token 效率测试百分比。" },
         { "CodexModelTimeEfficiencyTestPercent", "手动指定时间效率测试百分比。" },
@@ -4772,6 +4783,30 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 if (mode == CodexRadarSoftwareMode.Claude)
                 {
                     return "CLAUDE";
+                }
+            }
+
+            if (this.Value is RadarClockTimeDisplayMode)
+            {
+                RadarClockTimeDisplayMode mode = (RadarClockTimeDisplayMode)this.Value;
+                if (mode == RadarClockTimeDisplayMode.Utc)
+                {
+                    return "UTC";
+                }
+
+                if (mode == RadarClockTimeDisplayMode.CurrentLocal)
+                {
+                    return "当前时间";
+                }
+
+                if (mode == RadarClockTimeDisplayMode.LastAttemptRefresh)
+                {
+                    return "上次尝试刷新";
+                }
+
+                if (mode == RadarClockTimeDisplayMode.LastActualRefresh)
+                {
+                    return "上次实际刷新";
                 }
             }
 

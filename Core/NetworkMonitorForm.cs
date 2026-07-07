@@ -12,7 +12,6 @@ using System.Windows.Forms;
 internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 {
     private const int RenderSecondBoundaryOffsetMs = 55;
-    private const int DnsAlertOverlayRowIndex = 6;
     private readonly System.Windows.Forms.Timer timer;
     private readonly System.Windows.Forms.Timer hoverTimer;
     private readonly NetworkMonitorReader reader;
@@ -23,9 +22,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     private string cloudEndpointAlertSignature = string.Empty;
     private int cloudEndpointAlertIndex;
     private bool cloudEndpointAlertNamePhase = true;
-    private string dnsAlertSignature = string.Empty;
-    private int dnsAlertIndex;
-    private string dnsAlertCandidateKey = string.Empty;
     private double hoverOpacityProgress;
     private DateTime hoverOpacityLastUtc;
     private DateTime reverseHoverRevealUntilUtc;
@@ -228,7 +224,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
             this.snapshot = nextSnapshot;
             bool alertChanged = AdvanceCloudEndpointAlertRotation();
-            bool dnsAlertChanged = AdvanceDnsAlertRotation();
             Size desiredSize = GetDesiredSize();
             bool sizeChanged = false;
             if (this.Size != desiredSize)
@@ -247,7 +242,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
                 positionChanged = true;
             }
 
-            if (!this.hiddenForFullscreen && this.Visible && (displayChanged || sizeChanged || positionChanged || blinkChanged || alertChanged || dnsAlertChanged))
+            if (!this.hiddenForFullscreen && this.Visible && (displayChanged || sizeChanged || positionChanged || blinkChanged || alertChanged))
             {
                 RenderLayeredWindow();
             }
@@ -644,7 +639,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         DrawInfoRow(g, 4, "WIFI", BuildWifiText(), rowTop, rowHeight, this.snapshot.IsWifi ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted);
         DrawInfoRow(g, 5, "PING", BuildConnectivityText(), rowTop, rowHeight, GetConnectivityColor());
         DrawInfoRow(g, 6, "GFW", BuildGfwProbeText(), rowTop, rowHeight, GetGfwProbeColor());
-        DrawDnsAlertOverlay(g, rowTop, rowHeight);
     }
 
     private void DrawHeader(Graphics g, RectangleF rect)
@@ -656,24 +650,26 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         Font statusFont = GetCachedUiFont(Math.Max(8.0f, rect.Height * 0.42f), FontStyle.Bold);
         using (SolidBrush titleBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
         using (SolidBrush statusBrush = new SolidBrush(statusColor))
-        using (SolidBrush publicBrush = new SolidBrush(HasPublicAddressDisplayValue() ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted))
         {
             RectangleF titleRect = new RectangleF(rect.Left, rect.Top, rect.Width * 0.26f, rect.Height);
             DrawFittedText(g, "NETWORK", titleFont, titleBrush, titleRect, StringAlignment.Near);
 
-            RectangleF statusRect = new RectangleF(titleRect.Right + S(4), rect.Top, rect.Width * 0.36f, rect.Height);
+            float cloudWidth = GetCloudEndpointTileStripWidth(rect.Height);
+            float cloudLeft = cloudWidth > 0.0f ? Math.Max(titleRect.Right, rect.Right - cloudWidth) : rect.Right;
+            RectangleF cloudRect = cloudWidth > 0.0f
+                ? new RectangleF(cloudLeft, rect.Top, Math.Max(0.0f, rect.Right - cloudLeft), rect.Height)
+                : RectangleF.Empty;
+            float statusLeft = titleRect.Right + S(4);
+            float statusRight = cloudRect.IsEmpty ? rect.Right : cloudRect.Left - S(4);
+            RectangleF statusRect = new RectangleF(statusLeft, rect.Top, Math.Max(0.0f, statusRight - statusLeft), rect.Height);
             CloudEndpointAlert alert = GetCloudEndpointAlert(accessState);
-            string publicIp = BuildPublicAddressText("公网");
-            RectangleF rightTop = new RectangleF(statusRect.Right, rect.Top, rect.Right - statusRect.Right, rect.Height);
-            RectangleF publicRect = rightTop;
             RectangleF statusTextRect = statusRect;
-            if (alert.Active)
+            if (alert.Active && statusRect.Width > 0.0f)
             {
                 float gap = S(4);
                 float statusWidth = Math.Min(statusRect.Width, Math.Max(S(38), g.MeasureString(statusText, statusFont).Width + S(2)));
-                float publicWidth = Math.Min(rightTop.Width, Math.Max(S(34), g.MeasureString(publicIp, statusFont).Width + S(2)));
                 float alertLeft = statusRect.Left + statusWidth + gap;
-                float alertRight = Math.Max(alertLeft, rect.Right - publicWidth - gap);
+                float alertRight = Math.Max(alertLeft, statusRect.Right);
                 statusTextRect = new RectangleF(statusRect.Left, statusRect.Top, statusWidth, statusRect.Height);
                 RectangleF alertRect = new RectangleF(alertLeft, statusRect.Top, Math.Max(0.0f, alertRight - alertLeft), statusRect.Height);
                 using (SolidBrush alertBrush = new SolidBrush(alert.Color))
@@ -682,8 +678,12 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
                 }
             }
 
-            DrawFittedText(g, statusText, statusFont, statusBrush, statusTextRect, StringAlignment.Near);
-            DrawFittedText(g, publicIp, statusFont, publicBrush, publicRect, StringAlignment.Far);
+            if (statusTextRect.Width > 0.0f)
+            {
+                DrawFittedText(g, statusText, statusFont, statusBrush, statusTextRect, StringAlignment.Near);
+            }
+
+            DrawCloudEndpointTiles(g, cloudRect, accessState);
         }
     }
 
@@ -920,7 +920,56 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             });
         }
 
+        AddDnsHeaderAlertCandidates(candidates);
         return candidates.ToArray();
+    }
+
+    private void AddDnsHeaderAlertCandidates(List<CloudEndpointAlertCandidate> candidates)
+    {
+        DnsAlertCandidate[] dnsCandidates = GetDnsAlertCandidates();
+        for (int i = 0; i < dnsCandidates.Length; i++)
+        {
+            DnsAlertCandidate dns = dnsCandidates[i];
+            if (dns == null || dns.Status == DnsServerStatus.Normal)
+            {
+                continue;
+            }
+
+            candidates.Add(new CloudEndpointAlertCandidate
+            {
+                Key = "dns:" + dns.Key,
+                Status = GetHeaderAlertStatusForDns(dns.Status),
+                Name = "DNS",
+                Reason = GetHeaderAlertReasonForDns(dns.Text),
+                Color = dns.Color
+            });
+        }
+    }
+
+    private static CloudEndpointStatus GetHeaderAlertStatusForDns(DnsServerStatus status)
+    {
+        if (status == DnsServerStatus.Hijacked)
+        {
+            return CloudEndpointStatus.Down;
+        }
+
+        if (status == DnsServerStatus.Unavailable)
+        {
+            return CloudEndpointStatus.Unknown;
+        }
+
+        return CloudEndpointStatus.Abnormal;
+    }
+
+    private static string GetHeaderAlertReasonForDns(string text)
+    {
+        string value = string.IsNullOrWhiteSpace(text) ? string.Empty : text.Trim();
+        if (value.StartsWith("DNS", StringComparison.Ordinal))
+        {
+            value = value.Substring(3);
+        }
+
+        return value.Length == 0 ? "异常" : value;
     }
 
     private static string BuildCloudEndpointAlertSignature(CloudEndpointAlertCandidate[] candidates)
@@ -1054,155 +1103,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         }
 
         return " | " + rolling.DiagnosisText.Trim();
-    }
-
-    private float GetDnsAlertStripWidth(Graphics g, float rowHeight)
-    {
-        DnsAlertCandidate[] candidates = GetDnsAlertCandidates();
-        if (candidates.Length == 0)
-        {
-            return 0.0f;
-        }
-
-        float cloudWidth = GetCloudEndpointTileStripWidth(rowHeight);
-        float textWidth = GetMaxDnsAlertTextWidth(g, candidates, rowHeight);
-        float desired = Math.Max(Math.Max(cloudWidth, textWidth + S(10)), S(76));
-        float maxWidth = Math.Max(S(76), this.Width - S(92));
-        return Math.Min(desired, maxWidth);
-    }
-
-    private float GetMaxDnsAlertTextWidth(Graphics g, DnsAlertCandidate[] candidates, float rowHeight)
-    {
-        if (g == null || candidates == null || candidates.Length == 0)
-        {
-            return 0.0f;
-        }
-
-        Font font = GetDnsAlertFont(rowHeight);
-        float width = 0.0f;
-        for (int i = 0; i < candidates.Length; i++)
-        {
-            string text = candidates[i] == null ? string.Empty : candidates[i].Text;
-            if (string.IsNullOrEmpty(text))
-            {
-                continue;
-            }
-
-            width = Math.Max(width, g.MeasureString(text, font).Width);
-        }
-
-        return width;
-    }
-
-    private Font GetDnsAlertFont(float rowHeight)
-    {
-        return GetCachedUiFont(Math.Max(7.5f, rowHeight * 0.50f), FontStyle.Bold);
-    }
-
-    private void DrawDnsAlertStrip(Graphics g, RectangleF rect, float rowHeight)
-    {
-        DnsAlertCandidate[] candidates = GetDnsAlertCandidates();
-        if (candidates.Length == 0 || rect.Width <= 0.0f || rect.Height <= 0.0f)
-        {
-            return;
-        }
-
-        int index = Math.Max(0, Math.Min(this.dnsAlertIndex, candidates.Length - 1));
-        DnsAlertCandidate candidate = candidates[index];
-        Font font = GetDnsAlertFont(rowHeight);
-        using (SolidBrush brush = new SolidBrush(candidate.Color))
-        {
-            DrawFittedText(g, candidate.Text, font, brush, rect, StringAlignment.Far);
-        }
-    }
-
-    private void DrawDnsAlertOverlay(Graphics g, float rowTop, float rowHeight)
-    {
-        RectangleF rect = GetDnsAlertOverlayRect(g, rowTop, rowHeight);
-        if (rect.Width <= 0.0f || rect.Height <= 0.0f)
-        {
-            return;
-        }
-
-        DrawDnsAlertStrip(g, rect, rowHeight);
-    }
-
-    private RectangleF GetDnsAlertOverlayRect(Graphics g, float rowTop, float rowHeight)
-    {
-        float width = GetDnsAlertStripWidth(g, rowHeight);
-        if (width <= 0.0f)
-        {
-            return RectangleF.Empty;
-        }
-
-        // DNS status is a top-layer badge aligned with the GFW row. It must not
-        // change the GFW row's layout; only the IP4 cloud tiles reserve row width.
-        return new RectangleF(
-            Math.Max(S(10), this.Width - S(10) - width),
-            rowTop + DnsAlertOverlayRowIndex * rowHeight,
-            width,
-            rowHeight);
-    }
-
-    private bool AdvanceDnsAlertRotation()
-    {
-        DnsAlertCandidate[] candidates = GetDnsAlertCandidates();
-        if (candidates.Length == 0)
-        {
-            bool hadAlert = !string.IsNullOrEmpty(this.dnsAlertSignature);
-            this.dnsAlertSignature = string.Empty;
-            this.dnsAlertIndex = 0;
-            this.dnsAlertCandidateKey = string.Empty;
-            return hadAlert;
-        }
-
-        string signature = BuildDnsAlertSignature(candidates);
-        bool signatureChanged = !string.Equals(signature, this.dnsAlertSignature, StringComparison.Ordinal);
-        if (signatureChanged)
-        {
-            this.dnsAlertSignature = signature;
-        }
-
-        if (candidates.Length <= 1)
-        {
-            bool changed = signatureChanged || this.dnsAlertIndex != 0;
-            this.dnsAlertIndex = 0;
-            this.dnsAlertCandidateKey = candidates[0].Key;
-            return changed;
-        }
-
-        if (string.IsNullOrEmpty(this.dnsAlertCandidateKey))
-        {
-            this.dnsAlertIndex = Math.Max(0, Math.Min(this.dnsAlertIndex, candidates.Length - 1));
-            this.dnsAlertCandidateKey = candidates[this.dnsAlertIndex].Key;
-            return true;
-        }
-
-        int previousIndex = FindDnsAlertCandidateIndex(candidates, this.dnsAlertCandidateKey);
-        int baseIndex = previousIndex >= 0
-            ? previousIndex
-            : Math.Max(0, Math.Min(this.dnsAlertIndex, candidates.Length - 1));
-        this.dnsAlertIndex = (baseIndex + 1) % candidates.Length;
-        this.dnsAlertCandidateKey = candidates[this.dnsAlertIndex].Key;
-        return true;
-    }
-
-    private static int FindDnsAlertCandidateIndex(DnsAlertCandidate[] candidates, string key)
-    {
-        if (candidates == null || candidates.Length == 0 || string.IsNullOrEmpty(key))
-        {
-            return -1;
-        }
-
-        for (int i = 0; i < candidates.Length; i++)
-        {
-            if (string.Equals(candidates[i].Key, key, StringComparison.Ordinal))
-            {
-                return i;
-            }
-        }
-
-        return -1;
     }
 
     private DnsAlertCandidate[] GetDnsAlertCandidates()
@@ -1441,43 +1341,20 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return compact.ToString(0, maxLength - 1) + "…";
     }
 
-    private static string BuildDnsAlertSignature(DnsAlertCandidate[] candidates)
-    {
-        if (candidates == null || candidates.Length == 0)
-        {
-            return string.Empty;
-        }
-
-        System.Text.StringBuilder builder = new System.Text.StringBuilder();
-        for (int i = 0; i < candidates.Length; i++)
-        {
-            if (i > 0)
-            {
-                builder.Append("|");
-            }
-
-            builder.Append(candidates[i].Key);
-            builder.Append(":");
-            builder.Append(candidates[i].Text);
-            builder.Append(":");
-            builder.Append(candidates[i].Status.ToString());
-        }
-
-        return builder.ToString();
-    }
-
     private void DrawInfoRow(Graphics g, int row, string label, string value, float rowTop, float rowHeight, Color valueColor)
     {
         float y = rowTop + row * rowHeight;
         float labelLeft = S(10);
-        RectangleF labelRect = new RectangleF(labelLeft, y, S(42), rowHeight);
-        bool drawCloudTiles = string.Equals(label, "IP4", StringComparison.Ordinal);
-        float rightWidth = GetInfoRowReservedRightWidth(label, rowHeight);
-        float rightGap = rightWidth > 0.0f ? S(4) : 0.0f;
-        float valueWidth = Math.Max(S(28), this.Width - labelRect.Right - S(13) - rightWidth - rightGap);
-        RectangleF valueRect = new RectangleF(labelRect.Right + S(3), y, valueWidth, rowHeight);
         Font labelFont = GetCachedUiFont(Math.Max(8.0f, rowHeight * 0.52f), FontStyle.Bold);
         Font valueFont = GetCachedUiFont(Math.Max(8.5f, rowHeight * 0.58f), FontStyle.Bold);
+        float labelWidth = GetInfoRowLabelWidth(g, label, labelFont);
+        float valueGap = GetInfoRowValueGap();
+        RectangleF labelRect = new RectangleF(labelLeft, y, labelWidth, rowHeight);
+        bool drawPublicAddress = string.Equals(label, "IP4", StringComparison.Ordinal);
+        float rightWidth = GetInfoRowReservedRightWidth(g, label, valueFont, rowHeight);
+        float rightGap = rightWidth > 0.0f ? S(4) : 0.0f;
+        float valueWidth = Math.Max(S(28), this.Width - labelRect.Right - valueGap - S(10) - rightWidth - rightGap);
+        RectangleF valueRect = new RectangleF(labelRect.Right + valueGap, y, valueWidth, rowHeight);
         if (string.Equals(label, "IP4", StringComparison.Ordinal))
         {
             value = BuildMeasuredAddressRowText(g, value, valueFont, valueRect.Width, 15);
@@ -1494,31 +1371,65 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             DrawFittedText(g, value, valueFont, valueBrush, valueRect, StringAlignment.Near);
         }
 
-        if (drawCloudTiles && rightWidth > 0.0f)
+        if (drawPublicAddress && rightWidth > 0.0f)
         {
-            RectangleF cloudRect = new RectangleF(Math.Max(S(10), this.Width - S(10) - rightWidth), y, rightWidth, rowHeight);
-            DrawCloudEndpointTiles(g, cloudRect, GetDisplayAccessState());
+            RectangleF publicRect = new RectangleF(Math.Max(S(10), this.Width - S(10) - rightWidth), y, rightWidth, rowHeight);
+            DrawPublicAddressModule(g, publicRect, valueFont);
         }
     }
 
-    private float GetInfoRowReservedRightWidth(string label, float rowHeight)
+    private float GetInfoRowLabelWidth(Graphics g, string label, Font labelFont)
+    {
+        float measured = g == null || labelFont == null
+            ? S(18)
+            : g.MeasureString(EmptyToDash(label), labelFont).Width + S(2);
+        return Math.Min(S(34), Math.Max(S(18), measured));
+    }
+
+    private float GetInfoRowValueGap()
+    {
+        return S(2);
+    }
+
+    private float GetInfoRowReservedRightWidth(Graphics g, string label, Font valueFont, float rowHeight)
     {
         if (string.Equals(label, "IP4", StringComparison.Ordinal))
         {
-            return GetCloudEndpointTileStripWidth(rowHeight);
+            return GetPublicAddressStripWidth(g, valueFont, rowHeight);
         }
 
         return 0.0f;
+    }
+
+    private float GetPublicAddressStripWidth(Graphics g, Font font, float rowHeight)
+    {
+        Font drawFont = font ?? GetCachedUiFont(Math.Max(8.5f, rowHeight * 0.58f), FontStyle.Bold);
+        float measured = g == null
+            ? S(68)
+            : g.MeasureString(BuildPublicAddressText("公网"), drawFont).Width + S(4);
+        float minWidth = S(58);
+        float maxWidth = Math.Max(minWidth, this.Width * 0.38f);
+        return Math.Min(maxWidth, Math.Max(minWidth, measured));
+    }
+
+    private void DrawPublicAddressModule(Graphics g, RectangleF rect, Font font)
+    {
+        using (SolidBrush brush = new SolidBrush(HasPublicAddressDisplayValue() ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted))
+        {
+            DrawFittedText(g, BuildPublicAddressText("公网"), font, brush, rect, StringAlignment.Far);
+        }
     }
 
     private void DrawDnsRow(Graphics g, int row, float rowTop, float rowHeight)
     {
         float y = rowTop + row * rowHeight;
         float labelLeft = S(10);
-        RectangleF labelRect = new RectangleF(labelLeft, y, S(42), rowHeight);
-        RectangleF valueRect = new RectangleF(labelRect.Right + S(3), y, this.Width - labelRect.Right - S(13), rowHeight);
         Font labelFont = GetCachedUiFont(Math.Max(8.0f, rowHeight * 0.52f), FontStyle.Bold);
         Font valueFont = GetCachedUiFont(Math.Max(8.5f, rowHeight * 0.58f), FontStyle.Bold);
+        float labelWidth = GetInfoRowLabelWidth(g, "DNS", labelFont);
+        float valueGap = GetInfoRowValueGap();
+        RectangleF labelRect = new RectangleF(labelLeft, y, labelWidth, rowHeight);
+        RectangleF valueRect = new RectangleF(labelRect.Right + valueGap, y, this.Width - labelRect.Right - valueGap - S(10), rowHeight);
         using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
         {
             DrawFittedText(g, "DNS", labelFont, labelBrush, labelRect, StringAlignment.Near);
@@ -2804,41 +2715,75 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             }
 
             form.Width = 360;
-            form.snapshot = new NetworkMonitorSnapshot { DnsServerDetails = duplicateDns };
-            float testRowTop = 24.0f;
+            form.snapshot = new NetworkMonitorSnapshot
+            {
+                Connected = true,
+                InterfaceKnown = true,
+                AccessState = NetworkAccessState.Online,
+                ConnectivityKnown = true,
+                ConnectivityOnline = true,
+                DnsServerDetails = duplicateDns,
+                GfwProbe = new GfwProbeSnapshot
+                {
+                    CloudEndpoints = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Normal)
+                }
+            };
             float testRowHeight = 18.0f;
             using (Bitmap testBitmap = new Bitmap(form.Width, 120))
             using (Graphics testGraphics = Graphics.FromImage(testBitmap))
             {
-                RectangleF dnsOverlay = form.GetDnsAlertOverlayRect(testGraphics, testRowTop, testRowHeight);
-                if (dnsOverlay.IsEmpty ||
-                    Math.Abs(dnsOverlay.Top - (testRowTop + DnsAlertOverlayRowIndex * testRowHeight)) > 0.01f)
+                Font labelFont = form.GetCachedUiFont(Math.Max(8.0f, testRowHeight * 0.52f), FontStyle.Bold);
+                float oldFixedLabelWidth = form.S(42);
+                float ip4LabelWidth = form.GetInfoRowLabelWidth(testGraphics, "IP4", labelFont);
+                if (ip4LabelWidth > oldFixedLabelWidth * 0.65f)
                 {
-                    throw new InvalidOperationException("Network monitor display self-test: DNS alert overlay must align with the GFW row.");
-                }
-
-                if (form.GetInfoRowReservedRightWidth("GFW", testRowHeight) != 0.0f ||
-                    form.GetInfoRowReservedRightWidth("IP6", testRowHeight) != 0.0f)
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: DNS overlay must not change GFW or IP6 row layout width.");
-                }
-
-                form.snapshot = new NetworkMonitorSnapshot
-                {
-                    DnsServerDetails = new DnsServerSnapshot[]
-                    {
-                        new DnsServerSnapshot { Address = "1.1.1.1", Status = DnsServerStatus.Problem, Reason = "返回 SERVFAIL" }
-                    }
-                };
-                RectangleF shortAlertOverlay = form.GetDnsAlertOverlayRect(testGraphics, testRowTop, testRowHeight);
-                Font shortAlertFont = form.GetDnsAlertFont(testRowHeight);
-                float requiredShortAlertWidth = testGraphics.MeasureString("DNS返回SERVFAIL", shortAlertFont).Width;
-                if (shortAlertOverlay.Width < requiredShortAlertWidth)
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: DNS short alert text must have enough overlay width.");
+                    throw new InvalidOperationException("Network monitor display self-test: IP row label gap must be tightened.");
                 }
 
                 Font addressFont = form.GetCachedUiFont(10.0f, FontStyle.Bold);
+                if (form.GetInfoRowReservedRightWidth(testGraphics, "GFW", addressFont, testRowHeight) != 0.0f ||
+                    form.GetInfoRowReservedRightWidth(testGraphics, "IP6", addressFont, testRowHeight) != 0.0f)
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: only IP4 row may reserve a right-side module.");
+                }
+
+                float ip4ReservedWidth = form.GetInfoRowReservedRightWidth(testGraphics, "IP4", addressFont, testRowHeight);
+                if (ip4ReservedWidth <= 0.0f)
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: IP4 row must reserve public address module width.");
+                }
+
+                CloudEndpointAlertCandidate[] headerCandidates = form.GetCloudEndpointAlertCandidates(NetworkAccessState.Online);
+                if (headerCandidates.Length != 2 ||
+                    !string.Equals(headerCandidates[0].Key, "dns:1.1.1.1", StringComparison.Ordinal) ||
+                    !string.Equals(headerCandidates[0].Name, "DNS", StringComparison.Ordinal) ||
+                    headerCandidates[0].Reason.IndexOf("仅TCP@1.1.1.1", StringComparison.Ordinal) < 0)
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: DNS errors must join the cloud header alert candidates.");
+                }
+
+                if (!form.AdvanceCloudEndpointAlertRotation())
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: combined header alert rotation initial state failed.");
+                }
+
+                CloudEndpointAlert headerAlert = form.GetCloudEndpointAlert(NetworkAccessState.Online);
+                if (!headerAlert.Active || !string.Equals(headerAlert.Text, "DNS!", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: DNS header alert must show source name first.");
+                }
+
+                if (!form.AdvanceCloudEndpointAlertRotation())
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: combined header alert rotation reason phase failed.");
+                }
+
+                headerAlert = form.GetCloudEndpointAlert(NetworkAccessState.Online);
+                if (!headerAlert.Active || headerAlert.Text.IndexOf("仅TCP@1.1.1.1!", StringComparison.Ordinal) < 0)
+                {
+                    throw new InvalidOperationException("Network monitor display self-test: DNS header alert must rotate to the concrete reason.");
+                }
+
                 string measuredFullIpv6 = form.BuildMeasuredAddressRowText(
                     testGraphics,
                     "2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890, fd00::1",
@@ -2865,25 +2810,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
                 {
                     throw new InvalidOperationException("Network monitor display self-test: measured IPv6 row must compact only the first address when width is tight.");
                 }
-            }
-
-            form.snapshot = new NetworkMonitorSnapshot { DnsServerDetails = duplicateDns };
-            if (!form.AdvanceDnsAlertRotation() || form.dnsAlertIndex != 0)
-            {
-                throw new InvalidOperationException("Network monitor display self-test: DNS alert rotation initial index failed.");
-            }
-
-            form.snapshot = new NetworkMonitorSnapshot
-            {
-                DnsServerDetails = new DnsServerSnapshot[]
-                {
-                    new DnsServerSnapshot { Address = "1.1.1.1", Status = DnsServerStatus.Problem, Reason = "返回 SERVFAIL" },
-                    new DnsServerSnapshot { Address = "8.8.8.8", Status = DnsServerStatus.Problem, Reason = "UDP失败/TCP可用" }
-                }
-            };
-            if (!form.AdvanceDnsAlertRotation() || form.dnsAlertIndex != 1)
-            {
-                throw new InvalidOperationException("Network monitor display self-test: DNS alert rotation must advance through signature changes.");
             }
         }
 

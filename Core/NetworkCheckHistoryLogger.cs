@@ -650,7 +650,7 @@ internal sealed class NetworkCheckHistoryEntry
     public string Timezone { get; set; }
     /// <summary>codex_radar, connection_check, or network_monitor</summary>
     public string Module { get; set; }
-    /// <summary>codex_radar_status, claude_status, codex_connection, clean_ip, connectivity, public_ip, dns, gfw, cloud_endpoints</summary>
+    /// <summary>codex_radar_status, claude_status, clean_ip, connectivity, public_ip, dns, gfw, cloud_endpoints</summary>
     public string CheckName { get; set; }
     public string Trigger { get; set; }
     /// <summary>Short status string, never raw API bodies</summary>

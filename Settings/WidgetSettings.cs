@@ -189,6 +189,14 @@ internal enum DisplayTimeZoneMode
     Manual
 }
 
+internal enum RadarClockTimeDisplayMode
+{
+    Utc,
+    CurrentLocal,
+    LastAttemptRefresh,
+    LastActualRefresh
+}
+
 internal enum OperationPrimaryPanelMode
 {
     Auto,
@@ -271,17 +279,20 @@ internal sealed class WidgetSettings
     public const double MinHoverOpacityRevealResetSeconds = 0.1;
     public const double MaxHoverOpacityRevealResetSeconds = 5.0;
     public const double DefaultHoverOpacityRevealResetSeconds = 0.5;
-    private const int CurrentSettingsVersion = 49;
+    private const int CurrentSettingsVersion = 52;
     private const int EffectivePerformanceModeCacheMs = 2000;
     private static readonly object EffectivePerformanceModeSync = new object();
     private static DateTime effectivePerformanceModeCacheUtc = DateTime.MinValue;
     private static WidgetPerformanceMode effectivePerformanceModeCache = WidgetPerformanceMode.Balanced;
     public const int MinCodexModelIqPassed = 0;
-    public const int MaxCodexModelIqPassed = 10;
+    public const int MaxCodexModelIqPassed = 100;
+    public const int MinCodexModelIqValidTasks = 1;
+    public const int MaxCodexModelIqValidTasks = 100;
     public const int PreviousDefaultCodexModelIqBaselinePassed = 8;
     public const int PreviousTwelveTaskCodexModelIqBaselinePassed = 7;
     public const int PreviousTenTaskLocalCodexModelIqBaselinePassed = 6;
     public const int DefaultCodexModelIqBaselinePassed = 7;
+    public const int DefaultCodexModelIqBaselineValidTasks = 10;
     public const int MinCodexModelEfficiencyPercent = 0;
     public const int MaxCodexModelEfficiencyPercent = 200;
     public const int DefaultCodexModelEfficiencyPercent = 100;
@@ -513,7 +524,9 @@ internal sealed class WidgetSettings
     public CleanIpBadgeTestMode CleanIpBadgeTestMode { get; set; }
     public bool CodexModelIqTestEnabled { get; set; }
     public int CodexModelIqTestPassed { get; set; }
+    public bool CodexModelIqBaselineAutoEnabled { get; set; }
     public int CodexModelIqBaselinePassed { get; set; }
+    public int CodexModelIqBaselineValidTasks { get; set; }
     public CodexModelBaselineMode CodexModelIqBaselineMode { get; set; }
     public bool CodexModelEfficiencyTestEnabled { get; set; }
     public int CodexModelTokenEfficiencyTestPercent { get; set; }
@@ -529,6 +542,8 @@ internal sealed class WidgetSettings
     public CodexRadarModelVersion CodexRadarModelVersion { get; set; }
     public string CodexRadarModelKey { get; set; }
     public CodexRadarSoftwareMode CodexRadarSoftwareMode { get; set; }
+    public bool RadarClockAutoSwitchModelEnabled { get; set; }
+    public RadarClockTimeDisplayMode RadarClockTimeDisplayMode { get; set; }
     public string ClaudeRadarModelKey { get; set; }
     public CodexRadarRenderVariant ClaudeRadarRenderVariant { get; set; }
     public DisplayTimeZoneMode DisplayTimeZoneMode { get; set; }
@@ -737,7 +752,9 @@ internal sealed class WidgetSettings
         this.CleanIpBadgeTestMode = defaults.CleanIpBadgeTestMode;
         this.CodexModelIqTestEnabled = defaults.CodexModelIqTestEnabled;
         this.CodexModelIqTestPassed = defaults.CodexModelIqTestPassed;
+        this.CodexModelIqBaselineAutoEnabled = defaults.CodexModelIqBaselineAutoEnabled;
         this.CodexModelIqBaselinePassed = defaults.CodexModelIqBaselinePassed;
+        this.CodexModelIqBaselineValidTasks = defaults.CodexModelIqBaselineValidTasks;
         this.CodexModelIqBaselineMode = defaults.CodexModelIqBaselineMode;
         this.CodexModelEfficiencyTestEnabled = defaults.CodexModelEfficiencyTestEnabled;
         this.CodexModelTokenEfficiencyTestPercent = defaults.CodexModelTokenEfficiencyTestPercent;
@@ -752,6 +769,9 @@ internal sealed class WidgetSettings
         this.CodexModelTimeEfficiencyLowThresholdPercent = defaults.CodexModelTimeEfficiencyLowThresholdPercent;
         this.CodexRadarModelVersion = defaults.CodexRadarModelVersion;
         this.CodexRadarModelKey = defaults.CodexRadarModelKey;
+        this.CodexRadarSoftwareMode = defaults.CodexRadarSoftwareMode;
+        this.RadarClockAutoSwitchModelEnabled = defaults.RadarClockAutoSwitchModelEnabled;
+        this.RadarClockTimeDisplayMode = defaults.RadarClockTimeDisplayMode;
         this.ClaudeRadarModelKey = defaults.ClaudeRadarModelKey;
         this.ClaudeRadarRenderVariant = defaults.ClaudeRadarRenderVariant;
         this.DisplayTimeZoneMode = defaults.DisplayTimeZoneMode;
@@ -931,7 +951,9 @@ internal sealed class WidgetSettings
         settings.CleanIpBadgeTestMode = CleanIpBadgeTestMode.Off;
         settings.CodexModelIqTestEnabled = false;
         settings.CodexModelIqTestPassed = DefaultCodexModelIqBaselinePassed;
+        settings.CodexModelIqBaselineAutoEnabled = true;
         settings.CodexModelIqBaselinePassed = DefaultCodexModelIqBaselinePassed;
+        settings.CodexModelIqBaselineValidTasks = DefaultCodexModelIqBaselineValidTasks;
         settings.CodexModelIqBaselineMode = CodexModelBaselineMode.AllRecordsAverage;
         settings.CodexModelEfficiencyTestEnabled = false;
         settings.CodexModelTokenEfficiencyTestPercent = DefaultCodexModelEfficiencyPercent;
@@ -947,6 +969,8 @@ internal sealed class WidgetSettings
         settings.CodexRadarModelVersion = CodexRadarModelVersion.Gpt55;
         settings.CodexRadarModelKey = CodexRadarModelCatalog.DefaultModelKey;
         settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Auto;
+        settings.RadarClockAutoSwitchModelEnabled = true;
+        settings.RadarClockTimeDisplayMode = RadarClockTimeDisplayMode.Utc;
         settings.ClaudeRadarModelKey = string.Empty;
         settings.ClaudeRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
@@ -1156,7 +1180,9 @@ internal sealed class WidgetSettings
         settings.CleanIpBadgeTestMode = CleanIpBadgeTestMode.Off;
         settings.CodexModelIqTestEnabled = false;
         settings.CodexModelIqTestPassed = 7;
+        settings.CodexModelIqBaselineAutoEnabled = true;
         settings.CodexModelIqBaselinePassed = 7;
+        settings.CodexModelIqBaselineValidTasks = DefaultCodexModelIqBaselineValidTasks;
         settings.CodexModelIqBaselineMode = CodexModelBaselineMode.Absolute;
         settings.CodexModelEfficiencyTestEnabled = false;
         settings.CodexModelTokenEfficiencyTestPercent = 100;
@@ -1172,6 +1198,8 @@ internal sealed class WidgetSettings
         settings.CodexRadarModelVersion = CodexRadarModelVersion.Gpt55;
         settings.CodexRadarModelKey = "gpt_55_xhigh";
         settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Auto;
+        settings.RadarClockAutoSwitchModelEnabled = true;
+        settings.RadarClockTimeDisplayMode = RadarClockTimeDisplayMode.Utc;
         settings.ClaudeRadarModelKey = "";
         settings.ClaudeRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
@@ -1367,7 +1395,9 @@ internal sealed class WidgetSettings
             CleanIpBadgeTestMode = this.CleanIpBadgeTestMode,
             CodexModelIqTestEnabled = this.CodexModelIqTestEnabled,
             CodexModelIqTestPassed = this.CodexModelIqTestPassed,
+            CodexModelIqBaselineAutoEnabled = this.CodexModelIqBaselineAutoEnabled,
             CodexModelIqBaselinePassed = this.CodexModelIqBaselinePassed,
+            CodexModelIqBaselineValidTasks = this.CodexModelIqBaselineValidTasks,
             CodexModelIqBaselineMode = this.CodexModelIqBaselineMode,
             CodexModelEfficiencyTestEnabled = this.CodexModelEfficiencyTestEnabled,
             CodexModelTokenEfficiencyTestPercent = this.CodexModelTokenEfficiencyTestPercent,
@@ -1383,6 +1413,8 @@ internal sealed class WidgetSettings
             CodexRadarModelVersion = this.CodexRadarModelVersion,
             CodexRadarModelKey = this.CodexRadarModelKey,
             CodexRadarSoftwareMode = this.CodexRadarSoftwareMode,
+            RadarClockAutoSwitchModelEnabled = this.RadarClockAutoSwitchModelEnabled,
+            RadarClockTimeDisplayMode = this.RadarClockTimeDisplayMode,
             ClaudeRadarModelKey = this.ClaudeRadarModelKey,
             ClaudeRadarRenderVariant = this.ClaudeRadarRenderVariant,
             DisplayTimeZoneMode = this.DisplayTimeZoneMode,
@@ -1496,6 +1528,16 @@ internal sealed class WidgetSettings
             MaxAutoHoverOpacityIdleSeconds);
         this.CodexModelIqTestPassed = Clamp(this.CodexModelIqTestPassed, MinCodexModelIqPassed, MaxCodexModelIqPassed);
         this.CodexModelIqBaselinePassed = Clamp(this.CodexModelIqBaselinePassed, MinCodexModelIqPassed, MaxCodexModelIqPassed);
+        this.CodexModelIqBaselineValidTasks = Clamp(
+            this.CodexModelIqBaselineValidTasks <= 0
+                ? DefaultCodexModelIqBaselineValidTasks
+                : this.CodexModelIqBaselineValidTasks,
+            MinCodexModelIqValidTasks,
+            MaxCodexModelIqValidTasks);
+        if (this.CodexModelIqBaselinePassed > this.CodexModelIqBaselineValidTasks)
+        {
+            this.CodexModelIqBaselinePassed = this.CodexModelIqBaselineValidTasks;
+        }
         this.CodexModelTokenEfficiencyTestPercent = Clamp(
             this.CodexModelTokenEfficiencyTestPercent,
             MinCodexModelEfficiencyPercent,
@@ -1560,6 +1602,11 @@ internal sealed class WidgetSettings
         if (!Enum.IsDefined(typeof(CodexRadarSoftwareMode), this.CodexRadarSoftwareMode))
         {
             this.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Auto;
+        }
+
+        if (!Enum.IsDefined(typeof(RadarClockTimeDisplayMode), this.RadarClockTimeDisplayMode))
+        {
+            this.RadarClockTimeDisplayMode = RadarClockTimeDisplayMode.Utc;
         }
 
         this.ClaudeRadarModelKey = NormalizeClaudeRadarModelKey(this.ClaudeRadarModelKey);
@@ -2123,7 +2170,9 @@ internal sealed class WidgetSettings
             "CleanIpBadgeTestMode=" + this.CleanIpBadgeTestMode,
             "CodexModelIqTestEnabled=" + this.CodexModelIqTestEnabled,
             "CodexModelIqTestPassed=" + this.CodexModelIqTestPassed,
+            "CodexModelIqBaselineAutoEnabled=" + this.CodexModelIqBaselineAutoEnabled,
             "CodexModelIqBaselinePassed=" + this.CodexModelIqBaselinePassed,
+            "CodexModelIqBaselineValidTasks=" + this.CodexModelIqBaselineValidTasks,
             "CodexModelIqBaselineMode=" + this.CodexModelIqBaselineMode,
             "CodexModelEfficiencyTestEnabled=" + this.CodexModelEfficiencyTestEnabled,
             "CodexModelTokenEfficiencyTestPercent=" + this.CodexModelTokenEfficiencyTestPercent,
@@ -2139,6 +2188,8 @@ internal sealed class WidgetSettings
             "CodexRadarModelVersion=" + this.CodexRadarModelVersion,
             "CodexRadarModelKey=" + this.CodexRadarModelKey,
             "CodexRadarSoftwareMode=" + this.CodexRadarSoftwareMode,
+            "RadarClockAutoSwitchModelEnabled=" + this.RadarClockAutoSwitchModelEnabled,
+            "RadarClockTimeDisplayMode=" + this.RadarClockTimeDisplayMode,
             "ClaudeRadarModelKey=" + this.ClaudeRadarModelKey,
             "ClaudeRadarRenderVariant=" + this.ClaudeRadarRenderVariant,
             "DisplayTimeZoneMode=" + this.DisplayTimeZoneMode,
@@ -3266,11 +3317,23 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "CodexModelIqBaselineAutoEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.CodexModelIqBaselineAutoEnabled = boolValue;
+            return;
+        }
+
         if ((string.Equals(key, "CodexModelIqBaselinePassed", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(key, "CodexModelIqBaseline", StringComparison.OrdinalIgnoreCase)) &&
             int.TryParse(value, out intValue))
         {
             settings.CodexModelIqBaselinePassed = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexModelIqBaselineValidTasks", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexModelIqBaselineValidTasks = intValue;
             return;
         }
 
@@ -3404,6 +3467,27 @@ internal sealed class WidgetSettings
             catch
             {
                 settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Auto;
+            }
+
+            return;
+        }
+
+        if (string.Equals(key, "RadarClockAutoSwitchModelEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.RadarClockAutoSwitchModelEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "RadarClockTimeDisplayMode", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                settings.RadarClockTimeDisplayMode =
+                    (RadarClockTimeDisplayMode)Enum.Parse(typeof(RadarClockTimeDisplayMode), value, true);
+            }
+            catch
+            {
+                settings.RadarClockTimeDisplayMode = RadarClockTimeDisplayMode.Utc;
             }
 
             return;
@@ -4486,6 +4570,14 @@ internal sealed class WidgetSettings
         AssertLayout(legacy.CodexRadarSoftwareMode == CodexRadarSoftwareMode.Claude, "Codex Radar software mode should parse Claude");
         ApplyValue(legacy, "CodexRadarSoftwareMode", "InvalidMode");
         AssertLayout(legacy.CodexRadarSoftwareMode == CodexRadarSoftwareMode.Auto, "invalid Codex Radar software mode should normalize to Auto");
+        ApplyValue(legacy, "RadarClockAutoSwitchModelEnabled", "False");
+        AssertLayout(!legacy.RadarClockAutoSwitchModelEnabled, "radar clock auto-switch setting should parse false");
+        ApplyValue(legacy, "RadarClockAutoSwitchModelEnabled", "True");
+        AssertLayout(legacy.RadarClockAutoSwitchModelEnabled, "radar clock auto-switch setting should parse true");
+        ApplyValue(legacy, "RadarClockTimeDisplayMode", "LastAttemptRefresh");
+        AssertLayout(legacy.RadarClockTimeDisplayMode == RadarClockTimeDisplayMode.LastAttemptRefresh, "radar clock time display mode should parse last attempt");
+        ApplyValue(legacy, "RadarClockTimeDisplayMode", "InvalidMode");
+        AssertLayout(legacy.RadarClockTimeDisplayMode == RadarClockTimeDisplayMode.Utc, "invalid radar clock time display mode should normalize to UTC");
         ApplyValue(legacy, "CodexRadarEnabled", "False");
         AssertLayout(!legacy.CodexRadarEnabled, "codex radar enabled setting should parse false");
         ApplyValue(legacy, "CodexRadarEnabled", "True");
@@ -4534,16 +4626,18 @@ internal sealed class WidgetSettings
 
         WidgetSettings iqClamp = CreateDefaults();
         ApplyValue(iqClamp, "CodexModelIqBaselinePassed", "12");
+        ApplyValue(iqClamp, "CodexModelIqBaselineValidTasks", "12");
         ApplyValue(iqClamp, "CodexModelIqTestPassed", "12");
         ApplyValue(iqClamp, "CodexModelTokenEfficiencyBaselinePassed", "12");
         ApplyValue(iqClamp, "CodexModelTimeEfficiencyBaselinePassed", "12");
         iqClamp.Normalize();
         AssertLayout(
-            iqClamp.CodexModelIqBaselinePassed == MaxCodexModelIqPassed &&
-            iqClamp.CodexModelIqTestPassed == MaxCodexModelIqPassed &&
-            iqClamp.CodexModelTokenEfficiencyBaselinePassed == MaxCodexModelIqPassed &&
-            iqClamp.CodexModelTimeEfficiencyBaselinePassed == MaxCodexModelIqPassed,
-            "codex model iq passed settings should clamp to ten tasks");
+            iqClamp.CodexModelIqBaselinePassed == 12 &&
+            iqClamp.CodexModelIqBaselineValidTasks == 12 &&
+            iqClamp.CodexModelIqTestPassed == 12 &&
+            iqClamp.CodexModelTokenEfficiencyBaselinePassed == 12 &&
+            iqClamp.CodexModelTimeEfficiencyBaselinePassed == 12,
+            "codex model iq passed settings should preserve manually configured task counts");
 
         ApplyValue(legacy, "SensitiveMouseRangePixels", "500");
         ApplyValue(legacy, "HoverOpacityRevealDelayEnabled", "False");

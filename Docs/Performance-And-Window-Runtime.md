@@ -1,6 +1,6 @@
 # 性能模式、主窗口与指标运行机制
 
-适用版本：1.0.4.18
+适用版本：1.0.4.27
 
 ## 1. 文档范围
 
@@ -8,6 +8,7 @@
 
 - 主性能窗口 `WidgetForm`
 - Codex 监测窗口 `CodexRadarForm`
+- Claude 监测窗口 `ClaudeRadarForm`
 - 功耗与温度窗口 `PowerThermalForm`
 - 网络监控窗口 `NetworkMonitorForm`
 - 连接检测窗口 `ConnectionCheckForm`
@@ -32,8 +33,9 @@
 ```mermaid
 flowchart LR
     Settings["settings.ini"] --> Main["WidgetForm"]
-    Main --> Radar["CodexRadarForm"]
-    Main --> Power["PowerThermalForm"]
+Main --> Radar["CodexRadarForm"]
+Main --> Claude["ClaudeRadarForm"]
+Main --> Power["PowerThermalForm"]
     Main --> Network["NetworkMonitorForm"]
     Main --> CleanIP["ConnectionCheckForm"]
     Main --> Operation["OperationForm"]
@@ -102,7 +104,7 @@ flowchart LR
 
 ### 4.2 复用分层窗口缓冲区
 
-主窗口、Codex、功耗、网络和连接检测窗口均复用 `Bitmap` 与 `Graphics`：
+`WidgetForm`、`CodexRadarForm`、`ClaudeRadarForm`、`PowerThermalForm`、`NetworkMonitorForm`、`ConnectionCheckForm` 和 `OperationForm` 均继承 `LayeredWidgetFormBase`，共用 `NativeMethods.LayeredBitmapSurface`、`Bitmap` 与 `Graphics` 生命周期：
 
 - 尺寸不变时复用缓冲区。
 - 尺寸变化或窗口关闭时释放。
@@ -293,14 +295,14 @@ Wi-Fi RSSI 读取方式：
 
 - 同步读取本地网卡、IPv4/IPv6、DNS、Wi-Fi 认证和 PHY；IP 行只显示第一个地址，后续地址折叠为 `+n`，第一个地址放得下时不显示第二个地址；
 - 支持设置页指定当前网卡；未指定时继续按默认网关、地址、接口类型和链路速率自动选择；
-- 异步读取公网 IPv4；标题栏公网显示优先使用本地可公开路由 IPv6 的短显，没有 IPv6 时回退到公网 IPv4；
+- 异步读取公网 IPv4；`IP4` 行右侧公网显示优先使用本地可公开路由 IPv6 的短显，没有 IPv6 时回退到公网 IPv4；
 - 异步检测 DNS 可用性、错误返回和随机不存在域名劫持，并按正常/异常状态自适应复查周期；
 - 异步执行 Ping、NCSI 门户检测、延迟、抖动和丢包率测量；
 - 单飞执行 PING 滚动采样，保留网关、公网和百度回退窗口，用于 PING 行 1 位小数丢包、ICMP 禁用和 loss 后缀链路诊断；
 - 在 `Online` 时根据丢包、抖动和延迟生成内部本地链路劣化标记，供 DNS 和云服务检测降低高丢包误判；
 - 调用 `GfwProbeReader` 获取防火墙检测结果；GFW 的本地链路门控只来自当前活动目标滚动 PING 丢包率 `>= 2%` 且已确认，不直接使用 4 包连通性丢包，也不使用网关侧 ICMP 丢包、延迟或抖动诊断，`Unknown`、离线和该门控只影响本轮显示，不清空 GFW 周期；
 - 调用 `CloudEndpointProbeReader` 独立获取云服务检测结果，GFW 失败结论不会使云服务检测跳过或置灰；真实状态非 `Online` 时停止/取消云服务探测并隐藏标题右侧云服务告警；
-- Classic 布局的 DNS 告警覆盖层只消费已有 DNS 快照，不增加额外网络请求；覆盖层右对齐到窗口最右下角并对齐 `GFW` 行，但不参与 `GFW` 或 `IP6` 行宽度计算，不会让这两行预留、收窄或重排；IP 行和公网标题使用压缩短显，完整地址只留在快照中；IP 行优先显示第一个完整地址，后续地址折叠为 `+n`，第一个地址放得下时不显示第二个地址；DNS 行保留网卡返回的 DNS 优先级顺序，错误状态只改变颜色，不把报错项提前；无错误时显示绿色 `DNS正常`，异常时按 DNS 行从左到右的原始优先级顺序随绘制节拍轮换无编号提示，并显示污染、无响应、仅 TCP、返回码、无地址、NXDOMAIN 验证失败或地址无效等具体短原因；当多条异常文字相同且状态相同时，只在屏幕提示中追加紧凑 DNS 地址后缀以保证轮换可见；DNS 历史 JSONL 记录按顺序写入脱敏的 `status_detail`/`abnormal_detail`，保留具体原因但不写 DNS 地址；
+- Classic 布局的云服务方块在标题栏最右侧右对齐，公网短显在 `IP4` 行右侧，信息行标签列按标签文本测量以缩短短标签和内容的固定空白；DNS 异常只消费已有 DNS 快照，不增加额外网络请求，并加入标题栏云服务告警槽轮换，不再绘制独立右下角覆盖层；IP 行使用压缩短显，完整地址只留在快照中；IP 行优先显示第一个完整地址，后续地址折叠为 `+n`，第一个地址放得下时不显示第二个地址；DNS 行保留网卡返回的 DNS 优先级顺序，错误状态只改变颜色，不把报错项提前；无错误时不占用标题栏告警槽，异常时按 DNS 行从左到右的原始优先级顺序追加到云服务告警队列，并显示污染、无响应、仅 TCP、返回码、无地址、NXDOMAIN 验证失败或地址无效等具体短原因；当多条异常文字相同且状态相同时，只在屏幕提示中追加紧凑 DNS 地址后缀以保证轮换可见；DNS 历史 JSONL 记录按顺序写入脱敏的 `status_detail`/`abnormal_detail`，保留具体原因但不写 DNS 地址；
 - 返回快照副本，禁止 UI 直接修改内部状态。
 
 连通性状态判定：

@@ -6,6 +6,7 @@
 bin/
 obj/
 _build/
+Release/Assets/
 
 # Local backups and generated archives
 Backups/

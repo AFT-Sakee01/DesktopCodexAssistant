@@ -1,6 +1,6 @@
 # Fable5-Data-Sources-And-Caching-Technical — 数据源、Fallback 链与缓存位置详解
 
-适用版本：`1.0.4.18`。生成时间：2026-07-06。
+适用版本：`1.0.4.25`。生成时间：2026-07-07。
 本文回答三个问题：**每个模块从哪个网站/本地文件的哪个位置读什么、失败时按什么顺序 fallback、结果缓存在哪个文件里**。所有 URL、路径、常量均直接摘自源码并附出处；刷新频率与调度规则的权威文档是 `Docs/Component-Refresh-Rules.md`，本文只在必要处引用不重复。
 
 约定：`<DATA>` = `%LOCALAPPDATA%\DesktopCodexAssistant`（`Logger.DirectoryPath`）；`<HOME>` = `%USERPROFILE%`。
@@ -15,20 +15,21 @@
 
 | 优先级 | URL | 读取内容 | 门控设置 |
 |---|---|---|---|
-| 1 | `https://codexradar.com/current.json` | 当日批次模型数据：`passed`、通过率、`total_tokens`/`n_input_tokens`+`n_output_tokens`、`serial_task_seconds`（用于 token/时间效率）、状态色（green/yellow/orange/red 别名归一化）、数据日期与上下午窗口 | `CodexRadarPublicJsonEnabled` |
+| 1 | `https://codexradar.com/current.json` | 当日批次模型数据：`score`、`passed`、`tasks`/`valid_tasks`、`total_tokens`/`n_input_tokens`+`n_output_tokens`、`serial_task_seconds`（用于 token/时间效率）、状态色（green/yellow/orange/red 别名归一化）、数据日期与上下午窗口；`model_iq` 全模型分数还用于推导 IQ 环显示上限 | `CodexRadarPublicJsonEnabled` |
 | 1b | `https://codexradar.com/api/v1/current` | 授权完整 API（服务可用性探测按钮也会测它） | 同上 |
-| 2 | `https://codexradar.com/`（首页 HTML） | 两种用途：(a) **补齐**——JSON 成功但缺首页额度雷达、网页短数据标签或 IQ 常态区时抓取补齐，补齐失败不覆盖 JSON 结果；(b) **回退**——JSON 失败时作为数据回退 | `CodexRadarHtmlFallbackEnabled` |
+| 2 | `https://codexradar.com/`（首页 HTML） | 两种用途：(a) **补齐**——JSON 成功但缺首页额度雷达、网页短数据标签、IQ 常态区或 IQ 图表显示上限时抓取补齐，补齐失败不覆盖 JSON 结果；(b) **回退**——JSON 失败时作为数据回退 | `CodexRadarHtmlFallbackEnabled` |
 | 3 | `https://codexradar.com/feed.xml`（RSS） | 最后一层回退（文件内 9576 行附近） | `CodexRadarRssFallbackEnabled` |
 | 附 | `https://codexradar.com/api/model-ratings?history=14` | 模型社区评分 14 天历史 | — |
 
-- 效率计算：`模型效率 = (当前 passed/total_tokens) ÷ (基线 passed/total_tokens)`，时间效率同理用 `serial_task_seconds`；基线存在 `settings.ini` 的 `CodexModelIq*BaselinePassed` 系列键。
+- IQ 环：分数优先使用网站 `score`；显示上限从同次 `model_iq` 全模型分数或首页 `IQ指数` 历史值取最高值并缓存为 `DisplayMaxScore`。基准默认自动跟随网站 `valid_tasks` 和常态区推导 `n/N`，关闭自动后使用 `settings.ini` 的 `CodexModelIqBaselinePassed` / `CodexModelIqBaselineValidTasks`。
+- 效率计算：`模型效率 = (当前 passed/total_tokens) ÷ (基线 passed/total_tokens)`，时间效率同理用 `serial_task_seconds`；Token/时间效率基线存在 `settings.ini` 的 `CodexModel*EfficiencyBaseline*` 系列键。
 - 刷新节奏：启动/恢复/模型切换/数据源设置变化/手动刷新触发一次错峰请求；常规自动刷新在**北京时间每小时整点**一次（`TimeZoneUtilities.GetNextBeijingHourUtc`）；失败 10 min 重试。
 
 ### 1.2 缓存
 
 | 文件 | 内容 | TTL |
 |---|---|---|
-| `<DATA>\codex-radar-cache.ini` | 按 `软件模式+模型 key` 前缀分组的键值：`SavedUtc / RefreshedUtc / DataDate / DataWindowHour / DataLabel / PassRate / Passed / ValidTasks / Status / TimeEfficiency / TokenEfficiency / EfficiencyPassed / EfficiencySeconds / EfficiencyTokens / NormalLow / NormalHigh / History`。启动时 `LoadCodexRadarCache` 先回显缓存再联网 | `CodexModelCacheRetentionDays = 7` 天；Codex 模式还兼容读 legacy 前缀 |
+| `<DATA>\codex-radar-cache.ini` | 按 `软件模式+模型 key` 前缀分组的键值：`SavedUtc / RefreshedUtc / DataDate / DataWindowHour / DataLabel / PassRate / DisplayMaxScore / Passed / ValidTasks / Status / TimeEfficiency / TokenEfficiency / EfficiencyPassed / EfficiencySeconds / EfficiencyTokens / NormalLow / NormalHigh / History`。`RefreshedUtc` 是当前 IQ 内容首次被记录到的时间；同内容再次请求成功时保留旧值，用于 12/24 小时时钟小绿点。`DisplayMaxScore` 让请求失败时 IQ 环继续沿用最近一次网站图表上限。绿点可见性由运行时按真实时间差计算，Codex 超过 12 h、Claude 超过 24 h 后不再显示；刷新到当前时间的连接弧只在该绿点仍有效时绘制。渲染缓存按当前分钟失效，避免旧 bitmap 冻结过期绿点。启动时 `LoadCodexRadarCache` 先回显缓存再联网 | `CodexModelCacheRetentionDays = 7` 天；Codex 模式还兼容读 legacy 前缀 |
 | `<DATA>\codex-radar-models.ini` | 模型目录（`CodexRadarModelCatalog`），驱动设置页模型下拉 | 持久 |
 | `<DATA>\quota-reset-state.ini` | 额度 reset 到期后的保护状态（`LoadQuotaResetState`，约 13008 行） | 持久 |
 | `<DATA>\codex-radar-service-probe.txt` | 设置页"检测服务可用性"按钮的一次性诊断输出 | 覆盖写 |
@@ -39,7 +40,7 @@
 
 ## 2. Codex 个人额度（5h / 周额度环）
 
-源码：`Core/CodexRadarForm.CodexUsage.cs`（provider 路径）、`Core/CodexRadarForm.cs` 13200–13600 行附近（本地 session 路径）。
+源码：`Core/CodexRadarForm.CodexUsage.cs`（provider 路径）、`Core/CodexRadarForm.cs` 的 `ReadQuotaSnapshot` / `ApplyQuotaSlot` / `LogQuotaRingDecision`（本地 session、缓存和诊断路径）。
 
 ### 2.1 主路径：ChatGPT provider API
 
@@ -50,6 +51,7 @@
   3. `<HOME>\.codex\auth.json` —— 用 JavaScriptSerializer 递归找第一个 `access_token`/`accessToken` 字段。
 - 节奏：正常 300 s / 失败 600 s / HTTP 429 冷却 900 s，单飞；快照新鲜窗口 900 s。
 - 门控：仅当检测软件为 CODEX 且本地 Codex 进程在运行（`SoftwareRuntimePresence`）；AI 请求保护（手动阻断或 GFW 明确阻断）命中时本轮不读 token、不发请求，按 `AI_BLOCK` 失败间隔处理。
+- 字段单位：`used_percent` / `used_percentage` 是百分数，`1` 表示已用 1%；`utilization` 在 0–1 区间时按比例换算，`0.01` 表示已用 1%。provider 单次样本若把 5 小时或周余额从高位直接变成 0 且 reset 时间没有实质推进，会被拒绝写入内存和 `quota.ini`，并记录 `provider_*_zero_drop_ignored_keep_previous_snapshot`。
 
 ### 2.2 Fallback：本地 Codex CLI session 文件
 
@@ -62,8 +64,8 @@
 
 | 文件 | 写入者 | 用途 |
 |---|---|---|
-| `<DATA>\quota.ini` | CodexRadarForm（13846 行：Claude 模式写 `claude-quota.ini`，否则写 `quota.ini`） | 最近一次成功的 5h/周额度快照；`CodexQuotaGoalPlanner`（额度计划）只复用此缓存做暂停/恢复判断 |
-| `<DATA>\quota-decision-history.jsonl` | `QuotaDecisionHistoryLogger` | 每次真实额度读取后的判定记录；15 s/32 KiB 批量落盘，约 48 h 滚动 |
+| `<DATA>\quota.ini` | `CodexRadarForm.TryWriteQuotaIniSnapshot`（Claude 模式写 `claude-quota.ini`，否则写 `quota.ini`） | 最近一次成功的 5h/周额度快照；`CodexQuotaGoalPlanner`（额度计划）只复用此缓存做暂停/恢复判断 |
+| `<DATA>\quota-decision-history.jsonl` | `QuotaDecisionHistoryLogger` | 每次真实额度读取后的判定记录；包含来源类型、上游 used 字段名、原值、归一化值、可疑 provider 零值拒绝原因；15 s/32 KiB 批量落盘，约 48 h 滚动 |
 | `<DATA>\codex-quota-plan-state.json` | `CodexQuotaGoalPlanner` | 额度计划 goal 暂停/恢复状态（通过 `codex app-server` 写 `usageLimited`/`active`） |
 
 ---
@@ -76,7 +78,7 @@
 
 | 优先级 | URL | 读取内容 | 门控 |
 |---|---|---|---|
-| 1 | `https://claudecoderadar.com/data/claude-code-radar.json` | 主数据：`iq.models` 数组（模型 key、显示名、IQ、效率、状态）、站点公开 quota usage | `ClaudeRadarJsonEnabled` |
+| 1 | `https://claudecoderadar.com/data/claude-code-radar.json` | 主数据：`iq.models` 数组（模型 key、显示名、IQ、效率、状态）、站点公开 quota usage、额度雷达 `quota.chart.trend` / `base_d7_trend` / `quota.metrics` | `ClaudeRadarJsonEnabled` |
 | 2 | `https://claudecoderadar.com/`（首页 HTML） | **弱 metadata fallback**：仅当 JSON 失败、`iq.models` 缺失、模型名缺失或名=key 时，解析首页 `MODEL_NAMES` 补 key/显示名。**只补名字，不伪造 IQ/效率/额度/服务健康**；homepage-only 目录不推进缺失计数、不触发模型删除 | `ClaudeRadarHomepageFallbackEnabled`（关闭时严禁探测首页） |
 | 附 | `https://claudecoderadar.com/api/model-ratings?history=14` | 社区评分（底部 `RC` 取 average 最高一条，平分取 count 大者） | `ClaudeRadarCommunityRatingsEnabled` |
 | 附 | `https://status.claude.com/api/v2/summary.json` | Claude 官方 Statuspage（右侧 `C` 方块），只在本窗口真实刷新路径顺序读取 | — |
@@ -87,10 +89,10 @@
 
 | 文件 | 内容 |
 |---|---|
-| `<DATA>\claude-radar-cache.ini` | 网站快照 + `SelectedModelKey/Name` + `CommunityKnown/RatingKey/Label/Average`（启动/失败合并时回显底部 RC/LLM） |
+| `<DATA>\claude-radar-cache.ini` | 网站快照 + `SelectedModelKey/Name` + 选中模型 `LatestAtUtc` + `CommunityKnown/RatingKey/Label/Average` + `QuotaLine*`（启动/失败合并时回显底部 RC/LLM，并让 IQ 时钟重启后仍按上次模型 `latest_at` 判断；24 小时小绿点和“刷新点到当前点”的连接弧也使用该字段；额度线启动后可继续显示上次站点趋势） |
 | `<DATA>\claude-radar-model-map.ini` | 模型目录映射（source_key ↔ rating_key ↔ display_name/sort_order/enabled）；只有 `ok=true` 且目录完整的响应才推进 temporarily_missing/deleted 计数（连续缺失阈值 `ModelDeleteMissingThreshold = 3`）。**paint 路径禁止读此文件** |
 | `<DATA>\claude-radar-notification-state.ini` | 模型新增/暂缺/恢复/删除托盘通知去重状态 |
-| `<DATA>\claude-radar-quota-history.jsonl` | 额度历史，按 metric/update/run 全量去重，单行坏 JSON 跳过不阻断 |
+| `<DATA>\claude-radar-quota-history.jsonl` | 额度历史，按 metric/update/run 全量去重，单行坏 JSON 跳过不阻断；当站点趋势不足两点时读取最近 7 天作为额度线 fallback |
 
 ---
 
@@ -211,7 +213,7 @@
 | `claude-radar-cache.ini` / `claude-radar-model-map.ini` / `claude-radar-notification-state.ini` / `claude-radar-quota-history.jsonl` | ClaudeRadarReader/Form | 见 §3.2 | 持久 |
 | `quota-reset-state.ini` | CodexRadarForm | reset 到期保护状态 | 持久 |
 | `codex-quota-plan-state.json` | CodexQuotaGoalPlanner | 额度计划状态 | 持久 |
-| `quota-decision-history.jsonl` | QuotaDecisionHistoryLogger | 额度判定历史 | ~48 h 滚动 |
+| `quota-decision-history.jsonl` | QuotaDecisionHistoryLogger | 额度判定历史；含 provider/session/cache 来源诊断 | ~48 h 滚动 |
 | `network-check-history.jsonl` | NetworkCheckHistoryLogger | 网络检查历史 | 启动+每 6 h 修剪 |
 | `deepseek-balance-history.jsonl` | CodexRadarForm | 余额样本 | 48 h |
 | `ui-hang-watchdog.jsonl` | UiHangWatchdog | UI 无响应记录（>10 s 挂起） | 持久 |

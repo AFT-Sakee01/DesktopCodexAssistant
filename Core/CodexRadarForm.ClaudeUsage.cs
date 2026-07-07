@@ -717,7 +717,7 @@ internal sealed partial class CodexRadarForm
 
                 DateTime nowUtc = DateTime.UtcNow;
                 this.lastQuotaRefreshUtc = nowUtc;
-                ApplyCodexQuotaSnapshot(snapshot.Clone(), true, true, DateTime.Now, nowUtc);
+                ApplyCodexQuotaSnapshot(snapshot.Clone(), true, true, DateTime.Now, nowUtc, "claude");
                 RenderLayeredWindow();
             });
         }
