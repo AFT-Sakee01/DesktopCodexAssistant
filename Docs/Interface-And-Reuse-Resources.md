@@ -1,6 +1,6 @@
 # 接口与复用资源汇总
 
-适用版本：1.0.4.18
+适用版本：1.0.4.30
 
 ## 1. 文档用途
 
@@ -105,7 +105,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | 索引 ID | 组件 | 复用规则 |
 | --- | --- | --- |
 | `internal_api.widget_settings` | 设置、迁移、布局与性能策略 | 新设置完整接入读写和自测链 |
-| `internal_api.logger` | 缓冲日志、错误日志和 GFW 日志 | 高频事件聚合或只记录状态变化 |
+| `internal_api.logger` | 缓冲日志、错误日志和 GFW 日志 | 高频事件聚合或只记录状态变化；目录大小扫描默认 10 分钟节流，活动日志轮转时强制执行 |
 | `internal_api.timing_stats` | 12 小时滚动耗时统计 | 新增性能计时点复用内存滚动窗口和 15 分钟摘要日志 |
 | `internal_api.idle_cpu_diagnostics` | 空闲 CPU 飙升归因 | 复用一次性 CPU/进程采样、事件日志扫描和公式化归因规则 |
 | `internal_api.pdh_sampler` | 性能快照 | UI 不直接访问 PDH/WMI |
@@ -180,3 +180,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 4. 确认 `location` 与 `references` 指向现有项目路径。
 5. 逐行解析 JSONL，检查唯一 ID 和必填字段。
 6. 不登记密码、Token、Cookie、私钥或完整连接串。
+
+## 10. 待议项
+
+- JSON 统一入口待议：当前仍保留各模块现有 `JavaScriptSerializer` / 轻量解析路径，不在本轮替换；后续若统一 JSON 门面，需要先做 settings、quota、网络历史、外部 API payload 的兼容性夹具和回归测试。

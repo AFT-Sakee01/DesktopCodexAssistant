@@ -1,20 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
-using System.Management;
-using System.Net.NetworkInformation;
-using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using System.Web.Script.Serialization;
-using System.Windows.Forms;
-using Microsoft.Win32;
 
 internal static class Logger
 {
@@ -22,9 +10,11 @@ internal static class Logger
     private const long MaxActiveLogBytes = 3L * 1024L * 1024L;
     private const int MaxBufferedInfoBytes = 64 * 1024;
     private const int InfoFlushIntervalMs = 5 * 60 * 1000;
+    private static readonly TimeSpan DirectoryLimitCheckInterval = TimeSpan.FromMinutes(10);
     private static readonly object SyncRoot = new object();
     private static readonly StringBuilder InfoBuffer = new StringBuilder();
     private static readonly System.Threading.Timer FlushTimer;
+    private static DateTime lastDirectoryLimitCheckUtc = DateTime.MinValue;
     private static int infoBufferBytes;
     private static bool shuttingDown;
 
@@ -239,17 +229,17 @@ internal static class Logger
 
         Directory.CreateDirectory(DirectoryPath);
         long incomingBytes = Encoding.UTF8.GetByteCount(text);
-        RotateActiveLogIfNeeded(path, incomingBytes);
+        bool rotated = RotateActiveLogIfNeeded(path, incomingBytes);
         File.AppendAllText(path, text, Encoding.UTF8);
-        EnforceLogDirectoryLimit();
+        EnforceLogDirectoryLimit(rotated);
     }
 
-    private static void RotateActiveLogIfNeeded(string path, long incomingBytes)
+    private static bool RotateActiveLogIfNeeded(string path, long incomingBytes)
     {
         FileInfo file = new FileInfo(path);
         if (!file.Exists || file.Length + Math.Max(0, incomingBytes) <= MaxActiveLogBytes)
         {
-            return;
+            return false;
         }
 
         // Rotation is an O(1) rename; unlike tail trimming it never rewrites the full active log.
@@ -273,10 +263,22 @@ internal static class Logger
         }
 
         File.Move(path, archivePath);
+        return true;
     }
 
-    private static void EnforceLogDirectoryLimit()
+    private static void EnforceLogDirectoryLimit(bool force)
     {
+        DateTime nowUtc = DateTime.UtcNow;
+        if (!force &&
+            lastDirectoryLimitCheckUtc != DateTime.MinValue &&
+            nowUtc - lastDirectoryLimitCheckUtc < DirectoryLimitCheckInterval)
+        {
+            return;
+        }
+
+        // Directory enumeration is bounded but still touches storage metadata; throttle normal writes
+        // while forcing a check after rotation so archived logs cannot grow unchecked.
+        lastDirectoryLimitCheckUtc = nowUtc;
         EnforceLogDirectoryLimit(
             DirectoryPath,
             new string[] { LogPath, ErrorLogPath, GfwProbeLogPath },
