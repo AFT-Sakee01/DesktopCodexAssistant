@@ -1,6 +1,6 @@
 # Codex 监测窗口技术说明
 
-适用版本：1.0.4.27
+适用版本：1.0.4.29
 
 ## 1. 范围
 
@@ -99,7 +99,7 @@ flowchart LR
 
 - `Auto`：先读取 `SoftwareRuntimePresence` 的 Codex/Claude 进程快照。两者都未运行时保持上一次有效软件并跳过前台检测；只有一者运行时直接选择该软件；只有两者都运行时才按前台窗口标题/进程名识别 `codex` 或 `claude`，忽略本程序自身窗口；无法识别时保持上一次有效软件，初始回退到 `CODEX`。
 - `Codex`：优先使用 ChatGPT usage provider API；旧本地 Codex session 日志和 `quota.ini` 作为 fallback。额度数字灰显由共享 Codex/Claude 运行态决定：只有两者都未运行或无数值时灰显，任一受支持程序运行且有数值时保持白色；保留 RSS 重置保护、速蹬窗口提示和消耗环逻辑；窗口绘制 3 px 深蓝色内描边，底部显示蓝色斜体 `Codex`。
-- `Claude`：读取 Claude Code OAuth usage API 的 `five_hour` / `seven_day` 用量并映射到同一两个余额环；获取接口不同，但成功快照会写入独立的 `%LOCALAPPDATA%\DesktopCodexAssistant\claude-quota.ini`，并复用与 CODEX 相同的额度应用、消耗环判定、重置保护和 `quota-decision-history.jsonl` 日志路径，避免两个软件共用同一个 `quota.ini` 串扰；窗口绘制 3 px 橙色内描边，底部显示橙色粗体 `Claude`。
+- `Claude`：通过 `ClaudeCodeUsageScheduler` 与独立 Claude Radar 共用一次 Claude Code usage 刷新，默认读取本地 statusline quota cache，显式配置 setup-token 时才可能触达 Claude OAuth usage fallback；成功快照会写入独立的 `%LOCALAPPDATA%\DesktopCodexAssistant\claude-quota.ini`，并复用与 CODEX 相同的额度应用、消耗环判定、重置保护和 `quota-decision-history.jsonl` 日志路径，避免两个软件共用同一个 `quota.ini` 串扰；窗口绘制 3 px 橙色内描边，底部显示橙色粗体 `Claude`。
 
 ChatGPT usage provider 读取 `used_percent` / `used_percentage` / `utilization` 和 `reset_at` / `resets_at`，并把 provider 快照保留约 15 分钟；过期后即使上一次 provider 成功，也允许 session fallback 更新显示，避免服务端接口不可用时长期冻结旧值。`used_percent` 与 `used_percentage` 按百分数处理，`1` 表示已用 1%；只有 `utilization` 在 0–1 区间时按比例换算，`0.01` 表示已用 1%。provider 单次样本如果把 5 小时或周余额从高位直接打到 `0` 且 reset 时间没有实质推进，会被视为可疑零值快照并丢弃，继续保留上一帧和 `quota.ini`，直到下一次有效样本确认。session JSONL 回退中读取 `event_msg -> token_count -> rate_limits`。`primary` 通常对应 5 小时窗口，`secondary` 通常对应周窗口；如果存在 `window_minutes`，以是否小于等于 300 分钟重新判断。
 
@@ -113,7 +113,7 @@ ChatGPT usage provider 读取 `used_percent` / `used_percentage` / `utilization`
 
 本地 `resets_at` 到达时会把对应余额暂时固定为 100，并保存保护状态。只有新样本的 `SourceUpdatedUtc` 晚于保护建立时间且 reset 时间已经更新，保护才释放，避免旧日志再次覆盖为低余额。
 
-CODEX 成功从 provider 或 session 读取额度后会写回 `quota.ini`；CLAUDE 成功从 Claude Code usage 读取后会写回 `claude-quota.ini`。两者格式相同但文件分离，切换检测软件时会立即加载对应缓存并重置本轮消耗环跟踪。内存中的最新 session 快照可以复用，但每 30 秒会重新确认是否存在更新的 `rollout-*.jsonl`；如果 watcher 漏掉新文件，也不会长期相信旧缓存。
+CODEX 成功从 provider 或 session 读取额度后会写回 `quota.ini`；CLAUDE 成功从共享 Claude Code usage 调度器读取后会写回 `claude-quota.ini`，同一轮 Codex Radar 与独立 Claude Radar 重叠请求只写一次。两者格式相同但文件分离，切换检测软件时会立即加载对应缓存并重置本轮消耗环跟踪。内存中的最新 session 快照可以复用，但每 30 秒会重新确认是否存在更新的 `rollout-*.jsonl`；如果 watcher 漏掉新文件，也不会长期相信旧缓存。
 
 CodexRadar RSS 中出现新的“用量限制已重置”记录时，会同时保护 5 小时和周额度：两个环立即显示 100，右侧时间位置显示金色 `已重置`；额度环弧线仍按当前剩余额度使用原本颜色，不额外变金。额度环图层从下到上为灰色底环、与左侧效率环一致的淡绿色 `#8EF2B9` 消耗环、当前余额环。消耗环不是单独的差值短段，而是上次读取或窗口基线余额对应的完整弧层；当前余额环覆盖共同部分后，露出的尾段自然表示消耗。五小时环的消耗环基准是上上次真实检测到的余额，并与上次检测到的余额比较：如果上上次为 67、上次为 57，则先绘制 67 的消耗环完整弧，再绘制 57 的当前余额弧，视觉上只露出 10 的淡绿色尾段；如果连续两次日志或刷新读到相同的五小时余额，则明确保留已有消耗环基线，不清空也不重建，直到余额再次上涨、下降或来源失效。周额度环不再显示自己的最近读取下降段，消耗环基准为上一次 5 小时自然窗口开始时的周额度；窗口用 5 小时 reset 时间推进或五小时余额上涨识别，周额度上涨时也重建基线，避免把周重置前的基线继续用于当前窗口。首次读取、无有效来源或保护态不显示可见消耗环尾段。环内数字不再按软件族着色：有已知数值且 Codex/Claude 任一受支持本地软件运行时为白色；两者都未运行或数值未知时为灰色。RSS 发布时间只用于判断事件新旧；保护建立时间使用本机检测到该 RSS 的时间，避免启动前已经存在的 quota 样本立刻释放 100 保护。保护释放条件仍与本地到期保护相同，必须等到新的 quota 样本证明已经进入下一窗口，避免旧 session 文件把显示再次覆盖成低额度。RSS 重置事件使用 GUID、发布时间和“已保护 GUID”写入 `quota-reset-state.ini` 去重；首次升级后如果最新重置发生在 36 小时内，也会触发一次，防止刚恢复的 RSS 提醒被当作旧基线忽略。
 
@@ -127,10 +127,10 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，会同时�
 | `codexradar.com/feed.xml` | 跟随已启用的数据层成功响应 | 不独立重试 |
 | `status.claude.com/api/v2/status.json` | 15 min | 2 min |
 | `chatgpt.com/backend-api/wham/usage` | 5 min，仅当前软件为 `CODEX` 时 | 10 min；HTTP 429 冷却 15 min |
-| `api.anthropic.com/api/oauth/usage` | 5 min，仅当前软件为 `CLAUDE` 时 | 10 min；HTTP 429 冷却 15 min |
+| Claude Code usage scheduler | 5 min，Codex Radar `CLAUDE` 模式或独立 Claude Radar 符合各自门控时共享 | 10 min；HTTP 429 冷却 15 min |
 | 五阶段连接诊断 | 已删除，不安排后台请求 | 已删除 |
 
-每个远程端点都有独立的 `requestRunning` 标志。同一端点任意时刻最多运行一个请求，慢请求不会在 timer tick 中堆积。
+每个远程端点都有独立的 `requestRunning` 标志。同一端点任意时刻最多运行一个请求，慢请求不会在 timer tick 中堆积。Claude Code 用量例外地由 `ClaudeCodeUsageScheduler` 提供进程级单飞，Codex Radar Claude 模式和独立 Claude Radar 共享同一个请求、退避和成功缓存写入。
 
 请求使用：
 

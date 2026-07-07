@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -25,7 +24,6 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
     private readonly UiFontCache fontCache = new UiFontCache();
     private readonly Dictionary<string, Bitmap> renderSceneBitmapCache = new Dictionary<string, Bitmap>(StringComparer.Ordinal);
     private readonly Queue<string> renderSceneBitmapCacheOrder = new Queue<string>();
-    private readonly object claudeCodeUsageLock = new object();
     private readonly Action<string, string, ToolTipIcon> notificationAction;
     private readonly Dictionary<string, string> notificationState = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private readonly object claudeApiServiceAlertDebounceLock = new object();
@@ -38,20 +36,11 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
     private bool hiddenForFullscreen;
     private bool displaySuspended;
     private bool requestRunning;
-    private bool claudeCodeUsageRequestRunning;
     private int lastRandomRefreshToken;
     private long burnInShiftSlot = long.MinValue;
     private DateTime nextRefreshUtc = DateTime.MinValue;
-    private DateTime nextClaudeCodeUsageRefreshUtc = DateTime.MinValue;
-    private string claudeCodeUsageRefreshTrigger = "首次刷新";
     private string lastClockAutoSwitchSignature = string.Empty;
     private DateTime lastRadarAttemptLocal;
-
-    private sealed class ClaudeCodeUsageRefreshOutcome
-    {
-        public ClaudeCodeUsageReadResult Result { get; set; }
-        public long ElapsedMilliseconds { get; set; }
-    }
 
     private sealed class ClaudeServiceAlertDebounceState
     {
@@ -380,13 +369,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
     private void RequestClaudeCodeUsageRefresh(string trigger)
     {
-        lock (this.claudeCodeUsageLock)
-        {
-            this.nextClaudeCodeUsageRefreshUtc = DateTime.MinValue;
-            this.claudeCodeUsageRefreshTrigger = string.IsNullOrWhiteSpace(trigger)
-                ? "强制刷新"
-                : trigger.Trim();
-        }
+        ClaudeCodeUsageScheduler.RequestRefresh(trigger);
     }
 
     private void RefreshClaudeCodeUsageIfDue(string trigger)
@@ -406,55 +389,13 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        DateTime nowUtc = DateTime.UtcNow;
-        string effectiveTrigger;
-        lock (this.claudeCodeUsageLock)
+        Task<ClaudeCodeUsageSchedulerOutcome> usageTask;
+        if (!ClaudeCodeUsageScheduler.TryStartOrJoin("claude_radar", this.currentSettings, trigger, out usageTask))
         {
-            if (this.claudeCodeUsageRequestRunning ||
-                (this.nextClaudeCodeUsageRefreshUtc != DateTime.MinValue &&
-                 nowUtc < this.nextClaudeCodeUsageRefreshUtc))
-            {
-                return;
-            }
-
-            this.claudeCodeUsageRequestRunning = true;
-            effectiveTrigger = string.IsNullOrWhiteSpace(this.claudeCodeUsageRefreshTrigger)
-                ? (string.IsNullOrWhiteSpace(trigger) ? "定时间隔" : trigger.Trim())
-                : this.claudeCodeUsageRefreshTrigger;
-            this.claudeCodeUsageRefreshTrigger = "定时间隔";
+            return;
         }
 
-        WidgetSettings requestSettings = this.currentSettings.Clone();
-        Task.Run(delegate
-        {
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            ClaudeCodeUsageReadResult result;
-            try
-            {
-                result = ClaudeCodeUsageReader.Read(requestSettings);
-                if (result != null && result.Success && result.Snapshot != null)
-                {
-                    ClaudeCodeUsageReader.TryWriteQuotaCache(result.Snapshot);
-                }
-            }
-            catch (Exception ex)
-            {
-                Program.LogException(ex);
-                result = BuildClaudeCodeUsageFormError(ClaudeRadarServiceState.Unreachable, "ERROR", "请求失败");
-            }
-
-            stopwatch.Stop();
-            if (result == null)
-            {
-                result = BuildClaudeCodeUsageFormError(ClaudeRadarServiceState.Unreachable, "ERROR", "请求失败");
-            }
-
-            return new ClaudeCodeUsageRefreshOutcome
-            {
-                Result = result,
-                ElapsedMilliseconds = stopwatch.ElapsedMilliseconds
-            };
-        }).ContinueWith(delegate(Task<ClaudeCodeUsageRefreshOutcome> task)
+        usageTask.ContinueWith(delegate(Task<ClaudeCodeUsageSchedulerOutcome> task)
         {
             if (this.IsDisposed || !this.IsHandleCreated)
             {
@@ -465,7 +406,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             {
                 this.BeginInvoke((MethodInvoker)delegate
                 {
-                    ApplyClaudeCodeUsageRefreshResult(task, effectiveTrigger);
+                    ApplyClaudeCodeUsageRefreshResult(task);
                 });
             }
             catch (InvalidOperationException)
@@ -474,11 +415,9 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         });
     }
 
-    private void ApplyClaudeCodeUsageRefreshResult(
-        Task<ClaudeCodeUsageRefreshOutcome> task,
-        string trigger)
+    private void ApplyClaudeCodeUsageRefreshResult(Task<ClaudeCodeUsageSchedulerOutcome> task)
     {
-        ClaudeCodeUsageRefreshOutcome outcome = null;
+        ClaudeCodeUsageSchedulerOutcome outcome = null;
         if (task.Status == TaskStatus.RanToCompletion)
         {
             outcome = task.Result;
@@ -496,16 +435,6 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             result = BuildClaudeCodeUsageFormError(ClaudeRadarServiceState.Unreachable, "ERROR", "请求失败");
         }
 
-        DateTime nextUtc = DateTime.UtcNow.AddSeconds(
-            result.Success
-                ? ClaudeCodeUsageReader.NormalRefreshSeconds
-                : (result.RateLimited ? ClaudeCodeUsageReader.RateLimitRefreshSeconds : ClaudeCodeUsageReader.ErrorRefreshSeconds));
-        lock (this.claudeCodeUsageLock)
-        {
-            this.claudeCodeUsageRequestRunning = false;
-            this.nextClaudeCodeUsageRefreshUtc = nextUtc;
-        }
-
         ClaudeRadarSnapshot current = this.snapshot == null
             ? ClaudeRadarSnapshot.CreateDefault()
             : this.snapshot.Clone();
@@ -521,7 +450,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         NetworkCheckHistoryLogger.LogCompleted(
             "claude_radar",
             "claude_code_usage",
-            string.IsNullOrWhiteSpace(trigger) ? "定时间隔" : trigger,
+            outcome == null ? "定时间隔" : outcome.Trigger,
             result.Success ? "正常" : FallbackText(result.ErrorMessage, result.State.ToString()),
             result.Success,
             (int)Math.Min(int.MaxValue, outcome == null ? 0 : outcome.ElapsedMilliseconds),

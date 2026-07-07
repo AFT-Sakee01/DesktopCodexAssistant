@@ -1,15 +1,16 @@
 # Claude Radar Architecture
 
-适用版本：1.0.4.27
+适用版本：1.0.4.29
 
 This document records the current standalone Claude Radar window implementation. It is intentionally separate from the Codex Radar architecture because the two windows must not share cache files, model catalogs, or provider queues.
 
 ## Runtime Ownership
 
 - `Core/WidgetForm.cs` owns the Claude Radar window lifetime. It creates `ClaudeRadarForm`, applies settings, forwards display suspend/resume, fullscreen visibility, shared interaction ticks, and shutdown.
-- `Core/ClaudeRadarForm.cs` owns only the standalone layered window, render scene cache, public-data refresh scheduling, Claude Code usage refresh scheduling, notifications, and deterministic render fixtures.
+- `Core/ClaudeRadarForm.cs` owns only the standalone layered window, render scene cache, public-data refresh scheduling, Claude Code usage result application, notifications, and deterministic render fixtures.
 - `Core/ClaudeRadarReader.cs` owns public Claude Radar website reads, defensive parsing, model-map maintenance, local quota-history fallback, public cache writes, and parser self-tests.
-- `Core/ClaudeCodeUsageReader.cs` owns authenticated Claude Code usage reads. Successful personal quota snapshots are written through the shared `ClaudeRadarReader.TryWriteClaudeCodeQuotaCache` writer.
+- `Core/ClaudeCodeUsageScheduler.cs` owns the process-wide single-flight cadence for Claude Code usage so Codex Radar Claude mode and the standalone Claude Radar window consume one shared result.
+- `Core/ClaudeCodeUsageReader.cs` owns authenticated Claude Code usage reads. Successful personal quota snapshots are written through the shared `ClaudeRadarReader.TryWriteClaudeCodeQuotaCache` writer by the scheduler.
 
 ## Data Sources
 
@@ -19,13 +20,13 @@ This document records the current standalone Claude Radar window implementation.
 | `https://claudecoderadar.com/api/model-ratings?history=14` | `ClaudeRadarReader.ReadSnapshot` | Community rating data in a separate semantic key namespace | `claude-radar-model-map.ini` stores user mapping |
 | `https://claudecoderadar.com/` | `ClaudeRadarReader.TryFetchHomepageMetadata` | Weak fallback for `MODEL_NAMES` metadata only | No business-data cache |
 | `https://status.claude.com/api/v2/summary.json` | `ClaudeRadarReader.ReadClaudePublicStatusState` | Claude public service state for the `C` service square | Stored only inside the latest snapshot/cache state |
-| Claude Code statusline bridge | `ClaudeCodeUsageReader.Read` | Personal 5h/7d quota rings from Claude Code's own statusline JSON stream. This default path performs no Claude API/model request and spends no extra Claude tokens. | `claude-statusline-quota.ini` -> `claude-quota.ini` |
+| Claude Code statusline bridge | `ClaudeCodeUsageScheduler` -> `ClaudeCodeUsageReader.Read` | Personal 5h/7d quota rings from Claude Code's own statusline JSON stream. This default path performs no Claude API/model request and spends no extra Claude tokens. | `claude-statusline-quota.ini` -> `claude-quota.ini` |
 
-Public Claude Radar website data is not gated by local Codex/Claude process presence. Personal Claude Code usage is gated by the standalone window being enabled, visible, not suspended, not in random test mode, and the local Claude process being present.
+Public Claude Radar website data is not gated by local Codex/Claude process presence. Personal Claude Code usage is gated by the consumer window: standalone Claude Radar must be enabled, visible, not suspended, not in random test mode, and have the local Claude process present; Codex Radar Claude mode must pass the selected-provider gate. Both consumers join the same process-wide `ClaudeCodeUsageScheduler` request and receive the same result when they overlap.
 
 Claude Radar quota line data comes from the public `quota` block. The reader prefers `quota.chart.trend` for the 7d quota trend, accepts the current site `chart.key` values such as `d7` and `total_7d`, then falls back to `base_d7_trend`. When the site has only a single usable point, the reader uses the local `claude-radar-quota-history.jsonl` 7-day values; the current `base_d7` or `quota.metrics` d7 value is recorded with a metric/update/run signature so refreshes do not duplicate the same calibration run.
 
-Claude Code personal quota now defaults to a passive statusline bridge. `ClaudeCodeUsageReader.Read` installs `%USERPROFILE%/.claude/desktop-codex-statusline-bridge.ps1` and a Claude Code `statusLine` command only when no custom statusline exists, then reads `%LOCALAPPDATA%/DesktopCodexAssistant/claude-statusline-quota.ini`. Claude Code writes that cache when it already renders its own statusline during real user activity. If a custom statusline command exists, the program does not overwrite it; the user can merge the bridge manually or continue with public-site fallback data. The older `claude setup-token` path remains in `ClaudeCodeUsageReader.ReadViaSetupToken` as a non-default retained fallback, but the app no longer calls it automatically because its Messages-header fallback can spend a small amount of Claude quota.
+Claude Code personal quota now defaults to a passive statusline bridge. `ClaudeCodeUsageScheduler` calls `ClaudeCodeUsageReader.Read`, which installs `%USERPROFILE%/.claude/desktop-codex-statusline-bridge.ps1` and a Claude Code `statusLine` command only when no custom statusline exists, then reads `%LOCALAPPDATA%/DesktopCodexAssistant/claude-statusline-quota.ini`. Claude Code writes that cache when it already renders its own statusline during real user activity. If a custom statusline command exists, the program does not overwrite it; the user can merge the bridge manually or continue with public-site fallback data. The older `claude setup-token` path remains in `ClaudeCodeUsageReader.ReadViaSetupToken` as a retained fallback when an explicit setup token is configured; the scheduler logs only host/source and result summary, never token or response body.
 
 ## Model Mapping
 
@@ -66,7 +67,7 @@ The scene cache stores at most six pre-rendered bitmaps. The cache key includes 
 - Successful public refreshes schedule the next check between 15 and 60 minutes, bounded by the remote community rating `refresh_seconds`.
 - Public failures preserve the last successful business snapshot, including bottom-band community/model metadata, and retry after 10 minutes while updating service state.
 - Random test mode replaces snapshots in memory and does not call the public reader or write real caches.
-- Claude Code usage refresh is separately single-flight and uses the personal quota cache only after a successful read. The default path reads `claude-statusline-quota.ini`, rejects stale statusline data after 360 minutes, converts remaining percentages into the shared quota snapshot, and then writes `claude-quota.ini` through the existing shared writer. It never calls Claude API endpoints. The retained `ReadViaSetupToken` fallback still contains the previous OAuth usage JSON and Messages-header parser for rollback only.
+- Claude Code usage refresh is process-wide single-flight through `ClaudeCodeUsageScheduler`, shared by Codex Radar Claude mode and standalone Claude Radar. The default path reads `claude-statusline-quota.ini`, rejects stale statusline data after 360 minutes, converts remaining percentages into the shared quota snapshot, and then writes `claude-quota.ini` once through the existing shared writer. It never calls Claude API endpoints unless an explicit setup-token source exists, in which case the retained `ReadViaSetupToken` fallback may use the OAuth usage JSON and Messages-header parser.
 - In the shared transition Codex Radar window, Claude mode reads `ClaudeRadarReader` data instead of Codex Radar public status. When no personal `claude-quota.ini` exists, the shared window uses Claude Radar public `quota.usage` h5/d7 values as a display fallback and suppresses the noisy `NO_SETUP_TOKEN`/legacy `NO_TOKEN` alert because that state means no setup-token source was configured, not that the visible Claude app is necessarily logged out.
 
 ## Acceptance Entrypoints

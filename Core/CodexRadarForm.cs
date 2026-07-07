@@ -2074,10 +2074,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         if (isClaude)
         {
-            lock (this.claudeUsageLock)
-            {
-                return this.claudeQuotaSourceKnown;
-            }
+            return this.claudeQuotaSourceKnown;
         }
 
         lock (this.codexProviderUsageLock)

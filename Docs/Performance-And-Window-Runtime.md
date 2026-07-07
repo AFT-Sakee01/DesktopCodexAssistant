@@ -1,6 +1,6 @@
 # 性能模式、主窗口与指标运行机制
 
-适用版本：1.0.4.27
+适用版本：1.0.4.29
 
 ## 1. 文档范围
 
@@ -329,7 +329,7 @@ Wi-Fi RSSI 读取方式：
 | CodexRadar 失败重试 | 10 min |
 | Claude 失败重试 | 2 min |
 | Claude 官方状态 | 15 min |
-| Claude Code 用量 | 仅 `SF:CLAUDE` 时正常 5 min；失败 10 min；429 冷却 15 min |
+| Claude Code 用量 | Codex Radar `SF:CLAUDE` 和独立 Claude Radar 共享进程级调度；正常 5 min；失败 10 min；429 冷却 15 min |
 | 检测软件 Auto | 前台窗口识别，性能/均衡/省电为 2/5/10 s；不发网络请求 |
 | 五阶段连接诊断 | 当前停用，不调度 |
 | 五阶段异常重试 | 当前停用 |
@@ -347,7 +347,7 @@ DeepSeek 余额行使用官方余额接口实时读取 `CNY total_balance`。由
 | Codex 进程检查 | 3 s | 5 s | 10 s |
 | Codex 不活跃时额度刷新 | 10 min | 20 min | 60 min |
 | Auto 软件识别 | 2 s | 5 s | 10 s |
-| Claude Code 用量 | 5 min | 5 min | 5 min |
+| Claude Code 用量 | 5 min 共享调度 | 5 min 共享调度 | 5 min 共享调度 |
 
 时间显示最多每秒重绘一次。网站请求完成、测试状态变化或额度变化可以立即触发绘制。
 

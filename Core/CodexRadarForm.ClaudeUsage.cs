@@ -7,14 +7,6 @@ using System.Windows.Forms;
 
 internal sealed partial class CodexRadarForm
 {
-    private const int ClaudeCodeUsageNormalRefreshSeconds = 300;
-    private const int ClaudeCodeUsageErrorRefreshSeconds = 600;
-    private const int ClaudeCodeUsageRateLimitRefreshSeconds = 900;
-
-    private readonly object claudeUsageLock = new object();
-    private DateTime nextClaudeUsageRefreshUtc;
-    private bool claudeUsageRequestRunning;
-    private string claudeUsageRefreshTrigger = "首次刷新";
     private CodexQuotaSnapshot claudeQuotaSnapshot = CodexQuotaSnapshot.CreateDefault();
     private bool claudeQuotaSourceKnown;
     private ServiceHealthState claudeCodeUsageHealth = ServiceHealthState.Unknown;
@@ -542,11 +534,7 @@ internal sealed partial class CodexRadarForm
 
     private void RequestClaudeUsageRefresh(string trigger)
     {
-        lock (this.claudeUsageLock)
-        {
-            this.nextClaudeUsageRefreshUtc = DateTime.UtcNow;
-            this.claudeUsageRefreshTrigger = string.IsNullOrWhiteSpace(trigger) ? "强制刷新" : trigger.Trim();
-        }
+        ClaudeCodeUsageScheduler.RequestRefresh(trigger);
     }
 
     private void RefreshSelectedQuotaInfoIfNeeded()
@@ -587,113 +575,78 @@ internal sealed partial class CodexRadarForm
             return;
         }
 
-        DateTime nowUtc = DateTime.UtcNow;
-        if (!IsNetworkAvailable())
+        Task<ClaudeCodeUsageSchedulerOutcome> task;
+        if (!ClaudeCodeUsageScheduler.TryStartOrJoin("codex_radar", this.currentSettings, "定时间隔", out task))
         {
-            SetClaudeCodeUsageHealth(ServiceHealthState.Offline, "OFFLINE", "无网络");
-            lock (this.claudeUsageLock)
-            {
-                this.nextClaudeUsageRefreshUtc = nowUtc.AddSeconds(ClaudeCodeUsageErrorRefreshSeconds);
-            }
-
             return;
         }
 
-        string trigger = "定时间隔";
-        lock (this.claudeUsageLock)
+        task.ContinueWith(delegate(Task<ClaudeCodeUsageSchedulerOutcome> completedTask)
         {
-            if (this.claudeUsageRequestRunning ||
-                (this.nextClaudeUsageRefreshUtc != DateTime.MinValue &&
-                 nowUtc < this.nextClaudeUsageRefreshUtc))
+            if (this.IsDisposed || !this.IsHandleCreated)
             {
                 return;
             }
 
-            this.claudeUsageRequestRunning = true;
-            trigger = EmptyFallback(this.claudeUsageRefreshTrigger, "定时间隔");
-            this.claudeUsageRefreshTrigger = "定时间隔";
-        }
-
-        Task.Run((Action)delegate
-        {
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            ClaudeCodeUsageResult result;
             try
             {
-                result = ReadClaudeCodeUsage(this.currentSettings);
-            }
-            catch (Exception ex)
-            {
-                Program.LogException(ex);
-                result = BuildClaudeCodeUsageError(false, ServiceHealthState.Unreachable, "ERROR", "请求失败");
-            }
-
-            stopwatch.Stop();
-            if (result == null)
-            {
-                result = BuildClaudeCodeUsageError(false, ServiceHealthState.Unreachable, "ERROR", "请求失败");
-            }
-
-            DateTime nextRefreshUtc = DateTime.UtcNow.AddSeconds(
-                result.Success
-                    ? ClaudeCodeUsageNormalRefreshSeconds
-                    : (result.RateLimited ? ClaudeCodeUsageRateLimitRefreshSeconds : ClaudeCodeUsageErrorRefreshSeconds));
-            bool sourceKnownAfter;
-            lock (this.claudeUsageLock)
-            {
-                if (result.Success && result.Snapshot != null)
+                this.BeginInvoke((MethodInvoker)delegate
                 {
-                    this.claudeQuotaSnapshot = NormalizeQuotaSnapshot(result.Snapshot);
-                    this.claudeQuotaSourceKnown = true;
-                }
-
-                this.claudeCodeUsageHealth = result.Health;
-                this.claudeCodeUsageErrorCode = result.ErrorCode ?? string.Empty;
-                this.claudeCodeUsageErrorMessage = result.ErrorMessage ?? string.Empty;
-                this.claudeUsageRequestRunning = false;
-                this.nextClaudeUsageRefreshUtc = nextRefreshUtc;
-                sourceKnownAfter = this.claudeQuotaSourceKnown;
-            }
-
-            if (result.Success && result.Snapshot != null)
-            {
-                TryWriteQuotaIniSnapshot(CodexRadarSoftwareMode.Claude, result.Snapshot);
-                ApplyClaudeUsageResultOnUiThread(result.Snapshot);
-            }
-
-            NetworkCheckHistoryLogger.LogCompleted(
-                "codex_radar",
-                "claude_code_usage",
-                trigger,
-                result.Success ? "正常" : EmptyFallback(result.ErrorMessage, result.Health.ToString()),
-                result.Success,
-                (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
-                new Dictionary<string, object>
-                {
-                    { "health", result.Health.ToString() },
-                    { "error_code", result.ErrorCode ?? string.Empty },
-                    { "token_configured", result.TokenConfigured },
-                    { "rate_limited", result.RateLimited },
-                    { "source_known_after", sourceKnownAfter }
+                    ApplyClaudeUsageSchedulerResult(completedTask);
                 });
-
-            try
-            {
-                if (!this.IsDisposed && this.IsHandleCreated)
-                {
-                    this.BeginInvoke((MethodInvoker)delegate
-                    {
-                        if (!this.IsDisposed)
-                        {
-                            RenderLayeredWindow();
-                        }
-                    });
-                }
             }
-            catch
+            catch (InvalidOperationException)
             {
             }
         });
+    }
+
+    private void ApplyClaudeUsageSchedulerResult(Task<ClaudeCodeUsageSchedulerOutcome> task)
+    {
+        ClaudeCodeUsageSchedulerOutcome outcome = null;
+        if (task.Status == TaskStatus.RanToCompletion)
+        {
+            outcome = task.Result;
+        }
+        else if (task.Exception != null)
+        {
+            Program.LogException(task.Exception.GetBaseException());
+        }
+
+        ClaudeCodeUsageResult result = ConvertClaudeCodeUsageReadResult(outcome == null ? null : outcome.Result);
+        if (result.Success && result.Snapshot != null)
+        {
+            this.claudeQuotaSnapshot = NormalizeQuotaSnapshot(result.Snapshot);
+            this.claudeQuotaSourceKnown = true;
+        }
+
+        this.claudeCodeUsageHealth = result.Health;
+        this.claudeCodeUsageErrorCode = result.ErrorCode ?? string.Empty;
+        this.claudeCodeUsageErrorMessage = result.ErrorMessage ?? string.Empty;
+        bool sourceKnownAfter = this.claudeQuotaSourceKnown;
+
+        if (result.Success && result.Snapshot != null)
+        {
+            ApplyClaudeUsageResultOnUiThread(result.Snapshot);
+        }
+
+        NetworkCheckHistoryLogger.LogCompleted(
+            "codex_radar",
+            "claude_code_usage",
+            outcome == null ? "定时间隔" : outcome.Trigger,
+            result.Success ? "正常" : EmptyFallback(result.ErrorMessage, result.Health.ToString()),
+            result.Success,
+            (int)Math.Min(int.MaxValue, outcome == null ? 0 : outcome.ElapsedMilliseconds),
+            new Dictionary<string, object>
+            {
+                { "health", result.Health.ToString() },
+                { "error_code", result.ErrorCode ?? string.Empty },
+                { "token_configured", result.TokenConfigured },
+                { "rate_limited", result.RateLimited },
+                { "source_known_after", sourceKnownAfter }
+            });
+
+        RenderLayeredWindow();
     }
 
     private void ApplyClaudeUsageResultOnUiThread(CodexQuotaSnapshot snapshot)
@@ -728,26 +681,16 @@ internal sealed partial class CodexRadarForm
 
     private bool IsClaudeQuotaDisplayAvailable()
     {
-        lock (this.claudeUsageLock)
-        {
-            return this.quotaSourceKnown ||
-                this.claudeQuotaSourceKnown ||
-                (this.claudeUsageRequestRunning && this.claudeCodeUsageHealth != ServiceHealthState.Offline);
-        }
+        return this.quotaSourceKnown ||
+            this.claudeQuotaSourceKnown ||
+            (ClaudeCodeUsageScheduler.IsRequestRunning && this.claudeCodeUsageHealth != ServiceHealthState.Offline);
     }
 
     private void SetClaudeCodeUsageHealth(ServiceHealthState health, string errorCode, string errorMessage)
     {
-        lock (this.claudeUsageLock)
-        {
-            this.claudeCodeUsageHealth = health;
-            this.claudeCodeUsageErrorCode = errorCode ?? string.Empty;
-            this.claudeCodeUsageErrorMessage = errorMessage ?? string.Empty;
-            if (health == ServiceHealthState.Offline)
-            {
-                this.claudeUsageRequestRunning = false;
-            }
-        }
+        this.claudeCodeUsageHealth = health;
+        this.claudeCodeUsageErrorCode = errorCode ?? string.Empty;
+        this.claudeCodeUsageErrorMessage = errorMessage ?? string.Empty;
     }
 
     private void AddClaudeCodeUsageAlertCandidate(List<CodexConnectionAlertCandidate> candidates)
@@ -762,14 +705,11 @@ internal sealed partial class CodexRadarForm
         ServiceHealthState health;
         string errorCode;
         string errorMessage;
-        lock (this.claudeUsageLock)
-        {
-            checking = this.claudeUsageRequestRunning;
-            known = this.claudeQuotaSourceKnown;
-            health = this.claudeCodeUsageHealth;
-            errorCode = this.claudeCodeUsageErrorCode ?? string.Empty;
-            errorMessage = this.claudeCodeUsageErrorMessage ?? string.Empty;
-        }
+        checking = ClaudeCodeUsageScheduler.IsRequestRunning;
+        known = this.claudeQuotaSourceKnown;
+        health = this.claudeCodeUsageHealth;
+        errorCode = this.claudeCodeUsageErrorCode ?? string.Empty;
+        errorMessage = this.claudeCodeUsageErrorMessage ?? string.Empty;
 
         if (checking && !known)
         {
@@ -833,12 +773,6 @@ internal sealed partial class CodexRadarForm
         }
 
         return GetServiceHealthAlertColor(health);
-    }
-
-    private static ClaudeCodeUsageResult ReadClaudeCodeUsage(WidgetSettings settings)
-    {
-        ClaudeCodeUsageReadResult result = ClaudeCodeUsageReader.Read(settings);
-        return ConvertClaudeCodeUsageReadResult(result);
     }
 
     private static ClaudeCodeUsageResult ConvertClaudeCodeUsageReadResult(ClaudeCodeUsageReadResult result)
