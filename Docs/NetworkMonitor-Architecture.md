@@ -1,6 +1,6 @@
 # 网络监控窗口技术说明
 
-适用版本：1.0.4.31
+适用版本：1.0.4.33
 
 ## 1. 文档范围
 
@@ -323,7 +323,7 @@ Cloudflare、Akamai、Azure 和 Google 的官方状态源会按设置页“官�
 
 云服务方块固定在标题栏最右侧右对齐（分组卡片布局下标题栏只有标题、状态、方块三段）。云服务的异常不再挤进标题栏告警槽：Classic 布局改用分组卡片（见 §12.0），云服务/DNS/连通性的错误分别落在「健康」卡对应的整行里。服务名映射为 Cloudflare、Akamai、Github、AWS、Azure、Google。
 
-Classic 分组卡片不绘制独立的 DNS 覆盖层，也没有标题栏告警槽。DNS 状态在「健康」卡的 `DNS` 行以每服务分色段落显示（`DrawDnsSegments`），保留网卡返回的优先级顺序，错误只改变颜色、不把报错项提前，也不发起额外 DNS 探测。连通性/GFW 的长错误文本各自占据「健康」卡的整行（`PING`/`GFW` 行），fit 收缩后仍放不下时在本行矩形内裁剪，永不与其它卡相交。
+Classic 分组卡片不绘制独立的 DNS 覆盖层，也没有标题栏告警槽。健康卡改为彩色圆点芯片布局：`PING` 和 `GFW` 显示紧凑摘要，DNS 按服务器显示地址和短原因；颜色仍来自各自状态，错误只改变颜色、不把报错项提前，也不发起额外 DNS 探测。GFW 原始长原因和丢包/抖动细节不会直接塞进健康卡，避免在 628×250 固定画布里与其它卡相交。
 
 独立日志：
 
@@ -350,10 +350,10 @@ DNS 检测写入 `network-check-history.jsonl` 时，`result` 不再只有计数
 Classic 布局（`DrawContentClassic`）为分组卡片：固定画布（最大 628×250 物理像素），按最坏情况预算，不做小于该尺寸的收紧。结构自上而下：
 
 - **头部**（`DrawGroupedHeader`）：`NETWORK` 标题 + 状态文字（在线时追加延迟 `· 18ms`，GFW 失败态不追加）+ 右对齐云服务 6 方块；不承载告警文字。
-- **地址卡 + 链路卡**（并排，`DrawAddressCard` / `DrawLinkCard`）：地址卡三行 `IP4 / IP6 / 公网`；链路卡三行（Wi-Fi 名+制式 / SSID / 加密·信号·速率，或有线的名称/制式速率/`有线`）。
-- **健康卡**（全宽，`DrawHealthCard`）：三行 `PING`（连通性）/ `GFW` / `DNS`，每行占整行宽度，长错误文本有整行兜底。
+- **地址卡 + 链路卡**（并排，`DrawAddressCard` / `DrawLinkCard`）：地址卡三行 `IPv4 / IPv6 / 公网`；链路卡三行（Wi-Fi 名称与制式去重 / SSID / 加密·信号·速率，或有线的名称/制式速率/`有线`）。
+- **健康卡**（全宽，`DrawHealthCard`）：`PING`、`GFW`、每个 DNS 服务器各是一个彩色圆点 chip（`HealthChip` + `DrawHealthChip`），先测量全部 chip 总宽，能在一行内装下就单行绘制（默认状态下 PING/GFW/DNS 全部同一行，贴合"平时短"的观感），装不下再逐个换行到第二行；`BuildCompactConnectivityText` / `BuildCompactGfwText` / `BuildCompactDnsServerText` 把原始详情（jitter/loss/控制站点说明、GFW 长原因、DNS Reason）收敛成短语，DNS 正常只显示地址，异常追加紧凑原因（如 `SERVFAIL`）。绘制前对健康卡 `body` 设置裁剪区（`g.SetClip`），即使 DNS 服务器数量多到换行超出预留的两行高度，多余内容也只会被裁掉，绝不会画出卡片边界。
 
-卡片矩形由 `ComputeGroupedCardRects` 一次算出，`RunNetworkMonitorDisplaySelfTest` → `RunGroupedCardLayoutSelfTest` 断言三卡互不相交且在内容区内、空 IPv6 绘制不抛异常。
+卡片矩形由 `ComputeGroupedCardRects` 一次算出，`RunNetworkMonitorDisplaySelfTest` → `RunGroupedCardLayoutSelfTest` 断言三卡互不相交且在内容区内、空 IPv6 绘制不抛异常。`--render-networkmonitor` 生成 normal/noipv6/errors/realistic/stress 五个分组卡片 fixture：`realistic` 用真实问题形态覆盖 Wi-Fi 名称重复、无全局 IPv6 和双 DNS 正常项；`stress` 用 5 个异常 DNS 服务器验证健康卡 chip 换行与裁剪安全网。
 
 **IPv6 处理**：reader（`NetworkMonitorReader.IsIgnorableAddress`）过滤链路本地/组播地址，因此只剩 `fe80::` 时 `snapshot.IPv6` 为空。地址卡此时显示灰色「未分配 · 仅本地」占位（不留空行），公网行回退到公网 IPv4；有全局/ULA 地址时按像素测量压缩显示完整地址。
 

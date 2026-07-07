@@ -649,7 +649,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     {
         float cardsTop = header.Bottom + S(4);
         float cardsArea = Math.Max(S(24), content.Bottom - cardsTop);
-        float rowGap = S(6);
+        float rowGap = S(8);
         float row1Height = Math.Max(S(30), cardsArea * 0.52f - rowGap * 0.5f);
         float addrWidth = content.Width * 0.56f;
         float linkWidth = Math.Max(S(40), content.Width - addrWidth - rowGap);
@@ -754,12 +754,12 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         float linesTop;
         float lineHeight;
         DrawCardHeaderLabel(g, "地址", body, out linesTop, out lineHeight, 3);
-        float labelWidth = S(24);
+        float labelWidth = S(30);
         Font valueFont = GetCachedUiFont(Math.Max(8.5f, lineHeight * 0.56f), FontStyle.Bold);
         float valueWidth = Math.Max(S(20), body.Right - (body.X + labelWidth + S(3)));
 
         string ip4 = BuildMeasuredAddressRowText(g, this.snapshot == null ? null : this.snapshot.IPv4, valueFont, valueWidth, 15);
-        DrawCardLine(g, "IP4", labelWidth, ip4, DesignTokens.Colors.TextMuted, DesignTokens.Colors.TextStrong,
+        DrawCardLine(g, "IPv4", labelWidth, ip4, DesignTokens.Colors.TextMuted, DesignTokens.Colors.TextStrong,
             new RectangleF(body.X, linesTop, body.Width, lineHeight));
 
         string ip6Raw = this.snapshot == null ? null : this.snapshot.IPv6;
@@ -776,7 +776,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             ip6Color = DesignTokens.Colors.TextStrong;
         }
 
-        DrawCardLine(g, "IP6", labelWidth, ip6, DesignTokens.Colors.TextMuted, ip6Color,
+        DrawCardLine(g, "IPv6", labelWidth, ip6, DesignTokens.Colors.TextMuted, ip6Color,
             new RectangleF(body.X, linesTop + lineHeight, body.Width, lineHeight));
 
         string wan = BuildPublicAddressValue();
@@ -829,30 +829,201 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         DrawCardLine(g, string.Empty, 0.0f, line3, DesignTokens.Colors.TextMuted, DesignTokens.Colors.TextMuted, new RectangleF(body.X, linesTop + lineHeight * 2.0f, body.Width, lineHeight));
     }
 
+    private sealed class HealthChip
+    {
+        public string Text;
+        public Color Color;
+    }
+
+    // Health card matches the mockup exactly: every signal (PING, GFW, each DNS server) is a
+    // colored-dot chip on a shared flow, packed onto one row when they fit and wrapping to a second
+    // row only when they don't (same fixed-canvas, worst-case budget philosophy used elsewhere).
+    // Raw verbose probe text (jitter/loss/control-site detail) is intentionally summarized to short
+    // phrases so the card stays clean; the dot color still carries the full status.
     private void DrawHealthCard(Graphics g, RectangleF rect)
     {
         RectangleF body = DrawGroupedCard(g, rect);
         float linesTop;
         float lineHeight;
-        DrawCardHeaderLabel(g, "健康", body, out linesTop, out lineHeight, 3);
-        float labelWidth = S(30);
+        DrawCardHeaderLabel(g, "健康", body, out linesTop, out lineHeight, 2);
+        Font font = GetCachedUiFont(Math.Max(9.0f, lineHeight * 0.52f), FontStyle.Bold);
+        float dot = Math.Max(S(3), lineHeight * 0.16f);
+        float chipGap = S(16);
 
-        DrawCardLine(g, "PING", labelWidth, BuildConnectivityText(), DesignTokens.Colors.TextMuted, GetConnectivityColor(),
-            new RectangleF(body.X, linesTop, body.Width, lineHeight));
-        DrawCardLine(g, "GFW", labelWidth, BuildGfwProbeText(), DesignTokens.Colors.TextMuted, GetGfwProbeColor(),
-            new RectangleF(body.X, linesTop + lineHeight, body.Width, lineHeight));
-
-        // DNS line: colored per-server segments (reuse existing segment renderer) after the label.
-        RectangleF dnsRow = new RectangleF(body.X, linesTop + lineHeight * 2.0f, body.Width, lineHeight);
-        Font dnsLabelFont = GetCachedUiFont(Math.Max(8.0f, dnsRow.Height * 0.5f), FontStyle.Bold);
-        Font dnsValueFont = GetCachedUiFont(Math.Max(8.5f, dnsRow.Height * 0.56f), FontStyle.Bold);
-        using (SolidBrush dnsLabelBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
+        List<HealthChip> chips = new List<HealthChip>();
+        chips.Add(new HealthChip { Text = "PING " + BuildCompactConnectivityText(), Color = GetConnectivityColor() });
+        chips.Add(new HealthChip { Text = "GFW " + BuildCompactGfwText(), Color = GetGfwProbeColor() });
+        DnsDisplayItem[] dnsItems = BuildDnsDisplayItems();
+        for (int i = 0; i < dnsItems.Length; i++)
         {
-            DrawFittedText(g, "DNS", dnsLabelFont, dnsLabelBrush, new RectangleF(dnsRow.X, dnsRow.Y, labelWidth, dnsRow.Height), StringAlignment.Near);
+            string text = i == 0 ? "DNS " + BuildCompactDnsServerText(dnsItems[i]) : BuildCompactDnsServerText(dnsItems[i]);
+            chips.Add(new HealthChip { Text = text, Color = GetDnsStatusColor(dnsItems[i].Status) });
         }
 
-        float dnsValueX = dnsRow.X + labelWidth + S(3);
-        DrawDnsSegments(g, BuildDnsDisplaySegments(), dnsValueFont, new RectangleF(dnsValueX, dnsRow.Y, Math.Max(S(20), dnsRow.Right - dnsValueX), dnsRow.Height));
+        // Measure once to decide single-row vs wrapped layout; chip widths are reused for drawing.
+        float[] widths = new float[chips.Count];
+        float totalWidth = 0.0f;
+        for (int i = 0; i < chips.Count; i++)
+        {
+            widths[i] = dot + S(5) + g.MeasureString(chips[i].Text, font).Width + S(2);
+            totalWidth += widths[i] + (i > 0 ? chipGap : 0.0f);
+        }
+
+        // Clip to the card body as a hard safety net: even if an extreme number of DNS servers wraps
+        // past the reserved line budget, overflow is invisibly clipped instead of bleeding below the
+        // card into whatever sits underneath (the window's bottom edge, since 健康 is the last card).
+        Region oldClip = g.Clip;
+        g.SetClip(body);
+        try
+        {
+            float x = body.X;
+            float y = linesTop;
+            if (totalWidth <= body.Width)
+            {
+                for (int i = 0; i < chips.Count; i++)
+                {
+                    DrawHealthChip(g, x, y, lineHeight, dot, font, chips[i]);
+                    x += widths[i] + chipGap;
+                }
+
+                return;
+            }
+
+            float rowLimit = body.Right;
+            for (int i = 0; i < chips.Count; i++)
+            {
+                if (i > 0 && x + widths[i] > rowLimit)
+                {
+                    x = body.X;
+                    y += lineHeight;
+                }
+
+                DrawHealthChip(g, x, y, lineHeight, dot, font, chips[i]);
+                x += widths[i] + chipGap;
+            }
+        }
+        finally
+        {
+            g.Clip = oldClip;
+            oldClip.Dispose();
+        }
+    }
+
+    private void DrawHealthChip(Graphics g, float x, float y, float lineHeight, float dot, Font font, HealthChip chip)
+    {
+        DrawHealthDot(g, x + dot * 0.5f, y + lineHeight * 0.5f, dot, chip.Color);
+        float tx = x + dot + S(5);
+        float w = g.MeasureString(chip.Text, font).Width;
+        using (SolidBrush brush = new SolidBrush(chip.Color))
+        {
+            DrawFittedText(g, chip.Text, font, brush, new RectangleF(tx, y, w + S(2), lineHeight), StringAlignment.Near);
+        }
+    }
+
+    // Short per-server DNS text for a chip: address alone when normal, address + compact reason when
+    // not (e.g. "1.1.1.1 SERVFAIL"), matching the mockup's "1.1.1.1 SERVFAIL" / plain "8.8.8.8" split.
+    private static string BuildCompactDnsServerText(DnsDisplayItem item)
+    {
+        if (item == null)
+        {
+            return "--";
+        }
+
+        if (item.Status == DnsServerStatus.Normal || item.Detail == null)
+        {
+            return item.Address;
+        }
+
+        string reason = GetDnsAlertCompactReason(item.Detail.Reason);
+        return string.IsNullOrEmpty(reason) ? item.Address : item.Address + " " + reason;
+    }
+
+    private void DrawHealthDot(Graphics g, float cx, float cy, float diameter, Color color)
+    {
+        System.Drawing.Drawing2D.SmoothingMode old = g.SmoothingMode;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using (SolidBrush brush = new SolidBrush(color))
+        {
+            g.FillEllipse(brush, cx - diameter * 0.5f, cy - diameter * 0.5f, diameter, diameter);
+        }
+
+        g.SmoothingMode = old;
+    }
+
+    private string BuildCompactConnectivityText()
+    {
+        if (this.snapshot == null || !this.snapshot.ConnectivityKnown)
+        {
+            return "检测中";
+        }
+
+        switch (GetDisplayAccessState())
+        {
+            case NetworkAccessState.Online:
+                return this.snapshot.LatencyMs > 0.0
+                    ? ((int)Math.Round(this.snapshot.LatencyMs)).ToString(CultureInfo.InvariantCulture) + "ms"
+                    : "在线";
+            case NetworkAccessState.NeedsValidation:
+                return "需验证";
+            case NetworkAccessState.Offline:
+                return "离线";
+            case NetworkAccessState.AdapterMissing:
+                return "无网卡";
+            default:
+                return "未知";
+        }
+    }
+
+    private string BuildCompactGfwText()
+    {
+        GfwProbeSnapshot gfw = this.snapshot == null ? null : this.snapshot.GfwProbe;
+        if (gfw == null || !gfw.Enabled || gfw.Status == GfwProbeStatus.Disabled)
+        {
+            return "关闭";
+        }
+
+        if (gfw.Running && !gfw.CheckedAtKnown)
+        {
+            return "检测中";
+        }
+
+        switch (gfw.Status)
+        {
+            case GfwProbeStatus.Normal:
+                return "正常";
+            case GfwProbeStatus.Checking:
+                return "检测中";
+            case GfwProbeStatus.Unknown:
+                return "等待";
+            case GfwProbeStatus.SuspectedDns:
+                return "疑似DNS污染";
+            case GfwProbeStatus.SuspectedTcp:
+                return "疑似TCP阻断";
+            case GfwProbeStatus.SuspectedTlsSni:
+                return "疑似SNI阻断";
+            case GfwProbeStatus.SuspectedHttp:
+                return "疑似HTTP阻断";
+            case GfwProbeStatus.Inconclusive:
+                return "不确定";
+            default:
+                return EmptyToDash(gfw.Detail);
+        }
+    }
+
+    private static string CombineNameAndType(string name, string type)
+    {
+        if (string.IsNullOrEmpty(type) || type == "--")
+        {
+            return name;
+        }
+
+        if (string.Equals(name, type, StringComparison.OrdinalIgnoreCase) ||
+            name.IndexOf(type, StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return name;
+        }
+
+        return name + " · " + type;
     }
 
     private void DrawHeader(Graphics g, RectangleF rect)

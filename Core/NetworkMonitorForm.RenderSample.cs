@@ -71,6 +71,47 @@ internal sealed partial class NetworkMonitorForm
             snapshot.GfwProbe.Reason = "系统DNS失败但DoH可解析 3/3，TCP可连但TLS/SNI握手失败 2/3";
             snapshot.GfwProbe.CloudEndpoints = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Abnormal);
         });
+        // Reproduces the user's real messy data (redundant Wi-Fi/Wi-Fi interface name+type, no global
+        // IPv6, corporate SSID/DNS) to verify the compact health chips and name dedup stay clean.
+        RenderClassicCardFixture(outputDir, "networkmonitor-cards-realistic.png", delegate(NetworkMonitorSnapshot snapshot)
+        {
+            snapshot.InterfaceName = "Wi-Fi";
+            snapshot.InterfaceType = "Wi-Fi";
+            if (snapshot.WifiDetails != null)
+            {
+                snapshot.WifiDetails.Ssid = "SSID-9A9449";
+                snapshot.WifiDetails.AuthAlgorithm = "WPA2-PSK";
+                snapshot.WifiDetails.CipherAlgorithm = "CCMP";
+                snapshot.WifiDetails.SignalQuality = 100;
+            }
+
+            snapshot.IPv4 = "172.16.0.15";
+            snapshot.IPv6 = string.Empty;
+            snapshot.PublicIp = "113.37.249.175";
+            snapshot.PublicIpKnown = true;
+            snapshot.LatencyMs = 7.0;
+            snapshot.DnsServerDetails = new DnsServerSnapshot[]
+            {
+                new DnsServerSnapshot { Address = "163.139.8.202", Status = DnsServerStatus.Normal, Reason = "正常" },
+                new DnsServerSnapshot { Address = "163.139.9.202", Status = DnsServerStatus.Normal, Reason = "正常" }
+            };
+        });
+        // Stress case: many bad DNS servers force the health-card chip flow to wrap past its
+        // reserved 2-line budget. Verifies the clip added to DrawHealthCard actually holds — content
+        // must be invisibly cut off inside the card, never bleed past its border.
+        RenderClassicCardFixture(outputDir, "networkmonitor-cards-stress.png", delegate(NetworkMonitorSnapshot snapshot)
+        {
+            snapshot.GfwProbe.Status = GfwProbeStatus.SuspectedTlsSni;
+            snapshot.GfwProbe.Detail = "疑似SNI阻断";
+            snapshot.DnsServerDetails = new DnsServerSnapshot[]
+            {
+                new DnsServerSnapshot { Address = "1.1.1.1", Status = DnsServerStatus.Problem, Reason = "返回 SERVFAIL" },
+                new DnsServerSnapshot { Address = "8.8.8.8", Status = DnsServerStatus.Hijacked, Reason = "污染" },
+                new DnsServerSnapshot { Address = "9.9.9.9", Status = DnsServerStatus.Unavailable, Reason = "无响应" },
+                new DnsServerSnapshot { Address = "114.114.114.114", Status = DnsServerStatus.Problem, Reason = "NXDOMAIN一次异常" },
+                new DnsServerSnapshot { Address = "223.5.5.5", Status = DnsServerStatus.Problem, Reason = "地址无效" }
+            };
+        });
     }
 
     private static void RenderClassicCardFixture(string outputDir, string fileName, Action<NetworkMonitorSnapshot> mutate)
