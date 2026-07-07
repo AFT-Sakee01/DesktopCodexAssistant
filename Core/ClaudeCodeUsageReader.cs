@@ -58,7 +58,7 @@ internal static class ClaudeCodeUsageReader
 {
     public const string UsageUrl = "https://api.anthropic.com/api/oauth/usage";
     public const string MessagesUrl = "https://api.anthropic.com/v1/messages";
-    public const string SetupTokenFileName = "claude-code-oauth-token.txt";
+    public const string SetupTokenFileName = "claude-code-oauth-token.bin";
     public const string StatusLineQuotaFileName = "claude-statusline-quota.ini";
     public const int NormalRefreshSeconds = 300;
     public const int ErrorRefreshSeconds = 600;
@@ -66,6 +66,7 @@ internal static class ClaudeCodeUsageReader
 
     private const int RequestTimeoutMs = 10000;
     private const int StatusLineCacheMaxAgeMinutes = 360;
+    private const string LegacySetupTokenFileName = "claude-code-oauth-token.txt";
     private const string StatusLineBridgeScriptName = "desktop-codex-statusline-bridge.ps1";
     private const string StatusLineBridgeMarker = "# Desktop Codex Assistant Claude statusline bridge v2";
     private static readonly object StatusLineBridgeInstallLock = new object();
@@ -120,7 +121,7 @@ internal static class ClaudeCodeUsageReader
     }
 
     // Used when a setup token is configured (CLAUDE_CODE_OAUTH_TOKEN env var or
-    // claude-code-oauth-token.txt). Prefers the free OAuth usage endpoint; the
+    // the local DPAPI-protected setup-token file). Prefers the free OAuth usage endpoint; the
     // Messages-header fallback below can spend a tiny amount of Claude quota.
     public static ClaudeCodeUsageReadResult ReadViaSetupToken(WidgetSettings settings)
     {
@@ -865,6 +866,9 @@ internal static class ClaudeCodeUsageReader
             throw new InvalidOperationException("Claude Code setup-token normalization self-test failed.");
         }
 
+        SecretStore.RunSelfTest();
+        RunSetupTokenSecretMigrationSelfTest();
+
         ClaudeCodeUsageSnapshot statusLineSnapshot;
         string statusLineCode;
         string statusLineMessage;
@@ -885,6 +889,48 @@ internal static class ClaudeCodeUsageReader
             !statusLineSnapshot.WeeklyResetKnown)
         {
             throw new InvalidOperationException("Claude Code statusline quota cache self-test failed.");
+        }
+    }
+
+    private static void RunSetupTokenSecretMigrationSelfTest()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "desktopcodex-claude-token-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string encrypted = Path.Combine(root, SetupTokenFileName);
+            string legacy = Path.Combine(root, LegacySetupTokenFileName);
+            File.WriteAllText(legacy, "export CLAUDE_CODE_OAUTH_TOKEN='oauth-migrated'\n", new UTF8Encoding(false));
+
+            string token;
+            bool migrated;
+            string errorCode;
+            if (!SecretStore.TryReadOrMigrateSecret(encrypted, legacy, NormalizeSetupToken, out token, out migrated, out errorCode) ||
+                !migrated ||
+                !string.Equals(token, "oauth-migrated", StringComparison.Ordinal) ||
+                !File.Exists(encrypted) ||
+                File.Exists(legacy) ||
+                !File.Exists(legacy + ".migrated"))
+            {
+                throw new InvalidOperationException("Claude Code setup-token DPAPI migration self-test failed: " + errorCode);
+            }
+
+            string encryptedContent = File.ReadAllText(encrypted, Encoding.UTF8);
+            if (encryptedContent.IndexOf("oauth-migrated", StringComparison.Ordinal) >= 0 ||
+                !string.Equals(SecretStore.Unprotect(encryptedContent), "oauth-migrated", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Claude Code setup-token encrypted content self-test failed.");
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, true);
+            }
+            catch
+            {
+            }
         }
     }
 
@@ -1310,25 +1356,28 @@ internal static class ClaudeCodeUsageReader
             return token.Trim();
         }
 
-        string path = SetupTokenFilePath;
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-        {
-            return string.Empty;
-        }
-
-        try
-        {
-            return NormalizeSetupToken(File.ReadAllText(path, Encoding.UTF8));
-        }
-        catch
-        {
-            return string.Empty;
-        }
+        string secret;
+        bool migrated;
+        string errorCode;
+        return SecretStore.TryReadOrMigrateSecret(
+            SetupTokenFilePath,
+            LegacySetupTokenFilePath,
+            NormalizeSetupToken,
+            out secret,
+            out migrated,
+            out errorCode)
+            ? secret
+            : string.Empty;
     }
 
     public static string SetupTokenFilePath
     {
         get { return Path.Combine(Logger.DirectoryPath, SetupTokenFileName); }
+    }
+
+    private static string LegacySetupTokenFilePath
+    {
+        get { return Path.Combine(Logger.DirectoryPath, LegacySetupTokenFileName); }
     }
 
     private static string NormalizeSetupToken(string value)

@@ -1,6 +1,6 @@
 # Codex 监测窗口技术说明
 
-适用版本：1.0.4.29
+适用版本：1.0.4.34
 
 ## 1. 范围
 
@@ -188,7 +188,7 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，会同时�
 
 ### 7.1 DeepSeek 余额状态
 
-DeepSeek 余额读取使用官方 `GET https://api.deepseek.com/user/balance`，只读取 `CNY` 的 `total_balance`。API key 不写入 `settings.ini`、日志或文档；读取顺序为进程环境变量 `DEEPSEEK_API_KEY`、用户环境变量、机器环境变量，最后读取 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-api-key.txt`。设置页在 Codex Radar 的“模型与时区”组提供本地文件配置入口，保存后通过 `DeepSeekApiKeyRevision` 修订号触发运行中的 Codex Radar 立即刷新；修订号本身不包含密钥。
+DeepSeek 余额读取使用官方 `GET https://api.deepseek.com/user/balance`，只读取 `CNY` 的 `total_balance`。API key 不写入 `settings.ini`、日志或文档；读取顺序为进程环境变量 `DEEPSEEK_API_KEY`、用户环境变量、机器环境变量，最后读取 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-api-key.bin`。本地文件由 `SecretStore` 使用 DPAPI CurrentUser 加密为 Base64 密文；首次发现同目录同名旧 `.txt` 时会迁移到 `.bin` 并把旧文件改名为 `.txt.migrated`。设置页在 Codex Radar 的“模型与时区”组提供本地文件配置入口，保存后通过 `DeepSeekApiKeyRevision` 修订号触发运行中的 Codex Radar 立即刷新；修订号本身不包含密钥。
 
 余额正常 60 秒刷新一次，失败 5 分钟重试，网络变化和操作面板强制刷新会立即请求。DeepSeek 官方余额接口只返回当前余额，不返回 24 小时消费明细；程序将每次成功读取的余额写入 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-balance-history.jsonl`，只保存 `timestamp_utc` 和 `balance_cny`，滚动保留 48 小时。最近 24 小时消耗通过本地样本中余额下降量相加估算，充值或赠额上涨不计为负消费。
 

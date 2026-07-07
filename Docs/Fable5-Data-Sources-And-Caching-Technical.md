@@ -1,6 +1,6 @@
 # Fable5-Data-Sources-And-Caching-Technical — 数据源、Fallback 链与缓存位置详解
 
-适用版本：`1.0.4.25`。生成时间：2026-07-07。
+适用版本：`1.0.4.34`。生成时间：2026-07-07。
 本文回答三个问题：**每个模块从哪个网站/本地文件的哪个位置读什么、失败时按什么顺序 fallback、结果缓存在哪个文件里**。所有 URL、路径、常量均直接摘自源码并附出处；刷新频率与调度规则的权威文档是 `Docs/Component-Refresh-Rules.md`，本文只在必要处引用不重复。
 
 约定：`<DATA>` = `%LOCALAPPDATA%\DesktopCodexAssistant`（`Logger.DirectoryPath`）；`<HOME>` = `%USERPROFILE%`。
@@ -106,7 +106,7 @@
 2. **桥安装**：缓存缺失时，自动安装 `<HOME>\.claude\desktop-codex-statusline-bridge.ps1`（文件内嵌 PowerShell 脚本，标记 `# Desktop Codex Assistant Claude statusline bridge v2`），并把它注册进 `<HOME>\.claude\settings.json` 的 `statusLine` 命令。之后等 Claude Code CLI 下一次真实渲染 statusline 时，由桥脚本把额度写入上述 ini（`Source=claude_statusline`）。
    - 用户已有自定义 statusline → **不覆盖**，返回 `STATUSLINE_CUSTOM`，继续用站点公开 quota 或旧缓存。
    - Claude 桌面 App 不执行 statusLine（终端特性），纯桌面机器缓存会永远为空 → 落到第 3 步。
-3. **setup-token 路径**（仅当已配置 token 才走）：token 来源 = 环境变量 `CLAUDE_CODE_OAUTH_TOKEN` 或 `<DATA>\claude-code-oauth-token.txt`（`NormalizeSetupToken` 能剥掉 `export X=`、`$env:X=` 等包装）。
+3. **setup-token 路径**（仅当已配置 token 才走）：token 来源 = 环境变量 `CLAUDE_CODE_OAUTH_TOKEN` 或 DPAPI CurrentUser 保护的 `<DATA>\claude-code-oauth-token.bin`（同目录同名旧 `.txt` 首次读取时会迁移为 `.bin` 并改名为 `.txt.migrated`；`NormalizeSetupToken` 能剥掉 `export X=`、`$env:X=` 等包装）。
    - 先 GET `https://api.anthropic.com/api/oauth/usage`（免费，header `anthropic-beta: oauth-2025-04-20`）；
    - 失败再 fallback POST `https://api.anthropic.com/v1/messages` 读响应头限额（**会消耗极少量配额**）。
    - 注意：按 `Component-Refresh-Rules.md` §4，当前调度**默认不调用** `ReadViaSetupToken`，它是保留的非默认回滚路径；实际代码在 statusline 缓存无效且 token 已配置时仍会走它（`Read()` 104–107 行）。
@@ -129,7 +129,7 @@
 | Claude 官方状态 | `https://status.claude.com/api/v2/status.json`（注意与 Claude Radar 窗口用的 `summary.json` 不同端点） | 正常 15 min，异常/失败 2 min，单飞；AI 请求保护命中时不请求 |
 | OpenAI 官方状态 | `https://status.openai.com/api/v2/summary.json` | 随网站刷新链路 |
 | ChatGPT 可达性 | `https://chatgpt.com/`（HEAD/GET 探测） | 同上 |
-| DeepSeek 余额 | `https://api.deepseek.com/user/balance`，Bearer key 来源=env `DEEPSEEK_API_KEY` 或 `<DATA>\deepseek-api-key.txt`（设置页只写这个文件，**不进 settings.ini**，`DeepSeekApiKeyRevision` 递增触发即时刷新） | 正常 60 s / 失败 300 s；成功样本写 `<DATA>\deepseek-balance-history.jsonl` 保留 48 h，用于估算 24 h 消耗；高峰/低谷按北京时间 09:00–12:00、14:00–18:00 判定 |
+| DeepSeek 余额 | `https://api.deepseek.com/user/balance`，Bearer key 来源=env `DEEPSEEK_API_KEY` 或 DPAPI CurrentUser 保护的 `<DATA>\deepseek-api-key.bin`（设置页只写加密文件，**不进 settings.ini**，同目录同名旧 `.txt` 会迁移为 `.txt.migrated`，`DeepSeekApiKeyRevision` 递增触发即时刷新） | 正常 60 s / 失败 300 s；成功样本写 `<DATA>\deepseek-balance-history.jsonl` 保留 48 h，用于估算 24 h 消耗；高峰/低谷按北京时间 09:00–12:00、14:00–18:00 判定 |
 
 旧五段连接诊断（网络/DNS/隧道/OpenAI/本地 Codex）已由 `CodexConnectionFlowEnabled = false` 整体停用，不产生任何请求。
 
@@ -208,8 +208,8 @@
 | `quota.ini` | CodexRadarForm | Codex 5h/周额度快照 | 持久；QuotaGoalPlanner 复用 |
 | `claude-quota.ini` | ClaudeRadarReader.TryWriteClaudeCodeQuotaCache | Claude 5h/7d 额度快照 | 持久；原子写 |
 | `claude-statusline-quota.ini` | `~/.claude` 桥脚本（外部进程） | statusline 额度缓存 | 360 min 有效期 |
-| `claude-code-oauth-token.txt` | 用户手工放置 | setup-token 明文 | （规划中改 DPAPI，见优化 spec T8） |
-| `deepseek-api-key.txt` | 设置页 | DeepSeek key 明文 | 同上 |
+| `claude-code-oauth-token.bin` | `SecretStore` / 用户旧 `.txt` 迁移 | setup-token DPAPI CurrentUser 密文 Base64 | 旧 `.txt` 首次读取后改名为 `.txt.migrated` |
+| `deepseek-api-key.bin` | 设置页 / `SecretStore` / 用户旧 `.txt` 迁移 | DeepSeek key DPAPI CurrentUser 密文 Base64 | 清除配置时同时清理 `.bin`、旧 `.txt` 和 `.txt.migrated*` |
 | `claude-radar-cache.ini` / `claude-radar-model-map.ini` / `claude-radar-notification-state.ini` / `claude-radar-quota-history.jsonl` | ClaudeRadarReader/Form | 见 §3.2 | 持久 |
 | `quota-reset-state.ini` | CodexRadarForm | reset 到期保护状态 | 持久 |
 | `codex-quota-plan-state.json` | CodexQuotaGoalPlanner | 额度计划状态 | 持久 |

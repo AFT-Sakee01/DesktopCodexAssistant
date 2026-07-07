@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：1.0.4.31
+适用版本：1.0.4.34
 
 本文集中记录 Desktop Codex Assistant 各组件的刷新、轮询、手动刷新、网络事件、单飞任务和暂停恢复规则。修改定时器、刷新 token、网络事件、后台任务节流、测试模式或显示恢复逻辑时，应同步更新本文。
 
@@ -104,7 +104,7 @@ DNS 检测：
 | CodexRadar 服务检测 | 设置页“检测服务可用性”按钮触发一次性探测公开摘要、授权 API、首页 HTML 和 RSS，结果写入本地诊断文件并追加网络检查历史；不建立额外轮询。旧竖向 Rader/Claude/ChatGPT 健康面板已删除，Rader 状态仍随网站刷新更新，用于当前 `EvenRow` API 摘要和 `R/O/C/D` LED 列。API/LED 非检测中错误经过 10 s 防抖，同一服务错误连续存在满窗口才显示；恢复为正常时立即清除。 |
 | Claude 状态 | 用于当前 `EvenRow` 单行 API 摘要；正常 15 min，非正常或失败 2 min 重试，单飞。AI 请求保护命中时不请求 `status.claude.com`，按不可用状态进入异常重试。旧竖向三行面板已删除，不占布局宽度。 |
 | 五阶段连接 | 已删除。timer、网络变化、显示恢复和操作面板强制刷新都不会启动网络/DNS/隧道/OpenAI/本地 Codex 五段诊断；当前代码不再包含旧绘制、快照、调度和 ChatGPT/OpenAI 探测回滚路径。 |
-| DeepSeek 余额 | 读取 `https://api.deepseek.com/user/balance`；正常 60 s，失败 5 min；网络变化和操作面板强制刷新会立即请求。API key 只从 `DEEPSEEK_API_KEY` 环境变量或 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-api-key.txt` 读取，不写入设置或日志。成功余额样本写入 `deepseek-balance-history.jsonl`，保留 48 h，用于估算 24 h 消耗。当前底部 DS 元信息不按余额、24 h 消耗或高低峰改变颜色；文案追加按北京时间 `09:00-12:00`、`14:00-18:00` 判定的 `高峰`，其余为 `低谷`。 |
+| DeepSeek 余额 | 读取 `https://api.deepseek.com/user/balance`；正常 60 s，失败 5 min；网络变化和操作面板强制刷新会立即请求。API key 只从 `DEEPSEEK_API_KEY` 环境变量或 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-api-key.bin` 读取，本地文件由 `SecretStore` 通过 DPAPI CurrentUser 加密，不写入设置或日志。成功余额样本写入 `deepseek-balance-history.jsonl`，保留 48 h，用于估算 24 h 消耗。当前底部 DS 元信息不按余额、24 h 消耗或高低峰改变颜色；文案追加按北京时间 `09:00-12:00`、`14:00-18:00` 判定的 `高峰`，其余为 `低谷`。 |
 | 网络事件 | `NetworkChange` 标记服务网络失效并请求 DeepSeek 余额；个人额度只按当前有效且正在运行的软件排队 Codex provider 或 Claude Code 用量刷新，不再同时触碰两套 provider。下一次 Codex Radar UI 调度刷新单行 API 摘要需要的 Rader/Claude/OpenAI 兜底状态；旧五阶段连接流程已删除，不因网络事件启动五段探测。 |
 | 挂起/锁屏 | 显示器关闭、会话锁定或系统挂起时停止 Codex 轮询；恢复后网站/服务请求错峰启动，个人额度只经 selected-provider gate 排队当前有效且正在运行的软件 provider，不让两套额度请求同时到期。 |
 
@@ -242,7 +242,7 @@ DNS 告警：
 | 取消 | 恢复打开设置前的 baseline，不应触发额外持久化写入。 |
 | 异常关闭 | `Win11SettingsForm.OnFormClosing` 会回滚未保存预览；若窗口异常销毁或只触发 `Disposed/FormClosed`，宿主必须通过 `ISettingsWindow.TryConsumeUnsavedPreview()` 只消费一次 baseline 并回滚，不能只依赖 `OnFormClosing`。 |
 | Codex 模型选择 | `CodexRadarModelKey` 使用 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-radar-models.ini` 生成下拉框；暂不可用模型保留在下拉中并标注，不再手动填写 key。 |
-| DeepSeek 配置 | 设置页 Codex Radar 的“模型与时区”组只写 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-api-key.txt`，不把 key 写入 `settings.ini`；保存或清除后递增 `DeepSeekApiKeyRevision` 触发 Codex Radar 立即刷新余额状态。 |
+| DeepSeek 配置 | 设置页 Codex Radar 的“模型与时区”组只写 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-api-key.bin`，不把 key 写入 `settings.ini`；保存或清除后递增 `DeepSeekApiKeyRevision` 触发 Codex Radar 立即刷新余额状态。旧 `.txt` 会在读取时迁移为 `.txt.migrated`，清除时一并删除。 |
 
 ## 10. 修改检查清单
 

@@ -615,6 +615,67 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         }
     }
 
+    // Grouped-card layout (方案1) geometry, measured pixel-for-pixel from the user-approved 628x250
+    // reference screenshot (PIL/numpy boundary detection: card fill vs background edges, text-band
+    // detection vs card fill, per-chip color-run segmentation). Every constant below is
+    // <measured reference pixel> / <reference axis size> so multiplying by this.Width/this.Height
+    // reproduces the reference exactly at 628x250 and scales proportionally at other sizes. See
+    // Docs/NetworkMonitor-Architecture.md 12.0 for the measurement method and source figures.
+    private static class GroupedCardLayout
+    {
+        // Header row (NETWORK title, status text, cloud tiles), fraction of Height/Width.
+        public const float HeaderTop = 0.0400f;
+        public const float HeaderBottom = 0.1148f;
+        public const float TitleLeft = 0.0208f;
+        public const float TitleRight = 0.1525f;
+        public const float StatusLeft = 0.1679f;
+        public const float StatusRight = 0.3123f;
+        public const float TilesLeft = 0.7185f;
+        public const float TilesRight = 0.9765f;
+
+        // Address+link card row.
+        public const float Row1Top = 0.1715f;
+        public const float Row1Bottom = 0.6499f;
+        public const float AddressLeft = 0.0208f;
+        public const float AddressRight = 0.5623f;
+        public const float LinkLeft = 0.5758f;
+        public const float LinkRight = 0.9765f;
+
+        // Health card (full width, below row1).
+        public const float HealthTop = 0.6884f;
+        public const float HealthBottom = 0.9718f;
+
+        // Card-internal text line bands, absolute fraction of Height (not relative to card top).
+        public const float AddrHeaderTop = 0.2236f;
+        public const float AddrHeaderBottom = 0.2599f;
+        public const float AddrLine1Top = 0.3143f;
+        public const float AddrLine1Bottom = 0.3483f;
+        public const float AddrLine2Top = 0.4096f;
+        public const float AddrLine2Bottom = 0.4572f;
+        public const float AddrLine3Top = 0.5184f;
+        public const float AddrLine3Bottom = 0.5614f;
+        public const float AddrHeaderTextLeft = 0.0415f;
+        public const float AddrValueColLeft = 0.1047f;
+
+        public const float LinkHeaderTop = 0.2191f;
+        public const float LinkHeaderBottom = 0.2554f;
+        public const float LinkLine1Top = 0.3143f;
+        public const float LinkLine1Bottom = 0.3687f;
+        public const float LinkLine2Top = 0.4436f;
+        public const float LinkLine2Bottom = 0.4889f;
+        public const float LinkLine3Top = 0.5478f;
+        public const float LinkLine3Bottom = 0.5818f;
+        public const float LinkHeaderTextLeft = 0.5975f;
+        public const float LinkTextLeft = 0.5975f;
+
+        public const float HealthHeaderTop = 0.7383f;
+        public const float HealthHeaderBottom = 0.7791f;
+        public const float ChipRowTop = 0.8335f;
+        public const float ChipRowBottom = 0.8970f;
+        public const float ChipDotDiameter = 0.02948f;
+        public const float ChipDotTextGap = 0.02948f;
+    }
+
     private void DrawContentClassic(Graphics g)
     {
         ConfigureGraphics(g);
@@ -624,39 +685,34 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             g.DrawPath(outline, shell);
         }
 
-        float padding = S(10);
-        RectangleF content = new RectangleF(padding, S(6), this.Width - padding * 2.0f, this.Height - S(12));
-        float headerHeight = Math.Max(S(18), content.Height * 0.18f);
-        RectangleF header = new RectangleF(content.Left, content.Top, content.Width, headerHeight);
-        DrawGroupedHeader(g, header);
+        // Grouped-card layout (方案1): 头部 + 地址/链路 双卡 + 全宽健康卡, positioned by the exact
+        // GroupedCardLayout fractions measured from the reference. 健康卡里连通/GFW/DNS 各是一个彩色
+        // 圆点 chip，能一行装下就单行绘制，装不下再逐个换行，长错误文本不会与其它卡相撞。只剩链路本地
+        // IPv6（reader 已过滤）时地址卡显示灰色"未分配 · 仅本地"。
+        float w = this.Width;
+        float h = this.Height;
+        RectangleF headerRect = new RectangleF(0, GroupedCardLayout.HeaderTop * h, w, (GroupedCardLayout.HeaderBottom - GroupedCardLayout.HeaderTop) * h);
+        DrawGroupedHeader(g, headerRect);
 
-        // Grouped-card layout (方案1): 头部 + 地址/链路 双卡 + 全宽健康卡。窗口是固定画布（最大
-        // 628x250），布局按最坏情况预算。健康卡里连通/GFW/DNS 各占整行，长错误文本有整行宽度兜底，
-        // 不会与其它字段相撞。只剩链路本地 IPv6（reader 已过滤）时地址卡显示灰色"未分配 · 仅本地"，
-        // 不留空行。矩形纯垂直/并排堆叠，互不相交由结构保证。
-        RectangleF addrRect;
-        RectangleF linkRect;
-        RectangleF healthRect;
-        ComputeGroupedCardRects(content, header, out addrRect, out linkRect, out healthRect);
+        RectangleF addrRect = new RectangleF(
+            GroupedCardLayout.AddressLeft * w,
+            GroupedCardLayout.Row1Top * h,
+            (GroupedCardLayout.AddressRight - GroupedCardLayout.AddressLeft) * w,
+            (GroupedCardLayout.Row1Bottom - GroupedCardLayout.Row1Top) * h);
+        RectangleF linkRect = new RectangleF(
+            GroupedCardLayout.LinkLeft * w,
+            GroupedCardLayout.Row1Top * h,
+            (GroupedCardLayout.LinkRight - GroupedCardLayout.LinkLeft) * w,
+            (GroupedCardLayout.Row1Bottom - GroupedCardLayout.Row1Top) * h);
+        RectangleF healthRect = new RectangleF(
+            GroupedCardLayout.AddressLeft * w,
+            GroupedCardLayout.HealthTop * h,
+            (GroupedCardLayout.LinkRight - GroupedCardLayout.AddressLeft) * w,
+            (GroupedCardLayout.HealthBottom - GroupedCardLayout.HealthTop) * h);
+
         DrawAddressCard(g, addrRect);
         DrawLinkCard(g, linkRect);
         DrawHealthCard(g, healthRect);
-    }
-
-    // Card geometry is separated so RunGroupedCardLayoutSelfTest can assert the three rects never
-    // overlap and stay inside the content area. 地址/链路 sit side by side; 健康 spans full width below.
-    private void ComputeGroupedCardRects(RectangleF content, RectangleF header, out RectangleF addrRect, out RectangleF linkRect, out RectangleF healthRect)
-    {
-        float cardsTop = header.Bottom + S(4);
-        float cardsArea = Math.Max(S(24), content.Bottom - cardsTop);
-        float rowGap = S(8);
-        float row1Height = Math.Max(S(30), cardsArea * 0.52f - rowGap * 0.5f);
-        float addrWidth = content.Width * 0.56f;
-        float linkWidth = Math.Max(S(40), content.Width - addrWidth - rowGap);
-        addrRect = new RectangleF(content.Left, cardsTop, addrWidth, row1Height);
-        linkRect = new RectangleF(addrRect.Right + rowGap, cardsTop, linkWidth, row1Height);
-        float healthTop = cardsTop + row1Height + rowGap;
-        healthRect = new RectangleF(content.Left, healthTop, content.Width, Math.Max(S(24), content.Bottom - healthTop));
     }
 
     private void DrawGroupedHeader(Graphics g, RectangleF rect)

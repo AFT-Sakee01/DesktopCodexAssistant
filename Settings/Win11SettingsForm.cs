@@ -2216,11 +2216,18 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     {
         try
         {
-            string path = CodexRadarForm.DeepSeekApiKeyPath;
-            if (System.IO.File.Exists(path))
-            {
-                return (System.IO.File.ReadAllText(path, Encoding.UTF8) ?? string.Empty).Trim();
-            }
+            string secret;
+            bool migrated;
+            string errorCode;
+            return SecretStore.TryReadOrMigrateSecret(
+                CodexRadarForm.DeepSeekApiKeyPath,
+                CodexRadarForm.LegacyDeepSeekApiKeyPath,
+                SecretStore.TrimSecret,
+                out secret,
+                out migrated,
+                out errorCode)
+                ? secret
+                : string.Empty;
         }
         catch
         {
@@ -2232,55 +2239,23 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private static bool TrySaveDeepSeekApiKeyFile(string apiKey, out string errorCode)
     {
         errorCode = string.Empty;
-        string tempPath = string.Empty;
         try
         {
-            string path = CodexRadarForm.DeepSeekApiKeyPath;
-            string directory = System.IO.Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory))
-            {
-                System.IO.Directory.CreateDirectory(directory);
-            }
-
             string trimmed = (apiKey ?? string.Empty).Trim();
             if (trimmed.Length == 0)
             {
-                if (System.IO.File.Exists(path))
-                {
-                    System.IO.File.Delete(path);
-                }
-
+                SecretStore.DeleteSecretFiles(CodexRadarForm.DeepSeekApiKeyPath, CodexRadarForm.LegacyDeepSeekApiKeyPath);
                 return true;
             }
 
-            tempPath = path + ".tmp";
-            System.IO.File.WriteAllText(tempPath, trimmed + Environment.NewLine, new UTF8Encoding(false));
-            if (System.IO.File.Exists(path))
-            {
-                System.IO.File.Replace(tempPath, path, null);
-            }
-            else
-            {
-                System.IO.File.Move(tempPath, path);
-            }
-
+            SecretStore.WriteSecret(CodexRadarForm.DeepSeekApiKeyPath, trimmed);
+            SecretStore.DeleteLegacySecretFiles(CodexRadarForm.LegacyDeepSeekApiKeyPath);
             return true;
         }
         catch (Exception ex)
         {
             Program.LogException(ex);
             errorCode = "0x" + ex.HResult.ToString("X8", CultureInfo.InvariantCulture);
-            try
-            {
-                if (!string.IsNullOrEmpty(tempPath) && System.IO.File.Exists(tempPath))
-                {
-                    System.IO.File.Delete(tempPath);
-                }
-            }
-            catch
-            {
-            }
-
             return false;
         }
     }

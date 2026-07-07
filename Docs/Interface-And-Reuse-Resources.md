@@ -1,6 +1,6 @@
 # 接口与复用资源汇总
 
-适用版本：1.0.4.30
+适用版本：1.0.4.34
 
 ## 1. 文档用途
 
@@ -119,6 +119,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `internal_api.burn_in_protection` | 像素位移和隐藏反色 | 新窗口分配独立 salt；操作面板隐藏态只为可见按钮恢复命中 Alpha |
 | `internal_api.hover_interaction_policy` | 鼠标隐藏命中策略 | 敏感鼠标范围、延迟显现、覆盖开启和反向隐藏统一复用，不在窗口中重复点命中或倒计时逻辑 |
 | `internal_api.time_zone_utilities` | 北京时间调度和显示时区 | 区分业务时间与显示时间 |
+| `internal_api.secret_store` | DPAPI CurrentUser 密钥文件保护 | 统一读写 `.bin` Base64 密文、迁移旧 `.txt` 到 `.txt.migrated`，不要在调用点手写明文 key 文件 |
 | `internal_api.window_runtime_contract` | 设置、刷新、全屏、挂起、恢复和共享维护 | 新模块实现同等生命周期方法，低频维护复用主协调 tick |
 | `internal_api.snapshot_models` | 跨线程快照契约 | 后台状态通过 Clone 交付 |
 | `internal_api.drawing_and_rate_formatters` | Alpha 绘图和速率格式 | 不重复实现单位换算 |
@@ -134,11 +135,11 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `file_format.idle_cpu_diagnosis_report` | `idle-cpu-diagnosis-*.txt/.json` | 空闲 CPU 归因报告 |
 | `file_format.codex_radar_cache` | `codex-radar-cache.ini` | 动态模型快照和历史基准 |
 | `file_format.codex_radar_model_catalog` | `codex-radar-models.ini` | 模型下拉目录、可用状态和增删去重 |
-| `file_format.deepseek_api_key` | `deepseek-api-key.txt` | DeepSeek 本地 API key；设置页可写入/清除，禁止写入日志和 settings.ini |
+| `file_format.deepseek_api_key` | `deepseek-api-key.bin` | DeepSeek 本地 API key 的 DPAPI 密文；设置页可写入/清除，禁止写入日志和 settings.ini；旧 `.txt` 只作迁移来源 |
 | `file_format.codex_auth_json` | `%USERPROFILE%\.codex\auth.json` 或 `CODEX_HOME\auth.json` | Codex access token 只读来源；不写回、不刷新、不记录敏感内容 |
 | `file_format.claude_statusline_quota` | `claude-statusline-quota.ini` | Claude Code statusline 桥接脚本写入的只读额度快照；默认 Claude 用量来源，不含 token |
 | `command.claude_statusline_bridge` | `%USERPROFILE%\.claude\desktop-codex-statusline-bridge.ps1` | Claude Code `statusLine` 命令；程序仅在没有自定义 statusline 时自动安装，不覆盖用户已有命令 |
-| `file_format.claude_code_credentials` | `CLAUDE_CODE_OAUTH_TOKEN` 或 `%LOCALAPPDATA%\DesktopCodexAssistant\claude-code-oauth-token.txt` | `claude setup-token` 生成 token 的保留回退来源；默认调度不调用，不自动执行命令、不读取 `.credentials.json`、不写回、不刷新、不记录敏感内容 |
+| `file_format.claude_code_credentials` | `CLAUDE_CODE_OAUTH_TOKEN` 或 `%LOCALAPPDATA%\DesktopCodexAssistant\claude-code-oauth-token.bin` | `claude setup-token` 生成 token 的保留回退来源；本地文件为 DPAPI 密文，旧 `.txt` 只作迁移来源；默认调度不调用，不自动执行命令、不读取 `.credentials.json`、不写回、不刷新、不记录敏感内容 |
 | `file_format.application_icon_ico` | `Assets/AppIcon.ico` | 编译时嵌入 exe 的 Win32 图标，和 `ApplicationIcon` 运行时绘制保持同款 |
 | `file_format.codex_quota` | `quota.ini` | Codex 额度缓存 |
 | `file_format.claude_quota` | `claude-quota.ini` | Claude Code 用量缓存；格式与 `quota.ini` 相同但文件隔离 |

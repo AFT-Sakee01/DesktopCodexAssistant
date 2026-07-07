@@ -38,7 +38,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private const string CodexRadarFullApiUrl = "https://codexradar.com/api/v1/current";
     private const string DeepSeekBalanceUrl = "https://api.deepseek.com/user/balance";
     internal const string DeepSeekApiKeyEnvironmentVariable = "DEEPSEEK_API_KEY";
-    private const string DeepSeekApiKeyFileName = "deepseek-api-key.txt";
+    private const string DeepSeekApiKeyFileName = "deepseek-api-key.bin";
+    private const string LegacyDeepSeekApiKeyFileName = "deepseek-api-key.txt";
     // Keep probes enabled because the compact one-line API summary consumes their states.
     private static readonly bool ServiceHealthProbeEnabled = true;
     private const int DeepSeekBalanceTimeoutMs = 10000;
@@ -121,6 +122,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     internal static string DeepSeekApiKeyPath
     {
         get { return Path.Combine(Logger.DirectoryPath, DeepSeekApiKeyFileName); }
+    }
+
+    internal static string LegacyDeepSeekApiKeyPath
+    {
+        get { return Path.Combine(Logger.DirectoryPath, LegacyDeepSeekApiKeyFileName); }
     }
     private int codexRadarRandomTestRefreshToken = int.MinValue;
     private DateTime nextCodexRadarRandomTestRefreshUtc;
@@ -6235,11 +6241,18 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         try
         {
-            string path = DeepSeekApiKeyPath;
-            if (File.Exists(path))
-            {
-                return (File.ReadAllText(path, Encoding.UTF8) ?? string.Empty).Trim();
-            }
+            string secret;
+            bool migrated;
+            string errorCode;
+            return SecretStore.TryReadOrMigrateSecret(
+                DeepSeekApiKeyPath,
+                LegacyDeepSeekApiKeyPath,
+                SecretStore.TrimSecret,
+                out secret,
+                out migrated,
+                out errorCode)
+                ? secret
+                : string.Empty;
         }
         catch
         {
