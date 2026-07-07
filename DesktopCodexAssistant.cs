@@ -556,6 +556,7 @@ internal static class Program
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             WidgetSettings.RunCompatibilitySelfTest();
+            WidgetSettings.RunFullRoundTripSelfTest();
             HoverInteractionPolicy.RunSelfTest();
             IdleCpuDiagnostics.RunSelfTest();
             Win11SettingsForm.RunSettingsBindingSelfTest();

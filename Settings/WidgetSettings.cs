@@ -8,6 +8,7 @@ using System.Globalization;
 using System.IO;
 using System.Management;
 using System.Net.NetworkInformation;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -1698,6 +1699,11 @@ internal sealed class WidgetSettings
 
     public static WidgetSettings Load()
     {
+        return LoadFromPath(SettingsPath, true);
+    }
+
+    private static WidgetSettings LoadFromPath(string path, bool saveAfterMigrationToSamePath)
+    {
         WidgetSettings settings = new WidgetSettings();
         bool hasPixelPosition = false;
         int settingsVersion = 0;
@@ -1705,9 +1711,9 @@ internal sealed class WidgetSettings
 
         try
         {
-            if (File.Exists(SettingsPath))
+            if (File.Exists(path))
             {
-                string[] lines = File.ReadAllLines(SettingsPath);
+                string[] lines = File.ReadAllLines(path);
                 for (int i = 0; i < lines.Length; i++)
                 {
                     string line = lines[i].Trim();
@@ -1828,11 +1834,11 @@ internal sealed class WidgetSettings
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
-        if (saveAfterMigration)
+        if (saveAfterMigration && saveAfterMigrationToSamePath)
         {
             try
             {
-                settings.Save();
+                settings.SaveToPath(path, true);
             }
             catch (Exception ex)
             {
@@ -1979,9 +1985,23 @@ internal sealed class WidgetSettings
 
     public void Save()
     {
+        SaveToPath(SettingsPath, true);
+    }
+
+    private void SaveToPath(string path, bool captureCurrentWorkArea)
+    {
         this.Normalize();
-        this.CaptureCurrentWorkArea();
-        Directory.CreateDirectory(Logger.DirectoryPath);
+        if (captureCurrentWorkArea)
+        {
+            this.CaptureCurrentWorkArea();
+        }
+
+        string directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
         string[] lines = new string[]
         {
             "Version=" + CurrentSettingsVersion.ToString(CultureInfo.InvariantCulture),
@@ -2203,7 +2223,7 @@ internal sealed class WidgetSettings
             "BurnInHiddenModeColorProtectionEnabled=" + this.BurnInHiddenModeColorProtectionEnabled,
             "MetricOrder=" + string.Join(",", NormalizeMetricOrder(this.MetricOrder))
         };
-        File.WriteAllLines(SettingsPath, lines);
+        File.WriteAllLines(path, lines);
     }
 
     private static void ApplyValue(WidgetSettings settings, string key, string value)
@@ -4707,6 +4727,312 @@ internal sealed class WidgetSettings
             missingDisplayWorkArea.Width == 900 &&
             missingDisplayWorkArea.Height == 600,
             "missing display without fallback should keep module work area");
+    }
+
+    internal static void RunFullRoundTripSelfTest()
+    {
+        Dictionary<string, string> saveLoadExemptions = CreateFullRoundTripSaveLoadExemptions();
+        PropertyInfo[] properties = GetFullRoundTripProperties();
+        WidgetSettings settings = CreateDefaults();
+
+        for (int i = 0; i < properties.Length; i++)
+        {
+            if (!saveLoadExemptions.ContainsKey(properties[i].Name))
+            {
+                AssignFullRoundTripSentinel(settings, properties[i], i);
+            }
+        }
+
+        ApplyFullRoundTripCoherentSentinels(settings);
+
+        WidgetSettings clone = settings.Clone();
+        AssertFullRoundTripEqual(settings, clone, properties, null, "Clone");
+
+        string tempRoot = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-settings-rt-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            string savedPath = Path.Combine(tempRoot, "settings.ini");
+            settings.SaveToPath(savedPath, true);
+            WidgetSettings loaded = LoadFromPath(savedPath, false);
+            AssertFullRoundTripEqual(settings, loaded, properties, saveLoadExemptions, "Save/Load");
+            AssertFullRoundTripSaveCoverage(savedPath, properties, saveLoadExemptions);
+
+            string fixturePath = Path.Combine(
+                Environment.CurrentDirectory,
+                "_build",
+                "spec-baseline",
+                "settings-fixture.ini");
+            if (File.Exists(fixturePath))
+            {
+                WidgetSettings fixture = LoadFromPath(fixturePath, false);
+                string fixtureSavedPath = Path.Combine(tempRoot, "settings-fixture-saved.ini");
+                fixture.SaveToPath(fixtureSavedPath, true);
+                WidgetSettings fixtureReloaded = LoadFromPath(fixtureSavedPath, false);
+                AssertFullRoundTripEqual(fixture, fixtureReloaded, properties, saveLoadExemptions, "Fixture Save/Load");
+                Console.WriteLine("Settings fixture round-trip: PASS");
+            }
+
+            int persistedPropertyCount = 0;
+            for (int i = 0; i < properties.Length; i++)
+            {
+                if (!saveLoadExemptions.ContainsKey(properties[i].Name))
+                {
+                    persistedPropertyCount++;
+                }
+            }
+
+            Console.WriteLine(
+                "Settings full round-trip: PASS " +
+                persistedPropertyCount.ToString(CultureInfo.InvariantCulture) +
+                " persisted properties (" +
+                properties.Length.ToString(CultureInfo.InvariantCulture) +
+                " supported public properties, " +
+                saveLoadExemptions.Count.ToString(CultureInfo.InvariantCulture) +
+                " explicit exemptions)");
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(tempRoot, true);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private static PropertyInfo[] GetFullRoundTripProperties()
+    {
+        PropertyInfo[] allProperties = typeof(WidgetSettings).GetProperties(BindingFlags.Instance | BindingFlags.Public);
+        List<PropertyInfo> result = new List<PropertyInfo>();
+        for (int i = 0; i < allProperties.Length; i++)
+        {
+            PropertyInfo property = allProperties[i];
+            if (!property.CanRead || !property.CanWrite)
+            {
+                continue;
+            }
+
+            if (IsFullRoundTripSupportedType(property.PropertyType))
+            {
+                result.Add(property);
+            }
+        }
+
+        result.Sort(delegate(PropertyInfo left, PropertyInfo right)
+        {
+            return string.CompareOrdinal(left.Name, right.Name);
+        });
+        return result.ToArray();
+    }
+
+    private static bool IsFullRoundTripSupportedType(Type type)
+    {
+        return type == typeof(int) ||
+            type == typeof(bool) ||
+            type == typeof(double) ||
+            type == typeof(string) ||
+            type == typeof(string[]) ||
+            type.IsEnum;
+    }
+
+    private static Dictionary<string, string> CreateFullRoundTripSaveLoadExemptions()
+    {
+        Dictionary<string, string> result = new Dictionary<string, string>(StringComparer.Ordinal);
+        // Runtime state: Load() intentionally mirrors the current Windows startup registration.
+        result["StartupEnabled"] = "external Windows startup state";
+        // Derived compatibility alias: setter maps to PerformanceMode and Save writes both keys for legacy settings.
+        result["PowerSavingEnabled"] = "derived from PerformanceMode";
+        // Legacy compatibility booleans: Save derives them from OperationPrimaryPanelMode for old settings files.
+        result["OperationWindowsButtonEnabled"] = "derived legacy OperationPrimaryPanelMode key";
+        result["OperationMemoryPieEnabled"] = "derived legacy OperationPrimaryPanelMode key";
+        // One-shot runtime tokens are intentionally not persisted to avoid replaying manual refreshes on restart.
+        result["GfwProbeManualRefreshToken"] = "transient manual refresh token";
+        result["ConnectionCheckManualRefreshToken"] = "transient manual refresh token";
+        // Hover state flags are current interaction state, not durable user configuration.
+        result["ForceHoverOpacityActive"] = "transient hover state";
+        result["ManualHoverOpacityActive"] = "transient hover state";
+        return result;
+    }
+
+    private static void AssignFullRoundTripSentinel(WidgetSettings settings, PropertyInfo property, int index)
+    {
+        Type type = property.PropertyType;
+        if (type == typeof(int))
+        {
+            property.SetValue(settings, 37 + (index % 41), null);
+            return;
+        }
+
+        if (type == typeof(bool))
+        {
+            bool current = (bool)property.GetValue(settings, null);
+            property.SetValue(settings, !current, null);
+            return;
+        }
+
+        if (type == typeof(double))
+        {
+            property.SetValue(settings, 1.25d + ((double)(index % 7) / 10.0d), null);
+            return;
+        }
+
+        if (type == typeof(string))
+        {
+            property.SetValue(settings, "rt-" + property.Name, null);
+            return;
+        }
+
+        if (type == typeof(string[]))
+        {
+            property.SetValue(settings, new string[] { MetricNpu, MetricGpu, MetricNetwork, MetricDisk, MetricMemory, MetricCpu }, null);
+            return;
+        }
+
+        if (type.IsEnum)
+        {
+            Array values = Enum.GetValues(type);
+            if (values.Length > 1)
+            {
+                property.SetValue(settings, values.GetValue(1), null);
+            }
+            else if (values.Length == 1)
+            {
+                property.SetValue(settings, values.GetValue(0), null);
+            }
+        }
+    }
+
+    private static void ApplyFullRoundTripCoherentSentinels(WidgetSettings settings)
+    {
+        settings.CodexRadarModelVersion = CodexRadarModelVersion.Gpt55Medium;
+        settings.CodexRadarModelKey = CodexRadarModelCatalog.LegacyKeyFromVersion(settings.CodexRadarModelVersion);
+        settings.ClaudeRadarModelKey = "m999";
+        settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Manual;
+        settings.DisplayTimeZoneId = "UTC";
+        settings.OperationPrimaryPanelMode = OperationPrimaryPanelMode.Hidden;
+        settings.MetricOrder = new string[] { MetricNpu, MetricGpu, MetricNetwork, MetricDisk, MetricMemory, MetricCpu };
+    }
+
+    private static void AssertFullRoundTripEqual(
+        WidgetSettings expected,
+        WidgetSettings actual,
+        PropertyInfo[] properties,
+        Dictionary<string, string> exemptions,
+        string scope)
+    {
+        List<string> mismatches = new List<string>();
+        for (int i = 0; i < properties.Length; i++)
+        {
+            PropertyInfo property = properties[i];
+            if (exemptions != null && exemptions.ContainsKey(property.Name))
+            {
+                continue;
+            }
+
+            object expectedValue = property.GetValue(expected, null);
+            object actualValue = property.GetValue(actual, null);
+            if (!AreFullRoundTripValuesEqual(expectedValue, actualValue, property.PropertyType))
+            {
+                mismatches.Add(property.Name + " expected=" + FormatFullRoundTripValue(expectedValue) + " actual=" + FormatFullRoundTripValue(actualValue));
+            }
+        }
+
+        if (mismatches.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Settings full round-trip self-test failed in " + scope + ": " +
+                string.Join("; ", mismatches.ToArray()));
+        }
+    }
+
+    private static bool AreFullRoundTripValuesEqual(object expected, object actual, Type type)
+    {
+        if (type == typeof(double))
+        {
+            return Math.Abs((double)expected - (double)actual) < 0.0005d;
+        }
+
+        if (type == typeof(string[]))
+        {
+            string[] expectedArray = expected as string[];
+            string[] actualArray = actual as string[];
+            if (expectedArray == null || actualArray == null || expectedArray.Length != actualArray.Length)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < expectedArray.Length; i++)
+            {
+                if (!string.Equals(expectedArray[i], actualArray[i], StringComparison.Ordinal))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        return object.Equals(expected, actual);
+    }
+
+    private static string FormatFullRoundTripValue(object value)
+    {
+        string[] array = value as string[];
+        if (array != null)
+        {
+            return "[" + string.Join(",", array) + "]";
+        }
+
+        return value == null ? "<null>" : Convert.ToString(value, CultureInfo.InvariantCulture);
+    }
+
+    private static void AssertFullRoundTripSaveCoverage(
+        string path,
+        PropertyInfo[] properties,
+        Dictionary<string, string> exemptions)
+    {
+        Dictionary<string, int> keyCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        string[] lines = File.ReadAllLines(path);
+        for (int i = 0; i < lines.Length; i++)
+        {
+            int split = lines[i].IndexOf('=');
+            if (split <= 0)
+            {
+                continue;
+            }
+
+            string key = lines[i].Substring(0, split).Trim();
+            int count;
+            keyCounts.TryGetValue(key, out count);
+            keyCounts[key] = count + 1;
+        }
+
+        List<string> missing = new List<string>();
+        for (int i = 0; i < properties.Length; i++)
+        {
+            string name = properties[i].Name;
+            if (exemptions.ContainsKey(name))
+            {
+                continue;
+            }
+
+            int count;
+            keyCounts.TryGetValue(name, out count);
+            if (count != 1)
+            {
+                missing.Add(name + " count=" + count.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Settings full round-trip self-test failed in Save coverage: " +
+                string.Join("; ", missing.ToArray()));
+        }
     }
 
     private static void AssertLayout(bool condition, string message)
