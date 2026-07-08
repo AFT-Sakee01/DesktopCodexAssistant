@@ -3,9 +3,9 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 
-// Test-only render harness for --render-networkmonitor: paints one representative frame of each
-// NetworkMonitorRenderVariant (Classic plus the four OLED-safe schemes added in 1.0.3.44) to a PNG
-// for visual review, mirroring the CodexRadar/ConnectionCheck render harnesses.
+// Test-only render harness for --render-networkmonitor: paints one representative frame of the
+// Classic reference strip to a PNG for visual review, mirroring the CodexRadar/ConnectionCheck
+// render harnesses.
 internal sealed partial class NetworkMonitorForm
 {
     internal static void RenderVariantSamples(string outputDir)
@@ -13,11 +13,7 @@ internal sealed partial class NetworkMonitorForm
         Directory.CreateDirectory(outputDir);
         NetworkMonitorRenderVariant[] variants =
         {
-            NetworkMonitorRenderVariant.Classic,
-            NetworkMonitorRenderVariant.Typographic,
-            NetworkMonitorRenderVariant.AmberHud,
-            NetworkMonitorRenderVariant.WarmCard,
-            NetworkMonitorRenderVariant.Phosphor
+            NetworkMonitorRenderVariant.Classic
         };
 
         foreach (NetworkMonitorRenderVariant variant in variants)
@@ -40,108 +36,12 @@ internal sealed partial class NetworkMonitorForm
                 using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
                 using (Graphics g = Graphics.FromImage(bitmap))
                 {
-                    g.Clear(DesignTokens.Colors.AppBackground);
+                    g.Clear(Color.FromArgb(15, 15, 19));
                     form.DrawContent(g);
                     string path = Path.Combine(outputDir, "networkmonitor-" + variant.ToString().ToLowerInvariant() + ".png");
                     bitmap.Save(path, ImageFormat.Png);
                     Console.WriteLine(variant.ToString() + " -> " + path);
                 }
-            }
-        }
-
-        RenderClassicCardFixtures(outputDir);
-    }
-
-    // Deterministic 628x250 fixtures for the grouped-card Classic layout: normal (global IPv6),
-    // no-ipv6 (only link-local → 地址卡 shows the muted placeholder, 公网 falls back to IPv4), and
-    // errors (long GFW reason + DNS SERVFAIL + abnormal cloud → health-card lines hold long text).
-    private static void RenderClassicCardFixtures(string outputDir)
-    {
-        RenderClassicCardFixture(outputDir, "networkmonitor-cards-normal.png", null);
-        RenderClassicCardFixture(outputDir, "networkmonitor-cards-noipv6.png", delegate(NetworkMonitorSnapshot snapshot)
-        {
-            snapshot.IPv6 = string.Empty;
-            snapshot.PublicIp = "203.0.113.10";
-            snapshot.PublicIpKnown = true;
-        });
-        RenderClassicCardFixture(outputDir, "networkmonitor-cards-errors.png", delegate(NetworkMonitorSnapshot snapshot)
-        {
-            snapshot.GfwProbe.Status = GfwProbeStatus.SuspectedDns;
-            snapshot.GfwProbe.Detail = "疑似DNS污染";
-            snapshot.GfwProbe.Reason = "系统DNS失败但DoH可解析 3/3，TCP可连但TLS/SNI握手失败 2/3";
-            snapshot.GfwProbe.CloudEndpoints = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Abnormal);
-        });
-        // Reproduces the user's real messy data (redundant Wi-Fi/Wi-Fi interface name+type, no global
-        // IPv6, corporate SSID/DNS) to verify the compact health chips and name dedup stay clean.
-        RenderClassicCardFixture(outputDir, "networkmonitor-cards-realistic.png", delegate(NetworkMonitorSnapshot snapshot)
-        {
-            snapshot.InterfaceName = "Wi-Fi";
-            snapshot.InterfaceType = "Wi-Fi";
-            if (snapshot.WifiDetails != null)
-            {
-                snapshot.WifiDetails.Ssid = "SSID-9A9449";
-                snapshot.WifiDetails.AuthAlgorithm = "WPA2-PSK";
-                snapshot.WifiDetails.CipherAlgorithm = "CCMP";
-                snapshot.WifiDetails.SignalQuality = 100;
-            }
-
-            snapshot.IPv4 = "172.16.0.15";
-            snapshot.IPv6 = string.Empty;
-            snapshot.PublicIp = "113.37.249.175";
-            snapshot.PublicIpKnown = true;
-            snapshot.LatencyMs = 7.0;
-            snapshot.DnsServerDetails = new DnsServerSnapshot[]
-            {
-                new DnsServerSnapshot { Address = "163.139.8.202", Status = DnsServerStatus.Normal, Reason = "正常" },
-                new DnsServerSnapshot { Address = "163.139.9.202", Status = DnsServerStatus.Normal, Reason = "正常" }
-            };
-        });
-        // Stress case: many bad DNS servers force the health-card chip flow to wrap past its
-        // reserved 2-line budget. Verifies the clip added to DrawHealthCard actually holds — content
-        // must be invisibly cut off inside the card, never bleed past its border.
-        RenderClassicCardFixture(outputDir, "networkmonitor-cards-stress.png", delegate(NetworkMonitorSnapshot snapshot)
-        {
-            snapshot.GfwProbe.Status = GfwProbeStatus.SuspectedTlsSni;
-            snapshot.GfwProbe.Detail = "疑似SNI阻断";
-            snapshot.DnsServerDetails = new DnsServerSnapshot[]
-            {
-                new DnsServerSnapshot { Address = "1.1.1.1", Status = DnsServerStatus.Problem, Reason = "返回 SERVFAIL" },
-                new DnsServerSnapshot { Address = "8.8.8.8", Status = DnsServerStatus.Hijacked, Reason = "污染" },
-                new DnsServerSnapshot { Address = "9.9.9.9", Status = DnsServerStatus.Unavailable, Reason = "无响应" },
-                new DnsServerSnapshot { Address = "114.114.114.114", Status = DnsServerStatus.Problem, Reason = "NXDOMAIN一次异常" },
-                new DnsServerSnapshot { Address = "223.5.5.5", Status = DnsServerStatus.Problem, Reason = "地址无效" }
-            };
-        });
-    }
-
-    private static void RenderClassicCardFixture(string outputDir, string fileName, Action<NetworkMonitorSnapshot> mutate)
-    {
-        WidgetSettings settings = WidgetSettings.CreateDefaults();
-        settings.NetworkMonitorRenderVariant = NetworkMonitorRenderVariant.Classic;
-        // The user's fixed canvas: the window runs at up to 628x250 physical pixels.
-        settings.NetworkMonitorWidth = 628;
-        settings.NetworkMonitorHeight = 250;
-        settings.Normalize();
-        using (NetworkMonitorForm form = new NetworkMonitorForm(settings))
-        {
-            form.SetLayerScale(2.0f);
-            form.MaximumSize = new Size(4000, 4000);
-            form.Size = new Size(settings.NetworkMonitorWidth, settings.NetworkMonitorHeight);
-            NetworkMonitorSnapshot snapshot = BuildSampleSnapshot();
-            if (mutate != null)
-            {
-                mutate(snapshot);
-            }
-
-            form.snapshot = snapshot;
-            using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
-            using (Graphics g = Graphics.FromImage(bitmap))
-            {
-                g.Clear(DesignTokens.Colors.AppBackground);
-                form.DrawContent(g);
-                string path = Path.Combine(outputDir, fileName);
-                bitmap.Save(path, ImageFormat.Png);
-                Console.WriteLine("card fixture -> " + path + " (" + form.Width + "x" + form.Height + ")");
             }
         }
     }

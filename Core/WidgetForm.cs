@@ -254,7 +254,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             ShowWindowsNotification,
             delegate { return ToggleForcedHoverOpacity(); },
             delegate { return PulseSeelenDockToFront("operation panel", false, false); },
-            delegate { return PromptToggleAiRequestBlockingFromOperationPanel(); });
+            delegate { return PromptToggleAiRequestBlockingFromOperationPanel(); },
+            delegate(bool enabled) { return SetAiRequestBlockingFromOperationPanel(enabled); },
+            delegate(bool enabled) { return SetCodexQuotaPlanFromOperationPanel(enabled); });
         this.operationForm.Show(this);
         this.timer.Start();
         UpdateSeelenDockPulseTimer();
@@ -1069,16 +1071,17 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        PulseFormToTopMost(this);
-        PulseFormToTopMost(this.codexRadarForm);
-        PulseFormToTopMost(this.claudeRadarForm);
-        PulseFormToTopMost(this.powerThermalForm);
-        PulseFormToTopMost(this.networkMonitorForm);
-        PulseFormToTopMost(this.connectionCheckForm);
-        PulseFormToTopMost(this.operationForm);
+        IntPtr insertAfter = GetLayeredWidgetInsertAfter(true);
+        PulseFormToTopMost(this, insertAfter);
+        PulseFormToTopMost(this.codexRadarForm, insertAfter);
+        PulseFormToTopMost(this.claudeRadarForm, insertAfter);
+        PulseFormToTopMost(this.powerThermalForm, insertAfter);
+        PulseFormToTopMost(this.networkMonitorForm, insertAfter);
+        PulseFormToTopMost(this.connectionCheckForm, insertAfter);
+        PulseFormToTopMost(this.operationForm, insertAfter);
     }
 
-    private static void PulseFormToTopMost(Form form)
+    private static void PulseFormToTopMost(Form form, IntPtr insertAfter)
     {
         if (form == null || form.IsDisposed || !form.IsHandleCreated || !form.Visible)
         {
@@ -1087,7 +1090,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             form.Handle,
-            NativeMethods.HWND_TOPMOST,
+            insertAfter,
             0,
             0,
             0,
@@ -1427,7 +1430,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            this.currentSettings.VisibilityMode == WidgetVisibilityMode.DesktopOnly ? NativeMethods.HWND_TOP : NativeMethods.HWND_TOPMOST,
+            GetLayeredWidgetInsertAfter(this.currentSettings.VisibilityMode),
             left,
             top,
             this.Width,
@@ -1610,7 +1613,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         WidgetSettings nextSettings = this.savedSettings == null
-            ? this.currentSettings.Clone()
+            ? (this.currentSettings == null ? WidgetSettings.CreateDefaults() : this.currentSettings.Clone())
             : this.savedSettings.Clone();
         nextSettings.AiRequestProtectionManualBlockEnabled = enabled;
         SaveSettings(nextSettings);
@@ -1634,16 +1637,42 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return true;
     }
 
+    internal bool SetCodexQuotaPlanFromOperationPanel(bool enabled)
+    {
+        bool currentlyEnabled = this.currentSettings != null &&
+            this.currentSettings.CodexQuotaPlanEnabled;
+        if (currentlyEnabled == enabled)
+        {
+            return true;
+        }
+
+        WidgetSettings nextSettings = this.savedSettings == null
+            ? (this.currentSettings == null ? WidgetSettings.CreateDefaults() : this.currentSettings.Clone())
+            : this.savedSettings.Clone();
+        nextSettings.CodexQuotaPlanEnabled = enabled;
+        SaveSettings(nextSettings);
+
+        ShowWindowsNotification(
+            enabled ? "Codex 额度计划已启用" : "Codex 额度计划已关闭",
+            enabled
+                ? "具体阈值和 goal 列表在普通设置中调整。"
+                : "额度计划不会再自动暂停或恢复 goal。",
+            ToolTipIcon.Info);
+        return true;
+    }
+
     private void ShowAiQuickMenuFromOperationPanel()
     {
         if (IsReusableSettingsWindow(this.aiQuickMenuForm))
         {
-            ShowSettingsWindow(this.aiQuickMenuForm, "existing AI quick menu");
+            ShowSettingsWindow(this.aiQuickMenuForm, "existing special function menu");
             return;
         }
 
-        CleanupAiQuickMenuReference(this.aiQuickMenuForm, "stale AI quick menu before open");
-        WidgetSettings baseline = this.savedSettings == null ? this.currentSettings.Clone() : this.savedSettings.Clone();
+        CleanupAiQuickMenuReference(this.aiQuickMenuForm, "stale special function menu before open");
+        WidgetSettings baseline = this.savedSettings == null
+            ? (this.currentSettings == null ? WidgetSettings.CreateDefaults() : this.currentSettings.Clone())
+            : this.savedSettings.Clone();
         baseline.Normalize();
         Form quickMenu = new AiQuickMenuForm(this, baseline);
         this.aiQuickMenuForm = quickMenu;
@@ -1653,11 +1682,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         try
         {
             quickMenu.Show(this);
-            ShowSettingsWindow(quickMenu, "new AI quick menu");
+            ShowSettingsWindow(quickMenu, "new special function menu");
         }
         catch
         {
-            CleanupAiQuickMenuReference(quickMenu, "AI quick menu open failed");
+            CleanupAiQuickMenuReference(quickMenu, "special function menu open failed");
             throw;
         }
     }
@@ -1694,12 +1723,12 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void OnAiQuickMenuFormClosed(object sender, FormClosedEventArgs e)
     {
-        CleanupAiQuickMenuReference(sender as Form, "AI quick menu closed");
+        CleanupAiQuickMenuReference(sender as Form, "special function menu closed");
     }
 
     private void OnAiQuickMenuFormDisposed(object sender, EventArgs e)
     {
-        CleanupAiQuickMenuReference(sender as Form, "AI quick menu disposed");
+        CleanupAiQuickMenuReference(sender as Form, "special function menu disposed");
     }
 
     private void CleanupAiQuickMenuReference(Form form, string reason)
@@ -1712,7 +1741,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         form.FormClosed -= OnAiQuickMenuFormClosed;
         form.Disposed -= OnAiQuickMenuFormDisposed;
         this.aiQuickMenuForm = null;
-        Program.LogInfo("AI quick menu reference cleared. Reason=" + reason + ".");
+        Program.LogInfo("Special function menu reference cleared. Reason=" + reason + ".");
     }
 
     private void ShowWindowsNotification(string title, string message, ToolTipIcon icon)
@@ -1863,7 +1892,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:set_window_pos");
         NativeMethods.SetWindowPos(
             this.Handle,
-            shouldBeTopMost ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST,
+            GetLayeredWidgetInsertAfter(shouldBeTopMost),
             0,
             0,
             0,
@@ -2717,24 +2746,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     // sibling partial file (WidgetForm.<Name>.cs) to introduce an alternate main-window layout.
     private void DrawWidgetContent(Graphics g)
     {
-        switch (this.currentSettings.MainWidgetRenderVariant)
-        {
-            case MainWidgetRenderVariant.Typographic:
-                DrawWidgetContentTypographic(g);
-                return;
-            case MainWidgetRenderVariant.AmberHud:
-                DrawWidgetContentAmberHud(g);
-                return;
-            case MainWidgetRenderVariant.WarmCard:
-                DrawWidgetContentWarmCard(g);
-                return;
-            case MainWidgetRenderVariant.Phosphor:
-                DrawWidgetContentPhosphor(g);
-                return;
-            default:
-                DrawWidgetContentClassic(g);
-                return;
-        }
+        DrawWidgetContentClassic(g);
     }
 
     private void DrawWidgetContentClassic(Graphics g)

@@ -15,11 +15,7 @@ internal sealed partial class WidgetForm
         Directory.CreateDirectory(outputDir);
         MainWidgetRenderVariant[] variants =
         {
-            MainWidgetRenderVariant.Classic,
-            MainWidgetRenderVariant.Typographic,
-            MainWidgetRenderVariant.AmberHud,
-            MainWidgetRenderVariant.WarmCard,
-            MainWidgetRenderVariant.Phosphor
+            MainWidgetRenderVariant.Classic
         };
 
         using (PdhSampler sampler = new PdhSampler())

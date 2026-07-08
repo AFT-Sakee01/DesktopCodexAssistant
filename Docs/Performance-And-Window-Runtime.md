@@ -1,6 +1,6 @@
 # 性能模式、主窗口与指标运行机制
 
-适用版本：1.0.4.29
+适用版本：1.0.4.54
 
 ## 1. 文档范围
 
@@ -302,7 +302,7 @@ Wi-Fi RSSI 读取方式：
 - 在 `Online` 时根据丢包、抖动和延迟生成内部本地链路劣化标记，供 DNS 和云服务检测降低高丢包误判；
 - 调用 `GfwProbeReader` 获取防火墙检测结果；GFW 的本地链路门控只来自当前活动目标滚动 PING 丢包率 `>= 2%` 且已确认，不直接使用 4 包连通性丢包，也不使用网关侧 ICMP 丢包、延迟或抖动诊断，`Unknown`、离线和该门控只影响本轮显示，不清空 GFW 周期；
 - 调用 `CloudEndpointProbeReader` 独立获取云服务检测结果，GFW 失败结论不会使云服务检测跳过或置灰；真实状态非 `Online` 时停止/取消云服务探测并隐藏标题右侧云服务告警；
-- Classic 布局使用分组卡片：头部只放 `NETWORK`、状态文字和右对齐 6 个云服务方块；下方为并排的「地址」/「链路」卡和全宽「健康」卡。地址卡显示 `IP4 / IP6 / 公网`，链路卡显示网卡/Wi-Fi 细节，健康卡三行显示 `PING / GFW / DNS`。DNS 异常只消费已有 DNS 快照，不增加额外网络请求；DNS 状态在健康卡 `DNS` 行以分色段落显示，保留网卡返回的 DNS 优先级顺序，错误状态只改变颜色、不把报错项提前；连通性/GFW 长错误文本各占健康卡整行，避免与其它字段相撞；IP 行仍使用压缩短显，完整地址只留在快照中，公网行优先使用可公开路由 IPv6、无 IPv6 时回退公网 IPv4；只剩链路本地 IPv6 时显示灰色「未分配 · 仅本地」占位；DNS 历史 JSONL 记录按顺序写入脱敏的 `status_detail`/`abnormal_detail`，保留具体原因但不写 DNS 地址；
+- Classic 是唯一保留的布局（`1.0.4.56` 起 GroupedCards 第二布局连同其绘制代码已删除），使用扁平信息条：头部为 `NETWORK`、状态文字和链路摘要；中部三行显示 `IP4 / IP6 / DNS`，`公网` 模块在 `IP4` 行右侧，DNS 异常原因在 `DNS` 行右侧；底部显示 `PING / GFW` 和右对齐 6 个云服务方块。DNS 异常只消费已有 DNS 快照，不增加额外网络请求；DNS 状态保留网卡返回的 DNS 优先级顺序，错误状态只改变颜色、不把报错项提前；连通性/GFW 长错误文本在固定布局中使用紧凑摘要或整行兜底，避免与其它字段相撞；IP 行仍使用压缩短显，完整地址只留在快照中；DNS 历史 JSONL 记录按顺序写入脱敏的 `status_detail`/`abnormal_detail`，保留具体原因但不写 DNS 地址；
 - 返回快照副本，禁止 UI 直接修改内部状态。
 
 连通性状态判定：
@@ -400,7 +400,7 @@ SeelenUI 电源菜单通过后台单飞任务启动 `slu.exe` 并等待最多 1.
 
 设置窗口关闭、异常销毁或被宿主清理时，主窗口会主动调用 `OperationForm.ClearTransientInteractionState()` 清除 hover、pressed、tooltip 和鼠标捕获状态。这是一次性生命周期清理，不新增常驻定时器或后台轮询。
 
-操作窗口自身使用 `WS_EX_NOACTIVATE`，点击它不会让本程序成为前台进程。因此操作面板的程序设置按钮不能只调用 `Form.Activate()`；宿主会先清理操作面板瞬态交互状态，再对已有设置窗执行 `ShowWindow`/`SetForegroundWindow` 激活。这样用户从设置页 Alt+Tab 到浏览器复制内容后，既可以通过 Alt+Tab 回到设置页，也可以再次点操作面板按钮把设置页拉回。
+操作窗口自身使用 `WS_EX_NOACTIVATE`，点击它不会让本程序成为前台进程。因此操作面板的程序设置按钮不能只调用 `Form.Activate()`；单击会打开操作面板上方的特殊设置窗，双击才打开普通设置窗，宿主会先清理操作面板瞬态交互状态，再对已有窗口执行 `ShowWindow`/`SetForegroundWindow` 激活。这样用户从设置页 Alt+Tab 到浏览器复制内容后，既可以通过 Alt+Tab 回到设置页，也可以再次点操作面板按钮把相关窗口拉回。
 
 FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞读取性能计数器。性能、均衡、省电模式的刷新间隔分别为 1、2、5 秒；值未变化时不重绘。
 
@@ -409,6 +409,8 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 ### 6.1 分层窗口
 
 各监测窗口使用 Windows layered window。界面先绘制到内存 `Bitmap`，再通过 `UpdateLayeredWindow` 一次提交带 Alpha 的画面。这样可以实现无边框、每像素透明度和桌面层显示。
+
+非桌面模式下的监测浮窗使用 SeelenUI 感知的 Z-order 策略：`LayeredWidgetFormBase.GetLayeredWidgetInsertAfter()` 先通过 `NativeMethods.GetSeelenAwareTopMostInsertAfter()` 查找 SeelenUI 进程下可见、TopMost、非零尺寸的 `Tauri Window` 顶层窗口，并选择 Seelen 顶层窗口栈里最靠下的一个作为 insert-after；找到时把本程序窗口插入到该 HWND 之后，确保低于 SeelenUI Dock、顶部栏和弹出层。找不到符合条件的 SeelenUI 窗口时回退 `HWND_TOPMOST`。桌面模式仍使用桌面宿主层或 `HWND_TOP`，不参与该策略。
 
 透明度分成两部分：
 

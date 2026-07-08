@@ -397,7 +397,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         UpdateHoverAnimationTimer();
         NativeMethods.SetWindowPos(
             this.Handle,
-            shouldBeTopMost ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST,
+            GetLayeredWidgetInsertAfter(shouldBeTopMost),
             0,
             0,
             0,
@@ -957,7 +957,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            this.currentSettings.VisibilityMode == WidgetVisibilityMode.DesktopOnly ? NativeMethods.HWND_TOP : NativeMethods.HWND_TOPMOST,
+            GetLayeredWidgetInsertAfter(this.currentSettings.VisibilityMode),
             left,
             top,
             this.Width,
@@ -1233,24 +1233,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     // sibling partial file (PowerThermalForm.<Name>.cs) to introduce an alternate layout.
     private void DrawContent(Graphics g)
     {
-        switch (this.currentSettings.PowerThermalRenderVariant)
-        {
-            case PowerThermalRenderVariant.Typographic:
-                DrawContentTypographic(g);
-                return;
-            case PowerThermalRenderVariant.AmberHud:
-                DrawContentAmberHud(g);
-                return;
-            case PowerThermalRenderVariant.WarmCard:
-                DrawContentWarmCard(g);
-                return;
-            case PowerThermalRenderVariant.Phosphor:
-                DrawContentPhosphor(g);
-                return;
-            default:
-                DrawContentClassic(g);
-                return;
-        }
+        DrawContentClassic(g);
     }
 
     private void DrawContentClassic(Graphics g)

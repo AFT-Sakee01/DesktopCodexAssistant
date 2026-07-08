@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -9,6 +10,7 @@ using System.IO;
 using System.Management;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,6 +22,9 @@ internal static class Program
 {
     private const string MutexName = @"Local\" + ProductIdentity.MachineName;
     private const string StopEventName = MutexName + "Stop";
+    private const string CtfmonRestartHelperArgument = "--ctfmon-restart-helper";
+    private const string CtfmonRestartCorrelationArgument = "--correlation-id";
+    private const int CtfmonRestartHelperWaitMs = 30000;
     internal const string RunValueName = ProductIdentity.MachineName;
     internal const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private static bool performanceModeKnown;
@@ -40,6 +45,11 @@ internal static class Program
 
         bool useDesktopParent = HasArg(args, "--desktop-parent") || HasArg(args, "--workerw");
         LogInfo("Starting. Args=[" + string.Join(" ", args) + "], " + NativeMethods.DescribeProcessMachine());
+
+        if (HasArg(args, CtfmonRestartHelperArgument))
+        {
+            return RunCtfmonRestartHelperCommand(args);
+        }
 
         if (HasArg(args, "--stop"))
         {
@@ -240,6 +250,21 @@ internal static class Program
         return false;
     }
 
+    private static bool TryGetStringArg(string[] args, string name, out string value)
+    {
+        value = string.Empty;
+        for (int i = 0; i + 1 < args.Length; i++)
+        {
+            if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
+            {
+                value = args[i + 1] ?? string.Empty;
+                return value.Length > 0;
+            }
+        }
+
+        return false;
+    }
+
     private static bool TryGetIntArg(string[] args, string name, out int value)
     {
         value = 0;
@@ -253,6 +278,188 @@ internal static class Program
         }
 
         return false;
+    }
+
+    internal static bool RunElevatedCtfmonRestartHelper(string correlationId, out string detail)
+    {
+        string normalizedCorrelationId = NormalizeCorrelationIdForHelper(correlationId);
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        Process helperProcess = null;
+        try
+        {
+            string executablePath = Application.ExecutablePath;
+            if (string.IsNullOrEmpty(executablePath) || !File.Exists(executablePath))
+            {
+                detail = "helper_executable_missing path=" + (executablePath ?? string.Empty);
+                LogInfo("ctfmon_restart_helper_launch_failed correlation_id=" + normalizedCorrelationId + ", detail=" + detail);
+                return false;
+            }
+
+            ProcessStartInfo startInfo = new ProcessStartInfo();
+            startInfo.FileName = executablePath;
+            startInfo.Arguments = BuildCtfmonRestartHelperArguments(normalizedCorrelationId);
+            startInfo.WorkingDirectory = Path.GetDirectoryName(executablePath);
+            startInfo.UseShellExecute = true;
+            startInfo.Verb = "runas";
+            startInfo.WindowStyle = ProcessWindowStyle.Hidden;
+
+            LogInfo("ctfmon_restart_helper_launch_requested correlation_id=" + normalizedCorrelationId + ", exe=" + executablePath);
+            helperProcess = Process.Start(startInfo);
+            if (helperProcess == null)
+            {
+                detail = "Process.Start returned null";
+                LogInfo("ctfmon_restart_helper_launch_failed correlation_id=" + normalizedCorrelationId + ", detail=" + detail);
+                return false;
+            }
+
+            int helperPid = helperProcess.Id;
+            if (!helperProcess.WaitForExit(CtfmonRestartHelperWaitMs))
+            {
+                detail =
+                    "helper_pid=" +
+                    helperPid.ToString(CultureInfo.InvariantCulture) +
+                    ", wait_timeout_ms=" +
+                    CtfmonRestartHelperWaitMs.ToString(CultureInfo.InvariantCulture);
+                LogInfo("ctfmon_restart_helper_launch_completed correlation_id=" + normalizedCorrelationId + ", success=False, detail=" + detail);
+                return false;
+            }
+
+            int exitCode = helperProcess.ExitCode;
+            stopwatch.Stop();
+            detail =
+                "helper_pid=" +
+                helperPid.ToString(CultureInfo.InvariantCulture) +
+                ", exit_code=" +
+                exitCode.ToString(CultureInfo.InvariantCulture) +
+                ", elapsed_ms=" +
+                stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture);
+            bool success = exitCode == 0;
+            LogInfo("ctfmon_restart_helper_launch_completed correlation_id=" + normalizedCorrelationId + ", success=" + success.ToString() + ", detail=" + detail);
+            return success;
+        }
+        catch (Win32Exception ex)
+        {
+            stopwatch.Stop();
+            detail =
+                "Win32Exception(" +
+                ex.NativeErrorCode.ToString(CultureInfo.InvariantCulture) +
+                "): " +
+                ex.Message +
+                ", elapsed_ms=" +
+                stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture);
+            LogInfo("ctfmon_restart_helper_launch_failed correlation_id=" + normalizedCorrelationId + ", detail=" + detail);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            LogException(ex);
+            detail =
+                ex.GetType().Name +
+                ": " +
+                ex.Message +
+                ", elapsed_ms=" +
+                stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture);
+            LogInfo("ctfmon_restart_helper_launch_failed correlation_id=" + normalizedCorrelationId + ", detail=" + detail);
+            return false;
+        }
+        finally
+        {
+            if (helperProcess != null)
+            {
+                helperProcess.Dispose();
+            }
+        }
+    }
+
+    internal static string BuildCtfmonRestartHelperArguments(string correlationId)
+    {
+        string normalizedCorrelationId = NormalizeCorrelationIdForHelper(correlationId);
+        return CtfmonRestartHelperArgument + " " + CtfmonRestartCorrelationArgument + " " + normalizedCorrelationId;
+    }
+
+    private static int RunCtfmonRestartHelperCommand(string[] args)
+    {
+        string rawCorrelationId;
+        if (!TryGetStringArg(args, CtfmonRestartCorrelationArgument, out rawCorrelationId))
+        {
+            rawCorrelationId = Guid.NewGuid().ToString("N");
+        }
+
+        string correlationId = NormalizeCorrelationIdForHelper(rawCorrelationId);
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        bool success = false;
+        string detail = string.Empty;
+        try
+        {
+            LogInfo("ctfmon_restart_helper_started correlation_id=" + correlationId + ", elevated=" + IsCurrentProcessElevated().ToString());
+            success = NativeMethods.RestartCtfmonTextServices(out detail);
+            return success ? 0 : 2;
+        }
+        catch (Exception ex)
+        {
+            LogException(ex);
+            detail = ex.GetType().Name + ": " + ex.Message;
+            return 1;
+        }
+        finally
+        {
+            stopwatch.Stop();
+            LogInfo(
+                "ctfmon_restart_helper_completed correlation_id=" +
+                correlationId +
+                ", success=" +
+                success.ToString() +
+                ", elapsed_ms=" +
+                stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
+                ", detail=" +
+                detail);
+            NetworkCheckHistoryLogger.Shutdown();
+            QuotaDecisionHistoryLogger.Shutdown();
+            Logger.Shutdown();
+        }
+    }
+
+    private static string NormalizeCorrelationIdForHelper(string correlationId)
+    {
+        // The elevated helper only needs a correlation token; constrain it so UI text
+        // cannot append extra administrator-process arguments across the UAC boundary.
+        if (string.IsNullOrEmpty(correlationId))
+        {
+            return Guid.NewGuid().ToString("N");
+        }
+
+        StringBuilder builder = new StringBuilder(correlationId.Length);
+        for (int i = 0; i < correlationId.Length; i++)
+        {
+            char ch = correlationId[i];
+            if ((ch >= '0' && ch <= '9') ||
+                (ch >= 'A' && ch <= 'Z') ||
+                (ch >= 'a' && ch <= 'z') ||
+                ch == '-' ||
+                ch == '_')
+            {
+                builder.Append(ch);
+            }
+        }
+
+        return builder.Length == 0 ? Guid.NewGuid().ToString("N") : builder.ToString();
+    }
+
+    private static bool IsCurrentProcessElevated()
+    {
+        try
+        {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                WindowsPrincipal principal = new WindowsPrincipal(identity);
+                return principal.IsInRole(WindowsBuiltInRole.Administrator);
+            }
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static void WaitForRestartTargetExit(int processId)
@@ -1028,6 +1235,7 @@ internal static class Program
         try
         {
             OperationForm.RunSelfTest();
+            RunCtfmonRestartHelperArgumentSelfTest();
             Console.WriteLine("Operation panel interaction and performance policy: PASS");
             return 0;
         }
@@ -1036,6 +1244,27 @@ internal static class Program
             Console.Error.WriteLine(ex.ToString());
             LogException(ex);
             return 1;
+        }
+    }
+
+    private static void RunCtfmonRestartHelperArgumentSelfTest()
+    {
+        string arguments = BuildCtfmonRestartHelperArguments("abc DEF&bad");
+        string[] argumentParts = arguments.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        if (arguments.IndexOf('&') >= 0 ||
+            argumentParts.Length != 3 ||
+            !string.Equals(argumentParts[2], "abcDEFbad", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("CTF helper argument sanitizer failed.");
+        }
+
+        string[] parsed = new string[] { CtfmonRestartHelperArgument, CtfmonRestartCorrelationArgument, "abcDEFbad" };
+        string value;
+        if (!HasArg(parsed, CtfmonRestartHelperArgument) ||
+            !TryGetStringArg(parsed, CtfmonRestartCorrelationArgument, out value) ||
+            !string.Equals(value, "abcDEFbad", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("CTF helper argument parser failed.");
         }
     }
 

@@ -263,6 +263,7 @@ internal sealed partial class CodexRadarForm
     private void HandleCodexRadarSoftwareChanged(string trigger)
     {
         RestoreCodexRadarDisplayForCurrentMode(trigger);
+        ResetCodexApiServiceAlertDebounceForDisplayContextSwitch();
         RequestSelectedQuotaUsageRefresh(trigger);
 
         RenderLayeredWindow();

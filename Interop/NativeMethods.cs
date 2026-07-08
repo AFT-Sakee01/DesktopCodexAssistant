@@ -2491,7 +2491,13 @@ internal static class NativeMethods
         }
         catch (Exception ex)
         {
-            bool startedAfterEnumerationFailure = TryStartCtfmonTextServices(out detail);
+            string enumerationFailureStartDetail;
+            bool startedAfterEnumerationFailure = TryStartCtfmonTextServices(out enumerationFailureStartDetail);
+            string enumerationFailureConfirmationDetail;
+            bool confirmedAfterEnumerationFailure = WaitForCtfmonRestartConfirmation(
+                new HashSet<int>(),
+                Process.GetCurrentProcess().SessionId,
+                out enumerationFailureConfirmationDetail);
             detail = "Process enumeration failed: " +
                 ex.GetType().Name +
                 ": " +
@@ -2499,15 +2505,22 @@ internal static class NativeMethods
                 "; started=" +
                 startedAfterEnumerationFailure.ToString() +
                 "; start_detail=" +
-                detail;
-            return startedAfterEnumerationFailure;
+                enumerationFailureStartDetail +
+                "; confirmed=" +
+                confirmedAfterEnumerationFailure.ToString() +
+                "; confirmation_detail=" +
+                enumerationFailureConfirmationDetail;
+            return confirmedAfterEnumerationFailure;
         }
 
+        int currentSessionId = Process.GetCurrentProcess().SessionId;
+        HashSet<int> restartTargetPids = new HashSet<int>();
         int found = 0;
         int killed = 0;
         int exitedBeforeKill = 0;
         int timedOut = 0;
         int failed = 0;
+        int skippedOtherSession = 0;
         StringBuilder failures = new StringBuilder();
         for (int i = 0; i < processes.Length; i++)
         {
@@ -2520,6 +2533,15 @@ internal static class NativeMethods
             try
             {
                 int processId = process.Id;
+                // CTF is bound to an interactive Windows session; the elevated helper
+                // must not kill another logged-in user's ctfmon.exe instance.
+                if (process.SessionId != currentSessionId)
+                {
+                    skippedOtherSession++;
+                    continue;
+                }
+
+                restartTargetPids.Add(processId);
                 if (process.HasExited)
                 {
                     exitedBeforeKill++;
@@ -2567,6 +2589,8 @@ internal static class NativeMethods
 
         string startDetail;
         bool started = TryStartCtfmonTextServices(out startDetail);
+        string confirmationDetail;
+        bool confirmed = WaitForCtfmonRestartConfirmation(restartTargetPids, currentSessionId, out confirmationDetail);
         stopwatch.Stop();
         detail =
             "found=" +
@@ -2579,18 +2603,24 @@ internal static class NativeMethods
             timedOut.ToString(CultureInfo.InvariantCulture) +
             ", failed=" +
             failed.ToString(CultureInfo.InvariantCulture) +
+            ", skipped_other_session=" +
+            skippedOtherSession.ToString(CultureInfo.InvariantCulture) +
             ", started=" +
             started.ToString() +
+            ", confirmed=" +
+            confirmed.ToString() +
             ", elapsed_ms=" +
             stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
             ", start_detail=" +
-            startDetail;
+            startDetail +
+            ", confirmation_detail=" +
+            confirmationDetail;
         if (failures.Length > 0)
         {
             detail += ", failures=" + failures;
         }
 
-        return started && timedOut == 0 && failed == 0;
+        return confirmed && timedOut == 0 && failed == 0;
     }
 
     public static bool OpenActionCenterControl(string controlName)
@@ -2705,12 +2735,32 @@ internal static class NativeMethods
     {
         string systemPath = Path.Combine(Environment.SystemDirectory, CtfmonExecutableName);
         string fileName = File.Exists(systemPath) ? systemPath : CtfmonExecutableName;
+        string directDetail;
+        if (TryStartCtfmonTextServices(fileName, systemPath, false, out directDetail))
+        {
+            detail = directDetail;
+            return true;
+        }
+
+        string shellDetail;
+        if (TryStartCtfmonTextServices(fileName, systemPath, true, out shellDetail))
+        {
+            detail = "direct_failed=" + directDetail + "; shell=" + shellDetail;
+            return true;
+        }
+
+        detail = "direct_failed=" + directDetail + "; shell_failed=" + shellDetail;
+        return false;
+    }
+
+    private static bool TryStartCtfmonTextServices(string fileName, string systemPath, bool useShellExecute, out string detail)
+    {
         try
         {
             ProcessStartInfo startInfo = new ProcessStartInfo();
             startInfo.FileName = fileName;
-            startInfo.UseShellExecute = false;
-            startInfo.CreateNoWindow = true;
+            startInfo.UseShellExecute = useShellExecute;
+            startInfo.CreateNoWindow = !useShellExecute;
             startInfo.WindowStyle = ProcessWindowStyle.Hidden;
             if (File.Exists(systemPath))
             {
@@ -2726,7 +2776,13 @@ internal static class NativeMethods
 
             int processId = process.Id;
             process.Dispose();
-            detail = "started " + fileName + " pid=" + processId.ToString(CultureInfo.InvariantCulture);
+            detail =
+                "started " +
+                fileName +
+                " pid=" +
+                processId.ToString(CultureInfo.InvariantCulture) +
+                " shell=" +
+                useShellExecute.ToString();
             return true;
         }
         catch (Exception ex)
@@ -2734,6 +2790,95 @@ internal static class NativeMethods
             detail = ex.GetType().Name + ": " + ex.Message;
             return false;
         }
+    }
+
+    private static bool WaitForCtfmonRestartConfirmation(HashSet<int> previousPids, int sessionId, out string detail)
+    {
+        DateTime deadlineUtc = DateTime.UtcNow.AddMilliseconds(5000);
+        string lastObservation = string.Empty;
+        do
+        {
+            Process[] processes;
+            try
+            {
+                processes = Process.GetProcessesByName(CtfmonProcessName);
+            }
+            catch (Exception ex)
+            {
+                detail = "enumeration_failed=" + ex.GetType().Name + ": " + ex.Message;
+                return false;
+            }
+
+            int alive = 0;
+            int newPid = 0;
+            StringBuilder pids = new StringBuilder();
+            for (int i = 0; i < processes.Length; i++)
+            {
+                Process process = processes[i];
+                if (process == null)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    if (process.SessionId != sessionId || process.HasExited)
+                    {
+                        continue;
+                    }
+
+                    int processId = process.Id;
+                    alive++;
+                    if (pids.Length > 0)
+                    {
+                        pids.Append('|');
+                    }
+
+                    pids.Append(processId.ToString(CultureInfo.InvariantCulture));
+                    if ((previousPids == null || previousPids.Count == 0 || !previousPids.Contains(processId)) &&
+                        newPid == 0)
+                    {
+                        newPid = processId;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (pids.Length > 0)
+                    {
+                        pids.Append('|');
+                    }
+
+                    pids.Append("error:");
+                    pids.Append(ex.GetType().Name);
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+            }
+
+            bool confirmed = previousPids == null || previousPids.Count == 0
+                ? alive > 0
+                : newPid > 0;
+            lastObservation =
+                "alive=" +
+                alive.ToString(CultureInfo.InvariantCulture) +
+                ", new_pid=" +
+                newPid.ToString(CultureInfo.InvariantCulture) +
+                ", pids=" +
+                pids;
+            if (confirmed)
+            {
+                detail = lastObservation;
+                return true;
+            }
+
+            Thread.Sleep(250);
+        }
+        while (DateTime.UtcNow < deadlineUtc);
+
+        detail = "timeout " + lastObservation;
+        return false;
     }
 
     private static void AppendProcessFailure(StringBuilder builder, int processId, string message)
@@ -4410,6 +4555,73 @@ internal static class NativeMethods
             ". " +
             builder;
         return successCount > 0;
+    }
+
+    public static IntPtr GetSeelenAwareTopMostInsertAfter()
+    {
+        IntPtr seelenHandle;
+        return TryFindSeelenTopMostWindowForZOrder(out seelenHandle) ? seelenHandle : HWND_TOPMOST;
+    }
+
+    private static bool TryFindSeelenTopMostWindowForZOrder(out IntPtr handle)
+    {
+        handle = IntPtr.Zero;
+        IntPtr foundHandle = IntPtr.Zero;
+        bool found = false;
+        EnumWindows(delegate(IntPtr windowHandle, IntPtr lParam)
+        {
+            if (!IsWindowVisible(windowHandle) || !IsTopMostWindow(windowHandle))
+            {
+                return true;
+            }
+
+            string className = GetWindowClassName(windowHandle);
+            if (!string.Equals(className, "Tauri Window", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            uint processId;
+            GetWindowThreadProcessId(windowHandle, out processId);
+            if (processId == 0 || !ContainsSeelen(TryGetProcessImagePath((int)processId)))
+            {
+                return true;
+            }
+
+            RECT rect;
+            if (!GetWindowRect(windowHandle, out rect) ||
+                rect.Right <= rect.Left ||
+                rect.Bottom <= rect.Top)
+            {
+                return true;
+            }
+
+            // EnumWindows walks top-level windows in z-order. Keep the last visible Seelen
+            // topmost window so our insert-after target sits below Seelen chrome and popups.
+            foundHandle = windowHandle;
+            found = true;
+            return true;
+        }, IntPtr.Zero);
+
+        handle = foundHandle;
+        return found;
+    }
+
+    private static bool IsTopMostWindow(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            return (GetWindowLong(handle, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static List<IntPtr> FindSeelenDockAndBarWindows()

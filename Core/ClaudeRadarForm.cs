@@ -188,7 +188,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            shouldBeTopMost ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST,
+            GetLayeredWidgetInsertAfter(shouldBeTopMost),
             0,
             0,
             0,
@@ -734,7 +734,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            this.currentSettings.VisibilityMode == WidgetVisibilityMode.DesktopOnly ? NativeMethods.HWND_TOP : NativeMethods.HWND_TOPMOST,
+            GetLayeredWidgetInsertAfter(this.currentSettings.VisibilityMode),
             shifted.X,
             shifted.Y,
             this.Width,
@@ -3351,7 +3351,6 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             {
                 this.Width.ToString(CultureInfo.InvariantCulture),
                 this.Height.ToString(CultureInfo.InvariantCulture),
-                this.currentSettings.ClaudeRadarRenderVariant.ToString(),
                 GetBackgroundOpacityAlpha().ToString(CultureInfo.InvariantCulture),
                 GetContentOpacityAlpha().ToString(CultureInfo.InvariantCulture),
                 burnInColorProtectionActive ? "burn1" : "burn0",

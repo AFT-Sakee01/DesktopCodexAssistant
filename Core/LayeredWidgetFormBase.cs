@@ -173,6 +173,25 @@ internal abstract class LayeredWidgetFormBase : Form
         this.layeredUpdateFailureLogged = false;
     }
 
+    protected static IntPtr GetLayeredWidgetInsertAfter(bool shouldBeTopMost)
+    {
+        return shouldBeTopMost ? GetLayeredWidgetTopMostInsertAfter() : NativeMethods.HWND_NOTOPMOST;
+    }
+
+    protected static IntPtr GetLayeredWidgetInsertAfter(WidgetVisibilityMode visibilityMode)
+    {
+        return visibilityMode == WidgetVisibilityMode.DesktopOnly ?
+            NativeMethods.HWND_TOP :
+            GetLayeredWidgetTopMostInsertAfter();
+    }
+
+    private static IntPtr GetLayeredWidgetTopMostInsertAfter()
+    {
+        // SeelenUI owns the shell chrome; use its real topmost HWND as the insert-after target
+        // so these widgets stay directly below it instead of racing above the dock/top bar.
+        return NativeMethods.GetSeelenAwareTopMostInsertAfter();
+    }
+
     protected int S(int value)
     {
         return (int)Math.Round(value * this.LayerScale);

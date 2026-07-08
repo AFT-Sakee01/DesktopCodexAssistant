@@ -14,11 +14,7 @@ internal sealed partial class PowerThermalForm
         Directory.CreateDirectory(outputDir);
         PowerThermalRenderVariant[] variants =
         {
-            PowerThermalRenderVariant.Classic,
-            PowerThermalRenderVariant.Typographic,
-            PowerThermalRenderVariant.AmberHud,
-            PowerThermalRenderVariant.WarmCard,
-            PowerThermalRenderVariant.Phosphor
+            PowerThermalRenderVariant.Classic
         };
 
         foreach (PowerThermalRenderVariant variant in variants)

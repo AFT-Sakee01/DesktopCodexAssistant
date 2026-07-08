@@ -1,6 +1,6 @@
 # 网络监控窗口技术说明
 
-适用版本：1.0.4.33
+适用版本：1.0.4.52
 
 ## 1. 文档范围
 
@@ -321,9 +321,9 @@ Cloudflare、Akamai、Azure 和 Google 的官方状态源会按设置页“官�
 - 正常：六个云服务全部使用同一个绿色。
 - 延迟过高：黄色；无法连接：红色；状态异常：橙色。
 
-云服务方块固定在标题栏最右侧右对齐（分组卡片布局下标题栏只有标题、状态、方块三段）。云服务的异常不再挤进标题栏告警槽：Classic 布局改用分组卡片（见 §12.0），云服务/DNS/连通性的错误分别落在「健康」卡对应的整行里。服务名映射为 Cloudflare、Akamai、Github、AWS、Azure、Google。
+云服务方块在 `Classic` 扁平信息条中固定在底部 `PING/GFW` 行最右侧右对齐。正常状态使用深绿背景和浅绿文字，检测中在深绿/黄色之间随刷新闪烁；异常状态仍按各自状态着色。服务名映射为 Cloudflare、Akamai、Github、AWS、Azure、Google。
 
-Classic 分组卡片不绘制独立的 DNS 覆盖层，也没有标题栏告警槽。健康卡改为彩色圆点芯片布局：`PING` 和 `GFW` 显示紧凑摘要，DNS 按服务器显示地址和短原因；颜色仍来自各自状态，错误只改变颜色、不把报错项提前，也不发起额外 DNS 探测。GFW 原始长原因和丢包/抖动细节不会直接塞进健康卡，避免在 628×250 固定画布里与其它卡相交。
+`Classic` 扁平信息条不绘制 DNS 覆盖层：DNS 服务器按网卡优先级在 `DNS` 行左侧分色显示，首个异常 DNS 的具体原因在同一行右侧显示，例如 `DNS返回SERVFAIL`。DNS 显示只消费已有 DNS 快照，错误只改变颜色、不把报错项提前，也不发起额外 DNS 探测。GFW 原始长原因和丢包/抖动细节不会直接塞进固定宽度的小字段，避免与其它内容相交。
 
 独立日志：
 
@@ -345,21 +345,34 @@ DNS 检测写入 `network-check-history.jsonl` 时，`result` 不再只有计数
 
 ## 12. 绘制与缓存
 
-### 12.0 Classic 分组卡片布局
+### 12.0 Classic 扁平信息条布局（像素级还原自用户参考截图）
 
-Classic 布局（`DrawContentClassic`）为分组卡片：固定画布（最大 628×250 物理像素），按最坏情况预算，不做小于该尺寸的收紧。结构自上而下：
+Classic 布局（`DrawContentClassic`）为单层扁平信息条：基础运行尺寸为 520×250，布局没有内部分组卡片。宽度以 520 为紧凑档，并按内容长度在 520 / 560 / 600 / 628 四个预设档之间自动扩展；最大有效宽度为 628，高度保持 250，不缩小字号、行高或垂直间距。
 
-- **头部**（`DrawGroupedHeader`）：`NETWORK` 标题 + 状态文字（在线时追加延迟 `· 18ms`，GFW 失败态不追加）+ 右对齐云服务 6 方块；不承载告警文字。
-- **地址卡 + 链路卡**（并排，`DrawAddressCard` / `DrawLinkCard`）：地址卡三行 `IPv4 / IPv6 / 公网`；链路卡三行（Wi-Fi 名称与制式去重 / SSID / 加密·信号·速率，或有线的名称/制式速率/`有线`）。
-- **健康卡**（全宽，`DrawHealthCard`）：`PING`、`GFW`、每个 DNS 服务器各是一个彩色圆点 chip（`HealthChip` + `DrawHealthChip`），先测量全部 chip 总宽，能在一行内装下就单行绘制（默认状态下 PING/GFW/DNS 全部同一行，贴合"平时短"的观感），装不下再逐个换行到第二行；`BuildCompactConnectivityText` / `BuildCompactGfwText` / `BuildCompactDnsServerText` 把原始详情（jitter/loss/控制站点说明、GFW 长原因、DNS Reason）收敛成短语，DNS 正常只显示地址，异常追加紧凑原因（如 `SERVFAIL`）。绘制前对健康卡 `body` 设置裁剪区（`g.SetClip`），即使 DNS 服务器数量多到换行超出预留的两行高度，多余内容也只会被裁掉，绝不会画出卡片边界。
+**几何来源**：`ClassicStripLayout` 常量类记录标题、状态、链路摘要、两条水平分隔线、`IP4/IP6/DNS` 三行、`PING/GFW` 底行、云服务方块区域和四个宽度档。横向常量按 520px 参考宽度归一化，纵向常量仍按原 294px 参考高度归一化；因此宽度扩展只拉开横向列和空白，不改变垂直方向元素大小。`ValueLeft` 到 `Right` 在 520px 下仍保留约 458px 宽度，能显示完整 `2406:...:7890 +1` 形态的 IPv6 首地址。
 
-卡片矩形由 `ComputeGroupedCardRects` 一次算出，`RunNetworkMonitorDisplaySelfTest` → `RunGroupedCardLayoutSelfTest` 断言三卡互不相交且在内容区内、空 IPv6 绘制不抛异常。`--render-networkmonitor` 生成 normal/noipv6/errors/realistic/stress 五个分组卡片 fixture：`realistic` 用真实问题形态覆盖 Wi-Fi 名称重复、无全局 IPv6 和双 DNS 正常项；`stress` 用 5 个异常 DNS 服务器验证健康卡 chip 换行与裁剪安全网。
+**自动宽度**：`GetDesiredSize` 在 Classic 变体下调用 `GetEffectiveNetworkMonitorWidth`，把设置中的 `NetworkMonitorWidth` 作为基础宽度，再由 `GetClassicStripContentWidthPreset` 根据当前快照中的链路摘要、状态、IP4/IP6、公网、DNS、PING 和 GFW 文本做字符宽度评分，提升到 560、600 或 628。该逻辑只消费现有快照字符串，不做网络/磁盘 I/O，也不在绘制循环里做逐像素实时测量。`PositionNetworkMonitorWindow` 使用基础宽度计算右边界，自动扩展时窗口向左增长，右侧停靠点保持稳定。
 
-**IPv6 处理**：reader（`NetworkMonitorReader.IsIgnorableAddress`）过滤链路本地/组播地址，因此只剩 `fe80::` 时 `snapshot.IPv6` 为空。地址卡此时显示灰色「未分配 · 仅本地」占位（不留空行），公网行回退到公网 IPv4；有全局/ULA 地址时按像素测量压缩显示完整地址。
+结构自上而下：
 
-四个 OLED 变体（Typographic/AmberHud/WarmCard/Phosphor）仍使用各自绘制路径，不走分组卡片。
+- **头部**（`DrawClassicStripHeader`）：左侧 `NETWORK`，其右为 `ONLINE/需要验证/OFFLINE/网卡未识别/CHECKING`，右侧为 Wi-Fi/有线链路摘要。Wi-Fi 摘要格式为 `SSID · 认证 · 信号 · RX/TX`，例如 `HomeNet-5G · WPA3 · 88% · 866M/433M`。
+- **地址与 DNS 行**（`DrawClassicStripAddressRows`）：三行左侧标签统一为 `IP4`、`IP6`、`DNS`，标签与值的间距按参考图收紧；`IP4/IP6` 只显示第一个地址，后续地址折叠为 `+n`。`公网` 模块在 `IP4` 行右侧右对齐；DNS 服务器在 `DNS` 行左侧按原顺序分色显示，右侧显示首个异常 DNS 的具体原因。
+- **底行**（`DrawClassicStripFooter`）：`PING` 显示 `OK PUB 18ms` 这类紧凑公网连通性摘要，`GFW` 显示状态和最近检查时间，6 个云服务方块固定在最右侧且与 `IF/IP` 行不互相占位。
 
-### 12.1 变化检测
+Classic 第一布局的中性文字（标题、链路摘要、`IP4/IP6/DNS` 标签、地址值、`公网`、`PING/GFW` 标签和 DNS 分隔符）通过 `GetClassicStripNeutralTextColor()` 统一为 `DesignTokens.White(206)`，与 CodexRadar 底部 `RC/LLM` 文字一致。`ONLINE`、`PING/GFW` 状态、DNS 健康和云服务方块继续使用原语义色。
+
+**外壳描边**：Classic 第一布局在内容绘制完成后调用 `DrawClassicShellOutline()` 叠加与主窗口一致的白色外壳描边：`DesignTokens.White(DesignTokens.Alpha.ShellOutline)`，线宽 `Math.Max(1, S(1))`，圆角使用 `DesignTokens.Radius.Panel`。描边不改变窗口背景透明度和内部文字/状态色。
+
+`RunNetworkMonitorDisplaySelfTest` → `RunClassicStripLayoutSelfTest` 使用 520×250 固定画布检查唯一保留的布局：普通样例保持 520 紧凑宽度，极长链路/DNS/GFW 样例升到 628 上限，样例链路摘要、公网、PING、GFW、DNS 告警文本保持完整，`IP4` 右侧公网模块和云服务方块不与其它字段相交，并断言长 IPv6 首地址在 520px 宽度下不会被压缩成省略号。`--render-networkmonitor` 生成 `networkmonitor-classic.png` 和 `networkmonitor-current.png` 用于人工视觉复核。
+
+### 12.1 已删除的渲染变体
+
+`1.0.4.56` 起 `NetworkMonitorRenderVariant` 收窄为仅 `Classic` 单值，`DrawContent` 不再按设置分支。以下变体连同其绘制代码已全部删除（历史实现见 git 历史与 `Docs/Maintenance/CHANGELOG.jsonl`）：
+
+- **GroupedCards 分组卡片布局（第二布局）**：`DrawContentGroupedCards`、`DrawGroupedHeader`、`DrawAddressCard`、`DrawLinkCard`、`DrawHealthCard`、`GroupedCardLayout` 常量类、`GetClassicGroupedCardAlpha`/`ClassicGroupedCardOpacityRatio`（70% 卡片透明度）、`RunGroupedCardLayoutSelfTest` 和 `RenderClassicCardFixtures`（normal/noipv6/errors/realistic/stress 五个 fixture）均已删除。`DrawClassicShellOutline` 和 `BuildCompactGfwText` 是 Classic 也在用的共享方法，未被删除。
+- **四个 OLED 安全变体**（Typographic/AmberHud/WarmCard/Phosphor）：各自的 `Core/NetworkMonitorForm.<Name>.cs` 和 `Core/NetworkMonitorForm.OledShared.cs` 已删除。
+
+### 12.2 变化检测
 
 `HasSameDisplayData` 只比较实际影响画面的字段，包括：
 
@@ -370,7 +383,7 @@ Classic 布局（`DrawContentClassic`）为分组卡片：固定画布（最大 
 
 内部更新时间或不显示的数据不会触发重绘。延迟和抖动差异小于 0.5 ms 时视为相同。
 
-### 12.2 分层窗口缓冲区
+### 12.3 分层窗口缓冲区
 
 窗口复用：
 

@@ -1,6 +1,6 @@
 # Codex 监测窗口技术说明
 
-适用版本：1.0.4.34
+适用版本：1.0.4.58
 
 ## 1. 范围
 
@@ -25,7 +25,7 @@
 - 5 小时余额环
 - 周余额环
 - 速蹬窗口开启且结束时间未过期时，额度重置文字在金色 `速蹬！`、原白色正常额度重置时间/日期、黄色额外重置目标时间/日期之间轮播；额外目标来自网站 `closed_at` 或首页 `data-window-closes-at`，5 小时行显示时间、周行显示日期；`closed_at` 早于当前本地时间时本地快照强制视为已关闭；RSS 重置保护态右侧显示金色 `已重置`；额度环内数字有已知数值且 Codex/Claude 任一受支持本地软件运行时为白色，两者都未运行或数值未知时为灰色
-- 中间健康/额度雷达块：额度雷达线移动到 IQ 模块左侧，取代原灰色分割竖线；当前 `EvenRow` 状态格显示 API 状态摘要、网页数据标签和更新时间，左下方显示 `RC/DS/LLM/软件族品牌` 元信息
+- 中间健康/额度雷达块：额度雷达线移动到 IQ 模块左侧，取代原灰色分割竖线；Codex 模式使用 CodexRadar 公开额度雷达，Claude 模式把 `ClaudeRadarSnapshot.QuotaLine` 转换为同一 `CodexQuotaRadarSnapshot` 代表线；当前 `EvenRow` 状态格显示 API 状态摘要、网页数据标签和更新时间，左下方显示 `RC/DS/LLM/软件族品牌` 元信息
 - 右侧 IQ 环和 `增智`、`常态`、`降智` 状态字样
 
 ```mermaid
@@ -34,11 +34,13 @@ flowchart LR
     Local["~/.codex/sessions/*.jsonl"] --> Quota
     ClaudeUsage["Claude Code OAuth usage API"] --> ClaudeQuota["Claude Code 5h/7d 用量快照"]
     Radar["current.json / 首页 HTML 分层回退"] --> Model["模型 IQ / Token效率 / 时间效率 / 速蹬窗口"]
+    ClaudeRadarSite["claudecoderadar.com data JSON"] --> ClaudeRadarLine["Claude 额度线 / IQ / RC"]
     Feed["feed.xml 可选 RSS 层"] --> Reset["RSS 重置提醒"]
     Claude["status.claude.com API"] --> ClaudeHealth["Claude 服务健康"]
     Quota --> Merge["CodexRadarForm 快照合并"]
     ClaudeQuota --> Merge
     Model --> Merge
+    ClaudeRadarLine --> Merge
     Reset --> Merge
     ClaudeHealth --> Merge
     Settings["settings.ini / 测试覆盖"] --> Merge
@@ -149,7 +151,7 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，会同时�
 
 - `model_iq.latest` 是网站当前默认模型，key 由 `model` + `reasoning_effort` 规范化得到，例如 `gpt_55_xhigh`。
 - `model_iq.comparisons` 下的任意对象都按同一结构解析，字典 key 或对象内 `model/reasoning_effort` 均可作为稳定模型 key。
-- 模型目录保存到 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-radar-models.ini`，设置页按目录生成模型下拉框；不可用但未删除的模型保留并标注 `暂不可用`，避免手写模型 key。
+- 模型目录保存到 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-radar-models.ini`，设置页按目录生成模型下拉框；不可用但未删除的模型保留并标注 `暂不可用`，避免手写模型 key。`1.0.4.37` 起，新增、暂不可用和删除三类 Windows 通知会先写入 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-radar-notification-state.ini`，按规范化模型 key 和事件状态去重；同一模型同一状态跨刷新和跨重启只通知一次，状态从删除恢复为加入时仍通知一次。`1.0.4.39` 起，同一刷新批次中 JSON 与 HTML 回退对同一 key 给出冲突事件时先合并，只保留 Added > Unavailable > Deleted 的最终通知状态。
 - 新模型首次发现时触发 Windows 通知；模型首次从成功响应中缺失时标记为暂不可用并保留灰色禁用按钮；连续 3 次成功响应都缺失后才判定删除、移出目录并通知一次。
 
 模型切换或检测软件切换会优先加载对应模型未过期的本地缓存并立即安排一次请求。缓存键同时包含软件族和模型：新写入使用 `Codex.*` 或 `Claude.*` 前缀；旧版无前缀缓存只作为 `CODEX` 只读兼容回退，避免 Claude/Codex 数据混显。
@@ -167,7 +169,7 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，会同时�
 
 ## 7. 服务健康状态与额度雷达块
 
-当前版本已删除旧的竖向 `Rader`、`Claude`、`ChatGPT` 服务健康面板绘制路径和五阶段连接诊断路径；`ServiceHealthProbeEnabled = true` 仍保留 Rader/Claude/OpenAI 兜底服务状态刷新，因为当前 `EvenRow` 右侧 API 摘要和 `R/O/C/D` LED 列会消费这些状态。配置了 DeepSeek API key 时，DeepSeek 余额接口失败、不可用或余额不足也进入同一个 API 摘要候选；当前软件为 `CLAUDE` 时，Claude Code 用量接口的未登录、鉴权失败、限流、不可达或解析失败也加入同一 API 摘要候选；公开 Claude 状态页仍独立保留。API 摘要正常时显示绿色 `API无异常`，异常时按网络窗口云服务告警的模式在异常 API 名称和错误原因之间轮播，并按异常级别变色；LED 列使用同一组候选给对应服务点染色。`ApplyCodexApiServiceAlertDebounce` 对非检测中错误执行 10 秒防抖：同一个服务的新错误必须连续存在满 10 秒才进入 API 摘要和 LED 颜色；错误消失时立即恢复正常。OpenAI 项只消费服务健康兜底状态，不再读取旧连接快照，也不请求 `status.openai.com` 或 `chatgpt.com` 作为五阶段诊断。
+当前版本已删除旧的竖向 `Rader`、`Claude`、`ChatGPT` 服务健康面板绘制路径和五阶段连接诊断路径；`ServiceHealthProbeEnabled = true` 仍保留 Rader/Claude/OpenAI 服务状态刷新，因为当前 `EvenRow` 右侧 API 摘要和 `R/O/C/D` LED 列会消费这些状态。配置了 DeepSeek API key 时，DeepSeek 余额接口失败、不可用或余额不足也进入同一个 API 摘要候选；当前软件为 `CLAUDE` 时，Claude Code 用量接口的未登录、鉴权失败、限流、不可达或解析失败也加入同一 API 摘要候选；公开 Claude 状态页仍独立保留。API 摘要正常时显示绿色 `API无异常`，异常时按网络窗口云服务告警的模式在异常 API 名称和错误原因之间轮播，并按异常级别变色；LED 列使用同一组候选给对应服务点染色。`ApplyCodexApiServiceAlertDebounce` 对非检测中错误执行 10 秒防抖：同一个服务的新错误必须连续存在满 10 秒才进入 API 摘要和 LED 颜色；错误消失时立即恢复正常；`ResetCodexApiServiceAlertDebounceForDisplayContextSwitch` 在 Codex/Claude 软件族切换后清空稳定错误和轮播签名，目标模式缓存里的旧 Rader/OpenAI/Claude 错误不能跨窗口直接显示。`1.0.4.19` 曾把 OpenAI 项改成只消费 Codex 配额读取成功与否的兜底状态、不再请求 `status.openai.com`；`1.0.4.53` 恢复为独立探测：`RefreshOpenAiStatusIfNeeded`/`TryReadOpenAiStatus` 直接请求 `status.openai.com/api/v2/summary.json`（Statuspage v2，`indicator` 字段），与 `RefreshClaudeStatusIfNeeded`/`TryReadClaudeStatus` 同构、同调度节奏（成功 15 分钟轮询、异常 2 分钟重试），完全不再依赖 Codex 配额是否读取成功；`openAiServiceHealth` 取代旧的 `codexServiceHealth` 兜底字段。ChatGPT 首页 HTTPS 可达性探测（`chatgpt.com` 五阶段诊断的一部分）仍保持已删除状态，未随此次改动恢复。
 
 额度雷达线仍由 `DrawQuotaWidget` 单独绘制在 IQ 模块左侧，取代旧的灰色分割竖线。CodexRadar 网站主数据刷新不依赖隐藏面板，继续按网站刷新规则读取 `current.json`、首页 HTML 回退和 RSS 回退。
 
@@ -177,14 +179,13 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，会同时�
 
 `1.0.3.26` 起，Codex Radar 左侧连接流程区域的上行文字改为社区体感最高模型 `RC:xxx`。数据来自 `https://codexradar.com/api/model-ratings?history=14` 的滚动 24 小时 `models` 数组，按 `average` 最高、同分按 `count` 较高选中，并压缩为 `5.4H`、`5.5M` 等短标签；接口失败时保留上一轮已知值。额度雷达线在平均线两侧新增两枚 chevron 箭头：如果当前蓝点在平均线上方，箭头放在平均线下方三分之一和三分之二位置；如果蓝点在平均线下方，箭头放在平均线上方三分之一和三分之二位置。当前值高于上次时箭头为淡绿色并朝上，低于上次时为淡红色并朝下。`1.0.3.33` 起，chevron 改为短细线，不再使用点阵；尺寸按约 3 个旧点的纵向占位计算，避免点阵造成视觉噪声。`1.0.3.34` 修正了一次未提交改动中静默把 `DrawCodexRadarModules` 改成绘制另一套简化 4 格圆环布局、导致本节描述的 `DrawCodexRadarWidget`/`DrawQuotaWidget` 渲染树短暂失活的问题。当前 `EvenRow` 左下方绘制 `RC/DS/LLM/软件族` 四项元信息；旧五阶段连接摘要、快照和调度代码已删除。
 
-`1.0.3.35` 起，`CodexRadarForm` 拆分为 `partial class`：`Core/CodexRadarForm.cs` 保留数据层和经典绘制（`DrawCodexRadarModulesClassic`），新的视觉变体各自放在独立的 `Core/CodexRadarForm.<Name>.cs` 文件中。设置页“Codex Radar - 渲染变体”提供 `CodexRadarRenderVariant` 下拉，`DrawCodexRadarModules` 按该设置分支调用对应实现；切换经现有 75 ms 预览节流实时生效，不需要重新编译或重启。这个机制只切换绘制路径，不改变数据获取、缓存或线程模型；新增变体只应往对应文件里加 `Draw*` 方法，不要往共享数据层加变体私有字段。不再需要的变体删掉对应文件并去掉 `DrawCodexRadarModules` 里的分支即可完整回滚。`1.0.3.69` 起，Codex Radar 在 layered-window upload buffer 之外额外维护最多 6 张预渲染场景 bitmap，缓存 key 包含窗口尺寸、渲染变体、软件族、透明度、防烧屏颜色保护、闪烁相位、模型、显示数据签名和 Model IQ 时钟当前分钟签名；命中时只把 bitmap 拷回 upload buffer 并提交 `UpdateLayeredWindow`，不会重新执行全部 GDI+ 绘制。`1.0.4.09` 起，防烧屏隐藏反色激活时会在绘制阶段跳过 Codex/Claude 软件族彩色内边框，避免蓝色 Codex 边框被反相成黄橙色或橙色 Claude 边框在隐藏态继续形成误导性状态提示。尺寸变化、显示资源重置和窗口关闭会释放这些 bitmap。详见 `Docs/Indexes/FEATURE_INDEX.jsonl` 的 `codex_radar.render_variant_switch` 和 `Docs/Interfaces/INTERFACE_INDEX.jsonl` 的 `internal_api.codex_radar_render_variant`。
+`1.0.3.35` 起，`CodexRadarForm` 拆分为 `partial class`：`Core/CodexRadarForm.cs` 保留数据层，新的视觉变体各自放在独立的 `Core/CodexRadarForm.<Name>.cs` 文件中。`1.0.4.56` 起该切换机制已删除：`DrawCodexRadarModules` 不再按设置分支，直接调用 `DrawCodexRadarModulesEvenRow`；经典布局（`DrawCodexRadarModulesClassic`/`DrawCodexRadarWidget`/`DrawQuotaWidget`）、`EvenGrid` 和四套 OLED 安全变体已全部删除，`CodexRadarRenderVariant` 枚举收窄为仅 `EvenRow` 单值（仍持久化到 settings.ini，但 settings UI 不再提供切换下拉/预览）。`1.0.3.69` 起，Codex Radar 在 layered-window upload buffer 之外额外维护最多 6 张预渲染场景 bitmap，缓存 key 包含窗口尺寸、渲染变体、软件族、透明度、防烧屏颜色保护、闪烁相位、模型、显示数据签名和 Model IQ 时钟当前分钟签名；命中时只把 bitmap 拷回 upload buffer 并提交 `UpdateLayeredWindow`，不会重新执行全部 GDI+ 绘制。`1.0.4.09` 起，防烧屏隐藏反色激活时会在绘制阶段跳过 Codex/Claude 软件族彩色内边框，避免蓝色 Codex 边框被反相成黄橙色或橙色 Claude 边框在隐藏态继续形成误导性状态提示。尺寸变化、显示资源重置和窗口关闭会释放这些 bitmap。详见 `Docs/Indexes/FEATURE_INDEX.jsonl` 的 `codex_radar.render_variant_switch` 和 `Docs/Interfaces/INTERFACE_INDEX.jsonl` 的 `internal_api.codex_radar_render_variant`。
 
-`1.0.3.36` 起新增两个均匀分布变体，都不使用 `CodexRadarManualLayoutEnabled` 手动布局和任何 `CodexRadar*Offset*` 元素偏移设置——这些设置只对经典布局生效，均匀变体的网格由当前窗口尺寸自动等分，不接受手动微调：
+`1.0.3.36` 起新增两个均匀分布变体，都不使用 `CodexRadarManualLayoutEnabled` 手动布局和任何 `CodexRadar*Offset*` 元素偏移设置——这些设置只对已删除的经典布局生效过，均匀变体的网格由当前窗口尺寸自动等分，不接受手动微调。`EvenGrid`（曾在 `Core/CodexRadarForm.EvenGrid.cs`：上方一行六等分单元格 + 下方一条满宽状态带三等分）已在 `1.0.4.56` 删除；当前唯一保留且硬编码使用的是：
 
-- `EvenGrid`（`Core/CodexRadarForm.EvenGrid.cs`）：上方一行六等分单元格（时间效率、Token 效率、5 小时额度、周额度、IQ、额度雷达），下方一条满宽状态带三等分；当前只绘制社区体感评分和 Model IQ 更新时间，中间五阶段连接摘要已删除，中间用一条细横线分隔。
 - `EvenRow`（`Core/CodexRadarForm.EvenRow.cs`）：全部七个元素单行七等分（五个环 + 额度雷达 + 一个右侧状态格）。`1.0.3.47` 起前五个环和标签在原列距内缩小约三分之一并保持顶部对齐，底部紧贴标签绘制灰色分隔线；状态格中间行改为单行 API 摘要。`1.0.3.50` 起右侧状态文字先按最长实际文本共同计算字号，再用固定字号直接绘制。`1.0.3.52` 起灰色长分隔线整体上移约 3 个渲染像素。`1.0.3.54` 起原左下五点连接摘要改为四项元信息：`RC` 为社区体感最高模型，`DS` 为 DeepSeek 余额，`LLM` 为当前检测模型（默认 `5.5XH`），末项为当前软件族。`1.0.3.55` 起底部四项元信息字体统一放大 20%，并统一使用 RC 灰色与白色之间的中性灰白；`DS` 文案追加北京时间高峰/低谷状态。`1.0.3.57` 起右侧状态格改为 API 摘要、网页数据标签、Model IQ 更新时间三行。`1.0.3.58` 起右侧状态列加宽并提高最小字号，避免三行文字比旧版更小；底部 `RC/DS/LLM/软件族` 不再依赖灰线下方剩余高度，改为贴近窗口底部绘制，按文本测量得到四个独立矩形并分别适配字号，避免 `DS:... 高峰/低谷` 被横线、相邻项或实际窗口高度裁掉。`1.0.3.59` 起底部元信息使用灰线到窗口底边之间的整段高度上下居中绘制，字体基准再放大 30%。`1.0.3.61` 起软件族由 `CodexRadarSoftwareMode` 的自动/强制选项决定；`1.0.3.69` 起不再显示 `SF:` 前缀，Codex 显示蓝色斜体 `Codex`，Claude 显示橙色粗体 `Claude`。默认 Codex Radar 宽度压缩到 580，旧 EvenRow 默认宽度配置通过 Version 39 迁移从 620 收缩到 580。
 
-两个变体的圆环视觉（底环、消耗环、余额环颜色，IQ 超额/不足弧色，效率环基础/低效/高效弧色）与经典布局逐像素复用同一批颜色常量和绘制顺序，只是把环和标签统一装进等宽单元格；额度雷达线复用 `DrawCodexQuotaRadarVerticalLine`（含均线、彩色段、蓝点、趋势箭头）。`EvenRow` 右侧状态格使用 `DrawCodexApiServiceSummary` 的 API 轮播文本，左侧下方使用 `DrawEvenRowBottomInfoPanel` 绘制 `RC/DS/LLM/软件族`。共享的取数逻辑（`GatherQuotaDisplayState`）和无偏移版本的环/标签绘制方法（`DrawEvenLayoutQuotaCell`、`DrawEvenLayoutIqCell`、`DrawEvenLayoutEfficiencyCell`、`DrawEvenLayoutRadarCell`）放在 `Core/CodexRadarForm.cs` 供变体复用，避免同一套颜色/状态逻辑复制两份。
+`EvenRow` 的圆环视觉（底环、消耗环、余额环颜色，IQ 超额/不足弧色，效率环基础/低效/高效弧色）把环和标签统一装进等宽单元格；额度雷达线复用 `DrawCodexQuotaRadarVerticalLine`（含均线、彩色段、蓝点、趋势箭头）。`EvenRow` 右侧状态格使用 `GetCodexApiServiceAlertCandidates` 的 API 轮播文本，左侧下方使用 `DrawEvenRowBottomInfoPanel` 绘制 `RC/DS/LLM/软件族`。共享的取数逻辑（`GatherQuotaDisplayState`）和无偏移版本的环/标签绘制方法（`DrawEvenLayoutQuotaCell`、`DrawEvenLayoutIqCell`、`DrawEvenLayoutEfficiencyCell`、`DrawEvenLayoutRadarCell`）放在 `Core/CodexRadarForm.cs` 供 `EvenRow` 使用。
 
 ### 7.1 DeepSeek 余额状态
 

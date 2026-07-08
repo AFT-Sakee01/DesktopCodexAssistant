@@ -62,26 +62,13 @@ internal enum ThermalTestMode
     Simulate100
 }
 
-// Selects which coexisting CodexRadarForm draw-path variant renders the window. All variants
-// are compiled into the same binary (Core/CodexRadarForm.cs plus a CodexRadarForm.<Name>.cs
-// sibling partial file per variant); this only switches which paint method DrawCodexRadarModules
-// calls, so it never touches the shared data layer, threading, or persisted quota state.
+// CodexRadar's render path is hard-coded to EvenRow (Core/CodexRadarForm.EvenRow.cs: single row of
+// 7 equal-width cells); the other former variants (Classic widget tree, EvenGrid, and the four
+// OLED-safe restyle schemes) were deleted. This enum is kept single-member so the persisted
+// settings property and existing settings.ini key remain valid without a migration.
 internal enum CodexRadarRenderVariant
 {
-    // Core/CodexRadarForm.cs: DrawCodexRadarWidget/DrawQuotaWidget widget tree.
-    Classic,
-    // Core/CodexRadarForm.EvenGrid.cs: 6-cell top band + 3-cell status band, all equal width.
-    EvenGrid,
-    // Core/CodexRadarForm.EvenRow.cs: single row of 7 equal-width cells.
-    EvenRow,
-    // Core/CodexRadarForm.Typographic.cs: OLED-safe, no fills/borders, stacked value+label typography.
-    Typographic,
-    // Core/CodexRadarForm.AmberHud.cs: OLED-safe single amber hue, thin hairline chips, mono labels.
-    AmberHud,
-    // Core/CodexRadarForm.WarmCard.cs: OLED-safe warm-gray low-luminance filled cards + status dot.
-    WarmCard,
-    // Core/CodexRadarForm.Phosphor.cs: OLED-safe single green hue, borderless terminal-style rows.
-    Phosphor
+    EvenRow
 }
 
 // Per-window render-variant switches, mirroring CodexRadarRenderVariant. Each window has its own
@@ -93,15 +80,28 @@ internal enum CodexRadarRenderVariant
 // no blue-dominant hues, no peak-white/saturated fills, background stays the existing semi-transparent
 // AppBackground. Burn-in mitigation for all four relies on the existing BurnInProtection.ApplyRuntimeOffset
 // periodic whole-window position shift (uniform screen wear), not on any per-scheme trick.
-internal enum MainWidgetRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor }
+// MainWidget's render path is hard-coded to Classic; the four OLED-safe restyle schemes were
+// deleted. Kept single-member so the persisted settings property/settings.ini key stay valid.
+internal enum MainWidgetRenderVariant { Classic }
 
-internal enum NetworkMonitorRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor }
+// NetworkMonitor's render path is hard-coded to Classic; GroupedCards and the four OLED-safe
+// restyle schemes were deleted. Kept single-member so the persisted settings property/settings.ini
+// key stay valid.
+internal enum NetworkMonitorRenderVariant { Classic }
 
-internal enum PowerThermalRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor }
+// PowerThermal's render path is hard-coded to Classic; the four OLED-safe restyle schemes were
+// deleted. Kept single-member so the persisted settings property/settings.ini key stay valid.
+internal enum PowerThermalRenderVariant { Classic }
 
-internal enum ConnectionCheckRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor }
+// ConnectionCheck's render path is hard-coded to Classic; the four OLED-safe restyle schemes were
+// deleted. Kept single-member so the persisted settings property/settings.ini key stay valid.
+internal enum ConnectionCheckRenderVariant { Classic }
 
-internal enum OperationRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor }
+// RadialDial (added 1.0.4.57) is not a paint-only skin like the other four members: it replaces the
+// flat button grid with an expandable fan menu and therefore also changes hit-testing and window
+// sizing (see Core/OperationForm.RadialDial.cs). Keep it last so existing settings.ini values for
+// the paint-only variants are unaffected.
+internal enum OperationRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor, RadialDial }
 
 internal enum CodexQuotaPlanComparison
 {
@@ -546,7 +546,6 @@ internal sealed class WidgetSettings
     public bool RadarClockAutoSwitchModelEnabled { get; set; }
     public RadarClockTimeDisplayMode RadarClockTimeDisplayMode { get; set; }
     public string ClaudeRadarModelKey { get; set; }
-    public CodexRadarRenderVariant ClaudeRadarRenderVariant { get; set; }
     public DisplayTimeZoneMode DisplayTimeZoneMode { get; set; }
     public string DisplayTimeZoneId { get; set; }
     public WidgetPerformanceMode PerformanceMode { get; set; }
@@ -774,7 +773,6 @@ internal sealed class WidgetSettings
         this.RadarClockAutoSwitchModelEnabled = defaults.RadarClockAutoSwitchModelEnabled;
         this.RadarClockTimeDisplayMode = defaults.RadarClockTimeDisplayMode;
         this.ClaudeRadarModelKey = defaults.ClaudeRadarModelKey;
-        this.ClaudeRadarRenderVariant = defaults.ClaudeRadarRenderVariant;
         this.DisplayTimeZoneMode = defaults.DisplayTimeZoneMode;
         this.DisplayTimeZoneId = defaults.DisplayTimeZoneId;
         this.PerformanceMode = defaults.PerformanceMode;
@@ -836,11 +834,11 @@ internal sealed class WidgetSettings
         settings.PowerThermalAutoSizeEnabled = true;
         settings.PowerThermalAutoDirection = PowerThermalAutoDirection.Down;
         settings.PowerThermalVisibleAlertCount = 8;
-        settings.NetworkMonitorWidth = 583;
-        settings.NetworkMonitorHeight = 239;
-        settings.NetworkMonitorLeftX = 2297;
+        settings.NetworkMonitorWidth = 520;
+        settings.NetworkMonitorHeight = 250;
+        settings.NetworkMonitorLeftX = 2360;
         settings.NetworkMonitorBottomY = 1799;
-        settings.NetworkMonitorTransparencyPercent = 20;
+        settings.NetworkMonitorTransparencyPercent = 40;
         settings.NetworkMonitorAdapterId = string.Empty;
         settings.NetworkStatusTestMode = NetworkStatusTestMode.Off;
         settings.GfwProbeEnabled = true;
@@ -919,7 +917,7 @@ internal sealed class WidgetSettings
         settings.CodexRadarRandomTestEnabled = false;
         settings.CodexRadarRandomTestAutoRefresh = false;
         settings.CodexRadarRandomTestRefreshToken = 0;
-        settings.CodexRadarRenderVariant = CodexRadarRenderVariant.Classic;
+        settings.CodexRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
         settings.MainWidgetRenderVariant = MainWidgetRenderVariant.Classic;
         settings.NetworkMonitorRenderVariant = NetworkMonitorRenderVariant.Classic;
         settings.PowerThermalRenderVariant = PowerThermalRenderVariant.Classic;
@@ -973,7 +971,6 @@ internal sealed class WidgetSettings
         settings.RadarClockAutoSwitchModelEnabled = true;
         settings.RadarClockTimeDisplayMode = RadarClockTimeDisplayMode.Utc;
         settings.ClaudeRadarModelKey = string.Empty;
-        settings.ClaudeRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
         settings.DisplayTimeZoneId = TimeZoneInfo.Local.Id;
         settings.PerformanceMode = WidgetPerformanceMode.BatterySaver;
@@ -1064,11 +1061,11 @@ internal sealed class WidgetSettings
         settings.PowerThermalAutoSizeEnabled = true;
         settings.PowerThermalAutoDirection = PowerThermalAutoDirection.Down;
         settings.PowerThermalVisibleAlertCount = 8;
-        settings.NetworkMonitorWidth = 583;
-        settings.NetworkMonitorHeight = 247;
-        settings.NetworkMonitorLeftX = 2297;
+        settings.NetworkMonitorWidth = 520;
+        settings.NetworkMonitorHeight = 250;
+        settings.NetworkMonitorLeftX = 2360;
         settings.NetworkMonitorBottomY = 1799;
-        settings.NetworkMonitorTransparencyPercent = 20;
+        settings.NetworkMonitorTransparencyPercent = 40;
         settings.NetworkMonitorAdapterId = "";
         settings.NetworkStatusTestMode = NetworkStatusTestMode.Off;
         settings.GfwProbeEnabled = true;
@@ -1202,7 +1199,6 @@ internal sealed class WidgetSettings
         settings.RadarClockAutoSwitchModelEnabled = true;
         settings.RadarClockTimeDisplayMode = RadarClockTimeDisplayMode.Utc;
         settings.ClaudeRadarModelKey = "";
-        settings.ClaudeRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
         settings.DisplayTimeZoneId = "Tokyo Standard Time";
         settings.PerformanceMode = WidgetPerformanceMode.BatterySaver;
@@ -1417,7 +1413,6 @@ internal sealed class WidgetSettings
             RadarClockAutoSwitchModelEnabled = this.RadarClockAutoSwitchModelEnabled,
             RadarClockTimeDisplayMode = this.RadarClockTimeDisplayMode,
             ClaudeRadarModelKey = this.ClaudeRadarModelKey,
-            ClaudeRadarRenderVariant = this.ClaudeRadarRenderVariant,
             DisplayTimeZoneMode = this.DisplayTimeZoneMode,
             DisplayTimeZoneId = this.DisplayTimeZoneId,
             PerformanceMode = this.PerformanceMode,
@@ -1611,10 +1606,6 @@ internal sealed class WidgetSettings
         }
 
         this.ClaudeRadarModelKey = NormalizeClaudeRadarModelKey(this.ClaudeRadarModelKey);
-        if (!Enum.IsDefined(typeof(CodexRadarRenderVariant), this.ClaudeRadarRenderVariant))
-        {
-            this.ClaudeRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
-        }
 
         if (!Enum.IsDefined(typeof(DisplayTimeZoneMode), this.DisplayTimeZoneMode))
         {
@@ -2211,7 +2202,6 @@ internal sealed class WidgetSettings
             "RadarClockAutoSwitchModelEnabled=" + this.RadarClockAutoSwitchModelEnabled,
             "RadarClockTimeDisplayMode=" + this.RadarClockTimeDisplayMode,
             "ClaudeRadarModelKey=" + this.ClaudeRadarModelKey,
-            "ClaudeRadarRenderVariant=" + this.ClaudeRadarRenderVariant,
             "DisplayTimeZoneMode=" + this.DisplayTimeZoneMode,
             "DisplayTimeZoneId=" + this.DisplayTimeZoneId,
             "PowerSavingEnabled=" + this.PowerSavingEnabled,
@@ -3066,7 +3056,7 @@ internal sealed class WidgetSettings
             }
             catch
             {
-                settings.CodexRadarRenderVariant = CodexRadarRenderVariant.Classic;
+                settings.CodexRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
             }
 
             return;
@@ -3516,21 +3506,6 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "ClaudeRadarModelKey", StringComparison.OrdinalIgnoreCase))
         {
             settings.ClaudeRadarModelKey = NormalizeClaudeRadarModelKey(value);
-            return;
-        }
-
-        if (string.Equals(key, "ClaudeRadarRenderVariant", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                settings.ClaudeRadarRenderVariant =
-                    (CodexRadarRenderVariant)Enum.Parse(typeof(CodexRadarRenderVariant), value, true);
-            }
-            catch
-            {
-                settings.ClaudeRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
-            }
-
             return;
         }
 

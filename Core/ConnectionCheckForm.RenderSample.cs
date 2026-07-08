@@ -131,11 +131,7 @@ internal sealed partial class ConnectionCheckForm
         Directory.CreateDirectory(outputDir);
         ConnectionCheckRenderVariant[] variants =
         {
-            ConnectionCheckRenderVariant.Classic,
-            ConnectionCheckRenderVariant.Typographic,
-            ConnectionCheckRenderVariant.AmberHud,
-            ConnectionCheckRenderVariant.WarmCard,
-            ConnectionCheckRenderVariant.Phosphor
+            ConnectionCheckRenderVariant.Classic
         };
         CleanIpBadgeTestMode[] modes =
         {

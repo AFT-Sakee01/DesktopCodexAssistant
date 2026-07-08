@@ -132,7 +132,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
         UpdateHoverAnimationTimer();
         NativeMethods.SetWindowPos(
             this.Handle,
-            shouldBeTopMost ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST,
+            GetLayeredWidgetInsertAfter(shouldBeTopMost),
             0,
             0,
             0,
@@ -463,7 +463,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            this.currentSettings.VisibilityMode == WidgetVisibilityMode.DesktopOnly ? NativeMethods.HWND_TOP : NativeMethods.HWND_TOPMOST,
+            GetLayeredWidgetInsertAfter(this.currentSettings.VisibilityMode),
             left,
             top,
             this.Width,
@@ -545,121 +545,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
     // sibling partial file (ConnectionCheckForm.<Name>.cs) to introduce an alternate layout.
     private void DrawContent(Graphics g)
     {
-        switch (this.currentSettings.ConnectionCheckRenderVariant)
-        {
-            case ConnectionCheckRenderVariant.Typographic:
-                DrawContentTypographic(g);
-                return;
-            case ConnectionCheckRenderVariant.AmberHud:
-                DrawContentAmberHud(g);
-                return;
-            case ConnectionCheckRenderVariant.WarmCard:
-                DrawContentWarmCard(g);
-                return;
-            case ConnectionCheckRenderVariant.Phosphor:
-                DrawContentPhosphor(g);
-                return;
-            default:
-                DrawContentClassic(g);
-                return;
-        }
-    }
-
-    // Shared across the four OLED-safe variants: classify the same three data points the Classic
-    // badges already show (score / native attribution / IP type) into a coarse severity so each
-    // scheme's shared primitive (OledVariantPainting) can pick its own color for that severity,
-    // instead of every variant re-deriving the score thresholds independently.
-    private OledVariantPainting.Severity GetScoreSeverity()
-    {
-        int score = this.snapshot != null && this.snapshot.ScoreKnown ? this.snapshot.Score : -1;
-        if (score < 0)
-        {
-            return OledVariantPainting.Severity.Neutral;
-        }
-
-        if (score >= 70)
-        {
-            return OledVariantPainting.Severity.Good;
-        }
-
-        if (score >= 25)
-        {
-            return OledVariantPainting.Severity.Warn;
-        }
-
-        return OledVariantPainting.Severity.Danger;
-    }
-
-    private static OledVariantPainting.Severity GetNativeSeverity(string key)
-    {
-        if (string.Equals(key, "native", StringComparison.OrdinalIgnoreCase))
-        {
-            return OledVariantPainting.Severity.Good;
-        }
-
-        if (string.Equals(key, "broadcast", StringComparison.OrdinalIgnoreCase))
-        {
-            return OledVariantPainting.Severity.Warn;
-        }
-
-        return OledVariantPainting.Severity.Neutral;
-    }
-
-    private static OledVariantPainting.Severity GetIpTypeSeverity(string key)
-    {
-        if (key == "Residential IP" || key == "Mobile IP" || key == "Business IP" ||
-            key == "Education IP" || key == "Government IP")
-        {
-            return OledVariantPainting.Severity.Good;
-        }
-
-        if (key == "Tor IP" || key == "Tor Exit" || key == "VPN IP" || key == "Proxy IP")
-        {
-            return OledVariantPainting.Severity.Danger;
-        }
-
-        if (key == "Residential Proxy" || key == "IDC" || key == "Datacenter IP" || key == "Relay IP")
-        {
-            return OledVariantPainting.Severity.Warn;
-        }
-
-        return OledVariantPainting.Severity.Neutral;
-    }
-
-    // Common to all four OLED-safe variants: the three (label, value, severity) items to render,
-    // in the same order as the Classic badge triplet, including the waiting/checking/failed states.
-    private void GetOledDisplayItems(out string firstLabel, out string firstValue, out OledVariantPainting.Severity firstSeverity, out string secondLabel, out string secondValue, out OledVariantPainting.Severity secondSeverity, out string thirdLabel, out string thirdValue, out OledVariantPainting.Severity thirdSeverity)
-    {
-        bool waiting = this.snapshot == null || (!this.snapshot.CheckedAtKnown && !this.snapshot.Running);
-        bool firstRun = this.snapshot == null || (!this.snapshot.CheckedAtKnown && this.snapshot.Running);
-        bool failed = this.snapshot != null && !this.snapshot.Success && !this.snapshot.Running && this.snapshot.CheckedAtKnown;
-
-        if (waiting || firstRun || failed)
-        {
-            OledVariantPainting.Severity state = failed
-                ? OledVariantPainting.Severity.Danger
-                : (firstRun ? OledVariantPainting.Severity.Warn : OledVariantPainting.Severity.Neutral);
-            firstLabel = "评分";
-            firstValue = failed ? "ERR" : "--";
-            firstSeverity = state;
-            secondLabel = "归属";
-            secondValue = failed ? "失败" : (firstRun ? "检测中" : "等待");
-            secondSeverity = state;
-            thirdLabel = "类型";
-            thirdValue = failed ? GetCompactErrorLabel(this.snapshot.Error) : "--";
-            thirdSeverity = state;
-            return;
-        }
-
-        firstLabel = "评分";
-        firstValue = this.snapshot.ScoreLabel;
-        firstSeverity = GetScoreSeverity();
-        secondLabel = "归属";
-        secondValue = this.snapshot.NativeLabel;
-        secondSeverity = GetNativeSeverity(this.snapshot.NativeKey);
-        thirdLabel = "类型";
-        thirdValue = this.snapshot.IpTypeLabel;
-        thirdSeverity = GetIpTypeSeverity(this.snapshot.IpTypeKey);
+        DrawContentClassic(g);
     }
 
     private void DrawContentClassic(Graphics g)

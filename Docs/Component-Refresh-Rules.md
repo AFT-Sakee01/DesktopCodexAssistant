@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：1.0.4.34
+适用版本：1.0.4.58
 
 本文集中记录 Desktop Codex Assistant 各组件的刷新、轮询、手动刷新、网络事件、单飞任务和暂停恢复规则。修改定时器、刷新 token、网络事件、后台任务节流、测试模式或显示恢复逻辑时，应同步更新本文。
 
@@ -81,12 +81,12 @@ DNS 检测：
 | --- | --- |
 | UI 调度 | 使用普通面板调度 500/1000/3000 ms，并贴近秒边界；网站请求完成后可立即绘制。 |
 | 随机整窗测试 | 测试开启时暂停真实网站、Claude 和额度轮询；手动 token 立即重建，自动刷新最多 1 s 一次。旧五阶段连接流程已删除，不参与真实轮询。 |
-| 检测软件 Auto | `CodexRadarSoftwareMode=Auto` 先读取共享 `SoftwareRuntimePresence` 快照；固定 Codex/Claude、两者都未运行或只有一者运行时不查询前台窗口。只有 Codex 与 Claude 都运行时，才按前台窗口标题/进程名识别 `codex` 或 `claude`；识别不到或命中本程序时保持上一次有效软件。有效软件或模型切换前会把当前 Radar 快照、额度快照、额度来源和 Radar 服务健康态写入内存缓存；切换后优先恢复目标软件同模型的内存缓存，其次读磁盘缓存，仍缺失时保留上一帧内容，直到新网站/额度数据成功返回，避免切换瞬间出现空态或错误态闪烁。`--test` 通过 `RunSoftwareModeGateSelfTest` 覆盖固定模式、无进程、单进程、双进程前台检测失败和 selected-provider 额度刷新门控。 |
+| 检测软件 Auto | `CodexRadarSoftwareMode=Auto` 先读取共享 `SoftwareRuntimePresence` 快照；固定 Codex/Claude、两者都未运行或只有一者运行时不查询前台窗口。只有 Codex 与 Claude 都运行时，才按前台窗口标题/进程名识别 `codex` 或 `claude`；识别不到或命中本程序时保持上一次有效软件。有效软件或模型切换前会把当前 Radar 快照、额度快照、额度来源和 Radar 服务健康态写入内存缓存；切换后优先恢复目标软件同模型的内存缓存，其次读磁盘缓存，仍缺失时保留上一帧内容，直到新网站/额度数据成功返回，避免切换瞬间出现空态或错误态闪烁。软件族切换会同步清空 `ApplyCodexApiServiceAlertDebounce` 的稳定错误和轮播签名，目标模式缓存里的 Rader/OpenAI/Claude 旧错误必须重新连续存在 10 s 才能显示。`--test` 通过 `RunSoftwareModeGateSelfTest` 覆盖固定模式、无进程、单进程、双进程前台检测失败和 selected-provider 额度刷新门控。 |
 | 运行态快照 | `SoftwareRuntimePresence` 只按明确可执行名查询 Codex/Claude 进程，性能/均衡/省电刷新间隔为 3/5/10 s；绘制路径只读最近快照，不做进程枚举或前台窗口查询。 |
 | 额度进程检查 | Codex 额度路径复用共享运行态快照。两者都未运行时跳过个人额度 provider 和本地 session 额度读取，保留最近快照；启动、恢复、网络变化、手动刷新、软件切换或测试模式恢复只通过统一 selected-provider gate 排队当前有效且正在运行的软件，不再同时 prime Codex provider 与 Claude Code usage。 |
 | Claude Radar 运行态 | 独立 Claude Radar 窗口只在构造、设置应用、手动刷新和性能模式定时器中刷新共享运行态快照；额度数字绘制只读本地缓存快照，已知数值在 Codex/Claude 任一程序运行时为白色，无数值或两者都未运行时才灰显。公共 Claude Radar 网站数据不按本地进程状态门控。 |
 | Claude Radar 场景缓存 | 独立 Claude Radar 窗口最多缓存 6 张预渲染 scene bitmap，key 包含窗口尺寸、渲染变体、透明度、防烧屏、运行态、请求状态、动画/状态轮换相位、模型、模型 `latest_at`、底部 `RC` rating key/label、余额、IQ、效率、服务状态和额度线签名；尺寸变化、显示挂起和关闭时释放。底部栏绘制只消费 `ClaudeRadarSnapshot` 已解析字段，禁止在 paint 路径读取 `claude-radar-model-map.ini` 或其它磁盘文件。Claude 家族底部简称使用前两位家族前缀和 Codex 同类档位规则，例如 `Opus 4.8 high` -> `Op4.8H`、`Fable 5 max` -> `Fa5MAX`、`Sonnet 5 ultra` -> `So5Ult`。`--test-layout` 会验证状态矩阵渲染非空、scene cache 超限裁剪、释放清空，以及 120 次高频切换中 6 个 warmed scenes 后续全部命中缓存；`--test-radar-display-lifecycle` 会在禁用远程源的情况下反复运行 Codex/Claude Radar display suspend/resume 并检查 handle/GDI/USER 增量；`--render-clauderadar` 会输出 normal、missing-data、warning、error、offline、test-randomized 及对应 2880x1800 桌面图。 |
-| Claude Radar 额度线 | 独立窗口额度线读取 `data/claude-code-radar.json` 的 `quota.chart.trend`，兼容 `d7` / `total_7d` 等 7d 图表 key；无图表时退回 `quota.base_d7_trend`，再退回 `claude-radar-quota-history.jsonl` 最近 7 天，最后才用单点当前值。`quota.base_d7` 缺失时从 `quota.metrics` 的 d7/total_7d 行取当前值并按 metric/update/run 签名写历史。`claude-radar-cache.ini` 保存 `QuotaLineKnown/Current/Previous/Min/Max/Average/Metric/SourceMode`，启动和失败合并不清空额度线；paint 路径只消费已解析快照。`--test` 覆盖当前站点 `quota.metrics + chart.key=total_7d` 形状和缓存 round-trip。 |
+| Claude Radar 额度线 | 独立窗口额度线读取 `data/claude-code-radar.json` 的 `quota.chart.trend`，兼容 `d7` / `total_7d` 等 7d 图表 key；无图表时退回 `quota.base_d7_trend`，再退回 `claude-radar-quota-history.jsonl` 最近 7 天，最后才用单点当前值。`quota.base_d7` 缺失时从 `quota.metrics` 的 d7/total_7d 行取当前值并按 metric/update/run 签名写历史。`claude-radar-cache.ini` 保存 `QuotaLineKnown/Current/Previous/Min/Max/Average/Metric/SourceMode`，启动和失败合并不清空额度线；paint 路径只消费已解析快照。Codex Radar Claude 模式读取同一 `ClaudeRadarReader` 快照，并把 `QuotaLine` 映射为共享窗口的 `CodexQuotaRadarSnapshot`，所以 IQ 左侧额度线不依赖独立 Claude 窗口是否启用。`--test` 覆盖当前站点 `quota.metrics + chart.key=total_7d` 形状、缓存 round-trip 和共享窗口 `QuotaLine -> QuotaRadar` 映射。 |
 | Claude Radar 首页 metadata fallback | 独立窗口优先读取 `data/claude-code-radar.json`；首页 metadata fallback 受 `ClaudeRadarHomepageFallbackEnabled` 门控，关闭时不得读取首页 HTML，也不得因为 JSON 失败或 metadata 不完整而探测首页。开启时只在主 JSON 请求失败、`iq.models` 缺失、模型名缺失或模型名等于 key/key-only 时，才顺序读取首页 HTML 并解析 `MODEL_NAMES` 作为弱 metadata fallback；JSON 已足够时不得预读首页。首页 fallback 只补 source key/display name 等弱 metadata，不伪造 IQ、效率、额度、reset、服务健康或社区评分；homepage-only 目录是弱目录，不参与 `MissingSuccessCount` 或连续缺失计数，不会把未在首页出现的旧模型标记为 temporarily_missing/deleted，也不得触发模型删除。 |
 | Claude Radar 服务健康 | 独立窗口右侧 `R/C/U` 方块分别表示 Claude Radar data/homepage、Claude 官方 Statuspage summary、Claude Code usage。`C` 不再代表社区评分；社区评分只影响体感分数据。官方 Claude 状态只在 Claude Radar 窗口真实网站刷新路径中顺序读取 `https://status.claude.com/api/v2/summary.json`，不探测 Codex/OpenAI/ChatGPT。状态颜色和叉号语义为：正常绿色无叉、离线灰色无叉、元素缺失灰叉、服务响应但不可用黄叉、DNS/TLS/超时/连接失败红叉。右侧服务点和 API 摘要共用 `ApplyClaudeServiceAlertDebounce`，新错误需连续存在 10 s 才显示，恢复正常立即清除；随机测试模式旁路防抖。 |
 | Claude Radar 模型目录安全 | 只有 `ok=true` 且 `iq.models` 数组完整、每项都有唯一 key、可解析模型数等于原始模型项数时，才把本次响应视为完整目录并推进 `MissingSuccessCount`/temporarily_missing/deleted。非空但部分损坏的 JSON、`ok=false`、schema 缺失和 homepage-only 弱目录都只更新已见项，不证明旧模型消失。`--test` 通过 reader 失败 fixture 覆盖 HTTP 失败、超时、离线、DISABLED 和 unsupported/unavailable 状态映射。 |
@@ -100,8 +100,8 @@ DNS 检测：
 | 余额判定日志 | 跟随真实额度读取完成后写一条 `quota-decision-history.jsonl`，记录余额、消耗尾段、基线、来源类型、上游 used 字段原值/归一化值和原因；可疑 provider 零值被丢弃时也写一条原因日志。不在绘制、动画或测试随机刷新路径写入；日志 15 s/32 KiB 批量落盘，约 48 h 滚动保留。 |
 | CodexRadar 网站 | 启动、恢复、模型切换、数据源设置变化和手动刷新仍触发一次错峰请求；常规自动刷新在北京时间每小时整点执行一次，网站未出新批次不再加密轮询；失败、超时或不可用 10 min 重试；读取链路按设置在公开 `current.json`、首页 HTML 回退和 RSS 回退之间分层执行；公开 JSON 成功但缺少首页额度雷达、网页短数据标签、IQ 常态区或 IQ 图表显示上限时，也会读取首页 HTML 补齐展示字段，补齐失败不覆盖已成功的 JSON 数据。IQ 显示上限从同一次 `model_iq` 全模型分数或首页 `IQ指数` 历史值提取，不建立额外轮询。 |
 | Model IQ 时钟 | EvenRow 时钟只用模型 IQ 数据窗口或 Claude 模型 `latest_at` 判断新鲜度，不用本地抓取时间冒充数据更新。变黄边界按本机系统时间计算，不按北京时间：Codex 为 12 h 一圈，系统 0:00 和 12:00 边界开始等待当前半日批次；Claude 为 24 h 一圈，系统每天 0:00 开始等待当天模型 IQ。当前时间白点从顶部边界顺时针前进；12 点钟方向固定绘制绿色竖线；小绿点表示上次记录到新 IQ 内容的位置，Codex 保留 12 h、Claude 保留 24 h，当前指针下一圈到达该位置后不再显示。小绿点仍有效时，圆弧从小绿点顺时针连接到当前白点；小绿点过期后不再用旧刷新点绘制连接弧。Codex 抓到同一批旧 IQ 内容时保留旧 `RefreshedUtc`，避免每小时同内容请求移动绿点。时钟中心下方时间由 `RadarClockTimeDisplayMode` 控制，默认 UTC，可切到当前本机时间、上次尝试刷新时间或上次实际 IQ 刷新时间；时间下方同色显示 `UTC`、`NOW`、`LAST` 或 `REF` 短标签，不改变既有日期/时间位置；渲染缓存包含当前分钟签名，避免绿点到期后继续使用旧 bitmap。当前周期数据到达后变绿；只有上一个完整周期仍无数据时才在黄色满环上叠红色。`RadarClockAutoSwitchModelEnabled` 默认开启：过期且当前模型未达上一个周期边界时，Codex 从 7 天模型缓存里找最近达到边界的模型，Claude 从本次 `iq.models` 指标列表里找最近达到边界的模型并写入对应模型 key；没有候选时只变红，不重复写设置。 |
-| 模型切换 | 优先加载对应模型缓存，并安排约 1 s 后请求；模型目录由成功 `model_iq` 响应或首页 HTML 模型目录更新；网页短数据标签、IQ 常态区和 IQ 显示上限随同一次请求链路补齐。 |
-| CodexRadar 服务检测 | 设置页“检测服务可用性”按钮触发一次性探测公开摘要、授权 API、首页 HTML 和 RSS，结果写入本地诊断文件并追加网络检查历史；不建立额外轮询。旧竖向 Rader/Claude/ChatGPT 健康面板已删除，Rader 状态仍随网站刷新更新，用于当前 `EvenRow` API 摘要和 `R/O/C/D` LED 列。API/LED 非检测中错误经过 10 s 防抖，同一服务错误连续存在满窗口才显示；恢复为正常时立即清除。 |
+| 模型切换 | 优先加载对应模型缓存，并安排约 1 s 后请求；模型目录由成功 `model_iq` 响应或首页 HTML 模型目录更新；网页短数据标签、IQ 常态区和 IQ 显示上限随同一次请求链路补齐。Codex 模型目录通知复用 Claude 的持久去重模式，`codex-radar-notification-state.ini` 按模型 key 保存最近一次新增/暂缺/删除事件状态，同一状态不重复弹 Windows 通知，删除后重新加入作为状态变化仍会通知。同一刷新批次内同一 key 的冲突事件先按 Added > Unavailable > Deleted 合并，避免 JSON/HTML 两层互相抖动造成连发。 |
+| CodexRadar 服务检测 | 设置页“检测服务可用性”按钮触发一次性探测公开摘要、授权 API、首页 HTML 和 RSS，结果写入本地诊断文件并追加网络检查历史；不建立额外轮询。旧竖向 Rader/Claude/ChatGPT 健康面板已删除，Rader 状态仍随网站刷新更新，用于当前 `EvenRow` API 摘要和 `R/O/C/D` LED 列。API/LED 非检测中错误经过 10 s 防抖，同一服务错误连续存在满窗口才显示；恢复为正常时立即清除；Codex/Claude 软件族切换时清空防抖状态，避免已稳定的旧窗口错误在新窗口第一帧复用。 |
 | Claude 状态 | 用于当前 `EvenRow` 单行 API 摘要；正常 15 min，非正常或失败 2 min 重试，单飞。AI 请求保护命中时不请求 `status.claude.com`，按不可用状态进入异常重试。旧竖向三行面板已删除，不占布局宽度。 |
 | 五阶段连接 | 已删除。timer、网络变化、显示恢复和操作面板强制刷新都不会启动网络/DNS/隧道/OpenAI/本地 Codex 五段诊断；当前代码不再包含旧绘制、快照、调度和 ChatGPT/OpenAI 探测回滚路径。 |
 | DeepSeek 余额 | 读取 `https://api.deepseek.com/user/balance`；正常 60 s，失败 5 min；网络变化和操作面板强制刷新会立即请求。API key 只从 `DEEPSEEK_API_KEY` 环境变量或 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-api-key.bin` 读取，本地文件由 `SecretStore` 通过 DPAPI CurrentUser 加密，不写入设置或日志。成功余额样本写入 `deepseek-balance-history.jsonl`，保留 48 h，用于估算 24 h 消耗。当前底部 DS 元信息不按余额、24 h 消耗或高低峰改变颜色；文案追加按北京时间 `09:00-12:00`、`14:00-18:00` 判定的 `高峰`，其余为 `低谷`。 |
@@ -163,12 +163,12 @@ GFW：
 - 正常官方 API 缓存 30 min，普通 HTTPS 正常缓存 15 min，异常/慢响应缓存 2 min，无法连接缓存 45 s，未知缓存 30 s。
 - 状态变化需 30 s 滞后确认，避免网络抖动造成频繁日志和 UI 变色。
 - 本地链路劣化时，DNS/TCP/TLS/超时等链路敏感的非全数失败会从红色无法连接降为黄色本地丢包影响；官方故障或官方降级不降级。
-- 同一时间最多一个云服务探测任务；新强制刷新会取消旧请求。真实状态不是 `Online` 时停止/取消云服务探测并返回无告警 `Unknown` 方块。云服务错误在 Classic 分组卡片下显示为标题栏方块变色（红/橙）；异常明细归入「健康」卡，不再有标题栏告警槽。
+- 同一时间最多一个云服务探测任务；新强制刷新会取消旧请求。真实状态不是 `Online` 时停止/取消云服务探测并返回无告警 `Unknown` 方块。云服务错误在 Classic 扁平信息条中只改变对应服务方块颜色；异常明细由 DNS/GFW/PING 的既有显示位承担，不新增刷新或告警槽。
 - 云服务顺序固定为 `Cf Ak Gi Aw Az Go`；Akamai 使用 Statuspage v2 summary，Azure 使用公开 Azure Status RSS。地区设置变化会刷新 Cloudflare、Akamai、Azure、Google 这类带地区过滤的官方状态源。
 
 DNS 告警：
 
-- DNS 探测仍只由 DNS 行现有调度触发；Classic 分组卡片布局的 DNS 状态只消费 `DnsServerDetails`，不发起额外探测。DNS 状态显示在「健康」卡的 `DNS` 行（`DrawDnsSegments` 每服务分色段落），不再有标题栏告警槽或右下角覆盖层。
+- DNS 探测仍只由 DNS 行现有调度触发；Classic 扁平信息条的 DNS 状态只消费 `DnsServerDetails`，不发起额外探测。Classic 在 `DNS` 行左侧分色显示服务器、右侧显示首个异常原因；不再有标题栏告警槽或右下角覆盖层。
 - DNS 行保留网卡返回的 DNS 优先级顺序，错误状态只改变颜色、不把报错项提前，颜色复用 DNS 行状态色。
 - 连通性与 GFW 的错误分别显示在「健康」卡的 `PING` / `GFW` 整行，长错误文本有整行宽度兜底、fit 收缩，不与其它卡相交。
 
@@ -203,13 +203,14 @@ DNS 告警：
 | SeelenUI 状态 | 操作面板可见时复用共享维护 tick，最多每 2 s 检查一次 `seelen-ui` 进程；自动模式下变化后只重绘左侧按钮/内存区域并刷新隐藏模式命中遮罩。 |
 | 内存饼图 | 仅在左侧主区域解析为内存饼图时采样；最多每 2 s 读取一次 `GlobalMemoryStatusEx` 和前台进程 Working Set，绘制时只使用缓存快照。 |
 | 单击/双击重启按钮 | 单击行为用 `SystemInformation.DoubleClickTime` 延迟确认，避免和双击重启冲突。 |
-| 设置按钮 | 操作面板是 `WS_EX_NOACTIVATE` 窗口，单击程序设置按钮会等待一个系统双击间隔再打开设置；双击不打开设置，而是打开 AI 快速选单。打开已有设置窗或快速选单时必须走宿主 `ShowSettingsWindow()`，先清理瞬态交互状态，再用系统前台激活 API 拉回窗口。 |
-| AI 快速选单 | 双击程序设置按钮打开 `AiQuickMenuForm`，菜单包含 AI 阻断开关和 Codex 额度计划。AI 阻断开关保存 `AiRequestProtectionManualBlockEnabled`；开启时阻断本程序 OpenAI/ChatGPT/Claude/Anthropic 请求，并尝试停止正在运行的 Codex/Claude Code 进程。不要在自动测试中触发手动阻断开启路径。 |
-| Codex 额度计划 | `CodexQuotaGoalPlanner` 只复用 `%LOCALAPPDATA%\DesktopCodexAssistant\quota.ini` 的剩余额度缓存，默认条件为周额度小于 3% 且 5 小时额度小于 90%，计划默认关闭；触发时通过 `codex app-server` 对已勾选 goal 写入 `usageLimited`。恢复时按 `CodexQuotaPlanResumeConditionMode` 选择只看周额度、只看 5 小时额度或两者都恢复，再写回 `active`。app-server 调用运行在后台任务，失败只记录日志和 UI 状态，不阻塞主 tick。 |
+| 设置按钮 | 操作面板是 `WS_EX_NOACTIVATE` 窗口，单击程序设置按钮会等待一个系统双击间隔再打开 `AiQuickMenuForm` 特殊设置；双击打开普通 `Win11SettingsForm` 设置。打开已有设置窗或特殊设置窗时必须走宿主 `ShowSettingsWindow()`，先清理瞬态交互状态，再用系统前台激活 API 拉回窗口。 |
+| 特殊设置窗 | 单击程序设置按钮打开 `AiQuickMenuForm`，窗口宽度不得超过 500 px，内容只保留「链接阻断」「额度计划」「CTF 重启」三项。CTF 重启按钮通过 `runas` 拉起同一 exe 的 `--ctfmon-restart-helper` 助手；助手只处理当前交互会话的 `ctfmon.exe`，确认出现新进程或完整报错后自动退出，日志写入 `%LOCALAPPDATA%\DesktopCodexAssistant`。「链接阻断」开关保存 `AiRequestProtectionManualBlockEnabled`；开启时阻断本程序 OpenAI/ChatGPT/Claude/Anthropic 请求，并尝试停止正在运行的 Codex/Claude Code 进程。「额度计划」只切换 `CodexQuotaPlanEnabled`，阈值、恢复条件和 goal 列表必须留在普通设置的 `!Codex 额度计划` 分组中。不要在自动测试中触发手动阻断开启路径，也不要在自动测试中触发需要 UAC 的 CTF 重启按钮。 |
+| Codex 额度计划 | `CodexQuotaGoalPlanner` 只复用 `%LOCALAPPDATA%\DesktopCodexAssistant\quota.ini` 的剩余额度缓存，默认条件为周额度小于 3% 且 5 小时额度小于 90%，计划默认关闭；触发时通过 `codex app-server` 对普通设置中配置的 goal 写入 `usageLimited`。恢复时按 `CodexQuotaPlanResumeConditionMode` 选择只看周额度、只看 5 小时额度或两者都恢复，再写回 `active`。app-server 调用运行在后台任务，失败只记录日志和 UI 状态，不阻塞主 tick。 |
 | FPS 回退 | 仅当 FPS 面板应显示时运行；性能/均衡/省电间隔 1/2/5 s；值未变化时不重绘。 |
 | FPS counter 发现 | 首次或候选缺失时发现；前台进程变化后的重新发现冷却 30 s；完整发现间隔 60 s。 |
 | 防烧屏维护 | 位置位移检查复用主窗口共享维护 tick，不建立额外高频定时器。 |
 | 设置窗口恢复 | 设置窗口关闭、异常销毁或被宿主清理后，`WidgetForm` 调用 `OperationForm.ClearTransientInteractionState()` 清除 hover、pressed、tooltip 和鼠标捕获状态，避免操作面板停在半交互状态。 |
+| 窗口层级 | 非桌面模式监测浮窗在设置应用、定位和 Win+D/Seelen 恢复拉前时复用 SeelenUI 感知 insert-after；有可见 TopMost Seelen `Tauri Window` 时选择 Seelen 顶层窗口栈里最靠下的一个并插入到其下方，否则回退普通 `HWND_TOPMOST`。不新增常驻定时器。 |
 
 ## 8.1 鼠标隐藏与延迟显现
 
@@ -226,7 +227,7 @@ DNS 告警：
 | 项目 | 规则 |
 | --- | --- |
 | 默认界面 | 设置入口只创建基于 WinUI/Fluent 设置结构重写的 `Win11SettingsForm`，第一页是 `控制中心` 模块仪表盘，模块卡片只导航到现有详细设置页；旧 `SettingsForm` 和 `DESKTOP_CODEX_LEGACY_SETTINGS` 回退已移除。 |
-| 视觉资源 | 当前设置界面、控制中心模块卡片和 AI 快速选单共用 `DesignTokens` 的颜色、圆角、按钮尺寸和间距；设置窗口本体使用 `DesignTokens.SettingsWarmTheme` 的 WarmCard 暖灰/琥珀色板，不再使用 NeonGeek 蓝紫色板；跨窗口设置风格控件放在 `Settings/SettingsFluentResources.cs`，WinForms 控件字体必须通过窗口级 `UiFontCache.GetUiPoint` 复用，不能把 Point 字号接到悬浮窗 Pixel 字体路径；现行源码的导航图标使用 Segoe Fluent Icons / MDL2 字体字形。若恢复此前的 Phosphor PNG 设计要求，需要同时恢复资源加载器和 `--test-settings-bindings` 图标存在性断言。 |
+| 视觉资源 | 当前设置界面、控制中心模块卡片和特殊设置窗共用 `DesignTokens` 的颜色、圆角、按钮尺寸和间距；设置窗口本体使用 `DesignTokens.SettingsWarmTheme`，该主题自 1.0.4.50 起对齐所有窗口实际运行的 Classic 配色（近黑背景 + 红/黄/绿三色，无蓝无金），不再是仿 WarmCard OLED 变体的暖灰/琥珀色板（settings.ini 里从未有任何窗口选用 WarmCard/AmberHud 等 OLED 变体），也不使用 NeonGeek 蓝紫色板；跨窗口设置风格控件放在 `Settings/SettingsFluentResources.cs`，WinForms 控件字体必须通过窗口级 `UiFontCache.GetUiPoint` 复用，不能把 Point 字号接到悬浮窗 Pixel 字体路径；现行源码的导航图标使用 Segoe Fluent Icons / MDL2 字体字形。若恢复此前的 Phosphor PNG 设计要求，需要同时恢复资源加载器和 `--test-settings-bindings` 图标存在性断言。 |
 | 布局边界 | 设置窗口首选尺寸按 2880x1740 参考工作区比例动态缩放，并受当前工作区上限保护；低分辨率下最小尺寸必须收敛到屏幕内，左侧导航从 409 px 收缩到 300/220 px，内容依靠滚动承载。设置页卡片、页脚按钮和输入控件必须随内容区宽度重排；中文标题和说明高度按字体实际测量，不使用固定 24/34 px 行高；导航行、控制中心面板和设置行需要保留明显垂直间距，避免图标、标题、说明和按钮互相压叠；设置页不得暴露“记录窗口排版日志”这类内部诊断按钮；`--test-settings-bindings` 覆盖动态分辨率尺寸、最小窗口下的控件越界检查。 |
 | 页面结构 | 设置窗口包含独立「布局与位置」页；所有窗口宽高、左边距、底边距和操作面板偏移都收在该页「复杂选项」下，各业务页只保留日常开关、透明度和外观。分组名前缀 `!` 表示默认折叠到每页「复杂选项」区；搜索时高级项直接参与匹配，当前页无匹配行时跳到第一个匹配页。 |
 | 外观选择 | `MainWidgetRenderVariant`、`CodexRadarRenderVariant`、`NetworkMonitorRenderVariant`、`PowerThermalRenderVariant`、`ConnectionCheckRenderVariant` 和 `OperationRenderVariant` 使用 `VariantPicker` 缩略图卡片选择器；`ClaudeRadarRenderVariant` 仍是复杂选项中的下拉预留项。缩略图懒加载到 `%LOCALAPPDATA%\DesktopCodexAssistant\variant-samples\v<ProductIdentity.Version>\`，仅真实宿主设置窗触发，`--test-settings-bindings` 不渲染样例。 |
@@ -241,7 +242,7 @@ DNS 告警：
 | 保存 | 点击保存写入 `settings.ini`，主窗口 watcher 和修改时间检查负责外部热加载。 |
 | 取消 | 恢复打开设置前的 baseline，不应触发额外持久化写入。 |
 | 异常关闭 | `Win11SettingsForm.OnFormClosing` 会回滚未保存预览；若窗口异常销毁或只触发 `Disposed/FormClosed`，宿主必须通过 `ISettingsWindow.TryConsumeUnsavedPreview()` 只消费一次 baseline 并回滚，不能只依赖 `OnFormClosing`。 |
-| Codex 模型选择 | `CodexRadarModelKey` 使用 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-radar-models.ini` 生成下拉框；暂不可用模型保留在下拉中并标注，不再手动填写 key。 |
+| Codex 模型选择 | `CodexRadarModelKey` 使用 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-radar-models.ini` 生成下拉框；暂不可用模型保留在下拉中并标注，不再手动填写 key。模型通知状态单独保存在 `codex-radar-notification-state.ini`，不参与设置页按钮生成。 |
 | DeepSeek 配置 | 设置页 Codex Radar 的“模型与时区”组只写 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-api-key.bin`，不把 key 写入 `settings.ini`；保存或清除后递增 `DeepSeekApiKeyRevision` 触发 Codex Radar 立即刷新余额状态。旧 `.txt` 会在读取时迁移为 `.txt.migrated`，清除时一并删除。 |
 
 ## 10. 修改检查清单

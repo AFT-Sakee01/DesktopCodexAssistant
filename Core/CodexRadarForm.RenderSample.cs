@@ -16,13 +16,7 @@ internal sealed partial class CodexRadarForm
         Directory.CreateDirectory(outputDir);
         CodexRadarRenderVariant[] variants =
         {
-            CodexRadarRenderVariant.Classic,
-            CodexRadarRenderVariant.EvenGrid,
-            CodexRadarRenderVariant.EvenRow,
-            CodexRadarRenderVariant.Typographic,
-            CodexRadarRenderVariant.AmberHud,
-            CodexRadarRenderVariant.WarmCard,
-            CodexRadarRenderVariant.Phosphor
+            CodexRadarRenderVariant.EvenRow
         };
 
         foreach (CodexRadarRenderVariant variant in variants)

@@ -18,7 +18,8 @@ internal sealed partial class OperationForm
             OperationRenderVariant.Typographic,
             OperationRenderVariant.AmberHud,
             OperationRenderVariant.WarmCard,
-            OperationRenderVariant.Phosphor
+            OperationRenderVariant.Phosphor,
+            OperationRenderVariant.RadialDial
         };
 
         foreach (OperationRenderVariant variant in variants)
@@ -35,8 +36,15 @@ internal sealed partial class OperationForm
                 (title, message, icon) => { },
                 () => true,
                 () => true,
-                () => true))
+                () => true,
+                (enabled) => enabled,
+                (enabled) => enabled))
             {
+                if (variant == OperationRenderVariant.RadialDial)
+                {
+                    form.SetRadialDialExpandedForSample(true);
+                }
+
                 form.SetLayerScale(2.0f);
                 form.MaximumSize = new Size(4000, 4000);
                 form.Size = form.GetDesiredSize();
@@ -67,7 +75,9 @@ internal sealed partial class OperationForm
             (title, message, icon) => { },
             () => true,
             () => true,
-            () => true))
+            () => true,
+            (enabled) => enabled,
+            (enabled) => enabled))
         {
             form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);

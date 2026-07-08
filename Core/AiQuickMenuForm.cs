@@ -1,7 +1,9 @@
 using System;
-using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Globalization;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -10,23 +12,12 @@ internal sealed class AiQuickMenuForm : Form
     private readonly WidgetForm ownerForm;
     private readonly WidgetSettings workingSettings;
     private readonly UiFontCache fontCache = new UiFontCache();
-    private FlowLayoutPanel contentStack;
-    private Panel scrollPanel;
     private SettingsFluentToggleSwitch aiBlockToggle;
-    private SettingsFluentToggleSwitch planEnabledToggle;
-    private ComboBox weeklyComparisonComboBox;
-    private NumericUpDown weeklyThresholdBox;
-    private ComboBox fiveHourComparisonComboBox;
-    private NumericUpDown fiveHourThresholdBox;
-    private ComboBox resumeConditionComboBox;
-    private SettingsFluentToggleSwitch autoResumeToggle;
-    private CheckedListBox pauseGoalList;
-    private CheckedListBox resumeGoalList;
-    private Label summaryLabel;
+    private SettingsFluentToggleSwitch quotaPlanToggle;
+    private Button ctfmonRestartButton;
     private Label statusLabel;
-    private Button refreshButton;
     private bool applyingControls;
-    private List<CodexGoalInfo> displayedGoals = new List<CodexGoalInfo>();
+    private int ctfmonRestartRequestRunning;
 
     public AiQuickMenuForm(WidgetForm owner, WidgetSettings settings)
     {
@@ -34,28 +25,36 @@ internal sealed class AiQuickMenuForm : Form
         this.workingSettings = settings == null ? WidgetSettings.CreateDefaults() : settings.Clone();
         this.workingSettings.Normalize();
 
-        this.Text = "AI 快速选单";
+        this.Text = "特殊设置";
         this.ShowInTaskbar = false;
         this.StartPosition = FormStartPosition.Manual;
-        this.FormBorderStyle = FormBorderStyle.FixedSingle;
+        this.FormBorderStyle = FormBorderStyle.None;
         this.MaximizeBox = false;
         this.MinimizeBox = false;
-        this.ClientSize = new Size(780, 760);
-        this.MinimumSize = new Size(680, 620);
+        this.ClientSize = new Size(480, 308);
+        this.MinimumSize = new Size(420, 280);
+        this.MaximumSize = new Size(500, 900);
         this.BackColor = SettingsFluentResources.WindowBase;
         this.ForeColor = SettingsFluentResources.TextPrimary;
         this.Font = GetUiFont(10.0f);
+        this.Padding = new Padding(10);
+        ApplicationIcon.ApplyTo(this);
 
         BuildUi();
         LoadFromSettings();
-        PopulateGoalLists(CodexQuotaGoalPlanner.LoadKnownGoals());
-        UpdateSummary();
+        UpdateStatus("特殊设置已打开。");
     }
 
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        LayoutCards();
+        ApplyRoundedRegion();
+    }
+
+    protected override void OnSizeChanged(EventArgs e)
+    {
+        base.OnSizeChanged(e);
+        ApplyRoundedRegion();
     }
 
     protected override void Dispose(bool disposing)
@@ -78,277 +77,186 @@ internal sealed class AiQuickMenuForm : Form
         return this.fontCache.GetUiPoint(size, style);
     }
 
+    private void ApplyRoundedRegion()
+    {
+        if (this.Width <= 0 || this.Height <= 0)
+        {
+            return;
+        }
+
+        using (GraphicsPath path = SettingsFluentResources.CreateRoundRectangle(
+            new Rectangle(0, 0, this.Width, this.Height),
+            12))
+        {
+            Region oldRegion = this.Region;
+            this.Region = new Region(path);
+            if (oldRegion != null)
+            {
+                oldRegion.Dispose();
+            }
+        }
+    }
+
     private void BuildUi()
     {
         TableLayoutPanel root = new TableLayoutPanel();
         root.Dock = DockStyle.Fill;
         root.ColumnCount = 1;
-        root.RowCount = 3;
+        root.RowCount = 5;
         root.BackColor = this.BackColor;
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
+        root.Padding = new Padding(12, 10, 12, 10);
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
         this.Controls.Add(root);
 
         root.Controls.Add(BuildHeader(), 0, 0);
 
-        this.scrollPanel = new Panel();
-        this.scrollPanel.Dock = DockStyle.Fill;
-        this.scrollPanel.AutoScroll = true;
-        this.scrollPanel.Padding = new Padding(24, 0, 18, 0);
-        this.scrollPanel.BackColor = this.BackColor;
-        this.scrollPanel.Resize += delegate { LayoutCards(); };
-        root.Controls.Add(this.scrollPanel, 0, 1);
+        this.aiBlockToggle = new SettingsFluentToggleSwitch();
+        this.aiBlockToggle.CheckedChanged += OnAiBlockToggleChanged;
+        root.Controls.Add(BuildActionRow(
+            "链接阻断",
+            "阻断本程序的 OpenAI / ChatGPT / Claude 请求。",
+            this.aiBlockToggle),
+            0,
+            1);
 
-        this.contentStack = new FlowLayoutPanel();
-        this.contentStack.Dock = DockStyle.Top;
-        this.contentStack.FlowDirection = FlowDirection.TopDown;
-        this.contentStack.WrapContents = false;
-        this.contentStack.AutoSize = true;
-        this.contentStack.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        this.contentStack.BackColor = this.BackColor;
-        this.scrollPanel.Controls.Add(this.contentStack);
+        this.quotaPlanToggle = new SettingsFluentToggleSwitch();
+        this.quotaPlanToggle.CheckedChanged += OnQuotaPlanToggleChanged;
+        root.Controls.Add(BuildActionRow(
+            "额度计划",
+            "只切换启用状态；阈值和 goal 列表在普通设置中调整。",
+            this.quotaPlanToggle),
+            0,
+            2);
 
-        this.contentStack.Controls.Add(BuildAiBlockCard());
-        this.contentStack.Controls.Add(BuildTriggerCard());
-        this.contentStack.Controls.Add(BuildPauseGoalCard());
-        this.contentStack.Controls.Add(BuildResumeCard());
-
-        root.Controls.Add(BuildFooter(), 0, 2);
-    }
-
-    private Control BuildHeader()
-    {
-        Panel header = new Panel();
-        header.Dock = DockStyle.Fill;
-        header.Padding = new Padding(28, 18, 28, 8);
-        header.BackColor = this.BackColor;
-
-        Label title = new Label();
-        title.Text = "AI 快速选单";
-        title.Font = GetUiFont(18.0f, FontStyle.Bold);
-        title.ForeColor = SettingsFluentResources.TextPrimary;
-        title.SetBounds(28, 18, 680, 32);
-        title.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
-
-        Label subtitle = new Label();
-        subtitle.Text = "快速切换 AI 阻断，并按 Codex 额度条件暂停或恢复选中的 goal。";
-        subtitle.Font = GetUiFont(9.5f);
-        subtitle.ForeColor = SettingsFluentResources.TextTertiary;
-        subtitle.SetBounds(28, 54, 700, 24);
-        subtitle.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
-
-        header.Controls.Add(title);
-        header.Controls.Add(subtitle);
-        return header;
-    }
-
-    private Control BuildFooter()
-    {
-        TableLayoutPanel footer = new TableLayoutPanel();
-        footer.Dock = DockStyle.Fill;
-        footer.ColumnCount = 2;
-        footer.RowCount = 1;
-        footer.Padding = new Padding(24, 8, 16, 12);
-        footer.BackColor = this.BackColor;
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 420));
+        this.ctfmonRestartButton = SettingsFluentResources.CreateCommandButton("重启", true, GetUiFont(9.2f, FontStyle.Bold));
+        this.ctfmonRestartButton.AutoSize = false;
+        this.ctfmonRestartButton.Width = 112;
+        this.ctfmonRestartButton.Height = 42;
+        this.ctfmonRestartButton.Margin = new Padding(0);
+        this.ctfmonRestartButton.Click += delegate { BeginRestartCtfmonFromSpecialMenu(); };
+        root.Controls.Add(BuildActionRow(
+            "CTF 重启",
+            "提权重启当前会话的 ctfmon.exe。",
+            this.ctfmonRestartButton),
+            0,
+            3);
 
         this.statusLabel = new Label();
         this.statusLabel.Dock = DockStyle.Fill;
         this.statusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        this.statusLabel.AutoEllipsis = true;
         this.statusLabel.ForeColor = SettingsFluentResources.TextTertiary;
-        this.statusLabel.Font = GetUiFont(9.0f);
-        footer.Controls.Add(this.statusLabel, 0, 0);
+        this.statusLabel.Font = GetUiFont(8.5f);
+        this.statusLabel.Padding = new Padding(4, 0, 0, 0);
+        root.Controls.Add(this.statusLabel, 0, 4);
+    }
 
-        FlowLayoutPanel buttons = new FlowLayoutPanel();
-        buttons.Dock = DockStyle.Fill;
-        buttons.FlowDirection = FlowDirection.RightToLeft;
-        buttons.WrapContents = false;
-        buttons.BackColor = this.BackColor;
+    private Control BuildHeader()
+    {
+        TableLayoutPanel header = new TableLayoutPanel();
+        header.Dock = DockStyle.Fill;
+        header.ColumnCount = 2;
+        header.RowCount = 1;
+        header.BackColor = this.BackColor;
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 42));
 
-        Button closeButton = SettingsFluentResources.CreateCommandButton("关闭", false, GetUiFont(9.5f, FontStyle.Bold));
+        Label title = new Label();
+        title.Dock = DockStyle.Fill;
+        title.Text = "特殊设置";
+        title.TextAlign = ContentAlignment.MiddleLeft;
+        title.Font = GetUiFont(15.0f, FontStyle.Bold);
+        title.ForeColor = SettingsFluentResources.TextPrimary;
+        header.Controls.Add(title, 0, 0);
+
+        Button closeButton = SettingsFluentResources.CreateCommandButton("×", false, GetUiFont(11.0f, FontStyle.Bold));
+        closeButton.AutoSize = false;
+        closeButton.Width = 34;
+        closeButton.Height = 34;
+        closeButton.Padding = new Padding(0);
+        closeButton.Margin = new Padding(0, 4, 0, 0);
         closeButton.Click += delegate { this.Close(); };
-        Button saveButton = SettingsFluentResources.CreateCommandButton("保存", true, GetUiFont(9.5f, FontStyle.Bold));
-        saveButton.Click += delegate { SaveQuotaPlan(); };
-        this.refreshButton = SettingsFluentResources.CreateCommandButton("刷新 goal", false, GetUiFont(9.5f, FontStyle.Bold));
-        this.refreshButton.Click += delegate { RefreshGoals(); };
+        header.Controls.Add(closeButton, 1, 0);
 
-        buttons.Controls.Add(closeButton);
-        buttons.Controls.Add(saveButton);
-        buttons.Controls.Add(this.refreshButton);
-        footer.Controls.Add(buttons, 1, 0);
-        return footer;
+        return header;
     }
 
-    private SettingsFluentGroupCard BuildAiBlockCard()
+    private Control BuildActionRow(string title, string hint, Control actionControl)
     {
-        SettingsFluentGroupCard card = new SettingsFluentGroupCard();
-        this.aiBlockToggle = new SettingsFluentToggleSwitch();
-        this.aiBlockToggle.CheckedChanged += OnAiBlockToggleChanged;
-        card.AddRow(CreateRow(
-            "AI 阻断",
-            "开启后，本程序会阻断发往 OpenAI、ChatGPT、Claude 和 Anthropic 的相关请求，并按手动阻断策略尝试停止正在运行的 AI 工具。",
-            this.aiBlockToggle));
-        return card;
-    }
+        TableLayoutPanel row = new TableLayoutPanel();
+        row.Dock = DockStyle.Fill;
+        row.ColumnCount = 2;
+        row.RowCount = 1;
+        row.Margin = new Padding(0, 5, 0, 5);
+        row.Padding = new Padding(14, 7, 12, 7);
+        row.BackColor = SettingsFluentResources.CardRest;
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 126));
+        row.Paint += PaintRowBackground;
 
-    private SettingsFluentGroupCard BuildTriggerCard()
-    {
-        SettingsFluentGroupCard card = new SettingsFluentGroupCard();
+        Panel textPanel = new Panel();
+        textPanel.Dock = DockStyle.Fill;
+        textPanel.BackColor = Color.Transparent;
 
-        this.planEnabledToggle = new SettingsFluentToggleSwitch();
-        this.planEnabledToggle.CheckedChanged += delegate { UpdateSummary(); };
-        card.AddRow(CreateRow(
-            "Codex 额度计划",
-            "启用后，主窗口维护 tick 会读取本地 quota.ini 剩余额度快照，并在后台通过 codex app-server 调整 goal 状态。",
-            this.planEnabledToggle));
+        Label titleLabel = new Label();
+        titleLabel.Text = title;
+        titleLabel.SetBounds(0, 0, 260, 23);
+        titleLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+        titleLabel.Font = GetUiFont(10.0f, FontStyle.Bold);
+        titleLabel.ForeColor = SettingsFluentResources.TextPrimary;
+        titleLabel.BackColor = Color.Transparent;
+        textPanel.Controls.Add(titleLabel);
 
-        card.AddRow(CreateRow(
-            "当周额度",
-            "周额度剩余百分比满足此条件时，参与截断判定。",
-            BuildConditionControl(out this.weeklyComparisonComboBox, out this.weeklyThresholdBox)));
+        Label hintLabel = new Label();
+        hintLabel.Text = hint;
+        hintLabel.SetBounds(0, 24, 280, 22);
+        hintLabel.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+        hintLabel.Font = GetUiFont(8.2f);
+        hintLabel.ForeColor = SettingsFluentResources.TextTertiary;
+        hintLabel.BackColor = Color.Transparent;
+        hintLabel.AutoEllipsis = true;
+        textPanel.Controls.Add(hintLabel);
 
-        card.AddRow(CreateRow(
-            "5小时额度",
-            "5 小时额度剩余百分比满足此条件时，参与截断判定。",
-            BuildConditionControl(out this.fiveHourComparisonComboBox, out this.fiveHourThresholdBox)));
+        row.Controls.Add(textPanel, 0, 0);
 
-        this.summaryLabel = CreateValueLabel();
-        card.AddRow(CreateRow(
-            "计划摘要",
-            "保存后生效。截断只改 goal 状态，不自动结束 Codex 或 Claude 进程。",
-            this.summaryLabel));
+        Panel actionHost = new Panel();
+        actionHost.Dock = DockStyle.Fill;
+        actionHost.BackColor = Color.Transparent;
+        actionControl.Anchor = AnchorStyles.Right | AnchorStyles.Top;
+        actionControl.Location = new Point(Math.Max(0, actionHost.Width - actionControl.Width), Math.Max(0, (48 - actionControl.Height) / 2));
+        actionHost.Resize += delegate
+        {
+            actionControl.Location = new Point(
+                Math.Max(0, actionHost.ClientSize.Width - actionControl.Width),
+                Math.Max(0, (actionHost.ClientSize.Height - actionControl.Height) / 2));
+        };
+        actionHost.Controls.Add(actionControl);
+        row.Controls.Add(actionHost, 1, 0);
 
-        return card;
-    }
-
-    private SettingsFluentGroupCard BuildPauseGoalCard()
-    {
-        SettingsFluentGroupCard card = new SettingsFluentGroupCard();
-        this.pauseGoalList = SettingsFluentResources.CreateCheckedListBox(GetUiFont(9.0f));
-        this.pauseGoalList.ItemCheck += delegate { BeginInvoke((MethodInvoker)UpdateSummary); };
-        card.AddRow(CreateRow(
-            "截断 goal",
-            "常驻 goal 列表。达到触发条件时，将勾选项设置为 usageLimited。",
-            this.pauseGoalList));
-        return card;
-    }
-
-    private SettingsFluentGroupCard BuildResumeCard()
-    {
-        SettingsFluentGroupCard card = new SettingsFluentGroupCard();
-
-        this.autoResumeToggle = new SettingsFluentToggleSwitch();
-        this.autoResumeToggle.CheckedChanged += delegate { UpdateResumeListEnabled(); UpdateSummary(); };
-        card.AddRow(CreateRow(
-            "恢复上次暂停",
-            "开启时，额度恢复后自动启用本程序上次因额度计划暂停的 goal；关闭后使用下方恢复列表。",
-            this.autoResumeToggle));
-
-        this.resumeConditionComboBox = CreateResumeConditionComboBox();
-        this.resumeConditionComboBox.SelectedIndexChanged += delegate { UpdateSummary(); };
-        card.AddRow(CreateRow(
-            "恢复额度类型",
-            "选择额度恢复后自动启用 goal 时看周额度、5 小时额度，还是两者都恢复。",
-            this.resumeConditionComboBox));
-
-        this.resumeGoalList = SettingsFluentResources.CreateCheckedListBox(GetUiFont(9.0f));
-        this.resumeGoalList.ItemCheck += delegate { BeginInvoke((MethodInvoker)UpdateSummary); };
-        card.AddRow(CreateRow(
-            "恢复 goal",
-            "仅在关闭“恢复上次暂停”时使用。额度恢复后，将勾选项设置为 active。",
-            this.resumeGoalList));
-
-        return card;
-    }
-
-    private SettingsFluentRow CreateRow(string title, string hint, Control valueControl)
-    {
-        SettingsFluentRow row = new SettingsFluentRow(valueControl, GetUiFont(10.0f), GetUiFont(8.5f));
-        row.TitleLabel.Text = title;
-        row.HintLabel.Text = hint;
-        row.BackColor = Color.Transparent;
         return row;
     }
 
-    private Control BuildConditionControl(out ComboBox comparisonBox, out NumericUpDown thresholdBox)
+    private static void PaintRowBackground(object sender, PaintEventArgs e)
     {
-        Panel panel = new Panel();
-        panel.Width = 282;
-        panel.Height = 54;
-        panel.BackColor = Color.Transparent;
-
-        comparisonBox = CreateComparisonComboBox();
-        comparisonBox.SetBounds(0, 4, 112, 44);
-        comparisonBox.SelectedIndexChanged += delegate { UpdateSummary(); };
-        panel.Controls.Add(comparisonBox);
-
-        thresholdBox = SettingsFluentResources.CreatePercentBox(GetUiFont(9.5f), 88);
-        thresholdBox.SetBounds(124, 4, 88, 44);
-        thresholdBox.ValueChanged += delegate { UpdateSummary(); };
-        panel.Controls.Add(thresholdBox);
-
-        Label percent = new Label();
-        percent.Text = "%";
-        percent.Font = GetUiFont(9.5f, FontStyle.Bold);
-        percent.ForeColor = SettingsFluentResources.TextSecondary;
-        percent.BackColor = Color.Transparent;
-        percent.TextAlign = ContentAlignment.MiddleLeft;
-        percent.SetBounds(222, 4, 36, 44);
-        panel.Controls.Add(percent);
-        return panel;
-    }
-
-    private Label CreateValueLabel()
-    {
-        Label label = new Label();
-        label.Width = 520;
-        label.Height = 54;
-        label.AutoEllipsis = true;
-        label.Font = GetUiFont(9.0f);
-        label.ForeColor = SettingsFluentResources.TextSecondary;
-        label.BackColor = Color.Transparent;
-        label.TextAlign = ContentAlignment.MiddleLeft;
-        return label;
-    }
-
-    private ComboBox CreateComparisonComboBox()
-    {
-        ComboBox combo = SettingsFluentResources.CreateComboBox(GetUiFont(9.5f), 112);
-        combo.Items.Add(new ComparisonItem("小于", CodexQuotaPlanComparison.LessThan));
-        combo.Items.Add(new ComparisonItem("大于", CodexQuotaPlanComparison.GreaterThan));
-        combo.SelectedIndex = 0;
-        return combo;
-    }
-
-    private ComboBox CreateResumeConditionComboBox()
-    {
-        ComboBox combo = SettingsFluentResources.CreateComboBox(GetUiFont(9.5f), 260);
-        combo.Items.Add(new ResumeConditionItem("周额度与 5小时额度", CodexQuotaPlanResumeConditionMode.Both));
-        combo.Items.Add(new ResumeConditionItem("仅周额度", CodexQuotaPlanResumeConditionMode.WeeklyOnly));
-        combo.Items.Add(new ResumeConditionItem("仅 5小时额度", CodexQuotaPlanResumeConditionMode.FiveHourOnly));
-        combo.SelectedIndex = 0;
-        return combo;
-    }
-
-    private void LayoutCards()
-    {
-        if (this.scrollPanel == null || this.contentStack == null)
+        Control row = sender as Control;
+        if (row == null)
         {
             return;
         }
 
-        int width = Math.Max(420, this.scrollPanel.ClientSize.Width - this.scrollPanel.Padding.Left - this.scrollPanel.Padding.Right - 18);
-        this.contentStack.Width = width;
-        for (int i = 0; i < this.contentStack.Controls.Count; i++)
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using (GraphicsPath path = SettingsFluentResources.CreateRoundRectangle(
+            new Rectangle(0, 0, row.Width - 1, row.Height - 1),
+            8))
+        using (SolidBrush brush = new SolidBrush(SettingsFluentResources.CardRest))
+        using (Pen pen = new Pen(SettingsFluentResources.StrokeColor, 1))
         {
-            SettingsFluentGroupCard card = this.contentStack.Controls[i] as SettingsFluentGroupCard;
-            if (card != null)
-            {
-                card.Width = width;
-                card.LayoutRows();
-            }
+            e.Graphics.FillPath(brush, path);
+            e.Graphics.DrawPath(pen, path);
         }
     }
 
@@ -358,124 +266,12 @@ internal sealed class AiQuickMenuForm : Form
         try
         {
             this.aiBlockToggle.SetCheckedSilent(this.workingSettings.AiRequestProtectionManualBlockEnabled);
-            this.planEnabledToggle.SetCheckedSilent(this.workingSettings.CodexQuotaPlanEnabled);
-            SelectComparison(this.weeklyComparisonComboBox, this.workingSettings.CodexQuotaPlanWeeklyComparison);
-            this.weeklyThresholdBox.Value = this.workingSettings.CodexQuotaPlanWeeklyThresholdPercent;
-            SelectComparison(this.fiveHourComparisonComboBox, this.workingSettings.CodexQuotaPlanFiveHourComparison);
-            this.fiveHourThresholdBox.Value = this.workingSettings.CodexQuotaPlanFiveHourThresholdPercent;
-            SelectResumeCondition(this.resumeConditionComboBox, this.workingSettings.CodexQuotaPlanResumeConditionMode);
-            this.autoResumeToggle.SetCheckedSilent(this.workingSettings.CodexQuotaPlanAutoResumePausedGoals);
+            this.quotaPlanToggle.SetCheckedSilent(this.workingSettings.CodexQuotaPlanEnabled);
         }
         finally
         {
             this.applyingControls = false;
         }
-
-        UpdateResumeListEnabled();
-    }
-
-    private void PopulateGoalLists(List<CodexGoalInfo> goals)
-    {
-        this.displayedGoals = MergeGoals(goals, this.workingSettings.CodexQuotaPlanPauseGoalIds, this.workingSettings.CodexQuotaPlanResumeGoalIds);
-        PopulateGoalList(this.pauseGoalList, this.displayedGoals, this.workingSettings.CodexQuotaPlanPauseGoalIds);
-        PopulateGoalList(this.resumeGoalList, this.displayedGoals, this.workingSettings.CodexQuotaPlanResumeGoalIds);
-    }
-
-    private void PopulateGoalList(CheckedListBox list, List<CodexGoalInfo> goals, string selectedIds)
-    {
-        HashSet<string> selected = BuildGoalIdSet(selectedIds);
-        list.BeginUpdate();
-        try
-        {
-            list.Items.Clear();
-            for (int i = 0; i < goals.Count; i++)
-            {
-                GoalListItem item = new GoalListItem(goals[i]);
-                list.Items.Add(item, selected.Contains(item.ThreadId));
-            }
-        }
-        finally
-        {
-            list.EndUpdate();
-        }
-    }
-
-    private void RefreshGoals()
-    {
-        if (this.refreshButton == null || !this.refreshButton.Enabled)
-        {
-            return;
-        }
-
-        this.refreshButton.Enabled = false;
-        this.statusLabel.Text = "正在通过 codex app-server 刷新 goal 列表...";
-        Task.Run(delegate
-        {
-            string error;
-            List<CodexGoalInfo> goals = CodexAppServerGoalController.ListGoals(out error);
-            if (goals.Count > 0)
-            {
-                CodexQuotaGoalPlanner.SaveKnownGoals(goals);
-            }
-
-            if (this.IsDisposed)
-            {
-                return;
-            }
-
-            try
-            {
-                this.BeginInvoke((MethodInvoker)delegate
-                {
-                    this.refreshButton.Enabled = true;
-                    if (goals.Count > 0)
-                    {
-                        PreserveSelectionsToWorkingSettings();
-                        PopulateGoalLists(goals);
-                        this.statusLabel.Text = "已刷新 " + goals.Count.ToString(CultureInfo.InvariantCulture) + " 个 Codex goal。";
-                    }
-                    else
-                    {
-                        this.statusLabel.Text = string.IsNullOrWhiteSpace(error)
-                            ? "没有发现可管理的 Codex goal。"
-                            : "刷新失败：" + error;
-                    }
-
-                    UpdateSummary();
-                });
-            }
-            catch (InvalidOperationException)
-            {
-            }
-        });
-    }
-
-    private void SaveQuotaPlan()
-    {
-        PreserveSelectionsToWorkingSettings();
-        if (this.ownerForm != null && !this.ownerForm.IsDisposed)
-        {
-            this.ownerForm.SaveSettings(this.workingSettings);
-        }
-
-        CodexQuotaGoalPlanner.SaveKnownGoals(this.displayedGoals);
-        this.statusLabel.Text = "额度计划已保存。";
-        UpdateSummary();
-    }
-
-    private void PreserveSelectionsToWorkingSettings()
-    {
-        this.workingSettings.AiRequestProtectionManualBlockEnabled = this.aiBlockToggle.Checked;
-        this.workingSettings.CodexQuotaPlanEnabled = this.planEnabledToggle.Checked;
-        this.workingSettings.CodexQuotaPlanWeeklyComparison = GetSelectedComparison(this.weeklyComparisonComboBox);
-        this.workingSettings.CodexQuotaPlanWeeklyThresholdPercent = (int)this.weeklyThresholdBox.Value;
-        this.workingSettings.CodexQuotaPlanFiveHourComparison = GetSelectedComparison(this.fiveHourComparisonComboBox);
-        this.workingSettings.CodexQuotaPlanFiveHourThresholdPercent = (int)this.fiveHourThresholdBox.Value;
-        this.workingSettings.CodexQuotaPlanResumeConditionMode = GetSelectedResumeCondition(this.resumeConditionComboBox);
-        this.workingSettings.CodexQuotaPlanAutoResumePausedGoals = this.autoResumeToggle.Checked;
-        this.workingSettings.CodexQuotaPlanPauseGoalIds = GoalIdsFromList(this.pauseGoalList);
-        this.workingSettings.CodexQuotaPlanResumeGoalIds = GoalIdsFromList(this.resumeGoalList);
-        this.workingSettings.Normalize();
     }
 
     private void OnAiBlockToggleChanged(object sender, EventArgs e)
@@ -487,251 +283,150 @@ internal sealed class AiQuickMenuForm : Form
 
         bool enabled = this.aiBlockToggle.Checked;
         this.workingSettings.AiRequestProtectionManualBlockEnabled = enabled;
-        this.ownerForm.SetAiRequestBlockingFromOperationPanel(enabled);
-        this.statusLabel.Text = enabled ? "AI 阻断已开启。" : "AI 阻断已关闭。";
-    }
-
-    private void UpdateResumeListEnabled()
-    {
-        if (this.resumeGoalList != null)
+        if (this.ownerForm.SetAiRequestBlockingFromOperationPanel(enabled))
         {
-            this.resumeGoalList.Enabled = !this.autoResumeToggle.Checked;
-            this.resumeGoalList.BackColor = this.resumeGoalList.Enabled
-                ? SettingsFluentResources.ControlBg
-                : SettingsFluentResources.CardRest;
-            this.resumeGoalList.ForeColor = this.resumeGoalList.Enabled
-                ? SettingsFluentResources.TextPrimary
-                : SettingsFluentResources.TextTertiary;
+            UpdateStatus(enabled ? "链接阻断已开启。" : "链接阻断已关闭。");
         }
     }
 
-    private void UpdateSummary()
+    private void OnQuotaPlanToggleChanged(object sender, EventArgs e)
     {
-        if (this.summaryLabel == null ||
-            this.weeklyThresholdBox == null ||
-            this.fiveHourThresholdBox == null)
+        if (this.applyingControls || this.ownerForm == null || this.ownerForm.IsDisposed)
         {
             return;
         }
 
-        string weekly = GetComparisonText(GetSelectedComparison(this.weeklyComparisonComboBox));
-        string fiveHour = GetComparisonText(GetSelectedComparison(this.fiveHourComparisonComboBox));
-        int pauseCount = this.pauseGoalList == null ? 0 : this.pauseGoalList.CheckedItems.Count;
-        int resumeCount = this.resumeGoalList == null ? 0 : this.resumeGoalList.CheckedItems.Count;
-        string resumeTarget = this.autoResumeToggle != null && this.autoResumeToggle.Checked
-            ? "自动启用上次暂停的 goal"
-            : "启用恢复列表 " + resumeCount.ToString(CultureInfo.InvariantCulture) + " 个 goal";
-        this.summaryLabel.Text =
-            "触发截断：当周额度 " + weekly + " " + ((int)this.weeklyThresholdBox.Value).ToString(CultureInfo.InvariantCulture) +
-            "% 且 5小时额度 " + fiveHour + " " + ((int)this.fiveHourThresholdBox.Value).ToString(CultureInfo.InvariantCulture) +
-            "% 时，暂停 " + pauseCount.ToString(CultureInfo.InvariantCulture) + " 个 goal。恢复启用：按 " +
-            GetResumeConditionText(GetSelectedResumeCondition(this.resumeConditionComboBox)) + " 判定，" + resumeTarget + "。";
+        bool enabled = this.quotaPlanToggle.Checked;
+        this.workingSettings.CodexQuotaPlanEnabled = enabled;
+        if (this.ownerForm.SetCodexQuotaPlanFromOperationPanel(enabled))
+        {
+            UpdateStatus(enabled ? "额度计划已启用。" : "额度计划已关闭。");
+        }
     }
 
-    private static List<CodexGoalInfo> MergeGoals(List<CodexGoalInfo> goals, string pauseIds, string resumeIds)
+    private void BeginRestartCtfmonFromSpecialMenu()
     {
-        List<CodexGoalInfo> merged = new List<CodexGoalInfo>();
-        HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (goals != null)
+        if (Interlocked.CompareExchange(ref this.ctfmonRestartRequestRunning, 1, 0) != 0)
         {
-            for (int i = 0; i < goals.Count; i++)
+            UpdateStatus("CTF 重启已在执行。");
+            return;
+        }
+
+        string correlationId = Guid.NewGuid().ToString("N");
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        Program.LogInfo("special_menu_ctfmon_restart_requested correlation_id=" + correlationId);
+        SetCtfmonRestartBusy(true);
+
+        Task.Run(delegate
+        {
+            bool success = false;
+            string detail = string.Empty;
+            try
             {
-                AddGoal(merged, seen, goals[i]);
+                success = Program.RunElevatedCtfmonRestartHelper(correlationId, out detail);
             }
-        }
+            catch (Exception ex)
+            {
+                Program.LogException(ex);
+                detail = ex.GetType().Name + ": " + ex.Message;
+            }
+            finally
+            {
+                stopwatch.Stop();
+                Program.LogInfo(
+                    "special_menu_ctfmon_restart_completed correlation_id=" +
+                    correlationId +
+                    ", success=" +
+                    success.ToString() +
+                    ", elapsed_ms=" +
+                    stopwatch.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) +
+                    ", detail=" +
+                    detail);
+                Interlocked.Exchange(ref this.ctfmonRestartRequestRunning, 0);
+            }
 
-        AddPlaceholderGoals(merged, seen, pauseIds);
-        AddPlaceholderGoals(merged, seen, resumeIds);
-        return merged;
+            TryUpdateCtfmonRestartResult(success);
+        });
     }
 
-    private static void AddPlaceholderGoals(List<CodexGoalInfo> goals, HashSet<string> seen, string ids)
+    private void SetCtfmonRestartBusy(bool busy)
     {
-        string normalized = WidgetSettings.NormalizeGoalIdList(ids);
-        if (normalized.Length == 0)
+        if (this.ctfmonRestartButton != null)
         {
-            return;
+            this.ctfmonRestartButton.Enabled = !busy;
+            this.ctfmonRestartButton.Text = busy ? "等待" : "重启";
         }
 
-        string[] parts = normalized.Split(new char[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
-        for (int i = 0; i < parts.Length; i++)
+        UpdateStatus(busy ? "正在等待管理员授权并重启 CTF..." : this.statusLabel.Text);
+    }
+
+    private void TryUpdateCtfmonRestartResult(bool success)
+    {
+        try
         {
-            AddGoal(goals, seen, new CodexGoalInfo
+            if (this.IsDisposed || !this.IsHandleCreated)
             {
-                ThreadId = parts[i],
-                Objective = "常驻 goal",
-                Status = "saved"
+                return;
+            }
+
+            this.BeginInvoke((MethodInvoker)delegate
+            {
+                if (this.IsDisposed)
+                {
+                    return;
+                }
+
+                SetCtfmonRestartBusy(false);
+                UpdateStatus(success ? "CTF 输入服务已重启。" : "CTF 重启失败或已取消，详见日志。");
             });
         }
-    }
-
-    private static void AddGoal(List<CodexGoalInfo> goals, HashSet<string> seen, CodexGoalInfo goal)
-    {
-        if (goal == null)
+        catch (InvalidOperationException)
         {
-            return;
-        }
-
-        string id = WidgetSettings.NormalizeGoalIdList(goal.ThreadId);
-        if (id.Length == 0 || seen.Contains(id))
-        {
-            return;
-        }
-
-        seen.Add(id);
-        goal.ThreadId = id;
-        goals.Add(goal);
-    }
-
-    private static HashSet<string> BuildGoalIdSet(string ids)
-    {
-        HashSet<string> set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        string normalized = WidgetSettings.NormalizeGoalIdList(ids);
-        if (normalized.Length == 0)
-        {
-            return set;
-        }
-
-        string[] parts = normalized.Split(new char[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
-        for (int i = 0; i < parts.Length; i++)
-        {
-            set.Add(parts[i]);
-        }
-
-        return set;
-    }
-
-    private static string GoalIdsFromList(CheckedListBox list)
-    {
-        List<string> ids = new List<string>();
-        if (list != null)
-        {
-            for (int i = 0; i < list.CheckedItems.Count; i++)
-            {
-                GoalListItem item = list.CheckedItems[i] as GoalListItem;
-                if (item != null)
-                {
-                    ids.Add(item.ThreadId);
-                }
-            }
-        }
-
-        return WidgetSettings.NormalizeGoalIdList(string.Join("|", ids.ToArray()));
-    }
-
-    private static void SelectComparison(ComboBox combo, CodexQuotaPlanComparison comparison)
-    {
-        for (int i = 0; i < combo.Items.Count; i++)
-        {
-            ComparisonItem item = combo.Items[i] as ComparisonItem;
-            if (item != null && item.Value == comparison)
-            {
-                combo.SelectedIndex = i;
-                return;
-            }
-        }
-
-        combo.SelectedIndex = 0;
-    }
-
-    private static void SelectResumeCondition(ComboBox combo, CodexQuotaPlanResumeConditionMode mode)
-    {
-        for (int i = 0; i < combo.Items.Count; i++)
-        {
-            ResumeConditionItem item = combo.Items[i] as ResumeConditionItem;
-            if (item != null && item.Value == mode)
-            {
-                combo.SelectedIndex = i;
-                return;
-            }
-        }
-
-        combo.SelectedIndex = 0;
-    }
-
-    private static CodexQuotaPlanComparison GetSelectedComparison(ComboBox combo)
-    {
-        ComparisonItem item = combo == null ? null : combo.SelectedItem as ComparisonItem;
-        return item == null ? CodexQuotaPlanComparison.LessThan : item.Value;
-    }
-
-    private static CodexQuotaPlanResumeConditionMode GetSelectedResumeCondition(ComboBox combo)
-    {
-        ResumeConditionItem item = combo == null ? null : combo.SelectedItem as ResumeConditionItem;
-        return item == null ? CodexQuotaPlanResumeConditionMode.Both : item.Value;
-    }
-
-    private static string GetComparisonText(CodexQuotaPlanComparison comparison)
-    {
-        return comparison == CodexQuotaPlanComparison.GreaterThan ? "大于" : "小于";
-    }
-
-    private static string GetResumeConditionText(CodexQuotaPlanResumeConditionMode mode)
-    {
-        if (mode == CodexQuotaPlanResumeConditionMode.WeeklyOnly)
-        {
-            return "周额度";
-        }
-
-        if (mode == CodexQuotaPlanResumeConditionMode.FiveHourOnly)
-        {
-            return "5小时额度";
-        }
-
-        return "周额度与 5小时额度";
-    }
-
-    private sealed class ComparisonItem
-    {
-        public ComparisonItem(string text, CodexQuotaPlanComparison value)
-        {
-            this.Text = text;
-            this.Value = value;
-        }
-
-        public string Text { get; private set; }
-        public CodexQuotaPlanComparison Value { get; private set; }
-
-        public override string ToString()
-        {
-            return this.Text;
         }
     }
 
-    private sealed class ResumeConditionItem
+    private void UpdateStatus(string text)
     {
-        public ResumeConditionItem(string text, CodexQuotaPlanResumeConditionMode value)
+        if (this.statusLabel != null)
         {
-            this.Text = text;
-            this.Value = value;
-        }
-
-        public string Text { get; private set; }
-        public CodexQuotaPlanResumeConditionMode Value { get; private set; }
-
-        public override string ToString()
-        {
-            return this.Text;
+            this.statusLabel.Text = text ?? string.Empty;
         }
     }
 
-    private sealed class GoalListItem
+    internal static void RunSelfTest()
     {
-        private readonly CodexGoalInfo goal;
-
-        public GoalListItem(CodexGoalInfo goal)
+        using (AiQuickMenuForm form = new AiQuickMenuForm(null, WidgetSettings.CreateDefaults()))
         {
-            this.goal = goal;
+            AssertSelfTest(form.Width <= 500, "special settings window width must not exceed 500 px");
+            AssertSelfTest(CountControls<SettingsFluentToggleSwitch>(form) == 2, "special settings should expose two toggles");
+            AssertSelfTest(CountActionButtons(form) == 2, "special settings should expose close and CTF buttons only");
+            AssertSelfTest(CountControls<ComboBox>(form) == 0, "quota plan detail combo boxes belong to normal settings");
+            AssertSelfTest(CountControls<NumericUpDown>(form) == 0, "quota plan threshold boxes belong to normal settings");
+            AssertSelfTest(CountControls<CheckedListBox>(form) == 0, "quota plan goal lists belong to normal settings");
+        }
+    }
+
+    private static int CountActionButtons(Control root)
+    {
+        return CountControls<Button>(root);
+    }
+
+    private static int CountControls<TControl>(Control root) where TControl : Control
+    {
+        int count = root is TControl ? 1 : 0;
+        for (int i = 0; i < root.Controls.Count; i++)
+        {
+            count += CountControls<TControl>(root.Controls[i]);
         }
 
-        public string ThreadId
-        {
-            get { return this.goal == null ? string.Empty : this.goal.ThreadId; }
-        }
+        return count;
+    }
 
-        public override string ToString()
+    private static void AssertSelfTest(bool condition, string message)
+    {
+        if (!condition)
         {
-            return this.goal == null ? string.Empty : this.goal.DisplayText;
+            throw new InvalidOperationException("Special settings self-test failed: " + message);
         }
     }
 }

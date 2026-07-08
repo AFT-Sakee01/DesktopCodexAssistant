@@ -52,10 +52,10 @@ UI tick → RenderLayeredWindow(redrawContent)
 
 ## 2. 渲染变体系统
 
-- 每窗一个 `<X>RenderVariant` 枚举（Classic + Typographic/AmberHud/WarmCard/Phosphor；CodexRadar 另有 EvenGrid/EvenRow，当前默认 EvenRow）。
-- 变体绘制住在 `<Form>.<Variant>.cs` 兄弟 partial，仅由 `Draw*Content` 的 switch 分发；**变体只是 paint 切换，禁止触碰数据层、线程、持久化**。
-- OLED 四方案硬约束：无蓝色主导色、无峰值白/高饱和大面积填充、背景保持半透明 `AppBackground`；烧屏防护统一靠 `BurnInProtection` 整窗位移，不做每方案私活。
-- 设置页缩略图选择器（VariantPicker）的懒加载缓存在 `%LOCALAPPDATA%\DesktopCodexAssistant\variant-samples\v<版本>\`。
+- `1.0.4.56` 起该系统只在 `OperationForm` 保留（新操作面板窗口正在独立开发中，未改动）：`OperationRenderVariant` 枚举仍有 Classic + Typographic/AmberHud/WarmCard/Phosphor 五个成员，绘制住在 `OperationForm.<Variant>.cs` 兄弟 partial，仅由 `DrawOperationWindow` 的 switch 分发；**变体只是 paint 切换，禁止触碰数据层、线程、持久化**。
+- 其余 5 个窗口（CodexRadar/ClaudeRadar/MainWidget/NetworkMonitor/PowerThermal/ConnectionCheck）已硬编码为各自唯一保留的布局（CodexRadar=EvenRow，其余=Classic）：对应的 sibling `<Form>.<Variant>.cs` 文件、`switch` 分发和 settings UI 下拉/预览均已删除；`<X>RenderVariant` 枚举收窄为单一成员，仍持久化到 settings.ini 但不可切换。`ClaudeRadarRenderVariant` 属性已整体删除（此前就是未接线的预留占位）。
+- OLED 四方案硬约束（仍适用于 `OperationForm`）：无蓝色主导色、无峰值白/高饱和大面积填充、背景保持半透明 `AppBackground`；烧屏防护统一靠 `BurnInProtection` 整窗位移，不做每方案私活。
+- 设置页缩略图选择器（VariantPicker）的懒加载缓存在 `%LOCALAPPDATA%\DesktopCodexAssistant\variant-samples\v<版本>\`；现在只有 `OperationRenderVariant` 这一行会用到。
 
 ## 3. 渲染采样：sample 模式 vs current 模式（1.0.4.18 起）
 

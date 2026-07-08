@@ -52,6 +52,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly Func<bool> toggleHoverOpacityAction;
     private readonly Func<bool> pulseSeelenDockAction;
     private readonly Func<bool> manualAiBlockAction;
+    private readonly Func<bool, bool> setAiBlockAction;
+    private readonly Func<bool, bool> setQuotaPlanAction;
     private readonly System.Windows.Forms.Timer animationTimer;
     private readonly System.Windows.Forms.Timer foregroundFpsTimer;
     private readonly System.Windows.Forms.Timer restartSingleClickTimer;
@@ -74,7 +76,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private int pressAnimationButton = -1;
     private bool batteryCarePauseRunning;
     private bool batteryLimitRestoreRunning;
-    private int ctfmonRestartRequestRunning;
     private int seelenPowerMenuRequestRunning;
     private int foregroundFpsReadRunning;
     private DateTime animationLastUtc;
@@ -92,7 +93,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private bool buttonRectsValid;
     private Bitmap interactionHitMask;
 
-    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction)
+    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction)
     {
         this.currentSettings = settings.Clone();
         this.currentSettings.Normalize();
@@ -103,6 +104,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.toggleHoverOpacityAction = toggleHoverOpacityAction;
         this.pulseSeelenDockAction = pulseSeelenDockAction;
         this.manualAiBlockAction = manualAiBlockAction;
+        this.setAiBlockAction = setAiBlockAction;
+        this.setQuotaPlanAction = setQuotaPlanAction;
         ApplicationIcon.ApplyTo(this);
         this.isAsusZenbookDevice = DetectAsusZenbookDevice();
         this.myAsusInstalled = DetectMyAsusInstalled();
@@ -288,7 +291,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            shouldBeTopMost ? NativeMethods.HWND_TOPMOST : NativeMethods.HWND_NOTOPMOST,
+            GetLayeredWidgetInsertAfter(shouldBeTopMost),
             0,
             0,
             0,
@@ -311,12 +314,17 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.pressedButton != -1 ||
             this.pressAnimationButton != -1 ||
             this.toolTipButton != -1 ||
+            this.radialHoveredIndex != -1 ||
+            this.radialPressedIndex != -1 ||
+            this.radialCoreHovered ||
+            this.radialCorePressed ||
             this.Capture;
         HideHoverToolTip();
         this.hoveredButton = -1;
         this.pressedButton = -1;
         this.pressAnimationButton = -1;
         this.pressAnimationStartUtc = DateTime.MinValue;
+        ClearRadialTransientState();
         if (this.Capture)
         {
             this.Capture = false;
@@ -534,6 +542,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (IsRadialDialActive())
+        {
+            HandleRadialMouseMove(e);
+            return;
+        }
+
         int button = HitTest(e.Location);
         if (button != this.hoveredButton)
         {
@@ -546,6 +560,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
+        if (IsRadialDialActive())
+        {
+            HandleRadialMouseLeave();
+            return;
+        }
+
         this.hoveredButton = -1;
         HideHoverToolTip();
         EnsureAnimationTimer();
@@ -615,7 +635,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         if (button == RestartButtonIndex)
         {
-            return "单击：拉到前 Seelen Dock，并重启 CTF 输入服务\r\n双击：重启 SeelenUI 和本程序";
+            return "单击：拉到前 Seelen Dock\r\n双击：重启 SeelenUI 和本程序";
         }
 
         if (button == BatteryCarePauseButtonIndex)
@@ -630,7 +650,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         if (button == AppSettingsButtonIndex)
         {
-            return "程序设置\r\n双击切换 AI 阻断";
+            return "单击：特殊设置\r\n双击：普通设置";
         }
 
         if (button == TaskManagerButtonIndex)
@@ -681,6 +701,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
+        if (IsRadialDialActive())
+        {
+            HandleRadialMouseDown(e);
+            return;
+        }
+
         HideHoverToolTip();
         int button = HitTest(e.Location);
         if (!AcceptsMouseButton(button, e.Button))
@@ -698,6 +724,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (IsRadialDialActive())
+        {
+            HandleRadialMouseUp(e);
+            return;
+        }
+
         int button = HitTest(e.Location);
         int pressed = this.pressedButton;
         this.pressedButton = -1;
@@ -913,14 +945,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     private void ExecuteAppSettingsButtonSingleClick()
     {
-        if (this.openSettingsAction != null)
-        {
-            this.openSettingsAction();
-        }
-    }
-
-    private void ExecuteAppSettingsButtonDoubleClick()
-    {
         if (this.manualAiBlockAction == null)
         {
             return;
@@ -934,15 +958,22 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         {
             Program.LogException(ex);
             ShowOperationNotification(
-                "AI 快速选单",
-                "AI 快速选单打开失败。",
+                "特殊设置",
+                "特殊设置打开失败。",
                 ToolTipIcon.Warning);
+        }
+    }
+
+    private void ExecuteAppSettingsButtonDoubleClick()
+    {
+        if (this.openSettingsAction != null)
+        {
+            this.openSettingsAction();
         }
     }
 
     private void ExecuteRestartButtonSingleClick()
     {
-        BeginRestartCtfmonFromOperationPanel();
         PulseSeelenDockFromOperationPanel();
     }
 
@@ -967,83 +998,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
                 "Seelen Dock",
                 "未能找到或拉前 Seelen Dock。",
                 ToolTipIcon.Warning);
-        }
-    }
-
-    private void BeginRestartCtfmonFromOperationPanel()
-    {
-        if (!TryBeginSingleFlight(ref this.ctfmonRestartRequestRunning))
-        {
-            Program.LogInfo("operation_ctfmon_restart_skipped reason=already_running");
-            return;
-        }
-
-        string correlationId = Guid.NewGuid().ToString("N");
-        Program.LogInfo("operation_ctfmon_restart_requested correlation_id=" + correlationId);
-
-        // Restarting CTF can drop the active IME composition buffer, so this recovery
-        // action is only wired to the explicit Seelen Dock button click and is
-        // single-flighted to avoid stacked process kills from repeated clicks.
-        Task.Run((Action)delegate
-        {
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            bool success = false;
-            string detail = string.Empty;
-            try
-            {
-                success = NativeMethods.RestartCtfmonTextServices(out detail);
-            }
-            catch (Exception ex)
-            {
-                Program.LogException(ex);
-                detail = ex.GetType().Name + ": " + ex.Message;
-            }
-            finally
-            {
-                stopwatch.Stop();
-                Program.LogInfo(
-                    "operation_ctfmon_restart_completed correlation_id=" +
-                    correlationId +
-                    ", success=" +
-                    success.ToString() +
-                    ", elapsed_ms=" +
-                    stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture) +
-                    ", detail=" +
-                    detail);
-                EndSingleFlight(ref this.ctfmonRestartRequestRunning);
-            }
-
-            if (!success)
-            {
-                TryShowCtfmonRestartFailureNotification();
-            }
-        });
-    }
-
-    private void TryShowCtfmonRestartFailureNotification()
-    {
-        try
-        {
-            if (this.formClosing || this.IsDisposed || !this.IsHandleCreated)
-            {
-                return;
-            }
-
-            this.BeginInvoke((MethodInvoker)delegate
-            {
-                if (this.IsDisposed)
-                {
-                    return;
-                }
-
-                ShowOperationNotification(
-                    "CTF 输入服务",
-                    "未能重启 CTF 输入服务，详见日志。",
-                    ToolTipIcon.Warning);
-            });
-        }
-        catch (InvalidOperationException)
-        {
         }
     }
 
@@ -2339,6 +2293,11 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     private Size GetDesiredSize()
     {
+        if (IsRadialDialActive())
+        {
+            return ComputeRadialLayout().WindowSize;
+        }
+
         int margin = S(3);
         int startSize = GetStartButtonSize();
         int smallSize = GetSmallButtonSize();
@@ -2379,7 +2338,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            this.currentSettings.VisibilityMode == WidgetVisibilityMode.DesktopOnly ? NativeMethods.HWND_TOP : NativeMethods.HWND_TOPMOST,
+            GetLayeredWidgetInsertAfter(this.currentSettings.VisibilityMode),
             left,
             top,
             this.Width,
@@ -2499,6 +2458,9 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
                 return;
             case OperationRenderVariant.Phosphor:
                 DrawOperationWindowPhosphor(g);
+                return;
+            case OperationRenderVariant.RadialDial:
+                DrawOperationWindowRadialDial(g);
                 return;
             default:
                 DrawOperationWindowClassic(g);
@@ -3655,6 +3617,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         {
             graphics.Clear(Color.Transparent);
             graphics.SmoothingMode = SmoothingMode.None;
+            if (IsRadialDialActive())
+            {
+                PaintRadialHitMask(graphics, brush);
+                return;
+            }
+
             RectangleF[] rects = GetButtonRects();
             if (ShouldDrawStartFallbackPanel())
             {
@@ -3785,6 +3753,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         RunSingleFlightSelfTest();
         RunFpsIntervalSelfTest();
         RunSeelenPowerMenuResultSelfTest();
+        RunRadialDialSelfTest();
+        AiQuickMenuForm.RunSelfTest();
     }
 
     private static void RunInteractionHitMaskSelfTest()

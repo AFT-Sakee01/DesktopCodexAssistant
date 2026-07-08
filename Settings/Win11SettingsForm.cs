@@ -457,7 +457,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "AI 请求阻断", "AiRequestProtectionAutoEnabled", "AiRequestProtectionManualBlockEnabled" },
             new string[] { "!Codex 额度计划", "CodexQuotaPlanEnabled", "CodexQuotaPlanWeeklyComparison", "CodexQuotaPlanWeeklyThresholdPercent",
                            "CodexQuotaPlanFiveHourComparison", "CodexQuotaPlanFiveHourThresholdPercent", "CodexQuotaPlanResumeConditionMode",
-                           "CodexQuotaPlanAutoResumePausedGoals" },
+                           "CodexQuotaPlanAutoResumePausedGoals", "CodexQuotaPlanPauseGoalIds", "CodexQuotaPlanResumeGoalIds" },
             new string[] { "!恢复与保护", "SeelenDockForegroundPulseEnabled", "WinDRecoveryPulseEnabled", "PowerResumeRestartEnabled" },
             new string[] { "!调试", "ForceShowForegroundFpsEnabled" }
         });
@@ -487,8 +487,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddPageGrouped("\uE737", "主窗口", "主监控窗口显示哪些指标、透明度和外观。", new string[][]
         {
             new string[] { "显示哪些指标", "ShowCpu", "ShowMemory", "ShowDisk", "ShowNetwork", "ShowGpu", "ShowNpu" },
-            new string[] { "透明度", "BackgroundTransparencyPercent", "ApplicationTransparencyPercent" },
-            new string[] { "外观风格", "MainWidgetRenderVariant" }
+            new string[] { "透明度", "BackgroundTransparencyPercent", "ApplicationTransparencyPercent" }
         });
 
         AddPageGrouped("\uE71E", "Codex Radar", "Codex 用量监控：模型、时区和外观。", new string[][]
@@ -498,7 +497,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             // 均布变体本就忽略这些设置。恢复入口时把下方分组加回，并同步 VerifySelfTest 必需绑定。
             new string[] { "窗口", "CodexRadarEnabled", "CodexRadarTransparencyPercent" },
             new string[] { "模型与时区", "CodexRadarSoftwareMode", "CodexRadarModelKey", "CodexRadarModelVersion", "RadarClockAutoSwitchModelEnabled", "RadarClockTimeDisplayMode", "DeepSeekApiKeyRevision", "DisplayTimeZoneMode", "DisplayTimeZoneId" },
-            new string[] { "外观风格", "CodexRadarRenderVariant" },
             new string[] { "!网站数据源", "CodexRadarPublicJsonEnabled", "CodexRadarHtmlFallbackEnabled", "CodexRadarRssFallbackEnabled", "CodexRadarServiceProbeToken" },
             new string[] { "!IQ 测试覆盖", "CodexModelIqTestEnabled", "CodexModelIqTestPassed", "CodexModelIqBaselineAutoEnabled", "CodexModelIqBaselinePassed", "CodexModelIqBaselineValidTasks" },
             new string[] { "!效率测试覆盖", "CodexModelEfficiencyTestEnabled", "CodexModelTokenEfficiencyTestPercent", "CodexModelTimeEfficiencyTestPercent",
@@ -513,15 +511,13 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "窗口", "ClaudeRadarEnabled", "ClaudeRadarTransparencyPercent" },
             new string[] { "模型", "ClaudeRadarModelKey" },
             new string[] { "!网站数据源", "ClaudeRadarJsonEnabled", "ClaudeRadarHomepageFallbackEnabled", "ClaudeRadarCommunityRatingsEnabled", "ClaudeRadarLocalQuotaFallbackEnabled", "ClaudeRadarServiceProbeToken" },
-            new string[] { "!随机测试", "ClaudeRadarRandomTestEnabled", "ClaudeRadarRandomTestAutoRefresh", "ClaudeRadarRandomTestRefreshToken" },
-            new string[] { "!外观风格（预留）", "ClaudeRadarRenderVariant" }
+            new string[] { "!随机测试", "ClaudeRadarRandomTestEnabled", "ClaudeRadarRandomTestAutoRefresh", "ClaudeRadarRandomTestRefreshToken" }
         });
 
         AddPageGrouped("\uEBB0", "功耗与温度", "UX3407N / UX3607O 专用功耗温度窗口。", new string[][]
         {
             new string[] { "自动布局与告警", "PowerThermalAutoSizeEnabled", "PowerThermalAutoDirection", "PowerThermalVisibleAlertCount" },
             new string[] { "透明度", "PowerThermalTransparencyPercent" },
-            new string[] { "外观风格", "PowerThermalRenderVariant" },
             new string[] { "!测试", "ThermalTestMode" }
         });
 
@@ -530,8 +526,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "网络监控", "NetworkMonitorAdapterId", "NetworkMonitorTransparencyPercent" },
             new string[] { "GFW 检测", "GfwProbeEnabled", "GfwProbeIntervalMinutes" },
             new string[] { "连接检测", "ConnectionCheckIntervalSeconds", "ConnectionCheckTransparencyPercent", "ConnectionCheckBorderTransparencyPercent" },
-            new string[] { "网络监控外观", "NetworkMonitorRenderVariant" },
-            new string[] { "连接检测外观", "ConnectionCheckRenderVariant" },
             new string[] { "!手动刷新", "GfwProbeManualRefreshToken", "ConnectionCheckManualRefreshToken" },
             new string[] { "!云服务端点", "CloudEndpointTestSeed", "CloudStatusRegionMask" },
             new string[] { "!测试", "CleanIpBadgeTestMode", "NetworkStatusTestMode" }
@@ -1614,50 +1608,15 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
     private static string GetVariantSamplePrefix(string propertyName)
     {
-        if (string.Equals(propertyName, "MainWidgetRenderVariant", StringComparison.Ordinal)) return "widget";
-        if (string.Equals(propertyName, "CodexRadarRenderVariant", StringComparison.Ordinal)) return "codexradar";
-        if (string.Equals(propertyName, "NetworkMonitorRenderVariant", StringComparison.Ordinal)) return "networkmonitor";
-        if (string.Equals(propertyName, "PowerThermalRenderVariant", StringComparison.Ordinal)) return "powerthermal";
         if (string.Equals(propertyName, "OperationRenderVariant", StringComparison.Ordinal)) return "operation";
-        if (string.Equals(propertyName, "ConnectionCheckRenderVariant", StringComparison.Ordinal)) return "connectioncheck";
         return string.Empty;
     }
 
     private static void RenderVariantSamplesForProperty(string propertyName, string directory)
     {
-        if (string.Equals(propertyName, "MainWidgetRenderVariant", StringComparison.Ordinal))
-        {
-            WidgetForm.RenderVariantSamples(directory);
-            return;
-        }
-
-        if (string.Equals(propertyName, "CodexRadarRenderVariant", StringComparison.Ordinal))
-        {
-            CodexRadarForm.RenderVariantSamples(directory);
-            return;
-        }
-
-        if (string.Equals(propertyName, "NetworkMonitorRenderVariant", StringComparison.Ordinal))
-        {
-            NetworkMonitorForm.RenderVariantSamples(directory);
-            return;
-        }
-
-        if (string.Equals(propertyName, "PowerThermalRenderVariant", StringComparison.Ordinal))
-        {
-            PowerThermalForm.RenderVariantSamples(directory);
-            return;
-        }
-
         if (string.Equals(propertyName, "OperationRenderVariant", StringComparison.Ordinal))
         {
             OperationForm.RenderVariantSamples(directory);
-            return;
-        }
-
-        if (string.Equals(propertyName, "ConnectionCheckRenderVariant", StringComparison.Ordinal))
-        {
-            ConnectionCheckForm.RenderVariantSamples(directory);
         }
     }
 
@@ -2954,11 +2913,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexQuotaPlanFiveHourThresholdPercent",
             "CodexQuotaPlanResumeConditionMode",
             "CodexQuotaPlanAutoResumePausedGoals",
-            "CodexRadarRenderVariant",
-            "MainWidgetRenderVariant",
-            "NetworkMonitorRenderVariant",
-            "PowerThermalRenderVariant",
-            "ConnectionCheckRenderVariant",
+            "CodexQuotaPlanPauseGoalIds",
+            "CodexQuotaPlanResumeGoalIds",
             "OperationRenderVariant",
             "PowerThermalAutoSizeEnabled",
             "GfwProbeIntervalMinutes",
@@ -3073,11 +3029,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     {
         string[] pickerNames = new string[]
         {
-            "MainWidgetRenderVariant",
-            "CodexRadarRenderVariant",
-            "NetworkMonitorRenderVariant",
-            "PowerThermalRenderVariant",
-            "ConnectionCheckRenderVariant",
             "OperationRenderVariant"
         };
 
@@ -3093,13 +3044,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             {
                 throw new InvalidOperationException("Render variant must use VariantPicker: " + pickerNames[i]);
             }
-        }
-
-        SettingEditor claudeEditor;
-        if (this.editors.TryGetValue("ClaudeRadarRenderVariant", out claudeEditor) &&
-            claudeEditor.Control is VariantPicker)
-        {
-            throw new InvalidOperationException("Claude Radar render variant must remain a dropdown until it has effect.");
         }
     }
 
@@ -3260,6 +3204,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexQuotaPlanFiveHourThresholdPercent", "5 小时阈值" },
         { "CodexQuotaPlanResumeConditionMode", "恢复额度类型" },
         { "CodexQuotaPlanAutoResumePausedGoals", "恢复上次暂停" },
+        { "CodexQuotaPlanPauseGoalIds", "暂停 goal 列表" },
+        { "CodexQuotaPlanResumeGoalIds", "恢复 goal 列表" },
         { "FallbackDisconnectedDisplaysEnabled", "断开后回退显示器" },
         { "MainDisplayDeviceName", "主窗口显示器" },
         { "CodexRadarDisplayDeviceName", "Codex Radar 显示器" },
@@ -3334,15 +3280,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ClaudeRadarRandomTestEnabled", "Claude 随机测试" },
         { "ClaudeRadarRandomTestAutoRefresh", "Claude 随机测试自动刷新" },
         { "ClaudeRadarRandomTestRefreshToken", "立即刷新随机测试" },
-        { "ClaudeRadarRenderVariant", "外观风格" },
         { "CodexRadarRandomTestEnabled", "随机测试" },
         { "CodexRadarRandomTestAutoRefresh", "随机测试自动刷新" },
         { "CodexRadarRandomTestRefreshToken", "立即刷新随机测试" },
-        { "CodexRadarRenderVariant", "外观风格" },
-        { "MainWidgetRenderVariant", "外观风格" },
-        { "NetworkMonitorRenderVariant", "外观风格" },
-        { "PowerThermalRenderVariant", "外观风格" },
-        { "ConnectionCheckRenderVariant", "外观风格" },
         { "OperationRenderVariant", "外观风格" },
         { "CodexRadarManualLayoutEnabled", "启用手动布局" },
         { "CodexRadarManualLeftPercent", "左侧区域占比" },
@@ -3435,7 +3375,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ClickThroughMode", "允许鼠标事件穿透主窗口。" },
         { "ForceShowForegroundFpsEnabled", "调试用，强制显示前台 FPS 信息。" },
         { "AiRequestProtectionAutoEnabled", "网络监控判定为 GFW 明确阻断时，阻断本程序发往 OpenAI、ChatGPT、Claude 和 Anthropic 的请求。" },
-        { "AiRequestProtectionManualBlockEnabled", "手动启用后立即阻断本程序相关 AI 请求；也可在左下角程序设置按钮双击打开的 AI 快速选单中切换。" },
+        { "AiRequestProtectionManualBlockEnabled", "手动启用后立即阻断本程序相关 AI 请求；也可在左下角程序设置按钮单击打开的特殊设置中切换。" },
         { "CodexQuotaPlanEnabled", "按本地 Codex 剩余额度缓存自动暂停或恢复选中的 Codex goal。" },
         { "CodexQuotaPlanWeeklyComparison", "周额度百分比的比较方向；默认小于 3%。" },
         { "CodexQuotaPlanWeeklyThresholdPercent", "周额度剩余百分比阈值，范围 0-100。" },
@@ -3443,6 +3383,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexQuotaPlanFiveHourThresholdPercent", "5 小时额度剩余百分比阈值，范围 0-100。" },
         { "CodexQuotaPlanResumeConditionMode", "额度计划触发后，选择额度恢复时看周额度、5 小时额度，还是两者都恢复。" },
         { "CodexQuotaPlanAutoResumePausedGoals", "额度恢复时优先恢复本程序上次因额度计划暂停的 goal；关闭后使用恢复列表。" },
+        { "CodexQuotaPlanPauseGoalIds", "达到额度计划触发条件时暂停的 Codex goal ID，用 | 分隔；可从本地 goal 管理记录复制。" },
+        { "CodexQuotaPlanResumeGoalIds", "关闭“恢复上次暂停”时使用，额度恢复后启用这些 Codex goal ID，用 | 分隔。" },
         { "HoverOpacityEnabled", "鼠标接近窗口时进入隐藏透明度。" },
         { "SensitiveMouseModeEnabled", "使用鼠标周围方形区域判断命中。" },
         { "SensitiveMouseRangePixels", "范围 10-300，值越大越容易触发。" },
@@ -3498,12 +3440,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ClaudeRadarRandomTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
         { "ClaudeRadarRandomTestAutoRefresh", "仅用于测试显示效果，日常保持关闭。" },
         { "ClaudeRadarRandomTestRefreshToken", "点击后让随机测试数据立刻换一组。" },
-        { "ClaudeRadarRenderVariant", "预留项，当前第一版固定使用 EvenRow 风格。" },
-        { "MainWidgetRenderVariant", "切换后立即预览，可随时切回。" },
-        { "CodexRadarRenderVariant", "切换后立即预览，可随时切回。" },
-        { "NetworkMonitorRenderVariant", "切换后立即预览，可随时切回。" },
-        { "PowerThermalRenderVariant", "切换后立即预览，可随时切回。" },
-        { "ConnectionCheckRenderVariant", "切换后立即预览，可随时切回。" },
         { "OperationRenderVariant", "切换后立即预览，可随时切回。" },
         { "DeepSeekApiKeyRevision", "配置 DeepSeek API Key；密钥只写入本地文件，修订号用于触发即时刷新。" },
         { "CodexRadarManualLayoutEnabled", "开启后下方布局参数实时影响 Codex Radar 内部模块，不需要重启。" },
@@ -4815,9 +4751,19 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             // All six per-window render-variant enums share member names for the common variants
             // (Classic plus the four OLED-safe restyle schemes); CodexRadarRenderVariant additionally
             // carries EvenGrid/EvenRow. Label by member name once instead of duplicating per enum type.
+            if (this.Value is NetworkMonitorRenderVariant)
+            {
+                string networkVariantName = Convert.ToString(this.Value, CultureInfo.InvariantCulture);
+                if (networkVariantName == "Classic") return "扁平信息条";
+                if (networkVariantName == "GroupedCards") return "分组卡片";
+                if (networkVariantName == "Typographic") return "排版流（OLED 安全）";
+                if (networkVariantName == "AmberHud") return "暗琥珀仪表（OLED 安全）";
+                if (networkVariantName == "WarmCard") return "暖灰暗卡片（OLED 安全）";
+                if (networkVariantName == "Phosphor") return "磷光绿终端（OLED 安全）";
+            }
+
             if (this.Value is CodexRadarRenderVariant ||
                 this.Value is MainWidgetRenderVariant ||
-                this.Value is NetworkMonitorRenderVariant ||
                 this.Value is PowerThermalRenderVariant ||
                 this.Value is ConnectionCheckRenderVariant ||
                 this.Value is OperationRenderVariant)
@@ -4830,6 +4776,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 if (variantName == "AmberHud") return "暗琥珀仪表（OLED 安全）";
                 if (variantName == "WarmCard") return "暖灰暗卡片（OLED 安全）";
                 if (variantName == "Phosphor") return "磷光绿终端（OLED 安全）";
+                if (variantName == "RadialDial") return "扇形速控盘（新）";
             }
 
             return Convert.ToString(this.Value, CultureInfo.InvariantCulture);
