@@ -1,6 +1,6 @@
 # 接口与复用资源汇总
 
-适用版本：1.0.4.34
+适用版本：1.0.4.59
 
 ## 1. 文档用途
 
@@ -39,6 +39,12 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `external_api.cloudflare.doh` | Cloudflare DoH | `GfwProbeReader` | 独立 DNS 对照 |
 | `external_api.gfw.probe_hosts` | GFW 控制组与候选组 | `GfwProbeReader` | DNS/TCP/TLS/HTTP 多阶段语义 |
 | `external_api.cloud.health_targets` | 六个云服务端点 | `CloudEndpointProbe` | 并发上限、缓存、三次采样和取消 |
+| `external_api.cloudflare.status_v2` | Cloudflare Statuspage v2 | `CloudEndpointProbe` | `Cf` 方块官方状态源，复用 Statuspage 解析、地区过滤、条件请求和状态滞后确认 |
+| `external_api.akamai.status_v2` | Akamai Statuspage v2 | `CloudEndpointProbe` | `Ak` 方块官方状态源，复用 Statuspage 解析和地区文本过滤 |
+| `external_api.github.status_v2` | GitHub Statuspage v2 | `CloudEndpointProbe` | `Gi` 方块官方状态源，复用 Statuspage 解析、条件请求和异常缓存 |
+| `external_api.aws.home_reachability` | AWS public HTTPS reachability | `CloudEndpointProbe` | `Aw` 方块只代表 `https://aws.amazon.com/` 可达性，不等同 AWS Health 官方状态 |
+| `external_api.azure.status_rss` | Azure Status RSS | `CloudEndpointProbe` | `Az` 方块公开 RSS 源，按标题/描述关键字和地区文本过滤 |
+| `external_api.google_cloud.service_health` | Google Cloud Service Health | `CloudEndpointProbe` | `Go` 方块公开 incidents JSON，按 impact 和 affected locations 判断 |
 
 ## 4. 命令与进程接口
 
@@ -79,7 +85,9 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `event.application.stop` | `Local\DesktopCodexAssistantStop` 命名事件 |
 | `service.application.single_instance` | `Local\DesktopCodexAssistant` 命名 Mutex |
 | `command.seelen.cli` | SeelenUI `slu.exe`，电源菜单调用在后台单飞执行，UI 线程只处理结果和回退 |
-| `command.windows.shell_actions` | Windows URI、AppsFolder、Shell.Application、UI Automation、键盘回退和系统进程入口 |
+| `command.seelen.process_control` | 仅对用户单独安装的 SeelenUI 做进程检测、拉前、`taskkill` 重启和 top bar/dock 层级协作；不包含、修改、链接或再分发 SeelenUI 代码 |
+| `command.asus_keyboard_host.battery_care` | MyASUS / ASUS PC Assistant 的 `AsusKeyboardHost.exe -HWSettingsToast acin_set/acin80` 厂商电池维护入口；不可用时按 UI 灰显或 FPS fallback 处理 |
+| `command.windows.shell_actions` | Windows URI、AppsFolder、Shell.Application、UI Automation、键盘回退和系统进程入口，包含 Live Captions 与 `ms-clicktodo` / CoreAI AI Studio |
 
 ## 5. Windows 系统接口
 
@@ -97,6 +105,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `event.keyboard.ctrl_d` | 全局 Win+D（保留旧稳定 ID） | `GlobalWinDWatcher` |
 | `event.settings.file_watcher` | 外部设置热加载 | `WidgetForm` |
 | `event.codex.sessions_watcher` | Codex rollout JSONL 更新 | `CodexRadarForm` |
+| `resource.windows_icon_fonts` | Segoe Fluent Icons / Segoe MDL2 系统图标字体 | `Win11SettingsForm`、`SettingsFluentResources` |
 
 新增 P/Invoke、COM、WinRT 或 Shell 调用优先放入 `Interop/NativeMethods.cs`。
 
