@@ -1,6 +1,6 @@
 # Fable5-Data-Sources-And-Caching-Technical — 数据源、Fallback 链与缓存位置详解
 
-适用版本：`1.0.4.34`。生成时间：2026-07-07。
+适用版本：`1.0.4.81`。生成时间：2026-07-09。
 本文回答三个问题：**每个模块从哪个网站/本地文件的哪个位置读什么、失败时按什么顺序 fallback、结果缓存在哪个文件里**。所有 URL、路径、常量均直接摘自源码并附出处；刷新频率与调度规则的权威文档是 `Docs/Component-Refresh-Rules.md`，本文只在必要处引用不重复。
 
 约定：`<DATA>` = `%LOCALAPPDATA%\DesktopCodexAssistant`（`Logger.DirectoryPath`）；`<HOME>` = `%USERPROFILE%`。
@@ -53,7 +53,14 @@
 - 门控：仅当检测软件为 CODEX 且本地 Codex 进程在运行（`SoftwareRuntimePresence`）；AI 请求保护（手动阻断或 GFW 明确阻断）命中时本轮不读 token、不发请求，按 `AI_BLOCK` 失败间隔处理。
 - 字段单位：`used_percent` / `used_percentage` 是百分数，`1` 表示已用 1%；`utilization` 在 0–1 区间时按比例换算，`0.01` 表示已用 1%。provider 单次样本若把 5 小时或周余额从高位直接变成 0 且 reset 时间没有实质推进，会被拒绝写入内存和 `quota.ini`，并记录 `provider_*_zero_drop_ignored_keep_previous_snapshot`。
 
-### 2.2 Fallback：本地 Codex CLI session 文件
+### 2.2 Codex 重置卡：ChatGPT reset credits API
+
+- URL：`https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`，超时 10 s。
+- 凭据：复用 §2.1 的 `CODEX_ACCESS_TOKEN` / `auth.json` 只读 token 链路，不写回、不刷新、不记录 token。
+- 节奏：当前共享窗口为 CODEX 模式且非随机测试时运行；成功 3600 s / 失败 900 s，启动/恢复类触发在最近 60 s 已成功读取时去抖，操作面板强制刷新会立即排队。
+- 解析与缓存：只解析响应中的 `credits` 数组和每张卡的过期时间字段；结果只保存在内存 `CodexResetCreditsSnapshot`，不写持久化文件。底部 `RS` 显示剩余卡数与最早过期剩余时间，超过 24 小时显示天数。网络检查历史只记录摘要、数量和最早过期剩余小时，不保存响应体、卡片 ID 或凭据。
+
+### 2.3 Fallback：本地 Codex CLI session 文件
 
 - 目录：`<HOME>\.codex\sessions`（`quotaSessionsPath`，13415 行），`FileSystemWatcher` 监听 `rollout-*.jsonl` 只置失效标记。
 - 读取方式：按 LastWriteTime 排序，最多扫 `MaxQuotaRolloutFilesToScan = 80` 个文件；每个文件**从尾部按 `QuotaTailChunkBytes = 1 MB` 分块反向读取**，找含 `"rate_limits"` 的最新事件行；解析 `rate_limits.primary`（5 小时窗口）与 `rate_limits.secondary`（周窗口）两个 slot 的用量百分比和 reset 时间。
@@ -65,14 +72,14 @@
 | 文件 | 写入者 | 用途 |
 |---|---|---|
 | `<DATA>\quota.ini` | `CodexRadarForm.TryWriteQuotaIniSnapshot`（Claude 模式写 `claude-quota.ini`，否则写 `quota.ini`） | 最近一次成功的 5h/周额度快照；`CodexQuotaGoalPlanner`（额度计划）只复用此缓存做暂停/恢复判断 |
-| `<DATA>\quota-decision-history.jsonl` | `QuotaDecisionHistoryLogger` | 每次真实额度读取后的判定记录；包含来源类型、上游 used 字段名、原值、归一化值、可疑 provider 零值拒绝原因；15 s/32 KiB 批量落盘，约 48 h 滚动 |
+| `<DATA>\quota-decision-history.jsonl` | `QuotaDecisionHistoryLogger` | 每次真实额度读取后的判定记录；包含 `software_family`、来源类型、上游 used 字段名、原值、归一化值、可疑 provider 零值/提前满额拒绝原因；15 s/32 KiB 批量落盘，约 48 h 滚动 |
 | `<DATA>\codex-quota-plan-state.json` | `CodexQuotaGoalPlanner` | 额度计划 goal 暂停/恢复状态（通过 `codex app-server` 写 `usageLimited`/`active`） |
 
 ---
 
 ## 3. Claude Radar 网站数据（独立 Claude 窗口）
 
-源码：`Core/ClaudeRadarReader.cs`（URL 常量 13–16 行）、`Core/ClaudeRadarForm.cs`。
+源码：`Core/ClaudeRadarSnapshotScheduler.cs`、`Core/ClaudeRadarReader.cs`（URL 常量 13–16 行）、`Core/ClaudeRadarForm.cs`、`Core/StatuspageMonitor.cs`、`Core/DeepSeekBalanceMonitor.cs`。
 
 ### 3.1 数据源与 fallback 链
 
@@ -81,15 +88,17 @@
 | 1 | `https://claudecoderadar.com/data/claude-code-radar.json` | 主数据：`iq.models` 数组（模型 key、显示名、IQ、效率、状态）、站点公开 quota usage、额度雷达 `quota.chart.trend` / `base_d7_trend` / `quota.metrics` | `ClaudeRadarJsonEnabled` |
 | 2 | `https://claudecoderadar.com/`（首页 HTML） | **弱 metadata fallback**：仅当 JSON 失败、`iq.models` 缺失、模型名缺失或名=key 时，解析首页 `MODEL_NAMES` 补 key/显示名。**只补名字，不伪造 IQ/效率/额度/服务健康**；homepage-only 目录不推进缺失计数、不触发模型删除 | `ClaudeRadarHomepageFallbackEnabled`（关闭时严禁探测首页） |
 | 附 | `https://claudecoderadar.com/api/model-ratings?history=14` | 社区评分（底部 `RC` 取 average 最高一条，平分取 count 大者） | `ClaudeRadarCommunityRatingsEnabled` |
-| 附 | `https://status.claude.com/api/v2/summary.json` | Claude 官方 Statuspage（右侧 `C` 方块），只在本窗口真实刷新路径顺序读取 | — |
+| 附 | `https://status.claude.com/api/v2/summary.json` | Claude 官方 Statuspage（右侧 `C` 方块），通过 `StatuspageMonitor` 与共享 Codex Radar Claude 模式复用 | AI 请求保护 |
+| 附 | `https://status.openai.com/api/v2/summary.json` | OpenAI 官方 Statuspage（右侧 `O` 点），通过 `StatuspageMonitor` 与共享 Codex Radar Claude 模式复用；只做状态摘要，不触发 Codex 额度读取 | AI 请求保护 |
+| 附 | `https://api.deepseek.com/user/balance` | DeepSeek 官方 API 状态（右侧 `D` 点）和可选 CNY 余额（底部 `DS`） | 状态无 key；余额使用 `DEEPSEEK_API_KEY` 或 `<DATA>\deepseek-api-key.bin` |
 
-超时统一 10 s。右侧 `R/C/U` 方块 = Radar 数据源 / Claude 官方状态 / Claude Code usage。
+超时统一 10 s。右侧 `R/O/C/D` 点列 = Radar 数据源 / OpenAI 官方状态 / Claude 官方状态或 Claude Code usage / DeepSeek 官方 API 状态；底部为 `Claude / RC / DS / LLM`。公共网站读取由 `ClaudeRadarSnapshotScheduler` 按 `selectedModelKey/json/homepage/rating/localQuotaFallback` 组成请求 key 进行进程级 single-flight；同 key 的共享 Codex Radar Claude 模式和独立 Claude Radar 会 join 同一请求，不同 key 可并行。
 
 ### 3.2 缓存
 
 | 文件 | 内容 |
 |---|---|
-| `<DATA>\claude-radar-cache.ini` | 网站快照 + `SelectedModelKey/Name` + 选中模型 `LatestAtUtc` + `CommunityKnown/RatingKey/Label/Average` + `QuotaLine*`（启动/失败合并时回显底部 RC/LLM，并让 IQ 时钟重启后仍按上次模型 `latest_at` 判断；24 小时小绿点和“刷新点到当前点”的连接弧也使用该字段；额度线启动后可继续显示上次站点趋势） |
+| `<DATA>\claude-radar-cache.ini` | 网站快照 + `SelectedModelKey/Name` + 选中模型 `LatestAtUtc` + `CommunityKnown/RatingKey/Label/Average` + `QuotaLine*`（启动/失败合并时回显底部 RC/LLM，并让 IQ 时钟重启后仍按上次模型 `latest_at` 判断；24 小时小绿点和“刷新点到当前点”的连接弧也使用该字段；额度线启动后可继续显示上次站点趋势）。写入由 `ClaudeRadarReader.TrySaveCache` 加锁，内容未变时跳过，内容变化时写 temp 文件并用 `File.Replace`/`File.Move` 原子替换 |
 | `<DATA>\claude-radar-model-map.ini` | 模型目录映射（source_key ↔ rating_key ↔ display_name/sort_order/enabled）；只有 `ok=true` 且目录完整的响应才推进 temporarily_missing/deleted 计数（连续缺失阈值 `ModelDeleteMissingThreshold = 3`）。**paint 路径禁止读此文件** |
 | `<DATA>\claude-radar-notification-state.ini` | 模型新增/暂缺/恢复/删除托盘通知去重状态 |
 | `<DATA>\claude-radar-quota-history.jsonl` | 额度历史，按 metric/update/run 全量去重，单行坏 JSON 跳过不阻断；当站点趋势不足两点时读取最近 7 天作为额度线 fallback |
@@ -120,16 +129,15 @@
 
 ---
 
-## 5. 其余 AI 服务状态源（CodexRadar 单行 API 摘要消费）
+## 5. 其余 AI 服务状态源（Radar API 摘要消费）
 
 源码：`Core/CodexRadarForm.cs` 头部常量。
 
 | 服务 | URL | 节奏 |
 |---|---|---|
-| Claude 官方状态 | `https://status.claude.com/api/v2/status.json`（注意与 Claude Radar 窗口用的 `summary.json` 不同端点） | 正常 15 min，异常/失败 2 min，单飞；AI 请求保护命中时不请求 |
-| OpenAI 官方状态 | `https://status.openai.com/api/v2/summary.json` | 随网站刷新链路 |
-| ChatGPT 可达性 | `https://chatgpt.com/`（HEAD/GET 探测） | 同上 |
-| DeepSeek 余额 | `https://api.deepseek.com/user/balance`，Bearer key 来源=env `DEEPSEEK_API_KEY` 或 DPAPI CurrentUser 保护的 `<DATA>\deepseek-api-key.bin`（设置页只写加密文件，**不进 settings.ini**，同目录同名旧 `.txt` 会迁移为 `.txt.migrated`，`DeepSeekApiKeyRevision` 递增触发即时刷新） | 正常 60 s / 失败 300 s；成功样本写 `<DATA>\deepseek-balance-history.jsonl` 保留 48 h，用于估算 24 h 消耗；高峰/低谷按北京时间 09:00–12:00、14:00–18:00 判定 |
+| OpenAI / Claude 官方状态 | `https://status.openai.com/api/v2/summary.json`、`https://status.claude.com/api/v2/summary.json` | `StatuspageMonitor` 进程级 single-flight；同 serviceKey 只请求一次，正常 15 min，异常/失败 2 min；AI 请求保护命中时不请求；网络历史写 `statuspage_monitor` 并带 `joined_consumers` |
+| Codex 重置卡 | `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`，Bearer token 来源= `CODEX_ACCESS_TOKEN` 或 Codex `auth.json` | CODEX 模式成功 3600 s / 失败 900 s；只更新底部 `RS` 内存快照 |
+| DeepSeek API / 余额 | `https://api.deepseek.com/user/balance`；无 key 时用公开 API 响应判断服务状态，Bearer key 来源=env `DEEPSEEK_API_KEY` 或 DPAPI CurrentUser 保护的 `<DATA>\deepseek-api-key.bin`（设置页只写加密文件，**不进 settings.ini**，同目录同名旧 `.txt` 会迁移为 `.txt.migrated`，`DeepSeekApiKeyRevision` 递增触发即时刷新） | `DeepSeekBalanceMonitor` 进程级 single-flight；三种 Radar 视图共享 `D` 状态，Claude 视图额外显示 DS 余额；正常 60 s / 失败 300 s；成功余额样本写 `<DATA>\deepseek-balance-history.jsonl` 保留 48 h，用于估算 24 h 消耗；网络历史写 `deepseek_balance` 并带 `joined_consumers`、服务状态和余额状态 |
 
 旧五段连接诊断（网络/DNS/隧道/OpenAI/本地 Codex）已由 `CodexConnectionFlowEnabled = false` 整体停用，不产生任何请求。
 
@@ -210,12 +218,13 @@
 | `claude-statusline-quota.ini` | `~/.claude` 桥脚本（外部进程） | statusline 额度缓存 | 360 min 有效期 |
 | `claude-code-oauth-token.bin` | `SecretStore` / 用户旧 `.txt` 迁移 | setup-token DPAPI CurrentUser 密文 Base64 | 旧 `.txt` 首次读取后改名为 `.txt.migrated` |
 | `deepseek-api-key.bin` | 设置页 / `SecretStore` / 用户旧 `.txt` 迁移 | DeepSeek key DPAPI CurrentUser 密文 Base64 | 清除配置时同时清理 `.bin`、旧 `.txt` 和 `.txt.migrated*` |
-| `claude-radar-cache.ini` / `claude-radar-model-map.ini` / `claude-radar-notification-state.ini` / `claude-radar-quota-history.jsonl` | ClaudeRadarReader/Form | 见 §3.2 | 持久 |
+| `claude-radar-cache.ini` / `claude-radar-model-map.ini` / `claude-radar-notification-state.ini` / `claude-radar-quota-history.jsonl` | ClaudeRadarReader/Form | 见 §3.2；`claude-radar-cache.ini` 写入使用 lock + temp + replace/move，避免并发或中断留下半文件 | 持久 |
 | `quota-reset-state.ini` | CodexRadarForm | reset 到期保护状态 | 持久 |
 | `codex-quota-plan-state.json` | CodexQuotaGoalPlanner | 额度计划状态 | 持久 |
 | `quota-decision-history.jsonl` | QuotaDecisionHistoryLogger | 额度判定历史；含 provider/session/cache 来源诊断 | ~48 h 滚动 |
 | `network-check-history.jsonl` | NetworkCheckHistoryLogger | 网络检查历史 | 启动+每 6 h 修剪 |
-| `deepseek-balance-history.jsonl` | CodexRadarForm | 余额样本 | 48 h |
+| `deepseek-balance-history.jsonl` | DeepSeekBalanceMonitor | 余额样本 | 48 h |
+| Codex 重置卡内存快照 | CodexRadarForm.CodexUsage | `rate-limit-reset-credits` 的剩余卡数和过期时间 | 不持久化；成功 1 h / 失败 15 min 刷新 |
 | `ui-hang-watchdog.jsonl` | UiHangWatchdog | UI 无响应记录（>10 s 挂起） | 持久 |
 | `codex-radar-service-probe.txt` | CodexRadarForm | 服务可用性一次性诊断 | 覆盖写 |
 | `idle-cpu-diagnosis-*.txt` / `radar-runtime-diagnosis-*` | 诊断命令 | 诊断报告（含 `-latest` 别名） | 手动 |

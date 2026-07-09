@@ -18,6 +18,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
     private DateTime hoverOpacityLastUtc;
     private DateTime reverseHoverRevealUntilUtc;
     private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
+    private bool autoHideKeepAliveActive;
     private bool sharedInteractionPolling;
     private long burnInShiftSlot = long.MinValue;
     private readonly UiFontCache fontCache = new UiFontCache();
@@ -38,14 +39,15 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
+        ApplyLayerScaleFromSettings(this.currentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = new Size(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MinConnectionCheckHeight);
-        this.MaximumSize = new Size(WidgetSettings.MaxConnectionCheckWidth, WidgetSettings.MaxConnectionCheckHeight);
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MinConnectionCheckHeight));
+        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxConnectionCheckWidth, WidgetSettings.MaxConnectionCheckHeight));
         this.Size = GetDesiredSize();
 
         this.timer = new System.Windows.Forms.Timer();
@@ -113,6 +115,9 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
     {
         this.currentSettings = settings.Clone();
         this.currentSettings.Normalize();
+        ApplyLayerScaleFromSettings(this.currentSettings);
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MinConnectionCheckHeight));
+        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxConnectionCheckWidth, WidgetSettings.MaxConnectionCheckHeight));
         ApplyPerformanceTimerIntervals();
         this.snapshot = this.reader.GetSnapshot(this.currentSettings);
 
@@ -299,6 +304,21 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
         UpdateHoverAnimationTimer();
     }
 
+    public void SetAutoHideKeepAliveActive(bool active)
+    {
+        if (this.autoHideKeepAliveActive == active)
+        {
+            return;
+        }
+
+        this.autoHideKeepAliveActive = active;
+        if (active)
+        {
+            this.hoverOpacityDelayState.Reset();
+            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
+        }
+    }
+
     public bool ProcessSharedInteractionTick()
     {
         if (!this.sharedInteractionPolling ||
@@ -374,7 +394,8 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
             this.hiddenForFullscreen,
             this.Visible,
             ref this.reverseHoverRevealUntilUtc,
-            this.hoverOpacityDelayState);
+            this.hoverOpacityDelayState,
+            this.autoHideKeepAliveActive);
     }
 
     private bool IsHoverOpacityRuntimeEnabled()
@@ -448,9 +469,10 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
             this.Size = desiredSize;
         }
 
-        int left = Math.Max(workArea.Left, Math.Min(this.currentSettings.ConnectionCheckLeftX, workArea.Right - this.Width));
-        int baseHeight = Math.Max(WidgetSettings.MinConnectionCheckHeight, this.currentSettings.ConnectionCheckHeight);
-        int top = this.currentSettings.ConnectionCheckBottomY - baseHeight + 1;
+        int mappedLeft = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleConnectionCheck, workArea, this.currentSettings.ConnectionCheckLeftX);
+        int mappedBottom = this.currentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleConnectionCheck, workArea, this.currentSettings.ConnectionCheckBottomY);
+        int left = Math.Max(workArea.Left, Math.Min(mappedLeft, workArea.Right - this.Width));
+        int top = mappedBottom - this.Height + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
         Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
             new Point(left, top),
@@ -476,7 +498,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
 
     private Size GetDesiredSize()
     {
-        return new Size(this.currentSettings.ConnectionCheckWidth, this.currentSettings.ConnectionCheckHeight);
+        return this.currentSettings.ScaleResolutionCompatibilitySize(new Size(this.currentSettings.ConnectionCheckWidth, this.currentSettings.ConnectionCheckHeight));
     }
 
     protected override void OnPaint(PaintEventArgs e)

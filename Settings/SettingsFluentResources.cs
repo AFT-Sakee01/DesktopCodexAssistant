@@ -22,9 +22,16 @@ internal static class SettingsFluentResources
 
     public static Button CreateCommandButton(string text, bool primary, Font font)
     {
+        return CreateCommandButton(text, primary, font, null);
+    }
+
+    // outlineAccent lets a caller give a non-primary button a semantic border/hover tint
+    // (e.g. warning yellow for "重置为默认") without it looking like the primary Save action.
+    public static Button CreateCommandButton(string text, bool primary, Font font, Color? outlineAccent)
+    {
         Button button = new Button();
         button.Text = text;
-        button.AutoSize = true;
+        button.AutoSize = false;
         button.Padding = new Padding(24, 0, 24, 0);
         button.Height = 54;
         button.Margin = new Padding(0, 0, 12, 0);
@@ -39,6 +46,12 @@ internal static class SettingsFluentResources
         Color backHover = primary ? AccentHover : DesignTokens.SettingsWarmTheme.ButtonHover;
         Color backDown = primary ? AccentPressed : DesignTokens.SettingsWarmTheme.ButtonPressed;
         Color borderColor = primary ? Accent : ControlBorder;
+        if (!primary && outlineAccent.HasValue)
+        {
+            borderColor = outlineAccent.Value;
+            backHover = DesignTokens.WithAlpha(outlineAccent.Value, 60);
+        }
+
         bool hover = false;
         bool down = false;
 

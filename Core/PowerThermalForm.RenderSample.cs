@@ -5,7 +5,7 @@ using System.Drawing.Imaging;
 using System.IO;
 
 // Test-only render harness for --render-powerthermal: paints one representative frame of each
-// PowerThermalRenderVariant (Classic plus the four OLED-safe schemes added in 1.0.3.44) to a PNG for
+// PowerThermalRenderVariant to a PNG for
 // visual review, mirroring the CodexRadar/ConnectionCheck/NetworkMonitor render harnesses.
 internal sealed partial class PowerThermalForm
 {
@@ -30,11 +30,11 @@ internal sealed partial class PowerThermalForm
                 // PowerThermalWidth/Height are already the real physical pixel size; an earlier *2
                 // here rendered a double-size canvas that hid true-width truncation. Same fix as
                 // CodexRadarForm.RenderSample.cs.
-                form.Size = new Size(settings.PowerThermalWidth, settings.PowerThermalHeight);
                 form.cachedPowerReading = BuildSamplePowerReading();
                 form.cachedThermalReadings = BuildSampleThermalReadings();
                 form.thermalAlertNames.Add("CPU");
                 form.thermalAlertNames.Add("GPU");
+                form.Size = form.GetDesiredSize();
 
                 using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
                 using (Graphics g = Graphics.FromImage(bitmap))
@@ -59,9 +59,9 @@ internal sealed partial class PowerThermalForm
         {
             form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);
-            form.Size = new Size(settings.PowerThermalWidth, settings.PowerThermalHeight);
             form.cachedPowerReading = BuildSamplePowerReading();
             form.cachedThermalReadings = BuildSampleThermalReadings();
+            form.Size = form.GetDesiredSize();
             RenderSampleSupport.SaveComposited(
                 outputDir,
                 "powerthermal-current.png",
@@ -76,15 +76,17 @@ internal sealed partial class PowerThermalForm
     {
         PowerReading reading = new PowerReading();
         reading.StatusKnown = true;
-        reading.IsCharging = true;
+        reading.IsCharging = false;
         reading.PluggedInKnown = true;
-        reading.IsPluggedIn = true;
+        reading.IsPluggedIn = false;
         reading.WattsKnown = true;
-        reading.Watts = 45.0;
+        reading.Watts = 8.6;
         reading.BatteryPercentKnown = true;
-        reading.BatteryPercent = 68;
+        reading.BatteryPercent = 23;
         reading.SystemPowerModeKnown = true;
-        reading.SystemPowerModeText = "均衡";
+        reading.SystemPowerModeText = "平衡";
+        reading.EnergySaverKnown = false;
+        reading.EnergySaverEnabled = false;
         return reading;
     }
 

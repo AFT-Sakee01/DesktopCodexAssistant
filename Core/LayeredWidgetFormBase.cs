@@ -56,15 +56,28 @@ internal abstract class LayeredWidgetFormBase : Form
 
     protected void InitializeLayerScaleFromCurrentDpi()
     {
-        using (Graphics g = this.CreateGraphics())
-        {
-            SetLayerScale(Math.Max(1.0f, g.DpiX / 96.0f));
-        }
+        SetLayerScale(GetCurrentDpiLayerScale());
+    }
+
+    protected void ApplyLayerScaleFromSettings(WidgetSettings settings)
+    {
+        float compatibilityScale = settings == null ? 1.0f : settings.GetResolutionCompatibilityScaleFactor();
+        SetLayerScale(GetCurrentDpiLayerScale() * compatibilityScale);
     }
 
     protected void SetLayerScale(float scale)
     {
-        this.LayerScale = Math.Max(1.0f, scale);
+        // Resolution compatibility mode intentionally allows compression below the
+        // physical DPI scale. Keep this below the 40% settings floor so low-DPI
+        // preview displays do not render content larger than their scaled window.
+        float next = Math.Max(0.25f, scale);
+        if (Math.Abs(this.LayerScale - next) < 0.001f)
+        {
+            return;
+        }
+
+        this.LayerScale = next;
+        InvalidateLayeredRenderBuffer();
     }
 
     protected void RenderLayeredWindow()
@@ -280,5 +293,20 @@ internal abstract class LayeredWidgetFormBase : Form
         this.renderBitmap = new Bitmap(this.Width, this.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         this.renderGraphics = Graphics.FromImage(this.renderBitmap);
         this.renderBufferValid = false;
+    }
+
+    private float GetCurrentDpiLayerScale()
+    {
+        try
+        {
+            using (Graphics g = this.CreateGraphics())
+            {
+                return Math.Max(1.0f, g.DpiX / 96.0f);
+            }
+        }
+        catch
+        {
+            return 1.0f;
+        }
     }
 }

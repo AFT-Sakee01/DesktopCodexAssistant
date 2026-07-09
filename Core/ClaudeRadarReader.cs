@@ -17,6 +17,7 @@ internal static class ClaudeRadarReader
     private const int RequestTimeoutMs = 10000;
     private const int ModelDeleteMissingThreshold = 3;
     private static readonly object MapLock = new object();
+    private static readonly object CacheLock = new object();
     private static readonly object HistoryLock = new object();
     private static readonly object ClaudeCodeQuotaCacheLock = new object();
     private static string storageDirectoryOverride = string.Empty;
@@ -171,13 +172,13 @@ internal static class ClaudeRadarReader
                 snapshot.ErrorMessage = "首页metadata fallback";
             }
 
-            snapshot.ClaudeStatusState = ReadClaudePublicStatusState();
+            snapshot.ClaudeStatusState = ClaudeRadarServiceState.Unknown;
             return snapshot;
         }
 
         if (!ReadBool(dataRoot, "ok", true))
         {
-            snapshot.ClaudeStatusState = ReadClaudePublicStatusState();
+            snapshot.ClaudeStatusState = ClaudeRadarServiceState.Unknown;
             ApplyUnavailableDataRoot(snapshot, dataRoot);
             return snapshot;
         }
@@ -197,7 +198,7 @@ internal static class ClaudeRadarReader
             }
         }
 
-        snapshot.ClaudeStatusState = ReadClaudePublicStatusState();
+        snapshot.ClaudeStatusState = ClaudeRadarServiceState.Unknown;
         List<ClaudeRadarModelMetric> metrics = ParseModelMetrics(dataRoot);
         bool completeModelCatalog = IsCompleteModelCatalog(dataRoot, metrics);
         if (homepageFallbackEnabled && NeedsHomepageMetadata(metrics))
@@ -2129,10 +2130,60 @@ internal static class ClaudeRadarReader
             lines.Add("QuotaLineAverageKnown=" + line.AverageKnown.ToString(CultureInfo.InvariantCulture));
             lines.Add("QuotaLineMetric=" + Escape(line.Metric));
             lines.Add("QuotaLineSourceMode=" + Escape(line.SourceMode));
-            File.WriteAllLines(CachePath, lines.ToArray(), new UTF8Encoding(false));
+            TryWriteCacheLines(lines);
         }
         catch (Exception ex)
         {
+            Program.LogException(ex);
+        }
+    }
+
+    private static void TryWriteCacheLines(List<string> lines)
+    {
+        string tempPath = string.Empty;
+        try
+        {
+            string path = CachePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            string next = string.Join(Environment.NewLine, lines.ToArray()) + Environment.NewLine;
+            // Public data can be refreshed by two radar windows. A single lock plus
+            // temp-and-replace keeps claude-radar-cache.ini from being half-written
+            // if a joined request completes while another consumer is rendering.
+            lock (CacheLock)
+            {
+                if (File.Exists(path) && string.Equals(File.ReadAllText(path), next, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                File.WriteAllText(tempPath, next, new UTF8Encoding(false));
+                if (File.Exists(path))
+                {
+                    File.Replace(tempPath, path, null);
+                }
+                else
+                {
+                    File.Move(tempPath, path);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            if (!string.IsNullOrWhiteSpace(tempPath))
+            {
+                try
+                {
+                    if (File.Exists(tempPath))
+                    {
+                        File.Delete(tempPath);
+                    }
+                }
+                catch
+                {
+                }
+            }
+
             Program.LogException(ex);
         }
     }

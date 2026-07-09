@@ -38,16 +38,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private const string CodexRadarHomeUrl = "https://codexradar.com/";
     private const string CodexRadarModelRatingsUrl = "https://codexradar.com/api/model-ratings?history=14";
     private const string CodexRadarFullApiUrl = "https://codexradar.com/api/v1/current";
-    private const string DeepSeekBalanceUrl = "https://api.deepseek.com/user/balance";
-    internal const string DeepSeekApiKeyEnvironmentVariable = "DEEPSEEK_API_KEY";
-    private const string DeepSeekApiKeyFileName = "deepseek-api-key.bin";
-    private const string LegacyDeepSeekApiKeyFileName = "deepseek-api-key.txt";
     // Keep probes enabled because the compact one-line API summary consumes their states.
     private static readonly bool ServiceHealthProbeEnabled = true;
-    private const int DeepSeekBalanceTimeoutMs = 10000;
-    private const int DeepSeekBalanceNormalRefreshSeconds = 60;
-    private const int DeepSeekBalanceErrorRefreshSeconds = 300;
-    private const int DeepSeekBalanceHistoryRetentionHours = 48;
     private const int CodexApiServiceAlertDebounceSeconds = 10;
     private const int CodexModelIqNominalTasks = WidgetSettings.DefaultCodexModelIqBaselineValidTasks;
     private const int MaxCodexModelIqScore = 1000;
@@ -74,7 +66,6 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private readonly object claudeStatusLock = new object();
     private readonly object openAiStatusLock = new object();
     private readonly object codexRadarStatusLock = new object();
-    private readonly object deepSeekBalanceLock = new object();
     private readonly object quotaResetStateLock = new object();
     private readonly object serviceHealthLock = new object();
     private readonly object codexApiServiceAlertDebounceLock = new object();
@@ -88,55 +79,22 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private DateTime hoverOpacityLastUtc;
     private DateTime reverseHoverRevealUntilUtc;
     private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
+    private bool autoHideKeepAliveActive;
     private bool sharedInteractionPolling;
-    private DateTime lastQuotaRefreshUtc;
     private DateTime lastQuotaProcessCheckUtc;
-    private CodexQuotaSnapshot quotaSnapshot;
-    private bool quotaSourceKnown;
     private bool quotaCodexProcessRunning;
     private SoftwareRuntimePresenceSnapshot softwareRuntimePresenceSnapshot = SoftwareRuntimePresenceSnapshot.Empty();
-    private int lastFiveHourQuotaReadPercent = -1;
-    private int lastWeeklyQuotaReadPercent = -1;
-    private DateTime lastQuotaReadDeltaSourceUtc;
-    private int fiveHourConsumptionRingBaselinePercent = -1;
-    // The weekly consumption ring uses the weekly balance observed when the current five-hour window began.
-    private DateTime trackedFiveHourResetLocal;
-    private int weeklyQuotaAtFiveHourWindowStartPercent = -1;
-    private DateTime fiveHourQuotaProtectionUtc;
-    private DateTime weeklyQuotaProtectionUtc;
-    private bool fiveHourQuotaProtectionGold;
-    private bool weeklyQuotaProtectionGold;
-    private DateTime nextQuotaInactiveRefreshUtc;
     private DateTime nextClaudeStatusRefreshUtc;
     private bool claudeStatusRequestRunning;
     private string claudeStatusRefreshTrigger = "启动刷新";
     private DateTime nextOpenAiStatusRefreshUtc;
     private bool openAiStatusRequestRunning;
     private string openAiStatusRefreshTrigger = "启动刷新";
-    private DateTime nextCodexRadarStatusRefreshUtc;
-    private bool codexRadarStatusRequestRunning;
-    private string codexRadarStatusRefreshTrigger = "启动刷新";
-    private CodexRadarSnapshot codexRadarSnapshot;
     private readonly object codexRadarDisplayModeCacheLock = new object();
     private readonly Dictionary<CodexRadarSoftwareMode, CodexRadarDisplayModeCache> codexRadarDisplayModeCache =
         new Dictionary<CodexRadarSoftwareMode, CodexRadarDisplayModeCache>();
     private int codexRadarServiceProbeToken = int.MinValue;
     private bool codexRadarServiceProbeRunning;
-    private DateTime nextDeepSeekBalanceRefreshUtc;
-    private bool deepSeekBalanceRequestRunning;
-    private DeepSeekBalanceSnapshot deepSeekBalanceSnapshot = DeepSeekBalanceSnapshot.CreateDefault();
-    private bool deepSeekBalanceHistoryLoaded;
-    private readonly List<DeepSeekBalancePoint> deepSeekBalanceHistory = new List<DeepSeekBalancePoint>();
-
-    internal static string DeepSeekApiKeyPath
-    {
-        get { return Path.Combine(Logger.DirectoryPath, DeepSeekApiKeyFileName); }
-    }
-
-    internal static string LegacyDeepSeekApiKeyPath
-    {
-        get { return Path.Combine(Logger.DirectoryPath, LegacyDeepSeekApiKeyFileName); }
-    }
     private int codexRadarRandomTestRefreshToken = int.MinValue;
     private DateTime nextCodexRadarRandomTestRefreshUtc;
     private CodexRadarRandomTestSnapshot codexRadarRandomTestSnapshot;
@@ -145,22 +103,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private bool codexSessionActive = true;
     private bool codexPowerSuspended;
     private bool serviceNetworkAvailable = true;
-    private ServiceHealthState radarServiceHealth = ServiceHealthState.Unknown;
     private ServiceHealthState openAiServiceHealth = ServiceHealthState.Unknown;
     private ServiceHealthState claudeServiceHealth = ServiceHealthState.Unknown;
     private bool serviceNetworkRefreshRequested = true;
-    private string codexApiServiceAlertSignature = string.Empty;
-    private int codexApiServiceAlertIndex;
-    private bool codexApiServiceAlertNamePhase = true;
-    private readonly Dictionary<string, CodexConnectionAlertDebounceState> codexApiServiceAlertDebounceStates =
-        new Dictionary<string, CodexConnectionAlertDebounceState>(StringComparer.OrdinalIgnoreCase);
     private string lastRadarClockAutoSwitchSignature = string.Empty;
-    private DateTime lastCodexRadarStatusAttemptLocal;
-    private string lastRadarResetEventId = string.Empty;
-    private DateTime lastRadarResetEventUtc;
-    private string lastRadarProtectedResetEventId = string.Empty;
-    private string lastRadarOpenEventId = string.Empty;
-    private DateTime lastRadarOpenEventUtc;
     private FileSystemWatcher quotaSessionWatcher;
     private string quotaSessionsPath = string.Empty;
     private int quotaSessionFilesChanged = 1;
@@ -190,66 +136,6 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public string ContentType { get; set; }
         public string Content { get; set; }
         public string Error { get; set; }
-    }
-
-    private sealed class DeepSeekBalanceSnapshot
-    {
-        public bool ApiKeyConfigured { get; set; }
-        public bool Known { get; set; }
-        public bool IsAvailable { get; set; }
-        public string Currency { get; set; }
-        public double BalanceCny { get; set; }
-        public bool Last24HourUsageKnown { get; set; }
-        public double Last24HourUsageCny { get; set; }
-        public DateTime CheckedAtUtc { get; set; }
-        public DateTime CheckedAtLocal { get; set; }
-        public string ErrorCode { get; set; }
-        public string ErrorMessage { get; set; }
-        public bool RequestRunning { get; set; }
-
-        public static DeepSeekBalanceSnapshot CreateDefault()
-        {
-            return new DeepSeekBalanceSnapshot
-            {
-                ApiKeyConfigured = false,
-                Known = false,
-                IsAvailable = false,
-                Currency = "CNY",
-                BalanceCny = 0.0,
-                Last24HourUsageKnown = false,
-                Last24HourUsageCny = 0.0,
-                CheckedAtUtc = DateTime.MinValue,
-                CheckedAtLocal = DateTime.MinValue,
-                ErrorCode = string.Empty,
-                ErrorMessage = string.Empty,
-                RequestRunning = false
-            };
-        }
-
-        public DeepSeekBalanceSnapshot Clone()
-        {
-            return new DeepSeekBalanceSnapshot
-            {
-                ApiKeyConfigured = this.ApiKeyConfigured,
-                Known = this.Known,
-                IsAvailable = this.IsAvailable,
-                Currency = this.Currency,
-                BalanceCny = this.BalanceCny,
-                Last24HourUsageKnown = this.Last24HourUsageKnown,
-                Last24HourUsageCny = this.Last24HourUsageCny,
-                CheckedAtUtc = this.CheckedAtUtc,
-                CheckedAtLocal = this.CheckedAtLocal,
-                ErrorCode = this.ErrorCode,
-                ErrorMessage = this.ErrorMessage,
-                RequestRunning = this.RequestRunning
-            };
-        }
-    }
-
-    private sealed class DeepSeekBalancePoint
-    {
-        public DateTime TimestampUtc { get; set; }
-        public double BalanceCny { get; set; }
     }
 
     private sealed class CodexConnectionAlertCandidate
@@ -405,6 +291,48 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public int NextWeeklyBaselinePercent { get; set; } = -1;
         public DateTime NextTrackedFiveHourResetLocal { get; set; }
         public DateTime NextSourceUpdatedUtc { get; set; }
+    }
+
+    private sealed class QuotaProtectionOptions
+    {
+        public bool DueResetProtectionEnabled { get; set; }
+        public bool RssResetProtectionEnabled { get; set; }
+        public bool ProviderZeroDropProtectionEnabled { get; set; }
+        public bool DuplicateSameBalanceRingProtectionEnabled { get; set; }
+        public bool ProviderFiveHourEarlyResetSpikeProtectionEnabled { get; set; }
+        public bool ProviderWeeklySpikeProtectionEnabled { get; set; }
+        public bool StrictFiveHourResetBoundaryEnabled { get; set; }
+        public bool WeeklyBaselineAutoRepairEnabled { get; set; }
+
+        public static QuotaProtectionOptions FromSettings(WidgetSettings settings)
+        {
+            return new QuotaProtectionOptions
+            {
+                DueResetProtectionEnabled = settings == null || settings.CodexQuotaDueResetProtectionEnabled,
+                RssResetProtectionEnabled = settings == null || settings.CodexQuotaRssResetProtectionEnabled,
+                ProviderZeroDropProtectionEnabled = settings == null || settings.CodexQuotaProviderZeroDropProtectionEnabled,
+                DuplicateSameBalanceRingProtectionEnabled = settings == null || settings.CodexQuotaDuplicateSameBalanceRingProtectionEnabled,
+                ProviderFiveHourEarlyResetSpikeProtectionEnabled = settings != null && settings.CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled,
+                ProviderWeeklySpikeProtectionEnabled = settings != null && settings.CodexQuotaProviderWeeklySpikeProtectionEnabled,
+                StrictFiveHourResetBoundaryEnabled = settings != null && settings.CodexQuotaStrictFiveHourResetBoundaryEnabled,
+                WeeklyBaselineAutoRepairEnabled = settings != null && settings.CodexQuotaWeeklyBaselineAutoRepairEnabled
+            };
+        }
+
+        public static QuotaProtectionOptions LegacyRuntimeDefaults()
+        {
+            return new QuotaProtectionOptions
+            {
+                DueResetProtectionEnabled = true,
+                RssResetProtectionEnabled = true,
+                ProviderZeroDropProtectionEnabled = true,
+                DuplicateSameBalanceRingProtectionEnabled = true,
+                ProviderFiveHourEarlyResetSpikeProtectionEnabled = true,
+                ProviderWeeklySpikeProtectionEnabled = true,
+                StrictFiveHourResetBoundaryEnabled = true,
+                WeeklyBaselineAutoRepairEnabled = true
+            };
+        }
     }
 
     private sealed class CodexRadarSnapshot
@@ -801,15 +729,16 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
+        ApplyLayerScaleFromSettings(this.currentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight);
-        this.MaximumSize = new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight + S(32));
-        this.Size = new Size(this.currentSettings.CodexRadarWidth, this.currentSettings.CodexRadarHeight);
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
+        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight + S(32)));
+        this.Size = GetDesiredCodexRadarSize();
 
         this.timer = new System.Windows.Forms.Timer();
         this.timer.Interval = GetNextCodexRadarTickIntervalMs();
@@ -890,6 +819,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 }
 
                 RefreshSelectedQuotaInfoIfNeeded();
+                RefreshCodexResetCreditsIfNeeded();
                 RefreshCodexRadarStatusIfNeeded();
                 RefreshDeepSeekBalanceIfNeeded();
                 if (ServiceHealthProbeEnabled)
@@ -986,6 +916,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         CacheCodexRadarDisplayMode(oldEffectiveSoftwareMode);
         this.currentSettings = settings.Clone();
         this.currentSettings.Normalize();
+        ApplyLayerScaleFromSettings(this.currentSettings);
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
+        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight + S(32)));
         unchecked
         {
             this.renderSceneSettingsRevision++;
@@ -1014,13 +947,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (!string.Equals(oldModelKey, this.currentSettings.CodexRadarModelKey, StringComparison.OrdinalIgnoreCase) ||
             softwareSettingChanged)
         {
-            RestoreCodexRadarDisplayForCurrentMode(softwareSettingChanged ? "软件切换" : "模型切换");
             if (softwareSettingChanged)
             {
-                ResetCodexApiServiceAlertDebounceForDisplayContextSwitch();
+                SwitchCodexRadarSoftwareFamily("软件切换");
             }
-
-            RequestSelectedQuotaUsageRefresh("软件切换");
+            else
+            {
+                RestoreCodexRadarDisplayForCurrentMode("模型切换");
+                RequestSelectedQuotaUsageRefresh("软件切换");
+            }
         }
 
         if (oldPublicJsonEnabled != this.currentSettings.CodexRadarPublicJsonEnabled ||
@@ -1044,7 +979,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         if (oldDeepSeekApiKeyRevision != this.currentSettings.DeepSeekApiKeyRevision)
         {
-            RequestDeepSeekBalanceRefresh();
+            RequestDeepSeekBalanceRefresh("DeepSeek 配置");
             RefreshDeepSeekBalanceIfNeeded();
         }
 
@@ -1123,12 +1058,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 this.nextClaudeStatusRefreshUtc = DateTime.UtcNow.AddSeconds(1.0);
                 this.claudeStatusRefreshTrigger = "操作面板刷新";
             }
+            StatuspageMonitor.RequestRefresh(StatuspageMonitor.ClaudeServiceKey, "操作面板刷新");
 
             lock (this.openAiStatusLock)
             {
                 this.nextOpenAiStatusRefreshUtc = DateTime.UtcNow.AddSeconds(1.0);
                 this.openAiStatusRefreshTrigger = "操作面板刷新";
             }
+            StatuspageMonitor.RequestRefresh(StatuspageMonitor.OpenAiServiceKey, "操作面板刷新");
         }
 
         lock (this.codexRadarStatusLock)
@@ -1138,8 +1075,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             this.codexRadarStatusRefreshTrigger = "操作面板刷新";
         }
 
-        RequestDeepSeekBalanceRefresh();
+        RequestDeepSeekBalanceRefresh("操作面板刷新");
         RequestSelectedQuotaUsageRefresh("操作面板刷新");
+        RequestCodexResetCreditsRefresh("操作面板刷新");
 
         OnTimerTick(this, EventArgs.Empty);
     }
@@ -1246,12 +1184,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             this.nextClaudeStatusRefreshUtc = nowUtc.AddSeconds(1.0);
             this.claudeStatusRefreshTrigger = "启动或恢复刷新";
         }
+        StatuspageMonitor.RequestRefresh(StatuspageMonitor.ClaudeServiceKey, "启动或恢复刷新");
 
         lock (this.openAiStatusLock)
         {
             this.nextOpenAiStatusRefreshUtc = nowUtc.AddSeconds(1.0);
             this.openAiStatusRefreshTrigger = "启动或恢复刷新";
         }
+        StatuspageMonitor.RequestRefresh(StatuspageMonitor.OpenAiServiceKey, "启动或恢复刷新");
 
         lock (this.codexRadarStatusLock)
         {
@@ -1260,6 +1200,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         RequestSelectedQuotaUsageRefresh("启动或恢复刷新");
+        RequestCodexResetCreditsRefresh("启动或恢复刷新");
     }
 
     private bool IsCodexPollingAllowed()
@@ -1639,6 +1580,21 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         UpdateHoverAnimationTimer();
     }
 
+    public void SetAutoHideKeepAliveActive(bool active)
+    {
+        if (this.autoHideKeepAliveActive == active)
+        {
+            return;
+        }
+
+        this.autoHideKeepAliveActive = active;
+        if (active)
+        {
+            this.hoverOpacityDelayState.Reset();
+            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
+        }
+    }
+
     public bool ProcessSharedInteractionTick()
     {
         if (!this.sharedInteractionPolling ||
@@ -1714,7 +1670,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             this.hiddenForFullscreen,
             this.Visible,
             ref this.reverseHoverRevealUntilUtc,
-            this.hoverOpacityDelayState);
+            this.hoverOpacityDelayState,
+            this.autoHideKeepAliveActive);
     }
 
     private bool IsHoverOpacityRuntimeEnabled()
@@ -1766,10 +1723,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             this.Size = desiredSize;
         }
 
-        int left = Math.Max(workArea.Left, Math.Min(this.currentSettings.CodexRadarLeftX, workArea.Right - this.Width));
-        int baseHeight = Math.Max(WidgetSettings.MinCodexRadarHeight, this.currentSettings.CodexRadarHeight);
-        int top = this.currentSettings.CodexRadarBottomY - baseHeight + 1;
-        top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - baseHeight));
+        int mappedLeft = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleCodexRadar, workArea, this.currentSettings.CodexRadarLeftX);
+        int mappedBottom = this.currentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleCodexRadar, workArea, this.currentSettings.CodexRadarBottomY);
+        int left = Math.Max(workArea.Left, Math.Min(mappedLeft, workArea.Right - this.Width));
+        int top = mappedBottom - this.Height + 1;
+        top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
         Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
             new Point(left, top),
             this.Size,
@@ -1794,7 +1752,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private Size GetDesiredCodexRadarSize()
     {
-        return new Size(this.currentSettings.CodexRadarWidth, this.currentSettings.CodexRadarHeight);
+        return this.currentSettings.ScaleResolutionCompatibilitySize(new Size(this.currentSettings.CodexRadarWidth, this.currentSettings.CodexRadarHeight));
     }
 
     private int GetThermalAlertExtraHeight()
@@ -2019,6 +1977,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public int FiveHourConsumptionRingPercent;
         public int WeeklyConsumptionRingPercent;
         public bool WeeklyConsumptionRingBlocked;
+        public bool ForceDangerRing;
     }
 
     private QuotaDisplayState GatherQuotaDisplayState()
@@ -2053,15 +2012,18 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool weeklyProtected;
         lock (this.quotaResetStateLock)
         {
-            state.FiveHourGold = this.fiveHourQuotaProtectionGold;
-            state.WeeklyGold = this.weeklyQuotaProtectionGold;
-            fiveHourProtected = this.fiveHourQuotaProtectionUtc != DateTime.MinValue;
-            weeklyProtected = this.weeklyQuotaProtectionUtc != DateTime.MinValue;
+            state.FiveHourGold = !isClaude && this.fiveHourQuotaProtectionGold;
+            state.WeeklyGold = !isClaude && this.weeklyQuotaProtectionGold;
+            fiveHourProtected = !isClaude && this.fiveHourQuotaProtectionUtc != DateTime.MinValue;
+            weeklyProtected = !isClaude && this.weeklyQuotaProtectionUtc != DateTime.MinValue;
         }
 
         state.CodexRunning = isClaude ? IsClaudeQuotaDisplayAvailable() : this.quotaCodexProcessRunning;
         state.AnySupportedAppRunning = presence.AnySupportedAppRunning;
         state.QuotaValueKnown = IsSelectedQuotaValueKnown(isClaude);
+        state.ForceDangerRing = isClaude &&
+            !state.QuotaValueKnown &&
+            QuotaRingPresentation.IsSetupTokenMissing(this.claudeCodeUsageErrorCode);
         state.FiveHourConsumptionRingPercent = fiveHourProtected
             ? 0
             : (this.fiveHourConsumptionRingBaselinePercent >= 0
@@ -2108,69 +2070,40 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool quotaProtected,
         int consumptionRingPercent,
         CodexRadarSnapshot radarSnapshot,
-        bool dateText)
+        bool dateText,
+        bool forceDangerFullRing)
     {
         if (cellRect.Width <= 0 || cellRect.Height <= 0)
         {
             return;
         }
 
-        percent = ClampPercent(percent);
-        consumptionRingPercent = ClampPercent(consumptionRingPercent);
         RectangleF ringRect;
         RectangleF textRect;
         GetEvenLayoutCellRects(cellRect, out ringRect, out textRect);
 
-        Color ringColor = GetQuotaColor(percent);
-        int visibleConsumptionRingPercent = Math.Max(percent, consumptionRingPercent);
-        float stroke = Math.Max(2.0f, ringRect.Width * 0.14f);
-        RectangleF arcRect = new RectangleF(
-            ringRect.Left + stroke / 2.0f,
-            ringRect.Top + stroke / 2.0f,
-            ringRect.Width - stroke,
-            ringRect.Height - stroke);
-        using (Pen backgroundPen = new Pen(DesignTokens.White(78), stroke))
-        using (Pen valuePen = new Pen(ringColor, stroke))
-        using (Pen consumptionRingPen = new Pen(GetQuotaConsumptionRingColor(), stroke))
-        {
-            backgroundPen.StartCap = LineCap.Flat;
-            backgroundPen.EndCap = LineCap.Flat;
-            valuePen.StartCap = LineCap.Round;
-            valuePen.EndCap = LineCap.Round;
-            consumptionRingPen.StartCap = LineCap.Round;
-            consumptionRingPen.EndCap = LineCap.Round;
-            g.DrawArc(backgroundPen, arcRect, -90.0f, 360.0f);
-            if (visibleConsumptionRingPercent > percent)
-            {
-                g.DrawArc(consumptionRingPen, arcRect, -90.0f, 360.0f * visibleConsumptionRingPercent / 100.0f);
-            }
-
-            if (percent > 0)
-            {
-                g.DrawArc(valuePen, arcRect, -90.0f, 360.0f * percent / 100.0f);
-            }
-        }
-
         string displayText;
         Color displayColor;
         GetQuotaResetDisplayText(resetText, quotaProtected, radarSnapshot, dateText, out displayText, out displayColor);
-        if (!codexRunning)
-        {
-            displayColor = DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
-        }
 
-        Font numberFont = this.fontCache.GetUi(Math.Max(7.0f, ringRect.Width * 0.342f), FontStyle.Bold);
-        using (SolidBrush numberBrush = new SolidBrush(GetQuotaRingNumberColor(displayColor, anySupportedAppRunning, quotaValueKnown)))
-        using (StringFormat center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+        QuotaRingDrawSpec spec = new QuotaRingDrawSpec
         {
-            g.DrawString(percent.ToString(CultureInfo.InvariantCulture), numberFont, numberBrush, ringRect, center);
-        }
-
-        Font labelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold);
-        using (SolidBrush labelBrush = new SolidBrush(displayColor))
-        {
-            DrawCodexRadarFittedText(g, displayText, labelFont, labelBrush, textRect, StringAlignment.Center, 6.0f);
-        }
+            Percent = percent,
+            ConsumptionRingPercent = consumptionRingPercent,
+            ResetDisplayText = displayText,
+            ResetDisplayColor = displayColor,
+            Running = codexRunning,
+            AnySupportedAppRunning = anySupportedAppRunning,
+            QuotaValueKnown = quotaValueKnown,
+            ForceDangerFullRing = forceDangerFullRing,
+            NumberFont = this.fontCache.GetUi(Math.Max(7.0f, ringRect.Width * 0.342f), FontStyle.Bold),
+            LabelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold),
+            DrawFittedLabel = delegate(Graphics graphics, string text, Font font, Brush brush, RectangleF rect)
+            {
+                DrawCodexRadarFittedText(graphics, text, font, brush, rect, StringAlignment.Center, 6.0f);
+            }
+        };
+        QuotaRingPresentation.DrawQuotaRing(g, ringRect, textRect, spec);
     }
 
     private void DrawEvenLayoutIqCell(Graphics g, RectangleF cellRect, CodexRadarSnapshot snapshot)
@@ -3085,17 +3018,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 Reason = "无网络",
                 Color = DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230)
             });
-            DeepSeekBalanceSnapshot deepSeekSnapshot = GetDeepSeekBalanceDisplaySnapshot();
-            if (deepSeekSnapshot != null && deepSeekSnapshot.ApiKeyConfigured)
+            candidates.Add(new CodexConnectionAlertCandidate
             {
-                candidates.Add(new CodexConnectionAlertCandidate
-                {
-                    Key = "deepseek:offline",
-                    Name = "DeepSeek",
-                    Reason = "无网络",
-                    Color = DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230)
-                });
-            }
+                Key = "deepseek:offline",
+                Name = "DeepSeek",
+                Reason = "无网络",
+                Color = DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230)
+            });
 
             AddServiceHealthAlertCandidate(candidates, "claude", "Claude", claudeHealth, false);
             AddClaudeCodeUsageAlertCandidate(candidates);
@@ -3141,7 +3070,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     }
 
     private static void ClearCodexApiServiceAlertDebounceStates(
-        Dictionary<string, CodexConnectionAlertDebounceState> states)
+        Dictionary<string, ServiceAlertDebounceState> states)
     {
         if (states != null)
         {
@@ -3150,96 +3079,53 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     }
 
     private static CodexConnectionAlertCandidate[] ApplyCodexApiServiceAlertDebounce(
-        Dictionary<string, CodexConnectionAlertDebounceState> states,
+        Dictionary<string, ServiceAlertDebounceState> states,
         CodexConnectionAlertCandidate[] candidates,
         DateTime nowUtc,
         TimeSpan debounceWindow,
         bool bypass)
     {
-        if (states == null || candidates == null || candidates.Length == 0 || bypass)
+        List<ServiceAlertCandidate> sharedCandidates = new List<ServiceAlertCandidate>();
+        if (candidates != null)
         {
-            if (states != null && (candidates == null || candidates.Length == 0 || bypass))
+            for (int i = 0; i < candidates.Length; i++)
             {
-                states.Clear();
+                CodexConnectionAlertCandidate candidate = candidates[i];
+                if (candidate != null)
+                {
+                    sharedCandidates.Add(new ServiceAlertCandidate
+                    {
+                        Key = candidate.Key ?? string.Empty,
+                        Name = candidate.Name ?? string.Empty,
+                        Reason = candidate.Reason ?? string.Empty,
+                        State = string.Empty,
+                        Color = candidate.Color,
+                        Checking = IsCodexConnectionAlertChecking(candidate)
+                    });
+                }
             }
-
-            return CloneCodexConnectionAlertCandidates(candidates);
         }
 
-        HashSet<string> seenServices = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        List<ServiceAlertCandidate> debounced = ServiceAlertDebouncer.Apply(
+            states,
+            sharedCandidates,
+            nowUtc,
+            debounceWindow,
+            bypass);
         List<CodexConnectionAlertCandidate> result = new List<CodexConnectionAlertCandidate>();
-        for (int i = 0; i < candidates.Length; i++)
+        for (int i = 0; i < debounced.Count; i++)
         {
-            CodexConnectionAlertCandidate candidate = candidates[i];
-            if (candidate == null)
+            ServiceAlertCandidate candidate = debounced[i];
+            if (candidate != null)
             {
-                continue;
+                result.Add(new CodexConnectionAlertCandidate
+                {
+                    Key = candidate.Key ?? string.Empty,
+                    Name = candidate.Name ?? string.Empty,
+                    Reason = candidate.Reason ?? string.Empty,
+                    Color = candidate.Color
+                });
             }
-
-            string serviceKey = GetCodexConnectionAlertServiceKey(candidate.Key);
-            if (serviceKey.Length == 0)
-            {
-                serviceKey = "candidate-" + i.ToString(CultureInfo.InvariantCulture);
-            }
-
-            seenServices.Add(serviceKey);
-            if (IsCodexConnectionAlertChecking(candidate))
-            {
-                result.Add(CloneCodexConnectionAlertCandidate(candidate));
-                continue;
-            }
-
-            string signature = BuildSingleCodexConnectionAlertSignature(candidate);
-            CodexConnectionAlertDebounceState state;
-            if (!states.TryGetValue(serviceKey, out state) || state == null)
-            {
-                state = new CodexConnectionAlertDebounceState();
-                states[serviceKey] = state;
-            }
-
-            if (string.Equals(state.ActiveSignature, signature, StringComparison.Ordinal))
-            {
-                state.PendingSignature = string.Empty;
-                state.PendingSinceUtc = DateTime.MinValue;
-                result.Add(CloneCodexConnectionAlertCandidate(candidate));
-                continue;
-            }
-
-            if (!string.Equals(state.PendingSignature, signature, StringComparison.Ordinal))
-            {
-                state.PendingSignature = signature;
-                state.PendingSinceUtc = nowUtc;
-            }
-
-            // Short service-health spikes are common during adapter/VPN handoff. Keep the previous
-            // stable display, or suppress the new alert entirely, until the same error survives the
-            // full debounce window.
-            if (nowUtc - state.PendingSinceUtc >= debounceWindow)
-            {
-                state.ActiveSignature = signature;
-                state.ActiveCandidate = CloneCodexConnectionAlertCandidate(candidate);
-                state.PendingSignature = string.Empty;
-                state.PendingSinceUtc = DateTime.MinValue;
-                result.Add(CloneCodexConnectionAlertCandidate(candidate));
-            }
-            else if (state.ActiveCandidate != null)
-            {
-                result.Add(CloneCodexConnectionAlertCandidate(state.ActiveCandidate));
-            }
-        }
-
-        List<string> removeKeys = new List<string>();
-        foreach (string key in states.Keys)
-        {
-            if (!seenServices.Contains(key))
-            {
-                removeKeys.Add(key);
-            }
-        }
-
-        for (int i = 0; i < removeKeys.Count; i++)
-        {
-            states.Remove(removeKeys[i]);
         }
 
         return result.ToArray();
@@ -3343,68 +3229,57 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void AddDeepSeekServiceAlertCandidate(List<CodexConnectionAlertCandidate> candidates)
     {
-        DeepSeekBalanceSnapshot snapshot = GetDeepSeekBalanceDisplaySnapshot();
-        if (snapshot == null || !snapshot.ApiKeyConfigured)
-        {
-            return;
-        }
-
-        if (snapshot.RequestRunning && !snapshot.Known)
+        ColorlessDeepSeekAlert alert = DeepSeekBalanceMonitor.BuildAlert();
+        if (alert != null)
         {
             candidates.Add(new CodexConnectionAlertCandidate
             {
-                Key = "deepseek:checking",
-                Name = "DeepSeek",
-                Reason = "检测中",
-                Color = DesignTokens.Colors.Warning
-            });
-            return;
-        }
-
-        if (snapshot.Known && snapshot.IsAvailable)
-        {
-            return;
-        }
-
-        if (snapshot.Known && !snapshot.IsAvailable)
-        {
-            candidates.Add(new CodexConnectionAlertCandidate
-            {
-                Key = "deepseek:unavailable",
-                Name = "DeepSeek",
-                Reason = "余额不足",
-                Color = DesignTokens.WithAlpha(DesignTokens.Colors.WarningDeep, 245)
-            });
-            return;
-        }
-
-        if (!string.IsNullOrWhiteSpace(snapshot.ErrorCode))
-        {
-            candidates.Add(new CodexConnectionAlertCandidate
-            {
-                Key = "deepseek:" + snapshot.ErrorCode,
-                Name = "DeepSeek",
-                Reason = string.IsNullOrWhiteSpace(snapshot.ErrorMessage) ? "请求失败" : snapshot.ErrorMessage,
-                Color = GetDeepSeekApiAlertColor(snapshot.ErrorCode)
+                Key = alert.Key,
+                Name = alert.Name,
+                Reason = alert.Reason,
+                Color = GetDeepSeekApiAlertColor(alert.Snapshot)
             });
         }
     }
 
-    private static Color GetDeepSeekApiAlertColor(string errorCode)
+    private static Color GetDeepSeekApiAlertColor(DeepSeekBalanceSnapshot snapshot)
     {
+        if (snapshot == null)
+        {
+            return DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
+        }
+
+        if (snapshot.ServiceRequestRunning && !snapshot.ServiceKnown)
+        {
+            return DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245);
+        }
+
+        string errorCode = snapshot.ServiceErrorCode ?? string.Empty;
         if (string.Equals(errorCode, "NET", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(errorCode, "ERROR", StringComparison.OrdinalIgnoreCase))
         {
             return DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245);
         }
 
-        if (string.Equals(errorCode, "401", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(errorCode, "402", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(errorCode, "PARSE", StringComparison.OrdinalIgnoreCase))
+        {
+            return DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
+        }
+
+        if (string.Equals(errorCode, "429", StringComparison.OrdinalIgnoreCase) ||
+            IsDeepSeekServerErrorCode(errorCode))
         {
             return DesignTokens.WithAlpha(DesignTokens.Colors.WarningDeep, 245);
         }
 
         return DesignTokens.Colors.Warning;
+    }
+
+    private static bool IsDeepSeekServerErrorCode(string errorCode)
+    {
+        int statusCode;
+        return int.TryParse(errorCode ?? string.Empty, NumberStyles.Integer, CultureInfo.InvariantCulture, out statusCode) &&
+            statusCode >= 500;
     }
 
     private static string GetServiceHealthAlertReason(ServiceHealthState state)
@@ -4329,57 +4204,117 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             TimingStats.RecordElapsed("codex.quota_read", quotaReadStart);
         }
 
-        ApplyCodexQuotaSnapshot(nextSnapshot, quotaKnown, codexRunning, nowLocal, nowUtc, quotaSourceKind);
+        ApplyQuotaSnapshot(CodexRadarSoftwareMode.Codex, nextSnapshot, quotaKnown, codexRunning, nowLocal, nowUtc, quotaSourceKind);
         return true;
     }
 
-    private void ApplyCodexQuotaSnapshot(
+    private void ApplyQuotaSnapshot(
+        CodexRadarSoftwareMode family,
         CodexQuotaSnapshot nextSnapshot,
         bool quotaKnown,
-        bool codexRunning,
+        bool appRunning,
         DateTime nowLocal,
         DateTime detectedUtc,
         string sourceKind)
     {
+        ApplyQuotaSnapshot(family, nextSnapshot, quotaKnown, appRunning, nowLocal, detectedUtc, sourceKind, true);
+    }
+
+    private void ApplyQuotaSnapshot(
+        CodexRadarSoftwareMode family,
+        CodexQuotaSnapshot nextSnapshot,
+        bool quotaKnown,
+        bool appRunning,
+        DateTime nowLocal,
+        DateTime detectedUtc,
+        string sourceKind,
+        bool logDecision)
+    {
+        family = NormalizeEffectiveSoftwareMode(family);
+        QuotaRuntimeState quotaState = GetQuotaRuntimeState(family);
         MarkQuotaSnapshotSource(nextSnapshot, sourceKind);
-        if (IsQuotaResetDue(nextSnapshot, nowLocal))
+        if (family == CodexRadarSoftwareMode.Codex && IsQuotaResetDue(nextSnapshot, nowLocal))
         {
             ActivateDueQuotaResetProtections(nextSnapshot, nowLocal, detectedUtc);
         }
 
-        QuotaRingDecisionInfo quotaDecision = UpdateQuotaReadDeltaTracking(nextSnapshot, quotaKnown);
-        this.quotaSnapshot = ApplyQuotaResetProtections(nextSnapshot);
-        this.quotaSourceKnown = quotaKnown;
-        LogQuotaRingDecision(quotaDecision, this.quotaSnapshot, quotaKnown, codexRunning);
+        QuotaRingDecisionInfo quotaDecision = UpdateQuotaReadDeltaTrackingWithSettings(quotaState, nextSnapshot, quotaKnown);
+        CodexQuotaSnapshot displaySnapshot = family == CodexRadarSoftwareMode.Codex
+            ? ApplyQuotaResetProtections(family, nextSnapshot)
+            : NormalizeQuotaSnapshot(nextSnapshot);
+        quotaState.Snapshot = displaySnapshot;
+        quotaState.SourceKnown = quotaKnown;
+        GetRadarFamilyState(family).Touch();
+        if (logDecision)
+        {
+            LogQuotaRingDecision(family, quotaDecision, displaySnapshot, quotaKnown, appRunning);
+        }
     }
 
     private void InitializeQuotaReadDeltaTracking(CodexQuotaSnapshot snapshot, bool sourceKnown)
     {
+        InitializeQuotaReadDeltaTracking(GetActiveQuotaRuntimeState(), snapshot, sourceKnown);
+    }
+
+    private static void InitializeQuotaReadDeltaTracking(QuotaRuntimeState quotaState, CodexQuotaSnapshot snapshot, bool sourceKnown)
+    {
         if (!sourceKnown || snapshot == null)
         {
-            ResetQuotaReadDeltaTracking();
+            ResetQuotaReadDeltaTracking(quotaState);
             return;
         }
 
-        this.lastFiveHourQuotaReadPercent = ClampPercent(snapshot.FiveHourPercent);
-        this.lastWeeklyQuotaReadPercent = ClampPercent(snapshot.WeeklyPercent);
-        this.lastQuotaReadDeltaSourceUtc = snapshot.SourceUpdatedKnown
+        quotaState.LastFiveHourReadPercent = ClampPercent(snapshot.FiveHourPercent);
+        quotaState.LastWeeklyReadPercent = ClampPercent(snapshot.WeeklyPercent);
+        quotaState.LastReadSourceUtc = snapshot.SourceUpdatedKnown
             ? snapshot.SourceUpdatedUtc
             : DateTime.MinValue;
-        this.fiveHourConsumptionRingBaselinePercent = -1;
-        this.trackedFiveHourResetLocal = snapshot.FiveHourResetKnown
+        quotaState.FiveHourConsumptionRingBaselinePercent = -1;
+        quotaState.TrackedFiveHourResetLocal = snapshot.FiveHourResetKnown
             ? snapshot.FiveHourResetLocal
             : DateTime.MinValue;
-        this.weeklyQuotaAtFiveHourWindowStartPercent = ClampPercent(snapshot.WeeklyPercent);
+        quotaState.WeeklyQuotaAtFiveHourWindowStartPercent = ClampPercent(snapshot.WeeklyPercent);
     }
 
-    private QuotaRingDecisionInfo UpdateQuotaReadDeltaTracking(CodexQuotaSnapshot snapshot, bool sourceKnown)
+    private QuotaProtectionOptions GetQuotaProtectionOptions()
     {
-        QuotaRingDecisionInfo decision = CreateQuotaRingDecisionInfo(snapshot, sourceKnown);
+        return QuotaProtectionOptions.FromSettings(this.currentSettings);
+    }
+
+    private QuotaRingDecisionInfo UpdateQuotaReadDeltaTrackingWithSettings(
+        QuotaRuntimeState quotaState,
+        CodexQuotaSnapshot snapshot,
+        bool sourceKnown)
+    {
+        return UpdateQuotaReadDeltaTracking(quotaState, snapshot, sourceKnown, GetQuotaProtectionOptions());
+    }
+
+    private static QuotaRingDecisionInfo UpdateQuotaReadDeltaTracking(QuotaRuntimeState quotaState, CodexQuotaSnapshot snapshot, bool sourceKnown)
+    {
+        return UpdateQuotaReadDeltaTracking(
+            quotaState,
+            snapshot,
+            sourceKnown,
+            QuotaProtectionOptions.LegacyRuntimeDefaults());
+    }
+
+    private static QuotaRingDecisionInfo UpdateQuotaReadDeltaTracking(
+        QuotaRuntimeState quotaState,
+        CodexQuotaSnapshot snapshot,
+        bool sourceKnown,
+        QuotaProtectionOptions protectionOptions)
+    {
+        if (protectionOptions == null)
+        {
+            protectionOptions = QuotaProtectionOptions.LegacyRuntimeDefaults();
+        }
+
+        QuotaRingDecisionInfo decision = CreateQuotaRingDecisionInfo(quotaState, snapshot, sourceKnown);
         if (!sourceKnown || snapshot == null)
         {
-            ResetQuotaReadDeltaTracking();
+            ResetQuotaReadDeltaTracking(quotaState);
             return CompleteQuotaRingDecisionInfo(
+                quotaState,
                 decision,
                 snapshot == null ? "snapshot_null_reset_tracking" : "source_unknown_reset_tracking");
         }
@@ -4392,97 +4327,140 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         DateTime fiveHourResetLocal = snapshot.FiveHourResetKnown
             ? snapshot.FiveHourResetLocal
             : DateTime.MinValue;
-        if (this.lastFiveHourQuotaReadPercent < 0 || this.lastWeeklyQuotaReadPercent < 0)
+        bool weeklyConsumptionBaselineRepaired = false;
+        if (quotaState.LastFiveHourReadPercent < 0 || quotaState.LastWeeklyReadPercent < 0)
         {
-            InitializeQuotaReadDeltaTracking(snapshot, true);
-            return CompleteQuotaRingDecisionInfo(decision, "initial_sample_set_tracking_baseline");
+            InitializeQuotaReadDeltaTracking(quotaState, snapshot, true);
+            return CompleteQuotaRingDecisionInfo(quotaState, decision, "initial_sample_set_tracking_baseline");
         }
 
         if (sourceUtc != DateTime.MinValue &&
-            this.lastQuotaReadDeltaSourceUtc != DateTime.MinValue &&
-            sourceUtc < this.lastQuotaReadDeltaSourceUtc)
+            quotaState.LastReadSourceUtc != DateTime.MinValue &&
+            sourceUtc < quotaState.LastReadSourceUtc)
         {
-            return CompleteQuotaRingDecisionInfo(decision, "stale_source_ignored");
+            return CompleteQuotaRingDecisionInfo(quotaState, decision, "stale_source_ignored");
         }
 
-        if (sourceUtc != DateTime.MinValue &&
-            this.lastQuotaReadDeltaSourceUtc != DateTime.MinValue &&
-            sourceUtc == this.lastQuotaReadDeltaSourceUtc &&
-            fiveHourPercent == this.lastFiveHourQuotaReadPercent &&
-            weeklyPercent == this.lastWeeklyQuotaReadPercent &&
-            (fiveHourResetLocal == DateTime.MinValue || fiveHourResetLocal == this.trackedFiveHourResetLocal))
+        if (protectionOptions.WeeklyBaselineAutoRepairEnabled &&
+            IsSuspiciousWeeklyConsumptionBaseline(
+            quotaState.WeeklyQuotaAtFiveHourWindowStartPercent,
+            quotaState.LastWeeklyReadPercent,
+            weeklyPercent,
+            quotaState.TrackedFiveHourResetLocal,
+            fiveHourResetLocal))
         {
-            return CompleteQuotaRingDecisionInfo(decision, "duplicate_source_same_balance_keep_existing_rings");
+            // Provider cache jitter can briefly report weekly=100 and poison the "weekly at
+            // five-hour-window start" baseline. Once stable low weekly data returns, repair the
+            // baseline before duplicate-sample handling so the ring does not keep showing a
+            // fictitious 100-to-current consumption tail.
+            quotaState.WeeklyQuotaAtFiveHourWindowStartPercent = weeklyPercent;
+            weeklyConsumptionBaselineRepaired = true;
         }
 
-        bool fiveHourChanged = fiveHourPercent != this.lastFiveHourQuotaReadPercent;
-        bool weeklyChanged = weeklyPercent != this.lastWeeklyQuotaReadPercent;
+        bool duplicateSameBalance =
+            sourceUtc != DateTime.MinValue &&
+            quotaState.LastReadSourceUtc != DateTime.MinValue &&
+            sourceUtc == quotaState.LastReadSourceUtc &&
+            fiveHourPercent == quotaState.LastFiveHourReadPercent &&
+            weeklyPercent == quotaState.LastWeeklyReadPercent &&
+            (fiveHourResetLocal == DateTime.MinValue || fiveHourResetLocal == quotaState.TrackedFiveHourResetLocal);
+        if (duplicateSameBalance && protectionOptions.DuplicateSameBalanceRingProtectionEnabled)
+        {
+            return CompleteQuotaRingDecisionInfo(
+                quotaState,
+                decision,
+                weeklyConsumptionBaselineRepaired
+                    ? "suspicious_weekly_consumption_baseline_repaired;duplicate_source_same_balance_keep_existing_rings"
+                    : "duplicate_source_same_balance_keep_existing_rings");
+        }
+
+        bool fiveHourChanged = fiveHourPercent != quotaState.LastFiveHourReadPercent;
+        bool weeklyChanged = weeklyPercent != quotaState.LastWeeklyReadPercent;
         int nextFiveHourConsumptionRingBaseline = GetNextFiveHourConsumptionRingBaseline(
-            this.fiveHourConsumptionRingBaselinePercent,
-            this.lastFiveHourQuotaReadPercent,
+            quotaState.FiveHourConsumptionRingBaselinePercent,
+            quotaState.LastFiveHourReadPercent,
             fiveHourPercent);
+        DateTime nowLocal = DateTime.Now;
+        bool previousFiveHourResetDue =
+            quotaState.TrackedFiveHourResetLocal == DateTime.MinValue ||
+            quotaState.TrackedFiveHourResetLocal <= nowLocal.AddMinutes(30.0);
+        // Strict boundary mode keeps the old natural-reset rule. The default lets a clear
+        // balance increase advance the five-hour window so manual reset cards are not hidden.
         bool fiveHourResetMoved =
             fiveHourResetLocal != DateTime.MinValue &&
-            this.trackedFiveHourResetLocal != DateTime.MinValue &&
-            fiveHourResetLocal > this.trackedFiveHourResetLocal.AddMinutes(1.0);
+            quotaState.TrackedFiveHourResetLocal != DateTime.MinValue &&
+            fiveHourResetLocal > quotaState.TrackedFiveHourResetLocal.AddMinutes(1.0) &&
+            (!protectionOptions.StrictFiveHourResetBoundaryEnabled || previousFiveHourResetDue);
         bool fiveHourResetBecameKnown =
             fiveHourResetLocal != DateTime.MinValue &&
-            this.trackedFiveHourResetLocal == DateTime.MinValue;
+            quotaState.TrackedFiveHourResetLocal == DateTime.MinValue;
         bool fiveHourWindowAdvanced =
             fiveHourResetMoved ||
-            (fiveHourChanged && fiveHourPercent > this.lastFiveHourQuotaReadPercent);
-        bool weeklyWindowAdvanced = weeklyChanged && weeklyPercent > this.lastWeeklyQuotaReadPercent;
+            (fiveHourChanged &&
+                fiveHourPercent > quotaState.LastFiveHourReadPercent &&
+                fiveHourResetLocal == DateTime.MinValue);
+        bool weeklyWindowAdvanced = weeklyChanged && weeklyPercent > quotaState.LastWeeklyReadPercent;
         if (!fiveHourChanged && !weeklyChanged)
         {
             // A newer log can repeat the same rounded balance. Keep the previous visible
             // consumption baseline until a real decrease or reset/increase changes it.
-            this.fiveHourConsumptionRingBaselinePercent = nextFiveHourConsumptionRingBaseline;
+            quotaState.FiveHourConsumptionRingBaselinePercent = protectionOptions.DuplicateSameBalanceRingProtectionEnabled
+                ? nextFiveHourConsumptionRingBaseline
+                : -1;
             if (fiveHourResetMoved || fiveHourResetBecameKnown)
             {
-                this.trackedFiveHourResetLocal = fiveHourResetLocal;
-                this.weeklyQuotaAtFiveHourWindowStartPercent = weeklyPercent;
+                quotaState.TrackedFiveHourResetLocal = fiveHourResetLocal;
+                quotaState.WeeklyQuotaAtFiveHourWindowStartPercent = weeklyPercent;
             }
 
             if (sourceUtc != DateTime.MinValue)
             {
-                this.lastQuotaReadDeltaSourceUtc = sourceUtc;
+                quotaState.LastReadSourceUtc = sourceUtc;
             }
 
             string sameBalanceReason = fiveHourResetMoved
                 ? "same_balance_five_hour_window_advanced_reset_weekly_baseline"
                 : (fiveHourResetBecameKnown
                     ? "same_balance_five_hour_reset_became_known"
-                    : "newer_source_same_balance_keep_existing_rings");
-            return CompleteQuotaRingDecisionInfo(decision, sameBalanceReason);
+                    : (protectionOptions.DuplicateSameBalanceRingProtectionEnabled
+                        ? "newer_source_same_balance_keep_existing_rings"
+                        : "same_balance_protection_disabled_clear_consumption_ring"));
+            if (weeklyConsumptionBaselineRepaired)
+            {
+                sameBalanceReason = "suspicious_weekly_consumption_baseline_repaired;" + sameBalanceReason;
+            }
+
+            return CompleteQuotaRingDecisionInfo(quotaState, decision, sameBalanceReason);
         }
 
-        if (fiveHourWindowAdvanced || weeklyWindowAdvanced || this.weeklyQuotaAtFiveHourWindowStartPercent < 0)
+        if (fiveHourWindowAdvanced || weeklyWindowAdvanced || quotaState.WeeklyQuotaAtFiveHourWindowStartPercent < 0)
         {
-            this.weeklyQuotaAtFiveHourWindowStartPercent = weeklyPercent;
+            quotaState.WeeklyQuotaAtFiveHourWindowStartPercent = weeklyPercent;
         }
 
         if (fiveHourResetLocal != DateTime.MinValue)
         {
-            this.trackedFiveHourResetLocal = fiveHourResetLocal;
+            quotaState.TrackedFiveHourResetLocal = fiveHourResetLocal;
         }
 
         if (fiveHourChanged)
         {
-            this.fiveHourConsumptionRingBaselinePercent = nextFiveHourConsumptionRingBaseline;
-            this.lastFiveHourQuotaReadPercent = fiveHourPercent;
+            quotaState.FiveHourConsumptionRingBaselinePercent = nextFiveHourConsumptionRingBaseline;
+            quotaState.LastFiveHourReadPercent = fiveHourPercent;
         }
 
         if (weeklyChanged)
         {
-            this.lastWeeklyQuotaReadPercent = weeklyPercent;
+            quotaState.LastWeeklyReadPercent = weeklyPercent;
         }
 
         if (sourceUtc != DateTime.MinValue)
         {
-            this.lastQuotaReadDeltaSourceUtc = sourceUtc;
+            quotaState.LastReadSourceUtc = sourceUtc;
         }
 
         return CompleteQuotaRingDecisionInfo(
+            quotaState,
             decision,
             GetQuotaRingDecisionReason(
                 fiveHourChanged,
@@ -4492,7 +4470,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 weeklyPercent,
                 decision.PreviousWeeklyPercent,
                 fiveHourWindowAdvanced,
-                weeklyWindowAdvanced));
+                weeklyWindowAdvanced,
+                weeklyConsumptionBaselineRepaired));
     }
 
     private static int GetNextFiveHourConsumptionRingBaseline(
@@ -4514,32 +4493,71 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             : -1;
     }
 
-    private void ResetQuotaReadDeltaTracking()
+    private static bool IsSuspiciousWeeklyConsumptionBaseline(
+        int baselinePercent,
+        int previousWeeklyBalancePercent,
+        int currentWeeklyBalancePercent,
+        DateTime trackedFiveHourResetLocal,
+        DateTime currentFiveHourResetLocal)
     {
-        this.lastFiveHourQuotaReadPercent = -1;
-        this.lastWeeklyQuotaReadPercent = -1;
-        this.lastQuotaReadDeltaSourceUtc = DateTime.MinValue;
-        this.fiveHourConsumptionRingBaselinePercent = -1;
-        this.trackedFiveHourResetLocal = DateTime.MinValue;
-        this.weeklyQuotaAtFiveHourWindowStartPercent = -1;
+        baselinePercent = ClampPercent(baselinePercent);
+        previousWeeklyBalancePercent = ClampPercent(previousWeeklyBalancePercent);
+        currentWeeklyBalancePercent = ClampPercent(currentWeeklyBalancePercent);
+        if (baselinePercent < 95 ||
+            currentWeeklyBalancePercent > 50 ||
+            baselinePercent - currentWeeklyBalancePercent < 50)
+        {
+            return false;
+        }
+
+        if (previousWeeklyBalancePercent >= 95 &&
+            currentWeeklyBalancePercent < previousWeeklyBalancePercent)
+        {
+            return true;
+        }
+
+        if (previousWeeklyBalancePercent <= 50 &&
+            currentWeeklyBalancePercent <= 50)
+        {
+            return true;
+        }
+
+        return trackedFiveHourResetLocal != DateTime.MinValue &&
+            currentFiveHourResetLocal != DateTime.MinValue &&
+            currentFiveHourResetLocal < trackedFiveHourResetLocal.AddMinutes(-1.0);
     }
 
-    private QuotaRingDecisionInfo CreateQuotaRingDecisionInfo(CodexQuotaSnapshot snapshot, bool sourceKnown)
+    private void ResetQuotaReadDeltaTracking()
+    {
+        ResetQuotaReadDeltaTracking(GetActiveQuotaRuntimeState());
+    }
+
+    private static void ResetQuotaReadDeltaTracking(QuotaRuntimeState quotaState)
+    {
+        quotaState.LastFiveHourReadPercent = -1;
+        quotaState.LastWeeklyReadPercent = -1;
+        quotaState.LastReadSourceUtc = DateTime.MinValue;
+        quotaState.FiveHourConsumptionRingBaselinePercent = -1;
+        quotaState.TrackedFiveHourResetLocal = DateTime.MinValue;
+        quotaState.WeeklyQuotaAtFiveHourWindowStartPercent = -1;
+    }
+
+    private static QuotaRingDecisionInfo CreateQuotaRingDecisionInfo(QuotaRuntimeState quotaState, CodexQuotaSnapshot snapshot, bool sourceKnown)
     {
         QuotaRingDecisionInfo decision = new QuotaRingDecisionInfo
         {
             SourceKnown = sourceKnown,
             SnapshotKnown = snapshot != null,
-            PreviousFiveHourPercent = this.lastFiveHourQuotaReadPercent,
-            PreviousWeeklyPercent = this.lastWeeklyQuotaReadPercent,
-            PreviousSourceUpdatedUtc = this.lastQuotaReadDeltaSourceUtc,
-            PreviousFiveHourBaselinePercent = this.fiveHourConsumptionRingBaselinePercent,
-            PreviousWeeklyBaselinePercent = this.weeklyQuotaAtFiveHourWindowStartPercent,
-            PreviousTrackedFiveHourResetLocal = this.trackedFiveHourResetLocal,
-            NextFiveHourBaselinePercent = this.fiveHourConsumptionRingBaselinePercent,
-            NextWeeklyBaselinePercent = this.weeklyQuotaAtFiveHourWindowStartPercent,
-            NextTrackedFiveHourResetLocal = this.trackedFiveHourResetLocal,
-            NextSourceUpdatedUtc = this.lastQuotaReadDeltaSourceUtc
+            PreviousFiveHourPercent = quotaState.LastFiveHourReadPercent,
+            PreviousWeeklyPercent = quotaState.LastWeeklyReadPercent,
+            PreviousSourceUpdatedUtc = quotaState.LastReadSourceUtc,
+            PreviousFiveHourBaselinePercent = quotaState.FiveHourConsumptionRingBaselinePercent,
+            PreviousWeeklyBaselinePercent = quotaState.WeeklyQuotaAtFiveHourWindowStartPercent,
+            PreviousTrackedFiveHourResetLocal = quotaState.TrackedFiveHourResetLocal,
+            NextFiveHourBaselinePercent = quotaState.FiveHourConsumptionRingBaselinePercent,
+            NextWeeklyBaselinePercent = quotaState.WeeklyQuotaAtFiveHourWindowStartPercent,
+            NextTrackedFiveHourResetLocal = quotaState.TrackedFiveHourResetLocal,
+            NextSourceUpdatedUtc = quotaState.LastReadSourceUtc
         };
 
         if (snapshot != null)
@@ -4569,7 +4587,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return decision;
     }
 
-    private QuotaRingDecisionInfo CompleteQuotaRingDecisionInfo(
+    private static QuotaRingDecisionInfo CompleteQuotaRingDecisionInfo(
+        QuotaRuntimeState quotaState,
         QuotaRingDecisionInfo decision,
         string reason)
     {
@@ -4579,10 +4598,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         decision.Reason = reason;
-        decision.NextFiveHourBaselinePercent = this.fiveHourConsumptionRingBaselinePercent;
-        decision.NextWeeklyBaselinePercent = this.weeklyQuotaAtFiveHourWindowStartPercent;
-        decision.NextTrackedFiveHourResetLocal = this.trackedFiveHourResetLocal;
-        decision.NextSourceUpdatedUtc = this.lastQuotaReadDeltaSourceUtc;
+        decision.NextFiveHourBaselinePercent = quotaState.FiveHourConsumptionRingBaselinePercent;
+        decision.NextWeeklyBaselinePercent = quotaState.WeeklyQuotaAtFiveHourWindowStartPercent;
+        decision.NextTrackedFiveHourResetLocal = quotaState.TrackedFiveHourResetLocal;
+        decision.NextSourceUpdatedUtc = quotaState.LastReadSourceUtc;
         return decision;
     }
 
@@ -4594,9 +4613,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         int weeklyPercent,
         int previousWeeklyPercent,
         bool fiveHourWindowAdvanced,
-        bool weeklyWindowAdvanced)
+        bool weeklyWindowAdvanced,
+        bool weeklyConsumptionBaselineRepaired)
     {
         List<string> reasons = new List<string>();
+        if (weeklyConsumptionBaselineRepaired)
+        {
+            reasons.Add("suspicious_weekly_consumption_baseline_repaired");
+        }
+
         if (fiveHourChanged)
         {
             if (fiveHourPercent < previousFiveHourPercent)
@@ -4635,10 +4660,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     }
 
     private void LogQuotaRingDecision(
+        CodexRadarSoftwareMode family,
         QuotaRingDecisionInfo decision,
         CodexQuotaSnapshot displaySnapshot,
         bool sourceKnown,
-        bool codexRunning)
+        bool appRunning)
     {
         if (decision == null)
         {
@@ -4651,10 +4677,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool weeklyGold;
         lock (this.quotaResetStateLock)
         {
-            fiveHourProtected = this.fiveHourQuotaProtectionUtc != DateTime.MinValue;
-            weeklyProtected = this.weeklyQuotaProtectionUtc != DateTime.MinValue;
-            fiveHourGold = this.fiveHourQuotaProtectionGold;
-            weeklyGold = this.weeklyQuotaProtectionGold;
+            bool isCodex = NormalizeEffectiveSoftwareMode(family) == CodexRadarSoftwareMode.Codex;
+            fiveHourProtected = isCodex && this.fiveHourQuotaProtectionUtc != DateTime.MinValue;
+            weeklyProtected = isCodex && this.weeklyQuotaProtectionUtc != DateTime.MinValue;
+            fiveHourGold = isCodex && this.fiveHourQuotaProtectionGold;
+            weeklyGold = isCodex && this.weeklyQuotaProtectionGold;
         }
 
         int displayFiveHourPercent = displaySnapshot == null
@@ -4682,9 +4709,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         QuotaDecisionHistoryLogger.LogDecision(
             decision.Reason ?? "quota_ring_decision",
             sourceKnown,
-            codexRunning,
+            appRunning,
             new Dictionary<string, object>
             {
+                { "software_family", NormalizeEffectiveSoftwareMode(family).ToString() },
                 { "five_hour_balance_percent", displayFiveHourPercent },
                 { "five_hour_raw_balance_percent", decision.RawFiveHourPercent },
                 { "five_hour_source_used_field", EmptyFallback(decision.RawFiveHourUsedFieldName, string.Empty) },
@@ -4763,7 +4791,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             this.serviceNetworkAvailable = networkAvailable;
             if (!networkAvailable)
             {
-                this.radarServiceHealth = ServiceHealthState.Offline;
+                this.codexRuntimeState.RadarSiteHealth = ServiceHealthState.Offline;
+                this.claudeRuntimeState.RadarSiteHealth = ServiceHealthState.Offline;
+                this.codexRuntimeState.Touch();
+                this.claudeRuntimeState.Touch();
                 this.openAiServiceHealth = ServiceHealthState.Offline;
                 this.claudeServiceHealth = ServiceHealthState.Offline;
                 SetCodexProviderUsageHealth(ServiceHealthState.Offline, "OFFLINE", "无网络");
@@ -4771,9 +4802,16 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 return;
             }
 
-            if (this.radarServiceHealth == ServiceHealthState.Offline)
+            if (this.codexRuntimeState.RadarSiteHealth == ServiceHealthState.Offline)
             {
-                this.radarServiceHealth = ServiceHealthState.Unknown;
+                this.codexRuntimeState.RadarSiteHealth = ServiceHealthState.Unknown;
+                this.codexRuntimeState.Touch();
+            }
+
+            if (this.claudeRuntimeState.RadarSiteHealth == ServiceHealthState.Offline)
+            {
+                this.claudeRuntimeState.RadarSiteHealth = ServiceHealthState.Unknown;
+                this.claudeRuntimeState.Touch();
             }
 
             if (this.claudeServiceHealth == ServiceHealthState.Offline)
@@ -4791,14 +4829,18 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private void OnNetworkAddressChanged(object sender, EventArgs e)
     {
         RequestServiceNetworkRefresh();
-        RequestDeepSeekBalanceRefresh();
+        StatuspageMonitor.RequestRefresh(StatuspageMonitor.ClaudeServiceKey, "网络变化");
+        StatuspageMonitor.RequestRefresh(StatuspageMonitor.OpenAiServiceKey, "网络变化");
+        RequestDeepSeekBalanceRefresh("网络变化");
         RequestSelectedQuotaUsageRefresh("网络变化");
     }
 
     private void OnNetworkAvailabilityChanged(object sender, NetworkAvailabilityEventArgs e)
     {
         RequestServiceNetworkRefresh();
-        RequestDeepSeekBalanceRefresh();
+        StatuspageMonitor.RequestRefresh(StatuspageMonitor.ClaudeServiceKey, "网络变化");
+        StatuspageMonitor.RequestRefresh(StatuspageMonitor.OpenAiServiceKey, "网络变化");
+        RequestDeepSeekBalanceRefresh("网络变化");
         RequestSelectedQuotaUsageRefresh("网络变化");
     }
 
@@ -4817,493 +4859,53 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void RequestDeepSeekBalanceRefresh()
     {
-        lock (this.deepSeekBalanceLock)
-        {
-            this.nextDeepSeekBalanceRefreshUtc = DateTime.UtcNow;
-        }
+        RequestDeepSeekBalanceRefresh("强制刷新");
+    }
+
+    private void RequestDeepSeekBalanceRefresh(string trigger)
+    {
+        DeepSeekBalanceMonitor.RequestRefresh(trigger);
     }
 
     private void RefreshDeepSeekBalanceIfNeeded()
     {
-        DateTime nowUtc = DateTime.UtcNow;
-        string apiKey = GetDeepSeekApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey))
+        DeepSeekBalanceMonitor.RefreshIfNeeded(
+            "codex_radar",
+            "定时间隔",
+            RequestCodexRadarRenderFromAnyThread);
+    }
+
+    private void RequestCodexRadarRenderFromAnyThread()
+    {
+        try
         {
-            bool changed = false;
-            lock (this.deepSeekBalanceLock)
-            {
-                if (this.deepSeekBalanceSnapshot.ApiKeyConfigured ||
-                    this.deepSeekBalanceSnapshot.Known ||
-                    this.deepSeekBalanceSnapshot.RequestRunning ||
-                    !string.Equals(this.deepSeekBalanceSnapshot.ErrorCode, "NO_KEY", StringComparison.Ordinal))
-                {
-                    changed = true;
-                }
-
-                this.deepSeekBalanceRequestRunning = false;
-                this.nextDeepSeekBalanceRefreshUtc = nowUtc.AddSeconds(DeepSeekBalanceErrorRefreshSeconds);
-                this.deepSeekBalanceSnapshot = DeepSeekBalanceSnapshot.CreateDefault();
-                this.deepSeekBalanceSnapshot.ApiKeyConfigured = false;
-                this.deepSeekBalanceSnapshot.ErrorCode = "NO_KEY";
-                this.deepSeekBalanceSnapshot.ErrorMessage = "未配置";
-            }
-
-            if (changed)
-            {
-                RenderLayeredWindow();
-            }
-
-            return;
-        }
-
-        lock (this.deepSeekBalanceLock)
-        {
-            if (this.deepSeekBalanceRequestRunning ||
-                (this.nextDeepSeekBalanceRefreshUtc != DateTime.MinValue &&
-                 nowUtc < this.nextDeepSeekBalanceRefreshUtc))
+            if (this.IsDisposed || !this.IsHandleCreated)
             {
                 return;
             }
 
-            this.deepSeekBalanceRequestRunning = true;
-            DeepSeekBalanceSnapshot running = this.deepSeekBalanceSnapshot.Clone();
-            running.ApiKeyConfigured = true;
-            running.RequestRunning = true;
-            this.deepSeekBalanceSnapshot = running;
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke((MethodInvoker)delegate
+                {
+                    if (!this.IsDisposed)
+                    {
+                        RenderLayeredWindow();
+                    }
+                });
+                return;
+            }
+
+            RenderLayeredWindow();
         }
-
-        Task.Run((Action)delegate
+        catch (InvalidOperationException)
         {
-            DeepSeekBalanceSnapshot snapshot;
-            try
-            {
-                snapshot = ReadDeepSeekBalance(apiKey);
-                ApplyDeepSeekBalanceHistory(snapshot);
-            }
-            catch (Exception ex)
-            {
-                Program.LogException(ex);
-                snapshot = BuildDeepSeekBalanceErrorSnapshot("ERROR", "请求失败");
-            }
-
-            DateTime nextRefreshUtc = DateTime.UtcNow.AddSeconds(
-                snapshot.Known ? DeepSeekBalanceNormalRefreshSeconds : DeepSeekBalanceErrorRefreshSeconds);
-            lock (this.deepSeekBalanceLock)
-            {
-                snapshot.ApiKeyConfigured = true;
-                snapshot.RequestRunning = false;
-                this.deepSeekBalanceSnapshot = snapshot;
-                this.deepSeekBalanceRequestRunning = false;
-                this.nextDeepSeekBalanceRefreshUtc = nextRefreshUtc;
-            }
-
-            if (!this.IsDisposed && this.IsHandleCreated)
-            {
-                BeginInvoke((Action)delegate { RenderLayeredWindow(); });
-            }
-        });
+        }
     }
 
     private DeepSeekBalanceSnapshot GetDeepSeekBalanceDisplaySnapshot()
     {
-        lock (this.deepSeekBalanceLock)
-        {
-            return this.deepSeekBalanceSnapshot.Clone();
-        }
-    }
-
-    private static string GetDeepSeekApiKey()
-    {
-        string key = Environment.GetEnvironmentVariable(DeepSeekApiKeyEnvironmentVariable);
-        if (!string.IsNullOrWhiteSpace(key))
-        {
-            return key.Trim();
-        }
-
-        key = Environment.GetEnvironmentVariable(DeepSeekApiKeyEnvironmentVariable, EnvironmentVariableTarget.User);
-        if (!string.IsNullOrWhiteSpace(key))
-        {
-            return key.Trim();
-        }
-
-        key = Environment.GetEnvironmentVariable(DeepSeekApiKeyEnvironmentVariable, EnvironmentVariableTarget.Machine);
-        if (!string.IsNullOrWhiteSpace(key))
-        {
-            return key.Trim();
-        }
-
-        try
-        {
-            string secret;
-            bool migrated;
-            string errorCode;
-            return SecretStore.TryReadOrMigrateSecret(
-                DeepSeekApiKeyPath,
-                LegacyDeepSeekApiKeyPath,
-                SecretStore.TrimSecret,
-                out secret,
-                out migrated,
-                out errorCode)
-                ? secret
-                : string.Empty;
-        }
-        catch
-        {
-        }
-
-        return string.Empty;
-    }
-
-    private static DeepSeekBalanceSnapshot ReadDeepSeekBalance(string apiKey)
-    {
-        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(DeepSeekBalanceUrl);
-        request.Method = "GET";
-        request.UserAgent = ProductIdentity.UserAgent;
-        request.Timeout = DeepSeekBalanceTimeoutMs;
-        request.ReadWriteTimeout = DeepSeekBalanceTimeoutMs;
-        request.Headers["Cache-Control"] = "no-store, no-cache";
-        request.Headers["Authorization"] = "Bearer " + apiKey;
-
-        try
-        {
-            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
-            using (Stream stream = response.GetResponseStream())
-            using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
-            {
-                string content = reader.ReadToEnd();
-                DeepSeekBalanceSnapshot snapshot;
-                if (TryParseDeepSeekBalanceResponse(content, out snapshot))
-                {
-                    return snapshot;
-                }
-
-                return BuildDeepSeekBalanceErrorSnapshot("PARSE", "解析失败");
-            }
-        }
-        catch (WebException ex)
-        {
-            HttpWebResponse response = ex.Response as HttpWebResponse;
-            if (response != null)
-            {
-                int statusCode = (int)response.StatusCode;
-                return BuildDeepSeekBalanceErrorSnapshot(
-                    statusCode.ToString(CultureInfo.InvariantCulture),
-                    GetDeepSeekHttpErrorReason(statusCode));
-            }
-
-            return BuildDeepSeekBalanceErrorSnapshot("NET", "无法连接");
-        }
-    }
-
-    private static bool TryParseDeepSeekBalanceResponse(string content, out DeepSeekBalanceSnapshot snapshot)
-    {
-        snapshot = null;
-        if (string.IsNullOrWhiteSpace(content))
-        {
-            return false;
-        }
-
-        Dictionary<string, object> root;
-        try
-        {
-            root = new JavaScriptSerializer().DeserializeObject(content) as Dictionary<string, object>;
-        }
-        catch
-        {
-            return false;
-        }
-
-        if (root == null)
-        {
-            return false;
-        }
-
-        object isAvailableObj;
-        bool isAvailable = true;
-        if (root.TryGetValue("is_available", out isAvailableObj) && isAvailableObj is bool)
-        {
-            isAvailable = (bool)isAvailableObj;
-        }
-
-        object balanceInfosObj;
-        if (!root.TryGetValue("balance_infos", out balanceInfosObj))
-        {
-            return false;
-        }
-
-        object[] balanceInfos = balanceInfosObj as object[];
-        if (balanceInfos == null)
-        {
-            return false;
-        }
-
-        double balanceCny = 0.0;
-        string currency = "CNY";
-        bool found = false;
-        for (int i = 0; i < balanceInfos.Length; i++)
-        {
-            Dictionary<string, object> info = balanceInfos[i] as Dictionary<string, object>;
-            if (info == null)
-            {
-                continue;
-            }
-
-            object currencyObj;
-            string candidateCurrency = info.TryGetValue("currency", out currencyObj)
-                ? Convert.ToString(currencyObj, CultureInfo.InvariantCulture)
-                : string.Empty;
-            if (!string.Equals(candidateCurrency, "CNY", StringComparison.OrdinalIgnoreCase) && found)
-            {
-                continue;
-            }
-
-            object balanceObj;
-            double parsedBalance;
-            if (info.TryGetValue("total_balance", out balanceObj) &&
-                TryParseInvariantDouble(Convert.ToString(balanceObj, CultureInfo.InvariantCulture), out parsedBalance))
-            {
-                balanceCny = parsedBalance;
-                currency = string.IsNullOrWhiteSpace(candidateCurrency) ? "CNY" : candidateCurrency.ToUpperInvariant();
-                found = string.Equals(currency, "CNY", StringComparison.OrdinalIgnoreCase);
-                if (found)
-                {
-                    break;
-                }
-            }
-        }
-
-        if (!found && balanceCny <= 0.0)
-        {
-            return false;
-        }
-
-        DateTime nowUtc = DateTime.UtcNow;
-        snapshot = new DeepSeekBalanceSnapshot
-        {
-            ApiKeyConfigured = true,
-            Known = true,
-            IsAvailable = isAvailable,
-            Currency = currency,
-            BalanceCny = Math.Max(0.0, balanceCny),
-            Last24HourUsageKnown = false,
-            Last24HourUsageCny = 0.0,
-            CheckedAtUtc = nowUtc,
-            CheckedAtLocal = DateTime.Now,
-            ErrorCode = string.Empty,
-            ErrorMessage = string.Empty,
-            RequestRunning = false
-        };
-        return true;
-    }
-
-    private static bool TryParseInvariantDouble(string value, out double number)
-    {
-        return double.TryParse(
-            value,
-            NumberStyles.Float,
-            CultureInfo.InvariantCulture,
-            out number);
-    }
-
-    private static DeepSeekBalanceSnapshot BuildDeepSeekBalanceErrorSnapshot(string errorCode, string message)
-    {
-        return new DeepSeekBalanceSnapshot
-        {
-            ApiKeyConfigured = true,
-            Known = false,
-            IsAvailable = false,
-            Currency = "CNY",
-            BalanceCny = 0.0,
-            Last24HourUsageKnown = false,
-            Last24HourUsageCny = 0.0,
-            CheckedAtUtc = DateTime.UtcNow,
-            CheckedAtLocal = DateTime.Now,
-            ErrorCode = errorCode ?? string.Empty,
-            ErrorMessage = string.IsNullOrWhiteSpace(message) ? "请求失败" : message,
-            RequestRunning = false
-        };
-    }
-
-    private static string GetDeepSeekHttpErrorReason(int statusCode)
-    {
-        if (statusCode == 401)
-        {
-            return "鉴权失败";
-        }
-
-        if (statusCode == 402)
-        {
-            return "余额不足";
-        }
-
-        if (statusCode == 429)
-        {
-            return "限流";
-        }
-
-        if (statusCode >= 500)
-        {
-            return "服务异常";
-        }
-
-        return "HTTP " + statusCode.ToString(CultureInfo.InvariantCulture);
-    }
-
-    private void ApplyDeepSeekBalanceHistory(DeepSeekBalanceSnapshot snapshot)
-    {
-        if (snapshot == null || !snapshot.Known)
-        {
-            return;
-        }
-
-        lock (this.deepSeekBalanceLock)
-        {
-            EnsureDeepSeekBalanceHistoryLoadedLocked();
-            DateTime nowUtc = snapshot.CheckedAtUtc == DateTime.MinValue ? DateTime.UtcNow : snapshot.CheckedAtUtc;
-            this.deepSeekBalanceHistory.Add(new DeepSeekBalancePoint
-            {
-                TimestampUtc = nowUtc,
-                BalanceCny = snapshot.BalanceCny
-            });
-
-            TrimDeepSeekBalanceHistoryLocked(nowUtc);
-            snapshot.Last24HourUsageCny = CalculateDeepSeekLast24HourUsageLocked(nowUtc);
-            snapshot.Last24HourUsageKnown = true;
-            SaveDeepSeekBalanceHistoryLocked();
-        }
-    }
-
-    private void EnsureDeepSeekBalanceHistoryLoadedLocked()
-    {
-        if (this.deepSeekBalanceHistoryLoaded)
-        {
-            return;
-        }
-
-        this.deepSeekBalanceHistoryLoaded = true;
-        this.deepSeekBalanceHistory.Clear();
-        string path = DeepSeekBalanceHistoryPath;
-        if (!File.Exists(path))
-        {
-            return;
-        }
-
-        try
-        {
-            string[] lines = File.ReadAllLines(path, Encoding.UTF8);
-            for (int i = 0; i < lines.Length; i++)
-            {
-                Dictionary<string, object> row;
-                try
-                {
-                    row = new JavaScriptSerializer().DeserializeObject(lines[i]) as Dictionary<string, object>;
-                }
-                catch
-                {
-                    continue;
-                }
-
-                if (row == null)
-                {
-                    continue;
-                }
-
-                object timestampObj;
-                object balanceObj;
-                DateTime timestampUtc;
-                double balance;
-                if (row.TryGetValue("timestamp_utc", out timestampObj) &&
-                    row.TryGetValue("balance_cny", out balanceObj) &&
-                    DateTime.TryParse(
-                        Convert.ToString(timestampObj, CultureInfo.InvariantCulture),
-                        CultureInfo.InvariantCulture,
-                        DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
-                        out timestampUtc) &&
-                    TryParseInvariantDouble(Convert.ToString(balanceObj, CultureInfo.InvariantCulture), out balance))
-                {
-                    this.deepSeekBalanceHistory.Add(new DeepSeekBalancePoint
-                    {
-                        TimestampUtc = timestampUtc,
-                        BalanceCny = Math.Max(0.0, balance)
-                    });
-                }
-            }
-        }
-        catch
-        {
-        }
-
-        this.deepSeekBalanceHistory.Sort(delegate(DeepSeekBalancePoint left, DeepSeekBalancePoint right)
-        {
-            return left.TimestampUtc.CompareTo(right.TimestampUtc);
-        });
-        TrimDeepSeekBalanceHistoryLocked(DateTime.UtcNow);
-    }
-
-    private void TrimDeepSeekBalanceHistoryLocked(DateTime nowUtc)
-    {
-        DateTime cutoffUtc = nowUtc.AddHours(-DeepSeekBalanceHistoryRetentionHours);
-        this.deepSeekBalanceHistory.RemoveAll(delegate(DeepSeekBalancePoint point)
-        {
-            return point == null || point.TimestampUtc < cutoffUtc;
-        });
-    }
-
-    private double CalculateDeepSeekLast24HourUsageLocked(DateTime nowUtc)
-    {
-        DateTime cutoffUtc = nowUtc.AddHours(-24.0);
-        double used = 0.0;
-        DeepSeekBalancePoint previous = null;
-        for (int i = 0; i < this.deepSeekBalanceHistory.Count; i++)
-        {
-            DeepSeekBalancePoint point = this.deepSeekBalanceHistory[i];
-            if (point == null || point.TimestampUtc < cutoffUtc)
-            {
-                continue;
-            }
-
-            if (previous != null && point.BalanceCny < previous.BalanceCny)
-            {
-                used += previous.BalanceCny - point.BalanceCny;
-            }
-
-            previous = point;
-        }
-
-        return Math.Max(0.0, used);
-    }
-
-    private void SaveDeepSeekBalanceHistoryLocked()
-    {
-        try
-        {
-            Directory.CreateDirectory(Logger.DirectoryPath);
-            StringBuilder builder = new StringBuilder();
-            for (int i = 0; i < this.deepSeekBalanceHistory.Count; i++)
-            {
-                DeepSeekBalancePoint point = this.deepSeekBalanceHistory[i];
-                if (point == null)
-                {
-                    continue;
-                }
-
-                builder.Append("{\"schema_version\":1,\"timestamp_utc\":\"");
-                builder.Append(point.TimestampUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture));
-                builder.Append("\",\"balance_cny\":");
-                builder.Append(point.BalanceCny.ToString("0.####", CultureInfo.InvariantCulture));
-                builder.AppendLine("}");
-            }
-
-            File.WriteAllText(DeepSeekBalanceHistoryPath, builder.ToString(), Encoding.UTF8);
-        }
-        catch
-        {
-        }
-    }
-
-    private static string DeepSeekBalanceHistoryPath
-    {
-        get { return Path.Combine(Logger.DirectoryPath, "deepseek-balance-history.jsonl"); }
+        return DeepSeekBalanceMonitor.GetSnapshot();
     }
 
     private bool IsServiceNetworkAvailable()
@@ -5334,6 +4936,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void SetRadarServiceHealth(ServiceHealthState health)
     {
+        SetRadarServiceHealth(GetEffectiveCodexRadarSoftwareMode(), health);
+    }
+
+    private void SetRadarServiceHealth(CodexRadarSoftwareMode family, ServiceHealthState health)
+    {
         if (!ServiceHealthProbeEnabled)
         {
             return;
@@ -5347,7 +4954,26 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         lock (this.serviceHealthLock)
         {
-            this.radarServiceHealth = this.serviceNetworkAvailable ? health : ServiceHealthState.Offline;
+            RadarFamilyRuntimeState state = GetRadarFamilyState(family);
+            state.RadarSiteHealth = this.serviceNetworkAvailable ? health : ServiceHealthState.Offline;
+            state.Touch();
+        }
+    }
+
+    private void SetAllRadarServiceHealth(ServiceHealthState health)
+    {
+        if (!ServiceHealthProbeEnabled)
+        {
+            return;
+        }
+
+        lock (this.serviceHealthLock)
+        {
+            ServiceHealthState effective = this.serviceNetworkAvailable ? health : ServiceHealthState.Offline;
+            this.codexRuntimeState.RadarSiteHealth = effective;
+            this.claudeRuntimeState.RadarSiteHealth = effective;
+            this.codexRuntimeState.Touch();
+            this.claudeRuntimeState.Touch();
         }
     }
 
@@ -5389,6 +5015,61 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
     }
 
+    private void ApplyCodexStatuspageSnapshot(string serviceKey, StatuspageSnapshot snapshot)
+    {
+        StatuspageSnapshot local = snapshot == null
+            ? StatuspageSnapshot.CreateDefault(serviceKey)
+            : snapshot.Clone();
+        ServiceHealthState health = ConvertStatuspageHealthState(local.State);
+        if (string.Equals(serviceKey, StatuspageMonitor.ClaudeServiceKey, StringComparison.OrdinalIgnoreCase))
+        {
+            lock (this.claudeStatusLock)
+            {
+                this.claudeStatusRequestRunning = local.RequestRunning;
+                this.nextClaudeStatusRefreshUtc = DateTime.UtcNow.AddMinutes(
+                    health == ServiceHealthState.Normal ? 15.0 : 2.0);
+                this.claudeStatusRefreshTrigger = health == ServiceHealthState.Normal ? "定时间隔" : "异常状态重试";
+            }
+
+            SetClaudeServiceHealth(health);
+            return;
+        }
+
+        if (string.Equals(serviceKey, StatuspageMonitor.OpenAiServiceKey, StringComparison.OrdinalIgnoreCase))
+        {
+            lock (this.openAiStatusLock)
+            {
+                this.openAiStatusRequestRunning = local.RequestRunning;
+                this.nextOpenAiStatusRefreshUtc = DateTime.UtcNow.AddMinutes(
+                    health == ServiceHealthState.Normal ? 15.0 : 2.0);
+                this.openAiStatusRefreshTrigger = health == ServiceHealthState.Normal ? "定时间隔" : "异常状态重试";
+            }
+
+            SetOpenAiServiceHealth(health);
+        }
+    }
+
+    private static ServiceHealthState ConvertStatuspageHealthState(StatuspageHealthState state)
+    {
+        switch (state)
+        {
+            case StatuspageHealthState.Normal:
+                return ServiceHealthState.Normal;
+            case StatuspageHealthState.Degraded:
+                return ServiceHealthState.Degraded;
+            case StatuspageHealthState.Incomplete:
+                return ServiceHealthState.Incomplete;
+            case StatuspageHealthState.Offline:
+                return ServiceHealthState.Offline;
+            case StatuspageHealthState.Unavailable:
+                return ServiceHealthState.Unavailable;
+            case StatuspageHealthState.Unreachable:
+                return ServiceHealthState.Unreachable;
+            default:
+                return ServiceHealthState.Unknown;
+        }
+    }
+
     private void ApplyServiceHealthTestMode()
     {
         if (!ServiceHealthProbeEnabled)
@@ -5406,7 +5087,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         lock (this.serviceHealthLock)
         {
             this.serviceNetworkAvailable = mode != ServiceHealthTestMode.Offline;
-            this.radarServiceHealth = state;
+            this.codexRuntimeState.RadarSiteHealth = state;
+            this.claudeRuntimeState.RadarSiteHealth = state;
+            this.codexRuntimeState.Touch();
+            this.claudeRuntimeState.Touch();
             this.openAiServiceHealth = state;
             this.claudeServiceHealth = state;
         }
@@ -5424,7 +5108,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         {
             this.serviceNetworkRefreshRequested = false;
             this.serviceNetworkAvailable = networkAvailable;
-            this.radarServiceHealth = networkAvailable ? ServiceHealthState.Unknown : ServiceHealthState.Offline;
+            this.codexRuntimeState.RadarSiteHealth = networkAvailable ? ServiceHealthState.Unknown : ServiceHealthState.Offline;
+            this.claudeRuntimeState.RadarSiteHealth = networkAvailable ? ServiceHealthState.Unknown : ServiceHealthState.Offline;
+            this.codexRuntimeState.Touch();
+            this.claudeRuntimeState.Touch();
             this.openAiServiceHealth = networkAvailable ? ServiceHealthState.Unknown : ServiceHealthState.Offline;
             this.claudeServiceHealth = networkAvailable ? ServiceHealthState.Unknown : ServiceHealthState.Offline;
         }
@@ -5433,11 +5120,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         {
             this.nextClaudeStatusRefreshUtc = DateTime.UtcNow.AddSeconds(1.0);
         }
+        StatuspageMonitor.RequestRefresh(StatuspageMonitor.ClaudeServiceKey, "测试模式恢复");
 
         lock (this.openAiStatusLock)
         {
             this.nextOpenAiStatusRefreshUtc = DateTime.UtcNow.AddSeconds(1.0);
         }
+        StatuspageMonitor.RequestRefresh(StatuspageMonitor.OpenAiServiceKey, "测试模式恢复");
 
         RequestSelectedQuotaUsageRefresh("测试模式恢复");
 
@@ -5525,85 +5214,44 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        DateTime nowUtc = DateTime.UtcNow;
-        bool shouldStart = false;
-        bool forceRefresh = ShouldForceServiceHealthRefresh(this.claudeServiceHealth);
-        string trigger = "定时间隔";
-        lock (this.claudeStatusLock)
-        {
-            bool scheduledRefreshDue = this.nextClaudeStatusRefreshUtc == DateTime.MinValue ||
-                nowUtc >= this.nextClaudeStatusRefreshUtc;
-            if (!this.claudeStatusRequestRunning &&
-                (scheduledRefreshDue || forceRefresh))
-            {
-                this.claudeStatusRequestRunning = true;
-                trigger = forceRefresh
-                    ? "异常状态重试"
-                    : (this.nextClaudeStatusRefreshUtc == DateTime.MinValue
-                        ? "首次刷新"
-                        : EmptyFallback(this.claudeStatusRefreshTrigger, "定时间隔"));
-                this.claudeStatusRefreshTrigger = "定时间隔";
-                shouldStart = true;
-            }
-        }
-
-        if (!shouldStart)
+        WidgetSettings settings = this.currentSettings == null ? null : this.currentSettings.Clone();
+        if (settings == null)
         {
             return;
         }
 
-        Task.Run((Action)delegate
+        string trigger;
+        lock (this.claudeStatusLock)
         {
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            ServiceHealthState health = ServiceHealthState.Unknown;
-            try
+            trigger = EmptyFallback(this.claudeStatusRefreshTrigger, "定时间隔");
+            this.claudeStatusRefreshTrigger = "定时间隔";
+        }
+
+        Task<StatuspageRefreshOutcome> task;
+        if (!StatuspageMonitor.TryStartOrJoin(
+            StatuspageMonitor.ClaudeServiceKey,
+            "codex_radar",
+            settings,
+            trigger,
+            out task))
+        {
+            ApplyCodexStatuspageSnapshot(StatuspageMonitor.ClaudeServiceKey, StatuspageMonitor.GetSnapshot(StatuspageMonitor.ClaudeServiceKey));
+            return;
+        }
+
+        ApplyCodexStatuspageSnapshot(StatuspageMonitor.ClaudeServiceKey, StatuspageMonitor.GetSnapshot(StatuspageMonitor.ClaudeServiceKey));
+        task.ContinueWith(delegate(Task<StatuspageRefreshOutcome> completed)
+        {
+            if (completed.Exception != null)
             {
-                health = TryReadClaudeStatus(this.currentSettings);
-            }
-            catch (Exception ex)
-            {
-                health = ServiceHealthState.Unreachable;
-                Program.LogException(ex);
+                Program.LogException(completed.Exception.GetBaseException());
             }
 
-            stopwatch.Stop();
-            lock (this.claudeStatusLock)
-            {
-                this.nextClaudeStatusRefreshUtc = DateTime.UtcNow +
-                    (health == ServiceHealthState.Normal ? GetServiceStatusRefreshInterval() : GetCodexWebRetryDelay());
-                this.claudeStatusRequestRunning = false;
-                this.claudeStatusRefreshTrigger = health == ServiceHealthState.Normal ? "定时间隔" : "异常状态重试";
-            }
-
-            SetClaudeServiceHealth(health);
-            NetworkCheckHistoryLogger.LogCompleted(
-                "codex_radar",
-                "claude_status",
-                trigger,
-                health.ToString(),
-                health == ServiceHealthState.Normal,
-                (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
-                new Dictionary<string, object>
-                {
-                    { "health", health.ToString() }
-                });
-
-            try
-            {
-                if (!this.IsDisposed && this.IsHandleCreated)
-                {
-                    this.BeginInvoke((MethodInvoker)delegate
-                    {
-                        if (!this.IsDisposed)
-                        {
-                            RenderLayeredWindow();
-                        }
-                    });
-                }
-            }
-            catch (InvalidOperationException)
-            {
-            }
+            StatuspageSnapshot snapshot = completed.Status == TaskStatus.RanToCompletion && completed.Result != null
+                ? completed.Result.Snapshot
+                : StatuspageMonitor.GetSnapshot(StatuspageMonitor.ClaudeServiceKey);
+            ApplyCodexStatuspageSnapshot(StatuspageMonitor.ClaudeServiceKey, snapshot);
+            RequestCodexRadarRenderFromAnyThread();
         });
     }
 
@@ -5620,85 +5268,44 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        DateTime nowUtc = DateTime.UtcNow;
-        bool shouldStart = false;
-        bool forceRefresh = ShouldForceServiceHealthRefresh(this.openAiServiceHealth);
-        string trigger = "定时间隔";
-        lock (this.openAiStatusLock)
-        {
-            bool scheduledRefreshDue = this.nextOpenAiStatusRefreshUtc == DateTime.MinValue ||
-                nowUtc >= this.nextOpenAiStatusRefreshUtc;
-            if (!this.openAiStatusRequestRunning &&
-                (scheduledRefreshDue || forceRefresh))
-            {
-                this.openAiStatusRequestRunning = true;
-                trigger = forceRefresh
-                    ? "异常状态重试"
-                    : (this.nextOpenAiStatusRefreshUtc == DateTime.MinValue
-                        ? "首次刷新"
-                        : EmptyFallback(this.openAiStatusRefreshTrigger, "定时间隔"));
-                this.openAiStatusRefreshTrigger = "定时间隔";
-                shouldStart = true;
-            }
-        }
-
-        if (!shouldStart)
+        WidgetSettings settings = this.currentSettings == null ? null : this.currentSettings.Clone();
+        if (settings == null)
         {
             return;
         }
 
-        Task.Run((Action)delegate
+        string trigger;
+        lock (this.openAiStatusLock)
         {
-            Stopwatch stopwatch = Stopwatch.StartNew();
-            ServiceHealthState health = ServiceHealthState.Unknown;
-            try
+            trigger = EmptyFallback(this.openAiStatusRefreshTrigger, "定时间隔");
+            this.openAiStatusRefreshTrigger = "定时间隔";
+        }
+
+        Task<StatuspageRefreshOutcome> task;
+        if (!StatuspageMonitor.TryStartOrJoin(
+            StatuspageMonitor.OpenAiServiceKey,
+            "codex_radar",
+            settings,
+            trigger,
+            out task))
+        {
+            ApplyCodexStatuspageSnapshot(StatuspageMonitor.OpenAiServiceKey, StatuspageMonitor.GetSnapshot(StatuspageMonitor.OpenAiServiceKey));
+            return;
+        }
+
+        ApplyCodexStatuspageSnapshot(StatuspageMonitor.OpenAiServiceKey, StatuspageMonitor.GetSnapshot(StatuspageMonitor.OpenAiServiceKey));
+        task.ContinueWith(delegate(Task<StatuspageRefreshOutcome> completed)
+        {
+            if (completed.Exception != null)
             {
-                health = TryReadOpenAiStatus(this.currentSettings);
-            }
-            catch (Exception ex)
-            {
-                health = ServiceHealthState.Unreachable;
-                Program.LogException(ex);
+                Program.LogException(completed.Exception.GetBaseException());
             }
 
-            stopwatch.Stop();
-            lock (this.openAiStatusLock)
-            {
-                this.nextOpenAiStatusRefreshUtc = DateTime.UtcNow +
-                    (health == ServiceHealthState.Normal ? GetServiceStatusRefreshInterval() : GetCodexWebRetryDelay());
-                this.openAiStatusRequestRunning = false;
-                this.openAiStatusRefreshTrigger = health == ServiceHealthState.Normal ? "定时间隔" : "异常状态重试";
-            }
-
-            SetOpenAiServiceHealth(health);
-            NetworkCheckHistoryLogger.LogCompleted(
-                "codex_radar",
-                "openai_status",
-                trigger,
-                health.ToString(),
-                health == ServiceHealthState.Normal,
-                (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
-                new Dictionary<string, object>
-                {
-                    { "health", health.ToString() }
-                });
-
-            try
-            {
-                if (!this.IsDisposed && this.IsHandleCreated)
-                {
-                    this.BeginInvoke((MethodInvoker)delegate
-                    {
-                        if (!this.IsDisposed)
-                        {
-                            RenderLayeredWindow();
-                        }
-                    });
-                }
-            }
-            catch (InvalidOperationException)
-            {
-            }
+            StatuspageSnapshot snapshot = completed.Status == TaskStatus.RanToCompletion && completed.Result != null
+                ? completed.Result.Snapshot
+                : StatuspageMonitor.GetSnapshot(StatuspageMonitor.OpenAiServiceKey);
+            ApplyCodexStatuspageSnapshot(StatuspageMonitor.OpenAiServiceKey, snapshot);
+            RequestCodexRadarRenderFromAnyThread();
         });
     }
 
@@ -5711,30 +5318,33 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         if (!IsServiceNetworkAvailable())
         {
-            SetRadarServiceHealth(ServiceHealthState.Offline);
+            SetAllRadarServiceHealth(ServiceHealthState.Offline);
             return;
         }
 
         DateTime nowUtc = DateTime.UtcNow;
         DateTime attemptLocal = DateTime.Now;
+        CodexRadarSoftwareMode requestedSoftwareMode = GetEffectiveCodexRadarSoftwareMode();
+        RadarFamilyRuntimeState requestedState = GetRadarFamilyState(requestedSoftwareMode);
+        string requestedModelKey = GetSelectedRadarModelKeyForSoftwareMode(requestedSoftwareMode);
         bool shouldStart = false;
-        bool forceRefresh = ShouldForceServiceHealthRefresh(this.radarServiceHealth);
+        bool forceRefresh = ShouldForceServiceHealthRefresh(requestedState.RadarSiteHealth);
         string trigger = "定时间隔";
         lock (this.codexRadarStatusLock)
         {
-            bool scheduledRefreshDue = this.nextCodexRadarStatusRefreshUtc == DateTime.MinValue ||
-                nowUtc >= this.nextCodexRadarStatusRefreshUtc;
-            if (!this.codexRadarStatusRequestRunning &&
+            bool scheduledRefreshDue = requestedState.NextRadarStatusRefreshUtc == DateTime.MinValue ||
+                nowUtc >= requestedState.NextRadarStatusRefreshUtc;
+            if (!requestedState.RadarStatusRequestRunning &&
                 (scheduledRefreshDue || forceRefresh))
             {
-                this.codexRadarStatusRequestRunning = true;
-                this.lastCodexRadarStatusAttemptLocal = attemptLocal;
+                requestedState.RadarStatusRequestRunning = true;
+                requestedState.LastRadarStatusAttemptLocal = attemptLocal;
                 trigger = forceRefresh
                     ? "异常状态重试"
-                    : (this.nextCodexRadarStatusRefreshUtc == DateTime.MinValue
+                    : (requestedState.NextRadarStatusRefreshUtc == DateTime.MinValue
                         ? "首次刷新"
-                        : EmptyFallback(this.codexRadarStatusRefreshTrigger, "定时间隔"));
-                this.codexRadarStatusRefreshTrigger = "定时间隔";
+                        : EmptyFallback(requestedState.RadarStatusRefreshTrigger, "定时间隔"));
+                requestedState.RadarStatusRefreshTrigger = "定时间隔";
                 shouldStart = true;
             }
         }
@@ -5744,18 +5354,17 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
+        WidgetSettings requestSettings = this.currentSettings.Clone();
         Task.Run((Action)delegate
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
-            CodexRadarSoftwareMode requestedSoftwareMode = GetEffectiveCodexRadarSoftwareMode();
-            string requestedModelKey = GetSelectedRadarModelKeyForSoftwareMode(requestedSoftwareMode);
-            bool publicJsonEnabled = this.currentSettings.CodexRadarPublicJsonEnabled;
-            bool htmlFallbackEnabled = this.currentSettings.CodexRadarHtmlFallbackEnabled;
-            bool rssFallbackEnabled = this.currentSettings.CodexRadarRssFallbackEnabled;
-            bool claudeJsonEnabled = this.currentSettings.ClaudeRadarJsonEnabled;
-            bool claudeHomepageFallbackEnabled = this.currentSettings.ClaudeRadarHomepageFallbackEnabled;
-            bool claudeRatingsEnabled = this.currentSettings.ClaudeRadarCommunityRatingsEnabled;
-            bool claudeLocalQuotaFallbackEnabled = this.currentSettings.ClaudeRadarLocalQuotaFallbackEnabled;
+            bool publicJsonEnabled = requestSettings.CodexRadarPublicJsonEnabled;
+            bool htmlFallbackEnabled = requestSettings.CodexRadarHtmlFallbackEnabled;
+            bool rssFallbackEnabled = requestSettings.CodexRadarRssFallbackEnabled;
+            bool claudeJsonEnabled = requestSettings.ClaudeRadarJsonEnabled;
+            bool claudeHomepageFallbackEnabled = requestSettings.ClaudeRadarHomepageFallbackEnabled;
+            bool claudeRatingsEnabled = requestSettings.ClaudeRadarCommunityRatingsEnabled;
+            bool claudeLocalQuotaFallbackEnabled = requestSettings.ClaudeRadarLocalQuotaFallbackEnabled;
             CodexRadarSnapshot snapshot;
             bool known = false;
             ServiceHealthState health = ServiceHealthState.Unknown;
@@ -5770,6 +5379,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                         claudeHomepageFallbackEnabled,
                         claudeRatingsEnabled,
                         claudeLocalQuotaFallbackEnabled,
+                        trigger,
                         out snapshot,
                         out health,
                         out catalogUpdate);
@@ -5805,59 +5415,76 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                     requestedSoftwareMode == GetEffectiveCodexRadarSoftwareMode();
                 if (!modelStillSelected)
                 {
-                    this.nextCodexRadarStatusRefreshUtc = DateTime.UtcNow.AddSeconds(1.0);
-                    this.codexRadarStatusRefreshTrigger = "模型或软件切换";
+                    requestedState.NextRadarStatusRefreshUtc = DateTime.UtcNow.AddSeconds(1.0);
+                    requestedState.RadarStatusRefreshTrigger = "模型或软件切换";
                 }
                 else if (known && snapshot != null)
                 {
-                    MergeCodexModelIqHistory(snapshot, this.codexRadarSnapshot);
+                    CodexRadarSnapshot previousSnapshot = requestedState.RadarSnapshot;
+                    MergeCodexModelIqHistory(snapshot, previousSnapshot);
                     ApplyCodexModelIqEfficiencyFromHistory(snapshot);
-                    PreserveCodexModelIqSnapshot(snapshot, this.codexRadarSnapshot);
-                    PreserveCodexModelIqRefreshTimeIfContentUnchanged(snapshot, this.codexRadarSnapshot);
-                    PreserveCodexQuotaRadarSnapshot(snapshot, this.codexRadarSnapshot);
-                    PreserveCodexCommunityRatingSnapshot(snapshot, this.codexRadarSnapshot);
-                    this.codexRadarSnapshot = snapshot;
+                    PreserveCodexModelIqSnapshot(snapshot, previousSnapshot);
+                    PreserveCodexModelIqRefreshTimeIfContentUnchanged(snapshot, previousSnapshot);
+                    PreserveCodexQuotaRadarSnapshot(snapshot, previousSnapshot);
+                    PreserveCodexCommunityRatingSnapshot(snapshot, previousSnapshot);
+                    requestedState.RadarSnapshot = snapshot;
+                    requestedState.ModelKey = requestedModelKey;
+                    requestedState.Touch();
                     snapshotToCache = snapshot.Clone();
                 }
-                else if (this.codexRadarSnapshot != null)
+                else if (requestedState.RadarSnapshot != null)
                 {
-                    this.codexRadarSnapshot.ModelIqRefreshSucceeded = false;
+                    requestedState.RadarSnapshot.ModelIqRefreshSucceeded = false;
+                    requestedState.Touch();
                 }
 
                 if (modelStillSelected)
                 {
-                    this.nextCodexRadarStatusRefreshUtc = GetNextCodexRadarScheduledRefreshUtc(
+                    requestedState.NextRadarStatusRefreshUtc = GetNextCodexRadarScheduledRefreshUtc(
                         DateTime.UtcNow,
                         snapshot,
                         health);
-                    this.codexRadarStatusRefreshTrigger = health == ServiceHealthState.Normal ? "定时间隔" : "异常状态重试";
+                    requestedState.RadarStatusRefreshTrigger = health == ServiceHealthState.Normal ? "定时间隔" : "异常状态重试";
                 }
 
-                this.codexRadarStatusRequestRunning = false;
+                requestedState.RadarStatusRequestRunning = false;
+
             }
 
             if (snapshotToCache != null)
             {
                 SaveCodexRadarCache(requestedSoftwareMode, requestedModelKey, snapshotToCache);
-                HandleCodexRadarWindowAndResetEvents(snapshotToCache);
+                if (requestedSoftwareMode == CodexRadarSoftwareMode.Codex)
+                {
+                    HandleCodexRadarWindowAndResetEvents(snapshotToCache);
+                }
             }
 
             ShowCodexRadarModelCatalogNotifications(catalogUpdate);
-            SetRadarServiceHealth(health);
-            NetworkCheckHistoryLogger.LogCompleted(
-                "codex_radar",
-                "codex_radar_status",
-                trigger,
-                known ? health.ToString() : "未知 " + health.ToString(),
-                known && health == ServiceHealthState.Normal,
-                (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
-                new Dictionary<string, object>
-                {
-                    { "health", health.ToString() },
-                    { "known", known },
-                    { "model_still_selected", modelStillSelected },
-                    { "software_mode", requestedSoftwareMode.ToString() }
-                });
+            SetRadarServiceHealth(requestedSoftwareMode, health);
+            if (requestedSoftwareMode == CodexRadarSoftwareMode.Codex)
+            {
+                NetworkCheckHistoryLogger.LogCompleted(
+                    "codex_radar",
+                    "codex_radar_status",
+                    trigger,
+                    known ? health.ToString() : "未知 " + health.ToString(),
+                    known && health == ServiceHealthState.Normal,
+                    (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
+                    new Dictionary<string, object>
+                    {
+                        { "health", health.ToString() },
+                        { "known", known },
+                        { "model_still_selected", modelStillSelected },
+                        { "software_mode", requestedSoftwareMode.ToString() }
+                    });
+            }
+            else
+            {
+                Program.LogInfo("Shared Claude Radar applied backend snapshot. Trigger=" + trigger +
+                    ", Known=" + known.ToString(CultureInfo.InvariantCulture) +
+                    ", Health=" + health.ToString());
+            }
 
             try
             {
@@ -6104,21 +5731,57 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool homepageFallbackEnabled,
         bool ratingsEnabled,
         bool localQuotaFallbackEnabled,
+        string trigger,
         out CodexRadarSnapshot snapshot,
         out ServiceHealthState health,
         out CodexRadarModelCatalogUpdate catalogUpdate)
     {
         catalogUpdate = null;
-        ClaudeRadarSnapshot claudeSnapshot = ClaudeRadarReader.ReadSnapshot(
-            selectedModelKey,
-            jsonEnabled,
-            homepageFallbackEnabled,
-            ratingsEnabled,
-            localQuotaFallbackEnabled);
+        WidgetSettings schedulerSettings = new WidgetSettings();
+        schedulerSettings.Normalize();
+        schedulerSettings.ClaudeRadarModelKey = WidgetSettings.NormalizeClaudeRadarModelKey(selectedModelKey);
+        schedulerSettings.ClaudeRadarJsonEnabled = jsonEnabled;
+        schedulerSettings.ClaudeRadarHomepageFallbackEnabled = homepageFallbackEnabled;
+        schedulerSettings.ClaudeRadarCommunityRatingsEnabled = ratingsEnabled;
+        schedulerSettings.ClaudeRadarLocalQuotaFallbackEnabled = localQuotaFallbackEnabled;
+
+        Task<ClaudeRadarSnapshotSchedulerOutcome> task;
+        if (!ClaudeRadarSnapshotScheduler.TryStartOrJoin(
+            "codex_radar",
+            schedulerSettings,
+            trigger,
+            out task))
+        {
+            ClaudeRadarSnapshot lastGood = ClaudeRadarSnapshotScheduler.GetLastGoodSnapshot(schedulerSettings);
+            snapshot = ConvertClaudeRadarSnapshotForSharedWindow(lastGood);
+            health = ConvertClaudeRadarServiceState(lastGood == null
+                ? ClaudeRadarServiceState.Unknown
+                : lastGood.DataState);
+            return IsSharedClaudeRadarSnapshotUsable(snapshot);
+        }
+
+        ClaudeRadarSnapshot claudeSnapshot = null;
+        ClaudeRadarServiceState claudeHealth = ClaudeRadarServiceState.Unknown;
+        try
+        {
+            task.Wait();
+            ClaudeRadarSnapshotSchedulerOutcome outcome = task.Result;
+            if (outcome != null)
+            {
+                claudeSnapshot = outcome.Snapshot;
+                claudeHealth = outcome.Health;
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            claudeHealth = ClaudeRadarServiceState.Unreachable;
+        }
+
         snapshot = ConvertClaudeRadarSnapshotForSharedWindow(claudeSnapshot);
-        health = ConvertClaudeRadarServiceState(claudeSnapshot == null
-            ? ClaudeRadarServiceState.Unknown
-            : claudeSnapshot.DataState);
+        health = ConvertClaudeRadarServiceState(claudeHealth == ClaudeRadarServiceState.Unknown && claudeSnapshot != null
+            ? claudeSnapshot.DataState
+            : claudeHealth);
         return IsSharedClaudeRadarSnapshotUsable(snapshot);
     }
 
@@ -10494,6 +10157,18 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         if (isNewReset)
         {
+            QuotaProtectionOptions protectionOptions = GetQuotaProtectionOptions();
+            if (!protectionOptions.RssResetProtectionEnabled)
+            {
+                lock (this.quotaResetStateLock)
+                {
+                    this.lastRadarProtectedResetEventId = eventKey;
+                }
+
+                SaveQuotaResetState();
+                return;
+            }
+
             DateTime detectedUtc = DateTime.UtcNow;
             bool protectionSaved = ActivateQuotaResetProtections(
                 true,
@@ -10520,7 +10195,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 "Codex 额外重置",
                 "检测到新的 Codex 重置记录，余额已恢复至 100。",
                 ToolTipIcon.Warning);
-            this.lastQuotaRefreshUtc = DateTime.MinValue;
+            this.codexRuntimeState.Quota.LastRefreshUtc = DateTime.MinValue;
+            this.codexRuntimeState.Quota.NextInactiveRefreshUtc = DateTime.MinValue;
+            this.codexRuntimeState.Touch();
             RenderLayeredWindow();
             return;
         }
@@ -10547,7 +10224,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void ActivateDueQuotaResetProtections(CodexQuotaSnapshot snapshot, DateTime nowLocal, DateTime detectedUtc)
     {
-        if (snapshot == null)
+        if (snapshot == null || !GetQuotaProtectionOptions().DueResetProtectionEnabled)
         {
             return;
         }
@@ -10583,6 +10260,23 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool gold)
     {
         bool stateChanged = false;
+        QuotaProtectionOptions protectionOptions = GetQuotaProtectionOptions();
+        if (gold)
+        {
+            protectFiveHour = protectFiveHour && protectionOptions.RssResetProtectionEnabled;
+            protectWeekly = protectWeekly && protectionOptions.RssResetProtectionEnabled;
+        }
+        else
+        {
+            protectFiveHour = protectFiveHour && protectionOptions.DueResetProtectionEnabled;
+            protectWeekly = protectWeekly && protectionOptions.DueResetProtectionEnabled;
+        }
+
+        if (!protectFiveHour && !protectWeekly)
+        {
+            return false;
+        }
+
         lock (this.quotaResetStateLock)
         {
             if (protectFiveHour)
@@ -10628,20 +10322,23 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             }
         }
 
-        if (this.quotaSnapshot == null)
+        QuotaRuntimeState codexQuotaState = GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex);
+        if (codexQuotaState.Snapshot == null)
         {
-            this.quotaSnapshot = CodexQuotaSnapshot.CreateDefault();
+            codexQuotaState.Snapshot = CodexQuotaSnapshot.CreateDefault();
         }
 
         if (protectFiveHour)
         {
-            ForceFiveHourQuotaToFull(this.quotaSnapshot);
+            ForceFiveHourQuotaToFull(codexQuotaState.Snapshot);
         }
 
         if (protectWeekly)
         {
-            ForceWeeklyQuotaToFull(this.quotaSnapshot);
+            ForceWeeklyQuotaToFull(codexQuotaState.Snapshot);
         }
+
+        this.codexRuntimeState.Touch();
 
         if (stateChanged)
         {
@@ -10652,21 +10349,39 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return stateChanged;
     }
 
-    private CodexQuotaSnapshot ApplyQuotaResetProtections(CodexQuotaSnapshot snapshot)
+    private CodexQuotaSnapshot ApplyQuotaResetProtections(CodexRadarSoftwareMode family, CodexQuotaSnapshot snapshot)
     {
         if (snapshot == null)
         {
             snapshot = CodexQuotaSnapshot.CreateDefault();
         }
 
+        if (NormalizeEffectiveSoftwareMode(family) != CodexRadarSoftwareMode.Codex)
+        {
+            return snapshot;
+        }
+
         bool stateChanged = false;
         bool fiveHourReleased = false;
         bool weeklyReleased = false;
+        bool fiveHourDisabled = false;
+        bool weeklyDisabled = false;
+        QuotaProtectionOptions protectionOptions = GetQuotaProtectionOptions();
         lock (this.quotaResetStateLock)
         {
             if (this.fiveHourQuotaProtectionUtc != DateTime.MinValue)
             {
-                if (IsQuotaProtectionReleaseSample(
+                bool enabledForSource = this.fiveHourQuotaProtectionGold
+                    ? protectionOptions.RssResetProtectionEnabled
+                    : protectionOptions.DueResetProtectionEnabled;
+                if (!enabledForSource)
+                {
+                    this.fiveHourQuotaProtectionUtc = DateTime.MinValue;
+                    this.fiveHourQuotaProtectionGold = false;
+                    stateChanged = true;
+                    fiveHourDisabled = true;
+                }
+                else if (IsQuotaProtectionReleaseSample(
                     snapshot,
                     this.fiveHourQuotaProtectionUtc,
                     snapshot.FiveHourResetKnown,
@@ -10685,7 +10400,17 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
             if (this.weeklyQuotaProtectionUtc != DateTime.MinValue)
             {
-                if (IsQuotaProtectionReleaseSample(
+                bool enabledForSource = this.weeklyQuotaProtectionGold
+                    ? protectionOptions.RssResetProtectionEnabled
+                    : protectionOptions.DueResetProtectionEnabled;
+                if (!enabledForSource)
+                {
+                    this.weeklyQuotaProtectionUtc = DateTime.MinValue;
+                    this.weeklyQuotaProtectionGold = false;
+                    stateChanged = true;
+                    weeklyDisabled = true;
+                }
+                else if (IsQuotaProtectionReleaseSample(
                     snapshot,
                     this.weeklyQuotaProtectionUtc,
                     snapshot.WeeklyResetKnown,
@@ -10710,10 +10435,18 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             {
                 Program.LogInfo("Five-hour quota reset protection released by a newer quota sample.");
             }
+            else if (fiveHourDisabled)
+            {
+                Program.LogInfo("Five-hour quota reset protection disabled by settings.");
+            }
 
             if (weeklyReleased)
             {
                 Program.LogInfo("Weekly quota reset protection released by a newer quota sample.");
+            }
+            else if (weeklyDisabled)
+            {
+                Program.LogInfo("Weekly quota reset protection disabled by settings.");
             }
         }
 
@@ -11570,7 +11303,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         CodexQuotaSnapshot current = this.quotaSnapshot;
-        if (IsSuspiciousProviderZeroDrop(
+        QuotaProtectionOptions protectionOptions = GetQuotaProtectionOptions();
+        if (protectionOptions.ProviderZeroDropProtectionEnabled &&
+            IsSuspiciousProviderZeroDrop(
             current.FiveHourPercent,
             incoming.FiveHourPercent,
             current.FiveHourResetKnown ? current.FiveHourResetLocal : DateTime.MinValue,
@@ -11581,7 +11316,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return true;
         }
 
-        if (IsSuspiciousProviderZeroDrop(
+        if (protectionOptions.ProviderZeroDropProtectionEnabled &&
+            IsSuspiciousProviderZeroDrop(
             current.WeeklyPercent,
             incoming.WeeklyPercent,
             current.WeeklyResetKnown ? current.WeeklyResetLocal : DateTime.MinValue,
@@ -11589,6 +11325,34 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             TimeSpan.FromHours(6.0)))
         {
             reason = "provider_weekly_zero_drop_ignored_keep_previous_snapshot";
+            return true;
+        }
+
+        DateTime nowLocal = DateTime.Now;
+        if (protectionOptions.ProviderFiveHourEarlyResetSpikeProtectionEnabled &&
+            IsSuspiciousProviderFiveHourEarlyResetSpike(
+            current.FiveHourPercent,
+            incoming.FiveHourPercent,
+            current.FiveHourResetKnown ? current.FiveHourResetLocal : DateTime.MinValue,
+            incoming.FiveHourResetKnown ? incoming.FiveHourResetLocal : DateTime.MinValue,
+            nowLocal,
+            TimeSpan.FromMinutes(30.0)))
+        {
+            reason = "provider_five_hour_early_reset_spike_ignored_keep_previous_snapshot";
+            return true;
+        }
+
+        if (protectionOptions.ProviderWeeklySpikeProtectionEnabled &&
+            IsSuspiciousProviderWeeklySpike(
+            current.WeeklyPercent,
+            incoming.WeeklyPercent,
+            current.WeeklyResetKnown ? current.WeeklyResetLocal : DateTime.MinValue,
+            incoming.WeeklyResetKnown ? incoming.WeeklyResetLocal : DateTime.MinValue,
+            TimeSpan.FromHours(6.0),
+            nowLocal,
+            TimeSpan.FromMinutes(30.0)))
+        {
+            reason = "provider_weekly_spike_ignored_keep_previous_snapshot";
             return true;
         }
 
@@ -11618,15 +11382,80 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return incomingResetLocal <= previousResetLocal.Add(materialResetAdvance);
     }
 
+    private static bool IsSuspiciousProviderWeeklySpike(
+        int previousBalancePercent,
+        int incomingBalancePercent,
+        DateTime previousResetLocal,
+        DateTime incomingResetLocal,
+        TimeSpan materialResetAdvance,
+        DateTime nowLocal,
+        TimeSpan resetDueGrace)
+    {
+        previousBalancePercent = ClampPercent(previousBalancePercent);
+        incomingBalancePercent = ClampPercent(incomingBalancePercent);
+        if (previousBalancePercent > 50 ||
+            incomingBalancePercent < 95 ||
+            incomingBalancePercent - previousBalancePercent < 50)
+        {
+            return false;
+        }
+
+        if (previousResetLocal != DateTime.MinValue &&
+            nowLocal != DateTime.MinValue &&
+            previousResetLocal > nowLocal.Add(resetDueGrace))
+        {
+            return true;
+        }
+
+        if (previousResetLocal == DateTime.MinValue ||
+            incomingResetLocal == DateTime.MinValue)
+        {
+            return true;
+        }
+
+        // A real weekly reset should move the weekly reset boundary forward. A lone provider sample
+        // that jumps low weekly balance to near-full without that boundary is treated as cache jitter.
+        return incomingResetLocal <= previousResetLocal.Add(materialResetAdvance);
+    }
+
+    private static bool IsSuspiciousProviderFiveHourEarlyResetSpike(
+        int previousBalancePercent,
+        int incomingBalancePercent,
+        DateTime previousResetLocal,
+        DateTime incomingResetLocal,
+        DateTime nowLocal,
+        TimeSpan resetDueGrace)
+    {
+        previousBalancePercent = ClampPercent(previousBalancePercent);
+        incomingBalancePercent = ClampPercent(incomingBalancePercent);
+        if (incomingBalancePercent < 95 ||
+            incomingBalancePercent - previousBalancePercent < 10)
+        {
+            return false;
+        }
+
+        if (previousResetLocal == DateTime.MinValue ||
+            incomingResetLocal == DateTime.MinValue ||
+            nowLocal == DateTime.MinValue)
+        {
+            return false;
+        }
+
+        return previousResetLocal > nowLocal.Add(resetDueGrace) &&
+            incomingResetLocal > previousResetLocal.AddMinutes(1.0);
+    }
+
     private void LogRejectedProviderQuotaSnapshot(
         CodexQuotaSnapshot rejectedSnapshot,
         string reason,
         bool codexRunning)
     {
-        QuotaRingDecisionInfo decision = CreateQuotaRingDecisionInfo(rejectedSnapshot, true);
+        QuotaRuntimeState quotaState = GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex);
+        QuotaRingDecisionInfo decision = CreateQuotaRingDecisionInfo(quotaState, rejectedSnapshot, true);
         LogQuotaRingDecision(
-            CompleteQuotaRingDecisionInfo(decision, string.IsNullOrWhiteSpace(reason) ? "provider_quota_snapshot_ignored" : reason),
-            this.quotaSnapshot,
+            CodexRadarSoftwareMode.Codex,
+            CompleteQuotaRingDecisionInfo(quotaState, decision, string.IsNullOrWhiteSpace(reason) ? "provider_quota_snapshot_ignored" : reason),
+            quotaState.Snapshot,
             true,
             codexRunning);
     }
@@ -12573,51 +12402,17 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return Math.Max(0, Math.Min(999, value));
     }
 
-    private static Color GetQuotaColor(int percent)
-    {
-        if (percent >= 80)
-        {
-            return DesignTokens.WithAlpha(DesignTokens.Colors.QuotaGood, 235);
-        }
-
-        if (percent >= 30)
-        {
-            return DesignTokens.WithAlpha(DesignTokens.Colors.WarningSoft, 238);
-        }
-
-        if (percent <= 5)
-        {
-            return DesignTokens.WithAlpha(DesignTokens.Colors.QuotaDanger, 238);
-        }
-
-        return DesignTokens.WithAlpha(DesignTokens.Colors.WarningDeep, 238);
-    }
-
-    private Color GetQuotaRingNumberColor(Color fallbackColor, bool anySupportedAppRunning, bool quotaValueKnown)
-    {
-        if (!quotaValueKnown)
-        {
-            return fallbackColor;
-        }
-
-        return anySupportedAppRunning
-            ? DesignTokens.White(246)
-            : DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
-    }
-
-    private static Color GetQuotaConsumptionRingColor()
-    {
-        return DesignTokens.WithAlpha(GetCodexRadarLightGreen(), 242);
-    }
-
     internal static void RunStatusAndQuotaSelfTest()
     {
         RunEvenRowDialFreshnessSelfTest();
         RunCodexModelIqRefreshMarkerSelfTest();
         RunCodexModelIqDynamicScaleSelfTest();
         RunCodexApiServiceAlertDebounceSelfTest();
+        RunRadarFamilyRuntimeIsolationSelfTest();
         RunCodexRadarNotificationStateSelfTest();
         RunClaudeSharedQuotaLineSelfTest();
+        RunCodexResetCreditsSelfTest();
+        QuotaRingPresentation.RunSelfTest();
 
         int baseline = GetNextFiveHourConsumptionRingBaseline(-1, 67, 57);
         if (baseline != 67)
@@ -12635,6 +12430,77 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (baseline != -1)
         {
             throw new InvalidOperationException("Five-hour reset/increase did not clear the old baseline.");
+        }
+
+        DateTime guardNow = new DateTime(2026, 7, 8, 13, 0, 0, DateTimeKind.Local);
+        DateTime weeklyReset = new DateTime(2026, 7, 12, 16, 17, 16, DateTimeKind.Local);
+        if (!IsSuspiciousProviderWeeklySpike(
+            13,
+            100,
+            weeklyReset,
+            weeklyReset,
+            TimeSpan.FromHours(6.0),
+            guardNow,
+            TimeSpan.FromMinutes(30.0)))
+        {
+            throw new InvalidOperationException("Codex provider weekly spike guard missed a low-to-full single sample.");
+        }
+
+        if (!IsSuspiciousProviderWeeklySpike(
+            13,
+            100,
+            weeklyReset,
+            weeklyReset.AddDays(7.0),
+            TimeSpan.FromHours(6.0),
+            guardNow,
+            TimeSpan.FromMinutes(30.0)))
+        {
+            throw new InvalidOperationException("Codex provider weekly spike guard allowed an early weekly reset boundary jump.");
+        }
+
+        DateTime dueWeeklyReset = guardNow.AddMinutes(-5.0);
+        if (IsSuspiciousProviderWeeklySpike(
+            13,
+            100,
+            dueWeeklyReset,
+            dueWeeklyReset.AddDays(7.0),
+            TimeSpan.FromHours(6.0),
+            guardNow,
+            TimeSpan.FromMinutes(30.0)))
+        {
+            throw new InvalidOperationException("Codex provider weekly spike guard rejected a material weekly reset advance.");
+        }
+
+        if (!IsSuspiciousProviderFiveHourEarlyResetSpike(
+            79,
+            99,
+            guardNow.AddHours(3.0),
+            guardNow.AddHours(5.0),
+            guardNow,
+            TimeSpan.FromMinutes(30.0)))
+        {
+            throw new InvalidOperationException("Codex provider five-hour early reset spike guard missed a future reset jump.");
+        }
+
+        if (IsSuspiciousProviderFiveHourEarlyResetSpike(
+            79,
+            99,
+            guardNow.AddMinutes(-1.0),
+            guardNow.AddHours(5.0),
+            guardNow,
+            TimeSpan.FromMinutes(30.0)))
+        {
+            throw new InvalidOperationException("Codex provider five-hour early reset spike guard rejected a due reset.");
+        }
+
+        if (!IsSuspiciousWeeklyConsumptionBaseline(
+            100,
+            12,
+            12,
+            guardNow.AddHours(3.0),
+            guardNow.AddHours(3.0)))
+        {
+            throw new InvalidOperationException("Suspicious weekly consumption baseline repair did not catch a stuck 100 baseline.");
         }
 
         CodexProviderUsageResult percentResult = ParseCodexProviderUsageResponse(
@@ -12858,6 +12724,127 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
     }
 
+    private static void RunRadarFamilyRuntimeIsolationSelfTest()
+    {
+        QuotaRuntimeState codexQuota = new QuotaRuntimeState();
+        QuotaRuntimeState claudeQuota = new QuotaRuntimeState();
+        DateTime sourceUtc = new DateTime(2026, 7, 8, 4, 0, 0, DateTimeKind.Utc);
+        CodexQuotaSnapshot codexInitial = CreateRuntimeIsolationQuotaSnapshot(67, 13, sourceUtc);
+        CodexQuotaSnapshot claudeInitial = CreateRuntimeIsolationQuotaSnapshot(88, 44, sourceUtc.AddMinutes(1.0));
+
+        QuotaRingDecisionInfo codexInitialDecision = UpdateQuotaReadDeltaTracking(codexQuota, codexInitial, true);
+        codexQuota.Snapshot = codexInitial.Clone();
+        codexQuota.SourceKnown = true;
+        if (codexQuota.LastFiveHourReadPercent != 67 ||
+            codexQuota.LastWeeklyReadPercent != 13 ||
+            claudeQuota.LastFiveHourReadPercent != -1 ||
+            !string.Equals(codexInitialDecision.Reason, "initial_sample_set_tracking_baseline", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Radar runtime isolation self-test failed: Codex initial quota wrote into Claude state.");
+        }
+
+        QuotaRingDecisionInfo claudeInitialDecision = UpdateQuotaReadDeltaTracking(claudeQuota, claudeInitial, true);
+        claudeQuota.Snapshot = claudeInitial.Clone();
+        claudeQuota.SourceKnown = true;
+        if (claudeQuota.LastFiveHourReadPercent != 88 ||
+            claudeQuota.LastWeeklyReadPercent != 44 ||
+            codexQuota.LastFiveHourReadPercent != 67 ||
+            codexQuota.LastWeeklyReadPercent != 13 ||
+            !string.Equals(claudeInitialDecision.Reason, "initial_sample_set_tracking_baseline", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Radar runtime isolation self-test failed: Claude initial quota changed Codex state.");
+        }
+
+        codexQuota.LastRefreshUtc = sourceUtc.AddMinutes(10.0);
+        codexQuota.NextInactiveRefreshUtc = sourceUtc.AddMinutes(20.0);
+        claudeQuota.LastRefreshUtc = sourceUtc.AddMinutes(30.0);
+        claudeQuota.NextInactiveRefreshUtc = sourceUtc.AddMinutes(40.0);
+        if (codexQuota.LastRefreshUtc == claudeQuota.LastRefreshUtc ||
+            codexQuota.NextInactiveRefreshUtc == claudeQuota.NextInactiveRefreshUtc)
+        {
+            throw new InvalidOperationException("Radar runtime isolation self-test failed: quota refresh schedule is shared across families.");
+        }
+
+        CodexQuotaSnapshot claudeDrop = CreateRuntimeIsolationQuotaSnapshot(78, 44, sourceUtc.AddMinutes(2.0));
+        QuotaRingDecisionInfo claudeDropDecision = UpdateQuotaReadDeltaTracking(claudeQuota, claudeDrop, true);
+        if (claudeQuota.FiveHourConsumptionRingBaselinePercent != 88 ||
+            codexQuota.FiveHourConsumptionRingBaselinePercent != -1 ||
+            claudeDropDecision.NextFiveHourBaselinePercent != 88)
+        {
+            throw new InvalidOperationException("Radar runtime isolation self-test failed: Claude consumption baseline leaked or was not retained.");
+        }
+
+        CodexQuotaSnapshot claudeDuplicate = CreateRuntimeIsolationQuotaSnapshot(78, 44, sourceUtc.AddMinutes(2.0));
+        QuotaRingDecisionInfo claudeDuplicateDecision = UpdateQuotaReadDeltaTracking(claudeQuota, claudeDuplicate, true);
+        if (claudeQuota.FiveHourConsumptionRingBaselinePercent != 88 ||
+            !string.Equals(claudeDuplicateDecision.Reason, "duplicate_source_same_balance_keep_existing_rings", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Radar runtime isolation self-test failed: duplicate Claude sample did not preserve consumption ring.");
+        }
+
+        CodexQuotaSnapshot codexNearFull = CreateRuntimeIsolationQuotaSnapshot(99, 13, sourceUtc.AddMinutes(3.0));
+        UpdateQuotaReadDeltaTracking(claudeQuota, codexNearFull, true);
+        if (codexQuota.LastFiveHourReadPercent != 67 ||
+            codexQuota.FiveHourConsumptionRingBaselinePercent != -1)
+        {
+            throw new InvalidOperationException("Radar runtime isolation self-test failed: non-Codex near-full sample affected Codex quota state.");
+        }
+
+        RadarFamilyRuntimeState codexState = new RadarFamilyRuntimeState(CodexRadarSoftwareMode.Codex);
+        RadarFamilyRuntimeState claudeState = new RadarFamilyRuntimeState(CodexRadarSoftwareMode.Claude);
+        codexState.RadarSiteHealth = ServiceHealthState.Unavailable;
+        claudeState.RadarSiteHealth = ServiceHealthState.Normal;
+        if (codexState.RadarSiteHealth != ServiceHealthState.Unavailable ||
+            claudeState.RadarSiteHealth != ServiceHealthState.Normal)
+        {
+            throw new InvalidOperationException("Radar runtime isolation self-test failed: Radar health states are not independent.");
+        }
+
+        CodexConnectionAlertCandidate[] error = new[]
+        {
+            new CodexConnectionAlertCandidate
+            {
+                Key = "rader:unreachable",
+                Name = "Radar",
+                Reason = "无法连接",
+                Color = DesignTokens.Colors.DangerStrong
+            }
+        };
+        DateTime nowUtc = new DateTime(2026, 7, 8, 4, 0, 0, DateTimeKind.Utc);
+        ApplyCodexApiServiceAlertDebounce(codexState.ApiAlertDebounce.States, error, nowUtc, TimeSpan.FromSeconds(10.0), false);
+        CodexConnectionAlertCandidate[] codexVisible = ApplyCodexApiServiceAlertDebounce(
+            codexState.ApiAlertDebounce.States,
+            error,
+            nowUtc.AddSeconds(11.0),
+            TimeSpan.FromSeconds(10.0),
+            false);
+        CodexConnectionAlertCandidate[] claudeVisible = ApplyCodexApiServiceAlertDebounce(
+            claudeState.ApiAlertDebounce.States,
+            error,
+            nowUtc.AddSeconds(11.0),
+            TimeSpan.FromSeconds(10.0),
+            false);
+        if (codexVisible.Length != 1 || claudeVisible.Length != 0)
+        {
+            throw new InvalidOperationException("Radar runtime isolation self-test failed: API debounce state leaked across families.");
+        }
+    }
+
+    private static CodexQuotaSnapshot CreateRuntimeIsolationQuotaSnapshot(int fiveHourPercent, int weeklyPercent, DateTime sourceUtc)
+    {
+        CodexQuotaSnapshot snapshot = CodexQuotaSnapshot.CreateDefault();
+        snapshot.FiveHourPercent = ClampPercent(fiveHourPercent);
+        snapshot.WeeklyPercent = ClampPercent(weeklyPercent);
+        snapshot.FiveHourResetKnown = true;
+        snapshot.WeeklyResetKnown = true;
+        snapshot.FiveHourResetLocal = new DateTime(2026, 7, 8, 15, 0, 0, DateTimeKind.Local);
+        snapshot.WeeklyResetLocal = new DateTime(2026, 7, 12, 15, 0, 0, DateTimeKind.Local);
+        snapshot.SourceUpdatedKnown = true;
+        snapshot.SourceUpdatedUtc = sourceUtc;
+        MarkQuotaSnapshotSource(snapshot, "self_test");
+        return snapshot;
+    }
+
     private static void RunCodexModelIqDynamicScaleSelfTest()
     {
         string json =
@@ -12883,8 +12870,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private static void RunCodexApiServiceAlertDebounceSelfTest()
     {
-        Dictionary<string, CodexConnectionAlertDebounceState> states =
-            new Dictionary<string, CodexConnectionAlertDebounceState>(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, ServiceAlertDebounceState> states =
+            new Dictionary<string, ServiceAlertDebounceState>(StringComparer.OrdinalIgnoreCase);
         DateTime start = new DateTime(2026, 7, 7, 0, 0, 0, DateTimeKind.Utc);
         CodexConnectionAlertCandidate[] raw = new CodexConnectionAlertCandidate[]
         {
@@ -13801,13 +13788,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         snapshot.FiveHourPercent = ClampPercent(quota.FiveHourPercent);
         snapshot.WeeklyPercent = ClampPercent(quota.WeeklyPercent);
         DateTime resetLocal;
-        if (TryParseClaudeRadarResetText(quota.FiveHourResetText, true, out resetLocal))
+        if (ClaudeRadarResetTextFormatter.TryParseResetText(quota.FiveHourResetText, true, out resetLocal))
         {
             snapshot.FiveHourResetLocal = resetLocal;
             snapshot.FiveHourResetKnown = true;
         }
 
-        if (TryParseClaudeRadarResetText(quota.WeeklyResetText, false, out resetLocal))
+        if (ClaudeRadarResetTextFormatter.TryParseResetText(quota.WeeklyResetText, false, out resetLocal))
         {
             snapshot.WeeklyResetLocal = resetLocal;
             snapshot.WeeklyResetKnown = true;
@@ -13816,67 +13803,6 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         snapshot.SourceUpdatedUtc = quota.UpdatedAtUtc;
         snapshot.SourceUpdatedKnown = quota.UpdatedAtKnown;
         return true;
-    }
-
-    private static bool TryParseClaudeRadarResetText(string text, bool fiveHour, out DateTime resetLocal)
-    {
-        resetLocal = DateTime.MinValue;
-        string value = (text ?? string.Empty).Trim();
-        if (value.Length == 0 || string.Equals(value, "N/A", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        Match timeOnly = Regex.Match(value, @"(?<!\d)(\d{1,2})[:：](\d{2})(?!\d)");
-        if (fiveHour && timeOnly.Success)
-        {
-            int hour;
-            int minute;
-            if (int.TryParse(timeOnly.Groups[1].Value, out hour) &&
-                int.TryParse(timeOnly.Groups[2].Value, out minute) &&
-                hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59)
-            {
-                DateTime now = DateTime.Now;
-                resetLocal = now.Date.AddHours(hour).AddMinutes(minute);
-                if (resetLocal < now.AddMinutes(-5.0))
-                {
-                    resetLocal = resetLocal.AddDays(1.0);
-                }
-
-                return true;
-            }
-        }
-
-        Match monthDay = Regex.Match(value, @"(\d{1,2})\s*月\s*(\d{1,2})\s*日.*?(\d{1,2})[:：](\d{2})");
-        if (monthDay.Success)
-        {
-            int month;
-            int day;
-            int hour;
-            int minute;
-            if (int.TryParse(monthDay.Groups[1].Value, out month) &&
-                int.TryParse(monthDay.Groups[2].Value, out day) &&
-                int.TryParse(monthDay.Groups[3].Value, out hour) &&
-                int.TryParse(monthDay.Groups[4].Value, out minute))
-            {
-                int year = DateTime.Now.Year;
-                try
-                {
-                    resetLocal = new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Local);
-                    if (resetLocal < DateTime.Now.AddDays(-180.0))
-                    {
-                        resetLocal = resetLocal.AddYears(1);
-                    }
-
-                    return true;
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        return false;
     }
 
     private void StoreRenderSceneBitmap(string cacheKey)
@@ -13915,10 +13841,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         CodexRadarSnapshot radarSnapshot = GetCodexRadarDisplaySnapshot();
         QuotaDisplayState quotaState = GatherQuotaDisplayState();
         DeepSeekBalanceSnapshot deepSeekSnapshot = GetDeepSeekBalanceDisplaySnapshot();
+        CodexResetCreditsSnapshot resetCreditsSnapshot = GetCodexResetCreditsDisplaySnapshot();
         bool radarRequestRunning;
         bool claudeRequestRunning;
         bool openAiRequestRunning;
-        bool deepSeekRequestRunning;
+        bool deepSeekRequestRunning = deepSeekSnapshot != null && deepSeekSnapshot.RequestRunning;
         lock (this.codexRadarStatusLock)
         {
             radarRequestRunning = this.codexRadarStatusRequestRunning || this.codexRadarServiceProbeRunning;
@@ -13934,20 +13861,17 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             openAiRequestRunning = this.openAiStatusRequestRunning;
         }
 
-        lock (this.deepSeekBalanceLock)
-        {
-            deepSeekRequestRunning = this.deepSeekBalanceRequestRunning;
-        }
-
+        RadarFamilyRuntimeState activeFamilyState = GetActiveRadarFamilyState();
         StringBuilder key = new StringBuilder(512);
         key.Append(this.Width).Append('x').Append(this.Height).Append('|');
         key.Append(this.currentSettings.CodexRadarRenderVariant).Append('|');
         key.Append(GetEffectiveCodexRadarSoftwareMode()).Append('|');
+        key.Append(activeFamilyState.Revision).Append('|');
         key.Append(GetBackgroundOpacityAlpha()).Append('|');
         key.Append(GetContentOpacityAlpha()).Append('|');
         key.Append(burnInColorProtectionActive ? 'B' : 'N').Append('|');
         key.Append(this.renderTickCount & 1).Append('|');
-        key.Append(this.currentSettings.CodexRadarModelKey ?? string.Empty).Append('|');
+        key.Append(GetSelectedRadarModelKeyForSoftwareMode(activeFamilyState.Family)).Append('|');
         key.Append(this.renderSceneSettingsRevision).Append('|');
         key.Append(this.currentSettings.DisplayTimeZoneMode).Append('|');
         key.Append(this.currentSettings.DisplayTimeZoneId ?? string.Empty).Append('|');
@@ -13960,6 +13884,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         AppendRadarSnapshotCacheSignature(key, radarSnapshot);
         AppendQuotaSnapshotCacheSignature(key, quotaState);
         AppendDeepSeekSnapshotCacheSignature(key, deepSeekSnapshot);
+        AppendCodexResetCreditsSnapshotCacheSignature(key, resetCreditsSnapshot);
 
         bool networkAvailable;
         ServiceHealthState radarHealth;
@@ -14073,24 +13998,33 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         key.Append(quotaState.WeeklyGold ? '1' : '0').Append(',');
         key.Append(quotaState.FiveHourConsumptionRingPercent).Append(',');
         key.Append(quotaState.WeeklyConsumptionRingPercent).Append(',');
-        key.Append(quotaState.WeeklyConsumptionRingBlocked ? '1' : '0').Append('|');
+        key.Append(quotaState.WeeklyConsumptionRingBlocked ? '1' : '0').Append(',');
+        key.Append(quotaState.ForceDangerRing ? '1' : '0').Append('|');
     }
 
     private static void AppendDeepSeekSnapshotCacheSignature(StringBuilder key, DeepSeekBalanceSnapshot snapshot)
     {
+        key.Append("ds:");
+        key.Append(DeepSeekBalanceMonitor.BuildCacheSignature(snapshot));
+        key.Append('|');
+    }
+
+    private static void AppendCodexResetCreditsSnapshotCacheSignature(StringBuilder key, CodexResetCreditsSnapshot snapshot)
+    {
         if (snapshot == null)
         {
-            key.Append("ds:null|");
+            key.Append("rs:null|");
             return;
         }
 
-        key.Append("ds:");
-        key.Append(snapshot.ApiKeyConfigured ? '1' : '0').Append(',');
+        DateTime nowUtc = DateTime.UtcNow;
+        DateTime earliestUtc;
+        bool earliestKnown = snapshot.TryGetEarliestActiveExpirationUtc(nowUtc, out earliestUtc);
+        key.Append("rs:");
         key.Append(snapshot.Known ? '1' : '0').Append(',');
-        key.Append(snapshot.IsAvailable ? '1' : '0').Append(',');
         key.Append(snapshot.RequestRunning ? '1' : '0').Append(',');
-        key.Append(snapshot.BalanceCny.ToString("0.###", CultureInfo.InvariantCulture)).Append(',');
-        key.Append(snapshot.Last24HourUsageCny.ToString("0.###", CultureInfo.InvariantCulture)).Append(',');
+        key.Append(snapshot.GetActiveCount(nowUtc)).Append(',');
+        key.Append(earliestKnown ? earliestUtc.Ticks : 0L).Append(',');
         key.Append(snapshot.ErrorCode ?? string.Empty).Append('|');
     }
 

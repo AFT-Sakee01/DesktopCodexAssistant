@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Globalization;
+using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -28,11 +29,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private const int CompactNavWidth = 220;
     private const int NavItemHeight = 60;
     private const int ClaudeRadarModelGridColumns = 5;
-    private const int ClaudeRadarModelButtonWidth = 72;
+    private const int ClaudeRadarModelButtonWidth = 144;
+    private const int ClaudeRadarModelButtonMinimumWidth = 88;
     private const int ClaudeRadarModelButtonHeight = 38;
     private const int ClaudeRadarModelButtonGap = 8;
+    private const int ClaudeRadarModelButtonMaxTextChars = 14;
     private const string ClaudeRadarModelGridName = "ClaudeRadarModelGrid";
     private const string GlobalLayoutEditCommandName = "GlobalLayoutEditCommand";
+    private const string ClaudeSetupTokenCommandName = "ClaudeSetupTokenCommand";
 
     private static readonly Color MicaBase = DesignTokens.SettingsWarmTheme.WindowBase;
     private static readonly Color MicaLayer = DesignTokens.SettingsWarmTheme.InputBackground;
@@ -395,7 +399,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-        Button reset = BuildCommandButton("重置为默认", false);
+        Button reset = BuildCommandButton("重置为默认", false, DesignTokens.Colors.Warning);
         reset.Dock = DockStyle.Top;
         reset.Click += delegate
         {
@@ -428,7 +432,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             if (TrySaveSettings())
             {
-                ShowStatus("保存完成", false);
+                ShowStatus("保存完成", SettingsStatusSeverity.Success);
             }
         };
 
@@ -444,6 +448,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         return SettingsFluentResources.CreateCommandButton(text, primary, GetUiFont(9.5f, FontStyle.Bold));
     }
 
+    private Button BuildCommandButton(string text, bool primary, Color outlineAccent)
+    {
+        return SettingsFluentResources.CreateCommandButton(text, primary, GetUiFont(9.5f, FontStyle.Bold), outlineAccent);
+    }
+
     // ── Pages Definition ─────────────────────────────────────────────────
     // Each page uses AddPageGrouped with string[][] where each inner array
     // is [groupTitle, property1, property2, ...].
@@ -453,7 +462,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddPageGrouped("\uE115", "系统", "开机启动、性能和窗口基础行为。", new string[][]
         {
             new string[] { "启动与性能", "StartupEnabled", "PerformanceMode" },
-            new string[] { "窗口行为", "VisibilityMode", "ClickThroughMode" },
+            new string[] { "窗口行为", "VisibilityMode", "VisibilityOverlapIgnoresOperationPanelEnabled", "ClickThroughMode" },
             new string[] { "AI 请求阻断", "AiRequestProtectionAutoEnabled", "AiRequestProtectionManualBlockEnabled" },
             new string[] { "!Codex 额度计划", "CodexQuotaPlanEnabled", "CodexQuotaPlanWeeklyComparison", "CodexQuotaPlanWeeklyThresholdPercent",
                            "CodexQuotaPlanFiveHourComparison", "CodexQuotaPlanFiveHourThresholdPercent", "CodexQuotaPlanResumeConditionMode",
@@ -465,6 +474,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddPageGrouped("\uE7C2", "布局与位置", "所有浮窗的位置、大小和所在显示器；推荐用可视化编辑直接拖拽。", new string[][]
         {
             new string[] { "可视化编辑", GlobalLayoutEditCommandName },
+            new string[] { "分辨率兼容", "ResolutionCompatibilityModeEnabled", "ResolutionCompatibilityScalePercent" },
             new string[] { "显示器分配", "FallbackDisconnectedDisplaysEnabled", "MainDisplayDeviceName", "CodexRadarDisplayDeviceName",
                            "ClaudeRadarDisplayDeviceName", "PowerThermalDisplayDeviceName", "NetworkMonitorDisplayDeviceName", "ConnectionCheckDisplayDeviceName", "OperationDisplayDeviceName" },
             new string[] { "!主窗口位置", "Width", "Height", "LeftX", "BottomY" },
@@ -479,7 +489,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddPageGrouped("\uE7B3", "隐藏与防烧屏", "鼠标靠近时隐藏、空闲自动隐藏和 OLED 防烧屏。", new string[][]
         {
             new string[] { "鼠标靠近时隐藏", "HoverOpacityEnabled", "SensitiveMouseModeEnabled", "SensitiveMouseRangePixels" },
-            new string[] { "自动隐藏", "AutoHoverOpacityIdleEnabled", "AutoHoverOpacityIdleSeconds", "AutoHoverOpacityMaximizedEnabled", "BurnInHiddenModeColorProtectionEnabled" },
+            new string[] { "自动隐藏", "AutoHoverOpacityIdleEnabled", "AutoHoverOpacityIdleSeconds", "AutoHoverOpacityMaximizedEnabled", "OperationRadialCoreAutoHideKeepAliveEnabled", "OperationRadialIdleCollapseSeconds", "OperationRadialIdleResetOnInteractionEnabled", "OperationRadialKeepOpenAfterLeafClickEnabled", "BurnInHiddenModeColorProtectionEnabled" },
             new string[] { "!延迟显现", "HoverOpacityRevealDelayEnabled", "HoverOpacityRevealDelaySeconds", "HoverOpacityRevealResetSeconds" },
             new string[] { "!覆盖与反向", "HoverOpacityCoverEnabled", "ReverseHoverOpacityRevealEnabled", "ReverseHoverOpacityRestoreDelaySeconds" }
         });
@@ -490,14 +500,25 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "透明度", "BackgroundTransparencyPercent", "ApplicationTransparencyPercent" }
         });
 
-        AddPageGrouped("\uE71E", "Codex Radar", "Codex 用量监控：模型、时区和外观。", new string[][]
+        AddPageGrouped("\uE121", "Radar 通用", "Codex / Claude Radar 共用的时钟显示和时区。", new string[][]
+        {
+            new string[] { "时钟显示", "RadarClockTimeDisplayMode", "RadarClockAutoSwitchModelEnabled" },
+            new string[] { "显示时区", "DisplayTimeZoneMode", "DisplayTimeZoneId" }
+        });
+
+        AddPageGrouped("\uE71E", "Codex Radar", "共享 Radar 小窗：可按前台自动显示 Codex 或 Claude，也可固定检测对象。", new string[][]
         {
             // 手动布局与元素偏移分组已从设置界面隐藏（改用渲染变体切换布局）。
             // 对应 WidgetSettings 属性仍保留，Classic 布局若通过 settings.ini 设置仍生效；
             // 均布变体本就忽略这些设置。恢复入口时把下方分组加回，并同步 VerifySelfTest 必需绑定。
-            new string[] { "窗口", "CodexRadarEnabled", "CodexRadarTransparencyPercent" },
-            new string[] { "模型与时区", "CodexRadarSoftwareMode", "CodexRadarModelKey", "CodexRadarModelVersion", "RadarClockAutoSwitchModelEnabled", "RadarClockTimeDisplayMode", "DeepSeekApiKeyRevision", "DisplayTimeZoneMode", "DisplayTimeZoneId" },
-            new string[] { "!网站数据源", "CodexRadarPublicJsonEnabled", "CodexRadarHtmlFallbackEnabled", "CodexRadarRssFallbackEnabled", "CodexRadarServiceProbeToken" },
+            new string[] { "共享小窗", "CodexRadarEnabled", "CodexRadarSoftwareMode", "CodexRadarTransparencyPercent" },
+            new string[] { "CODEX 模式数据", "CodexRadarModelKey" },
+            new string[] { "!CodexRadar.com 读取链路", "CodexRadarPublicJsonEnabled", "CodexRadarHtmlFallbackEnabled", "CodexRadarRssFallbackEnabled", "CodexRadarServiceProbeToken" },
+            new string[] { "!额度保护", "CodexQuotaDueResetProtectionEnabled", "CodexQuotaRssResetProtectionEnabled",
+                           "CodexQuotaProviderZeroDropProtectionEnabled", "CodexQuotaDuplicateSameBalanceRingProtectionEnabled",
+                           "CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled", "CodexQuotaProviderWeeklySpikeProtectionEnabled",
+                           "CodexQuotaStrictFiveHourResetBoundaryEnabled", "CodexQuotaWeeklyBaselineAutoRepairEnabled" },
+            new string[] { "!兼容模型设置", "CodexRadarModelVersion" },
             new string[] { "!IQ 测试覆盖", "CodexModelIqTestEnabled", "CodexModelIqTestPassed", "CodexModelIqBaselineAutoEnabled", "CodexModelIqBaselinePassed", "CodexModelIqBaselineValidTasks" },
             new string[] { "!效率测试覆盖", "CodexModelEfficiencyTestEnabled", "CodexModelTokenEfficiencyTestPercent", "CodexModelTimeEfficiencyTestPercent",
                            "CodexModelTokenEfficiencyBaselineMode", "CodexModelTokenEfficiencyBaselinePassed", "CodexModelTokenEfficiencyBaselineTokens",
@@ -506,17 +527,21 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "!随机测试", "CodexRadarRandomTestEnabled", "CodexRadarRandomTestAutoRefresh", "CodexRadarRandomTestRefreshToken" }
         });
 
-        AddPageGrouped("\uE8D4", "Claude Radar", "Claude 用量监控独立窗口。", new string[][]
+        AddPageGrouped("\uE8D4", "Claude Radar", "Claude 相关数据：独立 Claude 小窗，以及共享 Radar 小窗的 CLAUDE 模式辅助状态。", new string[][]
         {
-            new string[] { "窗口", "ClaudeRadarEnabled", "ClaudeRadarTransparencyPercent" },
-            new string[] { "模型", "ClaudeRadarModelKey" },
-            new string[] { "!网站数据源", "ClaudeRadarJsonEnabled", "ClaudeRadarHomepageFallbackEnabled", "ClaudeRadarCommunityRatingsEnabled", "ClaudeRadarLocalQuotaFallbackEnabled", "ClaudeRadarServiceProbeToken" },
+            new string[] { "独立小窗", "ClaudeRadarEnabled", "ClaudeRadarTransparencyPercent" },
+            new string[] { "Claude 模型", "ClaudeRadarModelKey" },
+            new string[] { "Claude 数据链路", "ClaudeRadarJsonEnabled", "ClaudeRadarCommunityRatingsEnabled", "ClaudeRadarLocalQuotaFallbackEnabled" },
+            new string[] { "Claude Code 用量令牌", ClaudeSetupTokenCommandName },
+            new string[] { "DeepSeek 余额", "DeepSeekApiKeyRevision" },
+            new string[] { "!元数据与诊断", "ClaudeRadarHomepageFallbackEnabled", "ClaudeRadarServiceProbeToken" },
             new string[] { "!随机测试", "ClaudeRadarRandomTestEnabled", "ClaudeRadarRandomTestAutoRefresh", "ClaudeRadarRandomTestRefreshToken" }
         });
 
         AddPageGrouped("\uEBB0", "功耗与温度", "UX3407N / UX3607O 专用功耗温度窗口。", new string[][]
         {
             new string[] { "自动布局与告警", "PowerThermalAutoSizeEnabled", "PowerThermalAutoDirection", "PowerThermalVisibleAlertCount" },
+            new string[] { "电池与节能", "PowerThermalManualEnergySaverThresholdPercent" },
             new string[] { "透明度", "PowerThermalTransparencyPercent" },
             new string[] { "!测试", "ThermalTestMode" }
         });
@@ -533,7 +558,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         AddPageGrouped("\uE700", "操作面板", "左下角操作面板的按钮、透明度和外观。", new string[][]
         {
-            new string[] { "按钮与面板", "OperationButtonSize", "OperationPrimaryPanelMode", "OperationBackgroundTransparencyPercent" },
+            new string[] { "按钮与面板", "OperationButtonSize", "OperationPrimaryPanelMode", "OperationSettingsLogicExtensionEnabled", "OperationBackgroundTransparencyPercent" },
             new string[] { "外观风格", "OperationRenderVariant" },
             new string[] { "!测试", "AlertTestEnabled" }
         });
@@ -759,6 +784,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             return BuildGlobalLayoutEditEditor();
         }
 
+        if (string.Equals(propertyName, ClaudeSetupTokenCommandName, StringComparison.Ordinal))
+        {
+            return BuildClaudeSetupTokenEditor();
+        }
+
         PropertyInfo property = typeof(WidgetSettings).GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
         if (property == null || !property.CanRead || !property.CanWrite || property.PropertyType == typeof(string[]))
         {
@@ -772,6 +802,13 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         card.TitleLabel.Text = GetSettingTitle(propertyName);
         card.HintLabel.Text = GetSettingHint(propertyName);
         card.BackColor = Color.Transparent;
+        // The model button grid wraps to multiple rows on its own and doesn't fit alongside the
+        // title/hint text in the normal side-by-side column - stack it below instead of squeezing.
+        if (string.Equals(propertyName, "ClaudeRadarModelKey", StringComparison.Ordinal))
+        {
+            card.ForceCompactLayout = true;
+        }
+
         return new SettingEditor(property, card, control);
     }
 
@@ -789,6 +826,308 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         card.HintLabel.Text = GetSettingHint(GlobalLayoutEditCommandName);
         card.BackColor = Color.Transparent;
         return new SettingEditor(GlobalLayoutEditCommandName, card, button);
+    }
+
+    private SettingEditor BuildClaudeSetupTokenEditor()
+    {
+        Button button = BuildCommandButton(GetClaudeSetupTokenButtonText(), false, GetClaudeSetupTokenAccentColor());
+        button.Width = 227;
+        button.Height = 54;
+        button.Click += delegate { OpenClaudeSetupTokenDialog(button); };
+
+        SettingRow card = new SettingRow(button, GetUiFont(10.0f), GetUiFont(8.5f));
+        card.Width = 1152;
+        card.Margin = new Padding(0);
+        card.TitleLabel.Text = GetSettingTitle(ClaudeSetupTokenCommandName);
+        card.HintLabel.Text = GetSettingHint(ClaudeSetupTokenCommandName);
+        card.BackColor = Color.Transparent;
+        return new SettingEditor(ClaudeSetupTokenCommandName, card, button);
+    }
+
+    private void OpenClaudeSetupTokenDialog(Button sourceButton)
+    {
+        Form dialog = new Form();
+        try
+        {
+            dialog.Text = "Claude Code 用量令牌";
+            dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+            dialog.StartPosition = FormStartPosition.CenterParent;
+            dialog.ShowInTaskbar = false;
+            dialog.MaximizeBox = false;
+            dialog.MinimizeBox = false;
+            dialog.AutoScaleMode = AutoScaleMode.None;
+            dialog.BackColor = MicaBase;
+            dialog.ForeColor = TextSecondary;
+            dialog.Font = GetUiFont(9.5f);
+
+            // Every control's Y is accumulated from the previous control's *measured* height
+            // (via GetSingleLineHeight/GetWrappedTextHeight) rather than guessed constants -
+            // guessed row heights overlapped once the actual rendered font metrics differed
+            // from what was assumed at a different DPI/text-scale setting.
+            const int marginLeft = 24;
+            const int contentWidth = 572;
+            int y = 20;
+
+            Font titleFont = GetUiFont(12.0f, FontStyle.Bold);
+            Label title = new Label();
+            title.Text = "生成并粘贴 setup-token";
+            title.Font = titleFont;
+            title.ForeColor = TextPrimary;
+            title.BackColor = MicaBase;
+            title.Location = new Point(marginLeft, y);
+            title.Size = new Size(contentWidth, GetSingleLineHeight(titleFont, 8));
+            title.TextAlign = ContentAlignment.MiddleLeft;
+            y += title.Height + 8;
+
+            Font hintFont = GetUiFont(8.8f);
+            string hintText = "Claude 桌面版不会主动上报用量数据。先在下面复制命令，在任意 PowerShell 窗口运行并登录授权，" +
+                "把打印出的一次性长效令牌粘贴到下方输入框保存。未配置时两个额度环会显示满环红色。";
+            Label hint = new Label();
+            hint.Text = hintText;
+            hint.Font = hintFont;
+            hint.ForeColor = TextTertiary;
+            hint.BackColor = MicaBase;
+            hint.Location = new Point(marginLeft, y);
+            hint.Size = new Size(contentWidth, GetWrappedTextHeight(hintText, hintFont, contentWidth, 8));
+            hint.TextAlign = ContentAlignment.TopLeft;
+            y += hint.Height + 18;
+
+            Font sectionFont = GetUiFont(9.0f, FontStyle.Bold);
+            Label commandLabel = new Label();
+            commandLabel.Text = "第 1 步：复制并在 PowerShell 中运行";
+            commandLabel.Font = sectionFont;
+            commandLabel.ForeColor = TextPrimary;
+            commandLabel.BackColor = MicaBase;
+            commandLabel.Location = new Point(marginLeft, y);
+            commandLabel.Size = new Size(contentWidth, GetSingleLineHeight(sectionFont, 6));
+            commandLabel.TextAlign = ContentAlignment.MiddleLeft;
+            y += commandLabel.Height + 6;
+
+            int commandRowHeight = 34;
+            int copyButtonWidth = 112;
+            int gapBeforeCopy = 10;
+            int commandBoxWidth = contentWidth - copyButtonWidth - gapBeforeCopy;
+
+            TextBox commandBox = new TextBox();
+            commandBox.Location = new Point(marginLeft, y);
+            commandBox.Size = new Size(commandBoxWidth, commandRowHeight);
+            commandBox.BackColor = ControlBg;
+            commandBox.ForeColor = TextSecondary;
+            commandBox.BorderStyle = BorderStyle.FixedSingle;
+            commandBox.Font = GetUiFont(8.8f);
+            commandBox.ReadOnly = true;
+            commandBox.Text = BuildClaudeSetupTokenCommandText();
+
+            Button copyCommand = BuildCommandButton("复制命令", false);
+            copyCommand.Location = new Point(marginLeft + commandBoxWidth + gapBeforeCopy, y);
+            copyCommand.Width = copyButtonWidth;
+            copyCommand.Height = commandRowHeight;
+            copyCommand.Click += delegate
+            {
+                try
+                {
+                    Clipboard.SetText(commandBox.Text);
+                    ShowStatus("命令已复制", SettingsStatusSeverity.Success);
+                }
+                catch (Exception ex)
+                {
+                    Program.LogException(ex);
+                    ShowStatus("复制失败", SettingsStatusSeverity.Error);
+                }
+            };
+            y += commandRowHeight + 18;
+
+            Label tokenLabel = new Label();
+            tokenLabel.Text = "第 2 步：粘贴命令打印出的令牌";
+            tokenLabel.Font = sectionFont;
+            tokenLabel.ForeColor = TextPrimary;
+            tokenLabel.BackColor = MicaBase;
+            tokenLabel.Location = new Point(marginLeft, y);
+            tokenLabel.Size = new Size(contentWidth, GetSingleLineHeight(sectionFont, 6));
+            tokenLabel.TextAlign = ContentAlignment.MiddleLeft;
+            y += tokenLabel.Height + 6;
+
+            TextBox tokenBox = new TextBox();
+            tokenBox.Location = new Point(marginLeft, y);
+            tokenBox.Size = new Size(contentWidth, commandRowHeight);
+            tokenBox.BackColor = ControlBg;
+            tokenBox.ForeColor = TextSecondary;
+            tokenBox.BorderStyle = BorderStyle.FixedSingle;
+            tokenBox.Font = GetUiFont(9.5f);
+            tokenBox.UseSystemPasswordChar = true;
+            y += commandRowHeight + 14;
+
+            Font statusFont = GetUiFont(8.8f, FontStyle.Bold);
+            Label statusHint = new Label();
+            statusHint.AutoSize = false;
+            statusHint.Font = statusFont;
+            statusHint.Location = new Point(marginLeft, y);
+            statusHint.Size = new Size(contentWidth, GetSingleLineHeight(statusFont, 4));
+            statusHint.BackColor = MicaBase;
+            statusHint.TextAlign = ContentAlignment.MiddleLeft;
+            ApplyClaudeSetupTokenStatusHint(statusHint);
+            y += statusHint.Height + 20;
+
+            int buttonHeight = 44;
+            int buttonWidth = 112;
+            int buttonGap = 12;
+
+            Button clear = BuildCommandButton("清除", false);
+            clear.Location = new Point(marginLeft, y);
+            clear.Width = buttonWidth;
+            clear.Height = buttonHeight;
+
+            Button save = BuildCommandButton("保存", true);
+            save.Width = buttonWidth;
+            save.Height = buttonHeight;
+            save.Location = new Point(marginLeft + contentWidth - buttonWidth, y);
+
+            Button cancel = BuildCommandButton("取消", false);
+            cancel.Width = buttonWidth;
+            cancel.Height = buttonHeight;
+            cancel.Location = new Point(save.Left - buttonGap - buttonWidth, y);
+            cancel.Click += delegate { dialog.Close(); };
+
+            y += buttonHeight + 20;
+            dialog.ClientSize = new Size(marginLeft * 2 + contentWidth, y);
+
+            clear.Click += delegate
+            {
+                string errorCode;
+                if (TrySaveClaudeSetupTokenFile(string.Empty, out errorCode))
+                {
+                    tokenBox.Text = string.Empty;
+                    ApplyClaudeSetupTokenStatusHint(statusHint);
+                    RefreshClaudeSetupTokenButton(sourceButton);
+                    ShowStatus("Claude 用量令牌已清除", SettingsStatusSeverity.Warning);
+                    return;
+                }
+
+                ShowStatus("Claude 用量令牌清除失败 " + errorCode, SettingsStatusSeverity.Error);
+            };
+
+            save.Click += delegate
+            {
+                string errorCode;
+                if (TrySaveClaudeSetupTokenFile(tokenBox.Text, out errorCode))
+                {
+                    ApplyClaudeSetupTokenStatusHint(statusHint);
+                    RefreshClaudeSetupTokenButton(sourceButton);
+                    ShowStatus("Claude 用量令牌已保存", SettingsStatusSeverity.Success);
+                    dialog.Close();
+                    return;
+                }
+
+                ShowStatus("Claude 用量令牌保存失败 " + errorCode, SettingsStatusSeverity.Error);
+            };
+
+            dialog.Controls.Add(title);
+            dialog.Controls.Add(hint);
+            dialog.Controls.Add(commandLabel);
+            dialog.Controls.Add(commandBox);
+            dialog.Controls.Add(copyCommand);
+            dialog.Controls.Add(tokenLabel);
+            dialog.Controls.Add(tokenBox);
+            dialog.Controls.Add(statusHint);
+            dialog.Controls.Add(clear);
+            dialog.Controls.Add(cancel);
+            dialog.Controls.Add(save);
+            dialog.AcceptButton = save;
+            dialog.CancelButton = cancel;
+            dialog.ShowDialog(this);
+        }
+        finally
+        {
+            dialog.Dispose();
+        }
+    }
+
+    private void RefreshClaudeSetupTokenButton(Button sourceButton)
+    {
+        if (sourceButton != null)
+        {
+            sourceButton.Text = GetClaudeSetupTokenButtonText();
+        }
+
+        OnSettingChanged();
+    }
+
+    private static void ApplyClaudeSetupTokenStatusHint(Label statusHint)
+    {
+        if (statusHint == null)
+        {
+            return;
+        }
+
+        bool configured = IsClaudeSetupTokenConfiguredForUi();
+        statusHint.Text = configured ? "状态：已配置" : "状态：未配置（额度环将显示满环红色）";
+        statusHint.ForeColor = configured ? DesignTokens.Colors.Success : DesignTokens.Colors.Danger;
+    }
+
+    private static string GetClaudeSetupTokenButtonText()
+    {
+        return IsClaudeSetupTokenConfiguredForUi() ? "已配置 · 修改" : "未配置 · 立即设置";
+    }
+
+    private static Color GetClaudeSetupTokenAccentColor()
+    {
+        return IsClaudeSetupTokenConfiguredForUi() ? DesignTokens.Colors.Success : DesignTokens.Colors.Danger;
+    }
+
+    private static bool IsClaudeSetupTokenConfiguredForUi()
+    {
+        try
+        {
+            return ClaudeCodeUsageReader.ReadConfiguredSetupToken().Length > 0;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return false;
+        }
+    }
+
+    // Dynamically resolves the installed claude-code CLI version directory instead of hardcoding
+    // it - the Claude desktop app updates this bundled CLI independently of our own releases.
+    private static string BuildClaudeSetupTokenCommandText()
+    {
+        return "$dir = Get-ChildItem \"$env:APPDATA\\Claude\\claude-code\" -Directory | " +
+            "Sort-Object Name -Descending | Select-Object -First 1; " +
+            "& \"$($dir.FullName)\\claude.exe\" setup-token";
+    }
+
+    private static bool TrySaveClaudeSetupTokenFile(string token, out string errorCode)
+    {
+        errorCode = string.Empty;
+        try
+        {
+            string trimmed = (token ?? string.Empty).Trim().Trim('"', '\'');
+            string path = ClaudeCodeUsageReader.SetupTokenFilePath;
+            if (trimmed.Length == 0)
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+
+                return true;
+            }
+
+            string directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            File.WriteAllText(path, trimmed, new UTF8Encoding(false));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            errorCode = "0x" + ex.HResult.ToString("X8", CultureInfo.InvariantCulture);
+            return false;
+        }
     }
 
     private Control BuildValueControl(PropertyInfo property)
@@ -843,6 +1182,17 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         if (type == typeof(int) || type == typeof(double))
         {
+            if (string.Equals(property.Name, "ResolutionCompatibilityScalePercent", StringComparison.Ordinal))
+            {
+                PercentSliderControl slider = new PercentSliderControl(GetUiFont(9.0f, FontStyle.Bold));
+                slider.Width = 400;
+                slider.Height = 54;
+                slider.Minimum = WidgetSettings.MinResolutionCompatibilityScalePercent;
+                slider.Maximum = WidgetSettings.MaxResolutionCompatibilityScalePercent;
+                slider.ValueChanged += delegate { OnSettingChanged(); };
+                return slider;
+            }
+
             if (string.Equals(property.Name, "DeepSeekApiKeyRevision", StringComparison.Ordinal))
             {
                 Button button = BuildCommandButton(GetDeepSeekApiKeyButtonText(), false);
@@ -863,7 +1213,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 {
                     int token = button.Tag is int ? (int)button.Tag : 0;
                     button.Tag = token == int.MaxValue ? 1 : token + 1;
-                    ShowStatus("Codex Radar 服务检测已启动，结果写入本地诊断文件。", false);
+                    ShowStatus("Codex Radar 服务检测已启动，结果写入本地诊断文件。", SettingsStatusSeverity.Warning);
                     OnSettingChanged();
                 };
                 return button;
@@ -879,7 +1229,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 {
                     int token = button.Tag is int ? (int)button.Tag : 0;
                     button.Tag = token == int.MaxValue ? 1 : token + 1;
-                    ShowStatus("Claude Radar 服务检测已启动，结果写入本地诊断文件。", false);
+                    ShowStatus("Claude Radar 服务检测已启动，结果写入本地诊断文件。", SettingsStatusSeverity.Warning);
                     OnSettingChanged();
                 };
                 return button;
@@ -895,7 +1245,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 {
                     int token = button.Tag is int ? (int)button.Tag : 0;
                     button.Tag = token == int.MaxValue ? 1 : token + 1;
-                    ShowStatus("刷新请求已发送。", false);
+                    ShowStatus("刷新请求已发送。", SettingsStatusSeverity.Warning);
                     OnSettingChanged();
                 };
                 return button;
@@ -1021,7 +1371,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private Control BuildClaudeRadarModelGridSelector()
     {
         Panel panel = new Panel();
-        panel.Width = 400;
+        panel.Width = GetClaudeRadarModelGridPreferredWidth();
         panel.BackColor = Color.Transparent;
         panel.Resize += delegate { LayoutClaudeRadarModelPanel(panel); };
 
@@ -1050,7 +1400,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                     PopulateClaudeRadarModelGrid(grid, selected);
                     LayoutClaudeRadarModelPanel(panel);
                     RelayoutSettingGroup(panel);
-                    ShowStatus("Claude Radar 模型映射已保存。", false);
+                    ShowStatus("Claude Radar 模型映射已保存。", SettingsStatusSeverity.Success);
                     OnSettingChanged();
                 }
             }
@@ -1096,6 +1446,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 old.Dispose();
             }
 
+            int columns = GetClaudeRadarModelColumnCountForGrid(grid.Width);
             int slots = Math.Max(
                 ClaudeRadarModelGridColumns,
                 ((options.Count + ClaudeRadarModelGridColumns - 1) / ClaudeRadarModelGridColumns) * ClaudeRadarModelGridColumns);
@@ -1103,12 +1454,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             {
                 ClaudeModelOption option = i < options.Count ? options[i] : null;
                 Button button = BuildClaudeRadarModelButton(option);
-                button.Margin = new Padding(0, 0, i % ClaudeRadarModelGridColumns == ClaudeRadarModelGridColumns - 1 ? 0 : ClaudeRadarModelButtonGap, ClaudeRadarModelButtonGap);
+                button.Margin = new Padding(0, 0, i % columns == columns - 1 ? 0 : ClaudeRadarModelButtonGap, ClaudeRadarModelButtonGap);
                 grid.Controls.Add(button);
             }
 
             ApplyClaudeRadarModelGridSelection(grid);
-            int rows = Math.Max(1, slots / ClaudeRadarModelGridColumns);
+            int rows = Math.Max(1, (slots + columns - 1) / columns);
             grid.Height = rows * ClaudeRadarModelButtonHeight + Math.Max(0, rows - 1) * ClaudeRadarModelButtonGap;
         }
         finally
@@ -1233,12 +1584,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         string label = option.Label ?? option.Key;
-        if (label.Length <= 7)
+        if (label.Length <= ClaudeRadarModelButtonMaxTextChars)
         {
             return label;
         }
 
-        return label.Substring(0, 7);
+        return label.Substring(0, ClaudeRadarModelButtonMaxTextChars);
     }
 
     private void ApplyClaudeRadarModelGridSelection(FlowLayoutPanel grid)
@@ -1353,6 +1704,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             grid.Location = new Point(0, 0);
             grid.Width = panel.Width;
+            int columns = GetClaudeRadarModelColumnCountForGrid(grid.Width);
             int buttonWidth = GetClaudeRadarModelButtonWidthForGrid(grid.Width);
             for (int i = 0; i < grid.Controls.Count; i++)
             {
@@ -1367,10 +1719,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 button.Margin = new Padding(
                     0,
                     0,
-                    i % ClaudeRadarModelGridColumns == ClaudeRadarModelGridColumns - 1 ? 0 : ClaudeRadarModelButtonGap,
+                    i % columns == columns - 1 ? 0 : ClaudeRadarModelButtonGap,
                     ClaudeRadarModelButtonGap);
             }
 
+            int rows = Math.Max(1, (grid.Controls.Count + columns - 1) / columns);
+            grid.Height = rows * ClaudeRadarModelButtonHeight + Math.Max(0, rows - 1) * ClaudeRadarModelButtonGap;
             y = grid.Bottom + 10;
         }
 
@@ -1386,9 +1740,30 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
     private static int GetClaudeRadarModelButtonWidthForGrid(int gridWidth)
     {
-        int gaps = (ClaudeRadarModelGridColumns - 1) * ClaudeRadarModelButtonGap;
-        int usable = Math.Max(ClaudeRadarModelGridColumns, gridWidth - gaps);
-        return Math.Max(32, usable / ClaudeRadarModelGridColumns);
+        int columns = GetClaudeRadarModelColumnCountForGrid(gridWidth);
+        int gaps = Math.Max(0, columns - 1) * ClaudeRadarModelButtonGap;
+        int usable = Math.Max(columns, gridWidth - gaps);
+        return Math.Max(32, Math.Min(ClaudeRadarModelButtonWidth, usable / columns));
+    }
+
+    private static int GetClaudeRadarModelColumnCountForGrid(int gridWidth)
+    {
+        for (int columns = ClaudeRadarModelGridColumns; columns > 1; columns--)
+        {
+            int gaps = Math.Max(0, columns - 1) * ClaudeRadarModelButtonGap;
+            if (gridWidth >= columns * ClaudeRadarModelButtonMinimumWidth + gaps)
+            {
+                return columns;
+            }
+        }
+
+        return 1;
+    }
+
+    private static int GetClaudeRadarModelGridPreferredWidth()
+    {
+        return ClaudeRadarModelGridColumns * ClaudeRadarModelButtonWidth +
+            Math.Max(0, ClaudeRadarModelGridColumns - 1) * ClaudeRadarModelButtonGap;
     }
 
     private static void RelayoutSettingGroup(Control control)
@@ -1710,7 +2085,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         catch (Exception ex)
         {
             Program.LogException(ex);
-            ShowStatus("保存失败 0x" + ex.HResult.ToString("X8", CultureInfo.InvariantCulture), true);
+            ShowStatus("保存失败 0x" + ex.HResult.ToString("X8", CultureInfo.InvariantCulture), SettingsStatusSeverity.Error);
             return false;
         }
     }
@@ -1740,6 +2115,13 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             picker.SetSelectedValue(value);
             RelayoutSettingGroup(editor.Control);
+            return;
+        }
+
+        PercentSliderControl slider = editor.Control as PercentSliderControl;
+        if (slider != null)
+        {
+            slider.SetValueSilent(Convert.ToInt32(value, CultureInfo.InvariantCulture));
             return;
         }
 
@@ -1917,6 +2299,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             return picker.GetSelectedValue();
         }
 
+        PercentSliderControl slider = editor.Control as PercentSliderControl;
+        if (slider != null)
+        {
+            return slider.Value;
+        }
+
         ComboBox combo = editor.Control as ComboBox;
         if (combo == null && string.Equals(editor.Property.Name, "ClaudeRadarModelKey", StringComparison.Ordinal))
         {
@@ -2007,12 +2395,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             this.baseline.Normalize();
             LoadSettings(this.baseline);
             this.saved = true;
-            ShowStatus("全局布局已保存", false);
+            ShowStatus("全局布局已保存", SettingsStatusSeverity.Success);
             return;
         }
 
         this.owner.PreviewSettings(ReadSettings());
-        ShowStatus("全局编辑已取消", false);
+        ShowStatus("全局编辑已取消", SettingsStatusSeverity.Warning);
     }
 
     private void OpenDeepSeekApiKeyDialog(Button sourceButton)
@@ -2084,12 +2472,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 {
                     keyBox.Text = string.Empty;
                     IncrementDeepSeekApiKeyRevision(sourceButton);
-                    ShowStatus("DeepSeek 配置已清除", false);
+                    ShowStatus("DeepSeek 配置已清除", SettingsStatusSeverity.Success);
                     dialog.Close();
                     return;
                 }
 
-                ShowStatus("DeepSeek 配置清除失败 " + errorCode, true);
+                ShowStatus("DeepSeek 配置清除失败 " + errorCode, SettingsStatusSeverity.Error);
             };
 
             save.Click += delegate
@@ -2098,12 +2486,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 if (TrySaveDeepSeekApiKeyFile(keyBox.Text, out errorCode))
                 {
                     IncrementDeepSeekApiKeyRevision(sourceButton);
-                    ShowStatus("DeepSeek 配置已保存", false);
+                    ShowStatus("DeepSeek 配置已保存", SettingsStatusSeverity.Success);
                     dialog.Close();
                     return;
                 }
 
-                ShowStatus("DeepSeek 配置保存失败 " + errorCode, true);
+                ShowStatus("DeepSeek 配置保存失败 " + errorCode, SettingsStatusSeverity.Error);
             };
 
             dialog.Controls.Add(title);
@@ -2153,17 +2541,17 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     {
         try
         {
-            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(CodexRadarForm.DeepSeekApiKeyEnvironmentVariable)))
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(DeepSeekBalanceMonitor.ApiKeyEnvironmentVariable)))
             {
                 return true;
             }
 
-            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(CodexRadarForm.DeepSeekApiKeyEnvironmentVariable, EnvironmentVariableTarget.User)))
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(DeepSeekBalanceMonitor.ApiKeyEnvironmentVariable, EnvironmentVariableTarget.User)))
             {
                 return true;
             }
 
-            return !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(CodexRadarForm.DeepSeekApiKeyEnvironmentVariable, EnvironmentVariableTarget.Machine));
+            return !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(DeepSeekBalanceMonitor.ApiKeyEnvironmentVariable, EnvironmentVariableTarget.Machine));
         }
         catch
         {
@@ -2179,8 +2567,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             bool migrated;
             string errorCode;
             return SecretStore.TryReadOrMigrateSecret(
-                CodexRadarForm.DeepSeekApiKeyPath,
-                CodexRadarForm.LegacyDeepSeekApiKeyPath,
+                DeepSeekBalanceMonitor.ApiKeyPath,
+                DeepSeekBalanceMonitor.LegacyApiKeyPath,
                 SecretStore.TrimSecret,
                 out secret,
                 out migrated,
@@ -2203,12 +2591,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             string trimmed = (apiKey ?? string.Empty).Trim();
             if (trimmed.Length == 0)
             {
-                SecretStore.DeleteSecretFiles(CodexRadarForm.DeepSeekApiKeyPath, CodexRadarForm.LegacyDeepSeekApiKeyPath);
+                SecretStore.DeleteSecretFiles(DeepSeekBalanceMonitor.ApiKeyPath, DeepSeekBalanceMonitor.LegacyApiKeyPath);
                 return true;
             }
 
-            SecretStore.WriteSecret(CodexRadarForm.DeepSeekApiKeyPath, trimmed);
-            SecretStore.DeleteLegacySecretFiles(CodexRadarForm.LegacyDeepSeekApiKeyPath);
+            SecretStore.WriteSecret(DeepSeekBalanceMonitor.ApiKeyPath, trimmed);
+            SecretStore.DeleteLegacySecretFiles(DeepSeekBalanceMonitor.LegacyApiKeyPath);
             return true;
         }
         catch (Exception ex)
@@ -2220,7 +2608,17 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     }
 
     // ── Status Toast ─────────────────────────────────────────────────────
-    private void ShowStatus(string text, bool error)
+    // Three-state severity instead of a plain success/error bool: Warning covers "action
+    // fired but the outcome is not known yet" (detection/refresh requests, cancellations),
+    // which used to be lumped in with Success and always rendered green.
+    private enum SettingsStatusSeverity
+    {
+        Success,
+        Warning,
+        Error
+    }
+
+    private void ShowStatus(string text, SettingsStatusSeverity severity)
     {
         if (this.statusLabel == null)
         {
@@ -2229,9 +2627,24 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         this.statusTimer.Stop();
         this.statusLabel.Text = text;
-        this.statusLabel.ForeColor = error ? ErrorClr : AccentClr;
+        this.statusLabel.ForeColor = GetStatusSeverityColor(severity);
         this.statusLabel.Visible = true;
         this.statusTimer.Start();
+    }
+
+    private static Color GetStatusSeverityColor(SettingsStatusSeverity severity)
+    {
+        if (severity == SettingsStatusSeverity.Error)
+        {
+            return ErrorClr;
+        }
+
+        if (severity == SettingsStatusSeverity.Warning)
+        {
+            return DesignTokens.Colors.Warning;
+        }
+
+        return AccentClr;
     }
 
     private void SetDirtyState(bool hasChanges)
@@ -2886,7 +3299,13 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "PerformanceMode",
             "HoverOpacityEnabled",
             "HoverOpacityRevealDelayEnabled",
+            "OperationRadialCoreAutoHideKeepAliveEnabled",
+            "OperationRadialIdleCollapseSeconds",
+            "OperationRadialIdleResetOnInteractionEnabled",
+            "OperationRadialKeepOpenAfterLeafClickEnabled",
             "FallbackDisconnectedDisplaysEnabled",
+            "ResolutionCompatibilityModeEnabled",
+            "ResolutionCompatibilityScalePercent",
             "MainDisplayDeviceName",
             "CodexRadarDisplayDeviceName",
             "ClaudeRadarDisplayDeviceName",
@@ -2897,12 +3316,27 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexRadarModelKey",
             "RadarClockAutoSwitchModelEnabled",
             "RadarClockTimeDisplayMode",
+            "DisplayTimeZoneMode",
+            "DisplayTimeZoneId",
+            "CodexRadarPublicJsonEnabled",
             "CodexRadarHtmlFallbackEnabled",
+            "CodexRadarRssFallbackEnabled",
             "CodexRadarServiceProbeToken",
+            "CodexQuotaDueResetProtectionEnabled",
+            "CodexQuotaRssResetProtectionEnabled",
+            "CodexQuotaProviderZeroDropProtectionEnabled",
+            "CodexQuotaDuplicateSameBalanceRingProtectionEnabled",
+            "CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled",
+            "CodexQuotaProviderWeeklySpikeProtectionEnabled",
+            "CodexQuotaStrictFiveHourResetBoundaryEnabled",
+            "CodexQuotaWeeklyBaselineAutoRepairEnabled",
             "ClaudeRadarEnabled",
             "ClaudeRadarModelKey",
             "ClaudeRadarJsonEnabled",
+            "ClaudeRadarCommunityRatingsEnabled",
+            "ClaudeRadarLocalQuotaFallbackEnabled",
             "ClaudeRadarServiceProbeToken",
+            ClaudeSetupTokenCommandName,
             "DeepSeekApiKeyRevision",
             "AiRequestProtectionAutoEnabled",
             "AiRequestProtectionManualBlockEnabled",
@@ -2917,9 +3351,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexQuotaPlanResumeGoalIds",
             "OperationRenderVariant",
             "PowerThermalAutoSizeEnabled",
+            "PowerThermalManualEnergySaverThresholdPercent",
             "GfwProbeIntervalMinutes",
             "OperationButtonSize",
-            "OperationPrimaryPanelMode"
+            "OperationPrimaryPanelMode",
+            "OperationSettingsLogicExtensionEnabled"
         };
 
         for (int i = 0; i < required.Length; i++)
@@ -2964,21 +3400,42 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         FlowLayoutPanel grid = FindClaudeRadarModelGrid(editor.Control);
         if (grid == null)
         {
-            throw new InvalidOperationException("Claude Radar model selector must use the five-column button grid.");
+            throw new InvalidOperationException("Claude Radar model selector must use the responsive button grid.");
         }
 
-        if (grid.Controls.Count < ClaudeRadarModelGridColumns ||
-            grid.Controls.Count % ClaudeRadarModelGridColumns != 0)
+        if (grid.Controls.Count < ClaudeRadarModelGridColumns)
         {
-            throw new InvalidOperationException("Claude Radar model grid slot count is not a multiple of five.");
+            throw new InvalidOperationException("Claude Radar model grid slot count is below the maximum row size.");
         }
 
+        int columns = GetClaudeRadarModelColumnCountForGrid(grid.Width);
         int buttonWidth = GetClaudeRadarModelButtonWidthForGrid(grid.Width);
-        int rowWidth = ClaudeRadarModelGridColumns * buttonWidth +
-            (ClaudeRadarModelGridColumns - 1) * ClaudeRadarModelButtonGap;
+        int rowWidth = columns * buttonWidth +
+            Math.Max(0, columns - 1) * ClaudeRadarModelButtonGap;
         if (rowWidth > grid.Width)
         {
             throw new InvalidOperationException("Claude Radar model grid buttons exceed selector width.");
+        }
+
+        int preferredGridWidth = GetClaudeRadarModelGridPreferredWidth();
+        if (grid.Width >= preferredGridWidth && buttonWidth < ClaudeRadarModelButtonWidth)
+        {
+            throw new InvalidOperationException("Claude Radar model grid preferred button width was reduced.");
+        }
+
+        int compactWidth = 280;
+        int compactColumns = GetClaudeRadarModelColumnCountForGrid(compactWidth);
+        int compactButtonWidth = GetClaudeRadarModelButtonWidthForGrid(compactWidth);
+        if (compactColumns != 3 || compactButtonWidth < ClaudeRadarModelButtonMinimumWidth)
+        {
+            throw new InvalidOperationException("Claude Radar model grid does not expand cells in narrow settings rows.");
+        }
+
+        string commonLongLabel = GetClaudeRadarModelButtonText(
+            new ClaudeModelOption("m1", "Opus 4.8 high", true, false));
+        if (!string.Equals(commonLongLabel, "Opus 4.8 high", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Claude Radar model grid truncates common model labels.");
         }
 
         bool sawAuto = false;
@@ -3090,6 +3547,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 SettingEditor editor = page.Editors[j];
                 SettingRow card = editor.Card;
                 Control control = editor.Control;
+                card.RefreshLayoutForWidth(card.ClientSize.Width);
                 int rightLimit = card.ClientSize.Width - card.Padding.Right + 1;
                 int bottomLimit = card.ClientSize.Height - card.Padding.Bottom + 1;
                 if (control.Left < card.Padding.Left ||
@@ -3098,7 +3556,15 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                     card.TitleLabel.Right > rightLimit ||
                     card.HintLabel.Right > rightLimit)
                 {
-                    throw new InvalidOperationException("WinUI settings layout clipped: " + editor.Name);
+                    throw new InvalidOperationException(
+                        "WinUI settings layout clipped: " + editor.Name +
+                        " card=" + card.ClientSize.ToString() +
+                        " padding=" + card.Padding.ToString() +
+                        " control=" + control.Bounds.ToString() +
+                        " title=" + card.TitleLabel.Bounds.ToString() +
+                        " hint=" + card.HintLabel.Bounds.ToString() +
+                        " rightLimit=" + rightLimit.ToString(CultureInfo.InvariantCulture) +
+                        " bottomLimit=" + bottomLimit.ToString(CultureInfo.InvariantCulture));
                 }
             }
         }
@@ -3158,6 +3624,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "PowerThermalWidth", new NumericRange(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MaxPowerThermalWidth) },
         { "PowerThermalHeight", new NumericRange(WidgetSettings.MinPowerThermalHeight, WidgetSettings.MaxPowerThermalHeight) },
         { "PowerThermalVisibleAlertCount", new NumericRange(WidgetSettings.MinPowerThermalVisibleAlerts, WidgetSettings.MaxPowerThermalVisibleAlerts) },
+        { "PowerThermalManualEnergySaverThresholdPercent", new NumericRange(WidgetSettings.MinPowerThermalManualEnergySaverThresholdPercent, WidgetSettings.MaxPowerThermalManualEnergySaverThresholdPercent) },
         { "NetworkMonitorWidth", new NumericRange(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorWidth) },
         { "NetworkMonitorHeight", new NumericRange(WidgetSettings.MinNetworkMonitorHeight, WidgetSettings.MaxNetworkMonitorHeight) },
         { "GfwProbeIntervalMinutes", new NumericRange(WidgetSettings.MinGfwProbeIntervalMinutes, WidgetSettings.MaxGfwProbeIntervalMinutes) },
@@ -3168,11 +3635,13 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationButtonSize", new NumericRange(WidgetSettings.MinOperationButtonSize, WidgetSettings.MaxOperationButtonSize) },
         { "OperationLeftOffset", new NumericRange(WidgetSettings.MinOperationOffset, WidgetSettings.MaxOperationOffset) },
         { "OperationBottomOffset", new NumericRange(WidgetSettings.MinOperationOffset, WidgetSettings.MaxOperationOffset) },
+        { "ResolutionCompatibilityScalePercent", new NumericRange(WidgetSettings.MinResolutionCompatibilityScalePercent, WidgetSettings.MaxResolutionCompatibilityScalePercent) },
         { "SensitiveMouseRangePixels", new NumericRange(WidgetSettings.MinSensitiveMouseRangePixels, WidgetSettings.MaxSensitiveMouseRangePixels) },
         { "HoverOpacityRevealDelaySeconds", new NumericRange((decimal)WidgetSettings.MinHoverOpacityRevealDelaySeconds, (decimal)WidgetSettings.MaxHoverOpacityRevealDelaySeconds) },
         { "HoverOpacityRevealResetSeconds", new NumericRange((decimal)WidgetSettings.MinHoverOpacityRevealResetSeconds, (decimal)WidgetSettings.MaxHoverOpacityRevealResetSeconds) },
         { "ReverseHoverOpacityRestoreDelaySeconds", new NumericRange(WidgetSettings.MinReverseHoverOpacityRestoreDelaySeconds, WidgetSettings.MaxReverseHoverOpacityRestoreDelaySeconds) },
         { "AutoHoverOpacityIdleSeconds", new NumericRange(WidgetSettings.MinAutoHoverOpacityIdleSeconds, WidgetSettings.MaxAutoHoverOpacityIdleSeconds) },
+        { "OperationRadialIdleCollapseSeconds", new NumericRange(WidgetSettings.NeverOperationRadialIdleCollapseSeconds, WidgetSettings.MaxOperationRadialIdleCollapseSeconds) },
         { "CodexQuotaPlanWeeklyThresholdPercent", new NumericRange(WidgetSettings.MinCodexQuotaPlanThresholdPercent, WidgetSettings.MaxCodexQuotaPlanThresholdPercent) },
         { "CodexQuotaPlanFiveHourThresholdPercent", new NumericRange(WidgetSettings.MinCodexQuotaPlanThresholdPercent, WidgetSettings.MaxCodexQuotaPlanThresholdPercent) },
         { "CodexModelIqTestPassed", new NumericRange(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed) },
@@ -3187,6 +3656,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "StartupEnabled", "开机启动" },
         { "PerformanceMode", "性能模式" },
         { "VisibilityMode", "可见性" },
+        { "VisibilityOverlapIgnoresOperationPanelEnabled", "遮挡忽略操作面板" },
         { "ClickThroughMode", "点击穿透" },
         { "ForceShowForegroundFpsEnabled", "强制显示 FPS" },
         { "OperationPrimaryPanelMode", "左侧区域模式" },
@@ -3214,6 +3684,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "NetworkMonitorDisplayDeviceName", "网络监控显示器" },
         { "ConnectionCheckDisplayDeviceName", "连接检测显示器" },
         { "OperationDisplayDeviceName", "操作面板显示器" },
+        { "ResolutionCompatibilityModeEnabled", "分辨率兼容模式" },
+        { "ResolutionCompatibilityScalePercent", "兼容缩放比例" },
         { GlobalLayoutEditCommandName, "全局编辑" },
         { "Width", "主窗口宽度" },
         { "Height", "主窗口高度" },
@@ -3257,26 +3729,31 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "AutoHoverOpacityIdleEnabled", "空闲自动隐藏" },
         { "AutoHoverOpacityIdleSeconds", "空闲隐藏秒数" },
         { "AutoHoverOpacityMaximizedEnabled", "最大化自动隐藏" },
+        { "OperationRadialCoreAutoHideKeepAliveEnabled", "圆圈悬停保持显示" },
+        { "OperationRadialIdleCollapseSeconds", "扇形盘自动收回秒数" },
+        { "OperationRadialIdleResetOnInteractionEnabled", "操作后重置收回计时" },
+        { "OperationRadialKeepOpenAfterLeafClickEnabled", "末端按钮后保持展开" },
         { "BurnInHiddenModeColorProtectionEnabled", "隐藏反色防烧屏" },
-        { "CodexRadarSoftwareMode", "监控哪个软件" },
-        { "CodexRadarModelKey", "Codex Radar 模型" },
-        { "CodexRadarModelVersion", "模型版本" },
-        { "RadarClockAutoSwitchModelEnabled", "时钟过期自动切模型" },
-        { "RadarClockTimeDisplayMode", "时钟时间来源" },
-        { "CodexRadarEnabled", "启用 Codex Radar" },
+        { "CodexRadarSoftwareMode", "共享窗检测对象" },
+        { "CodexRadarModelKey", "CODEX 模型" },
+        { "CodexRadarModelVersion", "旧模型版本" },
+        { "RadarClockAutoSwitchModelEnabled", "过期自动切换模型" },
+        { "RadarClockTimeDisplayMode", "时钟时间显示" },
+        { "CodexRadarEnabled", "启用共享 Radar 小窗" },
         { "CodexRadarTransparencyPercent", "Codex Radar 透明度" },
-        { "ClaudeRadarEnabled", "启用 Claude Radar" },
+        { "ClaudeRadarEnabled", "启用独立 Claude Radar" },
         { "ClaudeRadarWidth", "Claude Radar 宽度" },
         { "ClaudeRadarHeight", "Claude Radar 高度" },
         { "ClaudeRadarLeftX", "Claude Radar 左侧 X" },
         { "ClaudeRadarBottomY", "Claude Radar 底部 Y" },
         { "ClaudeRadarTransparencyPercent", "Claude Radar 背景透明" },
-        { "ClaudeRadarModelKey", "Claude Radar 模型" },
-        { "ClaudeRadarJsonEnabled", "Claude Radar JSON" },
-        { "ClaudeRadarHomepageFallbackEnabled", "首页元数据回退" },
-        { "ClaudeRadarCommunityRatingsEnabled", "社区体感分" },
+        { "ClaudeRadarModelKey", "Claude 模型映射" },
+        { "ClaudeRadarJsonEnabled", "Claude 站点 JSON" },
+        { "ClaudeRadarHomepageFallbackEnabled", "首页模型元数据回退" },
+        { "ClaudeRadarCommunityRatingsEnabled", "Claude 社区体感分" },
         { "ClaudeRadarLocalQuotaFallbackEnabled", "本地 7 天额度线回退" },
-        { "ClaudeRadarServiceProbeToken", "测一下数据源是否可用" },
+        { "ClaudeRadarServiceProbeToken", "检查 Claude 数据链路" },
+        { ClaudeSetupTokenCommandName, "Claude Code 用量令牌" },
         { "ClaudeRadarRandomTestEnabled", "Claude 随机测试" },
         { "ClaudeRadarRandomTestAutoRefresh", "Claude 随机测试自动刷新" },
         { "ClaudeRadarRandomTestRefreshToken", "立即刷新随机测试" },
@@ -3284,6 +3761,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarRandomTestAutoRefresh", "随机测试自动刷新" },
         { "CodexRadarRandomTestRefreshToken", "立即刷新随机测试" },
         { "OperationRenderVariant", "外观风格" },
+        { "OperationSettingsLogicExtensionEnabled", "设置扩展到操作逻辑" },
         { "CodexRadarManualLayoutEnabled", "启用手动布局" },
         { "CodexRadarManualLeftPercent", "左侧区域占比" },
         { "CodexRadarManualGapPixels", "模块间距" },
@@ -3320,11 +3798,19 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarIqRingOffsetY", "IQ 环 Y" },
         { "CodexRadarIqTextOffsetX", "IQ 字 X" },
         { "CodexRadarIqTextOffsetY", "IQ 字 Y" },
-        { "CodexRadarPublicJsonEnabled", "公开 JSON 摘要" },
-        { "CodexRadarHtmlFallbackEnabled", "首页 HTML 回退" },
-        { "CodexRadarRssFallbackEnabled", "RSS 重置提醒" },
-        { "CodexRadarServiceProbeToken", "测一下数据源是否可用" },
-        { "DeepSeekApiKeyRevision", "DeepSeek 配置" },
+        { "CodexRadarPublicJsonEnabled", "Codex 公开 JSON" },
+        { "CodexRadarHtmlFallbackEnabled", "Codex 首页 HTML 回退" },
+        { "CodexRadarRssFallbackEnabled", "Codex RSS 重置提醒" },
+        { "CodexRadarServiceProbeToken", "检查 Codex 数据链路" },
+        { "CodexQuotaDueResetProtectionEnabled", "到期重置保护" },
+        { "CodexQuotaRssResetProtectionEnabled", "RSS 重置保护" },
+        { "CodexQuotaProviderZeroDropProtectionEnabled", "Provider 零值保护" },
+        { "CodexQuotaDuplicateSameBalanceRingProtectionEnabled", "相同余额保留消耗环" },
+        { "CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled", "5h 提前满额保护" },
+        { "CodexQuotaProviderWeeklySpikeProtectionEnabled", "周额度突增保护" },
+        { "CodexQuotaStrictFiveHourResetBoundaryEnabled", "严格 5h 边界" },
+        { "CodexQuotaWeeklyBaselineAutoRepairEnabled", "周基线自动修复" },
+        { "DeepSeekApiKeyRevision", "DeepSeek 余额配置" },
         { "CodexModelIqTestEnabled", "用测试值代替实时 IQ（调试用）" },
         { "CodexModelIqTestPassed", "IQ 测试通过数" },
         { "CodexModelIqBaselineAutoEnabled", "IQ 基准自动跟随网站" },
@@ -3340,11 +3826,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexModelTimeEfficiencyBaselineSeconds", "时间效率基准秒数" },
         { "CodexModelTokenEfficiencyLowThresholdPercent", "Token 低效阈值" },
         { "CodexModelTimeEfficiencyLowThresholdPercent", "时间低效阈值" },
-        { "DisplayTimeZoneId", "显示时区 ID" },
-        { "DisplayTimeZoneMode", "显示时区模式" },
+        { "DisplayTimeZoneId", "通用显示时区 ID" },
+        { "DisplayTimeZoneMode", "通用显示时区模式" },
         { "PowerThermalAutoSizeEnabled", "功耗模块自动大小" },
         { "PowerThermalAutoDirection", "自动大小方向" },
         { "PowerThermalVisibleAlertCount", "可见告警数量" },
+        { "PowerThermalManualEnergySaverThresholdPercent", "手动节能阈值" },
         { "PowerThermalTransparencyPercent", "功耗温度透明度" },
         { "NetworkMonitorAdapterId", "网络适配器 ID" },
         { "NetworkMonitorTransparencyPercent", "网络监控透明度" },
@@ -3371,7 +3858,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     {
         { "StartupEnabled", "写入当前用户启动项。" },
         { "PerformanceMode", "控制采样、动画和后台刷新节奏。" },
-        { "VisibilityMode", "决定窗口在桌面、前台或全屏时的行为。" },
+        { "VisibilityMode", "五档：总是可见、全屏时不可见、最大化时不可见、遮挡时不可见、仅桌面可见；默认全屏时不可见。最大化档也包含全屏。" },
+        { "VisibilityOverlapIgnoresOperationPanelEnabled", "仅在“遮挡时不可见”生效；开启后左下角操作面板及其展开区域不会因为被其他应用窗口覆盖而隐藏。" },
         { "ClickThroughMode", "允许鼠标事件穿透主窗口。" },
         { "ForceShowForegroundFpsEnabled", "调试用，强制显示前台 FPS 信息。" },
         { "AiRequestProtectionAutoEnabled", "网络监控判定为 GFW 明确阻断时，阻断本程序发往 OpenAI、ChatGPT、Claude 和 Anthropic 的请求。" },
@@ -3396,17 +3884,30 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ReverseHoverOpacityRestoreDelaySeconds", "反向隐藏临时恢复后，鼠标移开多久回到隐藏。" },
         { "AutoHoverOpacityIdleEnabled", "鼠标一段时间不动时自动进入隐藏透明度。" },
         { "AutoHoverOpacityIdleSeconds", "范围 1-300 秒，达到后自动隐藏。" },
-        { "AutoHoverOpacityMaximizedEnabled", "有非 SeelenUI 应用最大化时自动进入隐藏透明度。" },
+        { "AutoHoverOpacityMaximizedEnabled", "窗口状态缓存检测到非本程序、非 SeelenUI 应用最大化或全屏时自动进入隐藏透明度。" },
+        { "OperationRadialCoreAutoHideKeepAliveEnabled", "鼠标停在左下角扇形速控盘核心圆圈上时，暂停并重置自动隐藏计时器，让所有隐藏透明度窗口保持显示。" },
+        { "OperationRadialIdleCollapseSeconds", "范围 1-60 秒；设为 0 表示永不自动收回扇形速控盘。" },
+        { "OperationRadialIdleResetOnInteractionEnabled", "开启后鼠标移动、按下或展开新分支会重新开始扇形速控盘自动收回计时。" },
+        { "OperationRadialKeepOpenAfterLeafClickEnabled", "开启后点击扇形速控盘末端按钮不会自动收起菜单；关闭后恢复点击末端按钮即收起。" },
+        { "OperationSettingsLogicExtensionEnabled", "开启后在扇形速控盘“设置”分支中增加常用逻辑和全部开关目录；关闭时保持原来的 3 项设置菜单。" },
         { "BurnInHiddenModeColorProtectionEnabled", "隐藏时执行颜色反相和白灰透明化。" },
-        { "CodexRadarSoftwareMode", "自动按前台窗口选择 CODEX 或 CLAUDE；也可强制固定检测软件。" },
-        { "CodexRadarModelKey", "动态模型目录中的当前模型键。" },
-        { "CodexRadarModelVersion", "模型目录版本，日常保持默认。" },
-        { "RadarClockAutoSwitchModelEnabled", "当 Codex/Claude 时钟跨过完整周期仍未获取当前模型 IQ 更新时，自动切到同站点当天最近刷新 IQ 的模型。" },
-        { "RadarClockTimeDisplayMode", "控制 Codex/Claude Radar 时钟中心下方时间：UTC、当前本机时间、上次尝试刷新，或上次实际 IQ 刷新。" },
-        { "CodexRadarPublicJsonEnabled", "读取 current.json 的公开摘要层，包含窗口、预测和 API 可用性说明。" },
-        { "CodexRadarHtmlFallbackEnabled", "当公开 JSON 不含 model_iq 时，从首页明文模块补齐 IQ、效率和模型目录。" },
-        { "CodexRadarRssFallbackEnabled", "读取 feed.xml 的重置提醒；关闭后不会用 RSS 触发额度重置保护。" },
-        { "CodexRadarServiceProbeToken", "点击后探测公开摘要、授权 API、首页 HTML 和 RSS，并写入本地诊断结果。" },
+        { "CodexRadarSoftwareMode", "只影响 Codex Radar 这个共享小窗：自动按前台和运行态选择，或固定显示 CODEX/CLAUDE 数据。独立 Claude Radar 不受这里影响。" },
+        { "CodexRadarModelKey", "共享小窗处于 CODEX 模式时使用的 CodexRadar 模型；CLAUDE 模式使用 Claude 模型映射。" },
+        { "CodexRadarModelVersion", "兼容旧配置的模型版本枚举；日常使用上方 CODEX 模型选择，不需要改这里。" },
+        { "RadarClockAutoSwitchModelEnabled", "Codex/Claude Radar 时钟跨过完整周期仍没有当前模型 IQ 更新时，自动切到同站点当天最近刷新 IQ 的模型。" },
+        { "RadarClockTimeDisplayMode", "控制两个 Radar 时钟中心下方时间：UTC、当前本机时间、上次尝试刷新，或上次实际 IQ 刷新。" },
+        { "CodexRadarPublicJsonEnabled", "读取 codexradar.com/current.json 公开摘要层，包含窗口、预测和 API 可用性说明。" },
+        { "CodexRadarHtmlFallbackEnabled", "公开 JSON 缺少展示字段时，从 codexradar.com 首页补齐 IQ、效率、额度线和模型目录展示数据。" },
+        { "CodexRadarRssFallbackEnabled", "读取 CodexRadar feed.xml 的重置提醒；关闭后不会用 RSS 触发额度重置保护。" },
+        { "CodexRadarServiceProbeToken", "点击后探测 Codex 公开摘要、授权 API、首页 HTML 和 RSS，并写入本地诊断结果。" },
+        { "CodexQuotaDueResetProtectionEnabled", "本地 resets_at 到期后临时把对应余额显示为 100，直到新样本证明进入下一窗口；推荐保持开启。" },
+        { "CodexQuotaRssResetProtectionEnabled", "CodexRadar RSS 出现新的重置记录时触发额外重置保护；推荐保持开启。" },
+        { "CodexQuotaProviderZeroDropProtectionEnabled", "Provider 突然把高余额报成 0 且 reset 边界未推进时拒绝该样本；推荐保持开启。" },
+        { "CodexQuotaDuplicateSameBalanceRingProtectionEnabled", "连续读取到相同余额时保留已有消耗环，不因重复日志清空尾段；推荐保持开启。" },
+        { "CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled", "Provider 在旧 5 小时窗口未到期时突然报接近满额并后移 reset 时拒绝；默认关闭，避免拦截手动重置卡。" },
+        { "CodexQuotaProviderWeeklySpikeProtectionEnabled", "Provider 在周窗口未到期时把低周余额跳到近满时拒绝；默认关闭，避免拦截手动重置卡。" },
+        { "CodexQuotaStrictFiveHourResetBoundaryEnabled", "只有旧 5 小时 reset 已到期且边界推进时才重建周消耗基线；默认关闭，允许手动重置卡被余额上涨识别。" },
+        { "CodexQuotaWeeklyBaselineAutoRepairEnabled", "检测到疑似被 100 污染的周消耗基线时自动修回当前周余额；默认关闭，避免隐藏真实重置卡效果。" },
         { "CodexRadarRandomTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
         { "CodexRadarRandomTestAutoRefresh", "仅用于测试显示效果，日常保持关闭。" },
         { "CodexRadarRandomTestRefreshToken", "点击后让随机测试数据立刻换一组。" },
@@ -3427,21 +3928,22 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexModelTimeEfficiencyBaselineSeconds", "手动指定时间效率基准秒数。" },
         { "CodexModelTokenEfficiencyLowThresholdPercent", "低于该百分比时标记为偏低。" },
         { "CodexModelTimeEfficiencyLowThresholdPercent", "低于该百分比时标记为偏低。" },
-        { "CodexRadarEnabled", "关闭后会释放 Codex Radar 分层窗口；默认开启以保持现有桌面不变。" },
-        { "DisplayTimeZoneMode", "控制窗口里时间文字使用本机、北京时间还是指定时区。" },
-        { "DisplayTimeZoneId", "Windows 时区 ID，指定时区模式下生效。" },
-        { "ClaudeRadarEnabled", "开启独立 Claude Radar 分层窗口；默认关闭，避免升级后改变现有桌面。" },
-        { "ClaudeRadarModelKey", "Claude Radar 站点内部 m* 模型键；留空时按站点当前目录自动选择。" },
+        { "CodexRadarEnabled", "关闭后会释放共享 Codex Radar 分层窗口；该窗口仍可在 CLAUDE 模式显示 Claude 数据。" },
+        { "DisplayTimeZoneMode", "控制 Radar 和其他窗口里的时间文字使用本机、北京时间还是指定时区。" },
+        { "DisplayTimeZoneId", "Windows 时区 ID；仅在通用显示时区模式选择“指定时区”时生效。" },
+        { "ClaudeRadarEnabled", "开启独立 Claude Radar 分层窗口；它固定显示 Claude 数据，不读取 Codex Radar 缓存。" },
+        { "ClaudeRadarModelKey", "五列按钮选择 Claude Radar 站点 m* 模型；留空为自动，编辑映射用于维护站点模型和社区评分 key 的对应关系。" },
         { "ClaudeRadarJsonEnabled", "读取 claudecoderadar.com/data/claude-code-radar.json 作为主数据源。" },
-        { "ClaudeRadarHomepageFallbackEnabled", "主 JSON 失败或缺少模型元数据时，顺序读取首页 MODEL_NAMES 作为弱回退；不会伪造 IQ、效率或额度。" },
-        { "ClaudeRadarCommunityRatingsEnabled", "读取 Claude Radar 社区体感分接口，并通过独立映射表关联模型。" },
+        { "ClaudeRadarHomepageFallbackEnabled", "主 JSON 缺少模型元数据时，读取首页 MODEL_NAMES 作为弱回退；不会伪造 IQ、效率或额度。" },
+        { "ClaudeRadarCommunityRatingsEnabled", "读取 Claude Radar 社区体感分接口，并通过模型映射表关联当前模型。" },
         { "ClaudeRadarLocalQuotaFallbackEnabled", "站点额度趋势不完整时使用本地 7 天 JSONL 历史绘制额度线。" },
-        { "ClaudeRadarServiceProbeToken", "点击后触发 Claude Radar 下次刷新，服务状态显示在窗口右侧。" },
+        { "ClaudeRadarServiceProbeToken", "点击后触发 Claude Radar 数据链路检查；服务状态显示在窗口右侧 R/C/U 和 API 摘要中。" },
+        { ClaudeSetupTokenCommandName, "Claude 桌面版不会主动上报用量，需要生成一次性长效令牌并粘贴进来；未配置时两个额度环会显示满环红色。" },
         { "ClaudeRadarRandomTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
         { "ClaudeRadarRandomTestAutoRefresh", "仅用于测试显示效果，日常保持关闭。" },
         { "ClaudeRadarRandomTestRefreshToken", "点击后让随机测试数据立刻换一组。" },
         { "OperationRenderVariant", "切换后立即预览，可随时切回。" },
-        { "DeepSeekApiKeyRevision", "配置 DeepSeek API Key；密钥只写入本地文件，修订号用于触发即时刷新。" },
+        { "DeepSeekApiKeyRevision", "配置共享 Radar 小窗 CLAUDE 模式和独立 Claude Radar 底部 DS 余额使用的 DeepSeek API Key；密钥只写入本地 DPAPI 文件，修订号只用于触发即时刷新。" },
         { "CodexRadarManualLayoutEnabled", "开启后下方布局参数实时影响 Codex Radar 内部模块，不需要重启。" },
         { "CodexRadarManualLeftPercent", "调整效率/IQ/连接流程区与余额区的左右分配。" },
         { "CodexRadarManualGapPixels", "调整左侧区域和余额区之间的像素间距。" },
@@ -3453,6 +3955,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "PowerThermalAutoSizeEnabled", "根据告警数量自动调整功耗温度窗口高度。" },
         { "PowerThermalAutoDirection", "自动调整时从哪个方向展开。" },
         { "PowerThermalVisibleAlertCount", "功耗温度窗口中最多显示的告警数量。" },
+        { "PowerThermalManualEnergySaverThresholdPercent", "电量低于该百分比时，在功耗电池模块显示节能叶子和“（节能）”；0 表示关闭。默认 30。" },
         { "ThermalTestMode", "仅用于测试显示效果，日常保持关闭。" },
         { "NetworkMonitorAdapterId", "留空时自动选择网络适配器。" },
         { "NetworkStatusTestMode", "仅用于测试显示效果，日常保持关闭。" },
@@ -3474,6 +3977,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "NetworkMonitorDisplayDeviceName", "留空使用当前主显示器；适合把网络监控固定到副屏。" },
         { "ConnectionCheckDisplayDeviceName", "留空使用当前主显示器；适合把连接检测固定到副屏。" },
         { "OperationDisplayDeviceName", "留空使用当前主显示器；操作面板偏移量按目标显示器左下角计算。" },
+        { "ResolutionCompatibilityModeEnabled", "默认关闭。开启后按 2880x1800 参考布局在运行时投影所有浮窗，用于在当前设备预览其他分辨率占比。" },
+        { "ResolutionCompatibilityScalePercent", "运行时输出比例，低于 100% 压缩，高于 100% 放大；不会改写保存的真实布局坐标。" },
         { GlobalLayoutEditCommandName, "打开全屏布局编辑遮罩，拖拽模块位置；Enter 保存，Esc 放弃。" },
         { "Width", "逻辑像素，主窗口宽度。" },
         { "Height", "逻辑像素，主窗口高度。" },
@@ -3526,6 +4031,113 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     // ═════════════════════════════════════════════════════════════════════
     // Nested Classes — Custom Controls
     // ═════════════════════════════════════════════════════════════════════
+
+    // ── PercentSliderControl ─────────────────────────────────────────────
+    private sealed class PercentSliderControl : Panel
+    {
+        private readonly TrackBar trackBar;
+        private readonly Label valueLabel;
+        private bool suppressChanged;
+
+        public event EventHandler ValueChanged;
+
+        public PercentSliderControl(Font labelFont)
+        {
+            this.BackColor = Color.Transparent;
+            this.trackBar = new TrackBar();
+            this.trackBar.AutoSize = false;
+            this.trackBar.TickStyle = TickStyle.None;
+            this.trackBar.SmallChange = 1;
+            this.trackBar.LargeChange = 5;
+            this.trackBar.Height = 34;
+            this.trackBar.Minimum = 0;
+            this.trackBar.Maximum = 100;
+            this.trackBar.ValueChanged += OnTrackBarValueChanged;
+
+            this.valueLabel = new Label();
+            this.valueLabel.AutoSize = false;
+            this.valueLabel.TextAlign = ContentAlignment.MiddleRight;
+            this.valueLabel.Font = labelFont;
+            this.valueLabel.ForeColor = TextSecondary;
+            this.valueLabel.BackColor = Color.Transparent;
+
+            this.Controls.Add(this.trackBar);
+            this.Controls.Add(this.valueLabel);
+            this.Height = 54;
+            UpdateValueLabel();
+        }
+
+        public int Minimum
+        {
+            get { return this.trackBar.Minimum; }
+            set
+            {
+                this.trackBar.Minimum = value;
+                if (this.trackBar.Value < value)
+                {
+                    this.trackBar.Value = value;
+                }
+            }
+        }
+
+        public int Maximum
+        {
+            get { return this.trackBar.Maximum; }
+            set
+            {
+                this.trackBar.Maximum = value;
+                if (this.trackBar.Value > value)
+                {
+                    this.trackBar.Value = value;
+                }
+            }
+        }
+
+        public int Value
+        {
+            get { return this.trackBar.Value; }
+        }
+
+        public void SetValueSilent(int value)
+        {
+            int next = Math.Max(this.trackBar.Minimum, Math.Min(this.trackBar.Maximum, value));
+            this.suppressChanged = true;
+            try
+            {
+                this.trackBar.Value = next;
+                UpdateValueLabel();
+            }
+            finally
+            {
+                this.suppressChanged = false;
+            }
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            int labelWidth = 70;
+            int gap = 8;
+            int trackWidth = Math.Max(80, this.Width - labelWidth - gap);
+            int top = Math.Max(0, (this.Height - this.trackBar.Height) / 2);
+            this.trackBar.SetBounds(0, top, trackWidth, this.trackBar.Height);
+            this.valueLabel.SetBounds(trackWidth + gap, 0, labelWidth, this.Height);
+        }
+
+        private void OnTrackBarValueChanged(object sender, EventArgs e)
+        {
+            UpdateValueLabel();
+            if (!this.suppressChanged && this.ValueChanged != null)
+            {
+                this.ValueChanged(this, EventArgs.Empty);
+            }
+        }
+
+        private void UpdateValueLabel()
+        {
+            this.valueLabel.Text = this.trackBar.Value.ToString(CultureInfo.InvariantCulture) + "%";
+        }
+    }
 
     // ── ToggleSwitch ─────────────────────────────────────────────────────
     // Authentic Win11-style toggle: pill track, animated sliding knob.
@@ -3786,14 +4398,16 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             this.layoutInProgress = true;
             try
             {
+                int layoutWidth = Math.Max(1, this.ClientSize.Width > 0 ? this.ClientSize.Width : this.Width);
                 int y = 0;
                 bool first = true;
                 for (int i = 0; i < this.rows.Count; i++)
                 {
                     SettingRow row = this.rows[i];
                     row.ShowTopDivider = !first;
-                    int h = row.ComputeDesiredHeight(this.Width);
-                    row.SetBounds(0, y, this.Width, h);
+                    int h = row.ComputeDesiredHeight(layoutWidth);
+                    row.SetBounds(0, y, layoutWidth, h);
+                    row.RefreshLayoutForWidth(layoutWidth);
                     y += h;
                     first = false;
                 }
@@ -3855,12 +4469,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         private const int CompactLayoutRemainingTextThreshold = 320;
 
         private readonly Control valueControl;
+        private readonly int preferredValueControlWidth;
         private bool hover;
         public bool ShowTopDivider;
 
         public SettingRow(Control valueControl, Font titleFont, Font hintFont)
         {
             this.valueControl = valueControl;
+            this.preferredValueControlWidth = Math.Max(44, valueControl.Width);
             this.SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
                           ControlStyles.OptimizedDoubleBuffer, true);
             this.BackColor = Color.Transparent;
@@ -3892,15 +4508,21 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         public Label TitleLabel { get; private set; }
         public Label HintLabel { get; private set; }
 
+        // Some value controls (e.g. the Claude model button grid) are inherently wide and wrap
+        // to multiple rows on their own; forcing them to share row width with the title/hint text
+        // squeezes them into unreadable single-character buttons. This skips the width-threshold
+        // heuristic and always stacks the control below the text for that row.
+        public bool ForceCompactLayout;
+
         public int ComputeDesiredHeight(int width)
         {
-            int controlWidth = Math.Min(this.valueControl.Width, Math.Max(44, width - this.Padding.Left - this.Padding.Right));
+            int controlWidth = Math.Min(this.preferredValueControlWidth, Math.Max(44, width - this.Padding.Left - this.Padding.Right));
             int controlHeight = GetValueControlHeight(controlWidth);
             bool compact = ShouldUseCompactLayout(width, controlWidth);
 
             if (compact)
             {
-                int textWidth = Math.Max(120, width - this.Padding.Left - this.Padding.Right);
+                int textWidth = Math.Max(1, width - this.Padding.Left - this.Padding.Right);
                 int titleHeight = GetWrappedTextHeight(this.TitleLabel.Text, this.TitleLabel.Font, textWidth, 6);
                 int hintHeight = string.IsNullOrEmpty(this.HintLabel.Text) ? 0 : GetWrappedTextHeight(this.HintLabel.Text, this.HintLabel.Font, textWidth, 4);
                 int controlTop = this.Padding.Top + titleHeight + hintHeight + 8;
@@ -3909,13 +4531,23 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             else
             {
                 int controlLeft = width - this.Padding.Right - controlWidth;
-                int textWidth = Math.Max(120, controlLeft - this.Padding.Left - 24);
+                int textWidth = Math.Max(1, controlLeft - this.Padding.Left - 24);
                 int titleHeight = GetWrappedTextHeight(this.TitleLabel.Text, this.TitleLabel.Font, textWidth, 6);
                 int hintHeight = string.IsNullOrEmpty(this.HintLabel.Text) ? 0 : GetWrappedTextHeight(this.HintLabel.Text, this.HintLabel.Font, textWidth, 4);
                 int textHeight = titleHeight + hintHeight;
                 int contentHeight = Math.Max(textHeight, controlHeight);
                 return Math.Max(60, this.Padding.Top + contentHeight + this.Padding.Bottom);
             }
+        }
+
+        public void RefreshLayout()
+        {
+            RefreshLayoutForWidth(this.ClientSize.Width);
+        }
+
+        public void RefreshLayoutForWidth(int clientWidth)
+        {
+            LayoutChildren(Math.Max(1, clientWidth));
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -3942,7 +4574,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         protected override void OnResize(EventArgs eventargs)
         {
             base.OnResize(eventargs);
-            LayoutChildren();
+            LayoutChildren(Math.Max(1, this.ClientSize.Width));
         }
 
         protected override void OnControlAdded(ControlEventArgs e)
@@ -3985,16 +4617,21 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         private void LayoutChildren()
         {
+            LayoutChildren(Math.Max(1, this.ClientSize.Width));
+        }
+
+        private void LayoutChildren(int clientWidth)
+        {
             int left = this.Padding.Left;
             int top = this.Padding.Top;
-            int right = this.Width - this.Padding.Right;
-            int controlWidth = Math.Min(this.valueControl.Width, Math.Max(44, this.Width - this.Padding.Left - this.Padding.Right));
+            int right = clientWidth - this.Padding.Right;
+            int controlWidth = Math.Min(this.preferredValueControlWidth, Math.Max(44, clientWidth - this.Padding.Left - this.Padding.Right));
             int controlHeight = GetValueControlHeight(controlWidth);
-            bool compact = ShouldUseCompactLayout(this.Width, controlWidth);
+            bool compact = ShouldUseCompactLayout(clientWidth, controlWidth);
 
             if (compact)
             {
-                int textWidth = Math.Max(120, right - left);
+                int textWidth = Math.Max(1, right - left);
                 int titleHeight = GetWrappedTextHeight(this.TitleLabel.Text, this.TitleLabel.Font, textWidth, 6);
                 int hintHeight = string.IsNullOrEmpty(this.HintLabel.Text) ? 0 : GetWrappedTextHeight(this.HintLabel.Text, this.HintLabel.Font, textWidth, 4);
                 int controlTop = top + titleHeight + hintHeight + 8;
@@ -4005,7 +4642,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             else
             {
                 int controlLeft = right - controlWidth;
-                int textWidth = Math.Max(120, controlLeft - left - 24);
+                int textWidth = Math.Max(1, controlLeft - left - 24);
                 int titleHeight = GetWrappedTextHeight(this.TitleLabel.Text, this.TitleLabel.Font, textWidth, 6);
                 int hintHeight = string.IsNullOrEmpty(this.HintLabel.Text) ? 0 : GetWrappedTextHeight(this.HintLabel.Text, this.HintLabel.Font, textWidth, 4);
                 int textHeight = titleHeight + hintHeight;
@@ -4025,11 +4662,27 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 return picker.GetPreferredHeightForWidth(controlWidth);
             }
 
+            if (FindClaudeRadarModelGrid(this.valueControl) != null)
+            {
+                if (this.valueControl.Width != controlWidth)
+                {
+                    this.valueControl.Width = controlWidth;
+                }
+
+                LayoutClaudeRadarModelPanel(this.valueControl);
+                return this.valueControl.Height;
+            }
+
             return this.valueControl.Height;
         }
 
         private bool ShouldUseCompactLayout(int width, int controlWidth)
         {
+            if (this.ForceCompactLayout)
+            {
+                return true;
+            }
+
             int availableWidth = width - this.Padding.Left - this.Padding.Right;
             return width < CompactLayoutWidthThreshold || availableWidth - controlWidth < CompactLayoutRemainingTextThreshold;
         }
@@ -4082,10 +4735,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 g.DrawPath(pen, path);
             }
 
-            // Chevron glyph: E70D = down, E76C = right (Segoe MDL2 / Fluent Icons).
+            // Chevron glyph: E70D = down, E76C = right (Segoe MDL2 / Fluent Icons). Tinted warning
+            // yellow rather than the default green accent - this section holds advanced/power-user
+            // settings, so it gets the "proceed with caution" color instead of "all good".
             string chevron = this.expanded ? "\uE70D" : "\uE76C";
             Font icoFont = GetIconFont();
-            using (SolidBrush brush = new SolidBrush(AccentClr))
+            using (SolidBrush brush = new SolidBrush(DesignTokens.Colors.Warning))
             {
                 float iconY = (this.Height - icoFont.Height) / 2f + 1;
                 g.DrawString(chevron, icoFont, brush, 20, iconY);
@@ -4683,17 +5338,46 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 CodexRadarSoftwareMode mode = (CodexRadarSoftwareMode)this.Value;
                 if (mode == CodexRadarSoftwareMode.Auto)
                 {
-                    return "自动";
+                    return "自动（按前台）";
                 }
 
                 if (mode == CodexRadarSoftwareMode.Codex)
                 {
-                    return "CODEX";
+                    return "固定 CODEX";
                 }
 
                 if (mode == CodexRadarSoftwareMode.Claude)
                 {
-                    return "CLAUDE";
+                    return "固定 CLAUDE";
+                }
+            }
+
+            if (this.Value is WidgetVisibilityMode)
+            {
+                WidgetVisibilityMode mode = (WidgetVisibilityMode)this.Value;
+                if (mode == WidgetVisibilityMode.AlwaysVisible)
+                {
+                    return "总是可见";
+                }
+
+                if (mode == WidgetVisibilityMode.HideWhenFullscreen)
+                {
+                    return "全屏时不可见";
+                }
+
+                if (mode == WidgetVisibilityMode.HideWhenMaximized)
+                {
+                    return "最大化时不可见";
+                }
+
+                if (mode == WidgetVisibilityMode.HideWhenOverlapped)
+                {
+                    return "遮挡时不可见";
+                }
+
+                if (mode == WidgetVisibilityMode.DesktopOnly)
+                {
+                    return "仅桌面可见";
                 }
             }
 

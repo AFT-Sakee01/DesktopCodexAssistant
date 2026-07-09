@@ -53,6 +53,25 @@ internal static class HoverInteractionPolicy
         ref DateTime revealUntilUtc,
         HoverOpacityDelayState delayState)
     {
+        return IsHoverOpacityTargetActive(
+            settings,
+            windowBounds,
+            hiddenForFullscreen,
+            visible,
+            ref revealUntilUtc,
+            delayState,
+            false);
+    }
+
+    public static bool IsHoverOpacityTargetActive(
+        WidgetSettings settings,
+        Rectangle windowBounds,
+        bool hiddenForFullscreen,
+        bool visible,
+        ref DateTime revealUntilUtc,
+        HoverOpacityDelayState delayState,
+        bool autoHideKeepAliveActive)
+    {
         return IsHoverOpacityTargetActiveAt(
             settings,
             CursorPosition(),
@@ -61,7 +80,8 @@ internal static class HoverInteractionPolicy
             visible,
             DateTime.UtcNow,
             ref revealUntilUtc,
-            delayState);
+            delayState,
+            autoHideKeepAliveActive);
     }
 
     internal static bool IsHoverOpacityTargetActiveAt(
@@ -74,7 +94,37 @@ internal static class HoverInteractionPolicy
         ref DateTime revealUntilUtc,
         HoverOpacityDelayState delayState)
     {
+        return IsHoverOpacityTargetActiveAt(
+            settings,
+            cursor,
+            windowBounds,
+            hiddenForFullscreen,
+            visible,
+            nowUtc,
+            ref revealUntilUtc,
+            delayState,
+            false);
+    }
+
+    internal static bool IsHoverOpacityTargetActiveAt(
+        WidgetSettings settings,
+        Point cursor,
+        Rectangle windowBounds,
+        bool hiddenForFullscreen,
+        bool visible,
+        DateTime nowUtc,
+        ref DateTime revealUntilUtc,
+        HoverOpacityDelayState delayState,
+        bool autoHideKeepAliveActive)
+    {
         if (settings == null || hiddenForFullscreen || !visible)
+        {
+            ResetDelayState(delayState);
+            revealUntilUtc = DateTime.MinValue;
+            return false;
+        }
+
+        if (autoHideKeepAliveActive)
         {
             ResetDelayState(delayState);
             revealUntilUtc = DateTime.MinValue;
@@ -327,6 +377,18 @@ internal static class HoverInteractionPolicy
         settings.HoverOpacityRevealDelayEnabled = false;
         AssertPolicy(IsDelayedHoverOpacityActiveAt(settings, true, now, delayState), "disabled hover delay should still hide while inside");
         AssertPolicy(!IsDelayedHoverOpacityActiveAt(settings, false, now.AddSeconds(0.1), delayState), "disabled hover delay should reveal immediately after leaving");
+
+        delayState.Reset();
+        settings.HoverOpacityRevealDelayEnabled = true;
+        AssertPolicy(
+            IsHoverOpacityTargetActiveAt(settings, new Point(120, 120), bounds, false, true, now, ref revealUntil, delayState),
+            "hover opacity should hide before keep-alive is applied");
+        AssertPolicy(
+            !IsHoverOpacityTargetActiveAt(settings, new Point(120, 120), bounds, false, true, now.AddSeconds(0.1), ref revealUntil, delayState, true),
+            "keep-alive should suppress hover opacity target activation");
+        AssertPolicy(
+            revealUntil == DateTime.MinValue && !delayState.RawHoverActive && !delayState.DelayedRevealActive,
+            "keep-alive should reset delayed and reverse reveal state");
     }
 
     private static Point CursorPosition()

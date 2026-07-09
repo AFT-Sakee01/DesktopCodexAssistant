@@ -38,7 +38,8 @@ internal sealed partial class OperationForm
                 () => true,
                 () => true,
                 (enabled) => enabled,
-                (enabled) => enabled))
+                (enabled) => enabled,
+                (propertyName, enabled) => enabled))
             {
                 if (variant == OperationRenderVariant.RadialDial)
                 {
@@ -60,6 +61,8 @@ internal sealed partial class OperationForm
                 }
             }
         }
+
+        RenderQuickGridSample(outputDir);
     }
 
     // Current-mode sample: real settings.ini (button size/offsets/variant/transparency), drawn
@@ -77,7 +80,8 @@ internal sealed partial class OperationForm
             () => true,
             () => true,
             (enabled) => enabled,
-            (enabled) => enabled))
+            (enabled) => enabled,
+            (propertyName, enabled) => enabled))
         {
             form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);

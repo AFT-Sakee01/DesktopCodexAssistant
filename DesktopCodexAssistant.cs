@@ -699,6 +699,10 @@ internal static class Program
             NetworkMonitorReader.RunRollingPingSelfTest();
             CloudEndpointProbe.RunSelfTest();
             ClaudeRadarReader.RunSelfTest();
+            ClaudeRadarSnapshotScheduler.RunSelfTest();
+            StatuspageMonitor.RunSelfTest();
+            DeepSeekBalanceMonitor.RunSelfTest();
+            ServiceAlertDebouncer.RunSelfTest();
             ClaudeCodeUsageReader.RunSelfTest();
             CodexRadarForm.RunSoftwareModeGateSelfTest();
             CodexQuotaGoalPlanner.RunSelfTest();
@@ -739,6 +743,7 @@ internal static class Program
         try
         {
             WidgetSettings.RunLayoutScalingSelfTest();
+            ApplicationWindowStateTracker.RunSelfTest();
             CodexRadarForm.RunStatusAndQuotaSelfTest();
             ClaudeRadarForm.RunRenderResourceSelfTest();
             ConnectionCheckForm.RunHiddenModeBadgeRenderingSelfTest();

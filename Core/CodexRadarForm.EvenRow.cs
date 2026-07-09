@@ -8,7 +8,7 @@ using System.Text.RegularExpressions;
 // EvenRow render variant (WidgetSettings.CodexRadarRenderVariant == EvenRow): a single row of
 // seven weighted cells - time/token efficiency, 5h/weekly quota, IQ, quota radar, and a status
 // cell with API/update lines. The left bottom third exposed by the compact ring cells now hosts
-// compact RC/DS/LLM/SF metadata; the hidden five-stage connection flow is not painted here. Ignores
+// compact software-family/RC/auxiliary/LLM metadata; the hidden five-stage connection flow is not painted here. Ignores
 // CodexRadarManualLayoutEnabled and all CodexRadar*Offset* settings by design - see
 // Docs/Interfaces/INTERFACE_INDEX.jsonl internal_api.codex_radar_render_variant. Only paint code
 // belongs here; data gathering lives in Core/CodexRadarForm.cs and is shared with EvenGrid.
@@ -26,7 +26,7 @@ internal sealed partial class CodexRadarForm
 
         // EvenRow v3 - a three-zone grid: [5 rings | radar bar] over one shared info band on the
         // left, and a content-sized status column on the right. The radar bar shares the rings'
-        // compact height (both end at the same divider line), which lets the bottom RC/DS/LLM/brand
+        // compact height (both end at the same divider line), which lets the bottom brand/RC/aux/LLM
         // band span the rings AND the radar bar - that extra width is what buys the band a larger,
         // never-truncated font. The status column is measured from its real three lines but capped
         // at 36% of the window, so the big green text stays dominant without starving the left side.
@@ -83,7 +83,8 @@ internal sealed partial class CodexRadarForm
             quotaState.FiveHourGold,
             quotaState.FiveHourConsumptionRingPercent,
             radarSnapshot,
-            false);
+            false,
+            quotaState.ForceDangerRing);
         x += ringCellWidth + ringGap;
 
         cellRect = GetEvenRowCompactRingCellRect(new RectangleF(x, bounds.Top, ringCellWidth, bounds.Height), compactCellHeight);
@@ -100,7 +101,8 @@ internal sealed partial class CodexRadarForm
             quotaState.WeeklyGold,
             quotaState.WeeklyConsumptionRingBlocked ? 0 : quotaState.WeeklyConsumptionRingPercent,
             radarSnapshot,
-            true);
+            true,
+            quotaState.ForceDangerRing);
         x += ringCellWidth + ringGap;
 
         cellRect = GetEvenRowCompactRingCellRect(new RectangleF(x, bounds.Top, ringCellWidth, bounds.Height), compactCellHeight);
@@ -253,21 +255,15 @@ internal sealed partial class CodexRadarForm
         DrawEvenRowServiceLedColumn(g, ledArea);
     }
 
-    // Proposal 1 (vertical variant per the sketch): one LED per service stacked at the right edge
-    // (R=radar site, O=OpenAI, C=Claude incl. Claude Code usage, D=DeepSeek when configured).
-    // Healthy services show a green dot; alert candidates recolor their dot; ":checking" blinks.
+    // Proposal 1 (vertical variant per the sketch): one LED per service stacked at the right edge.
+    // D is always visible and represents the public DeepSeek API service probe; the Claude-mode
+    // bottom DS text is only the optional balance display. Healthy services show a green dot;
+    // alert candidates recolor their dot; ":checking" blinks.
     private void DrawEvenRowServiceLedColumn(Graphics g, RectangleF rect)
     {
         CodexConnectionAlertCandidate[] candidates = GetCodexApiServiceAlertCandidates();
-        DeepSeekBalanceSnapshot deepSeekSnapshot = GetDeepSeekBalanceDisplaySnapshot();
-        bool deepSeekConfigured = deepSeekSnapshot != null && deepSeekSnapshot.ApiKeyConfigured;
-
-        string[] labels = deepSeekConfigured
-            ? new string[] { "R", "O", "C", "D" }
-            : new string[] { "R", "O", "C" };
-        string[] prefixes = deepSeekConfigured
-            ? new string[] { "rader", "openai", "claude", "deepseek" }
-            : new string[] { "rader", "openai", "claude" };
+        string[] labels = new string[] { "R", "O", "C", "D" };
+        string[] prefixes = new string[] { "rader", "openai", "claude", "deepseek" };
 
         float rowHeight = rect.Height / labels.Length;
         float dotDiameter = S(5);
@@ -817,13 +813,14 @@ internal sealed partial class CodexRadarForm
             return;
         }
 
-        // Brand first (leftmost), then RC and LLM sharing the freed space - the DeepSeek balance
-        // entry was removed from this band per user request; its reader keeps running for other
-        // consumers.
+        // Brand first (leftmost), then RC, a mode-specific auxiliary value and LLM sharing the
+        // freed space. The auxiliary value uses cached snapshots only; painting must not trigger
+        // token reads or HTTP requests.
         string ratingText = GetEvenRowBottomRatingDisplayText(radarSnapshot);
+        string auxiliaryText = GetEvenRowBottomAuxiliaryDisplayText();
         string modelText = GetEvenRowBottomModelDisplayText(radarSnapshot);
         string serviceFamilyText = GetCodexRadarServiceFamilyDisplayText();
-        string[] texts = new string[] { serviceFamilyText, ratingText, modelText };
+        string[] texts = new string[] { serviceFamilyText, ratingText, auxiliaryText, modelText };
         Color bottomTextColor = DesignTokens.White(206);
 
         // One shared size keeps the bottom items aligned, but the brand item (index 0) carries its
@@ -857,11 +854,23 @@ internal sealed partial class CodexRadarForm
             Color itemColor = i == 0 ? GetCodexRadarServiceFamilyDisplayColor() : bottomTextColor;
             using (SolidBrush brush = new SolidBrush(itemColor))
             {
-                DrawEvenRowStatusText(g, texts[i], itemFont, brush, itemRect);
+                DrawEvenRowBottomInfoText(g, texts[i], itemFont, brush, itemRect);
             }
 
             x += width + gap;
         }
+    }
+
+    private string GetEvenRowBottomAuxiliaryDisplayText()
+    {
+        return GetEffectiveCodexRadarSoftwareMode() == CodexRadarSoftwareMode.Claude
+            ? GetDeepSeekBalanceDisplayText()
+            : GetCodexResetCreditsDisplayText();
+    }
+
+    private string GetDeepSeekBalanceDisplayText()
+    {
+        return DeepSeekBalanceMonitor.FormatDisplayText(DeepSeekBalanceMonitor.GetSnapshot());
     }
 
     private FontStyle GetCodexRadarServiceFamilyFontStyle()
@@ -1070,6 +1079,117 @@ internal sealed partial class CodexRadarForm
             format.Trimming = StringTrimming.EllipsisCharacter;
             format.FormatFlags = StringFormatFlags.NoWrap;
             g.DrawString(text ?? string.Empty, font, brush, rect, format);
+        }
+    }
+
+    private static void DrawEvenRowBottomInfoText(Graphics g, string text, Font font, Brush brush, RectangleF rect)
+    {
+        string value = text ?? string.Empty;
+        if (value.Length == 0)
+        {
+            return;
+        }
+
+        float offsetX;
+        float offsetY;
+        if (TryMeasureEvenRowDrawnTextCenterOffset(g, value, font, rect.Size, out offsetX, out offsetY))
+        {
+            GraphicsState state = g.Save();
+            try
+            {
+                g.TranslateTransform(offsetX, offsetY);
+                DrawEvenRowStatusText(g, value, font, brush, rect);
+            }
+            finally
+            {
+                g.Restore(state);
+            }
+
+            return;
+        }
+
+        DrawEvenRowStatusText(g, value, font, brush, rect);
+    }
+
+    private static bool TryMeasureEvenRowDrawnTextCenterOffset(
+        Graphics sourceGraphics,
+        string text,
+        Font font,
+        SizeF rectSize,
+        out float offsetX,
+        out float offsetY)
+    {
+        offsetX = 0.0f;
+        offsetY = 0.0f;
+        if (sourceGraphics == null || string.IsNullOrEmpty(text) || font == null ||
+            rectSize.Width <= 1.0f || rectSize.Height <= 1.0f)
+        {
+            return false;
+        }
+
+        const int AlphaThreshold = 8;
+        float margin = Math.Max(2.0f, font.Size * 0.25f);
+        int width = Math.Max(4, (int)Math.Ceiling(rectSize.Width + margin * 2.0f));
+        int height = Math.Max(4, (int)Math.Ceiling(rectSize.Height + margin * 2.0f));
+
+        using (Bitmap bitmap = new Bitmap(width, height))
+        using (Graphics measureGraphics = Graphics.FromImage(bitmap))
+        using (SolidBrush measureBrush = new SolidBrush(Color.White))
+        {
+            measureGraphics.Clear(Color.Transparent);
+            measureGraphics.SmoothingMode = sourceGraphics.SmoothingMode;
+            measureGraphics.PixelOffsetMode = sourceGraphics.PixelOffsetMode;
+            measureGraphics.TextRenderingHint = sourceGraphics.TextRenderingHint;
+            measureGraphics.CompositingQuality = sourceGraphics.CompositingQuality;
+            DrawEvenRowStatusText(
+                measureGraphics,
+                text,
+                font,
+                measureBrush,
+                new RectangleF(margin, margin, rectSize.Width, rectSize.Height));
+
+            int minX = width;
+            int minY = height;
+            int maxX = -1;
+            int maxY = -1;
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    if (bitmap.GetPixel(x, y).A <= AlphaThreshold)
+                    {
+                        continue;
+                    }
+
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+
+            if (maxX < minX || maxY < minY)
+            {
+                return false;
+            }
+
+            float desiredCenterX = margin + rectSize.Width * 0.5f;
+            float desiredCenterY = margin + rectSize.Height * 0.5f;
+            float actualCenterX = (minX + maxX + 1.0f) * 0.5f;
+            float actualCenterY = (minY + maxY + 1.0f) * 0.5f;
+            offsetX = desiredCenterX - actualCenterX;
+            offsetY = desiredCenterY - actualCenterY;
+            if (Math.Abs(offsetX) > Math.Max(1.0f, rectSize.Width * 0.16f) ||
+                Math.Abs(offsetY) > Math.Max(1.0f, rectSize.Height * 0.35f))
+            {
+                offsetX = 0.0f;
+                offsetY = 0.0f;
+                return false;
+            }
+
+            if (Math.Abs(offsetX) < 0.2f) offsetX = 0.0f;
+            if (Math.Abs(offsetY) < 0.2f) offsetY = 0.0f;
+            return true;
         }
     }
 }

@@ -26,13 +26,6 @@ internal sealed partial class CodexRadarForm
         public string ErrorMessage { get; set; }
     }
 
-    private enum SelectedQuotaRefreshTarget
-    {
-        None,
-        Codex,
-        Claude
-    }
-
     private CodexRadarSoftwareMode GetEffectiveCodexRadarSoftwareMode()
     {
         return this.effectiveCodexRadarSoftwareMode;
@@ -71,7 +64,7 @@ internal sealed partial class CodexRadarForm
             if (this.effectiveCodexRadarSoftwareMode != this.currentSettings.CodexRadarSoftwareMode &&
                 UpdateEffectiveCodexRadarSoftwareMode(true))
             {
-                HandleCodexRadarSoftwareChanged("软件设置切换");
+                SwitchCodexRadarSoftwareFamily("软件设置切换");
             }
 
             return;
@@ -86,7 +79,7 @@ internal sealed partial class CodexRadarForm
 
         if (UpdateEffectiveCodexRadarSoftwareMode(false))
         {
-            HandleCodexRadarSoftwareChanged("前台软件切换");
+            SwitchCodexRadarSoftwareFamily("前台软件切换");
         }
     }
 
@@ -128,22 +121,22 @@ internal sealed partial class CodexRadarForm
             detected = CodexRadarSoftwareMode.Codex;
         }
 
-        return ResolveCodexRadarSoftwareModeFromSignals(
-            configured,
-            this.effectiveCodexRadarSoftwareMode,
-            presence,
-            foregroundDetected,
-            detected);
+        RadarSoftwareModeDecision decision = this.radarSoftwareModeController.Resolve(new RadarSoftwareModeInput
+        {
+            ConfiguredMode = configured,
+            PreviousEffectiveMode = this.effectiveCodexRadarSoftwareMode,
+            Presence = presence,
+            ForegroundDetected = foregroundDetected,
+            ForegroundMode = detected
+        });
+        return decision.EffectiveMode;
     }
 
     private static bool ShouldDetectForegroundForSoftwareMode(
         CodexRadarSoftwareMode configured,
         SoftwareRuntimePresenceSnapshot presence)
     {
-        return configured == CodexRadarSoftwareMode.Auto &&
-            presence != null &&
-            presence.CodexRunning &&
-            presence.ClaudeRunning;
+        return RadarSoftwareModeController.ShouldDetectForeground(configured, presence);
     }
 
     private static CodexRadarSoftwareMode ResolveCodexRadarSoftwareModeFromSignals(
@@ -153,43 +146,17 @@ internal sealed partial class CodexRadarForm
         bool foregroundDetected,
         CodexRadarSoftwareMode foregroundMode)
     {
-        if (configured == CodexRadarSoftwareMode.Codex ||
-            configured == CodexRadarSoftwareMode.Claude)
-        {
-            return configured;
-        }
-
-        SoftwareRuntimePresenceSnapshot localPresence = presence ?? SoftwareRuntimePresenceSnapshot.Empty();
-        if (!localPresence.AnySupportedAppRunning)
-        {
-            return NormalizeEffectiveSoftwareMode(previousEffective);
-        }
-
-        if (localPresence.CodexRunning && !localPresence.ClaudeRunning)
-        {
-            return CodexRadarSoftwareMode.Codex;
-        }
-
-        if (localPresence.ClaudeRunning && !localPresence.CodexRunning)
-        {
-            return CodexRadarSoftwareMode.Claude;
-        }
-
-        if (foregroundDetected)
-        {
-            return foregroundMode == CodexRadarSoftwareMode.Claude
-                ? CodexRadarSoftwareMode.Claude
-                : CodexRadarSoftwareMode.Codex;
-        }
-
-        return NormalizeEffectiveSoftwareMode(previousEffective);
+        return RadarSoftwareModeController.ResolveEffectiveMode(
+            configured,
+            previousEffective,
+            presence,
+            foregroundDetected,
+            foregroundMode);
     }
 
     private static CodexRadarSoftwareMode NormalizeEffectiveSoftwareMode(CodexRadarSoftwareMode mode)
     {
-        return mode == CodexRadarSoftwareMode.Claude
-            ? CodexRadarSoftwareMode.Claude
-            : CodexRadarSoftwareMode.Codex;
+        return RadarSoftwareModeController.NormalizeEffectiveSoftwareMode(mode);
     }
 
     private int GetCodexRadarSoftwareAutoDetectSeconds()
@@ -260,7 +227,7 @@ internal sealed partial class CodexRadarForm
         return false;
     }
 
-    private void HandleCodexRadarSoftwareChanged(string trigger)
+    private void SwitchCodexRadarSoftwareFamily(string trigger)
     {
         RestoreCodexRadarDisplayForCurrentMode(trigger);
         ResetCodexApiServiceAlertDebounceForDisplayContextSwitch();
@@ -307,6 +274,7 @@ internal sealed partial class CodexRadarForm
     private void CacheCodexRadarDisplayMode(CodexRadarSoftwareMode mode)
     {
         mode = NormalizeEffectiveSoftwareMode(mode);
+        RadarFamilyRuntimeState state = GetRadarFamilyState(mode);
         string modelKey = this.currentSettings == null
             ? string.Empty
             : GetSelectedRadarModelKeyForSoftwareMode(mode);
@@ -322,6 +290,21 @@ internal sealed partial class CodexRadarForm
         {
             radarHealth = this.radarServiceHealth;
         }
+
+        state.ModelKey = modelKey ?? string.Empty;
+        if (radarSnapshot != null)
+        {
+            state.RadarSnapshot = radarSnapshot.Clone();
+        }
+
+        if (quotaSnapshot != null)
+        {
+            state.Quota.Snapshot = NormalizeQuotaSnapshot(quotaSnapshot);
+            state.Quota.SourceKnown = this.quotaSourceKnown;
+        }
+
+        state.RadarSiteHealth = radarHealth;
+        state.Touch();
 
         lock (this.codexRadarDisplayModeCacheLock)
         {
@@ -341,6 +324,13 @@ internal sealed partial class CodexRadarForm
     {
         mode = NormalizeEffectiveSoftwareMode(mode);
         modelKey = modelKey ?? string.Empty;
+        RadarFamilyRuntimeState state = GetRadarFamilyState(mode);
+        if (string.Equals(state.ModelKey ?? string.Empty, modelKey, StringComparison.OrdinalIgnoreCase) &&
+            (IsRuntimeRadarSnapshotUsable(state.RadarSnapshot) || state.Quota.SourceKnown))
+        {
+            return true;
+        }
+
         CodexRadarDisplayModeCache cached;
         lock (this.codexRadarDisplayModeCacheLock)
         {
@@ -386,6 +376,15 @@ internal sealed partial class CodexRadarForm
         return cached.RadarSnapshot != null || cached.QuotaSnapshot != null;
     }
 
+    private static bool IsRuntimeRadarSnapshotUsable(CodexRadarSnapshot snapshot)
+    {
+        return snapshot != null &&
+            (snapshot.CheckedAtKnown ||
+             snapshot.ModelIqKnown ||
+             snapshot.CommunityRatingKnown ||
+             IsCodexQuotaRadarKnown(snapshot));
+    }
+
     private void RequestSelectedQuotaUsageRefresh(string trigger)
     {
         SoftwareRuntimePresenceSnapshot presence = RefreshSoftwareRuntimePresenceSnapshot(false);
@@ -409,75 +408,12 @@ internal sealed partial class CodexRadarForm
         CodexRadarSoftwareMode effectiveMode,
         SoftwareRuntimePresenceSnapshot presence)
     {
-        SoftwareRuntimePresenceSnapshot localPresence = presence ?? SoftwareRuntimePresenceSnapshot.Empty();
-        if (!localPresence.AnySupportedAppRunning)
-        {
-            return SelectedQuotaRefreshTarget.None;
-        }
-
-        if (effectiveMode == CodexRadarSoftwareMode.Claude)
-        {
-            return localPresence.ClaudeRunning
-                ? SelectedQuotaRefreshTarget.Claude
-                : SelectedQuotaRefreshTarget.None;
-        }
-
-        return localPresence.CodexRunning
-            ? SelectedQuotaRefreshTarget.Codex
-            : SelectedQuotaRefreshTarget.None;
+        return RadarSoftwareModeController.ResolveSelectedQuotaRefreshTarget(effectiveMode, presence);
     }
 
     internal static void RunSoftwareModeGateSelfTest()
     {
-        SoftwareRuntimePresenceSnapshot none = new SoftwareRuntimePresenceSnapshot(false, false, DateTime.UtcNow, "test");
-        SoftwareRuntimePresenceSnapshot codexOnly = new SoftwareRuntimePresenceSnapshot(true, false, DateTime.UtcNow, "test");
-        SoftwareRuntimePresenceSnapshot claudeOnly = new SoftwareRuntimePresenceSnapshot(false, true, DateTime.UtcNow, "test");
-        SoftwareRuntimePresenceSnapshot both = new SoftwareRuntimePresenceSnapshot(true, true, DateTime.UtcNow, "test");
-
-        AssertSoftwareMode(
-            ResolveCodexRadarSoftwareModeFromSignals(CodexRadarSoftwareMode.Codex, CodexRadarSoftwareMode.Claude, both, true, CodexRadarSoftwareMode.Claude),
-            CodexRadarSoftwareMode.Codex,
-            "fixed Codex should ignore foreground and presence");
-        AssertSoftwareMode(
-            ResolveCodexRadarSoftwareModeFromSignals(CodexRadarSoftwareMode.Claude, CodexRadarSoftwareMode.Codex, both, true, CodexRadarSoftwareMode.Codex),
-            CodexRadarSoftwareMode.Claude,
-            "fixed Claude should ignore foreground and presence");
-        AssertSoftwareMode(
-            ResolveCodexRadarSoftwareModeFromSignals(CodexRadarSoftwareMode.Auto, CodexRadarSoftwareMode.Claude, none, false, CodexRadarSoftwareMode.Codex),
-            CodexRadarSoftwareMode.Claude,
-            "no supported apps should keep previous effective mode");
-        AssertSoftwareMode(
-            ResolveCodexRadarSoftwareModeFromSignals(CodexRadarSoftwareMode.Auto, CodexRadarSoftwareMode.Claude, codexOnly, false, CodexRadarSoftwareMode.Claude),
-            CodexRadarSoftwareMode.Codex,
-            "Codex-only presence should select Codex without foreground detection");
-        AssertSoftwareMode(
-            ResolveCodexRadarSoftwareModeFromSignals(CodexRadarSoftwareMode.Auto, CodexRadarSoftwareMode.Codex, claudeOnly, false, CodexRadarSoftwareMode.Codex),
-            CodexRadarSoftwareMode.Claude,
-            "Claude-only presence should select Claude without foreground detection");
-        AssertSoftwareMode(
-            ResolveCodexRadarSoftwareModeFromSignals(CodexRadarSoftwareMode.Auto, CodexRadarSoftwareMode.Codex, both, true, CodexRadarSoftwareMode.Claude),
-            CodexRadarSoftwareMode.Claude,
-            "both running should accept foreground-detected Claude");
-        AssertSoftwareMode(
-            ResolveCodexRadarSoftwareModeFromSignals(CodexRadarSoftwareMode.Auto, CodexRadarSoftwareMode.Claude, both, false, CodexRadarSoftwareMode.Codex),
-            CodexRadarSoftwareMode.Claude,
-            "foreground detection failure should keep previous effective mode");
-
-        if (ShouldDetectForegroundForSoftwareMode(CodexRadarSoftwareMode.Codex, both) ||
-            ShouldDetectForegroundForSoftwareMode(CodexRadarSoftwareMode.Claude, both) ||
-            ShouldDetectForegroundForSoftwareMode(CodexRadarSoftwareMode.Auto, none) ||
-            ShouldDetectForegroundForSoftwareMode(CodexRadarSoftwareMode.Auto, codexOnly) ||
-            ShouldDetectForegroundForSoftwareMode(CodexRadarSoftwareMode.Auto, claudeOnly) ||
-            !ShouldDetectForegroundForSoftwareMode(CodexRadarSoftwareMode.Auto, both))
-        {
-            throw new InvalidOperationException("Codex Radar software mode self-test failed: foreground detection gate.");
-        }
-
-        AssertRefreshTarget(ResolveSelectedQuotaRefreshTarget(CodexRadarSoftwareMode.Codex, none), SelectedQuotaRefreshTarget.None, "no apps should not queue quota refresh");
-        AssertRefreshTarget(ResolveSelectedQuotaRefreshTarget(CodexRadarSoftwareMode.Codex, codexOnly), SelectedQuotaRefreshTarget.Codex, "Codex mode should queue Codex when Codex is running");
-        AssertRefreshTarget(ResolveSelectedQuotaRefreshTarget(CodexRadarSoftwareMode.Codex, claudeOnly), SelectedQuotaRefreshTarget.None, "Codex mode should not queue Claude when only Claude is running");
-        AssertRefreshTarget(ResolveSelectedQuotaRefreshTarget(CodexRadarSoftwareMode.Claude, claudeOnly), SelectedQuotaRefreshTarget.Claude, "Claude mode should queue Claude when Claude is running");
-        AssertRefreshTarget(ResolveSelectedQuotaRefreshTarget(CodexRadarSoftwareMode.Claude, codexOnly), SelectedQuotaRefreshTarget.None, "Claude mode should not queue Codex when only Codex is running");
+        RadarSoftwareModeController.RunSelfTest();
 
         ClaudeRadarSnapshot claudeSnapshot = ClaudeRadarSnapshot.CreateDefault();
         claudeSnapshot.Known = true;
@@ -514,22 +450,6 @@ internal sealed partial class CodexRadarForm
             !string.Equals(sharedSnapshot.CommunityRatingModelId, "opus48_high", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("Codex Radar software mode self-test failed: Claude shared snapshot conversion.");
-        }
-    }
-
-    private static void AssertSoftwareMode(CodexRadarSoftwareMode actual, CodexRadarSoftwareMode expected, string message)
-    {
-        if (actual != expected)
-        {
-            throw new InvalidOperationException("Codex Radar software mode self-test failed: " + message);
-        }
-    }
-
-    private static void AssertRefreshTarget(SelectedQuotaRefreshTarget actual, SelectedQuotaRefreshTarget expected, string message)
-    {
-        if (actual != expected)
-        {
-            throw new InvalidOperationException("Codex Radar quota provider self-test failed: " + message);
         }
     }
 
@@ -671,7 +591,7 @@ internal sealed partial class CodexRadarForm
 
                 DateTime nowUtc = DateTime.UtcNow;
                 this.lastQuotaRefreshUtc = nowUtc;
-                ApplyCodexQuotaSnapshot(snapshot.Clone(), true, true, DateTime.Now, nowUtc, "claude");
+                ApplyQuotaSnapshot(CodexRadarSoftwareMode.Claude, snapshot.Clone(), true, true, DateTime.Now, nowUtc, "claude");
                 RenderLayeredWindow();
             });
         }
@@ -729,7 +649,7 @@ internal sealed partial class CodexRadarForm
             return;
         }
 
-        if ((IsClaudeCodeSetupTokenMissing(errorCode) || IsClaudeCodeStatusLineCacheMissing(errorCode)) &&
+        if ((QuotaRingPresentation.IsSetupTokenMissing(errorCode) || IsClaudeCodeStatusLineCacheMissing(errorCode)) &&
             (this.quotaSourceKnown || known))
         {
             return;
@@ -758,7 +678,7 @@ internal sealed partial class CodexRadarForm
 
         if (string.Equals(errorCode, "401", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(errorCode, "403", StringComparison.OrdinalIgnoreCase) ||
-            IsClaudeCodeSetupTokenMissing(errorCode))
+            QuotaRingPresentation.IsSetupTokenMissing(errorCode))
         {
             return DesignTokens.Colors.WarningDeep;
         }
@@ -844,12 +764,6 @@ internal sealed partial class CodexRadarForm
             ErrorCode = errorCode ?? string.Empty,
             ErrorMessage = message ?? string.Empty
         };
-    }
-
-    private static bool IsClaudeCodeSetupTokenMissing(string errorCode)
-    {
-        return string.Equals(errorCode, "NO_SETUP_TOKEN", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(errorCode, "NO_TOKEN", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsClaudeCodeStatusLineCacheMissing(string errorCode)

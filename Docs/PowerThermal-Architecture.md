@@ -1,6 +1,6 @@
 # 功耗与电池窗口技术说明
 
-适用版本：1.0.4.18
+适用版本：1.0.4.74
 
 ## 1. 文档范围
 
@@ -12,8 +12,8 @@
 | --- | --- |
 | `Core/PowerThermalForm.cs` | 功耗、电池、系统电源模式和温度告警窗口 |
 | `Interop/NativeMethods.cs` | Windows 电源通知、有效电源模式通知和分层窗口接口 |
-| `Settings/WidgetSettings.cs` | 三档性能模式及公共刷新间隔 |
-| `Settings/Win11SettingsForm.cs` | 性能模式、窗口尺寸、透明度、延展方向和测试状态 |
+| `Settings/WidgetSettings.cs` | 三档性能模式、公共刷新间隔和低电量节能显示阈值 |
+| `Settings/Win11SettingsForm.cs` | 性能模式、窗口尺寸、透明度、延展方向、低电量节能阈值和测试状态 |
 | `DesktopCodexAssistant.cs` | 进程优先级与 Windows Power Throttling |
 | `Core/WidgetForm.cs` | 子窗口生命周期、显示器恢复和设置分发 |
 
@@ -58,6 +58,10 @@
 - `省电`
 
 其中注册表 Overlay 会根据当前 AC/DC 状态选择不同字段，因此能反映用户为插电和电池分别配置的模式。
+
+全局节能状态独立读取 `Windows.System.Power.PowerManager.EnergySaverStatus`，并用 `GetSystemPowerStatus().SystemStatusFlag` 作为 Battery Saver 兼容备用来源。该状态不覆盖基础三档；任一来源显示已开启时，在电池百分比右侧显示叶子标志，并把底部文本显示为 `基础模式（节能）`，例如 `平衡（节能）`。如果基础模式不可读但全局节能可读为开启，则显示 `节能`。`ReadCurrentSystemPowerModeText()` 也会返回带 `节能` 的文本，使 `WidgetPerformanceMode.WindowsPowerMode` 能按省电档位解析。
+
+设置键 `PowerThermalManualEnergySaverThresholdPercent` 是功耗窗口的显示兜底，默认 `30`，范围 `0-100`，`0` 表示关闭。当前电池百分比低于该阈值时，`PowerThermalForm.DrawBatteryModule` 同样显示叶子和 `（节能）` 后缀，用于 Windows API 未暴露全局节能但用户希望低电量按节能显示的场景。该阈值只作用于功耗窗口显示，不修改 Windows 电源模式，也不让 `ReadCurrentSystemPowerModeText()` 的全局性能档位解析强制进入省电。
 
 ### 2.4 温度
 
@@ -127,6 +131,7 @@ flowchart LR
 | `GUID_ACDC_POWER_SOURCE` | 插拔电源后立即刷新 |
 | `GUID_BATTERY_PERCENTAGE_REMAINING` | 电量变化后立即刷新 |
 | `GUID_POWERSCHEME_PERSONALITY` | 电源计划变化后立即刷新 |
+| `GUID_POWER_SAVING_STATUS` | 全局节能状态变化后立即刷新功耗快照 |
 | Effective Power Mode callback | Windows 电源模式滑块变化后立即刷新 |
 | `SystemEvents.SessionSwitch` | 锁屏暂停，解锁恢复 |
 

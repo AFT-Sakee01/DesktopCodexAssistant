@@ -9,6 +9,7 @@ internal static class BurnInProtection
 {
     public const int MainWidgetSalt = 1;
     public const int CodexRadarSalt = 7;
+    public const int ClaudeRadarSalt = 31;
     public const int PowerThermalSalt = 13;
     public const int NetworkMonitorSalt = 19;
     public const int ConnectionCheckSalt = 23;

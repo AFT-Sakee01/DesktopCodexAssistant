@@ -1,13 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
@@ -18,6 +21,10 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
     private const int RandomRefreshMs = 1000;
     private const int MaxSceneCacheEntries = 6;
     private const int MaxModelIqScore = 200;
+    private const string OpenAiStatusUrl = "https://status.openai.com/api/v2/summary.json";
+    private const int OpenAiStatusTimeoutMs = 10000;
+    private const int OpenAiStatusNormalRefreshMinutes = 15;
+    private const int OpenAiStatusFailureRefreshMinutes = 2;
     private static readonly Color ClaudeOrange = Color.FromArgb(255, 154, 82);
     private static readonly Color ClaudeOrangeMuted = Color.FromArgb(190, 103, 54);
     private readonly System.Windows.Forms.Timer timer;
@@ -27,8 +34,9 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
     private readonly Action<string, string, ToolTipIcon> notificationAction;
     private readonly Dictionary<string, string> notificationState = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     private readonly object claudeApiServiceAlertDebounceLock = new object();
-    private readonly Dictionary<string, ClaudeServiceAlertDebounceState> claudeApiServiceAlertDebounceStates =
-        new Dictionary<string, ClaudeServiceAlertDebounceState>(StringComparer.OrdinalIgnoreCase);
+    private readonly object openAiStatusLock = new object();
+    private readonly Dictionary<string, ServiceAlertDebounceState> claudeApiServiceAlertDebounceStates =
+        new Dictionary<string, ServiceAlertDebounceState>(StringComparer.OrdinalIgnoreCase);
     private WidgetSettings currentSettings;
     private ClaudeRadarSnapshot snapshot;
     private SoftwareRuntimePresenceSnapshot runtimePresenceSnapshot = SoftwareRuntimePresenceSnapshot.Empty();
@@ -41,13 +49,10 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
     private DateTime nextRefreshUtc = DateTime.MinValue;
     private string lastClockAutoSwitchSignature = string.Empty;
     private DateTime lastRadarAttemptLocal;
-
-    private sealed class ClaudeServiceAlertDebounceState
-    {
-        public string Signature { get; set; }
-        public DateTime FirstSeenUtc { get; set; }
-        public ClaudeServiceAlertCandidate ActiveCandidate { get; set; }
-    }
+    private ClaudeRadarServiceState openAiStatusState = ClaudeRadarServiceState.Unknown;
+    private DateTime nextOpenAiStatusRefreshUtc = DateTime.MinValue;
+    private bool openAiStatusRequestRunning;
+    private string openAiStatusRefreshTrigger = "启动刷新";
 
     public ClaudeRadarForm(WidgetSettings settings)
         : this(settings, null)
@@ -74,14 +79,15 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
+        ApplyLayerScaleFromSettings(this.currentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight);
-        this.MaximumSize = new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight);
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
+        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight));
         this.Size = GetDesiredSize();
 
         this.timer = new System.Windows.Forms.Timer();
@@ -142,6 +148,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
     {
         WidgetSettings next = settings.Clone();
         next.Normalize();
+        int oldDeepSeekApiKeyRevision = this.currentSettings.DeepSeekApiKeyRevision;
         bool modelChanged = !string.Equals(
             this.currentSettings.ClaudeRadarModelKey,
             next.ClaudeRadarModelKey,
@@ -152,8 +159,12 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             this.currentSettings.ClaudeRadarCommunityRatingsEnabled != next.ClaudeRadarCommunityRatingsEnabled ||
             this.currentSettings.ClaudeRadarLocalQuotaFallbackEnabled != next.ClaudeRadarLocalQuotaFallbackEnabled ||
             this.currentSettings.ClaudeRadarServiceProbeToken != next.ClaudeRadarServiceProbeToken;
+        bool serviceProbeChanged = this.currentSettings.ClaudeRadarServiceProbeToken != next.ClaudeRadarServiceProbeToken;
 
         this.currentSettings = next;
+        ApplyLayerScaleFromSettings(this.currentSettings);
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
+        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight));
         this.timer.Interval = GetTimerIntervalMs();
         if (RefreshRuntimePresenceSnapshot(false))
         {
@@ -198,6 +209,20 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             NativeMethods.SWP_NOSIZE);
 
         PositionClaudeRadarWindow();
+        if (oldDeepSeekApiKeyRevision != this.currentSettings.DeepSeekApiKeyRevision)
+        {
+            RequestDeepSeekBalanceRefresh();
+            RefreshDeepSeekBalanceIfNeeded("DeepSeek 配置");
+        }
+
+        if (serviceProbeChanged)
+        {
+            RequestOpenAiStatusRefresh("服务检测");
+            RequestClaudeStatusRefresh("服务检测");
+            RefreshOpenAiStatusIfDue("服务检测");
+            RefreshClaudeStatusIfDue("服务检测");
+        }
+
         if (modelChanged || dataSourceChanged)
         {
             this.snapshot = ClaudeRadarReader.LoadCache(this.currentSettings.ClaudeRadarModelKey) ??
@@ -257,6 +282,9 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
     public void ForceRefresh(string trigger)
     {
         this.nextRefreshUtc = DateTime.MinValue;
+        RequestOpenAiStatusRefresh(trigger);
+        RequestClaudeStatusRefresh(trigger);
+        RequestDeepSeekBalanceRefresh();
         if (RefreshRuntimePresenceSnapshot(false))
         {
             InvalidateLayeredRenderBuffer();
@@ -264,6 +292,9 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
         RequestClaudeCodeUsageRefresh(trigger);
         StartRefreshIfDue(trigger);
+        RefreshOpenAiStatusIfDue(trigger);
+        RefreshClaudeStatusIfDue(trigger);
+        RefreshDeepSeekBalanceIfNeeded(trigger);
         RefreshClaudeCodeUsageIfDue(trigger);
     }
 
@@ -289,6 +320,9 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         }
 
         StartRefreshIfDue("定时");
+        RefreshOpenAiStatusIfDue("定时");
+        RefreshClaudeStatusIfDue("定时");
+        RefreshDeepSeekBalanceIfNeeded("定时");
         ApplyClaudeRadarClockAutoSwitchIfNeeded();
         RefreshClaudeCodeUsageIfDue("定时");
         RenderLayeredWindow(false);
@@ -339,15 +373,18 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         RenderLayeredWindow();
 
         WidgetSettings requestSettings = this.currentSettings.Clone();
-        Task.Run(delegate
+        Task<ClaudeRadarSnapshotSchedulerOutcome> refreshTask;
+        if (!ClaudeRadarSnapshotScheduler.TryStartOrJoin(
+            "claude_radar",
+            requestSettings,
+            trigger,
+            out refreshTask))
         {
-            return ClaudeRadarReader.ReadSnapshot(
-                requestSettings.ClaudeRadarModelKey,
-                requestSettings.ClaudeRadarJsonEnabled,
-                requestSettings.ClaudeRadarHomepageFallbackEnabled,
-                requestSettings.ClaudeRadarCommunityRatingsEnabled,
-                requestSettings.ClaudeRadarLocalQuotaFallbackEnabled);
-        }).ContinueWith(delegate(Task<ClaudeRadarSnapshot> task)
+            CompleteSingleFlight(ref this.requestRunning);
+            return;
+        }
+
+        refreshTask.ContinueWith(delegate(Task<ClaudeRadarSnapshotSchedulerOutcome> task)
         {
             if (this.IsDisposed || !this.IsHandleCreated)
             {
@@ -370,6 +407,251 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
     private void RequestClaudeCodeUsageRefresh(string trigger)
     {
         ClaudeCodeUsageScheduler.RequestRefresh(trigger);
+    }
+
+    private void RequestOpenAiStatusRefresh(string trigger)
+    {
+        lock (this.openAiStatusLock)
+        {
+            this.nextOpenAiStatusRefreshUtc = DateTime.MinValue;
+            this.openAiStatusRefreshTrigger = string.IsNullOrWhiteSpace(trigger) ? "手动刷新" : trigger.Trim();
+        }
+
+        StatuspageMonitor.RequestRefresh(StatuspageMonitor.OpenAiServiceKey, trigger);
+    }
+
+    private void RequestClaudeStatusRefresh(string trigger)
+    {
+        StatuspageMonitor.RequestRefresh(StatuspageMonitor.ClaudeServiceKey, trigger);
+    }
+
+    private void RequestDeepSeekBalanceRefresh()
+    {
+        DeepSeekBalanceMonitor.RequestRefresh();
+    }
+
+    private void RefreshOpenAiStatusIfDue(string trigger)
+    {
+        if (this.currentSettings == null ||
+            !this.currentSettings.ClaudeRadarEnabled ||
+            this.currentSettings.ClaudeRadarRandomTestEnabled ||
+            this.hiddenForFullscreen ||
+            this.displaySuspended)
+        {
+            return;
+        }
+
+        ClaudeRadarSnapshot local = this.snapshot;
+        if (local != null && local.DataState == ClaudeRadarServiceState.Offline)
+        {
+            SetOpenAiStatusState(ClaudeRadarServiceState.Offline);
+            return;
+        }
+
+        string effectiveTrigger = string.IsNullOrWhiteSpace(trigger) ? "定时间隔" : trigger.Trim();
+        lock (this.openAiStatusLock)
+        {
+            effectiveTrigger = FallbackText(this.openAiStatusRefreshTrigger, effectiveTrigger);
+            this.openAiStatusRefreshTrigger = "定时间隔";
+        }
+
+        WidgetSettings requestSettings = this.currentSettings.Clone();
+        Task<StatuspageRefreshOutcome> task;
+        if (!StatuspageMonitor.TryStartOrJoin(
+            StatuspageMonitor.OpenAiServiceKey,
+            "claude_radar",
+            requestSettings,
+            effectiveTrigger,
+            out task))
+        {
+            ApplyOpenAiStatusSnapshot(StatuspageMonitor.GetSnapshot(StatuspageMonitor.OpenAiServiceKey));
+            return;
+        }
+
+        ApplyOpenAiStatusSnapshot(StatuspageMonitor.GetSnapshot(StatuspageMonitor.OpenAiServiceKey));
+        task.ContinueWith(delegate(Task<StatuspageRefreshOutcome> completed)
+        {
+            if (completed.Exception != null)
+            {
+                Program.LogException(completed.Exception.GetBaseException());
+            }
+
+            ApplyOpenAiStatusSnapshot(completed.Status == TaskStatus.RanToCompletion && completed.Result != null
+                ? completed.Result.Snapshot
+                : StatuspageMonitor.GetSnapshot(StatuspageMonitor.OpenAiServiceKey));
+            RequestClaudeRadarRenderFromAnyThread();
+        });
+    }
+
+    private void RefreshClaudeStatusIfDue(string trigger)
+    {
+        if (this.currentSettings == null ||
+            !this.currentSettings.ClaudeRadarEnabled ||
+            this.currentSettings.ClaudeRadarRandomTestEnabled ||
+            this.hiddenForFullscreen ||
+            this.displaySuspended)
+        {
+            return;
+        }
+
+        ClaudeRadarSnapshot local = this.snapshot;
+        if (local != null && local.DataState == ClaudeRadarServiceState.Offline)
+        {
+            ClaudeRadarSnapshot current = local.Clone();
+            current.ClaudeStatusState = ClaudeRadarServiceState.Offline;
+            this.snapshot = current;
+            InvalidateLayeredRenderBuffer();
+            return;
+        }
+
+        WidgetSettings requestSettings = this.currentSettings.Clone();
+        Task<StatuspageRefreshOutcome> task;
+        if (!StatuspageMonitor.TryStartOrJoin(
+            StatuspageMonitor.ClaudeServiceKey,
+            "claude_radar",
+            requestSettings,
+            string.IsNullOrWhiteSpace(trigger) ? "定时间隔" : trigger.Trim(),
+            out task))
+        {
+            ApplyClaudeStatusSnapshot(StatuspageMonitor.GetSnapshot(StatuspageMonitor.ClaudeServiceKey));
+            return;
+        }
+
+        ApplyClaudeStatusSnapshot(StatuspageMonitor.GetSnapshot(StatuspageMonitor.ClaudeServiceKey));
+        task.ContinueWith(delegate(Task<StatuspageRefreshOutcome> completed)
+        {
+            if (completed.Exception != null)
+            {
+                Program.LogException(completed.Exception.GetBaseException());
+            }
+
+            ApplyClaudeStatusSnapshot(completed.Status == TaskStatus.RanToCompletion && completed.Result != null
+                ? completed.Result.Snapshot
+                : StatuspageMonitor.GetSnapshot(StatuspageMonitor.ClaudeServiceKey));
+            RequestClaudeRadarRenderFromAnyThread();
+        });
+    }
+
+    private void RefreshDeepSeekBalanceIfNeeded(string trigger)
+    {
+        if (this.currentSettings == null ||
+            !this.currentSettings.ClaudeRadarEnabled ||
+            this.currentSettings.ClaudeRadarRandomTestEnabled ||
+            this.hiddenForFullscreen ||
+            this.displaySuspended)
+        {
+            return;
+        }
+
+        DeepSeekBalanceMonitor.RefreshIfNeeded(
+            "claude_radar",
+            string.IsNullOrWhiteSpace(trigger) ? "定时间隔" : trigger.Trim(),
+            RequestClaudeRadarRenderFromAnyThread);
+    }
+
+    private void RequestClaudeRadarRenderFromAnyThread()
+    {
+        if (this.IsDisposed)
+        {
+            return;
+        }
+
+        if (this.IsHandleCreated && this.InvokeRequired)
+        {
+            try
+            {
+                BeginInvoke((MethodInvoker)delegate
+                {
+                    if (!this.IsDisposed)
+                    {
+                        InvalidateLayeredRenderBuffer();
+                        RenderLayeredWindow();
+                    }
+                });
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            return;
+        }
+
+        InvalidateLayeredRenderBuffer();
+        RenderLayeredWindow();
+    }
+
+    private void SetOpenAiStatusState(ClaudeRadarServiceState state)
+    {
+        lock (this.openAiStatusLock)
+        {
+            this.openAiStatusState = state;
+        }
+    }
+
+    private void ApplyOpenAiStatusSnapshot(StatuspageSnapshot snapshot)
+    {
+        StatuspageSnapshot local = snapshot == null
+            ? StatuspageSnapshot.CreateDefault(StatuspageMonitor.OpenAiServiceKey)
+            : snapshot.Clone();
+        lock (this.openAiStatusLock)
+        {
+            this.openAiStatusState = ConvertStatuspageHealthStateForClaude(local.State);
+            this.openAiStatusRequestRunning = local.RequestRunning;
+            this.nextOpenAiStatusRefreshUtc = DateTime.UtcNow.AddMinutes(
+                this.openAiStatusState == ClaudeRadarServiceState.Normal ? 15.0 : 2.0);
+            this.openAiStatusRefreshTrigger = this.openAiStatusState == ClaudeRadarServiceState.Normal
+                ? "定时间隔"
+                : "异常状态重试";
+        }
+    }
+
+    private void ApplyClaudeStatusSnapshot(StatuspageSnapshot snapshot)
+    {
+        StatuspageSnapshot local = snapshot == null
+            ? StatuspageSnapshot.CreateDefault(StatuspageMonitor.ClaudeServiceKey)
+            : snapshot.Clone();
+        ClaudeRadarSnapshot current = this.snapshot == null
+            ? ClaudeRadarSnapshot.CreateDefault()
+            : this.snapshot.Clone();
+        current.ClaudeStatusState = ConvertStatuspageHealthStateForClaude(local.State);
+        this.snapshot = current;
+        InvalidateLayeredRenderBuffer();
+    }
+
+    private static ClaudeRadarServiceState ConvertStatuspageHealthStateForClaude(StatuspageHealthState state)
+    {
+        switch (state)
+        {
+            case StatuspageHealthState.Normal:
+                return ClaudeRadarServiceState.Normal;
+            case StatuspageHealthState.Offline:
+                return ClaudeRadarServiceState.Offline;
+            case StatuspageHealthState.Incomplete:
+                return ClaudeRadarServiceState.Incomplete;
+            case StatuspageHealthState.Degraded:
+            case StatuspageHealthState.Unavailable:
+                return ClaudeRadarServiceState.Unavailable;
+            case StatuspageHealthState.Unreachable:
+                return ClaudeRadarServiceState.Unreachable;
+            default:
+                return ClaudeRadarServiceState.Unknown;
+        }
+    }
+
+    private ClaudeRadarServiceState GetOpenAiStatusState()
+    {
+        lock (this.openAiStatusLock)
+        {
+            return this.openAiStatusState;
+        }
+    }
+
+    private bool IsOpenAiStatusRequestRunning()
+    {
+        lock (this.openAiStatusLock)
+        {
+            return this.openAiStatusRequestRunning;
+        }
     }
 
     private void RefreshClaudeCodeUsageIfDue(string trigger)
@@ -439,6 +721,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             ? ClaudeRadarSnapshot.CreateDefault()
             : this.snapshot.Clone();
         current.ClaudeCodeState = result.State;
+        current.ClaudeCodeErrorCode = result.ErrorCode ?? string.Empty;
         if (result.Success && result.Snapshot != null)
         {
             current.Quota = result.Snapshot.ToClaudeRadarQuotaSnapshot();
@@ -488,20 +771,28 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         return string.IsNullOrWhiteSpace(value) ? (fallback ?? string.Empty) : value.Trim();
     }
 
-    private void ApplyRefreshResult(Task<ClaudeRadarSnapshot> task, string trigger)
+    private void ApplyRefreshResult(Task<ClaudeRadarSnapshotSchedulerOutcome> task, string trigger)
     {
         CompleteSingleFlight(ref this.requestRunning);
         ClaudeRadarSnapshot next = null;
+        ClaudeRadarSnapshot previous = this.snapshot == null
+            ? ClaudeRadarSnapshot.CreateDefault()
+            : this.snapshot.Clone();
+        ClaudeRadarSnapshotSchedulerOutcome outcome = null;
         if (task.Status == TaskStatus.RanToCompletion)
         {
-            next = task.Result;
+            outcome = task.Result;
+            next = outcome == null ? null : outcome.Snapshot;
         }
         else if (task.Exception != null)
         {
             Program.LogException(task.Exception.GetBaseException());
         }
 
-        if (next == null || !next.Known)
+        bool requestSucceeded = outcome == null
+            ? next != null && next.Known
+            : outcome.Success;
+        if (next == null || !next.Known || !requestSucceeded)
         {
             this.snapshot = BuildRefreshFailureDisplaySnapshot(this.snapshot, next);
             this.nextRefreshUtc = DateTime.UtcNow.AddMinutes(FailureRefreshMinutes);
@@ -509,6 +800,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         else
         {
             next.RequestRunning = false;
+            PreserveCurrentClaudeStatus(next, previous);
             PreserveCurrentClaudeCodeQuotaIfNewer(next);
             ShowModelCatalogNotifications(next.ModelCatalogEvents);
             this.snapshot = next.Clone();
@@ -662,7 +954,11 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         {
             fallback.DataState = failed.DataState;
             fallback.RatingsState = failed.RatingsState;
-            fallback.ClaudeStatusState = failed.ClaudeStatusState;
+            if (failed.ClaudeStatusState != ClaudeRadarServiceState.Unknown)
+            {
+                fallback.ClaudeStatusState = failed.ClaudeStatusState;
+            }
+
             fallback.ClaudeCodeState = failed.ClaudeCodeState;
             fallback.ErrorCode = failed.ErrorCode;
             fallback.ErrorMessage = failed.ErrorMessage;
@@ -671,6 +967,20 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         }
 
         return fallback;
+    }
+
+    private static void PreserveCurrentClaudeStatus(ClaudeRadarSnapshot next, ClaudeRadarSnapshot current)
+    {
+        if (next == null || current == null)
+        {
+            return;
+        }
+
+        if (next.ClaudeStatusState == ClaudeRadarServiceState.Unknown &&
+            current.ClaudeStatusState != ClaudeRadarServiceState.Unknown)
+        {
+            next.ClaudeStatusState = current.ClaudeStatusState;
+        }
     }
 
     private void PreserveCurrentClaudeCodeQuotaIfNewer(ClaudeRadarSnapshot next)
@@ -721,15 +1031,16 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             this.Size = desired;
         }
 
-        int left = Math.Max(workArea.Left, Math.Min(this.currentSettings.ClaudeRadarLeftX, workArea.Right - this.Width));
-        int baseHeight = Math.Max(WidgetSettings.MinCodexRadarHeight, this.currentSettings.ClaudeRadarHeight);
-        int top = this.currentSettings.ClaudeRadarBottomY - baseHeight + 1;
+        int mappedLeft = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleClaudeRadar, workArea, this.currentSettings.ClaudeRadarLeftX);
+        int mappedBottom = this.currentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleClaudeRadar, workArea, this.currentSettings.ClaudeRadarBottomY);
+        int left = Math.Max(workArea.Left, Math.Min(mappedLeft, workArea.Right - this.Width));
+        int top = mappedBottom - this.Height + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
         Point shifted = BurnInProtection.ApplyRuntimeOffset(
             new Point(left, top),
             this.Size,
             workArea,
-            31);
+            BurnInProtection.ClaudeRadarSalt);
         this.Location = shifted;
 
         NativeMethods.SetWindowPos(
@@ -747,7 +1058,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
     private Size GetDesiredSize()
     {
-        return new Size(this.currentSettings.ClaudeRadarWidth, this.currentSettings.ClaudeRadarHeight);
+        return this.currentSettings.ScaleResolutionCompatibilitySize(new Size(this.currentSettings.ClaudeRadarWidth, this.currentSettings.ClaudeRadarHeight));
     }
 
     private int GetTimerIntervalMs()
@@ -935,6 +1246,8 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             ? ClaudeRadarQuotaSnapshot.CreateDefault()
             : local.Quota;
         SoftwareRuntimePresenceSnapshot presence = GetLastRuntimePresenceSnapshot();
+        bool forceDangerFullRing = !quota.Known &&
+            QuotaRingPresentation.IsSetupTokenMissing(local == null ? string.Empty : local.ClaudeCodeErrorCode);
 
         cellRect = GetClaudeEvenRowCompactRingCellRect(new RectangleF(x, bounds.Top, ringCellWidth, bounds.Height), compactCellHeight);
         DrawClaudeEvenLayoutEfficiencyCell(g, cellRect, metric, true, ringFillFactor);
@@ -955,7 +1268,9 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             quota.Known,
             false,
             0,
-            ringFillFactor);
+            true,
+            ringFillFactor,
+            forceDangerFullRing);
         x += ringCellWidth + ringGap;
 
         cellRect = GetClaudeEvenRowCompactRingCellRect(new RectangleF(x, bounds.Top, ringCellWidth, bounds.Height), compactCellHeight);
@@ -969,7 +1284,9 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             quota.Known,
             false,
             0,
-            ringFillFactor);
+            false,
+            ringFillFactor,
+            forceDangerFullRing);
         x += ringCellWidth + ringGap;
 
         cellRect = GetClaudeEvenRowCompactRingCellRect(new RectangleF(x, bounds.Top, ringCellWidth, bounds.Height), compactCellHeight);
@@ -1140,48 +1457,18 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         bool quotaValueKnown,
         bool quotaProtected,
         int consumptionRingPercent,
-        float ringFillFactor)
+        bool fiveHour,
+        float ringFillFactor,
+        bool forceDangerFullRing)
     {
         if (cellRect.Width <= 0 || cellRect.Height <= 0)
         {
             return;
         }
 
-        percent = ClampPercent(percent);
-        consumptionRingPercent = ClampPercent(consumptionRingPercent);
         RectangleF ringRect;
         RectangleF textRect;
         GetClaudeEvenLayoutCellRects(cellRect, ringFillFactor, out ringRect, out textRect);
-
-        Color ringColor = GetClaudeQuotaColor(percent);
-        int visibleConsumptionRingPercent = Math.Max(percent, consumptionRingPercent);
-        float stroke = Math.Max(2.0f, ringRect.Width * 0.14f);
-        RectangleF arcRect = new RectangleF(
-            ringRect.Left + stroke / 2.0f,
-            ringRect.Top + stroke / 2.0f,
-            ringRect.Width - stroke,
-            ringRect.Height - stroke);
-        using (Pen backgroundPen = new Pen(DesignTokens.White(78), stroke))
-        using (Pen valuePen = new Pen(ringColor, stroke))
-        using (Pen consumptionRingPen = new Pen(GetClaudeQuotaConsumptionRingColor(), stroke))
-        {
-            backgroundPen.StartCap = LineCap.Flat;
-            backgroundPen.EndCap = LineCap.Flat;
-            valuePen.StartCap = LineCap.Round;
-            valuePen.EndCap = LineCap.Round;
-            consumptionRingPen.StartCap = LineCap.Round;
-            consumptionRingPen.EndCap = LineCap.Round;
-            g.DrawArc(backgroundPen, arcRect, -90.0f, 360.0f);
-            if (visibleConsumptionRingPercent > percent)
-            {
-                g.DrawArc(consumptionRingPen, arcRect, -90.0f, 360.0f * visibleConsumptionRingPercent / 100.0f);
-            }
-
-            if (percent > 0)
-            {
-                g.DrawArc(valuePen, arcRect, -90.0f, 360.0f * percent / 100.0f);
-            }
-        }
 
         Color displayColor = DesignTokens.TextStrong(226);
         if (quotaProtected)
@@ -1189,24 +1476,29 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             displayColor = GetClaudeRadarGoldColor();
             resetText = "已重置";
         }
-        if (!claudeRunning)
+        else
         {
-            displayColor = DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
+            resetText = ClaudeRadarResetTextFormatter.FormatCompact(resetText, fiveHour);
         }
 
-        Font numberFont = this.fontCache.GetUi(Math.Max(7.0f, ringRect.Width * 0.342f), FontStyle.Bold);
-        string numberText = quotaValueKnown ? percent.ToString(CultureInfo.InvariantCulture) : "-";
-        using (SolidBrush numberBrush = new SolidBrush(GetClaudeQuotaRingNumberColor(displayColor, anySupportedAppRunning, quotaValueKnown)))
-        using (StringFormat center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+        QuotaRingDrawSpec spec = new QuotaRingDrawSpec
         {
-            g.DrawString(numberText, numberFont, numberBrush, ringRect, center);
-        }
-
-        Font labelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold);
-        using (SolidBrush labelBrush = new SolidBrush(displayColor))
-        {
-            DrawClaudeRadarFittedText(g, string.IsNullOrWhiteSpace(resetText) ? "N/A" : resetText.Trim(), labelFont, labelBrush, textRect, StringAlignment.Center);
-        }
+            Percent = percent,
+            ConsumptionRingPercent = consumptionRingPercent,
+            ResetDisplayText = string.IsNullOrWhiteSpace(resetText) ? "N/A" : resetText.Trim(),
+            ResetDisplayColor = displayColor,
+            Running = claudeRunning,
+            AnySupportedAppRunning = anySupportedAppRunning,
+            QuotaValueKnown = quotaValueKnown,
+            ForceDangerFullRing = forceDangerFullRing,
+            NumberFont = this.fontCache.GetUi(Math.Max(7.0f, ringRect.Width * 0.342f), FontStyle.Bold),
+            LabelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold),
+            DrawFittedLabel = delegate(Graphics graphics, string text, Font font, Brush brush, RectangleF rect)
+            {
+                DrawClaudeRadarFittedText(graphics, text, font, brush, rect, StringAlignment.Center);
+            }
+        };
+        QuotaRingPresentation.DrawQuotaRing(g, ringRect, textRect, spec);
     }
 
     private void DrawClaudeEvenLayoutIqCell(Graphics g, RectangleF cellRect, ClaudeRadarModelMetric metric, float ringFillFactor)
@@ -1305,8 +1597,8 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
     }
 
     // Graphical status card per the user's sketch, mirroring CodexRadarForm.EvenRow.cs: a 24h
-    // batch dial as the main element plus a vertical per-service LED column (R=radar data,
-    // C=Claude status, U=Claude Code usage) at the right edge.
+    // batch dial as the main element plus a vertical per-service LED column (R/O/C/D) at the
+    // right edge. The C row accepts both Claude Statuspage and Claude Code usage alerts.
     private void DrawClaudeEvenRowStatusCell(Graphics g, RectangleF cellRect, ClaudeRadarSnapshot local)
     {
         if (cellRect.Width <= 0 || cellRect.Height <= 0)
@@ -1336,14 +1628,8 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
     private void DrawClaudeEvenRowServiceLedColumn(Graphics g, RectangleF rect, ClaudeRadarSnapshot local)
     {
-        string[] labels = new string[] { "R", "C", "U" };
-        string[] prefixes = new string[] { "radar", "claude", "usage" };
-        ClaudeRadarServiceState[] states = new ClaudeRadarServiceState[]
-        {
-            local == null ? ClaudeRadarServiceState.Unknown : local.DataState,
-            local == null ? ClaudeRadarServiceState.Unknown : local.ClaudeStatusState,
-            local == null ? ClaudeRadarServiceState.Unknown : local.ClaudeCodeState
-        };
+        string[] labels = new string[] { "R", "O", "C", "D" };
+        string[] prefixes = new string[] { "radar", "openai", "claude", "deepseek" };
         List<ClaudeServiceAlertCandidate> candidates = GetClaudeApiServiceAlertCandidates(local);
 
         float rowHeight = rect.Height / labels.Length;
@@ -1352,15 +1638,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         for (int i = 0; i < labels.Length; i++)
         {
             Color ledColor = DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245);
-            if (states[i] == ClaudeRadarServiceState.Normal)
-            {
-                ledColor = DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245);
-            }
-            else if (states[i] == ClaudeRadarServiceState.Unknown)
-            {
-                ledColor = DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
-            }
-
+            bool checking = false;
             for (int c = 0; candidates != null && c < candidates.Count; c++)
             {
                 string key = candidates[c].Key ?? string.Empty;
@@ -1370,10 +1648,19 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
                 }
 
                 ledColor = candidates[c].Color;
-                break;
+                checking = key.IndexOf(":checking", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!checking)
+                {
+                    break;
+                }
             }
 
-            if (local != null && local.RequestRunning && (this.renderTickCount & 1) == 0)
+            if (checking && (this.renderTickCount & 1) == 0)
+            {
+                ledColor = DesignTokens.WithAlpha(ledColor, 104);
+            }
+
+            if (!checking && local != null && local.RequestRunning && (this.renderTickCount & 1) == 0)
             {
                 ledColor = DesignTokens.WithAlpha(ledColor, 104);
             }
@@ -1886,11 +2173,12 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        // Brand first (leftmost), matching the Codex window's band order.
+        // Brand first (leftmost), matching the shared Codex window's Claude-mode band order.
         string[] texts = new string[]
         {
             "Claude",
             GetClaudeBottomRatingDisplayText(local),
+            DeepSeekBalanceMonitor.FormatDisplayText(DeepSeekBalanceMonitor.GetSnapshot()),
             GetClaudeBottomModelDisplayText(local)
         };
 
@@ -1958,9 +2246,63 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         }
 
         AddClaudeServiceAlertCandidate(result, "radar", "Radar", local.DataState, FallbackText(local.ErrorMessage, local.ErrorCode));
-        AddClaudeServiceAlertCandidate(result, "claude", "Claude", local.ClaudeStatusState, string.Empty);
-        AddClaudeServiceAlertCandidate(result, "usage", "Usage", local.ClaudeCodeState, string.Empty);
+        AddOpenAiStatusAlertCandidate(result);
+        AddClaudeStatusAlertCandidate(result, local);
+        AddClaudeServiceAlertCandidate(result, "claude_code_usage", "Usage", local.ClaudeCodeState, string.Empty);
+        AddDeepSeekAlertCandidate(result);
         return GetDebouncedClaudeServiceAlertCandidates(result);
+    }
+
+    private void AddOpenAiStatusAlertCandidate(List<ClaudeServiceAlertCandidate> result)
+    {
+        if (IsOpenAiStatusRequestRunning() && GetOpenAiStatusState() != ClaudeRadarServiceState.Normal)
+        {
+            result.Add(new ClaudeServiceAlertCandidate(
+                "openai:checking",
+                "OpenAI",
+                "检测中",
+                DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245),
+                ClaudeRadarServiceState.Unknown));
+            return;
+        }
+
+        AddClaudeServiceAlertCandidate(result, "openai", "OpenAI", GetOpenAiStatusState(), string.Empty);
+    }
+
+    private void AddClaudeStatusAlertCandidate(List<ClaudeServiceAlertCandidate> result, ClaudeRadarSnapshot local)
+    {
+        StatuspageSnapshot status = StatuspageMonitor.GetSnapshot(StatuspageMonitor.ClaudeServiceKey);
+        ClaudeRadarServiceState state = local == null
+            ? ConvertStatuspageHealthStateForClaude(status.State)
+            : local.ClaudeStatusState;
+        if (status.RequestRunning && state != ClaudeRadarServiceState.Normal)
+        {
+            result.Add(new ClaudeServiceAlertCandidate(
+                "claude:checking",
+                "Claude",
+                "检测中",
+                DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245),
+                ClaudeRadarServiceState.Unknown));
+            return;
+        }
+
+        AddClaudeServiceAlertCandidate(result, "claude", "Claude", state, string.Empty);
+    }
+
+    private void AddDeepSeekAlertCandidate(List<ClaudeServiceAlertCandidate> result)
+    {
+        ColorlessDeepSeekAlert alert = DeepSeekBalanceMonitor.BuildAlert();
+        if (alert == null)
+        {
+            return;
+        }
+
+        result.Add(new ClaudeServiceAlertCandidate(
+            alert.Key,
+            alert.Name,
+            alert.Reason,
+            GetDeepSeekApiAlertColor(alert.Snapshot),
+            GetDeepSeekAlertState(alert.Snapshot)));
     }
 
     private void AddClaudeServiceAlertCandidate(
@@ -2007,88 +2349,62 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
     }
 
     private static List<ClaudeServiceAlertCandidate> ApplyClaudeServiceAlertDebounce(
-        Dictionary<string, ClaudeServiceAlertDebounceState> states,
+        Dictionary<string, ServiceAlertDebounceState> states,
         List<ClaudeServiceAlertCandidate> candidates,
         DateTime nowUtc,
         TimeSpan debounceWindow)
     {
-        if (states == null)
-        {
-            return CloneClaudeServiceAlertCandidates(candidates);
-        }
-
         List<ClaudeServiceAlertCandidate> source = candidates ?? new List<ClaudeServiceAlertCandidate>();
-        List<ClaudeServiceAlertCandidate> result = new List<ClaudeServiceAlertCandidate>();
-        HashSet<string> seenServiceKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
+        List<ServiceAlertCandidate> sharedCandidates = new List<ServiceAlertCandidate>();
         for (int i = 0; i < source.Count; i++)
         {
             ClaudeServiceAlertCandidate candidate = source[i];
+            if (candidate != null)
+            {
+                sharedCandidates.Add(new ServiceAlertCandidate
+                {
+                    Key = candidate.Key ?? string.Empty,
+                    Name = candidate.Name ?? string.Empty,
+                    Reason = candidate.Reason ?? string.Empty,
+                    State = candidate.State.ToString(),
+                    Color = candidate.Color,
+                    Checking = (candidate.Key ?? string.Empty).IndexOf(":checking", StringComparison.OrdinalIgnoreCase) >= 0
+                });
+            }
+        }
+
+        List<ServiceAlertCandidate> debounced = ServiceAlertDebouncer.Apply(
+            states,
+            sharedCandidates,
+            nowUtc,
+            debounceWindow,
+            false);
+        List<ClaudeServiceAlertCandidate> result = new List<ClaudeServiceAlertCandidate>();
+        for (int i = 0; i < debounced.Count; i++)
+        {
+            ServiceAlertCandidate candidate = debounced[i];
             if (candidate == null)
             {
                 continue;
             }
 
-            string serviceKey = GetClaudeServiceAlertKey(candidate.Key);
-            if (string.IsNullOrWhiteSpace(serviceKey))
-            {
-                result.Add(CloneClaudeServiceAlertCandidate(candidate));
-                continue;
-            }
-
-            seenServiceKeys.Add(serviceKey);
-            string signature = BuildClaudeServiceAlertSignature(candidate);
-            ClaudeServiceAlertDebounceState state;
-            if (!states.TryGetValue(serviceKey, out state) || state == null)
-            {
-                state = new ClaudeServiceAlertDebounceState();
-                states[serviceKey] = state;
-            }
-
-            if (!string.Equals(state.Signature, signature, StringComparison.Ordinal))
-            {
-                // A new error must survive the debounce window before it replaces the visible
-                // stable state. Recovery is handled by removing unseen service keys below.
-                state.Signature = signature;
-                state.FirstSeenUtc = nowUtc;
-                state.ActiveCandidate = null;
-            }
-
-            if (state.ActiveCandidate != null)
-            {
-                result.Add(CloneClaudeServiceAlertCandidate(state.ActiveCandidate));
-                continue;
-            }
-
-            if (nowUtc - state.FirstSeenUtc >= debounceWindow)
-            {
-                state.ActiveCandidate = CloneClaudeServiceAlertCandidate(candidate);
-                result.Add(CloneClaudeServiceAlertCandidate(candidate));
-            }
-        }
-
-        if (seenServiceKeys.Count == 0)
-        {
-            states.Clear();
-        }
-        else
-        {
-            List<string> staleKeys = new List<string>();
-            foreach (string key in states.Keys)
-            {
-                if (!seenServiceKeys.Contains(key))
-                {
-                    staleKeys.Add(key);
-                }
-            }
-
-            for (int i = 0; i < staleKeys.Count; i++)
-            {
-                states.Remove(staleKeys[i]);
-            }
+            result.Add(new ClaudeServiceAlertCandidate(
+                candidate.Key ?? string.Empty,
+                candidate.Name ?? string.Empty,
+                candidate.Reason ?? string.Empty,
+                candidate.Color,
+                ParseClaudeServiceAlertState(candidate.State)));
         }
 
         return result;
+    }
+
+    private static ClaudeRadarServiceState ParseClaudeServiceAlertState(string state)
+    {
+        ClaudeRadarServiceState parsed;
+        return Enum.TryParse(state ?? string.Empty, true, out parsed)
+            ? parsed
+            : ClaudeRadarServiceState.Unknown;
     }
 
     private static string GetClaudeServiceAlertKey(string key)
@@ -2182,6 +2498,191 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             default:
                 return DesignTokens.White(210);
         }
+    }
+
+    private static ClaudeRadarServiceState GetDeepSeekAlertState(DeepSeekBalanceSnapshot snapshot)
+    {
+        if (snapshot == null)
+        {
+            return ClaudeRadarServiceState.Unknown;
+        }
+
+        if (snapshot.ServiceRequestRunning && !snapshot.ServiceKnown)
+        {
+            return ClaudeRadarServiceState.Unknown;
+        }
+
+        if (snapshot.ServiceKnown && snapshot.ServiceIsAvailable)
+        {
+            return ClaudeRadarServiceState.Normal;
+        }
+
+        string errorCode = snapshot.ServiceErrorCode ?? string.Empty;
+        if (string.Equals(errorCode, "PARSE", StringComparison.OrdinalIgnoreCase))
+        {
+            return ClaudeRadarServiceState.Incomplete;
+        }
+
+        if (snapshot.ServiceKnown && !snapshot.ServiceIsAvailable)
+        {
+            return ClaudeRadarServiceState.Unavailable;
+        }
+
+        if (string.Equals(errorCode, "NET", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(errorCode, "ERROR", StringComparison.OrdinalIgnoreCase))
+        {
+            return ClaudeRadarServiceState.Unreachable;
+        }
+
+        return string.IsNullOrWhiteSpace(errorCode) ? ClaudeRadarServiceState.Unknown : ClaudeRadarServiceState.Unavailable;
+    }
+
+    private static Color GetDeepSeekApiAlertColor(DeepSeekBalanceSnapshot snapshot)
+    {
+        if (snapshot == null)
+        {
+            return DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
+        }
+
+        if (snapshot.ServiceRequestRunning && !snapshot.ServiceKnown)
+        {
+            return DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245);
+        }
+
+        string errorCode = snapshot.ServiceErrorCode ?? string.Empty;
+        if (string.Equals(errorCode, "NET", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(errorCode, "ERROR", StringComparison.OrdinalIgnoreCase))
+        {
+            return DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245);
+        }
+
+        if (string.Equals(errorCode, "PARSE", StringComparison.OrdinalIgnoreCase))
+        {
+            return DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
+        }
+
+        if (string.Equals(errorCode, "429", StringComparison.OrdinalIgnoreCase) ||
+            IsDeepSeekServerErrorCode(errorCode) ||
+            (snapshot.ServiceKnown && !snapshot.ServiceIsAvailable))
+        {
+            return DesignTokens.WithAlpha(DesignTokens.Colors.WarningDeep, 245);
+        }
+
+        return DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245);
+    }
+
+    private static bool IsDeepSeekServerErrorCode(string errorCode)
+    {
+        int statusCode;
+        return int.TryParse(errorCode ?? string.Empty, NumberStyles.Integer, CultureInfo.InvariantCulture, out statusCode) &&
+            statusCode >= 500;
+    }
+
+    private static ClaudeRadarServiceState TryReadOpenAiStatus(WidgetSettings settings)
+    {
+        string aiBlockReason;
+        if (AiRequestProtection.ShouldBlock(settings, OpenAiStatusUrl, out aiBlockReason))
+        {
+            return ClaudeRadarServiceState.Unavailable;
+        }
+
+        try
+        {
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+        }
+        catch
+        {
+        }
+
+        string url = OpenAiStatusUrl + "?t=" + DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture);
+        HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+        request.Method = "GET";
+        request.Accept = "application/json,text/plain,*/*";
+        request.UserAgent = ProductIdentity.UserAgent;
+        request.Timeout = OpenAiStatusTimeoutMs;
+        request.ReadWriteTimeout = OpenAiStatusTimeoutMs;
+        request.Headers["Cache-Control"] = "no-store, no-cache";
+        request.Headers["Pragma"] = "no-cache";
+
+        try
+        {
+            using (WebResponse response = request.GetResponse())
+            {
+                HttpWebResponse httpResponse = response as HttpWebResponse;
+                if (httpResponse != null &&
+                    ((int)httpResponse.StatusCode < 200 || (int)httpResponse.StatusCode >= 300))
+                {
+                    return ClaudeRadarServiceState.Unavailable;
+                }
+
+                using (Stream stream = response.GetResponseStream())
+                {
+                    if (stream == null)
+                    {
+                        return ClaudeRadarServiceState.Unavailable;
+                    }
+
+                    using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
+                    {
+                        string content = reader.ReadToEnd();
+                        JavaScriptSerializer serializer = new JavaScriptSerializer();
+                        Dictionary<string, object> root =
+                            serializer.DeserializeObject(content) as Dictionary<string, object>;
+                        Dictionary<string, object> status = ReadJsonObject(root, "status");
+                        string indicator = ReadJsonString(status, "indicator").Trim();
+                        if (string.Equals(indicator, "none", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return ClaudeRadarServiceState.Normal;
+                        }
+
+                        if (string.Equals(indicator, "minor", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return ClaudeRadarServiceState.Unavailable;
+                        }
+
+                        if (string.Equals(indicator, "major", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(indicator, "critical", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return ClaudeRadarServiceState.Unavailable;
+                        }
+
+                        return ClaudeRadarServiceState.Unavailable;
+                    }
+                }
+            }
+        }
+        catch (WebException)
+        {
+            return ClaudeRadarServiceState.Unreachable;
+        }
+        catch
+        {
+            return ClaudeRadarServiceState.Unreachable;
+        }
+    }
+
+    private static Dictionary<string, object> ReadJsonObject(Dictionary<string, object> obj, string key)
+    {
+        if (obj == null || string.IsNullOrWhiteSpace(key))
+        {
+            return null;
+        }
+
+        object value;
+        return obj.TryGetValue(key, out value) ? value as Dictionary<string, object> : null;
+    }
+
+    private static string ReadJsonString(Dictionary<string, object> obj, string key)
+    {
+        if (obj == null || string.IsNullOrWhiteSpace(key))
+        {
+            return string.Empty;
+        }
+
+        object value;
+        return obj.TryGetValue(key, out value)
+            ? Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty
+            : string.Empty;
     }
 
     private void GetClaudeModelIqUpdateStatusText(ClaudeRadarSnapshot local, out string text, out Color color)
@@ -2654,43 +3155,6 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
     private static int ClampEfficiencyPercent(int value)
     {
         return Math.Max(0, Math.Min(200, value));
-    }
-
-    private static Color GetClaudeQuotaColor(int percent)
-    {
-        if (percent >= 80)
-        {
-            return DesignTokens.WithAlpha(DesignTokens.Colors.QuotaGood, 235);
-        }
-
-        if (percent >= 30)
-        {
-            return DesignTokens.WithAlpha(DesignTokens.Colors.WarningSoft, 238);
-        }
-
-        if (percent <= 5)
-        {
-            return DesignTokens.WithAlpha(DesignTokens.Colors.QuotaDanger, 238);
-        }
-
-        return DesignTokens.WithAlpha(DesignTokens.Colors.WarningDeep, 238);
-    }
-
-    private static Color GetClaudeQuotaRingNumberColor(Color fallbackColor, bool anySupportedAppRunning, bool quotaValueKnown)
-    {
-        if (!quotaValueKnown)
-        {
-            return fallbackColor;
-        }
-
-        return anySupportedAppRunning
-            ? DesignTokens.White(246)
-            : DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
-    }
-
-    private static Color GetClaudeQuotaConsumptionRingColor()
-    {
-        return DesignTokens.WithAlpha(GetClaudeRadarLightGreen(), 242);
     }
 
     private static Color GetClaudeRadarLightGreen()
@@ -3345,6 +3809,9 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         ClaudeRadarQuotaLineSnapshot quotaLine = local.QuotaLine ?? ClaudeRadarQuotaLineSnapshot.CreateDefault();
         ClaudeRadarCommunitySnapshot community = local.Community ?? ClaudeRadarCommunitySnapshot.CreateDefault();
         SoftwareRuntimePresenceSnapshot presence = GetLastRuntimePresenceSnapshot();
+        DeepSeekBalanceSnapshot deepSeekSnapshot = DeepSeekBalanceMonitor.GetSnapshot();
+        ClaudeRadarServiceState openAiState = GetOpenAiStatusState();
+        bool openAiRunning = IsOpenAiStatusRequestRunning();
         return string.Join(
             "|",
             new string[]
@@ -3365,6 +3832,9 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
                 local.RatingsState.ToString(),
                 local.ClaudeStatusState.ToString(),
                 local.ClaudeCodeState.ToString(),
+                openAiState.ToString(),
+                openAiRunning ? "or1" : "or0",
+                DeepSeekBalanceMonitor.BuildCacheSignature(deepSeekSnapshot),
                 local.SelectedModelKey ?? string.Empty,
                 local.SelectedModelName ?? string.Empty,
                 metric.Known ? "mk1" : "mk0",
@@ -3443,12 +3913,22 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.ClaudeRadarEnabled = true;
         settings.ClaudeRadarRandomTestEnabled = false;
-        settings.ClaudeRadarWidth = WidgetSettings.DefaultCodexRadarWidth;
-        settings.ClaudeRadarHeight = 116;
+        settings.ClaudeRadarWidth = settings.CodexRadarWidth;
+        settings.ClaudeRadarHeight = settings.CodexRadarHeight;
         settings.Normalize();
 
         using (ClaudeRadarForm form = new ClaudeRadarForm(settings))
         {
+            DeepSeekBalanceMonitor.SetSnapshotForTest(new DeepSeekBalanceSnapshot
+            {
+                ApiKeyConfigured = true,
+                Known = true,
+                IsAvailable = true,
+                Currency = "CNY",
+                BalanceCny = 473.36,
+                CheckedAtUtc = DateTime.UtcNow,
+                CheckedAtLocal = DateTime.Now
+            });
             // scale=2 matches a real 200%-DPI display; ClaudeRadarWidth/Height are already the real
             // physical pixel size (see GetDesiredSize() - no separate DPI multiplication happens at
             // runtime), so the canvas must match them 1:1 or overflow/truncation that only appears at
@@ -3479,6 +3959,23 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         }
     }
 
+    private static void RunClaudeCodeErrorCodeCloneSelfTest()
+    {
+        ClaudeRadarSnapshot snapshot = ClaudeRadarSnapshot.CreateDefault();
+        snapshot.ClaudeCodeState = ClaudeRadarServiceState.Unavailable;
+        snapshot.ClaudeCodeErrorCode = "NO_SETUP_TOKEN";
+        ClaudeRadarSnapshot clone = snapshot.Clone();
+        if (!string.Equals(clone.ClaudeCodeErrorCode, "NO_SETUP_TOKEN", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Claude Radar self-test failed: ClaudeCodeErrorCode did not survive Clone().");
+        }
+
+        if (!QuotaRingPresentation.IsSetupTokenMissing(clone.ClaudeCodeErrorCode))
+        {
+            throw new InvalidOperationException("Claude Radar self-test failed: setup-token-missing detection did not fire for a cloned snapshot.");
+        }
+    }
+
     internal static void RunRenderResourceSelfTest()
     {
         RunNotificationStateSelfTest();
@@ -3486,16 +3983,27 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         RunBottomLabelSelfTest();
         RunClaudeEvenRowDialFreshnessSelfTest();
         RunClaudeServiceAlertDebounceSelfTest();
+        RunClaudeCodeErrorCodeCloneSelfTest();
 
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.ClaudeRadarEnabled = true;
         settings.ClaudeRadarRandomTestEnabled = false;
-        settings.ClaudeRadarWidth = WidgetSettings.DefaultCodexRadarWidth;
-        settings.ClaudeRadarHeight = 116;
+        settings.ClaudeRadarWidth = settings.CodexRadarWidth;
+        settings.ClaudeRadarHeight = settings.CodexRadarHeight;
         settings.Normalize();
 
         using (ClaudeRadarForm form = new ClaudeRadarForm(settings))
         {
+            DeepSeekBalanceMonitor.SetSnapshotForTest(new DeepSeekBalanceSnapshot
+            {
+                ApiKeyConfigured = true,
+                Known = true,
+                IsAvailable = true,
+                Currency = "CNY",
+                BalanceCny = 473.36,
+                CheckedAtUtc = DateTime.UtcNow,
+                CheckedAtLocal = DateTime.Now
+            });
             form.SetLayerScale(1.0f);
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.ClaudeRadarWidth, settings.ClaudeRadarHeight);
@@ -3729,8 +4237,8 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
     private static void RunClaudeServiceAlertDebounceSelfTest()
     {
-        Dictionary<string, ClaudeServiceAlertDebounceState> states =
-            new Dictionary<string, ClaudeServiceAlertDebounceState>(StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, ServiceAlertDebounceState> states =
+            new Dictionary<string, ServiceAlertDebounceState>(StringComparer.OrdinalIgnoreCase);
         DateTime start = new DateTime(2026, 7, 7, 0, 0, 0, DateTimeKind.Utc);
         List<ClaudeServiceAlertCandidate> raw = new List<ClaudeServiceAlertCandidate>
         {
@@ -3985,8 +4493,8 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         snapshot.SelectedModel.EfficiencyText = "高效";
         snapshot.Quota.FiveHourPercent = 88;
         snapshot.Quota.WeeklyPercent = 93;
-        snapshot.Quota.FiveHourResetText = "20:30";
-        snapshot.Quota.WeeklyResetText = "07/08";
+        snapshot.Quota.FiveHourResetText = "20:30 重置";
+        snapshot.Quota.WeeklyResetText = "7月8日 16:00 重置";
         snapshot.QuotaLine.CurrentValue = 1840;
         snapshot.QuotaLine.PreviousKnown = true;
         snapshot.QuotaLine.PreviousValue = 1760;

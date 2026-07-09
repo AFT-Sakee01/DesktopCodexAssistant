@@ -29,6 +29,7 @@ internal static class NativeMethods
     public const int WS_CHILD = 0x40000000;
     public const int WS_VISIBLE = 0x10000000;
     public const int WS_POPUP = unchecked((int)0x80000000);
+    public const int WS_THICKFRAME = 0x00040000;
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOMOVE = 0x0002;
@@ -54,6 +55,7 @@ internal static class NativeMethods
     public const uint EVENT_OBJECT_SHOW = 0x8002;
     public const uint EVENT_OBJECT_HIDE = 0x8003;
     public const uint EVENT_OBJECT_STATECHANGE = 0x800A;
+    public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
     public const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
     public const uint EVENT_OBJECT_PARENTCHANGE = 0x800F;
     public const uint EVENT_OBJECT_CLOAKED = 0x8017;
@@ -66,6 +68,7 @@ internal static class NativeMethods
     public static readonly Guid GUID_ACDC_POWER_SOURCE = new Guid("5d3e9a59-e9d5-4b00-a6bd-ff34ff516548");
     public static readonly Guid GUID_BATTERY_PERCENTAGE_REMAINING = new Guid("a7ad8041-b45a-4cae-87a3-eecbb468a9e1");
     public static readonly Guid GUID_POWERSCHEME_PERSONALITY = new Guid("245d8541-3943-4422-b025-13a784f679b7");
+    public static readonly Guid GUID_POWER_SAVING_STATUS = new Guid("e00958c0-c213-4ace-ac77-fecced2eeea5");
 
     private const uint WM_SPAWN_WORKER = 0x052C;
     private const uint SMTO_NORMAL = 0x0000;
@@ -154,6 +157,17 @@ internal static class NativeMethods
         public byte Data;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct SYSTEM_POWER_STATUS
+    {
+        public byte ACLineStatus;
+        public byte BatteryFlag;
+        public byte BatteryLifePercent;
+        public byte SystemStatusFlag;
+        public int BatteryLifeTime;
+        public int BatteryFullLifeTime;
+    }
+
     private delegate void WinEventProc(
         IntPtr hookHandle,
         uint eventId,
@@ -172,6 +186,9 @@ internal static class NativeMethods
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AttachConsole(int processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS status);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool DestroyIcon(IntPtr hIcon);
@@ -312,6 +329,26 @@ internal static class NativeMethods
         }
 
         return UnregisterPowerSettingNotification(handle);
+    }
+
+    public static bool TryGetBatterySaverStatus(out bool enabled)
+    {
+        enabled = false;
+        try
+        {
+            SYSTEM_POWER_STATUS status;
+            if (!GetSystemPowerStatus(out status))
+            {
+                return false;
+            }
+
+            enabled = status.SystemStatusFlag != 0;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public static bool TryRegisterEffectivePowerModeNotification(
@@ -667,6 +704,11 @@ internal static class NativeMethods
         public int ProcessId { get; set; }
         public string Title { get; set; }
         public string ClassName { get; set; }
+        public Rectangle Bounds { get; set; }
+        public Rectangle ScreenBounds { get; set; }
+        public bool IsMinimized { get; set; }
+        public bool IsMaximized { get; set; }
+        public bool IsFullscreen { get; set; }
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -1029,6 +1071,7 @@ internal static class NativeMethods
             AddHook(EVENT_OBJECT_SHOW);
             AddHook(EVENT_OBJECT_HIDE);
             AddHook(EVENT_OBJECT_STATECHANGE);
+            AddHook(EVENT_OBJECT_LOCATIONCHANGE);
             AddHook(EVENT_OBJECT_NAMECHANGE);
             AddHook(EVENT_OBJECT_PARENTCHANGE);
             AddHook(EVENT_OBJECT_CLOAKED);
@@ -2042,42 +2085,50 @@ internal static class NativeMethods
     public static List<ApplicationWindowInfo> EnumerateApplicationWindows(IntPtr ownHandle)
     {
         List<ApplicationWindowInfo> windows = new List<ApplicationWindowInfo>();
-        int ownProcessId = 0;
-        try
-        {
-            ownProcessId = Process.GetCurrentProcess().Id;
-        }
-        catch
-        {
-        }
-
         EnumWindows(delegate(IntPtr handle, IntPtr lParam)
         {
-            if (handle == IntPtr.Zero || handle == ownHandle)
+            ApplicationWindowInfo info;
+            if (TryGetApplicationWindowInfo(handle, ownHandle, out info))
             {
-                return true;
+                windows.Add(info);
             }
 
-            if (!IsWindowVisible(handle))
-            {
-                return true;
-            }
+            return true;
+        }, IntPtr.Zero);
 
-            if (GetWindow(handle, GW_OWNER) != IntPtr.Zero)
+        return windows;
+    }
+
+    public static bool TryGetApplicationWindowInfo(IntPtr handle, IntPtr ownHandle, out ApplicationWindowInfo info)
+    {
+        info = null;
+        if (handle == IntPtr.Zero || handle == ownHandle)
+        {
+            return false;
+        }
+
+        try
+        {
+            if (!IsWindowVisible(handle) || GetWindow(handle, GW_OWNER) != IntPtr.Zero)
             {
-                return true;
+                return false;
             }
 
             int exStyle = GetWindowLong(handle, GWL_EXSTYLE);
             if ((exStyle & WS_EX_TOOLWINDOW) != 0)
             {
-                return true;
+                return false;
             }
 
             string className = GetWindowClassName(handle);
             if (IsShellOrUtilityWindowClass(className))
             {
-                return true;
+                return false;
+            }
+
+            if (IsCurrentProcessWindow(handle) || IsSeelenUiWindow(handle))
+            {
+                return false;
             }
 
             uint processIdValue;
@@ -2092,18 +2143,13 @@ internal static class NativeMethods
                 }
                 else
                 {
-                    return true;
+                    return false;
                 }
             }
 
-            if (processId <= 0 || processId == ownProcessId)
+            if (processId <= 0 || IsUtilityWindowProcess(processId))
             {
-                return true;
-            }
-
-            if (IsUtilityWindowProcess(processId))
-            {
-                return true;
+                return false;
             }
 
             RECT rect;
@@ -2111,26 +2157,56 @@ internal static class NativeMethods
                 rect.Right - rect.Left < 32 ||
                 rect.Bottom - rect.Top < 32)
             {
-                return true;
+                return false;
             }
 
             string title = GetWindowTitle(handle);
             if (string.IsNullOrEmpty(title))
             {
-                return true;
+                return false;
             }
 
-            windows.Add(new ApplicationWindowInfo
+            Rectangle bounds = Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
+            Rectangle screenBounds = Screen.FromHandle(handle).Bounds;
+            bool isMinimized = IsIconic(handle);
+            bool isMaximized = IsZoomed(handle);
+            bool isFullscreen = IsApplicationWindowFullscreenForState(
+                GetWindowLong(handle, GWL_STYLE),
+                bounds,
+                screenBounds);
+            info = new ApplicationWindowInfo
             {
                 Handle = handle,
                 ProcessId = processId,
                 Title = title,
-                ClassName = className
-            });
+                ClassName = className,
+                Bounds = bounds,
+                ScreenBounds = screenBounds,
+                IsMinimized = isMinimized,
+                IsMaximized = isMaximized,
+                IsFullscreen = isFullscreen
+            };
             return true;
-        }, IntPtr.Zero);
+        }
+        catch
+        {
+            info = null;
+            return false;
+        }
+    }
 
-        return windows;
+    internal static bool IsApplicationWindowFullscreenForState(int styles, Rectangle bounds, Rectangle screenBounds)
+    {
+        if ((styles & WS_THICKFRAME) != 0)
+        {
+            return false;
+        }
+
+        const int Tolerance = 2;
+        return bounds.Left <= screenBounds.Left + Tolerance &&
+               bounds.Top <= screenBounds.Top + Tolerance &&
+               bounds.Right >= screenBounds.Right - Tolerance &&
+               bounds.Bottom >= screenBounds.Bottom - Tolerance;
     }
 
     private static bool TryGetHostedApplicationProcessId(IntPtr frameHandle, int frameProcessId, out int hostedProcessId)
@@ -4814,86 +4890,6 @@ internal static class NativeMethods
         }
 
         return progman;
-    }
-
-    public static bool IsForegroundWindowFullscreen(IntPtr ownHandle)
-    {
-        IntPtr foreground = GetForegroundWindow();
-        if (foreground == IntPtr.Zero || foreground == ownHandle)
-        {
-            return false;
-        }
-
-        if (!IsWindowVisible(foreground))
-        {
-            return false;
-        }
-
-        string className = GetWindowClassName(foreground);
-        if (string.Equals(className, "Progman", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(className, "WorkerW", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(className, "Shell_TrayWnd", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        RECT rect;
-        if (!GetWindowRect(foreground, out rect))
-        {
-            return false;
-        }
-
-        Rectangle bounds = Screen.FromHandle(foreground).Bounds;
-        const int Tolerance = 2;
-        return rect.Left <= bounds.Left + Tolerance &&
-               rect.Top <= bounds.Top + Tolerance &&
-               rect.Right >= bounds.Right - Tolerance &&
-               rect.Bottom >= bounds.Bottom - Tolerance;
-    }
-
-    public static bool IsForegroundWindowMaximizedOrFullscreen(IntPtr ownHandle)
-    {
-        IntPtr foreground = GetForegroundWindow();
-        if (foreground == IntPtr.Zero || foreground == ownHandle)
-        {
-            return false;
-        }
-
-        if (!IsWindowVisible(foreground))
-        {
-            return false;
-        }
-
-        if (IsCurrentProcessWindow(foreground) || IsSeelenUiWindow(foreground))
-        {
-            return false;
-        }
-
-        string className = GetWindowClassName(foreground);
-        if (string.Equals(className, "Progman", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(className, "WorkerW", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(className, "Shell_TrayWnd", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (IsZoomed(foreground))
-        {
-            return true;
-        }
-
-        RECT rect;
-        if (!GetWindowRect(foreground, out rect))
-        {
-            return false;
-        }
-
-        Rectangle bounds = Screen.FromHandle(foreground).Bounds;
-        const int Tolerance = 2;
-        return rect.Left <= bounds.Left + Tolerance &&
-               rect.Top <= bounds.Top + Tolerance &&
-               rect.Right >= bounds.Right - Tolerance &&
-               rect.Bottom >= bounds.Bottom - Tolerance;
     }
 
     public static bool IsLeftMouseButtonDown()

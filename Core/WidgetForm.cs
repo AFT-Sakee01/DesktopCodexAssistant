@@ -8,6 +8,7 @@ using System.Globalization;
 using System.IO;
 using System.Management;
 using System.Net.NetworkInformation;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -25,7 +26,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private const int SeelenDockPulseFallbackIntervalMs = 30 * 60 * 1000;
     private const int WinDRecoveryDelayMs = 2000;
     private const int PowerResumeRestartGuardSeconds = 30;
-    private const int ForegroundMaximizedCacheMs = 750;
     private static readonly string[] HardwareVendorPrefixes = new string[]
     {
         "Western Digital",
@@ -114,11 +114,12 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool manualForceHoverOpacityActive;
     private bool autoIdleHoverOpacityActive;
     private bool autoMaximizedHoverOpacityActive;
-    private bool cachedForegroundMaximizedOrFullscreen;
+    private bool operationRadialCoreAutoHideKeepAliveActive;
+    private bool autoHideKeepAliveActive;
+    private ApplicationWindowStateTracker applicationWindowStateTracker;
     private Point lastMouseActivityPosition;
     private bool lastMouseButtonDown;
     private DateTime lastMouseActivityUtc;
-    private DateTime cachedForegroundMaximizedUtc;
     private bool applyingAutomaticHoverOpacityState;
     private DateTime lastSettingsWriteUtc;
     private DateTime lastSampleDiagnosticUtc;
@@ -136,6 +137,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private IntPtr acDcPowerNotificationHandle;
     private IntPtr batteryPowerNotificationHandle;
     private IntPtr powerSchemeNotificationHandle;
+    private IntPtr energySaverNotificationHandle;
     private IntPtr effectivePowerModeNotificationHandle;
     private NativeMethods.EffectivePowerModeCallback effectivePowerModeCallback;
     private string pendingDisplayRecoveryReason = string.Empty;
@@ -195,6 +197,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
+        ApplyLayerScaleFromSettings(this.currentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
@@ -202,9 +205,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
         this.Opacity = 1.0;
-        this.MinimumSize = new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight);
-        this.MaximumSize = new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight);
-        this.Size = new Size(this.currentSettings.Width, this.currentSettings.Height);
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
+        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
+        this.Size = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(this.currentSettings.Width, this.currentSettings.Height));
         ApplicationIcon.ApplyTo(this);
         this.ContextMenuStrip = BuildContextMenu();
         BuildNotifyIcon();
@@ -222,6 +225,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     {
         base.OnShown(e);
         Program.LogInfo("Widget shown. Handle=0x" + this.Handle.ToInt64().ToString("X"));
+        StartApplicationWindowStateTracking();
         ApplyRuntimeSettings(this.currentSettings);
         PositionWidget();
 
@@ -256,11 +260,82 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             delegate { return PulseSeelenDockToFront("operation panel", false, false); },
             delegate { return PromptToggleAiRequestBlockingFromOperationPanel(); },
             delegate(bool enabled) { return SetAiRequestBlockingFromOperationPanel(enabled); },
-            delegate(bool enabled) { return SetCodexQuotaPlanFromOperationPanel(enabled); });
+            delegate(bool enabled) { return SetCodexQuotaPlanFromOperationPanel(enabled); },
+            delegate(string propertyName, bool enabled) { return SetBooleanSettingFromOperationPanel(propertyName, enabled); });
         this.operationForm.Show(this);
         this.timer.Start();
         UpdateSeelenDockPulseTimer();
         UpdateWinDRecoveryWatcher();
+    }
+
+    private void StartApplicationWindowStateTracking()
+    {
+        if (this.applicationWindowStateTracker != null || !this.IsHandleCreated)
+        {
+            return;
+        }
+
+        this.applicationWindowStateTracker =
+            new ApplicationWindowStateTracker(this.Handle, OnApplicationWindowStateEvent);
+    }
+
+    private void StopApplicationWindowStateTracking()
+    {
+        ApplicationWindowStateTracker tracker = this.applicationWindowStateTracker;
+        this.applicationWindowStateTracker = null;
+        if (tracker != null)
+        {
+            tracker.Dispose();
+        }
+    }
+
+    private void OnApplicationWindowStateEvent(uint eventId, IntPtr windowHandle)
+    {
+        if (this.formClosing || this.IsDisposed || !this.IsHandleCreated)
+        {
+            return;
+        }
+
+        if (this.InvokeRequired)
+        {
+            try
+            {
+                this.BeginInvoke((MethodInvoker)delegate
+                {
+                    ProcessApplicationWindowStateEvent(eventId, windowHandle);
+                });
+            }
+            catch (InvalidOperationException)
+            {
+            }
+
+            return;
+        }
+
+        ProcessApplicationWindowStateEvent(eventId, windowHandle);
+    }
+
+    private void ProcessApplicationWindowStateEvent(uint eventId, IntPtr windowHandle)
+    {
+        if (this.applicationWindowStateTracker == null)
+        {
+            return;
+        }
+
+        this.applicationWindowStateTracker.ProcessWindowEvent(eventId, windowHandle);
+        UpdateVisibilityForMode();
+        if (this.currentSettings != null && this.currentSettings.AutoHoverOpacityMaximizedEnabled)
+        {
+            UpdateAutomaticHoverOpacityTriggers();
+        }
+    }
+
+    private void RefreshApplicationWindowState()
+    {
+        if (this.applicationWindowStateTracker != null)
+        {
+            this.applicationWindowStateTracker.RefreshAll();
+        }
     }
 
     private void EnsureRadarChildWindows()
@@ -291,7 +366,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.codexRadarForm.SetSharedInteractionPolling(true);
         this.codexRadarForm.Show(this);
         this.codexRadarForm.ApplyRuntimeSettings(this.currentSettings);
-        if (this.hiddenForFullscreen)
+        if (ShouldHideFormForVisibilityMode(this.codexRadarForm))
         {
             this.codexRadarForm.SetHiddenForFullscreen(true);
         }
@@ -316,7 +391,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.claudeRadarForm.SetSharedInteractionPolling(true);
         this.claudeRadarForm.Show(this);
         this.claudeRadarForm.ApplyRuntimeSettings(this.currentSettings);
-        if (this.hiddenForFullscreen)
+        if (ShouldHideFormForVisibilityMode(this.claudeRadarForm))
         {
             this.claudeRadarForm.SetHiddenForFullscreen(true);
         }
@@ -387,6 +462,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 NativeMethods.GUID_POWERSCHEME_PERSONALITY);
         }
 
+        if (this.energySaverNotificationHandle == IntPtr.Zero)
+        {
+            this.energySaverNotificationHandle = NativeMethods.RegisterPowerSettingNotificationForWindow(
+                this.Handle,
+                NativeMethods.GUID_POWER_SAVING_STATUS);
+        }
+
         if (this.effectivePowerModeNotificationHandle == IntPtr.Zero)
         {
             NativeMethods.TryRegisterEffectivePowerModeNotification(
@@ -406,10 +488,12 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         NativeMethods.UnregisterPowerNotification(this.acDcPowerNotificationHandle);
         NativeMethods.UnregisterPowerNotification(this.batteryPowerNotificationHandle);
         NativeMethods.UnregisterPowerNotification(this.powerSchemeNotificationHandle);
+        NativeMethods.UnregisterPowerNotification(this.energySaverNotificationHandle);
         NativeMethods.UnregisterEffectivePowerModeNotification(this.effectivePowerModeNotificationHandle);
         this.acDcPowerNotificationHandle = IntPtr.Zero;
         this.batteryPowerNotificationHandle = IntPtr.Zero;
         this.powerSchemeNotificationHandle = IntPtr.Zero;
+        this.energySaverNotificationHandle = IntPtr.Zero;
         this.effectivePowerModeNotificationHandle = IntPtr.Zero;
 
         base.OnHandleDestroyed(e);
@@ -437,6 +521,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.hoverTimer.Stop();
         this.hoverTimer.Tick -= OnHoverTimerTick;
         this.hoverTimer.Dispose();
+        StopApplicationWindowStateTracking();
         DisposeSettingsWatcher();
         if (this.settingsForm != null)
         {
@@ -578,7 +663,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 typeof(NativeMethods.POWERBROADCAST_SETTING));
         if (setting.PowerSetting == NativeMethods.GUID_ACDC_POWER_SOURCE ||
             setting.PowerSetting == NativeMethods.GUID_BATTERY_PERCENTAGE_REMAINING ||
-            setting.PowerSetting == NativeMethods.GUID_POWERSCHEME_PERSONALITY)
+            setting.PowerSetting == NativeMethods.GUID_POWERSCHEME_PERSONALITY ||
+            setting.PowerSetting == NativeMethods.GUID_POWER_SAVING_STATUS)
         {
             RefreshAutomaticPerformanceMode("power setting change");
             return;
@@ -1041,7 +1127,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         if (skipWhenForegroundMaximizedOrFullscreen &&
-            NativeMethods.IsForegroundWindowMaximizedOrFullscreen(this.Handle))
+            IsAnyApplicationWindowMaximizedOrFullscreen())
         {
             Program.LogInfo("Seelen dock foreground pulse skipped because foreground window is maximized or fullscreen. Reason=" + reason);
             return false;
@@ -1170,6 +1256,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         {
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:reload_settings");
             ReloadSettingsIfChanged();
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:refresh_window_state");
+            RefreshApplicationWindowState();
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:update_visibility");
             UpdateVisibilityForMode();
             if (!this.hiddenForFullscreen &&
@@ -1458,8 +1546,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private Point CalculateLocation(Rectangle workArea)
     {
-        int left = this.currentSettings.LeftX;
-        int top = this.currentSettings.BottomY - this.Height + 1;
+        int left = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleMain, workArea, this.currentSettings.LeftX);
+        int bottom = this.currentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleMain, workArea, this.currentSettings.BottomY);
+        int top = bottom - this.Height + 1;
         left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
         return new Point(left, top);
@@ -1539,6 +1628,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         runtimeSettings.ManualHoverOpacityActive = false;
         runtimeSettings.AutoHoverOpacityIdleEnabled = false;
         runtimeSettings.AutoHoverOpacityMaximizedEnabled = false;
+        runtimeSettings.ResolutionCompatibilityModeEnabled = false;
         return runtimeSettings;
     }
 
@@ -1659,6 +1749,60 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 : "额度计划不会再自动暂停或恢复 goal。",
             ToolTipIcon.Info);
         return true;
+    }
+
+    internal bool SetBooleanSettingFromOperationPanel(string propertyName, bool enabled)
+    {
+        if (string.Equals(propertyName, "AiRequestProtectionManualBlockEnabled", StringComparison.Ordinal))
+        {
+            return SetAiRequestBlockingFromOperationPanel(enabled);
+        }
+
+        if (string.Equals(propertyName, "CodexQuotaPlanEnabled", StringComparison.Ordinal))
+        {
+            return SetCodexQuotaPlanFromOperationPanel(enabled);
+        }
+
+        try
+        {
+            PropertyInfo property = typeof(WidgetSettings).GetProperty(
+                propertyName,
+                BindingFlags.Instance | BindingFlags.Public);
+            if (property == null || property.PropertyType != typeof(bool) || !property.CanRead || !property.CanWrite)
+            {
+                ShowWindowsNotification(
+                    "设置切换失败",
+                    "未找到可切换的布尔设置：" + propertyName,
+                    ToolTipIcon.Warning);
+                return false;
+            }
+
+            WidgetSettings nextSettings = this.savedSettings == null
+                ? (this.currentSettings == null ? WidgetSettings.CreateDefaults() : this.currentSettings.Clone())
+                : this.savedSettings.Clone();
+            bool currentValue = (bool)property.GetValue(nextSettings, null);
+            if (currentValue == enabled)
+            {
+                return true;
+            }
+
+            property.SetValue(nextSettings, enabled, null);
+            SaveSettings(nextSettings);
+            ShowWindowsNotification(
+                enabled ? "设置已开启" : "设置已关闭",
+                propertyName,
+                ToolTipIcon.Info);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            ShowWindowsNotification(
+                "设置切换失败",
+                propertyName + " 保存失败。",
+                ToolTipIcon.Warning);
+            return false;
+        }
     }
 
     private void ShowAiQuickMenuFromOperationPanel()
@@ -1859,20 +2003,26 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         if (!nextSettings.AutoHoverOpacityMaximizedEnabled)
         {
             this.autoMaximizedHoverOpacityActive = false;
-            this.cachedForegroundMaximizedOrFullscreen = false;
-            this.cachedForegroundMaximizedUtc = DateTime.MinValue;
+        }
+
+        if (this.manualForceHoverOpacityActive || !nextSettings.OperationRadialCoreAutoHideKeepAliveEnabled)
+        {
+            SetOperationRadialCoreAutoHideKeepAliveActive(false);
         }
 
         nextSettings.ForceHoverOpacityActive = IsCombinedHoverOpacityActive();
         nextSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.currentSettings = nextSettings;
+        ApplyLayerScaleFromSettings(this.currentSettings);
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
+        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
         Program.ApplyPerformanceMode(this.currentSettings.PerformanceMode);
         UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:timers");
         ApplyPerformanceTimerIntervals();
         UpdateSeelenDockPulseTimer();
         UpdateWinDRecoveryWatcher();
 
-        Size desiredSize = new Size(this.currentSettings.Width, this.currentSettings.Height);
+        Size desiredSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(this.currentSettings.Width, this.currentSettings.Height));
         if (this.Size != desiredSize)
         {
             this.Size = desiredSize;
@@ -2165,6 +2315,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         DateTime nowUtc = DateTime.UtcNow;
         UpdateMouseActivityState(nowUtc);
+        bool keepAliveStateChanged = UpdateOperationRadialCoreAutoHideKeepAlive(nowUtc);
 
         bool idleActive = false;
         if (this.currentSettings.AutoHoverOpacityIdleEnabled)
@@ -2179,12 +2330,18 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         bool maximizedActive =
             this.currentSettings.AutoHoverOpacityMaximizedEnabled &&
-            IsForegroundWindowMaximizedOrFullscreenCached(nowUtc);
+            IsAnyApplicationWindowMaximizedOrFullscreen();
+
+        if (this.operationRadialCoreAutoHideKeepAliveActive)
+        {
+            idleActive = false;
+            maximizedActive = false;
+        }
 
         if (idleActive == this.autoIdleHoverOpacityActive &&
             maximizedActive == this.autoMaximizedHoverOpacityActive)
         {
-            return false;
+            return keepAliveStateChanged;
         }
 
         this.autoIdleHoverOpacityActive = idleActive;
@@ -2201,17 +2358,84 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return true;
     }
 
-    private bool IsForegroundWindowMaximizedOrFullscreenCached(DateTime nowUtc)
+    private bool UpdateOperationRadialCoreAutoHideKeepAlive(DateTime nowUtc)
     {
-        if (this.cachedForegroundMaximizedUtc != DateTime.MinValue &&
-            (nowUtc - this.cachedForegroundMaximizedUtc).TotalMilliseconds < ForegroundMaximizedCacheMs)
+        bool active = false;
+        if (this.currentSettings != null &&
+            this.currentSettings.OperationRadialCoreAutoHideKeepAliveEnabled &&
+            !this.manualForceHoverOpacityActive &&
+            this.operationForm != null &&
+            !this.operationForm.IsDisposed)
         {
-            return this.cachedForegroundMaximizedOrFullscreen;
+            active = this.operationForm.IsRadialCoreAutoHideKeepAliveActive();
         }
 
-        this.cachedForegroundMaximizedOrFullscreen = NativeMethods.IsForegroundWindowMaximizedOrFullscreen(this.Handle);
-        this.cachedForegroundMaximizedUtc = nowUtc;
-        return this.cachedForegroundMaximizedOrFullscreen;
+        if (active)
+        {
+            this.lastMouseActivityPosition = Cursor.Position;
+            this.lastMouseButtonDown = NativeMethods.IsAnyMouseButtonDown();
+            this.lastMouseActivityUtc = nowUtc;
+        }
+
+        return SetOperationRadialCoreAutoHideKeepAliveActive(active);
+    }
+
+    private bool SetOperationRadialCoreAutoHideKeepAliveActive(bool active)
+    {
+        if (this.operationRadialCoreAutoHideKeepAliveActive == active)
+        {
+            return false;
+        }
+
+        this.operationRadialCoreAutoHideKeepAliveActive = active;
+        SetAutoHideKeepAliveActive(active);
+
+        if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
+        {
+            this.codexRadarForm.SetAutoHideKeepAliveActive(active);
+        }
+
+        if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
+        {
+            this.powerThermalForm.SetAutoHideKeepAliveActive(active);
+        }
+
+        if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
+        {
+            this.networkMonitorForm.SetAutoHideKeepAliveActive(active);
+        }
+
+        if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
+        {
+            this.connectionCheckForm.SetAutoHideKeepAliveActive(active);
+        }
+
+        return true;
+    }
+
+    private void SetAutoHideKeepAliveActive(bool active)
+    {
+        if (this.autoHideKeepAliveActive == active)
+        {
+            return;
+        }
+
+        this.autoHideKeepAliveActive = active;
+        if (active)
+        {
+            this.hoverOpacityDelayState.Reset();
+            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
+        }
+    }
+
+    private bool IsAnyApplicationWindowMaximizedOrFullscreen()
+    {
+        if (this.applicationWindowStateTracker == null)
+        {
+            return false;
+        }
+
+        return this.applicationWindowStateTracker.HasMaximizedOrFullscreenWindow();
     }
 
     private void UpdateMouseActivityState(DateTime nowUtc)
@@ -2368,7 +2592,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.hiddenForFullscreen,
             this.Visible,
             ref this.reverseHoverRevealUntilUtc,
-            this.hoverOpacityDelayState);
+            this.hoverOpacityDelayState,
+            this.autoHideKeepAliveActive);
     }
 
     private bool IsHoverOpacityRuntimeEnabled()
@@ -2449,7 +2674,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
             if (hiddenChanged)
             {
-                SetChildWindowsHiddenForFullscreen(false);
+                ApplyChildWindowsVisibilityMode();
                 ApplyPerformanceTimerIntervals();
                 UpdateHoverAnimationTimer();
             }
@@ -2458,12 +2683,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        bool foregroundWindowFullscreen = NativeMethods.IsForegroundWindowFullscreen(this.Handle);
-        bool hideForFullscreen =
-            this.currentSettings.VisibilityMode == WidgetVisibilityMode.HideWhenFullscreen &&
-            foregroundWindowFullscreen;
+        bool hideForVisibilityMode = ShouldHideFormForVisibilityMode(this);
 
-        if (hideForFullscreen)
+        if (hideForVisibilityMode)
         {
             bool hiddenChanged = !this.hiddenForFullscreen;
             this.hiddenForFullscreen = true;
@@ -2474,10 +2696,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
             if (hiddenChanged)
             {
-                // Propagate only state transitions; repeated notifications force every child to redraw.
-                SetChildWindowsHiddenForFullscreen(true);
+                ApplyChildWindowsVisibilityMode();
                 ApplyPerformanceTimerIntervals();
                 UpdateHoverAnimationTimer();
+            }
+            else
+            {
+                ApplyChildWindowsVisibilityMode();
             }
 
             return;
@@ -2498,42 +2723,71 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         if (shownChanged)
         {
-            SetChildWindowsHiddenForFullscreen(false);
             ApplyPerformanceTimerIntervals();
             UpdateHoverAnimationTimer();
         }
+
+        ApplyChildWindowsVisibilityMode();
     }
 
-    private void SetChildWindowsHiddenForFullscreen(bool hidden)
+    private bool ShouldHideFormForVisibilityMode(Form form)
+    {
+        if (this.currentSettings == null ||
+            this.globalLayoutEditActive ||
+            this.applicationWindowStateTracker == null ||
+            form == null ||
+            form.IsDisposed)
+        {
+            return false;
+        }
+
+        Rectangle screenBounds = form.IsHandleCreated
+            ? Screen.FromHandle(form.Handle).Bounds
+            : Screen.FromControl(form).Bounds;
+        Rectangle formBounds = form.IsHandleCreated
+            ? new Rectangle(form.Left, form.Top, form.Width, form.Height)
+            : form.Bounds;
+        bool ignoreOverlapForTarget =
+            this.currentSettings.VisibilityOverlapIgnoresOperationPanelEnabled &&
+            this.currentSettings.VisibilityMode == WidgetVisibilityMode.HideWhenOverlapped &&
+            object.ReferenceEquals(form, this.operationForm);
+        return this.applicationWindowStateTracker.ShouldHideForVisibilityMode(
+            this.currentSettings.VisibilityMode,
+            formBounds,
+            screenBounds,
+            ignoreOverlapForTarget);
+    }
+
+    private void ApplyChildWindowsVisibilityMode()
     {
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
         {
-            this.codexRadarForm.SetHiddenForFullscreen(hidden);
+            this.codexRadarForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.codexRadarForm));
         }
 
         if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
         {
-            this.claudeRadarForm.SetHiddenForFullscreen(hidden);
+            this.claudeRadarForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.claudeRadarForm));
         }
 
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
         {
-            this.powerThermalForm.SetHiddenForFullscreen(hidden);
+            this.powerThermalForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.powerThermalForm));
         }
 
         if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
         {
-            this.networkMonitorForm.SetHiddenForFullscreen(hidden);
+            this.networkMonitorForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.networkMonitorForm));
         }
 
         if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
         {
-            this.connectionCheckForm.SetHiddenForFullscreen(hidden);
+            this.connectionCheckForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.connectionCheckForm));
         }
 
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
-            this.operationForm.SetHiddenForFullscreen(hidden);
+            this.operationForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.operationForm));
         }
     }
 

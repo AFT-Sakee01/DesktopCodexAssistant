@@ -1,6 +1,6 @@
 # Codex 监测窗口技术说明
 
-适用版本：1.0.4.58
+适用版本：1.0.4.81
 
 ## 1. 范围
 
@@ -17,20 +17,22 @@
 
 - 上环：时间效率
 - 下环：Token 效率
-- 底部元信息：当前 `EvenRow` 布局在左下方显示 `RC:xxx`、`DS:...`、`LLM:...` 和软件族品牌文本 `Codex` / `Claude`
-- 右侧状态：Model IQ 时钟圆盘和 `R/O/C/D` 服务 LED 列。时钟圆盘显示网页数据标签和可配置时间；LED 分别表示 Radar、OpenAI/额度、Claude、DeepSeek（配置 API key 后显示）的服务状态。
+- 底部元信息：当前 `EvenRow` 布局在左下方显示软件族品牌文本 `Codex` / `Claude`、`RC:xxx`、模式辅助项和 `LLM:...`；辅助项在 Codex 模式显示重置卡 `RS:n 剩余时间`，在 Claude 模式显示 DeepSeek 余额 `DS:￥n`
+- 右侧状态：Model IQ 时钟圆盘和服务 LED 列。时钟圆盘显示网页数据标签和可配置时间；Codex 与 Claude 模式都显示 `R/O/C/D`，其中 `D` 始终表示 DeepSeek 官方 API 可达性，和余额 key 是否配置分离。
 
 右侧额度区：
 
 - 5 小时余额环
 - 周余额环
 - 速蹬窗口开启且结束时间未过期时，额度重置文字在金色 `速蹬！`、原白色正常额度重置时间/日期、黄色额外重置目标时间/日期之间轮播；额外目标来自网站 `closed_at` 或首页 `data-window-closes-at`，5 小时行显示时间、周行显示日期；`closed_at` 早于当前本地时间时本地快照强制视为已关闭；RSS 重置保护态右侧显示金色 `已重置`；额度环内数字有已知数值且 Codex/Claude 任一受支持本地软件运行时为白色，两者都未运行或数值未知时为灰色
-- 中间健康/额度雷达块：额度雷达线移动到 IQ 模块左侧，取代原灰色分割竖线；Codex 模式使用 CodexRadar 公开额度雷达，Claude 模式把 `ClaudeRadarSnapshot.QuotaLine` 转换为同一 `CodexQuotaRadarSnapshot` 代表线；当前 `EvenRow` 状态格显示 API 状态摘要、网页数据标签和更新时间，左下方显示 `RC/DS/LLM/软件族品牌` 元信息
+- 中间健康/额度雷达块：额度雷达线移动到 IQ 模块左侧，取代原灰色分割竖线；Codex 模式使用 CodexRadar 公开额度雷达，Claude 模式把 `ClaudeRadarSnapshot.QuotaLine` 转换为同一 `CodexQuotaRadarSnapshot` 代表线；当前 `EvenRow` 状态格显示 API 状态摘要、网页数据标签和更新时间，左下方显示 `软件族品牌/RC/辅助项/LLM` 元信息
 - 右侧 IQ 环和 `增智`、`常态`、`降智` 状态字样
 
 ```mermaid
 flowchart LR
     ChatGPTUsage["ChatGPT usage provider"] --> Quota["Codex 额度快照"]
+    ResetCredits["ChatGPT reset credits"] --> BottomInfo["EvenRow 底部 Codex RS"]
+    DeepSeek["DeepSeek balance"] --> BottomInfoClaude["EvenRow 底部 Claude DS"]
     Local["~/.codex/sessions/*.jsonl"] --> Quota
     ClaudeUsage["Claude Code OAuth usage API"] --> ClaudeQuota["Claude Code 5h/7d 用量快照"]
     Radar["current.json / 首页 HTML 分层回退"] --> Model["模型 IQ / Token效率 / 时间效率 / 速蹬窗口"]
@@ -43,6 +45,7 @@ flowchart LR
     ClaudeRadarLine --> Merge
     Reset --> Merge
     ClaudeHealth --> Merge
+    DeepSeek --> Merge
     Settings["settings.ini / 测试覆盖"] --> Merge
     Merge --> Render["分层窗口绘制"]
 ```
@@ -56,7 +59,7 @@ flowchart LR
 1. 检查显示器、会话和电源挂起状态。
 2. 处理网络可用性失效标记。
 3. 判断本地额度是否到期。
-4. 判断北京时间日界线驱动的 Radar、Claude 健康检查、Claude Code 用量检查和 DeepSeek 余额检查是否到期；旧五阶段连接诊断已删除，不参与调度。
+4. 判断北京时间日界线驱动的 Radar、进程级 Statuspage 健康检查、Claude Code 用量检查和 DeepSeek 官方 API/余额检查是否到期；旧五阶段连接诊断已删除，不参与调度。
 5. 根据设置计算窗口尺寸和防烧屏微位移。
 6. 仅在尺寸、位置或本地秒变化时执行常规重绘。
 7. 重新计算下一次 timer 间隔。
@@ -76,7 +79,7 @@ flowchart LR
 1. 清除暂停状态。
 2. 使额度刷新立即到期。
 3. 重新安排 Claude 状态、Codex/Claude 用量和 `current.json` 的错峰启动时间。
-4. 按需安排 DeepSeek 余额检查。
+4. 安排 DeepSeek 官方 API 状态检查；有 key 且显示 Claude 余额视图时同一 monitor 读取余额。
 5. 使渲染缓存失效。
 6. 重新定位并绘制窗口。
 
@@ -101,7 +104,8 @@ flowchart LR
 
 - `Auto`：先读取 `SoftwareRuntimePresence` 的 Codex/Claude 进程快照。两者都未运行时保持上一次有效软件并跳过前台检测；只有一者运行时直接选择该软件；只有两者都运行时才按前台窗口标题/进程名识别 `codex` 或 `claude`，忽略本程序自身窗口；无法识别时保持上一次有效软件，初始回退到 `CODEX`。
 - `Codex`：优先使用 ChatGPT usage provider API；旧本地 Codex session 日志和 `quota.ini` 作为 fallback。额度数字灰显由共享 Codex/Claude 运行态决定：只有两者都未运行或无数值时灰显，任一受支持程序运行且有数值时保持白色；保留 RSS 重置保护、速蹬窗口提示和消耗环逻辑；窗口绘制 3 px 深蓝色内描边，底部显示蓝色斜体 `Codex`。
-- `Claude`：通过 `ClaudeCodeUsageScheduler` 与独立 Claude Radar 共用一次 Claude Code usage 刷新，默认读取本地 statusline quota cache，显式配置 setup-token 时才可能触达 Claude OAuth usage fallback；成功快照会写入独立的 `%LOCALAPPDATA%\DesktopCodexAssistant\claude-quota.ini`，并复用与 CODEX 相同的额度应用、消耗环判定、重置保护和 `quota-decision-history.jsonl` 日志路径，避免两个软件共用同一个 `quota.ini` 串扰；窗口绘制 3 px 橙色内描边，底部显示橙色粗体 `Claude`。
+- `Claude`：通过 `ClaudeCodeUsageScheduler` 与独立 Claude Radar 共用一次 Claude Code usage 刷新，默认读取本地 statusline quota cache，显式配置 setup-token 时才可能触达 Claude OAuth usage fallback；成功快照会写入独立的 `%LOCALAPPDATA%\DesktopCodexAssistant\claude-quota.ini`，并复用与 CODEX 相同的额度应用、消耗环判定和 `quota-decision-history.jsonl` 日志路径，但运行态、额度来源、消耗环基线和 Radar 网站健康状态均写入 Claude 专属 `RadarFamilyRuntimeState`，不会消费 Codex RSS/速蹬/额外重置保护；窗口绘制 3 px 橙色内描边，底部显示橙色粗体 `Claude`。
+- Claude Radar/Claude Code 的 reset 文本通过共享 `ClaudeRadarResetTextFormatter` 解析，长中文网站文案在共享窗口和独立 Claude 窗口中统一显示为 `HH:mm` / `MM/dd`。
 
 ChatGPT usage provider 读取 `used_percent` / `used_percentage` / `utilization` 和 `reset_at` / `resets_at`，并把 provider 快照保留约 15 分钟；过期后即使上一次 provider 成功，也允许 session fallback 更新显示，避免服务端接口不可用时长期冻结旧值。`used_percent` 与 `used_percentage` 按百分数处理，`1` 表示已用 1%；只有 `utilization` 在 0–1 区间时按比例换算，`0.01` 表示已用 1%。provider 单次样本如果把 5 小时或周余额从高位直接打到 `0` 且 reset 时间没有实质推进，会被视为可疑零值快照并丢弃，继续保留上一帧和 `quota.ini`，直到下一次有效样本确认。session JSONL 回退中读取 `event_msg -> token_count -> rate_limits`。`primary` 通常对应 5 小时窗口，`secondary` 通常对应周窗口；如果存在 `window_minutes`，以是否小于等于 300 分钟重新判断。
 
@@ -113,13 +117,13 @@ ChatGPT usage provider 读取 `used_percent` / `used_percentage` / `utilization`
 | Codex 活跃时额度刷新 | 10 s | 15 s | 30 s |
 | Codex 非活跃时额度刷新 | 当前由共享快照门控跳过个人额度 provider 和本地 session 读取 | 当前由共享快照门控跳过个人额度 provider 和本地 session 读取 | 当前由共享快照门控跳过个人额度 provider 和本地 session 读取 |
 
-本地 `resets_at` 到达时会把对应余额暂时固定为 100，并保存保护状态。只有新样本的 `SourceUpdatedUtc` 晚于保护建立时间且 reset 时间已经更新，保护才释放，避免旧日志再次覆盖为低余额。
+本地 `resets_at` 到达时默认会把对应余额暂时固定为 100，并保存保护状态；该行为受复杂选项 `CodexQuotaDueResetProtectionEnabled` 控制且默认开启。只有新样本的 `SourceUpdatedUtc` 晚于保护建立时间且 reset 时间已经更新，保护才释放，避免旧日志再次覆盖为低余额。
 
-CODEX 成功从 provider 或 session 读取额度后会写回 `quota.ini`；CLAUDE 成功从共享 Claude Code usage 调度器读取后会写回 `claude-quota.ini`，同一轮 Codex Radar 与独立 Claude Radar 重叠请求只写一次。两者格式相同但文件分离，切换检测软件时会立即加载对应缓存并重置本轮消耗环跟踪。内存中的最新 session 快照可以复用，但每 30 秒会重新确认是否存在更新的 `rollout-*.jsonl`；如果 watcher 漏掉新文件，也不会长期相信旧缓存。
+CODEX 成功从 provider 或 session 读取额度后会写回 `quota.ini`；CLAUDE 成功从共享 Claude Code usage 调度器读取后会写回 `claude-quota.ini`，同一轮 Codex Radar 与独立 Claude Radar 重叠请求只写一次。两者格式相同但文件分离，切换检测软件时先恢复目标软件族的内存 `RadarFamilyRuntimeState`，缺失时再加载对应磁盘缓存；消耗环跟踪、上次读取余额、source-known、刷新调度时间和 Radar 网站健康状态都按软件族保留，不会因为切换而重置另一个软件族的基线。内存中的最新 session 快照可以复用，但每 30 秒会重新确认是否存在更新的 `rollout-*.jsonl`；如果 watcher 漏掉新文件，也不会长期相信旧缓存。
 
-CodexRadar RSS 中出现新的“用量限制已重置”记录时，会同时保护 5 小时和周额度：两个环立即显示 100，右侧时间位置显示金色 `已重置`；额度环弧线仍按当前剩余额度使用原本颜色，不额外变金。额度环图层从下到上为灰色底环、与左侧效率环一致的淡绿色 `#8EF2B9` 消耗环、当前余额环。消耗环不是单独的差值短段，而是上次读取或窗口基线余额对应的完整弧层；当前余额环覆盖共同部分后，露出的尾段自然表示消耗。五小时环的消耗环基准是上上次真实检测到的余额，并与上次检测到的余额比较：如果上上次为 67、上次为 57，则先绘制 67 的消耗环完整弧，再绘制 57 的当前余额弧，视觉上只露出 10 的淡绿色尾段；如果连续两次日志或刷新读到相同的五小时余额，则明确保留已有消耗环基线，不清空也不重建，直到余额再次上涨、下降或来源失效。周额度环不再显示自己的最近读取下降段，消耗环基准为上一次 5 小时自然窗口开始时的周额度；窗口用 5 小时 reset 时间推进或五小时余额上涨识别，周额度上涨时也重建基线，避免把周重置前的基线继续用于当前窗口。首次读取、无有效来源或保护态不显示可见消耗环尾段。环内数字不再按软件族着色：有已知数值且 Codex/Claude 任一受支持本地软件运行时为白色；两者都未运行或数值未知时为灰色。RSS 发布时间只用于判断事件新旧；保护建立时间使用本机检测到该 RSS 的时间，避免启动前已经存在的 quota 样本立刻释放 100 保护。保护释放条件仍与本地到期保护相同，必须等到新的 quota 样本证明已经进入下一窗口，避免旧 session 文件把显示再次覆盖成低额度。RSS 重置事件使用 GUID、发布时间和“已保护 GUID”写入 `quota-reset-state.ini` 去重；首次升级后如果最新重置发生在 36 小时内，也会触发一次，防止刚恢复的 RSS 提醒被当作旧基线忽略。
+CodexRadar RSS 中出现新的“用量限制已重置”记录时，默认会同时保护 5 小时和周额度；该行为受复杂选项 `CodexQuotaRssResetProtectionEnabled` 控制且默认开启。两个环立即显示 100，右侧时间位置显示金色 `已重置`；额度环弧线仍按当前剩余额度使用原本颜色，不额外变金。额度环图层从下到上为灰色底环、与左侧效率环一致的淡绿色 `#8EF2B9` 消耗环、当前余额环。消耗环不是单独的差值短段，而是上次读取或窗口基线余额对应的完整弧层；当前余额环覆盖共同部分后，露出的尾段自然表示消耗。五小时环的消耗环基准是上上次真实检测到的余额，并与上次检测到的余额比较：如果上上次为 67、上次为 57，则先绘制 67 的消耗环完整弧，再绘制 57 的当前余额弧，视觉上只露出 10 的淡绿色尾段；如果连续两次日志或刷新读到相同的五小时余额，默认通过 `CodexQuotaDuplicateSameBalanceRingProtectionEnabled` 保留已有消耗环基线，不清空也不重建，直到余额再次上涨、下降或来源失效。周额度环不再显示自己的最近读取下降段，消耗环基准为上一次 5 小时窗口开始时的周额度；默认允许用五小时余额上涨识别手动重置卡，只有开启 `CodexQuotaStrictFiveHourResetBoundaryEnabled` 后才要求旧 5 小时 reset 到期并推进，或在没有 reset 边界时退回余额上涨识别。Provider 零值保护 `CodexQuotaProviderZeroDropProtectionEnabled` 默认开启：单次 provider 样本把高余额直接报为 0 且 reset 时间没有实质推进时拒绝整份样本。Provider 5 小时提前满额保护、周额度突增保护和周基线自动修复分别由 `CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled`、`CodexQuotaProviderWeeklySpikeProtectionEnabled`、`CodexQuotaWeeklyBaselineAutoRepairEnabled` 控制，默认关闭，避免把手动重置卡误判为抖动；开启后被拒绝样本不写 `quota.ini`，也不更新 5 小时或周额度消耗环基线。首次读取、无有效来源或保护态不显示可见消耗环尾段。环内数字不再按软件族着色：有已知数值且 Codex/Claude 任一受支持本地软件运行时为白色；两者都未运行或数值未知时为灰色。RSS 发布时间只用于判断事件新旧；保护建立时间使用本机检测到该 RSS 的时间，避免启动前已经存在的 quota 样本立刻释放 100 保护。保护释放条件仍与本地到期保护相同，必须等到新的 quota 样本证明已经进入下一窗口，避免旧 session 文件把显示再次覆盖成低额度。RSS 重置事件使用 GUID、发布时间和“已保护 GUID”写入 `quota-reset-state.ini` 去重；首次升级后如果最新重置发生在 36 小时内，也会触发一次，防止刚恢复的 RSS 提醒被当作旧基线忽略。
 
-每次额度读取完成并执行消耗环判定后，会向 `%LOCALAPPDATA%\DesktopCodexAssistant\quota-decision-history.jsonl` 追加一条 JSONL 诊断记录。记录中的 `*_balance_percent` 是最终显示余额，`*_raw_balance_percent` 是本次读取原始余额，`source_kind` 标记 provider/session/cache/claude/default，`*_source_used_field`、`*_source_raw_used_value` 和 `*_source_normalized_used_percent` 用于定位上游字段单位问题，`*_consumption_ring_percent` 是实际露出的消耗尾段，`*_consumption_baseline_percent` 是绘制在当前余额环下方的完整基线环，`reason` 说明为什么保留、重置、丢弃可疑 provider 零值或更新基线。日志不在 `DrawQuotaRow`、hover 动画或 layered-window 重绘路径写入，避免绘制帧造成写放大；记录器使用 15 秒或 32 KiB 批量落盘，启动和每 6 小时按约 48 小时窗口清理旧行。
+每次额度读取完成并执行消耗环判定后，会向 `%LOCALAPPDATA%\DesktopCodexAssistant\quota-decision-history.jsonl` 追加一条 JSONL 诊断记录。记录中的 `software_family` 标明本次判定属于 Codex 还是 Claude，`*_balance_percent` 是最终显示余额，`*_raw_balance_percent` 是本次读取原始余额，`source_kind` 标记 provider/session/cache/claude/default，`*_source_used_field`、`*_source_raw_used_value` 和 `*_source_normalized_used_percent` 用于定位上游字段单位问题，`*_consumption_ring_percent` 是实际露出的消耗尾段，`*_consumption_baseline_percent` 是绘制在当前余额环下方的完整基线环，`reason` 说明为什么保留、重置、丢弃可疑 provider 零值或更新基线。日志不在 `DrawQuotaRow`、hover 动画或 layered-window 重绘路径写入，避免绘制帧造成写放大；记录器使用 15 秒或 32 KiB 批量落盘，启动和每 6 小时按约 48 小时窗口清理旧行。
 
 ## 6. 网站请求调度
 
@@ -169,7 +173,7 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，会同时�
 
 ## 7. 服务健康状态与额度雷达块
 
-当前版本已删除旧的竖向 `Rader`、`Claude`、`ChatGPT` 服务健康面板绘制路径和五阶段连接诊断路径；`ServiceHealthProbeEnabled = true` 仍保留 Rader/Claude/OpenAI 服务状态刷新，因为当前 `EvenRow` 右侧 API 摘要和 `R/O/C/D` LED 列会消费这些状态。配置了 DeepSeek API key 时，DeepSeek 余额接口失败、不可用或余额不足也进入同一个 API 摘要候选；当前软件为 `CLAUDE` 时，Claude Code 用量接口的未登录、鉴权失败、限流、不可达或解析失败也加入同一 API 摘要候选；公开 Claude 状态页仍独立保留。API 摘要正常时显示绿色 `API无异常`，异常时按网络窗口云服务告警的模式在异常 API 名称和错误原因之间轮播，并按异常级别变色；LED 列使用同一组候选给对应服务点染色。`ApplyCodexApiServiceAlertDebounce` 对非检测中错误执行 10 秒防抖：同一个服务的新错误必须连续存在满 10 秒才进入 API 摘要和 LED 颜色；错误消失时立即恢复正常；`ResetCodexApiServiceAlertDebounceForDisplayContextSwitch` 在 Codex/Claude 软件族切换后清空稳定错误和轮播签名，目标模式缓存里的旧 Rader/OpenAI/Claude 错误不能跨窗口直接显示。`1.0.4.19` 曾把 OpenAI 项改成只消费 Codex 配额读取成功与否的兜底状态、不再请求 `status.openai.com`；`1.0.4.53` 恢复为独立探测：`RefreshOpenAiStatusIfNeeded`/`TryReadOpenAiStatus` 直接请求 `status.openai.com/api/v2/summary.json`（Statuspage v2，`indicator` 字段），与 `RefreshClaudeStatusIfNeeded`/`TryReadClaudeStatus` 同构、同调度节奏（成功 15 分钟轮询、异常 2 分钟重试），完全不再依赖 Codex 配额是否读取成功；`openAiServiceHealth` 取代旧的 `codexServiceHealth` 兜底字段。ChatGPT 首页 HTTPS 可达性探测（`chatgpt.com` 五阶段诊断的一部分）仍保持已删除状态，未随此次改动恢复。
+当前版本已删除旧的竖向 `Rader`、`Claude`、`ChatGPT` 服务健康面板绘制路径和五阶段连接诊断路径；`ServiceHealthProbeEnabled = true` 仍保留 Rader/Claude/OpenAI/DeepSeek 服务状态刷新，因为当前 `EvenRow` 右侧 API 摘要和 LED 列会消费这些状态。Codex 模式的 Radar 健康写入 Codex `RadarFamilyRuntimeState.RadarSiteHealth`，Claude 模式的 Radar 健康写入 Claude `RadarFamilyRuntimeState.RadarSiteHealth`；API 摘要防抖签名、轮播相位和候选稳定状态同样随软件族分开保存。DeepSeek `D` 点三种 Radar 视图都显示，状态只由公开 DeepSeek API 可达性决定：无 key 时 401/402/422 视为 API 可达，DNS/TLS/超时/连接失败为不可达，5xx/429 为服务异常，余额不足或未配置 key 不作为服务故障。当前软件为 `CLAUDE` 时，Claude Code 用量接口的未登录、鉴权失败、限流、不可达或解析失败也加入同一 API 摘要候选；公开 Claude 状态页仍独立保留。API 摘要正常时显示绿色 `API无异常`，异常时按网络窗口云服务告警的模式在异常 API 名称和错误原因之间轮播，并按异常级别变色；LED 列使用同一组候选给对应服务点染色。`ApplyCodexApiServiceAlertDebounce` 通过 `ServiceAlertDebouncer` 对非检测中错误执行 10 秒防抖：同一个服务的新错误必须连续存在满 10 秒才进入 API 摘要和 LED 颜色；错误消失时立即恢复正常；`ResetCodexApiServiceAlertDebounceForDisplayContextSwitch` 在 Codex/Claude 软件族切换后只重置目标软件族的稳定错误和轮播签名，另一个软件族的 Radar/OpenAI/Claude 错误不会跨窗口第一帧直接显示。OpenAI 与 Claude 官方状态页由 `StatuspageMonitor` 统一读取 `summary.json`，同一 serviceKey 在进程内 single-flight，正常 15 分钟轮询、异常或失败 2 分钟重试，并由 monitor 写一次 request-level 网络历史。ChatGPT 首页 HTTPS 可达性探测（`chatgpt.com` 五阶段诊断的一部分）仍保持已删除状态，未随此次改动恢复。
 
 额度雷达线仍由 `DrawQuotaWidget` 单独绘制在 IQ 模块左侧，取代旧的灰色分割竖线。CodexRadar 网站主数据刷新不依赖隐藏面板，继续按网站刷新规则读取 `current.json`、首页 HTML 回退和 RSS 回退。
 
@@ -177,23 +181,27 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，会同时�
 
 `1.0.3.25` 起，手动布局进一步拆到元素级偏移。`CodexRadarTimeEfficiency*Offset*`、`CodexRadarTokenEfficiency*Offset*`、`CodexRadarConnection*Offset*`、`CodexRadarFiveHourQuota*Offset*`、`CodexRadarWeeklyQuota*Offset*`、`CodexRadarQuotaRadarLineOffset*` 和 `CodexRadarIq*Offset*` 只在最终绘制矩形上叠加偏移，不参与列宽、间距和窗口尺寸计算，因此允许图形和文字相互覆盖，也不会因为移动一个元素挤压其他元素。额度环与环内数字、效率环与环内数字、IQ 环与环内数字分别保持一体；额度雷达线保持整条线一体。所有偏移由 `WidgetSettings.Normalize` 限制在 -240 到 240 像素，设置窗口保存后经现有预览/重载路径实时生效。
 
-`1.0.3.26` 起，Codex Radar 左侧连接流程区域的上行文字改为社区体感最高模型 `RC:xxx`。数据来自 `https://codexradar.com/api/model-ratings?history=14` 的滚动 24 小时 `models` 数组，按 `average` 最高、同分按 `count` 较高选中，并压缩为 `5.4H`、`5.5M` 等短标签；接口失败时保留上一轮已知值。额度雷达线在平均线两侧新增两枚 chevron 箭头：如果当前蓝点在平均线上方，箭头放在平均线下方三分之一和三分之二位置；如果蓝点在平均线下方，箭头放在平均线上方三分之一和三分之二位置。当前值高于上次时箭头为淡绿色并朝上，低于上次时为淡红色并朝下。`1.0.3.33` 起，chevron 改为短细线，不再使用点阵；尺寸按约 3 个旧点的纵向占位计算，避免点阵造成视觉噪声。`1.0.3.34` 修正了一次未提交改动中静默把 `DrawCodexRadarModules` 改成绘制另一套简化 4 格圆环布局、导致本节描述的 `DrawCodexRadarWidget`/`DrawQuotaWidget` 渲染树短暂失活的问题。当前 `EvenRow` 左下方绘制 `RC/DS/LLM/软件族` 四项元信息；旧五阶段连接摘要、快照和调度代码已删除。
+`1.0.3.26` 起，Codex Radar 左侧连接流程区域的上行文字改为社区体感最高模型 `RC:xxx`。数据来自 `https://codexradar.com/api/model-ratings?history=14` 的滚动 24 小时 `models` 数组，按 `average` 最高、同分按 `count` 较高选中，并压缩为 `5.4H`、`5.5M` 等短标签；接口失败时保留上一轮已知值。额度雷达线在平均线两侧新增两枚 chevron 箭头：如果当前蓝点在平均线上方，箭头放在平均线下方三分之一和三分之二位置；如果蓝点在平均线下方，箭头放在平均线上方三分之一和三分之二位置。当前值高于上次时箭头为淡绿色并朝上，低于上次时为淡红色并朝下。`1.0.3.33` 起，chevron 改为短细线，不再使用点阵；尺寸按约 3 个旧点的纵向占位计算，避免点阵造成视觉噪声。`1.0.3.34` 修正了一次未提交改动中静默把 `DrawCodexRadarModules` 改成绘制另一套简化 4 格圆环布局、导致本节描述的 `DrawCodexRadarWidget`/`DrawQuotaWidget` 渲染树短暂失活的问题。当前 `EvenRow` 左下方绘制 `软件族品牌/RC/辅助项/LLM` 四项元信息；旧五阶段连接摘要、快照和调度代码已删除。
 
 `1.0.3.35` 起，`CodexRadarForm` 拆分为 `partial class`：`Core/CodexRadarForm.cs` 保留数据层，新的视觉变体各自放在独立的 `Core/CodexRadarForm.<Name>.cs` 文件中。`1.0.4.56` 起该切换机制已删除：`DrawCodexRadarModules` 不再按设置分支，直接调用 `DrawCodexRadarModulesEvenRow`；经典布局（`DrawCodexRadarModulesClassic`/`DrawCodexRadarWidget`/`DrawQuotaWidget`）、`EvenGrid` 和四套 OLED 安全变体已全部删除，`CodexRadarRenderVariant` 枚举收窄为仅 `EvenRow` 单值（仍持久化到 settings.ini，但 settings UI 不再提供切换下拉/预览）。`1.0.3.69` 起，Codex Radar 在 layered-window upload buffer 之外额外维护最多 6 张预渲染场景 bitmap，缓存 key 包含窗口尺寸、渲染变体、软件族、透明度、防烧屏颜色保护、闪烁相位、模型、显示数据签名和 Model IQ 时钟当前分钟签名；命中时只把 bitmap 拷回 upload buffer 并提交 `UpdateLayeredWindow`，不会重新执行全部 GDI+ 绘制。`1.0.4.09` 起，防烧屏隐藏反色激活时会在绘制阶段跳过 Codex/Claude 软件族彩色内边框，避免蓝色 Codex 边框被反相成黄橙色或橙色 Claude 边框在隐藏态继续形成误导性状态提示。尺寸变化、显示资源重置和窗口关闭会释放这些 bitmap。详见 `Docs/Indexes/FEATURE_INDEX.jsonl` 的 `codex_radar.render_variant_switch` 和 `Docs/Interfaces/INTERFACE_INDEX.jsonl` 的 `internal_api.codex_radar_render_variant`。
 
 `1.0.3.36` 起新增两个均匀分布变体，都不使用 `CodexRadarManualLayoutEnabled` 手动布局和任何 `CodexRadar*Offset*` 元素偏移设置——这些设置只对已删除的经典布局生效过，均匀变体的网格由当前窗口尺寸自动等分，不接受手动微调。`EvenGrid`（曾在 `Core/CodexRadarForm.EvenGrid.cs`：上方一行六等分单元格 + 下方一条满宽状态带三等分）已在 `1.0.4.56` 删除；当前唯一保留且硬编码使用的是：
 
-- `EvenRow`（`Core/CodexRadarForm.EvenRow.cs`）：全部七个元素单行七等分（五个环 + 额度雷达 + 一个右侧状态格）。`1.0.3.47` 起前五个环和标签在原列距内缩小约三分之一并保持顶部对齐，底部紧贴标签绘制灰色分隔线；状态格中间行改为单行 API 摘要。`1.0.3.50` 起右侧状态文字先按最长实际文本共同计算字号，再用固定字号直接绘制。`1.0.3.52` 起灰色长分隔线整体上移约 3 个渲染像素。`1.0.3.54` 起原左下五点连接摘要改为四项元信息：`RC` 为社区体感最高模型，`DS` 为 DeepSeek 余额，`LLM` 为当前检测模型（默认 `5.5XH`），末项为当前软件族。`1.0.3.55` 起底部四项元信息字体统一放大 20%，并统一使用 RC 灰色与白色之间的中性灰白；`DS` 文案追加北京时间高峰/低谷状态。`1.0.3.57` 起右侧状态格改为 API 摘要、网页数据标签、Model IQ 更新时间三行。`1.0.3.58` 起右侧状态列加宽并提高最小字号，避免三行文字比旧版更小；底部 `RC/DS/LLM/软件族` 不再依赖灰线下方剩余高度，改为贴近窗口底部绘制，按文本测量得到四个独立矩形并分别适配字号，避免 `DS:... 高峰/低谷` 被横线、相邻项或实际窗口高度裁掉。`1.0.3.59` 起底部元信息使用灰线到窗口底边之间的整段高度上下居中绘制，字体基准再放大 30%。`1.0.3.61` 起软件族由 `CodexRadarSoftwareMode` 的自动/强制选项决定；`1.0.3.69` 起不再显示 `SF:` 前缀，Codex 显示蓝色斜体 `Codex`，Claude 显示橙色粗体 `Claude`。默认 Codex Radar 宽度压缩到 580，旧 EvenRow 默认宽度配置通过 Version 39 迁移从 620 收缩到 580。
+- `EvenRow`（`Core/CodexRadarForm.EvenRow.cs`）：全部七个元素单行七等分（五个环 + 额度雷达 + 一个右侧状态格）。前五个环和标签在原列距内缩小并保持顶部对齐，底部紧贴标签绘制灰色分隔线；右侧状态格显示 API 摘要、网页数据标签和 Model IQ 更新时间三行。左下底部元信息为 `软件族品牌/RC/辅助项/LLM` 四项：软件族由 `CodexRadarSoftwareMode` 的自动/强制选项决定，Codex 显示蓝色斜体 `Codex`，Claude 显示橙色粗体 `Claude`；`RC` 为社区体感最高模型；辅助项在 Codex 模式为重置卡 `RS:n 剩余时间`，在 Claude 模式为 DeepSeek 余额 `DS:￥n`；`LLM` 为当前检测模型（默认 `5.5XH`）。`DrawEvenRowBottomInfoPanel` 先按共享字号和宽度分配得到四个独立矩形，再由 `DrawEvenRowBottomInfoText` 统一绘制：该 helper 用原 `DrawEvenRowStatusText` 路径把每项文字画到小透明位图，扫描 alpha 像素边界后做有界平移，使可见文字盒在本项矩形内居中；绘制路径只消费内存快照，不发起网络、磁盘或 token 读取。旧 EvenRow 默认宽度配置通过 Version 39 从 620 收缩到 580；当前用户默认快照进一步使用 522 px，Version 57 会把仍停留在旧 580 px 默认值的独立 Claude 窗口宽度一次性对齐到当前 `CodexRadarWidth`，非默认手动宽度仍由 `ClaudeRadarWidth` 独立保留。
 
-`EvenRow` 的圆环视觉（底环、消耗环、余额环颜色，IQ 超额/不足弧色，效率环基础/低效/高效弧色）把环和标签统一装进等宽单元格；额度雷达线复用 `DrawCodexQuotaRadarVerticalLine`（含均线、彩色段、蓝点、趋势箭头）。`EvenRow` 右侧状态格使用 `GetCodexApiServiceAlertCandidates` 的 API 轮播文本，左侧下方使用 `DrawEvenRowBottomInfoPanel` 绘制 `RC/DS/LLM/软件族`。共享的取数逻辑（`GatherQuotaDisplayState`）和无偏移版本的环/标签绘制方法（`DrawEvenLayoutQuotaCell`、`DrawEvenLayoutIqCell`、`DrawEvenLayoutEfficiencyCell`、`DrawEvenLayoutRadarCell`）放在 `Core/CodexRadarForm.cs` 供 `EvenRow` 使用。
+`EvenRow` 的圆环视觉（底环、消耗环、余额环颜色，IQ 超额/不足弧色，效率环基础/低效/高效弧色）把环和标签统一装进等宽单元格；额度雷达线复用 `DrawCodexQuotaRadarVerticalLine`（含均线、彩色段、蓝点、趋势箭头）。`EvenRow` 右侧状态格使用 `GetCodexApiServiceAlertCandidates` 的 API 轮播文本，左侧下方使用 `DrawEvenRowBottomInfoPanel` 与 `DrawEvenRowBottomInfoText` 绘制 `软件族/RC/辅助项/LLM` 并按实际可见像素居中。共享的取数逻辑（`GatherQuotaDisplayState`）和无偏移版本的环/标签绘制方法（`DrawEvenLayoutQuotaCell`、`DrawEvenLayoutIqCell`、`DrawEvenLayoutEfficiencyCell`、`DrawEvenLayoutRadarCell`）放在 `Core/CodexRadarForm.cs` 供 `EvenRow` 使用。
 
-### 7.1 DeepSeek 余额状态
+### 7.1 Codex 重置卡状态
 
-DeepSeek 余额读取使用官方 `GET https://api.deepseek.com/user/balance`，只读取 `CNY` 的 `total_balance`。API key 不写入 `settings.ini`、日志或文档；读取顺序为进程环境变量 `DEEPSEEK_API_KEY`、用户环境变量、机器环境变量，最后读取 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-api-key.bin`。本地文件由 `SecretStore` 使用 DPAPI CurrentUser 加密为 Base64 密文；首次发现同目录同名旧 `.txt` 时会迁移到 `.bin` 并把旧文件改名为 `.txt.migrated`。设置页在 Codex Radar 的“模型与时区”组提供本地文件配置入口，保存后通过 `DeepSeekApiKeyRevision` 修订号触发运行中的 Codex Radar 立即刷新；修订号本身不包含密钥。
+Codex 模式底部 `RS` 元信息读取 `GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`。凭据来源复用 Codex provider 的 `GetCodexAccessToken`：优先 `CODEX_ACCESS_TOKEN`，其次 `%USERPROFILE%\.codex\auth.json` 或 `CODEX_HOME\auth.json` 内的 `access_token`；程序不输出、不缓存、不刷新 token。成功响应只解析 `credits` 数组和每张卡的过期时间字段，内存中保存过期时间列表；绘制时按当前 UTC 过滤已过期卡，显示 `RS:数量 剩余时间`，例如 `RS:3 17小时`，超过 24 小时显示天数。请求成功后 1 小时再查，失败或离线 15 分钟重试；启动/恢复类触发若 60 秒内刚成功读取过会去抖，操作面板强制刷新仍会立即排队一次；随机测试模式暂停真实请求。查询结果不写持久化文件，网络检查历史只记录状态码摘要、数量和最早过期剩余小时，不记录响应体、卡片 ID 或凭据。
 
-余额正常 60 秒刷新一次，失败 5 分钟重试，网络变化和操作面板强制刷新会立即请求。DeepSeek 官方余额接口只返回当前余额，不返回 24 小时消费明细；程序将每次成功读取的余额写入 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-balance-history.jsonl`，只保存 `timestamp_utc` 和 `balance_cny`，滚动保留 48 小时。最近 24 小时消耗通过本地样本中余额下降量相加估算，充值或赠额上涨不计为负消费。
+### 7.2 DeepSeek API 与余额状态
 
-底部 DeepSeek 元信息显示 `DS:¥余额 高峰/低谷`，未配置、检测中或异常文案也追加同一个高峰/低谷状态。DS 文本不再按余额、24 小时本地估算消耗或高低峰改变颜色，而与底部 `RC/LLM/SF` 共用中性灰白；请求中仅做统一透明闪烁。高峰/低谷没有公开状态端点，当前 UI 集中按北京时间 `09:00-12:00` 和 `14:00-18:00` 判定为高峰，其余时间为低谷；后续若 DeepSeek 提供公开时段接口或调整规则，只修改 `IsDeepSeekPeakPeriodTime`。有 API key 且余额接口请求失败时，DeepSeek 也会进入 `DrawCodexApiServiceSummary` 的异常轮播；未配置 key 不作为 API 故障。
+DeepSeek 服务状态与余额读取共用官方 `GET https://api.deepseek.com/user/balance`。服务状态不要求 API key：无授权请求返回 401/402/422 时表示 DeepSeek API 网关可达，`D` 点保持绿色；只有 DNS/TLS/超时/连接失败、5xx/429 或返回结构异常才进入异常候选。余额读取仍只在配置 key 后解析 `CNY` 的 `total_balance`。API key 不写入 `settings.ini`、日志或文档；读取顺序为进程环境变量 `DEEPSEEK_API_KEY`、用户环境变量、机器环境变量，最后读取 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-api-key.bin`。本地文件由 `SecretStore` 使用 DPAPI CurrentUser 加密为 Base64 密文；首次发现同目录同名旧 `.txt` 时会迁移到 `.bin` 并把旧文件改名为 `.txt.migrated`。设置页在 Claude Radar 的“DeepSeek 余额”组提供本地文件配置入口，保存后通过 `DeepSeekApiKeyRevision` 修订号触发运行中的共享 Radar 小窗和独立 Claude Radar 刷新；修订号本身不包含密钥。
+
+状态/余额由进程级 `DeepSeekBalanceMonitor` single-flight 读取：正常 60 秒刷新一次，失败 5 分钟重试，网络变化、操作面板强制刷新、启动和 `DeepSeekApiKeyRevision` 会使下一次检查立即到期。共享 Codex Radar 的 Codex 模式、共享 Claude 模式和独立 Claude Radar 同时显示时 join 同一个请求，monitor 写一次 request-level 网络历史并记录 `joined_consumers`、服务状态和余额状态摘要。DeepSeek 官方余额接口只返回当前余额，不返回 24 小时消费明细；程序将每次成功读取的余额写入 `%LOCALAPPDATA%\DesktopCodexAssistant\deepseek-balance-history.jsonl`，只保存 `timestamp_utc` 和 `balance_cny`，滚动保留 48 小时。最近 24 小时消耗通过本地样本中余额下降量相加估算，充值或赠额上涨不计为负消费。
+
+共享窗口处于 Claude 模式时，DeepSeek 占用底部辅助项并显示 `DS:￥n`，金额按 CNY 余额四舍五入为整数；未配置、未知或失败时显示 `DS:--`，首次余额请求中显示 `DS:...`。独立 Claude Radar 窗口也读取同一个 `DeepSeekBalanceMonitor` cloned snapshot 显示 `DS` 和 `D`，但仍不读取 Codex 额度、Codex reset-card 或 Codex Radar 公共数据。共享 Codex 模式底部继续显示 `RS`，但右侧仍显示 `D` 并消费公开 API 状态；未配置 key 或余额不足不作为 API 故障。
 
 GLM5.2 暂不加入 `DrawCodexApiServiceSummary`：Z.AI/智谱公开文档目前提供的是 OpenAI 兼容的 `chat/completions` 调用和模型枚举，没有发现类似 DeepSeek 余额接口的轻量状态/余额端点。用聊天请求作为健康探测会产生额外消耗且不能区分服务健康、模型可用性和账户额度，因此只在未来出现轻量状态接口或明确配置需求后接入。
 
@@ -219,7 +227,7 @@ GLM5.2 暂不加入 `DrawCodexApiServiceSummary`：Z.AI/智谱公开文档目前
 
 竖向额度雷达来自首页 HTML 的 `quota-radar` 区域。程序读取 Plus、5x Pro、20x Pro 的 5h/7d 表格值，并读取 `20x Pro 7d` 趋势 SVG 的坐标轴文字和标题点。显示时只使用一根代表性竖线，优先使用 20x Pro 7d：纵向顶部和底部分别对应网页 SVG 坐标轴最高值和最低值，例如当前网页为 `$1,967` 和 `$1,506`，而不是可读数据点的最高/最低；灰色为完整坐标轴范围基线；平均横杠取网页中可读到的全部 `20x Pro 7d` 日期点平均值。彩色段精确连接上一点和当前点，颜色规则只看当前蓝点位置：高于平均且靠近顶部半区为绿色，高于平均但靠近均线半区为淡绿色，低于平均但靠近均线半区为黄色，低于平均且靠近底部半区为橙色。当前点绘制一个直径等于线宽的蓝色小点。Plus 和 5x Pro 没有独立趋势点时按页面当前表格与 20x Pro 的比例推导上一点、平均点、坐标轴范围和此前历史范围。
 
-`NetworkChange` 回调只设置服务健康和 DeepSeek 余额失效标记，不在系统事件线程执行网络检查。个人额度刷新只通过 `RequestSelectedQuotaUsageRefresh` 排队当前有效且正在运行的软件 provider，不再同时触碰 Codex provider 和 Claude Code usage 队列。下一次 UI 调度统一更新服务健康摘要；旧五阶段连接诊断已删除，网络变化不会再启动对应的网络/DNS/隧道/OpenAI/本地 Codex 探测。旧三行服务面板绘制路径已删除，不会恢复三行绘制。
+`NetworkChange` 回调只设置服务健康、`StatuspageMonitor` OpenAI/Claude 状态和 DeepSeek API/余额失效标记，不在系统事件线程执行网络检查；真实请求只会在后续调度 tick 中按可见窗口门控启动。个人额度刷新只通过 `RequestSelectedQuotaUsageRefresh` 排队当前有效且正在运行的软件 provider，不再同时触碰 Codex provider 和 Claude Code usage 队列。下一次 UI 调度统一更新服务健康摘要；旧五阶段连接诊断已删除，网络变化不会再启动对应的网络/DNS/隧道/OpenAI/本地 Codex 探测。旧三行服务面板绘制路径已删除，不会恢复三行绘制。
 
 ## 8. Model IQ 与效率
 
@@ -279,12 +287,14 @@ Token 和时间分别有可配置低效阈值。
 
 ### 8.4 底部元信息
 
-旧七日折线图和旧模型新鲜度状态已经从绘制代码删除。`1.0.3.54` 起，当前 `EvenRow` 左下方显示四项元信息：
+旧七日折线图和旧模型新鲜度状态已经从绘制代码删除。当前 `EvenRow` 左下方显示四项元信息：
 
+- 软件族品牌：当前检测软件族，Codex 显示蓝色斜体 `Codex`，Claude 显示橙色粗体 `Claude`；当前共享窗口仍由 `Auto` 模式结合共享运行态快照和必要时的前台窗口识别决定，并在无法识别时保持上一次有效软件。
 - `RC:xxx`：社区体感评分最高模型。
-- `DS:... 高峰/低谷`：DeepSeek 余额或配置状态，状态按北京时间 `09:00-12:00`、`14:00-18:00` 判定高峰，其余为低谷。
+- `RS:n 剩余时间`：Codex 重置卡数量和最早有效卡的剩余时间；Claude 软件族或未知时显示 `RS:--`。
 - `LLM:...`：当前 Codex Radar 检测模型，默认 `LLM:5.5XH`。
-- 软件族品牌：当前检测软件族，Codex 显示蓝色斜体 `Codex`，Claude 显示橙色粗体 `Claude`；当前共享窗口仍由 `Auto` 模式结合共享运行态快照和必要时的前台窗口识别决定，并在无法识别时保持上一次有效软件，未来独立 Claude Radar 窗口应固定为 Claude。
+
+四项元信息共用同一套 `DrawEvenRowBottomInfoText` 可见像素居中逻辑；任何新增底部项都应使用该 helper，避免某一项因字体回退、斜体或中英混排单独偏移。第三项通过 `GetEvenRowBottomAuxiliaryDisplayText` 按软件族分流：Codex 显示 RS，Claude 显示 DS。
 
 旧五阶段连接流程（网络、DNS、隧道、OpenAI、Codex）的调度、快照、绘制和 OpenAI/ChatGPT 探测代码已删除。Model IQ 更新时间只在 IQ 环实际接收新快照时更新，旧连接诊断失败不会再影响更新时间或 API 摘要。
 
@@ -357,7 +367,7 @@ CodexRadar 公开 JSON、首页 HTML、速蹬窗口状态、RSS 重置提醒与 
 
 | 锁 | 保护内容 |
 | --- | --- |
-| `codexRadarStatusLock` | CodexRadar 分层数据源快照、请求标志和下次刷新时间 |
+| `codexRadarStatusLock` | Codex/Claude family Radar 数据源快照、请求标志、模型 key 和下次刷新时间 |
 | `claudeStatusLock` | Claude 请求标志和下次刷新时间 |
 | `quotaResetStateLock` | 本地额度 reset-card 保护状态、RSS 重置和速蹬开启去重 |
 | `serviceHealthLock` | 网络可用性和三项服务健康状态 |
@@ -389,7 +399,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
 5. JSON 和首页 HTML 回退均能读取所选模型，Rader 不误报黄色叉。
 6. RSS 最新重置项只触发一次金色 100 保护，右侧显示 `已重置`；相同 GUID 重启后不重复触发。
 7. 速蹬窗口开启且 `closed_at` 尚未过期时额度右侧文字在金色 `速蹬！`、原白色正常额度重置时间/日期、黄色额外重置目标时间/日期之间轮播；黄色目标时间可从 `current.json.window.closed_at` 或首页 `data-window-closes-at` 回退读取，五小时行显示目标时间，周行显示目标日期；过期关闭时间必须压过旧 open 快照，避免结束后继续提示速蹬；环弧颜色不因速蹬或保护态改变，灰色底环保持在最下方，和左侧效率环一致的淡绿色 `#8EF2B9` 消耗环绘制在底环上方和当前余额环下方，五小时消耗环使用上上次检测余额与上次检测余额的差异，周消耗环使用上次五小时窗口开始时的周额度，环内数字有已知数值且 Codex/Claude 任一受支持软件运行时为白色，两者都未运行或数值未知时为灰色。
-8. 当前 EvenRow 左下方完整显示 `RC/DS/LLM/软件族`，不显示五阶段连接点线；底部软件族项显示 `Codex` 或 `Claude` 且使用对应蓝/橙品牌样式；右侧只显示 API 摘要和 IQ `已更新/时间`。
+8. 当前 EvenRow 左下方完整显示 `软件族/RC/辅助项/LLM`，四项按可见像素盒居中，不显示五阶段连接点线；底部软件族项显示 `Codex` 或 `Claude` 且使用对应蓝/橙品牌样式；辅助项在 Codex 模式为 RS，在 Claude 模式为 DS；右侧只显示 API 摘要和 IQ `已更新/时间`。
 9. 三种模型缓存各自保留 7 个完整属性样本，程序重启和模型切换可恢复；缓存超过 7 天后拒绝加载。
 10. 左侧双效率环分别按时间/Token 规则绘制。
 11. 右侧 IQ 环和状态字样替代旧预测/No/Yes 区域。

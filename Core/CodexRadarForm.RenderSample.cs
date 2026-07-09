@@ -23,6 +23,7 @@ internal sealed partial class CodexRadarForm
         {
             WidgetSettings settings = WidgetSettings.CreateDefaults();
             settings.CodexRadarRenderVariant = variant;
+            settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Claude;
             settings.Normalize();
 
             using (CodexRadarForm form = new CodexRadarForm(settings, null))
@@ -36,12 +37,13 @@ internal sealed partial class CodexRadarForm
                 form.SetLayerScale(2.0f);
                 form.MaximumSize = new Size(4000, 4000);
                 form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
+                form.effectiveCodexRadarSoftwareMode = CodexRadarSoftwareMode.Claude;
                 // Normalize() force-disables CodexRadarTestMode, so inject a populated snapshot
                 // directly instead - this is what actually exercises the quota radar trend content.
                 form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
-                // Realistic long DeepSeek balance ("DS:¥473.36 ...") to exercise the EvenRow bottom
-                // info panel's fit/centering with real-length text instead of the short "未配置".
-                form.deepSeekBalanceSnapshot = new DeepSeekBalanceSnapshot
+                // Realistic DeepSeek balance for the shared window's Claude mode, where the
+                // auxiliary bottom slot displays DS instead of Codex reset cards.
+                DeepSeekBalanceMonitor.SetSnapshotForTest(new DeepSeekBalanceSnapshot
                 {
                     ApiKeyConfigured = true,
                     Known = true,
@@ -50,7 +52,7 @@ internal sealed partial class CodexRadarForm
                     BalanceCny = 473.36,
                     CheckedAtUtc = DateTime.UtcNow,
                     CheckedAtLocal = DateTime.Now
-                };
+                });
 
                 using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
                 using (Graphics g = Graphics.FromImage(bitmap))

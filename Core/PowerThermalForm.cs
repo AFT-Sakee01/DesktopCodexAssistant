@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
+using Windows.System.Power;
 
 internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 {
@@ -34,6 +35,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     private IntPtr acDcPowerNotificationHandle;
     private IntPtr batteryPowerNotificationHandle;
     private IntPtr powerSchemeNotificationHandle;
+    private IntPtr energySaverNotificationHandle;
     private IntPtr effectivePowerModeNotificationHandle;
     private NativeMethods.EffectivePowerModeCallback effectivePowerModeCallback;
     private PowerReading cachedPowerReading;
@@ -45,6 +47,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     private DateTime hoverOpacityLastUtc;
     private DateTime reverseHoverRevealUntilUtc;
     private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
+    private bool autoHideKeepAliveActive;
     private bool sharedInteractionPolling;
     private long burnInShiftSlot = long.MinValue;
     private readonly UiFontCache fontCache = new UiFontCache();
@@ -61,6 +64,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         public int BatteryPercent;
         public bool SystemPowerModeKnown;
         public string SystemPowerModeText;
+        public bool EnergySaverKnown;
+        public bool EnergySaverEnabled;
         public bool BatteryCarePauseKnown;
         public bool BatteryCarePauseActive;
     }
@@ -105,14 +110,15 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
+        ApplyLayerScaleFromSettings(this.currentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight);
-        this.MaximumSize = new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32));
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
+        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
         this.Size = GetDesiredSize();
 
         this.timer = new System.Windows.Forms.Timer();
@@ -149,6 +155,9 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         this.powerSchemeNotificationHandle = NativeMethods.RegisterPowerSettingNotificationForWindow(
             this.Handle,
             NativeMethods.GUID_POWERSCHEME_PERSONALITY);
+        this.energySaverNotificationHandle = NativeMethods.RegisterPowerSettingNotificationForWindow(
+            this.Handle,
+            NativeMethods.GUID_POWER_SAVING_STATUS);
         NativeMethods.TryRegisterEffectivePowerModeNotification(
             this.effectivePowerModeCallback,
             out this.effectivePowerModeNotificationHandle);
@@ -160,11 +169,13 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         NativeMethods.UnregisterPowerNotification(this.acDcPowerNotificationHandle);
         NativeMethods.UnregisterPowerNotification(this.batteryPowerNotificationHandle);
         NativeMethods.UnregisterPowerNotification(this.powerSchemeNotificationHandle);
+        NativeMethods.UnregisterPowerNotification(this.energySaverNotificationHandle);
         NativeMethods.UnregisterEffectivePowerModeNotification(this.effectivePowerModeNotificationHandle);
         this.displayPowerNotificationHandle = IntPtr.Zero;
         this.acDcPowerNotificationHandle = IntPtr.Zero;
         this.batteryPowerNotificationHandle = IntPtr.Zero;
         this.powerSchemeNotificationHandle = IntPtr.Zero;
+        this.energySaverNotificationHandle = IntPtr.Zero;
         this.effectivePowerModeNotificationHandle = IntPtr.Zero;
         base.OnHandleDestroyed(e);
     }
@@ -325,7 +336,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
         if (setting.PowerSetting == NativeMethods.GUID_ACDC_POWER_SOURCE ||
             setting.PowerSetting == NativeMethods.GUID_BATTERY_PERCENTAGE_REMAINING ||
-            setting.PowerSetting == NativeMethods.GUID_POWERSCHEME_PERSONALITY)
+            setting.PowerSetting == NativeMethods.GUID_POWERSCHEME_PERSONALITY ||
+            setting.PowerSetting == NativeMethods.GUID_POWER_SAVING_STATUS)
         {
             RequestSampling(true, false, true);
         }
@@ -373,6 +385,9 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         WidgetPerformanceMode oldPerformanceMode = this.currentSettings.PerformanceMode;
         this.currentSettings = settings.Clone();
         this.currentSettings.Normalize();
+        ApplyLayerScaleFromSettings(this.currentSettings);
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
+        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
         if (oldThermalTestMode != this.currentSettings.ThermalTestMode)
         {
             this.thermalCriticalSinceUtc.Clear();
@@ -829,6 +844,21 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         UpdateHoverAnimationTimer();
     }
 
+    public void SetAutoHideKeepAliveActive(bool active)
+    {
+        if (this.autoHideKeepAliveActive == active)
+        {
+            return;
+        }
+
+        this.autoHideKeepAliveActive = active;
+        if (active)
+        {
+            this.hoverOpacityDelayState.Reset();
+            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
+        }
+    }
+
     public bool ProcessSharedInteractionTick()
     {
         if (!this.sharedInteractionPolling ||
@@ -904,7 +934,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             this.hiddenForFullscreen,
             this.Visible,
             ref this.reverseHoverRevealUntilUtc,
-            this.hoverOpacityDelayState);
+            this.hoverOpacityDelayState,
+            this.autoHideKeepAliveActive);
     }
 
     private bool IsHoverOpacityRuntimeEnabled()
@@ -932,19 +963,21 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             int baseWidth = Math.Max(
                 WidgetSettings.MinPowerThermalWidth,
                 Math.Min(WidgetSettings.MaxPowerThermalWidth, this.currentSettings.PowerThermalWidth));
-            int anchorRight = this.currentSettings.PowerThermalLeftX + baseWidth;
+            int mappedLeft = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModulePowerThermal, workArea, this.currentSettings.PowerThermalLeftX);
+            int anchorRight = mappedLeft + this.currentSettings.ScaleResolutionCompatibilityPixels(baseWidth);
             anchorRight = Math.Max(workArea.Left + this.Width, Math.Min(anchorRight, workArea.Right));
             left = anchorRight - this.Width;
             left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
         }
         else
         {
-            left = this.currentSettings.PowerThermalLeftX;
+            left = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModulePowerThermal, workArea, this.currentSettings.PowerThermalLeftX);
             left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
         }
 
         int baseHeight = Math.Max(WidgetSettings.MinPowerThermalHeight, this.currentSettings.PowerThermalHeight);
-        int top = this.currentSettings.PowerThermalBottomY - baseHeight + 1;
+        int mappedBottom = this.currentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModulePowerThermal, workArea, this.currentSettings.PowerThermalBottomY);
+        int top = mappedBottom - this.currentSettings.ScaleResolutionCompatibilityPixels(baseHeight) + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
         Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
             new Point(left, top),
@@ -993,7 +1026,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         width = Math.Max(WidgetSettings.MinPowerThermalWidth, Math.Min(WidgetSettings.MaxPowerThermalWidth, width));
         int maxHeight = IsPowerThermalAutoDown() ? WidgetSettings.MaxPowerThermalAutoHeight : WidgetSettings.MaxPowerThermalHeight;
         height = Math.Max(WidgetSettings.MinPowerThermalHeight, Math.Min(maxHeight, height));
-        return new Size(width, height);
+        return this.currentSettings.ScaleResolutionCompatibilitySize(new Size(width, height));
     }
 
     private bool IsPowerThermalAutoLeft()
@@ -1364,7 +1397,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         Color accent = GetBatteryPercentColor(known, percent);
         bool hiddenColorProtectionActive = IsBurnInColorProtectionActive();
         Color borderColor = GetBatteryBorderColor(pluggedIn, hiddenColorProtectionActive);
-        string powerModeText = reading.SystemPowerModeKnown ? reading.SystemPowerModeText : "--";
+        bool energySaverActive = IsEnergySaverDisplayActive(reading);
+        string powerModeText = FormatSystemPowerModeDisplayText(reading, energySaverActive);
 
         float bodyWidth = Math.Max(S(46), Math.Min(bounds.Width - S(12), bounds.Width * 0.64f));
         float modeTextHeight = S(11);
@@ -1408,10 +1442,10 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         Font percentFont = this.fontCache.GetUi(Math.Max(8.0f, Math.Min(bodyHeight * 0.58f, bodyWidth * 0.20f)), FontStyle.Bold);
         using (SolidBrush textBrush = new SolidBrush(GetHiddenSafeNeutralColor(DesignTokens.Colors.TextStrong, DesignTokens.Colors.AccentAlt)))
         {
-            if (batteryCarePauseActive)
+            if (batteryCarePauseActive || energySaverActive)
             {
-                float badgeSize = Math.Max(S(9), bodyHeight * 0.72f);
-                float gap = S(2);
+                float badgeSize = Math.Max(S(8), bodyHeight * 0.64f);
+                float gap = S(1.2f);
                 float maxTextWidth = Math.Max(S(10), bodyRect.Width - badgeSize - gap - S(4));
                 float measuredTextWidth = Math.Min(maxTextWidth, g.MeasureString(percentText, percentFont).Width);
                 float totalWidth = measuredTextWidth + gap + badgeSize;
@@ -1423,7 +1457,14 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
                     badgeSize,
                     badgeSize);
                 DrawFittedText(g, percentText, percentFont, textBrush, percentRect, StringAlignment.Center);
-                DrawBatteryCarePauseBadge(g, badgeRect);
+                if (energySaverActive)
+                {
+                    DrawEnergySaverLeafGlyph(g, badgeRect);
+                }
+                else
+                {
+                    DrawBatteryCarePauseBadge(g, badgeRect);
+                }
             }
             else
             {
@@ -1431,9 +1472,11 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             }
         }
 
-        RectangleF modeRect = new RectangleF(bounds.Left, bodyRect.Bottom + S(1), bounds.Width, Math.Max(S(10), bounds.Bottom - bodyRect.Bottom - S(1)));
+        float modeLeft = Math.Max(0.0f, bounds.Left - S(8));
+        float modeRight = Math.Min(this.Width, bounds.Right + S(8));
+        RectangleF modeRect = new RectangleF(modeLeft, bodyRect.Bottom + S(1), Math.Max(S(10), modeRight - modeLeft), Math.Max(S(10), bounds.Bottom - bodyRect.Bottom - S(1)));
         Font modeFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.LayerScale), FontStyle.Bold);
-        using (SolidBrush modeBrush = new SolidBrush(GetSystemPowerModeColor(powerModeText)))
+        using (SolidBrush modeBrush = new SolidBrush(GetSystemPowerModeColor(powerModeText, energySaverActive)))
         {
             DrawFittedText(g, powerModeText, modeFont, modeBrush, modeRect, StringAlignment.Center);
         }
@@ -1466,8 +1509,76 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         return IsBurnInColorProtectionActive() ? hidden : normal;
     }
 
-    private Color GetSystemPowerModeColor(string powerModeText)
+    private bool IsEnergySaverDisplayActive(PowerReading reading)
     {
+        return (reading.EnergySaverKnown && reading.EnergySaverEnabled) ||
+            IsManualEnergySaverThresholdActive(reading);
+    }
+
+    private bool IsManualEnergySaverThresholdActive(PowerReading reading)
+    {
+        // Display-only fallback: some Windows builds keep EnergySaverStatus/SystemStatusFlag off
+        // even when the user wants low battery to be treated visually as energy saver.
+        int threshold = this.currentSettings == null
+            ? WidgetSettings.DefaultPowerThermalManualEnergySaverThresholdPercent
+            : this.currentSettings.PowerThermalManualEnergySaverThresholdPercent;
+        if (threshold <= 0 || !reading.BatteryPercentKnown)
+        {
+            return false;
+        }
+
+        int percent = Math.Max(0, Math.Min(100, reading.BatteryPercent));
+        return percent < threshold;
+    }
+
+    private static string FormatSystemPowerModeDisplayText(PowerReading reading, bool energySaverActive)
+    {
+        string text = reading.SystemPowerModeKnown
+            ? NormalizeDisplaySystemPowerModeText(reading.SystemPowerModeText)
+            : "--";
+
+        if (energySaverActive)
+        {
+            return AppendEnergySaverSuffix(text);
+        }
+
+        return text;
+    }
+
+    private static string NormalizeDisplaySystemPowerModeText(string text)
+    {
+        if (string.Equals(text, "均衡", StringComparison.Ordinal))
+        {
+            return "平衡";
+        }
+
+        return string.IsNullOrEmpty(text) ? "--" : text;
+    }
+
+    private static string AppendEnergySaverSuffix(string text)
+    {
+        if (string.IsNullOrEmpty(text) || string.Equals(text, "--", StringComparison.Ordinal))
+        {
+            return "节能";
+        }
+
+        if (text.IndexOf("节能", StringComparison.Ordinal) >= 0)
+        {
+            return text;
+        }
+
+        return text + "（节能）";
+    }
+
+    private Color GetSystemPowerModeColor(string powerModeText, bool energySaverActive)
+    {
+        if (energySaverActive)
+        {
+            return IsBurnInColorProtectionActive()
+                ? DesignTokens.Colors.Success
+                : Color.FromArgb(134, 238, 150);
+        }
+
         if (string.Equals(powerModeText, "性能", StringComparison.OrdinalIgnoreCase))
         {
             return IsBurnInColorProtectionActive()
@@ -1484,6 +1595,48 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         }
 
         return GetHiddenSafeNeutralColor(DesignTokens.Colors.TextStrong, DesignTokens.Colors.Accent);
+    }
+
+    private void DrawEnergySaverLeafGlyph(Graphics g, RectangleF rect)
+    {
+        float size = Math.Min(rect.Width, rect.Height);
+        RectangleF leafRect = new RectangleF(
+            rect.Left + (rect.Width - size) / 2.0f + size * 0.04f,
+            rect.Top + (rect.Height - size) / 2.0f,
+            size * 0.82f,
+            size * 0.82f);
+        Color fillColor = IsBurnInColorProtectionActive()
+            ? DesignTokens.Colors.Success
+            : Color.FromArgb(134, 238, 150);
+        Color lineColor = GetHiddenSafeNeutralColor(DesignTokens.White(238), DesignTokens.Colors.Accent);
+        PointF tip = new PointF(leafRect.Right, leafRect.Top + leafRect.Height * 0.18f);
+        PointF basePoint = new PointF(leafRect.Left + leafRect.Width * 0.12f, leafRect.Bottom - leafRect.Height * 0.14f);
+        PointF mid = new PointF(leafRect.Left + leafRect.Width * 0.44f, leafRect.Top + leafRect.Height * 0.50f);
+
+        using (GraphicsPath leafPath = new GraphicsPath())
+        using (SolidBrush fillBrush = new SolidBrush(DesignTokens.WithAlpha(fillColor, 235)))
+        using (Pen veinPen = new Pen(DesignTokens.WithAlpha(lineColor, 210), Math.Max(1.0f, 0.9f * this.LayerScale)))
+        {
+            leafPath.StartFigure();
+            leafPath.AddBezier(
+                basePoint,
+                new PointF(leafRect.Left + leafRect.Width * 0.18f, leafRect.Top + leafRect.Height * 0.04f),
+                new PointF(leafRect.Left + leafRect.Width * 0.70f, leafRect.Top - leafRect.Height * 0.02f),
+                tip);
+            leafPath.AddBezier(
+                tip,
+                new PointF(leafRect.Right - leafRect.Width * 0.05f, leafRect.Top + leafRect.Height * 0.62f),
+                new PointF(leafRect.Left + leafRect.Width * 0.50f, leafRect.Bottom + leafRect.Height * 0.06f),
+                basePoint);
+            leafPath.CloseFigure();
+            g.FillPath(fillBrush, leafPath);
+            g.DrawLine(veinPen, basePoint, mid);
+            g.DrawLine(veinPen, mid, tip);
+            g.DrawLine(
+                veinPen,
+                new PointF(basePoint.X - size * 0.09f, basePoint.Y + size * 0.10f),
+                new PointF(basePoint.X + size * 0.16f, basePoint.Y - size * 0.06f));
+        }
     }
 
     private void DrawBatteryCarePauseBadge(Graphics g, RectangleF rect)
@@ -1873,6 +2026,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             left.BatteryPercent == right.BatteryPercent &&
             left.SystemPowerModeKnown == right.SystemPowerModeKnown &&
             string.Equals(left.SystemPowerModeText, right.SystemPowerModeText, StringComparison.Ordinal) &&
+            left.EnergySaverKnown == right.EnergySaverKnown &&
+            left.EnergySaverEnabled == right.EnergySaverEnabled &&
             left.BatteryCarePauseKnown == right.BatteryCarePauseKnown &&
             left.BatteryCarePauseActive == right.BatteryCarePauseActive;
     }
@@ -2123,6 +2278,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         {
         }
 
+        UpdateEnergySaverState(ref reading);
         UpdateBatteryCarePauseState(ref reading);
         if (noSystemBattery)
         {
@@ -2223,6 +2379,40 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         reading.BatteryCarePauseActive = false;
     }
 
+    private static void UpdateEnergySaverState(ref PowerReading reading)
+    {
+        bool energySaverEnabled;
+        if (TryReadEnergySaverEnabled(out energySaverEnabled))
+        {
+            reading.EnergySaverKnown = true;
+            reading.EnergySaverEnabled = energySaverEnabled;
+        }
+    }
+
+    private static bool TryReadEnergySaverEnabled(out bool enabled)
+    {
+        bool known = false;
+        enabled = false;
+        try
+        {
+            EnergySaverStatus status = PowerManager.EnergySaverStatus;
+            known = true;
+            enabled = status == EnergySaverStatus.On;
+        }
+        catch
+        {
+        }
+
+        bool batterySaverEnabled;
+        if (NativeMethods.TryGetBatterySaverStatus(out batterySaverEnabled))
+        {
+            known = true;
+            enabled = enabled || batterySaverEnabled;
+        }
+
+        return known;
+    }
+
     private static void UpdateSystemPowerModeText(ref PowerReading reading)
     {
         if (reading.SystemPowerModeKnown)
@@ -2256,7 +2446,14 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         {
         }
 
-        return ReadSystemPowerModeText(pluggedInKnown, pluggedIn);
+        string powerModeText = ReadSystemPowerModeText(pluggedInKnown, pluggedIn);
+        bool energySaverEnabled;
+        if (TryReadEnergySaverEnabled(out energySaverEnabled) && energySaverEnabled)
+        {
+            return AppendEnergySaverSuffix(powerModeText);
+        }
+
+        return powerModeText;
     }
 
     private static string ReadSystemPowerModeText(bool pluggedInKnown, bool pluggedIn)

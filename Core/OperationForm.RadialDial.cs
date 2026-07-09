@@ -3,86 +3,111 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-// RadialDial (added 1.0.4.57, tiered menu + custom icon set added 1.0.4.58): the operation panel is
-// always docked to the screen's bottom-left corner (PositionOperationWindow anchors left to
-// workArea.Left and bottom to workArea.Bottom), so a fan menu can only grow right (+X) and up (-Y)
-// from its core -- a 90-degree quadrant, never a full circle. This is genuinely a different
-// interaction model from the other five OperationRenderVariant members (Classic/Typographic/
-// AmberHud/WarmCard/Phosphor), which only swap paint while sharing one flat 6x2 button grid
-// (GetButtonRects/HitTest/ExecuteButton/IsButtonVisible in OperationForm.cs). RadialDial owns its
-// own geometry, hit-testing, icon set and mouse routing here; OperationForm.cs only branches into
-// this file via IsRadialDialActive() at the top of GetDesiredSize() and the mouse handlers, plus one
-// case in the DrawOperationWindow dispatcher. None of the grid code is touched.
+// RadialDial (added 1.0.4.57, tiered custom-icon menu 1.0.4.58, generic multi-level tree 1.0.4.59+):
+// the operation panel is always docked to the screen's bottom-left corner (PositionOperationWindow
+// anchors left to workArea.Left and bottom to workArea.Bottom), so a fan menu can only grow right
+// (+X) and up (-Y) from its core -- a 90-degree quadrant, never a full circle. RadialDial owns its
+// own geometry, hit-testing, icon set and mouse routing in this file; OperationForm.cs only branches
+// into it via IsRadialDialActive() at the top of GetDesiredSize(), the mouse handlers, one case in
+// the DrawOperationWindow dispatcher, and one idle-collapse check inside ProcessSharedInteractionTick.
 //
-// The menu is a tiered tree, not a flat ring: Root shows category nodes; clicking one drills into
-// that category's children; the Settings category has one further branch (SpecialSettingsBranch,
-// labelled "特殊设置") that drills one level deeper into the three actions that used to live only in
-// the AiQuickMenuForm popup. Every leaf action still reuses the existing single-purpose
-// implementation instead of duplicating it (ExecuteButton for plain single-click buttons,
-// PulseSeelenDockFromOperationPanel / ExecuteRestartButtonDoubleClick / ExecuteAppSettingsButtonDoubleClick
-// for the two pairs already split apart, setAiBlockAction/setQuotaPlanAction/RunElevatedCtfmonRestartHelper
-// for the three folded-in items). All icon glyphs below are drawn fresh for this variant -- none call
-// the flat grid's Draw*Glyph methods.
+// The menu is a generic tree (RadialNode: Id/Label/color/icon delegate/Children/Execute/toggle/
+// unavailable/busy/tooltip), not a hand-coded set of enums switched over per level. Extending the
+// menu -- adding a button or a whole new nesting level -- means adding nodes inside BuildRadialRoots()
+// and nothing else; ComputeRadialLayout/hit-testing/drawing/click-dispatch all walk the tree
+// generically and auto-distribute each level's siblings across a density-aware arc inside the
+// up-right quadrant. Sparse levels keep the old compact 8-82 degree arc; denser levels expand
+// toward the full 0-90 degree quadrant so large setting groups do not bunch up in the middle.
+//
+// Levels stay visible simultaneously while navigating deeper (drilling into a category does NOT hide
+// the ring(s) above it) -- radialSelectionPathIds records which sibling is "expanded" at each depth,
+// and every level from the root ring down to (path.Count + 1) renders every tick. Gray rail lines
+// connect siblings within a level; a light-green line traces core -> selected L1 -> selected L2 -> ...
+// to show the active drill path across rings. Selected (expanded) branch nodes get a blue ring +
+// light-blue fill; toggle-type leaves show green (on) / red (off) fill instead of their category tint.
+// The core shows the active L1 category's icon plus small dots for how many rings are open, and
+// doubles as the open/close control. An idle timer (ShouldRadialIdleCollapse, ticked from
+// OperationForm.ProcessSharedInteractionTick) auto-collapses the whole menu after a few seconds with
+// no interaction, since levels no longer collapse themselves while browsing.
 internal sealed partial class OperationForm
 {
     // Angles are degrees measured counter-clockwise from straight right (0 = east, 90 = north/up),
-    // matching the up-right quadrant the window is physically allowed to occupy. A small inset from
-    // the exact 0/90 edges keeps items from being clipped against the window bounds.
-    private const float RadialArcStartDeg = 8.0f;
-    private const float RadialArcEndDeg = 82.0f;
+    // matching the up-right quadrant the window is physically allowed to occupy.
+    private const float RadialSparseArcStartDeg = 8.0f;
+    private const float RadialSparseArcEndDeg = 82.0f;
+    private const float RadialMediumArcStartDeg = 2.0f;
+    private const float RadialMediumArcEndDeg = 88.0f;
+    private const float RadialDenseArcStartDeg = 0.0f;
+    private const float RadialDenseArcEndDeg = 90.0f;
+    private const int RadialMediumArcMinItems = 4;
+    private const int RadialDenseArcMinItems = 7;
+    private const int RadialCoreAutoHideThresholdDimAlpha = 13;
+    private const int RadialCoreAutoHideThresholdRingAlpha = 77;
     private const float RadialGapScale = 0.34f;
+    private const float RadialLevelSpacingMultiplier = 2.0f;
     private const float RadialMinItemSpacingScale = 1.22f;
+    private static readonly Color RadialSettingsColor = Color.FromArgb(198, 193, 182);
+    private static readonly Color RadialSystemColor = Color.FromArgb(120, 214, 189);
+    private static readonly Color RadialPowerColor = Color.FromArgb(255, 176, 89);
+    private static readonly Color RadialAssistColor = Color.FromArgb(214, 150, 214);
+    private static readonly Color RadialBatteryColor = Color.FromArgb(140, 214, 150);
+    private static readonly Color RadialAdvancedColor = Color.FromArgb(224, 120, 120);
+    private static readonly Color RadialSelectedColor = Color.FromArgb(120, 178, 255);
 
-    private RadialLevel radialLevel = RadialLevel.Collapsed;
-    private RadialCategoryId? radialActiveCategory;
+    private bool radialMenuOpen;
+    private List<string> radialSelectionPathIds = new List<string>();
+    private List<RadialNode> cachedRadialRoots;
+    private bool cachedRadialRootsHasBattery;
+    private int radialHoveredLevel = -1;
     private int radialHoveredIndex = -1;
+    private int radialPressedLevel = -1;
     private int radialPressedIndex = -1;
     private bool radialCoreHovered;
     private bool radialCorePressed;
+    private DateTime radialCoreHoverStartedUtc = DateTime.MinValue;
+    private bool radialCoreAutoHideThresholdVisualActive;
+    private DateTime radialLastInteractionUtc = DateTime.MinValue;
     private int radialCtfRestartRunning;
+    private bool cachedRadialRootsSettingsLogicExtension;
 
-    private enum RadialLevel
+    // A node with Children.Count > 0 is a branch (expands one more ring when clicked); a node with
+    // no children is a leaf (Execute fires immediately). GetToggleState non-null marks a leaf whose
+    // fill color reflects an on/off setting instead of its category tint.
+    private sealed class RadialNode
     {
-        Collapsed,
-        Root,
-        Category,
-        SubCategory
+        public string Id;
+        public string Label;
+        public Color BaseColor;
+        public Action<Graphics, RectangleF> DrawIcon;
+        public List<RadialNode> Children = new List<RadialNode>();
+        public Action Execute;
+        public Func<bool> GetToggleState;
+        public Func<bool> IsUnavailable;
+        public Func<bool> IsBusy;
+        public Func<string> GetTooltip;
+
+        public bool IsBranch
+        {
+            get { return this.Children.Count > 0; }
+        }
     }
 
-    private enum RadialCategoryId
+    private sealed class RadialSettingToggleDescriptor
     {
-        Settings,
-        Power,
-        SystemTools,
-        Battery,
-        Assist
-    }
-
-    private enum RadialItemId
-    {
-        NormalSettings,
-        WindowsSettings,
-        SpecialSettingsBranch,
-        PowerMenu,
-        RestartApp,
-        PulseDock,
-        TaskManager,
-        QuickSettings,
-        SystemToolsMenu,
-        Refresh,
-        BatteryCarePause,
-        BatteryLimitRestore,
-        AiStudio,
-        LiveCaptions,
-        HoverOpacityToggle,
-        LinkBlockToggle,
-        QuotaPlanToggle,
-        CtfRestart
+        public string PropertyName;
+        public string Id;
+        public string Label;
+        public Color Color;
+        public Action<Graphics, RectangleF> DrawIcon;
+        public Func<WidgetSettings, bool> GetState;
+        public bool RequiresConfirmation;
+        public string ConfirmationText;
     }
 
     private enum RadialHitKind
@@ -92,14 +117,25 @@ internal sealed partial class OperationForm
         Item
     }
 
+    private struct RadialHitResult
+    {
+        public RadialHitKind Kind;
+        public int Level;
+        public int Index;
+        public RadialNode Node;
+    }
+
+    private sealed class RadialLevelLayout
+    {
+        public List<RadialNode> Nodes;
+        public RectangleF[] Rects;
+    }
+
     private sealed class RadialLayout
     {
-        public RadialLevel Level;
         public Size WindowSize;
         public RectangleF Core;
-        public List<RadialCategoryId> Categories;
-        public List<RadialItemId> Items;
-        public RectangleF[] Rects;
+        public List<RadialLevelLayout> Levels = new List<RadialLevelLayout>();
     }
 
     private bool IsRadialDialActive()
@@ -107,179 +143,609 @@ internal sealed partial class OperationForm
         return this.currentSettings.OperationRenderVariant == OperationRenderVariant.RadialDial;
     }
 
-    // Test/render-harness only: jumps straight to the category ring (Root) instead of the collapsed
-    // core, since that is the most illustrative single frame of the new tiered design.
+    // Test/render-harness only: jumps to the root ring (open, nothing drilled) since that is the
+    // most illustrative single frame of the tiered design.
     internal void SetRadialDialExpandedForSample(bool expanded)
     {
-        this.radialLevel = expanded ? RadialLevel.Root : RadialLevel.Collapsed;
+        this.radialMenuOpen = expanded;
+        this.radialSelectionPathIds = new List<string>();
     }
 
     private void ClearRadialTransientState()
     {
+        this.radialHoveredLevel = -1;
         this.radialHoveredIndex = -1;
+        this.radialPressedLevel = -1;
         this.radialPressedIndex = -1;
         this.radialCoreHovered = false;
         this.radialCorePressed = false;
+        ClearRadialCoreAutoHideThresholdVisual();
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Tree data
+    // Tree data -- the only place that needs editing to add a button, a toggle, or a whole new
+    // nesting level. Geometry/hit-testing/drawing/click-dispatch below are generic over this tree.
     // ---------------------------------------------------------------------------------------------
 
-    private List<RadialCategoryId> GetRootCategories()
+    private static RadialNode NewBranch(string id, string label, Color color, Action<Graphics, RectangleF> drawIcon)
     {
-        List<RadialCategoryId> categories = new List<RadialCategoryId>
+        return new RadialNode { Id = id, Label = label, BaseColor = color, DrawIcon = drawIcon };
+    }
+
+    private static RadialNode NewLeaf(
+        string id,
+        string label,
+        Color color,
+        Action<Graphics, RectangleF> drawIcon,
+        Action execute,
+        Func<string> tooltip,
+        Func<bool> isUnavailable = null,
+        Func<bool> isBusy = null)
+    {
+        return new RadialNode
         {
-            RadialCategoryId.Settings,
-            RadialCategoryId.Power,
-            RadialCategoryId.SystemTools
+            Id = id,
+            Label = label,
+            BaseColor = color,
+            DrawIcon = drawIcon,
+            Execute = execute,
+            GetTooltip = tooltip,
+            IsUnavailable = isUnavailable,
+            IsBusy = isBusy
         };
-        if (ShouldShowBatteryCareButtons())
-        {
-            categories.Add(RadialCategoryId.Battery);
-        }
-
-        categories.Add(RadialCategoryId.Assist);
-        return categories;
     }
 
-    private static List<RadialItemId> GetCategoryChildren(RadialCategoryId category)
+    private static RadialNode NewToggle(
+        string id,
+        string label,
+        Color color,
+        Action<Graphics, RectangleF> drawIcon,
+        Func<bool> getState,
+        Action execute,
+        Func<string> tooltip)
     {
-        switch (category)
+        return new RadialNode
         {
-            case RadialCategoryId.Settings:
-                return new List<RadialItemId> { RadialItemId.NormalSettings, RadialItemId.SpecialSettingsBranch, RadialItemId.WindowsSettings };
-            case RadialCategoryId.Power:
-                return new List<RadialItemId> { RadialItemId.PowerMenu, RadialItemId.PulseDock, RadialItemId.RestartApp };
-            case RadialCategoryId.SystemTools:
-                return new List<RadialItemId> { RadialItemId.TaskManager, RadialItemId.QuickSettings, RadialItemId.SystemToolsMenu, RadialItemId.Refresh };
-            case RadialCategoryId.Battery:
-                return new List<RadialItemId> { RadialItemId.BatteryCarePause, RadialItemId.BatteryLimitRestore };
-            case RadialCategoryId.Assist:
-                return new List<RadialItemId> { RadialItemId.AiStudio, RadialItemId.LiveCaptions, RadialItemId.HoverOpacityToggle };
-            default:
-                return new List<RadialItemId>();
+            Id = id,
+            Label = label,
+            BaseColor = color,
+            DrawIcon = drawIcon,
+            Execute = execute,
+            GetToggleState = getState,
+            GetTooltip = tooltip
+        };
+    }
+
+    private List<RadialNode> GetRadialRoots()
+    {
+        bool hasBattery = ShouldShowBatteryCareButtons();
+        bool settingsLogicExtension =
+            this.currentSettings != null &&
+            this.currentSettings.OperationSettingsLogicExtensionEnabled;
+        if (this.cachedRadialRoots == null ||
+            hasBattery != this.cachedRadialRootsHasBattery ||
+            settingsLogicExtension != this.cachedRadialRootsSettingsLogicExtension)
+        {
+            this.cachedRadialRoots = BuildRadialRoots(hasBattery);
+            this.cachedRadialRootsHasBattery = hasBattery;
+            this.cachedRadialRootsSettingsLogicExtension = settingsLogicExtension;
+        }
+
+        return this.cachedRadialRoots;
+    }
+
+    // Capped at 3 level-1 / 5 level-2 / 7 level-3 siblings so every ring stays visually tight; the
+    // caps double at each depth since a level further from the core has more arc circumference.
+    private List<RadialNode> BuildRadialRoots(bool includeBattery)
+    {
+        RadialNode settings = NewBranch("settings", "设置", RadialSettingsColor, this.DrawHexNutGlyph);
+        settings.Children.Add(NewLeaf(
+            "normal_settings",
+            "程序设置",
+            RadialSettingsColor,
+            this.DrawAppWindowGlyph,
+            ExecuteAppSettingsButtonDoubleClick,
+            () => "程序设置"));
+
+        RadialNode special = NewBranch("special_settings", "特殊设置", RadialAdvancedColor, this.DrawBeakerGlyph);
+        special.Children.Add(NewToggle(
+            "link_block",
+            "链接阻断",
+            RadialAdvancedColor,
+            this.DrawChainLinkGlyph,
+            () => this.currentSettings.AiRequestProtectionManualBlockEnabled,
+            ExecuteRadialLinkBlockToggle,
+            () => this.currentSettings.AiRequestProtectionManualBlockEnabled
+                ? "点击关闭链接阻断"
+                : "点击开启链接阻断\r\n阻断本程序的 OpenAI / ChatGPT / Claude 请求"));
+        special.Children.Add(NewToggle(
+            "quota_plan",
+            "额度计划",
+            RadialAdvancedColor,
+            this.DrawPieWedgeGlyph,
+            () => this.currentSettings.CodexQuotaPlanEnabled,
+            ExecuteRadialQuotaPlanToggle,
+            () => this.currentSettings.CodexQuotaPlanEnabled
+                ? "点击关闭额度计划"
+                : "点击开启额度计划\r\n阈值和 goal 列表在普通设置中调整"));
+        special.Children.Add(NewLeaf(
+            "ctf_restart",
+            "CTF 重启",
+            RadialAdvancedColor,
+            this.DrawKeyboardGlyph,
+            BeginRadialCtfRestart,
+            () => IsRadialCtfRestartBusy() ? "正在提权重启 ctfmon.exe..." : "提权重启当前会话的 ctfmon.exe",
+            isBusy: IsRadialCtfRestartBusy));
+        settings.Children.Add(special);
+
+        settings.Children.Add(NewLeaf(
+            "windows_settings",
+            "系统设置",
+            RadialSettingsColor,
+            (g, r) => DrawTileGridGlyph(g, r, 2),
+            () => ExecuteButton(WindowsSettingsButtonIndex, MouseButtons.Left),
+            () => "系统设置\r\nWindows 设置"));
+
+        if (this.currentSettings.OperationSettingsLogicExtensionEnabled)
+        {
+            settings.Children.Add(BuildRadialCommonLogicBranch(includeBattery));
+            settings.Children.Add(BuildRadialAllSettingsBranch());
+        }
+
+        RadialNode system = NewBranch("system", "系统", RadialSystemColor, this.DrawWrenchGlyph);
+        RadialNode power = NewBranch("power", "电源", RadialPowerColor, this.DrawPowerRingGlyph);
+        power.Children.Add(NewLeaf(
+            "power_menu",
+            "电源菜单",
+            RadialPowerColor,
+            this.DrawGaugeGlyph,
+            () => ExecuteButton(WindowsPowerMenuButtonIndex, MouseButtons.Left),
+            () => "打开 SeelenUI 电源界面\r\n不可用时尝试 Windows 安全菜单",
+            isBusy: () => Interlocked.CompareExchange(ref this.seelenPowerMenuRequestRunning, 0, 0) != 0));
+        power.Children.Add(NewLeaf(
+            "pulse_dock",
+            "置顶 Dock",
+            RadialPowerColor,
+            this.DrawDockChevronGlyph,
+            PulseSeelenDockFromOperationPanel,
+            () => "拉到前 Seelen Dock"));
+        power.Children.Add(NewLeaf(
+            "restart_app",
+            "重启程序",
+            RadialPowerColor,
+            this.DrawRestartLoopGlyph,
+            ExecuteRestartButtonDoubleClick,
+            () => "重启 SeelenUI 和本程序"));
+        system.Children.Add(power);
+        system.Children.Add(NewLeaf(
+            "task_manager",
+            "任务管理器",
+            RadialSystemColor,
+            this.DrawBarsGlyph,
+            () => ExecuteButton(TaskManagerButtonIndex, MouseButtons.Left),
+            () => "打开任务管理器"));
+        system.Children.Add(NewLeaf(
+            "quick_settings",
+            "快速设置",
+            RadialSystemColor,
+            this.DrawTogglesGlyph,
+            () => ExecuteButton(WindowsQuickSettingsButtonIndex, MouseButtons.Left),
+            () => "打开快速设置\r\n使用快捷键 Win+A"));
+        system.Children.Add(NewLeaf(
+            "system_tools_menu",
+            "系统工具菜单",
+            RadialSystemColor,
+            (g, r) => DrawTileGridGlyph(g, r, 3),
+            ExecuteRadialSystemToolsMenu,
+            () => "Windows 系统工具菜单\r\n设备管理器、磁盘管理等"));
+        system.Children.Add(NewLeaf(
+            "refresh",
+            "刷新",
+            RadialSystemColor,
+            this.DrawRefreshLoopGlyph,
+            () => ExecuteButton(RefreshButtonIndex, MouseButtons.Left),
+            () => "刷新所有模块"));
+
+        RadialNode assist = NewBranch("assist", "辅助", RadialAssistColor, (g, r) => DrawSparkleGlyph(g, r, 6));
+        assist.Children.Add(NewLeaf(
+            "ai_studio",
+            "AI Studio",
+            RadialAssistColor,
+            (g, r) => DrawSparkleGlyph(g, r, 4),
+            () => ExecuteButton(WindowsAiStudioButtonIndex, MouseButtons.Left),
+            () => this.windowsAiStudioAvailable
+                ? "打开 AI Studio"
+                : "AI Studio 当前不可用\r\n未检测到 ms-clicktodo 协议或 CoreAI 包",
+            isUnavailable: () => !this.windowsAiStudioAvailable));
+        assist.Children.Add(NewLeaf(
+            "live_captions",
+            "实时字幕",
+            RadialAssistColor,
+            this.DrawCaptionBubbleGlyph,
+            () => ExecuteButton(LiveCaptionsButtonIndex, MouseButtons.Left),
+            () => this.liveCaptionsAvailable
+                ? "打开实时字幕"
+                : "实时字幕当前不可用\r\n未检测到系统实时字幕入口",
+            isUnavailable: () => !this.liveCaptionsAvailable));
+        assist.Children.Add(NewToggle(
+            "hover_opacity",
+            "悬停透明度",
+            RadialAssistColor,
+            this.DrawHalfMoonGlyph,
+            () => this.currentSettings.ForceHoverOpacityActive,
+            () => ExecuteButton(HoverOpacityToggleButtonIndex, MouseButtons.Left),
+            () => this.currentSettings.ForceHoverOpacityActive ? "恢复模块透明度" : "切换到悬停透明度"));
+        if (includeBattery)
+        {
+            assist.Children.Add(NewLeaf(
+                "battery_care_pause",
+                "电池保护暂停",
+                RadialBatteryColor,
+                this.DrawBatteryPauseGlyph,
+                () => ExecuteButton(BatteryCarePauseButtonIndex, MouseButtons.Left),
+                () => "关闭电池保护 24 小时",
+                isBusy: () => this.batteryCarePauseRunning));
+            assist.Children.Add(NewLeaf(
+                "battery_limit_restore",
+                "电池保护恢复",
+                RadialBatteryColor,
+                this.DrawBatteryCheckGlyph,
+                () => ExecuteButton(BatteryLimitRestoreButtonIndex, MouseButtons.Left),
+                () => "开启电池保护",
+                isBusy: () => this.batteryLimitRestoreRunning));
+        }
+
+        return new List<RadialNode> { settings, system, assist };
+    }
+
+    private RadialNode BuildRadialCommonLogicBranch(bool includeBattery)
+    {
+        RadialNode common = NewBranch("common_logic", "常用逻辑", RadialSettingsColor, this.DrawTogglesGlyph);
+
+        RadialNode visibility = NewBranch("common_visibility", "显示隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph);
+        visibility.Children.Add(NewLeaf(
+            "common_hover_opacity_action",
+            "悬停透明度",
+            RadialAssistColor,
+            this.DrawHalfMoonGlyph,
+            () => ExecuteButton(HoverOpacityToggleButtonIndex, MouseButtons.Left),
+            () => this.currentSettings.ForceHoverOpacityActive ? "恢复模块透明度" : "切换到悬停透明度"));
+        visibility.Children.Add(NewSettingToggle("HoverOpacityEnabled", "common_hover_hide", "靠近隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.HoverOpacityEnabled));
+        visibility.Children.Add(NewSettingToggle("AutoHoverOpacityIdleEnabled", "common_idle_hide", "空闲隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.AutoHoverOpacityIdleEnabled));
+        visibility.Children.Add(NewSettingToggle("AutoHoverOpacityMaximizedEnabled", "common_max_hide", "最大化隐藏", RadialSettingsColor, this.DrawAppWindowGlyph, s => s.AutoHoverOpacityMaximizedEnabled));
+        visibility.Children.Add(NewSettingToggle("OperationRadialCoreAutoHideKeepAliveEnabled", "common_core_keepalive", "圆圈保持", RadialSettingsColor, this.DrawPowerRingGlyph, s => s.OperationRadialCoreAutoHideKeepAliveEnabled));
+        visibility.Children.Add(NewSettingToggle("BurnInHiddenModeColorProtectionEnabled", "common_burnin", "反色防烧屏", RadialSettingsColor, this.DrawSparkleShieldGlyph, s => s.BurnInHiddenModeColorProtectionEnabled));
+        common.Children.Add(visibility);
+
+        RadialNode aiQuota = NewBranch("common_ai_quota", "AI/额度", RadialAdvancedColor, this.DrawPieWedgeGlyph);
+        aiQuota.Children.Add(NewToggle(
+            "common_link_block",
+            "链接阻断",
+            RadialAdvancedColor,
+            this.DrawChainLinkGlyph,
+            () => this.currentSettings.AiRequestProtectionManualBlockEnabled,
+            ExecuteRadialLinkBlockToggle,
+            () => this.currentSettings.AiRequestProtectionManualBlockEnabled
+                ? "点击关闭链接阻断"
+                : "点击开启链接阻断\r\n阻断本程序的 OpenAI / ChatGPT / Claude 请求"));
+        aiQuota.Children.Add(NewSettingToggle("AiRequestProtectionAutoEnabled", "common_ai_auto_block", "自动阻断", RadialAdvancedColor, this.DrawChainLinkGlyph, s => s.AiRequestProtectionAutoEnabled));
+        aiQuota.Children.Add(NewToggle(
+            "common_quota_plan",
+            "额度计划",
+            RadialAdvancedColor,
+            this.DrawPieWedgeGlyph,
+            () => this.currentSettings.CodexQuotaPlanEnabled,
+            ExecuteRadialQuotaPlanToggle,
+            () => this.currentSettings.CodexQuotaPlanEnabled
+                ? "点击关闭额度计划"
+                : "点击开启额度计划\r\n阈值和 goal 列表在普通设置中调整"));
+        aiQuota.Children.Add(NewSettingToggle("CodexQuotaPlanAutoResumePausedGoals", "common_quota_auto_resume", "恢复上次", RadialAdvancedColor, this.DrawRestartLoopGlyph, s => s.CodexQuotaPlanAutoResumePausedGoals));
+        common.Children.Add(aiQuota);
+
+        RadialNode radar = NewBranch("common_radar", "Radar 窗口", RadialAssistColor, (g, r) => DrawSparkleGlyph(g, r, 4));
+        radar.Children.Add(NewSettingToggle("CodexRadarEnabled", "common_codex_radar", "共享 Radar", RadialAssistColor, this.DrawAppWindowGlyph, s => s.CodexRadarEnabled));
+        radar.Children.Add(NewSettingToggle("ClaudeRadarEnabled", "common_claude_radar", "Claude 窗", RadialAssistColor, this.DrawAppWindowGlyph, s => s.ClaudeRadarEnabled));
+        radar.Children.Add(NewSettingToggle("RadarClockAutoSwitchModelEnabled", "common_radar_auto_model", "自动模型", RadialAssistColor, this.DrawRefreshLoopGlyph, s => s.RadarClockAutoSwitchModelEnabled));
+        common.Children.Add(radar);
+
+        RadialNode shortcuts = NewBranch("common_system_shortcuts", "系统快捷", RadialSystemColor, this.DrawWrenchGlyph);
+        shortcuts.Children.Add(NewLeaf("common_task_manager", "任务管理器", RadialSystemColor, this.DrawBarsGlyph, () => ExecuteButton(TaskManagerButtonIndex, MouseButtons.Left), () => "打开任务管理器"));
+        shortcuts.Children.Add(NewLeaf("common_quick_settings", "快速设置", RadialSystemColor, this.DrawTogglesGlyph, () => ExecuteButton(WindowsQuickSettingsButtonIndex, MouseButtons.Left), () => "打开快速设置\r\n使用快捷键 Win+A"));
+        shortcuts.Children.Add(NewLeaf("common_system_tools", "系统工具", RadialSystemColor, (g, r) => DrawTileGridGlyph(g, r, 3), ExecuteRadialSystemToolsMenu, () => "Windows 系统工具菜单\r\n设备管理器、磁盘管理等"));
+        shortcuts.Children.Add(NewLeaf("common_power_menu", "电源菜单", RadialPowerColor, this.DrawGaugeGlyph, () => ExecuteButton(WindowsPowerMenuButtonIndex, MouseButtons.Left), () => "打开 SeelenUI 电源界面\r\n不可用时尝试 Windows 安全菜单", isBusy: () => Interlocked.CompareExchange(ref this.seelenPowerMenuRequestRunning, 0, 0) != 0));
+        shortcuts.Children.Add(NewLeaf("common_refresh", "刷新", RadialSystemColor, this.DrawRefreshLoopGlyph, () => ExecuteButton(RefreshButtonIndex, MouseButtons.Left), () => "刷新所有模块"));
+        shortcuts.Children.Add(NewLeaf("common_restart_app", "重启程序", RadialPowerColor, this.DrawRestartLoopGlyph, ExecuteRestartButtonDoubleClick, () => "重启 SeelenUI 和本程序"));
+        shortcuts.Children.Add(NewLeaf("common_pulse_dock", "置顶 Dock", RadialPowerColor, this.DrawDockChevronGlyph, PulseSeelenDockFromOperationPanel, () => "拉到前 Seelen Dock"));
+        common.Children.Add(shortcuts);
+
+        RadialNode assist = NewBranch("common_assist", "辅助入口", RadialAssistColor, (g, r) => DrawSparkleGlyph(g, r, 6));
+        assist.Children.Add(NewLeaf("common_ai_studio", "AI Studio", RadialAssistColor, (g, r) => DrawSparkleGlyph(g, r, 4), () => ExecuteButton(WindowsAiStudioButtonIndex, MouseButtons.Left), () => this.windowsAiStudioAvailable ? "打开 AI Studio" : "AI Studio 当前不可用\r\n未检测到 ms-clicktodo 协议或 CoreAI 包", isUnavailable: () => !this.windowsAiStudioAvailable));
+        assist.Children.Add(NewLeaf("common_live_captions", "实时字幕", RadialAssistColor, this.DrawCaptionBubbleGlyph, () => ExecuteButton(LiveCaptionsButtonIndex, MouseButtons.Left), () => this.liveCaptionsAvailable ? "打开实时字幕" : "实时字幕当前不可用\r\n未检测到系统实时字幕入口", isUnavailable: () => !this.liveCaptionsAvailable));
+        if (includeBattery)
+        {
+            assist.Children.Add(NewLeaf("common_battery_care_pause", "电池暂停", RadialBatteryColor, this.DrawBatteryPauseGlyph, () => ExecuteButton(BatteryCarePauseButtonIndex, MouseButtons.Left), () => "关闭电池保护 24 小时", isBusy: () => this.batteryCarePauseRunning));
+            assist.Children.Add(NewLeaf("common_battery_limit_restore", "电池恢复", RadialBatteryColor, this.DrawBatteryCheckGlyph, () => ExecuteButton(BatteryLimitRestoreButtonIndex, MouseButtons.Left), () => "开启电池保护", isBusy: () => this.batteryLimitRestoreRunning));
+        }
+        common.Children.Add(assist);
+
+        RadialNode networkPower = NewBranch("common_network_power", "网络功耗", RadialSystemColor, this.DrawGaugeGlyph);
+        networkPower.Children.Add(NewSettingToggle("GfwProbeEnabled", "common_gfw_probe", "GFW 检测", RadialSystemColor, this.DrawChainLinkGlyph, s => s.GfwProbeEnabled));
+        networkPower.Children.Add(NewSettingToggle("PowerThermalAutoSizeEnabled", "common_power_auto_size", "功耗自适应", RadialPowerColor, this.DrawGaugeGlyph, s => s.PowerThermalAutoSizeEnabled));
+        networkPower.Children.Add(NewLeaf("common_network_refresh", "刷新", RadialSystemColor, this.DrawRefreshLoopGlyph, () => ExecuteButton(RefreshButtonIndex, MouseButtons.Left), () => "刷新所有模块"));
+        common.Children.Add(networkPower);
+
+        RadialNode maintenance = NewBranch("common_maintenance", "维护调试", RadialAdvancedColor, this.DrawKeyboardGlyph);
+        maintenance.Children.Add(NewSettingToggle("AlertTestEnabled", "common_alert_test", "告警测试", RadialAdvancedColor, this.DrawBeakerGlyph, s => s.AlertTestEnabled));
+        maintenance.Children.Add(NewSettingToggle("ForceShowForegroundFpsEnabled", "common_fps", "显示 FPS", RadialAdvancedColor, this.DrawGaugeGlyph, s => s.ForceShowForegroundFpsEnabled));
+        common.Children.Add(maintenance);
+
+        return common;
+    }
+
+    private RadialNode BuildRadialAllSettingsBranch()
+    {
+        RadialNode all = NewBranch("all_settings", "全部开关", RadialSettingsColor, (g, r) => DrawTileGridGlyph(g, r, 3));
+
+        RadialNode system = NewBranch("all_system", "系统启动", RadialSystemColor, this.DrawWrenchGlyph);
+        system.Children.Add(NewSettingToggle("StartupEnabled", "all_startup", "开机启动", RadialSystemColor, this.DrawPowerRingGlyph, s => s.StartupEnabled, true, "此操作会修改当前用户的 Windows 开机启动项。确定继续？"));
+        system.Children.Add(NewSettingToggle("VisibilityOverlapIgnoresOperationPanelEnabled", "all_overlap_ignore", "忽略遮挡", RadialSystemColor, this.DrawAppWindowGlyph, s => s.VisibilityOverlapIgnoresOperationPanelEnabled));
+        system.Children.Add(NewSettingToggle("FallbackDisconnectedDisplaysEnabled", "all_display_fallback", "显示器回退", RadialSystemColor, this.DrawAppWindowGlyph, s => s.FallbackDisconnectedDisplaysEnabled));
+        system.Children.Add(NewSettingToggle("ResolutionCompatibilityModeEnabled", "all_resolution_compat", "分辨率兼容", RadialSystemColor, (g, r) => DrawTileGridGlyph(g, r, 2), s => s.ResolutionCompatibilityModeEnabled));
+        system.Children.Add(NewSettingToggle("SeelenDockForegroundPulseEnabled", "all_seelen_pulse", "Dock 拉前", RadialPowerColor, this.DrawDockChevronGlyph, s => s.SeelenDockForegroundPulseEnabled));
+        system.Children.Add(NewSettingToggle("WinDRecoveryPulseEnabled", "all_wind_recovery", "Win+D 恢复", RadialPowerColor, this.DrawRestartLoopGlyph, s => s.WinDRecoveryPulseEnabled));
+        system.Children.Add(NewSettingToggle("PowerResumeRestartEnabled", "all_resume_restart", "唤醒重启", RadialPowerColor, this.DrawRestartLoopGlyph, s => s.PowerResumeRestartEnabled));
+        all.Children.Add(system);
+
+        RadialNode visibility = NewBranch("all_visibility", "隐藏防烧屏", RadialSettingsColor, this.DrawHalfMoonGlyph);
+        visibility.Children.Add(NewSettingToggle("HoverOpacityEnabled", "all_hover_hide", "靠近隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.HoverOpacityEnabled));
+        visibility.Children.Add(NewSettingToggle("SensitiveMouseModeEnabled", "all_sensitive_mouse", "敏感鼠标", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.SensitiveMouseModeEnabled));
+        visibility.Children.Add(NewSettingToggle("HoverOpacityRevealDelayEnabled", "all_reveal_delay", "延迟显现", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.HoverOpacityRevealDelayEnabled));
+        visibility.Children.Add(NewSettingToggle("HoverOpacityCoverEnabled", "all_hover_cover", "覆盖开启", RadialSettingsColor, this.DrawAppWindowGlyph, s => s.HoverOpacityCoverEnabled));
+        visibility.Children.Add(NewSettingToggle("ReverseHoverOpacityRevealEnabled", "all_reverse_reveal", "反向隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.ReverseHoverOpacityRevealEnabled));
+        visibility.Children.Add(NewSettingToggle("BurnInHiddenModeColorProtectionEnabled", "all_burnin", "反色防烧屏", RadialSettingsColor, this.DrawSparkleShieldGlyph, s => s.BurnInHiddenModeColorProtectionEnabled));
+        RadialNode autoHide = NewBranch("all_auto_hide", "自动隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph);
+        autoHide.Children.Add(NewSettingToggle("AutoHoverOpacityIdleEnabled", "all_idle_hide", "空闲隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.AutoHoverOpacityIdleEnabled));
+        autoHide.Children.Add(NewSettingToggle("AutoHoverOpacityMaximizedEnabled", "all_max_hide", "最大化隐藏", RadialSettingsColor, this.DrawAppWindowGlyph, s => s.AutoHoverOpacityMaximizedEnabled));
+        autoHide.Children.Add(NewSettingToggle("OperationRadialCoreAutoHideKeepAliveEnabled", "all_core_keepalive", "圆圈保持", RadialSettingsColor, this.DrawPowerRingGlyph, s => s.OperationRadialCoreAutoHideKeepAliveEnabled));
+        autoHide.Children.Add(NewSettingToggle("OperationRadialKeepOpenAfterLeafClickEnabled", "all_radial_leaf_keepopen", "末端保持", RadialSettingsColor, this.DrawTogglesGlyph, s => s.OperationRadialKeepOpenAfterLeafClickEnabled));
+        visibility.Children.Add(autoHide);
+        all.Children.Add(visibility);
+
+        RadialNode metrics = NewBranch("all_main_metrics", "主窗口指标", RadialSystemColor, this.DrawBarsGlyph);
+        metrics.Children.Add(NewSettingToggle("ShowCpu", "all_show_cpu", "CPU", RadialSystemColor, this.DrawGaugeGlyph, s => s.ShowCpu));
+        metrics.Children.Add(NewSettingToggle("ShowMemory", "all_show_memory", "内存", RadialSystemColor, this.DrawPieWedgeGlyph, s => s.ShowMemory));
+        metrics.Children.Add(NewSettingToggle("ShowDisk", "all_show_disk", "磁盘", RadialSystemColor, this.DrawBarsGlyph, s => s.ShowDisk));
+        metrics.Children.Add(NewSettingToggle("ShowNetwork", "all_show_network", "网络", RadialSystemColor, this.DrawChainLinkGlyph, s => s.ShowNetwork));
+        metrics.Children.Add(NewSettingToggle("ShowGpu", "all_show_gpu", "GPU", RadialSystemColor, this.DrawSparkleGlyphSix, s => s.ShowGpu));
+        metrics.Children.Add(NewSettingToggle("ShowNpu", "all_show_npu", "NPU", RadialSystemColor, this.DrawSparkleGlyphFour, s => s.ShowNpu));
+        all.Children.Add(metrics);
+
+        RadialNode radar = NewBranch("all_radar_common", "Radar 通用", RadialAssistColor, (g, r) => DrawSparkleGlyph(g, r, 4));
+        radar.Children.Add(NewSettingToggle("RadarClockAutoSwitchModelEnabled", "all_radar_auto_model", "自动模型", RadialAssistColor, this.DrawRefreshLoopGlyph, s => s.RadarClockAutoSwitchModelEnabled));
+        radar.Children.Add(NewSettingToggle("CodexRadarEnabled", "all_codex_radar_enabled", "共享 Radar", RadialAssistColor, this.DrawAppWindowGlyph, s => s.CodexRadarEnabled));
+        radar.Children.Add(NewSettingToggle("ClaudeRadarEnabled", "all_claude_radar_enabled", "Claude 窗", RadialAssistColor, this.DrawAppWindowGlyph, s => s.ClaudeRadarEnabled));
+        all.Children.Add(radar);
+
+        all.Children.Add(BuildRadialAllCodexSettingsBranch());
+        all.Children.Add(BuildRadialAllClaudeSettingsBranch());
+
+        RadialNode networkPower = NewBranch("all_network_power_test", "网络功耗测试", RadialSystemColor, this.DrawGaugeGlyph);
+        networkPower.Children.Add(NewSettingToggle("GfwProbeEnabled", "all_gfw_probe", "GFW 检测", RadialSystemColor, this.DrawChainLinkGlyph, s => s.GfwProbeEnabled));
+        networkPower.Children.Add(NewSettingToggle("PowerThermalAutoSizeEnabled", "all_power_auto_size", "功耗自适应", RadialPowerColor, this.DrawGaugeGlyph, s => s.PowerThermalAutoSizeEnabled));
+        networkPower.Children.Add(NewSettingToggle("AlertTestEnabled", "all_alert_test", "告警测试", RadialAdvancedColor, this.DrawBeakerGlyph, s => s.AlertTestEnabled));
+        networkPower.Children.Add(NewSettingToggle("ForceShowForegroundFpsEnabled", "all_fps", "显示 FPS", RadialAdvancedColor, this.DrawGaugeGlyph, s => s.ForceShowForegroundFpsEnabled));
+        networkPower.Children.Add(NewSettingToggle("OperationSettingsLogicExtensionEnabled", "all_settings_logic_extension", "设置逻辑扩展", RadialSettingsColor, this.DrawTogglesGlyph, s => s.OperationSettingsLogicExtensionEnabled));
+        all.Children.Add(networkPower);
+
+        return all;
+    }
+
+    private RadialNode BuildRadialAllCodexSettingsBranch()
+    {
+        RadialNode codex = NewBranch("all_codex", "Codex 设置", RadialAdvancedColor, this.DrawPieWedgeGlyph);
+
+        RadialNode ai = NewBranch("all_codex_ai", "AI 阻断", RadialAdvancedColor, this.DrawChainLinkGlyph);
+        ai.Children.Add(NewSettingToggle("AiRequestProtectionAutoEnabled", "all_ai_auto_block", "自动阻断", RadialAdvancedColor, this.DrawChainLinkGlyph, s => s.AiRequestProtectionAutoEnabled));
+        ai.Children.Add(NewToggle(
+            "all_ai_manual_block",
+            "手动阻断",
+            RadialAdvancedColor,
+            this.DrawChainLinkGlyph,
+            () => this.currentSettings.AiRequestProtectionManualBlockEnabled,
+            ExecuteRadialLinkBlockToggle,
+            () => this.currentSettings.AiRequestProtectionManualBlockEnabled ? "点击关闭链接阻断" : "点击开启链接阻断"));
+        codex.Children.Add(ai);
+
+        RadialNode link = NewBranch("all_codex_link", "Codex 链路", RadialAdvancedColor, this.DrawChainLinkGlyph);
+        link.Children.Add(NewSettingToggle("CodexRadarPublicJsonEnabled", "all_codex_public_json", "公开 JSON", RadialAdvancedColor, this.DrawChainLinkGlyph, s => s.CodexRadarPublicJsonEnabled));
+        link.Children.Add(NewSettingToggle("CodexRadarHtmlFallbackEnabled", "all_codex_html", "HTML 回退", RadialAdvancedColor, this.DrawAppWindowGlyph, s => s.CodexRadarHtmlFallbackEnabled));
+        link.Children.Add(NewSettingToggle("CodexRadarRssFallbackEnabled", "all_codex_rss", "RSS 提醒", RadialAdvancedColor, this.DrawRefreshLoopGlyph, s => s.CodexRadarRssFallbackEnabled));
+        codex.Children.Add(link);
+
+        RadialNode quotaPlan = NewBranch("all_codex_quota_plan", "额度计划", RadialAdvancedColor, this.DrawPieWedgeGlyph);
+        quotaPlan.Children.Add(NewToggle(
+            "all_quota_plan_enabled",
+            "启用计划",
+            RadialAdvancedColor,
+            this.DrawPieWedgeGlyph,
+            () => this.currentSettings.CodexQuotaPlanEnabled,
+            ExecuteRadialQuotaPlanToggle,
+            () => this.currentSettings.CodexQuotaPlanEnabled ? "点击关闭额度计划" : "点击开启额度计划"));
+        quotaPlan.Children.Add(NewSettingToggle("CodexQuotaPlanAutoResumePausedGoals", "all_quota_auto_resume", "恢复上次", RadialAdvancedColor, this.DrawRestartLoopGlyph, s => s.CodexQuotaPlanAutoResumePausedGoals));
+        codex.Children.Add(quotaPlan);
+
+        RadialNode protection = NewBranch("all_codex_quota_protection", "额度保护", RadialAdvancedColor, this.DrawBatterySparkGlyph);
+        protection.Children.Add(NewSettingToggle("CodexQuotaDueResetProtectionEnabled", "all_quota_due_reset", "到期重置", RadialAdvancedColor, this.DrawRefreshLoopGlyph, s => s.CodexQuotaDueResetProtectionEnabled));
+        protection.Children.Add(NewSettingToggle("CodexQuotaRssResetProtectionEnabled", "all_quota_rss_reset", "RSS 重置", RadialAdvancedColor, this.DrawRefreshLoopGlyph, s => s.CodexQuotaRssResetProtectionEnabled));
+        protection.Children.Add(NewSettingToggle("CodexQuotaProviderZeroDropProtectionEnabled", "all_quota_zero_drop", "零值保护", RadialAdvancedColor, this.DrawBatterySparkGlyph, s => s.CodexQuotaProviderZeroDropProtectionEnabled));
+        protection.Children.Add(NewSettingToggle("CodexQuotaDuplicateSameBalanceRingProtectionEnabled", "all_quota_same_ring", "保留消耗环", RadialAdvancedColor, this.DrawPieWedgeGlyph, s => s.CodexQuotaDuplicateSameBalanceRingProtectionEnabled));
+        protection.Children.Add(NewSettingToggle("CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled", "all_quota_five_spike", "5h 提前保护", RadialAdvancedColor, this.DrawGaugeGlyph, s => s.CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled));
+        protection.Children.Add(NewSettingToggle("CodexQuotaProviderWeeklySpikeProtectionEnabled", "all_quota_week_spike", "周突增保护", RadialAdvancedColor, this.DrawGaugeGlyph, s => s.CodexQuotaProviderWeeklySpikeProtectionEnabled));
+        protection.Children.Add(NewSettingToggle("CodexQuotaStrictFiveHourResetBoundaryEnabled", "all_quota_strict_5h", "严格 5h", RadialAdvancedColor, this.DrawWrenchGlyph, s => s.CodexQuotaStrictFiveHourResetBoundaryEnabled));
+        protection.Children.Add(NewSettingToggle("CodexQuotaWeeklyBaselineAutoRepairEnabled", "all_quota_week_repair", "周基线修复", RadialAdvancedColor, this.DrawWrenchGlyph, s => s.CodexQuotaWeeklyBaselineAutoRepairEnabled));
+        codex.Children.Add(protection);
+
+        RadialNode tests = NewBranch("all_codex_tests", "测试覆盖", RadialAdvancedColor, this.DrawBeakerGlyph);
+        tests.Children.Add(NewSettingToggle("CodexModelIqTestEnabled", "all_codex_iq_test", "IQ 测试", RadialAdvancedColor, this.DrawBeakerGlyph, s => s.CodexModelIqTestEnabled));
+        tests.Children.Add(NewSettingToggle("CodexModelIqBaselineAutoEnabled", "all_codex_iq_auto", "IQ 自动基准", RadialAdvancedColor, this.DrawRefreshLoopGlyph, s => s.CodexModelIqBaselineAutoEnabled));
+        tests.Children.Add(NewSettingToggle("CodexModelEfficiencyTestEnabled", "all_codex_eff_test", "效率测试", RadialAdvancedColor, this.DrawGaugeGlyph, s => s.CodexModelEfficiencyTestEnabled));
+        tests.Children.Add(NewSettingToggle("CodexRadarRandomTestEnabled", "all_codex_random", "随机测试", RadialAdvancedColor, this.DrawSparkleGlyphFour, s => s.CodexRadarRandomTestEnabled));
+        tests.Children.Add(NewSettingToggle("CodexRadarRandomTestAutoRefresh", "all_codex_random_auto", "随机自刷", RadialAdvancedColor, this.DrawRefreshLoopGlyph, s => s.CodexRadarRandomTestAutoRefresh));
+        codex.Children.Add(tests);
+
+        return codex;
+    }
+
+    private RadialNode BuildRadialAllClaudeSettingsBranch()
+    {
+        RadialNode claude = NewBranch("all_claude", "Claude 设置", RadialAssistColor, (g, r) => DrawSparkleGlyph(g, r, 6));
+        claude.Children.Add(NewSettingToggle("ClaudeRadarJsonEnabled", "all_claude_json", "站点 JSON", RadialAssistColor, this.DrawChainLinkGlyph, s => s.ClaudeRadarJsonEnabled));
+        claude.Children.Add(NewSettingToggle("ClaudeRadarCommunityRatingsEnabled", "all_claude_ratings", "社区体感分", RadialAssistColor, this.DrawSparkleGlyphSix, s => s.ClaudeRadarCommunityRatingsEnabled));
+        claude.Children.Add(NewSettingToggle("ClaudeRadarLocalQuotaFallbackEnabled", "all_claude_local_quota", "本地额度线", RadialAssistColor, this.DrawPieWedgeGlyph, s => s.ClaudeRadarLocalQuotaFallbackEnabled));
+        claude.Children.Add(NewSettingToggle("ClaudeRadarHomepageFallbackEnabled", "all_claude_homepage", "首页元数据", RadialAssistColor, this.DrawAppWindowGlyph, s => s.ClaudeRadarHomepageFallbackEnabled));
+        claude.Children.Add(NewSettingToggle("ClaudeRadarRandomTestEnabled", "all_claude_random", "随机测试", RadialAdvancedColor, this.DrawBeakerGlyph, s => s.ClaudeRadarRandomTestEnabled));
+        claude.Children.Add(NewSettingToggle("ClaudeRadarRandomTestAutoRefresh", "all_claude_random_auto", "随机自刷", RadialAdvancedColor, this.DrawRefreshLoopGlyph, s => s.ClaudeRadarRandomTestAutoRefresh));
+        return claude;
+    }
+
+    private RadialNode NewSettingToggle(
+        string propertyName,
+        string id,
+        string label,
+        Color color,
+        Action<Graphics, RectangleF> drawIcon,
+        Func<WidgetSettings, bool> getState,
+        bool requiresConfirmation = false,
+        string confirmationText = null)
+    {
+        RadialSettingToggleDescriptor descriptor = new RadialSettingToggleDescriptor
+        {
+            PropertyName = propertyName,
+            Id = id,
+            Label = label,
+            Color = color,
+            DrawIcon = drawIcon,
+            GetState = getState,
+            RequiresConfirmation = requiresConfirmation,
+            ConfirmationText = confirmationText
+        };
+        return NewToggle(
+            descriptor.Id,
+            descriptor.Label,
+            descriptor.Color,
+            descriptor.DrawIcon,
+            () => GetRadialSettingState(descriptor),
+            () => ExecuteRadialSettingToggle(descriptor),
+            () => GetRadialSettingToggleTooltip(descriptor));
+    }
+
+    private bool GetRadialSettingState(RadialSettingToggleDescriptor descriptor)
+    {
+        return this.currentSettings != null &&
+            descriptor.GetState != null &&
+            descriptor.GetState(this.currentSettings);
+    }
+
+    private string GetRadialSettingToggleTooltip(RadialSettingToggleDescriptor descriptor)
+    {
+        bool enabled = GetRadialSettingState(descriptor);
+        return (enabled ? "点击关闭" : "点击开启") + descriptor.Label + "\r\n" + descriptor.PropertyName;
+    }
+
+    private void ExecuteRadialSettingToggle(RadialSettingToggleDescriptor descriptor)
+    {
+        bool next = !GetRadialSettingState(descriptor);
+        if (descriptor.RequiresConfirmation)
+        {
+            DialogResult result = MessageBox.Show(
+                this,
+                descriptor.ConfirmationText ?? ("确定要切换“" + descriptor.Label + "”？"),
+                descriptor.Label,
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2);
+            if (result != DialogResult.Yes)
+            {
+                return;
+            }
+        }
+
+        if (this.setBooleanSettingAction == null)
+        {
+            ShowOperationNotification("设置切换", "当前宿主不支持此设置。", ToolTipIcon.Warning);
+            return;
+        }
+
+        try
+        {
+            if (!this.setBooleanSettingAction(descriptor.PropertyName, next))
+            {
+                ShowOperationNotification("设置切换", descriptor.Label + " 切换失败。", ToolTipIcon.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            ShowOperationNotification("设置切换", descriptor.Label + " 切换失败。", ToolTipIcon.Warning);
         }
     }
 
-    // The only branch deeper than one level: Settings > 特殊设置 > (link block / quota plan / CTF).
-    private static List<RadialItemId> GetSpecialSettingsChildren()
+    private void DrawSparkleGlyphFour(Graphics g, RectangleF rect)
     {
-        return new List<RadialItemId> { RadialItemId.LinkBlockToggle, RadialItemId.QuotaPlanToggle, RadialItemId.CtfRestart };
+        DrawSparkleGlyph(g, rect, 4);
     }
 
-    private static string GetCategoryName(RadialCategoryId category)
+    private void DrawSparkleGlyphSix(Graphics g, RectangleF rect)
     {
-        switch (category)
-        {
-            case RadialCategoryId.Settings: return "设置";
-            case RadialCategoryId.Power: return "电源";
-            case RadialCategoryId.SystemTools: return "系统工具";
-            case RadialCategoryId.Battery: return "电池维护";
-            case RadialCategoryId.Assist: return "辅助功能";
-            default: return string.Empty;
-        }
+        DrawSparkleGlyph(g, rect, 6);
     }
 
-    private static Color GetCategoryColor(RadialCategoryId category)
+    private void DrawSparkleShieldGlyph(Graphics g, RectangleF rect)
     {
-        switch (category)
-        {
-            case RadialCategoryId.Settings: return Color.FromArgb(198, 193, 182);
-            case RadialCategoryId.Power: return Color.FromArgb(255, 176, 89);
-            case RadialCategoryId.SystemTools: return Color.FromArgb(120, 214, 189);
-            case RadialCategoryId.Battery: return Color.FromArgb(140, 214, 150);
-            case RadialCategoryId.Assist: return Color.FromArgb(214, 150, 214);
-            default: return DesignTokens.Colors.GlyphMuted;
-        }
+        DrawSparkleGlyph(g, rect, 5);
     }
 
-    // The "advanced" branch (特殊设置 and its three children) gets its own color instead of
-    // inheriting Settings' -- crossing into it is a deliberate second click, and the color change
-    // reinforces that these three actions are a different kind of thing (process kill / elevation).
-    private static readonly Color RadialAdvancedColor = Color.FromArgb(224, 120, 120);
-
-    private static Color GetLeafColor(RadialItemId item)
+    private bool IsRadialCtfRestartBusy()
     {
-        switch (item)
-        {
-            case RadialItemId.NormalSettings:
-            case RadialItemId.WindowsSettings:
-                return GetCategoryColor(RadialCategoryId.Settings);
-            case RadialItemId.SpecialSettingsBranch:
-            case RadialItemId.LinkBlockToggle:
-            case RadialItemId.QuotaPlanToggle:
-            case RadialItemId.CtfRestart:
-                return RadialAdvancedColor;
-            case RadialItemId.PowerMenu:
-            case RadialItemId.RestartApp:
-            case RadialItemId.PulseDock:
-                return GetCategoryColor(RadialCategoryId.Power);
-            case RadialItemId.TaskManager:
-            case RadialItemId.QuickSettings:
-            case RadialItemId.SystemToolsMenu:
-            case RadialItemId.Refresh:
-                return GetCategoryColor(RadialCategoryId.SystemTools);
-            case RadialItemId.BatteryCarePause:
-            case RadialItemId.BatteryLimitRestore:
-                return GetCategoryColor(RadialCategoryId.Battery);
-            default:
-                return GetCategoryColor(RadialCategoryId.Assist);
-        }
+        return Interlocked.CompareExchange(ref this.radialCtfRestartRunning, 0, 0) != 0;
     }
 
-    // Blends a category hue into a warm-neutral base at restrained saturation, matching the
-    // project's "no peak-white/saturated fills" convention even though Classic isn't OLED-only.
-    private static Color MutedCategoryTint(Color categoryColor)
+    // Re-resolves the stored id chain against the live tree every time (rather than holding node
+    // references) so a tree rebuild (e.g. battery visibility flips) or a since-removed node can never
+    // leave a dangling reference; a stale id silently truncates the path instead of throwing.
+    private List<RadialNode> ResolveSelectionPath()
     {
-        int r = (int)Math.Round(categoryColor.R * 0.40 + 233.0 * 0.60);
-        int g = (int)Math.Round(categoryColor.G * 0.40 + 228.0 * 0.60);
-        int b = (int)Math.Round(categoryColor.B * 0.40 + 220.0 * 0.60);
-        return Color.FromArgb(ClampByte(r), ClampByte(g), ClampByte(b));
-    }
-
-    private bool IsRadialItemUnavailable(RadialItemId item)
-    {
-        if (item == RadialItemId.AiStudio)
+        List<RadialNode> resolved = new List<RadialNode>();
+        List<RadialNode> siblings = GetRadialRoots();
+        foreach (string id in this.radialSelectionPathIds)
         {
-            return !this.windowsAiStudioAvailable;
+            RadialNode found = siblings.Find(n => n.Id == id);
+            if (found == null)
+            {
+                break;
+            }
+
+            resolved.Add(found);
+            siblings = found.Children;
         }
 
-        if (item == RadialItemId.LiveCaptions)
+        if (resolved.Count != this.radialSelectionPathIds.Count)
         {
-            return !this.liveCaptionsAvailable;
+            List<string> trimmed = new List<string>();
+            for (int i = 0; i < resolved.Count; i++)
+            {
+                trimmed.Add(resolved[i].Id);
+            }
+
+            this.radialSelectionPathIds = trimmed;
         }
 
-        return false;
-    }
-
-    private bool IsRadialItemBusy(RadialItemId item)
-    {
-        if (item == RadialItemId.PowerMenu)
-        {
-            return Interlocked.CompareExchange(ref this.seelenPowerMenuRequestRunning, 0, 0) != 0;
-        }
-
-        if (item == RadialItemId.BatteryCarePause)
-        {
-            return this.batteryCarePauseRunning;
-        }
-
-        if (item == RadialItemId.BatteryLimitRestore)
-        {
-            return this.batteryLimitRestoreRunning;
-        }
-
-        if (item == RadialItemId.CtfRestart)
-        {
-            return Interlocked.CompareExchange(ref this.radialCtfRestartRunning, 0, 0) != 0;
-        }
-
-        return false;
+        return resolved;
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Geometry -- single ring per level (root categories, or the current level's children)
+    // Geometry -- one ring per currently-open level (root always, plus one more per drilled node),
+    // rendered simultaneously so drilling deeper never hides the rings above it.
     // ---------------------------------------------------------------------------------------------
 
     private RadialLayout ComputeRadialLayout()
@@ -287,62 +753,74 @@ internal sealed partial class OperationForm
         int margin = S(3);
         int coreSize = GetStartButtonSize();
         RadialLayout layout = new RadialLayout();
-        layout.Level = this.radialLevel;
 
-        int count;
-        if (this.radialLevel == RadialLevel.Root)
-        {
-            layout.Categories = GetRootCategories();
-            count = layout.Categories.Count;
-        }
-        else if (this.radialLevel == RadialLevel.Category && this.radialActiveCategory.HasValue)
-        {
-            layout.Items = GetCategoryChildren(this.radialActiveCategory.Value);
-            count = layout.Items.Count;
-        }
-        else if (this.radialLevel == RadialLevel.SubCategory)
-        {
-            layout.Items = GetSpecialSettingsChildren();
-            count = layout.Items.Count;
-        }
-        else
+        if (!this.radialMenuOpen)
         {
             layout.WindowSize = new Size(margin * 2 + coreSize, margin * 2 + coreSize);
             layout.Core = new RectangleF(margin, margin, coreSize, coreSize);
-            layout.Rects = new RectangleF[0];
             return layout;
         }
 
+        List<RadialNode> resolvedPath = ResolveSelectionPath();
+        List<List<RadialNode>> levelNodeLists = new List<List<RadialNode>>();
+        levelNodeLists.Add(GetRadialRoots());
+        for (int i = 0; i < resolvedPath.Count; i++)
+        {
+            levelNodeLists.Add(resolvedPath[i].Children);
+        }
+
         int itemSize = GetSmallButtonSize();
-        float baseRadius = coreSize / 2.0f + coreSize * RadialGapScale + itemSize / 2.0f;
-        float radius = ComputeRingRadius(baseRadius, count, itemSize);
-        PointF[] offsets = ComputeArcOffsets(count, radius);
+        float coreRadius = coreSize / 2.0f;
+        float previousRadius = coreRadius;
+        float maxRight = coreRadius;
+        float maxUp = coreRadius;
+        List<PointF[]> levelOffsets = new List<PointF[]>();
 
-        float maxRight = coreSize / 2.0f;
-        float maxUp = coreSize / 2.0f;
-        AccumulateExtent(offsets, itemSize, ref maxRight, ref maxUp);
+        for (int levelIdx = 0; levelIdx < levelNodeLists.Count; levelIdx++)
+        {
+            int count = levelNodeLists[levelIdx].Count;
+            float baseRadius = levelIdx == 0
+                ? coreRadius + coreSize * RadialGapScale + itemSize / 2.0f
+                : previousRadius + itemSize * (RadialGapScale + 1.0f) * RadialLevelSpacingMultiplier;
+            float arcStartDeg;
+            float arcEndDeg;
+            GetRadialArcForLevel(count, out arcStartDeg, out arcEndDeg);
+            float radius = ComputeRingRadius(baseRadius, count, itemSize, arcStartDeg, arcEndDeg);
+            previousRadius = radius;
+            PointF[] offsets = ComputeArcOffsets(count, radius, arcStartDeg, arcEndDeg);
+            levelOffsets.Add(offsets);
+            AccumulateExtent(offsets, itemSize, ref maxRight, ref maxUp);
+        }
 
-        float coreCenterX = margin + coreSize / 2.0f;
+        float coreCenterX = margin + coreRadius;
         int windowWidth = (int)Math.Ceiling(coreCenterX + maxRight + margin);
-        int windowHeight = (int)Math.Ceiling(margin + coreSize / 2.0f + maxUp + margin);
-        float coreCenterY = windowHeight - margin - coreSize / 2.0f;
+        int windowHeight = (int)Math.Ceiling(margin + coreRadius + maxUp + margin);
+        float coreCenterY = windowHeight - margin - coreRadius;
 
         layout.WindowSize = new Size(windowWidth, windowHeight);
-        layout.Core = new RectangleF(coreCenterX - coreSize / 2.0f, coreCenterY - coreSize / 2.0f, coreSize, coreSize);
-        layout.Rects = BuildRectsFromOffsets(offsets, coreCenterX, coreCenterY, itemSize);
+        layout.Core = new RectangleF(coreCenterX - coreRadius, coreCenterY - coreRadius, coreSize, coreSize);
+
+        for (int levelIdx = 0; levelIdx < levelNodeLists.Count; levelIdx++)
+        {
+            RadialLevelLayout ll = new RadialLevelLayout();
+            ll.Nodes = levelNodeLists[levelIdx];
+            ll.Rects = BuildRectsFromOffsets(levelOffsets[levelIdx], coreCenterX, coreCenterY, itemSize);
+            layout.Levels.Add(ll);
+        }
+
         return layout;
     }
 
-    // Grows the ring radius beyond the resting gap-from-core radius whenever the arc is dense enough
-    // that evenly-spaced items would otherwise overlap.
-    private static float ComputeRingRadius(float baseRadius, int itemCount, float itemSize)
+    // Grows the ring radius beyond the resting gap-from-previous-ring radius whenever the arc is
+    // dense enough that evenly-spaced items would otherwise overlap.
+    private static float ComputeRingRadius(float baseRadius, int itemCount, float itemSize, float arcStartDeg, float arcEndDeg)
     {
         if (itemCount <= 1)
         {
             return baseRadius;
         }
 
-        float archSpanDeg = RadialArcEndDeg - RadialArcStartDeg;
+        float archSpanDeg = arcEndDeg - arcStartDeg;
         double gapRad = (archSpanDeg / (itemCount - 1)) * Math.PI / 180.0;
         double sinHalfGap = Math.Sin(gapRad / 2.0);
         if (sinHalfGap < 0.001)
@@ -354,9 +832,29 @@ internal sealed partial class OperationForm
         return Math.Max(baseRadius, required);
     }
 
+    private static void GetRadialArcForLevel(int itemCount, out float startDeg, out float endDeg)
+    {
+        if (itemCount >= RadialDenseArcMinItems)
+        {
+            startDeg = RadialDenseArcStartDeg;
+            endDeg = RadialDenseArcEndDeg;
+            return;
+        }
+
+        if (itemCount >= RadialMediumArcMinItems)
+        {
+            startDeg = RadialMediumArcStartDeg;
+            endDeg = RadialMediumArcEndDeg;
+            return;
+        }
+
+        startDeg = RadialSparseArcStartDeg;
+        endDeg = RadialSparseArcEndDeg;
+    }
+
     // Offsets are in "quadrant space": origin at the core center, +X right, +Y UP (not screen Y-down
     // yet -- BuildRectsFromOffsets flips the sign when placing items).
-    private static PointF[] ComputeArcOffsets(int count, float radius)
+    private static PointF[] ComputeArcOffsets(int count, float radius, float arcStartDeg, float arcEndDeg)
     {
         PointF[] result = new PointF[count];
         if (count <= 0)
@@ -366,7 +864,7 @@ internal sealed partial class OperationForm
 
         if (count == 1)
         {
-            double midRad = ((RadialArcStartDeg + RadialArcEndDeg) / 2.0) * Math.PI / 180.0;
+            double midRad = ((arcStartDeg + arcEndDeg) / 2.0) * Math.PI / 180.0;
             result[0] = new PointF((float)(Math.Cos(midRad) * radius), (float)(Math.Sin(midRad) * radius));
             return result;
         }
@@ -374,7 +872,7 @@ internal sealed partial class OperationForm
         for (int i = 0; i < count; i++)
         {
             double t = (double)i / (count - 1);
-            double angleDeg = RadialArcStartDeg + t * (RadialArcEndDeg - RadialArcStartDeg);
+            double angleDeg = arcStartDeg + t * (arcEndDeg - arcStartDeg);
             double angleRad = angleDeg * Math.PI / 180.0;
             result[i] = new PointF((float)(Math.Cos(angleRad) * radius), (float)(Math.Sin(angleRad) * radius));
         }
@@ -409,44 +907,80 @@ internal sealed partial class OperationForm
     // Hit-testing / mouse routing (branched into from OperationForm.cs's OnMouseDown/Up/Move/Leave)
     // ---------------------------------------------------------------------------------------------
 
-    private RadialHitKind RadialHitTest(Point point, out int index)
+    private RadialHitResult RadialHitTest(Point point)
     {
-        index = -1;
         RadialLayout layout = ComputeRadialLayout();
-        if (layout.Core.Contains(point.X, point.Y))
+        if (IsPointInRadialCore(layout, point))
         {
-            return RadialHitKind.Core;
+            return new RadialHitResult { Kind = RadialHitKind.Core, Level = -1, Index = -1 };
         }
 
-        if (layout.Rects != null)
+        for (int levelIdx = 0; levelIdx < layout.Levels.Count; levelIdx++)
         {
-            for (int i = 0; i < layout.Rects.Length; i++)
+            RadialLevelLayout ll = layout.Levels[levelIdx];
+            for (int i = 0; i < ll.Rects.Length; i++)
             {
-                if (layout.Rects[i].Contains(point.X, point.Y))
+                if (ll.Rects[i].Contains(point.X, point.Y))
                 {
-                    index = i;
-                    return RadialHitKind.Item;
+                    return new RadialHitResult { Kind = RadialHitKind.Item, Level = levelIdx, Index = i, Node = ll.Nodes[i] };
                 }
             }
         }
 
-        return RadialHitKind.None;
+        return new RadialHitResult { Kind = RadialHitKind.None, Level = -1, Index = -1 };
+    }
+
+    internal bool IsRadialCoreAutoHideKeepAliveActive()
+    {
+        if (!IsRadialDialActive() ||
+            this.formClosing ||
+            this.hiddenForFullscreen ||
+            this.displaySuspended ||
+            !this.Visible ||
+            this.IsDisposed ||
+            !this.IsHandleCreated)
+        {
+            return false;
+        }
+
+        return IsPointInRadialCore(ComputeRadialLayout(), PointToClient(Cursor.Position));
+    }
+
+    private static bool IsPointInRadialCore(RadialLayout layout, Point point)
+    {
+        return layout != null && layout.Core.Contains(point.X, point.Y);
+    }
+
+    internal void ClearRadialCoreAutoHideThresholdVisual()
+    {
+        this.radialCoreHoverStartedUtc = DateTime.MinValue;
+        this.radialCoreAutoHideThresholdVisualActive = false;
     }
 
     private void HandleRadialMouseMove(MouseEventArgs e)
     {
-        int index;
-        RadialHitKind kind = RadialHitTest(e.Location, out index);
-        bool coreHover = kind == RadialHitKind.Core;
-        int itemHover = kind == RadialHitKind.Item ? index : -1;
-        if (coreHover == this.radialCoreHovered && itemHover == this.radialHoveredIndex)
+        ResetRadialIdleCollapseTimerForInteraction();
+
+        RadialHitResult hit = RadialHitTest(e.Location);
+        bool coreHover = hit.Kind == RadialHitKind.Core;
+        int hoverLevel = hit.Kind == RadialHitKind.Item ? hit.Level : -1;
+        int hoverIndex = hit.Kind == RadialHitKind.Item ? hit.Index : -1;
+        if (coreHover == this.radialCoreHovered &&
+            hoverLevel == this.radialHoveredLevel &&
+            hoverIndex == this.radialHoveredIndex)
         {
             return;
         }
 
         this.radialCoreHovered = coreHover;
-        this.radialHoveredIndex = itemHover;
-        UpdateRadialHoverToolTip(kind, index, e.Location);
+        if (!coreHover)
+        {
+            ClearRadialCoreAutoHideThresholdVisual();
+        }
+
+        this.radialHoveredLevel = hoverLevel;
+        this.radialHoveredIndex = hoverIndex;
+        UpdateRadialHoverToolTip(hit, e.Location);
         RenderLayeredWindow();
     }
 
@@ -458,125 +992,149 @@ internal sealed partial class OperationForm
         }
 
         this.radialCoreHovered = false;
+        this.radialHoveredLevel = -1;
         this.radialHoveredIndex = -1;
+        ClearRadialCoreAutoHideThresholdVisual();
         HideHoverToolTip();
         RenderLayeredWindow();
     }
 
     private void HandleRadialMouseDown(MouseEventArgs e)
     {
-        if (e.Button != MouseButtons.Left)
+        if (e.Button != MouseButtons.Left && e.Button != MouseButtons.Right)
         {
             return;
         }
 
+        if (this.radialMenuOpen)
+        {
+            ResetRadialIdleCollapseTimerForInteraction();
+        }
+
         HideHoverToolTip();
-        int index;
-        RadialHitKind kind = RadialHitTest(e.Location, out index);
-        this.radialCorePressed = kind == RadialHitKind.Core;
-        this.radialPressedIndex = kind == RadialHitKind.Item ? index : -1;
+        RadialHitResult hit = RadialHitTest(e.Location);
+        this.radialCorePressed = hit.Kind == RadialHitKind.Core;
+        this.radialPressedLevel = e.Button == MouseButtons.Left && hit.Kind == RadialHitKind.Item ? hit.Level : -1;
+        this.radialPressedIndex = e.Button == MouseButtons.Left && hit.Kind == RadialHitKind.Item ? hit.Index : -1;
         RenderLayeredWindow();
     }
 
     private void HandleRadialMouseUp(MouseEventArgs e)
     {
-        int index;
-        RadialHitKind kind = RadialHitTest(e.Location, out index);
+        RadialHitResult hit = RadialHitTest(e.Location);
         bool corePressed = this.radialCorePressed;
+        int pressedLevel = this.radialPressedLevel;
         int pressedIndex = this.radialPressedIndex;
         this.radialCorePressed = false;
+        this.radialPressedLevel = -1;
         this.radialPressedIndex = -1;
         RenderLayeredWindow();
+
+        if (e.Button == MouseButtons.Right)
+        {
+            if (hit.Kind == RadialHitKind.Core && corePressed)
+            {
+                OpenWindowsSystemToolsMenu();
+                ResetRadialIdleCollapseTimerForInteraction();
+            }
+
+            return;
+        }
 
         if (e.Button != MouseButtons.Left)
         {
             return;
         }
 
-        if (kind == RadialHitKind.Core && corePressed)
+        if (hit.Kind == RadialHitKind.Core && corePressed)
         {
-            NavigateRadialBack();
-            return;
-        }
-
-        if (kind != RadialHitKind.Item || index != pressedIndex)
-        {
-            return;
-        }
-
-        if (this.radialLevel == RadialLevel.Root)
-        {
-            List<RadialCategoryId> categories = GetRootCategories();
-            if (index < 0 || index >= categories.Count)
+            if (this.radialMenuOpen)
             {
-                return;
+                CloseRadialMenu();
+            }
+            else
+            {
+                OpenRadialMenu();
             }
 
-            this.radialActiveCategory = categories[index];
-            this.radialLevel = RadialLevel.Category;
+            return;
+        }
+
+        if (hit.Kind != RadialHitKind.Item || hit.Level != pressedLevel || hit.Index != pressedIndex)
+        {
+            return;
+        }
+
+        RadialNode node = hit.Node;
+        if (node.IsBranch)
+        {
+            List<RadialNode> resolvedPath = ResolveSelectionPath();
+            bool alreadyActive = hit.Level < resolvedPath.Count && resolvedPath[hit.Level].Id == node.Id;
+            int keepCount = Math.Min(hit.Level, this.radialSelectionPathIds.Count);
+            List<string> newPathIds = this.radialSelectionPathIds.GetRange(0, keepCount);
+            if (!alreadyActive)
+            {
+                newPathIds.Add(node.Id);
+            }
+
+            this.radialSelectionPathIds = newPathIds;
+            ResetRadialIdleCollapseTimerForInteraction();
             ClearRadialTransientState();
             ApplyRadialSizeAndPosition();
             return;
         }
 
-        if (this.radialLevel == RadialLevel.Category || this.radialLevel == RadialLevel.SubCategory)
+        if (node.IsUnavailable != null && node.IsUnavailable())
         {
-            List<RadialItemId> items = this.radialLevel == RadialLevel.SubCategory
-                ? GetSpecialSettingsChildren()
-                : GetCategoryChildren(this.radialActiveCategory.GetValueOrDefault());
-            if (index < 0 || index >= items.Count)
-            {
-                return;
-            }
-
-            RadialItemId item = items[index];
-            if (item == RadialItemId.SpecialSettingsBranch)
-            {
-                this.radialLevel = RadialLevel.SubCategory;
-                ClearRadialTransientState();
-                ApplyRadialSizeAndPosition();
-                return;
-            }
-
-            ExecuteRadialItem(item);
-            CollapseRadialFully();
+            return;
         }
+
+        if (node.IsBusy != null && node.IsBusy())
+        {
+            return;
+        }
+
+        if (node.Execute != null)
+        {
+            node.Execute();
+        }
+
+        if (ShouldKeepRadialMenuOpenAfterLeafClick())
+        {
+            ResetRadialIdleCollapseTimerForInteraction();
+            ClearRadialTransientState();
+            RenderLayeredWindow();
+            return;
+        }
+
+        CloseRadialMenu();
     }
 
-    private void NavigateRadialBack()
+    private bool ShouldKeepRadialMenuOpenAfterLeafClick()
     {
-        if (this.radialLevel == RadialLevel.Collapsed)
-        {
-            this.radialLevel = RadialLevel.Root;
-        }
-        else if (this.radialLevel == RadialLevel.Root)
-        {
-            this.radialLevel = RadialLevel.Collapsed;
-        }
-        else if (this.radialLevel == RadialLevel.SubCategory)
-        {
-            this.radialLevel = RadialLevel.Category;
-        }
-        else if (this.radialLevel == RadialLevel.Category)
-        {
-            this.radialLevel = RadialLevel.Root;
-            this.radialActiveCategory = null;
-        }
+        return this.currentSettings == null ||
+            this.currentSettings.OperationRadialKeepOpenAfterLeafClickEnabled;
+    }
 
+    private void OpenRadialMenu()
+    {
+        this.radialMenuOpen = true;
+        this.radialSelectionPathIds = new List<string>();
+        this.radialLastInteractionUtc = DateTime.UtcNow;
         ClearRadialTransientState();
         ApplyRadialSizeAndPosition();
     }
 
-    private void CollapseRadialFully()
+    private void CloseRadialMenu()
     {
-        this.radialLevel = RadialLevel.Collapsed;
-        this.radialActiveCategory = null;
+        this.radialMenuOpen = false;
+        this.radialSelectionPathIds = new List<string>();
         ClearRadialTransientState();
         ApplyRadialSizeAndPosition();
     }
 
     // Mirrors the resize+reposition+redraw the periodic tick already does (OperationForm.cs's timer
-    // handler), fired immediately on every level change instead of waiting up to one tick interval.
+    // handler), fired immediately on every navigation change instead of waiting up to one tick.
     private void ApplyRadialSizeAndPosition()
     {
         Size desired = GetDesiredSize();
@@ -589,9 +1147,120 @@ internal sealed partial class OperationForm
         RenderLayeredWindow();
     }
 
-    private void UpdateRadialHoverToolTip(RadialHitKind kind, int index, Point location)
+    // Called from OperationForm.ProcessSharedInteractionTick (the shared per-tick hook other windows
+    // also use) since, unlike before, navigating no longer hides anything on its own -- the menu now
+    // only ever retracts by an explicit core click or by sitting idle for a few seconds.
+    private bool TickRadialIdleCollapse()
     {
-        string text = GetRadialTooltipText(kind, index);
+        if (!ShouldRadialIdleCollapse(DateTime.UtcNow))
+        {
+            return false;
+        }
+
+        CloseRadialMenu();
+        return true;
+    }
+
+    private bool UpdateRadialCoreAutoHideThresholdVisual(DateTime nowUtc)
+    {
+        bool coreKeepAliveActive =
+            this.currentSettings != null &&
+            this.currentSettings.OperationRadialCoreAutoHideKeepAliveEnabled &&
+            IsRadialCoreAutoHideKeepAliveActive();
+
+        return UpdateRadialCoreAutoHideThresholdVisual(nowUtc, coreKeepAliveActive);
+    }
+
+    private bool UpdateRadialCoreAutoHideThresholdVisual(DateTime nowUtc, bool coreKeepAliveActive)
+    {
+        if (!coreKeepAliveActive)
+        {
+            bool wasActive = this.radialCoreAutoHideThresholdVisualActive;
+            ClearRadialCoreAutoHideThresholdVisual();
+            return wasActive;
+        }
+
+        if (this.radialCoreHoverStartedUtc == DateTime.MinValue)
+        {
+            this.radialCoreHoverStartedUtc = nowUtc;
+        }
+
+        bool shouldBeActive =
+            (nowUtc - this.radialCoreHoverStartedUtc).TotalSeconds >= GetRadialCoreAutoHideThresholdSeconds();
+        if (shouldBeActive == this.radialCoreAutoHideThresholdVisualActive)
+        {
+            return false;
+        }
+
+        this.radialCoreAutoHideThresholdVisualActive = shouldBeActive;
+        return true;
+    }
+
+    private int GetRadialCoreAutoHideThresholdSeconds()
+    {
+        int seconds = this.currentSettings == null
+            ? WidgetSettings.DefaultAutoHoverOpacityIdleSeconds
+            : this.currentSettings.AutoHoverOpacityIdleSeconds;
+        if (seconds < WidgetSettings.MinAutoHoverOpacityIdleSeconds)
+        {
+            return WidgetSettings.MinAutoHoverOpacityIdleSeconds;
+        }
+
+        if (seconds > WidgetSettings.MaxAutoHoverOpacityIdleSeconds)
+        {
+            return WidgetSettings.MaxAutoHoverOpacityIdleSeconds;
+        }
+
+        return seconds;
+    }
+
+    private bool ShouldRadialIdleCollapse(DateTime nowUtc)
+    {
+        int collapseSeconds = GetRadialIdleCollapseSeconds();
+        return this.radialMenuOpen &&
+            collapseSeconds > WidgetSettings.NeverOperationRadialIdleCollapseSeconds &&
+            (nowUtc - this.radialLastInteractionUtc).TotalSeconds >= collapseSeconds;
+    }
+
+    private int GetRadialIdleCollapseSeconds()
+    {
+        if (this.currentSettings == null)
+        {
+            return WidgetSettings.DefaultOperationRadialIdleCollapseSeconds;
+        }
+
+        int seconds = this.currentSettings.OperationRadialIdleCollapseSeconds;
+        if (seconds <= WidgetSettings.NeverOperationRadialIdleCollapseSeconds)
+        {
+            return WidgetSettings.NeverOperationRadialIdleCollapseSeconds;
+        }
+
+        if (seconds < WidgetSettings.MinOperationRadialIdleCollapseSeconds)
+        {
+            return WidgetSettings.MinOperationRadialIdleCollapseSeconds;
+        }
+
+        if (seconds > WidgetSettings.MaxOperationRadialIdleCollapseSeconds)
+        {
+            return WidgetSettings.MaxOperationRadialIdleCollapseSeconds;
+        }
+
+        return seconds;
+    }
+
+    private void ResetRadialIdleCollapseTimerForInteraction()
+    {
+        if (this.radialMenuOpen &&
+            this.currentSettings != null &&
+            this.currentSettings.OperationRadialIdleResetOnInteractionEnabled)
+        {
+            this.radialLastInteractionUtc = DateTime.UtcNow;
+        }
+    }
+
+    private void UpdateRadialHoverToolTip(RadialHitResult hit, Point location)
+    {
+        string text = GetRadialTooltipText(hit);
         if (string.IsNullOrEmpty(text))
         {
             HideHoverToolTip();
@@ -603,191 +1272,33 @@ internal sealed partial class OperationForm
         this.hoverToolTip.Show(text, this, new Point(location.X + S(12), location.Y + S(18)), 5000);
     }
 
-    private string GetRadialTooltipText(RadialHitKind kind, int index)
+    private string GetRadialTooltipText(RadialHitResult hit)
     {
-        if (kind == RadialHitKind.Core)
+        if (hit.Kind == RadialHitKind.Core)
         {
-            switch (this.radialLevel)
-            {
-                case RadialLevel.Collapsed: return "展开操作面板";
-                case RadialLevel.Root: return "收起";
-                case RadialLevel.SubCategory: return "返回设置";
-                default: return "返回";
-            }
+            return this.radialMenuOpen ? "收起操作面板" : "展开操作面板";
         }
 
-        if (kind != RadialHitKind.Item)
+        if (hit.Kind != RadialHitKind.Item || hit.Node == null)
         {
             return string.Empty;
         }
 
-        if (this.radialLevel == RadialLevel.Root)
+        if (hit.Node.GetTooltip != null)
         {
-            List<RadialCategoryId> categories = GetRootCategories();
-            if (index < 0 || index >= categories.Count)
-            {
-                return string.Empty;
-            }
-
-            return GetCategoryName(categories[index]);
+            return hit.Node.GetTooltip();
         }
 
-        List<RadialItemId> items = this.radialLevel == RadialLevel.SubCategory
-            ? GetSpecialSettingsChildren()
-            : GetCategoryChildren(this.radialActiveCategory.GetValueOrDefault());
-        if (index < 0 || index >= items.Count)
-        {
-            return string.Empty;
-        }
-
-        return GetLeafTooltipText(items[index]);
-    }
-
-    private string GetLeafTooltipText(RadialItemId item)
-    {
-        if (item == RadialItemId.SpecialSettingsBranch)
-        {
-            return "特殊设置\r\n链接阻断 / 额度计划 / CTF 重启";
-        }
-
-        if (IsRadialItemUnavailable(item))
-        {
-            if (item == RadialItemId.AiStudio)
-            {
-                return "AI Studio 当前不可用\r\n未检测到 ms-clicktodo 协议或 CoreAI 包";
-            }
-
-            if (item == RadialItemId.LiveCaptions)
-            {
-                return "实时字幕当前不可用\r\n未检测到系统实时字幕入口";
-            }
-
-            return "当前系统入口不可用";
-        }
-
-        switch (item)
-        {
-            case RadialItemId.NormalSettings:
-                return "程序设置";
-            case RadialItemId.WindowsSettings:
-                return "系统设置\r\nWindows 设置";
-            case RadialItemId.PowerMenu:
-                return "打开 SeelenUI 电源界面\r\n不可用时尝试 Windows 安全菜单";
-            case RadialItemId.Refresh:
-                return "刷新所有模块";
-            case RadialItemId.PulseDock:
-                return "拉到前 Seelen Dock";
-            case RadialItemId.RestartApp:
-                return "重启 SeelenUI 和本程序";
-            case RadialItemId.BatteryCarePause:
-                return "关闭电池保护 24 小时";
-            case RadialItemId.BatteryLimitRestore:
-                return "开启电池保护";
-            case RadialItemId.TaskManager:
-                return "打开任务管理器";
-            case RadialItemId.AiStudio:
-                return "打开 AI Studio";
-            case RadialItemId.QuickSettings:
-                return "打开快速设置\r\n使用快捷键 Win+A";
-            case RadialItemId.LiveCaptions:
-                return "打开实时字幕";
-            case RadialItemId.HoverOpacityToggle:
-                return this.currentSettings.ForceHoverOpacityActive ? "恢复模块透明度" : "切换到悬停透明度";
-            case RadialItemId.SystemToolsMenu:
-                return "Windows 系统工具菜单\r\n设备管理器、磁盘管理等";
-            case RadialItemId.LinkBlockToggle:
-                return this.currentSettings.AiRequestProtectionManualBlockEnabled
-                    ? "点击关闭链接阻断"
-                    : "点击开启链接阻断\r\n阻断本程序的 OpenAI / ChatGPT / Claude 请求";
-            case RadialItemId.QuotaPlanToggle:
-                return this.currentSettings.CodexQuotaPlanEnabled
-                    ? "点击关闭额度计划"
-                    : "点击开启额度计划\r\n阈值和 goal 列表在普通设置中调整";
-            case RadialItemId.CtfRestart:
-                return IsRadialItemBusy(RadialItemId.CtfRestart)
-                    ? "正在提权重启 ctfmon.exe..."
-                    : "提权重启当前会话的 ctfmon.exe";
-            default:
-                return string.Empty;
-        }
+        return hit.Node.Label;
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Action dispatch
+    // Action dispatch for the handful of leaves that need more than a plain ExecuteButton call
     // ---------------------------------------------------------------------------------------------
-
-    private void ExecuteRadialItem(RadialItemId item)
-    {
-        if (IsRadialItemUnavailable(item) || IsRadialItemBusy(item))
-        {
-            return;
-        }
-
-        switch (item)
-        {
-            case RadialItemId.WindowsSettings:
-                ExecuteButton(WindowsSettingsButtonIndex, MouseButtons.Left);
-                break;
-            case RadialItemId.PowerMenu:
-                ExecuteButton(WindowsPowerMenuButtonIndex, MouseButtons.Left);
-                break;
-            case RadialItemId.Refresh:
-                ExecuteButton(RefreshButtonIndex, MouseButtons.Left);
-                break;
-            case RadialItemId.PulseDock:
-                PulseSeelenDockFromOperationPanel();
-                break;
-            case RadialItemId.RestartApp:
-                ExecuteRestartButtonDoubleClick();
-                break;
-            case RadialItemId.BatteryCarePause:
-                ExecuteButton(BatteryCarePauseButtonIndex, MouseButtons.Left);
-                break;
-            case RadialItemId.BatteryLimitRestore:
-                ExecuteButton(BatteryLimitRestoreButtonIndex, MouseButtons.Left);
-                break;
-            case RadialItemId.NormalSettings:
-                ExecuteAppSettingsButtonDoubleClick();
-                break;
-            case RadialItemId.TaskManager:
-                ExecuteButton(TaskManagerButtonIndex, MouseButtons.Left);
-                break;
-            case RadialItemId.AiStudio:
-                ExecuteButton(WindowsAiStudioButtonIndex, MouseButtons.Left);
-                break;
-            case RadialItemId.QuickSettings:
-                ExecuteButton(WindowsQuickSettingsButtonIndex, MouseButtons.Left);
-                break;
-            case RadialItemId.LiveCaptions:
-                ExecuteButton(LiveCaptionsButtonIndex, MouseButtons.Left);
-                break;
-            case RadialItemId.HoverOpacityToggle:
-                ExecuteButton(HoverOpacityToggleButtonIndex, MouseButtons.Left);
-                break;
-            case RadialItemId.SystemToolsMenu:
-                ExecuteRadialSystemToolsMenu();
-                break;
-            case RadialItemId.LinkBlockToggle:
-                ExecuteRadialLinkBlockToggle();
-                break;
-            case RadialItemId.QuotaPlanToggle:
-                ExecuteRadialQuotaPlanToggle();
-                break;
-            case RadialItemId.CtfRestart:
-                BeginRadialCtfRestart();
-                break;
-        }
-    }
 
     private void ExecuteRadialSystemToolsMenu()
     {
-        if (!NativeMethods.OpenWindowsStartContextMenu())
-        {
-            ShowOperationNotification(
-                "系统工具菜单",
-                "未能打开 Windows 系统工具菜单。",
-                ToolTipIcon.Warning);
-        }
+        OpenWindowsSystemToolsMenu();
     }
 
     private void ExecuteRadialLinkBlockToggle()
@@ -902,54 +1413,169 @@ internal sealed partial class OperationForm
     {
         ConfigureGraphics(g);
         RadialLayout layout = ComputeRadialLayout();
-        if (layout.Categories != null)
+        if (!this.radialMenuOpen)
         {
-            for (int i = 0; i < layout.Rects.Length; i++)
-            {
-                DrawRadialCategoryNode(g, layout.Rects[i], layout.Categories[i], i == this.radialHoveredIndex, i == this.radialPressedIndex);
-            }
+            DrawRadialCore(g, layout.Core, new List<RadialNode>());
+            return;
         }
-        else if (layout.Items != null)
+
+        List<RadialNode> resolvedPath = ResolveSelectionPath();
+
+        for (int levelIdx = 0; levelIdx < layout.Levels.Count; levelIdx++)
         {
-            for (int i = 0; i < layout.Rects.Length; i++)
+            DrawRadialSameLevelRail(g, layout.Levels[levelIdx].Rects);
+        }
+
+        DrawRadialPathConnectors(g, layout, resolvedPath);
+
+        for (int levelIdx = 0; levelIdx < layout.Levels.Count; levelIdx++)
+        {
+            RadialLevelLayout ll = layout.Levels[levelIdx];
+            for (int i = 0; i < ll.Rects.Length; i++)
             {
-                DrawRadialLeafNode(g, layout.Rects[i], layout.Items[i], i == this.radialHoveredIndex, i == this.radialPressedIndex);
+                bool selected = levelIdx < resolvedPath.Count && resolvedPath[levelIdx].Id == ll.Nodes[i].Id;
+                bool hovered = levelIdx == this.radialHoveredLevel && i == this.radialHoveredIndex;
+                bool pressed = levelIdx == this.radialPressedLevel && i == this.radialPressedIndex;
+                DrawRadialNode(g, ll.Rects[i], ll.Nodes[i], selected, hovered, pressed);
             }
         }
 
-        DrawRadialCore(g, layout.Core);
+        DrawRadialCore(g, layout.Core, resolvedPath);
     }
 
-    // ----- shared circle chrome -----
-
-    private void GetRadialFillAndBorder(Color? tint, bool unavailable, bool busy, bool hovered, bool pressed, out Color fill, out Color border)
+    // Gray "rail" connecting every sibling within one level, in the same angular order they're
+    // drawn -- a visual backbone so a ring of buttons reads as one group.
+    private void DrawRadialSameLevelRail(Graphics g, RectangleF[] rects)
     {
+        if (rects.Length < 2)
+        {
+            return;
+        }
+
+        PointF[] centers = new PointF[rects.Length];
+        for (int i = 0; i < rects.Length; i++)
+        {
+            centers[i] = new PointF(rects[i].X + rects[i].Width / 2.0f, rects[i].Y + rects[i].Height / 2.0f);
+        }
+
+        using (Pen pen = new Pen(DesignTokens.WithAlpha(Color.White, ScaleAlpha(46, GetBackgroundOpacityAlpha())), Math.Max(1.0f, 1.2f * this.LayerScale)))
+        {
+            g.DrawLines(pen, centers);
+        }
+    }
+
+    // Light-green breadcrumb: core -> selected L1 -> selected L2 -> ... tracing the active drill path
+    // across however many rings are currently open.
+    private void DrawRadialPathConnectors(Graphics g, RadialLayout layout, List<RadialNode> resolvedPath)
+    {
+        if (resolvedPath.Count == 0)
+        {
+            return;
+        }
+
+        PointF previous = new PointF(layout.Core.X + layout.Core.Width / 2.0f, layout.Core.Y + layout.Core.Height / 2.0f);
+        Color lineColor = DesignTokens.WithAlpha(Color.FromArgb(150, 235, 180), ScaleAlpha(190, GetBackgroundOpacityAlpha()));
+        using (Pen pen = new Pen(lineColor, Math.Max(1.3f, 1.8f * this.LayerScale)))
+        {
+            for (int levelIdx = 0; levelIdx < resolvedPath.Count; levelIdx++)
+            {
+                RadialLevelLayout ll = layout.Levels[levelIdx];
+                int index = ll.Nodes.FindIndex(n => n.Id == resolvedPath[levelIdx].Id);
+                if (index < 0)
+                {
+                    break;
+                }
+
+                RectangleF r = ll.Rects[index];
+                PointF center = new PointF(r.X + r.Width / 2.0f, r.Y + r.Height / 2.0f);
+                g.DrawLine(pen, previous, center);
+                previous = center;
+            }
+        }
+    }
+
+    // Fill precedence: unavailable > busy > toggle-state (green/red) > selected-on-path (blue) >
+    // plain category tint.
+    private void DrawRadialNode(Graphics g, RectangleF rect, RadialNode node, bool selected, bool hovered, bool pressed)
+    {
+        if (rect.Width <= 0.0f || rect.Height <= 0.0f)
+        {
+            return;
+        }
+
+        bool unavailable = node.IsUnavailable != null && node.IsUnavailable();
+        bool busy = node.IsBusy != null && node.IsBusy();
+        bool isToggle = node.GetToggleState != null;
+        bool toggleOn = isToggle && node.GetToggleState();
+
         int backgroundAlpha = GetBackgroundOpacityAlpha();
         double hover = hovered ? 1.0 : 0.0;
         double press = pressed ? 1.0 : 0.0;
         int fillAlpha = ScaleAlpha(ClampByte((int)Math.Round(60 + hover * 52 + press * 34)), backgroundAlpha);
         int outlineAlpha = ScaleAlpha(ClampByte((int)Math.Round(46 + hover * 68 + press * 38)), backgroundAlpha);
+
+        Color fill;
+        Color border;
+        bool blueSelected = false;
         if (unavailable)
         {
             fill = DesignTokens.WithAlpha(DesignTokens.Colors.Control, ScaleAlpha(34, backgroundAlpha));
+            border = DesignTokens.White(outlineAlpha);
         }
         else if (busy)
         {
             fill = DesignTokens.WithAlpha(DesignTokens.Colors.Warning, ScaleAlpha(ClampByte((int)Math.Round(46 + hover * 40)), backgroundAlpha));
+            border = DesignTokens.White(outlineAlpha);
         }
-        else if (tint.HasValue)
+        else if (isToggle)
         {
-            fill = DesignTokens.WithAlpha(MutedCategoryTint(tint.Value), fillAlpha);
+            Color toggleColor = toggleOn ? DesignTokens.Colors.Success : DesignTokens.Colors.Danger;
+            fill = DesignTokens.WithAlpha(MutedCategoryTint(toggleColor), fillAlpha);
+            border = DesignTokens.WithAlpha(toggleColor, ScaleAlpha(190, backgroundAlpha));
+        }
+        else if (selected)
+        {
+            fill = DesignTokens.WithAlpha(MutedCategoryTint(RadialSelectedColor), ScaleAlpha(ClampByte((int)Math.Round(110 + hover * 40 + press * 24)), backgroundAlpha));
+            border = DesignTokens.WithAlpha(RadialSelectedColor, ScaleAlpha(220, backgroundAlpha));
+            blueSelected = true;
         }
         else
         {
-            fill = DesignTokens.White(fillAlpha);
+            fill = DesignTokens.WithAlpha(MutedCategoryTint(node.BaseColor), fillAlpha);
+            border = DesignTokens.White(outlineAlpha);
         }
 
-        border = DesignTokens.White(outlineAlpha);
+        using (SolidBrush brush = new SolidBrush(fill))
+        {
+            g.FillEllipse(brush, rect);
+        }
+
+        using (Pen pen = new Pen(border, Math.Max(1.0f, (blueSelected ? 1.6f : 1.0f) * this.LayerScale)))
+        {
+            g.DrawEllipse(pen, rect);
+        }
+
+        if (node.IsBranch)
+        {
+            Color ringColor = blueSelected ? RadialSelectedColor : node.BaseColor;
+            using (Pen expandPen = new Pen(DesignTokens.WithAlpha(ringColor, ScaleAlpha(150, backgroundAlpha)), Math.Max(0.9f, 1.1f * this.LayerScale)))
+            {
+                g.DrawEllipse(expandPen, RectangleF.Inflate(rect, Math.Max(1.5f, rect.Width * 0.09f), Math.Max(1.5f, rect.Height * 0.09f)));
+            }
+        }
+
+        node.DrawIcon(g, GetIconRect(rect));
+
+        if (unavailable)
+        {
+            using (SolidBrush veil = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, ScaleAlpha(116, backgroundAlpha))))
+            {
+                g.FillEllipse(veil, rect);
+            }
+        }
     }
 
-    private void DrawRadialCore(Graphics g, RectangleF rect)
+    private void DrawRadialCore(Graphics g, RectangleF rect, List<RadialNode> resolvedPath)
     {
         if (rect.Width <= 0.0f || rect.Height <= 0.0f)
         {
@@ -959,19 +1585,8 @@ internal sealed partial class OperationForm
         int backgroundAlpha = GetBackgroundOpacityAlpha();
         double hover = this.radialCoreHovered ? 1.0 : 0.0;
         double press = this.radialCorePressed ? 1.0 : 0.0;
+        Color? tint = resolvedPath.Count > 0 ? (Color?)resolvedPath[0].BaseColor : null;
 
-        Color? tint = null;
-        if (this.radialLevel == RadialLevel.SubCategory)
-        {
-            tint = RadialAdvancedColor;
-        }
-        else if (this.radialLevel == RadialLevel.Category && this.radialActiveCategory.HasValue)
-        {
-            tint = GetCategoryColor(this.radialActiveCategory.Value);
-        }
-
-        // A soft diagonal two-stop gradient reads as a considered, lightly domed surface instead of
-        // the flat single-tone disc the first RadialDial cut shipped with.
         Color baseLight = tint.HasValue
             ? DesignTokens.WithAlpha(Lighten(MutedCategoryTint(tint.Value), 0.22), ScaleAlpha(ClampByte((int)Math.Round(150 + hover * 60 + press * 30)), backgroundAlpha))
             : DesignTokens.WithAlpha(Color.FromArgb(250, 248, 244), ScaleAlpha(ClampByte((int)Math.Round(130 + hover * 60 + press * 30)), backgroundAlpha));
@@ -1009,152 +1624,74 @@ internal sealed partial class OperationForm
             g.DrawEllipse(hairline, RectangleF.Inflate(outer, -0.5f, -0.5f));
         }
 
-        DrawRadialCoreGlyph(g, GetIconRect(ring));
+        DrawRadialCoreGlyph(g, GetIconRect(ring), resolvedPath);
+        if (this.radialMenuOpen && resolvedPath.Count > 0)
+        {
+            DrawRadialCoreDepthDots(g, ring, resolvedPath.Count + 1);
+        }
+
+        if (this.radialCoreAutoHideThresholdVisualActive)
+        {
+            DrawRadialCoreAutoHideThresholdVisual(g, outer);
+        }
     }
 
-    private void DrawRadialCategoryNode(Graphics g, RectangleF rect, RadialCategoryId category, bool hovered, bool pressed)
+    private void DrawRadialCoreAutoHideThresholdVisual(Graphics g, RectangleF rect)
     {
         if (rect.Width <= 0.0f || rect.Height <= 0.0f)
         {
             return;
         }
 
-        Color fill;
-        Color border;
-        GetRadialFillAndBorder(GetCategoryColor(category), false, false, hovered, pressed, out fill, out border);
-
-        using (SolidBrush brush = new SolidBrush(fill))
+        CompositingMode previousMode = g.CompositingMode;
+        try
         {
-            g.FillEllipse(brush, rect);
-        }
+            // SourceCopy changes the final layered-window pixel alpha. SourceOver would only tint
+            // the already drawn core and leave it opaque against the desktop.
+            g.CompositingMode = CompositingMode.SourceCopy;
+            using (SolidBrush dimBrush = new SolidBrush(Color.FromArgb(RadialCoreAutoHideThresholdDimAlpha, 0, 0, 0)))
+            {
+                g.FillEllipse(dimBrush, rect);
+            }
 
-        using (Pen pen = new Pen(border, Math.Max(1.0f, this.LayerScale)))
+            float borderWidth = Math.Max(1.0f, 3.0f * this.LayerScale);
+            RectangleF borderRect = RectangleF.Inflate(rect, -borderWidth / 2.0f, -borderWidth / 2.0f);
+            using (Pen borderPen = new Pen(Color.FromArgb(RadialCoreAutoHideThresholdRingAlpha, 90, 235, 140), borderWidth))
+            {
+                g.DrawEllipse(borderPen, borderRect);
+            }
+        }
+        finally
         {
-            g.DrawEllipse(pen, rect);
+            g.CompositingMode = previousMode;
         }
-
-        // Thin outer ring hints "this expands further" -- distinguishes category nodes and the
-        // SpecialSettingsBranch leaf from terminal actions at a glance.
-        using (Pen expandPen = new Pen(DesignTokens.WithAlpha(GetCategoryColor(category), ScaleAlpha(150, GetBackgroundOpacityAlpha())), Math.Max(0.9f, 1.1f * this.LayerScale)))
-        {
-            g.DrawEllipse(expandPen, RectangleF.Inflate(rect, Math.Max(1.5f, rect.Width * 0.09f), Math.Max(1.5f, rect.Height * 0.09f)));
-        }
-
-        DrawRadialCategoryGlyph(g, GetIconRect(rect), category);
     }
 
-    private void DrawRadialLeafNode(Graphics g, RectangleF rect, RadialItemId item, bool hovered, bool pressed)
+    // Collapsed: four-point launcher spark. Open with nothing drilled: back/close chevron. Open with
+    // a category active: that category's own icon, so the core always shows "where the outermost
+    // selection currently is" per the requested core redesign.
+    private void DrawRadialCoreGlyph(Graphics g, RectangleF rect, List<RadialNode> resolvedPath)
     {
-        if (rect.Width <= 0.0f || rect.Height <= 0.0f)
+        if (!this.radialMenuOpen)
         {
+            DrawRadialSparkGlyph(g, rect);
             return;
         }
 
-        bool unavailable = IsRadialItemUnavailable(item);
-        bool busy = IsRadialItemBusy(item);
-        bool expandable = item == RadialItemId.SpecialSettingsBranch;
-        Color? tint = null;
-        if (!unavailable && !busy)
+        if (resolvedPath.Count == 0)
         {
-            if (item == RadialItemId.LinkBlockToggle && this.currentSettings.AiRequestProtectionManualBlockEnabled)
-            {
-                tint = DesignTokens.Colors.Danger;
-            }
-            else if (item == RadialItemId.QuotaPlanToggle && this.currentSettings.CodexQuotaPlanEnabled)
-            {
-                tint = Color.FromArgb(150, 200, 235);
-            }
-            else
-            {
-                tint = GetLeafColor(item);
-            }
+            DrawRadialBackChevronGlyph(g, rect);
+            return;
         }
 
-        Color fill;
-        Color border;
-        GetRadialFillAndBorder(tint, unavailable, busy, hovered, pressed, out fill, out border);
-
-        using (SolidBrush brush = new SolidBrush(fill))
-        {
-            g.FillEllipse(brush, rect);
-        }
-
-        using (Pen pen = new Pen(border, Math.Max(1.0f, this.LayerScale)))
-        {
-            g.DrawEllipse(pen, rect);
-        }
-
-        if (expandable)
-        {
-            using (Pen expandPen = new Pen(DesignTokens.WithAlpha(RadialAdvancedColor, ScaleAlpha(150, GetBackgroundOpacityAlpha())), Math.Max(0.9f, 1.1f * this.LayerScale)))
-            {
-                g.DrawEllipse(expandPen, RectangleF.Inflate(rect, Math.Max(1.5f, rect.Width * 0.09f), Math.Max(1.5f, rect.Height * 0.09f)));
-            }
-        }
-
-        DrawRadialLeafGlyph(g, GetIconRect(rect), item);
-
-        if (unavailable)
-        {
-            using (SolidBrush veil = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, ScaleAlpha(116, GetBackgroundOpacityAlpha()))))
-            {
-                g.FillEllipse(veil, rect);
-            }
-        }
+        resolvedPath[0].DrawIcon(g, rect);
     }
 
-    private static Color Lighten(Color c, double amount)
-    {
-        int r = (int)Math.Round(c.R + (255 - c.R) * amount);
-        int g = (int)Math.Round(c.G + (255 - c.G) * amount);
-        int b = (int)Math.Round(c.B + (255 - c.B) * amount);
-        return Color.FromArgb(ClampByte(r), ClampByte(g), ClampByte(b));
-    }
-
-    private static Color Darken(Color c, double amount)
-    {
-        int r = (int)Math.Round(c.R * (1.0 - amount));
-        int g = (int)Math.Round(c.G * (1.0 - amount));
-        int b = (int)Math.Round(c.B * (1.0 - amount));
-        return Color.FromArgb(ClampByte(r), ClampByte(g), ClampByte(b));
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Icon glyphs -- all fresh drawings for this variant; none reuse the flat grid's Draw*Glyph set.
-    // ---------------------------------------------------------------------------------------------
-
-    private static Pen NewGlyphPen(float width)
-    {
-        Pen pen = new Pen(DesignTokens.Glyph(240), width);
-        pen.StartCap = LineCap.Round;
-        pen.EndCap = LineCap.Round;
-        pen.LineJoin = LineJoin.Round;
-        return pen;
-    }
-
-    // Collapsed/Root: a four-point compass spark (launcher mark). Category/SubCategory: a left
-    // chevron, so the core visually doubles as a "back" affordance the moment you drill in.
-    private void DrawRadialCoreGlyph(Graphics g, RectangleF rect)
+    private void DrawRadialSparkGlyph(Graphics g, RectangleF rect)
     {
         float cx = rect.Left + rect.Width / 2.0f;
         float cy = rect.Top + rect.Height / 2.0f;
         float r = Math.Min(rect.Width, rect.Height) / 2.0f;
-
-        if (this.radialLevel == RadialLevel.Category || this.radialLevel == RadialLevel.SubCategory)
-        {
-            using (Pen pen = NewGlyphPen(Math.Max(1.5f, 2.0f * this.LayerScale)))
-            {
-                g.DrawLines(pen, new PointF[]
-                {
-                    new PointF(cx + r * 0.42f, cy - r * 0.62f),
-                    new PointF(cx - r * 0.46f, cy),
-                    new PointF(cx + r * 0.42f, cy + r * 0.62f)
-                });
-            }
-
-            return;
-        }
-
         using (GraphicsPath star = new GraphicsPath())
         {
             PointF[] points = new PointF[8];
@@ -1179,87 +1716,83 @@ internal sealed partial class OperationForm
         }
     }
 
-    private void DrawRadialCategoryGlyph(Graphics g, RectangleF rect, RadialCategoryId category)
+    private void DrawRadialBackChevronGlyph(Graphics g, RectangleF rect)
     {
-        switch (category)
+        float cx = rect.Left + rect.Width / 2.0f;
+        float cy = rect.Top + rect.Height / 2.0f;
+        float r = Math.Min(rect.Width, rect.Height) / 2.0f;
+        using (Pen pen = NewGlyphPen(Math.Max(1.5f, 2.0f * this.LayerScale)))
         {
-            case RadialCategoryId.Settings:
-                DrawHexNutGlyph(g, rect);
-                break;
-            case RadialCategoryId.Power:
-                DrawPowerRingGlyph(g, rect);
-                break;
-            case RadialCategoryId.SystemTools:
-                DrawWrenchGlyph(g, rect);
-                break;
-            case RadialCategoryId.Battery:
-                DrawBatterySparkGlyph(g, rect);
-                break;
-            case RadialCategoryId.Assist:
-                DrawSparkleGlyph(g, rect, 6);
-                break;
+            g.DrawLines(pen, new PointF[]
+            {
+                new PointF(cx + r * 0.42f, cy - r * 0.62f),
+                new PointF(cx - r * 0.46f, cy),
+                new PointF(cx + r * 0.42f, cy + r * 0.62f)
+            });
         }
     }
 
-    private void DrawRadialLeafGlyph(Graphics g, RectangleF rect, RadialItemId item)
+    // Small progress dots along the core's bottom edge, one per currently-open ring, so "how deep am
+    // I" is legible at a glance without needing to fit text inside a small circle.
+    private void DrawRadialCoreDepthDots(Graphics g, RectangleF ringRect, int visibleLevels)
     {
-        switch (item)
+        float cx = ringRect.Left + ringRect.Width / 2.0f;
+        float cy = ringRect.Top + ringRect.Height / 2.0f;
+        float r = Math.Min(ringRect.Width, ringRect.Height) / 2.0f;
+        float dotR = Math.Max(1.3f, r * 0.11f);
+        double spanDeg = 64.0;
+        double startDeg = 90.0 - spanDeg / 2.0;
+        using (SolidBrush dotBrush = new SolidBrush(DesignTokens.Glyph(250)))
         {
-            case RadialItemId.NormalSettings:
-                DrawAppWindowGlyph(g, rect);
-                break;
-            case RadialItemId.WindowsSettings:
-                DrawTileGridGlyph(g, rect, 2);
-                break;
-            case RadialItemId.SpecialSettingsBranch:
-                DrawBeakerGlyph(g, rect);
-                break;
-            case RadialItemId.PowerMenu:
-                DrawGaugeGlyph(g, rect);
-                break;
-            case RadialItemId.RestartApp:
-                DrawRestartLoopGlyph(g, rect);
-                break;
-            case RadialItemId.PulseDock:
-                DrawDockChevronGlyph(g, rect);
-                break;
-            case RadialItemId.TaskManager:
-                DrawBarsGlyph(g, rect);
-                break;
-            case RadialItemId.QuickSettings:
-                DrawTogglesGlyph(g, rect);
-                break;
-            case RadialItemId.SystemToolsMenu:
-                DrawTileGridGlyph(g, rect, 3);
-                break;
-            case RadialItemId.Refresh:
-                DrawRefreshLoopGlyph(g, rect);
-                break;
-            case RadialItemId.BatteryCarePause:
-                DrawBatteryPauseGlyph(g, rect);
-                break;
-            case RadialItemId.BatteryLimitRestore:
-                DrawBatteryCheckGlyph(g, rect);
-                break;
-            case RadialItemId.AiStudio:
-                DrawSparkleGlyph(g, rect, 4);
-                break;
-            case RadialItemId.LiveCaptions:
-                DrawCaptionBubbleGlyph(g, rect);
-                break;
-            case RadialItemId.HoverOpacityToggle:
-                DrawHalfMoonGlyph(g, rect);
-                break;
-            case RadialItemId.LinkBlockToggle:
-                DrawChainLinkGlyph(g, rect);
-                break;
-            case RadialItemId.QuotaPlanToggle:
-                DrawPieWedgeGlyph(g, rect);
-                break;
-            case RadialItemId.CtfRestart:
-                DrawKeyboardGlyph(g, rect);
-                break;
+            for (int i = 0; i < visibleLevels; i++)
+            {
+                double t = visibleLevels == 1 ? 0.5 : (double)i / (visibleLevels - 1);
+                double angleDeg = startDeg + t * spanDeg;
+                double angleRad = angleDeg * Math.PI / 180.0;
+                float dx = cx + (float)Math.Cos(angleRad) * r * 0.82f;
+                float dy = cy + (float)Math.Sin(angleRad) * r * 0.82f;
+                g.FillEllipse(dotBrush, dx - dotR, dy - dotR, dotR * 2.0f, dotR * 2.0f);
+            }
         }
+    }
+
+    private static Color Lighten(Color c, double amount)
+    {
+        int r = (int)Math.Round(c.R + (255 - c.R) * amount);
+        int g = (int)Math.Round(c.G + (255 - c.G) * amount);
+        int b = (int)Math.Round(c.B + (255 - c.B) * amount);
+        return Color.FromArgb(ClampByte(r), ClampByte(g), ClampByte(b));
+    }
+
+    private static Color Darken(Color c, double amount)
+    {
+        int r = (int)Math.Round(c.R * (1.0 - amount));
+        int g = (int)Math.Round(c.G * (1.0 - amount));
+        int b = (int)Math.Round(c.B * (1.0 - amount));
+        return Color.FromArgb(ClampByte(r), ClampByte(g), ClampByte(b));
+    }
+
+    // Blends a category hue into a warm-neutral base at restrained saturation, matching the
+    // project's "no peak-white/saturated fills" convention even though Classic isn't OLED-only.
+    private static Color MutedCategoryTint(Color categoryColor)
+    {
+        int r = (int)Math.Round(categoryColor.R * 0.40 + 233.0 * 0.60);
+        int g = (int)Math.Round(categoryColor.G * 0.40 + 228.0 * 0.60);
+        int b = (int)Math.Round(categoryColor.B * 0.40 + 220.0 * 0.60);
+        return Color.FromArgb(ClampByte(r), ClampByte(g), ClampByte(b));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Icon glyphs -- all fresh drawings for this variant; none reuse the flat grid's Draw*Glyph set.
+    // ---------------------------------------------------------------------------------------------
+
+    private static Pen NewGlyphPen(float width)
+    {
+        Pen pen = new Pen(DesignTokens.Glyph(240), width);
+        pen.StartCap = LineCap.Round;
+        pen.EndCap = LineCap.Round;
+        pen.LineJoin = LineJoin.Round;
+        return pen;
     }
 
     private void DrawHexNutGlyph(Graphics g, RectangleF rect)
@@ -1715,14 +2248,13 @@ internal sealed partial class OperationForm
     {
         RadialLayout layout = ComputeRadialLayout();
         graphics.FillEllipse(brush, layout.Core);
-        if (layout.Rects == null)
+        for (int levelIdx = 0; levelIdx < layout.Levels.Count; levelIdx++)
         {
-            return;
-        }
-
-        for (int i = 0; i < layout.Rects.Length; i++)
-        {
-            graphics.FillEllipse(brush, layout.Rects[i]);
+            RectangleF[] rects = layout.Levels[levelIdx].Rects;
+            for (int i = 0; i < rects.Length; i++)
+            {
+                graphics.FillEllipse(brush, rects[i]);
+            }
         }
     }
 
@@ -1735,28 +2267,120 @@ internal sealed partial class OperationForm
         OperationForm form = CreateRadialDialSelfTestForm();
         try
         {
-            RadialLayout collapsed = form.ComputeRadialLayout();
-            AssertSelfTest(collapsed.WindowSize.Width > 0 && collapsed.WindowSize.Height > 0, "radial collapsed size positive");
-            AssertSelfTest(collapsed.WindowSize.Width == collapsed.WindowSize.Height, "radial collapsed panel is core-only and square");
+            List<RadialNode> roots = form.GetRadialRoots();
+            AssertSelfTest(roots.Count >= 1 && roots.Count <= 3, "radial root category count is within the level-1 cap of 3");
+            AssertRadialSiblingCaps(roots, 1, "root");
 
-            form.radialLevel = RadialLevel.Root;
-            RadialLayout root = form.ComputeRadialLayout();
-            AssertSelfTest(root.WindowSize.Width > collapsed.WindowSize.Width, "radial root width grows past the collapsed core");
-            AssertSelfTest(root.Categories.Count >= 4, "radial root shows at least four categories");
-            AssertRadialQuadrant(root);
+            form.radialMenuOpen = true;
+            form.radialSelectionPathIds = new List<string>();
+            RadialLayout rootLayout = form.ComputeRadialLayout();
+            AssertSelfTest(rootLayout.Levels.Count == 1, "only the root ring is visible before any category is selected");
+            Point coreCenter = new Point(
+                (int)Math.Round(rootLayout.Core.Left + rootLayout.Core.Width / 2.0f),
+                (int)Math.Round(rootLayout.Core.Top + rootLayout.Core.Height / 2.0f));
+            Point outsideCore = new Point((int)Math.Ceiling(rootLayout.Core.Right + 8.0f), coreCenter.Y);
+            AssertSelfTest(IsPointInRadialCore(rootLayout, coreCenter), "radial core keep-alive hit test should include the core center");
+            AssertSelfTest(!IsPointInRadialCore(rootLayout, outsideCore), "radial core keep-alive hit test should reject points outside the core");
+            AssertRadialQuadrant(rootLayout);
 
-            form.radialActiveCategory = RadialCategoryId.Settings;
-            form.radialLevel = RadialLevel.Category;
-            RadialLayout settingsLevel = form.ComputeRadialLayout();
-            AssertSelfTest(settingsLevel.Items.Count == 3, "settings category has three children");
-            AssertSelfTest(settingsLevel.Items.Contains(RadialItemId.SpecialSettingsBranch), "settings category includes the special-settings branch");
-            AssertRadialQuadrant(settingsLevel);
+            form.radialSelectionPathIds = new List<string> { "settings" };
+            RadialLayout settingsLayout = form.ComputeRadialLayout();
+            AssertSelfTest(settingsLayout.Levels.Count == 2, "the root ring stays visible alongside the settings children ring (no auto-hide on drill-in)");
+            AssertSelfTest(settingsLayout.Levels[1].Nodes.Count == 3, "settings has three children");
+            AssertSelfTest(settingsLayout.Levels[1].Nodes.Exists(n => n.Id == "special_settings"), "settings children include the special-settings branch");
+            AssertRadialQuadrant(settingsLayout);
 
-            form.radialLevel = RadialLevel.SubCategory;
-            RadialLayout subLevel = form.ComputeRadialLayout();
-            AssertSelfTest(subLevel.Items.Count == 3, "special-settings branch has three leaves");
-            AssertSelfTest(subLevel.Items.Contains(RadialItemId.CtfRestart), "special-settings branch includes CTF restart");
-            AssertRadialQuadrant(subLevel);
+            form.currentSettings.OperationSettingsLogicExtensionEnabled = true;
+            form.cachedRadialRoots = null;
+            roots = form.GetRadialRoots();
+            AssertRadialSiblingCaps(roots, 1, "extended root");
+            RadialNode settingsRoot = FindRadialNode(roots, "settings");
+            AssertSelfTest(settingsRoot != null, "extended roots include settings");
+            AssertSelfTest(settingsRoot.Children.Count == 5, "settings has five children when settings logic extension is enabled");
+            AssertSelfTest(settingsRoot.Children[0].Id == "normal_settings", "extended settings keeps normal settings first");
+            AssertSelfTest(settingsRoot.Children[1].Id == "special_settings", "extended settings keeps special settings second");
+            AssertSelfTest(settingsRoot.Children[2].Id == "windows_settings", "extended settings keeps Windows settings third");
+            AssertSelfTest(FindRadialNode(settingsRoot.Children, "common_logic") != null, "extended settings include the common logic branch");
+            AssertSelfTest(FindRadialNode(settingsRoot.Children, "all_settings") != null, "extended settings include the all settings branch");
+            AssertRadialSettingToggleCatalog();
+
+            form.radialSelectionPathIds = new List<string> { "settings" };
+            RadialLayout extendedSettingsLayout = form.ComputeRadialLayout();
+            AssertSelfTest(extendedSettingsLayout.Levels.Count == 2, "extended settings ring stays visible alongside the root ring");
+            AssertSelfTest(extendedSettingsLayout.Levels[1].Nodes.Count == 5, "extended settings layout shows five settings children");
+            AssertRadialLevelArcCoverage(
+                extendedSettingsLayout,
+                1,
+                3.0,
+                87.0,
+                "extended settings medium-density ring uses most of the available quadrant");
+            AssertRadialQuadrant(extendedSettingsLayout);
+
+            form.radialSelectionPathIds = new List<string> { "settings", "all_settings", "all_codex", "all_codex_quota_protection" };
+            RadialLayout quotaProtectionLayout = form.ComputeRadialLayout();
+            AssertSelfTest(quotaProtectionLayout.Levels.Count == 5, "deep all-settings quota protection path renders all open rings");
+            AssertSelfTest(quotaProtectionLayout.Levels[4].Nodes.Count == 8, "quota protection branch keeps related switches together");
+            AssertRadialLevelArcCoverage(
+                quotaProtectionLayout,
+                4,
+                1.0,
+                89.0,
+                "dense quota protection ring uses the full available quadrant");
+            AssertRadialQuadrant(quotaProtectionLayout);
+
+            form.currentSettings.OperationSettingsLogicExtensionEnabled = false;
+            form.cachedRadialRoots = null;
+            form.radialSelectionPathIds = new List<string> { "settings", "special_settings" };
+            RadialLayout specialLayout = form.ComputeRadialLayout();
+            AssertSelfTest(specialLayout.Levels.Count == 3, "all three rings stay visible when drilled to special settings");
+            AssertSelfTest(specialLayout.Levels[2].Nodes.Count == 3, "special settings has three leaves");
+            AssertSelfTest(specialLayout.Levels[2].Nodes.Exists(n => n.Id == "ctf_restart"), "special settings includes CTF restart");
+            AssertRadialQuadrant(specialLayout);
+
+            List<RadialNode> resolved = form.ResolveSelectionPath();
+            AssertSelfTest(
+                resolved.Count == 2 && resolved[0].Id == "settings" && resolved[1].Id == "special_settings",
+                "resolved selection path matches the stored id chain");
+
+            form.radialSelectionPathIds = new List<string> { "settings", "does_not_exist" };
+            List<RadialNode> truncated = form.ResolveSelectionPath();
+            AssertSelfTest(truncated.Count == 1 && truncated[0].Id == "settings", "a stale selection id truncates the resolved path instead of throwing");
+            AssertSelfTest(form.radialSelectionPathIds.Count == 1, "resolving a stale path also trims the stored id list");
+
+            form.radialMenuOpen = true;
+            form.currentSettings.OperationRadialIdleCollapseSeconds = WidgetSettings.DefaultOperationRadialIdleCollapseSeconds;
+            form.radialLastInteractionUtc = DateTime.UtcNow.AddSeconds(-100);
+            AssertSelfTest(form.ShouldRadialIdleCollapse(DateTime.UtcNow), "idle timeout elapsed should request a collapse");
+            form.radialLastInteractionUtc = DateTime.UtcNow;
+            AssertSelfTest(!form.ShouldRadialIdleCollapse(DateTime.UtcNow), "recent interaction should not request a collapse");
+            form.currentSettings.OperationRadialIdleCollapseSeconds = WidgetSettings.NeverOperationRadialIdleCollapseSeconds;
+            form.radialLastInteractionUtc = DateTime.UtcNow.AddSeconds(-1000);
+            AssertSelfTest(!form.ShouldRadialIdleCollapse(DateTime.UtcNow), "idle timeout set to never should not request a collapse");
+            form.currentSettings.OperationRadialIdleCollapseSeconds = 10;
+            form.currentSettings.OperationRadialIdleResetOnInteractionEnabled = false;
+            DateTime noResetInteractionUtc = DateTime.UtcNow.AddSeconds(-5);
+            form.radialLastInteractionUtc = noResetInteractionUtc;
+            form.ResetRadialIdleCollapseTimerForInteraction();
+            AssertSelfTest(form.radialLastInteractionUtc == noResetInteractionUtc, "disabled interaction reset leaves the idle collapse timer unchanged");
+            form.currentSettings.OperationRadialIdleResetOnInteractionEnabled = true;
+            form.ResetRadialIdleCollapseTimerForInteraction();
+            AssertSelfTest(form.radialLastInteractionUtc > noResetInteractionUtc, "enabled interaction reset refreshes the idle collapse timer");
+            form.currentSettings.OperationRadialKeepOpenAfterLeafClickEnabled = true;
+            AssertSelfTest(form.ShouldKeepRadialMenuOpenAfterLeafClick(), "default leaf click setting keeps the radial menu open");
+            form.currentSettings.OperationRadialKeepOpenAfterLeafClickEnabled = false;
+            AssertSelfTest(!form.ShouldKeepRadialMenuOpenAfterLeafClick(), "disabled leaf click setting closes the radial menu");
+
+            form.currentSettings.OperationRadialCoreAutoHideKeepAliveEnabled = true;
+            form.currentSettings.AutoHoverOpacityIdleSeconds = 2;
+            DateTime visualStartUtc = new DateTime(2026, 7, 9, 0, 0, 0, DateTimeKind.Utc);
+            AssertSelfTest(!form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc, true), "core keep-alive threshold starts without an immediate visual change");
+            AssertSelfTest(!form.radialCoreAutoHideThresholdVisualActive, "core keep-alive visual is inactive before the threshold");
+            AssertSelfTest(!form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc.AddSeconds(1.9), true), "core keep-alive visual stays inactive before configured auto-hide seconds");
+            AssertSelfTest(form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc.AddSeconds(2.0), true), "core keep-alive visual changes when configured auto-hide seconds elapse");
+            AssertSelfTest(form.radialCoreAutoHideThresholdVisualActive, "core keep-alive visual is active at the threshold");
+            AssertSelfTest(form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc.AddSeconds(2.1), false), "core keep-alive visual clears after leaving the core");
+            AssertSelfTest(!form.radialCoreAutoHideThresholdVisualActive, "core keep-alive visual is inactive after leaving the core");
+            RunRadialCoreSourceAlphaSelfTest(form);
         }
         finally
         {
@@ -1764,15 +2388,215 @@ internal sealed partial class OperationForm
         }
     }
 
+    private static void RunRadialCoreSourceAlphaSelfTest(OperationForm form)
+    {
+        using (Bitmap bitmap = new Bitmap(80, 80, PixelFormat.Format32bppPArgb))
+        using (Graphics graphics = Graphics.FromImage(bitmap))
+        using (SolidBrush opaqueBrush = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            RectangleF rect = new RectangleF(16.0f, 16.0f, 48.0f, 48.0f);
+            graphics.Clear(Color.Transparent);
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.FillEllipse(opaqueBrush, rect);
+
+            form.DrawRadialCoreAutoHideThresholdVisual(graphics, rect);
+
+            Color center = bitmap.GetPixel(40, 40);
+            AssertSelfTest(center.A == RadialCoreAutoHideThresholdDimAlpha, "core keep-alive center alpha must be transparent to desktop");
+
+            int maxAlpha = 0;
+            int ringPixels = 0;
+            for (int y = 0; y < bitmap.Height; y++)
+            {
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    int alpha = bitmap.GetPixel(x, y).A;
+                    if (alpha > maxAlpha)
+                    {
+                        maxAlpha = alpha;
+                    }
+
+                    if (alpha > RadialCoreAutoHideThresholdDimAlpha)
+                    {
+                        ringPixels++;
+                    }
+                }
+            }
+
+            AssertSelfTest(maxAlpha <= RadialCoreAutoHideThresholdRingAlpha, "core keep-alive ring must not inherit opaque pixels underneath");
+            AssertSelfTest(ringPixels > 0, "core keep-alive ring pixels are present");
+            AssertSelfTest(bitmap.GetPixel(0, 0).A == 0, "core keep-alive visual leaves exterior pixels transparent");
+        }
+    }
+
+    private static RadialNode FindRadialNode(List<RadialNode> nodes, string id)
+    {
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            if (nodes[i].Id == id)
+            {
+                return nodes[i];
+            }
+        }
+
+        return null;
+    }
+
+    private static void AssertRadialSiblingCaps(List<RadialNode> nodes, int level, string path)
+    {
+        int cap = GetRadialSiblingCap(level);
+        AssertSelfTest(nodes.Count <= cap, "radial sibling count for " + path + " is within level " + level.ToString(CultureInfo.InvariantCulture) + " cap " + cap.ToString(CultureInfo.InvariantCulture));
+        for (int i = 0; i < nodes.Count; i++)
+        {
+            if (nodes[i].Children.Count > 0)
+            {
+                AssertRadialSiblingCaps(nodes[i].Children, level + 1, path + "/" + nodes[i].Id);
+            }
+        }
+    }
+
+    private static int GetRadialSiblingCap(int level)
+    {
+        if (level <= 1)
+        {
+            return 3;
+        }
+
+        if (level == 2)
+        {
+            return 5;
+        }
+
+        if (level == 3)
+        {
+            return 7;
+        }
+
+        if (level == 4)
+        {
+            return 9;
+        }
+
+        if (level == 5)
+        {
+            return 11;
+        }
+
+        return 13;
+    }
+
+    private static void AssertRadialSettingToggleCatalog()
+    {
+        HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
+        string[] names = new string[]
+        {
+            "StartupEnabled",
+            "VisibilityOverlapIgnoresOperationPanelEnabled",
+            "AiRequestProtectionAutoEnabled",
+            "AiRequestProtectionManualBlockEnabled",
+            "CodexQuotaPlanEnabled",
+            "CodexQuotaPlanAutoResumePausedGoals",
+            "SeelenDockForegroundPulseEnabled",
+            "WinDRecoveryPulseEnabled",
+            "PowerResumeRestartEnabled",
+            "ForceShowForegroundFpsEnabled",
+            "ResolutionCompatibilityModeEnabled",
+            "FallbackDisconnectedDisplaysEnabled",
+            "HoverOpacityEnabled",
+            "SensitiveMouseModeEnabled",
+            "AutoHoverOpacityIdleEnabled",
+            "AutoHoverOpacityMaximizedEnabled",
+            "OperationRadialCoreAutoHideKeepAliveEnabled",
+            "OperationRadialKeepOpenAfterLeafClickEnabled",
+            "OperationSettingsLogicExtensionEnabled",
+            "BurnInHiddenModeColorProtectionEnabled",
+            "HoverOpacityRevealDelayEnabled",
+            "HoverOpacityCoverEnabled",
+            "ReverseHoverOpacityRevealEnabled",
+            "ShowCpu",
+            "ShowMemory",
+            "ShowDisk",
+            "ShowNetwork",
+            "ShowGpu",
+            "ShowNpu",
+            "RadarClockAutoSwitchModelEnabled",
+            "CodexRadarEnabled",
+            "CodexRadarPublicJsonEnabled",
+            "CodexRadarHtmlFallbackEnabled",
+            "CodexRadarRssFallbackEnabled",
+            "CodexQuotaDueResetProtectionEnabled",
+            "CodexQuotaRssResetProtectionEnabled",
+            "CodexQuotaProviderZeroDropProtectionEnabled",
+            "CodexQuotaDuplicateSameBalanceRingProtectionEnabled",
+            "CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled",
+            "CodexQuotaProviderWeeklySpikeProtectionEnabled",
+            "CodexQuotaStrictFiveHourResetBoundaryEnabled",
+            "CodexQuotaWeeklyBaselineAutoRepairEnabled",
+            "CodexModelIqTestEnabled",
+            "CodexModelIqBaselineAutoEnabled",
+            "CodexModelEfficiencyTestEnabled",
+            "CodexRadarRandomTestEnabled",
+            "CodexRadarRandomTestAutoRefresh",
+            "ClaudeRadarEnabled",
+            "ClaudeRadarJsonEnabled",
+            "ClaudeRadarCommunityRatingsEnabled",
+            "ClaudeRadarLocalQuotaFallbackEnabled",
+            "ClaudeRadarHomepageFallbackEnabled",
+            "ClaudeRadarRandomTestEnabled",
+            "ClaudeRadarRandomTestAutoRefresh",
+            "PowerThermalAutoSizeEnabled",
+            "GfwProbeEnabled",
+            "AlertTestEnabled"
+        };
+
+        for (int i = 0; i < names.Length; i++)
+        {
+            AssertSelfTest(seen.Add(names[i]), "radial setting toggle catalog has no duplicate property " + names[i]);
+            System.Reflection.PropertyInfo property = typeof(WidgetSettings).GetProperty(names[i]);
+            AssertSelfTest(property != null && property.PropertyType == typeof(bool), "radial setting toggle property is a WidgetSettings bool: " + names[i]);
+        }
+
+        AssertSelfTest(seen.Contains("AiRequestProtectionManualBlockEnabled"), "radial setting catalog includes manual AI block special-case toggle");
+        AssertSelfTest(seen.Contains("CodexQuotaPlanEnabled"), "radial setting catalog includes quota plan special-case toggle");
+        AssertSelfTest(seen.Contains("StartupEnabled"), "radial setting catalog includes startup confirmation toggle");
+    }
+
+    private static void AssertRadialLevelArcCoverage(RadialLayout layout, int levelIdx, double maxFirstAngleDeg, double minLastAngleDeg, string message)
+    {
+        AssertSelfTest(levelIdx >= 0 && levelIdx < layout.Levels.Count, message + " has a valid level");
+        RectangleF[] rects = layout.Levels[levelIdx].Rects;
+        AssertSelfTest(rects.Length >= 2, message + " has multiple items");
+
+        double firstAngleDeg = GetRadialItemAngleDeg(layout, rects[0]);
+        double lastAngleDeg = GetRadialItemAngleDeg(layout, rects[rects.Length - 1]);
+        AssertSelfTest(firstAngleDeg <= maxFirstAngleDeg, message + " starts near the right edge");
+        AssertSelfTest(lastAngleDeg >= minLastAngleDeg, message + " ends near the top edge");
+    }
+
+    private static double GetRadialItemAngleDeg(RadialLayout layout, RectangleF rect)
+    {
+        double coreCx = layout.Core.Left + layout.Core.Width / 2.0;
+        double coreCy = layout.Core.Top + layout.Core.Height / 2.0;
+        double itemCx = rect.Left + rect.Width / 2.0;
+        double itemCy = rect.Top + rect.Height / 2.0;
+        double right = itemCx - coreCx;
+        double up = coreCy - itemCy;
+        return Math.Atan2(up, right) * 180.0 / Math.PI;
+    }
+
     private static void AssertRadialQuadrant(RadialLayout layout)
     {
         RectangleF windowBounds = new RectangleF(0, 0, layout.WindowSize.Width, layout.WindowSize.Height);
-        for (int i = 0; i < layout.Rects.Length; i++)
+        for (int levelIdx = 0; levelIdx < layout.Levels.Count; levelIdx++)
         {
-            AssertSelfTest(windowBounds.Contains(layout.Rects[i]), "radial item stays inside the window bounds");
-            AssertSelfTest(
-                layout.Rects[i].Right >= layout.Core.Left && layout.Rects[i].Bottom <= layout.Core.Bottom,
-                "radial item stays in the up-right quadrant from the core (90 degree constraint)");
+            RectangleF[] rects = layout.Levels[levelIdx].Rects;
+            for (int i = 0; i < rects.Length; i++)
+            {
+                AssertSelfTest(windowBounds.Contains(rects[i]), "radial item stays inside the window bounds");
+                AssertSelfTest(
+                    rects[i].Right >= layout.Core.Left && rects[i].Bottom <= layout.Core.Bottom,
+                    "radial item stays in the up-right quadrant from the core (90 degree constraint)");
+            }
         }
     }
 
@@ -1791,6 +2615,7 @@ internal sealed partial class OperationForm
             delegate { return true; },
             delegate { return true; },
             delegate(bool enabled) { return enabled; },
-            delegate(bool enabled) { return enabled; });
+            delegate(bool enabled) { return enabled; },
+            delegate(string propertyName, bool enabled) { return enabled; });
     }
 }

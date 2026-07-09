@@ -2,7 +2,7 @@
 
 The global `C:\Users\GengH\.codex\AGENTS.md` rules apply. This file only records project-specific constraints and overrides; do not duplicate global rules or maintenance history here.
 
-Current version: `1.0.4.59`
+Current version: `1.0.4.95`
 
 ## Project AI
 
@@ -36,6 +36,7 @@ Current version: `1.0.4.59`
 - New settings must cover defaults, clone, load, save, normalization, settings UI, migration version, and `--test-settings-bindings`.
 - Persistent runtime data belongs under `%LOCALAPPDATA%\DesktopCodexAssistant`, not beside the executable.
 - Power and thermal behavior is device-family-specific. Generic fallbacks must not silently replace UX3407N / UX3607O calibrated behavior.
+- Never hand-guess fixed pixel Y offsets/heights for WinForms `Label`/text-adjacent controls (dialogs, custom rows, etc.) — actual rendered font metrics on the user's machine are routinely taller than assumed and rows silently overlap. Compute each control's height from its actual font via `Win11SettingsForm.GetSingleLineHeight`/`GetWrappedTextHeight` (or `TextRenderer.MeasureText`) and accumulate the next control's Y from the previous control's measured height, the same way `OpenClaudeSetupTokenDialog` and `SettingRow` do it. This applies to any manually laid-out `Form`/`Panel`, not just Settings.
 
 ## Verification
 

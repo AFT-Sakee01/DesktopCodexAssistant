@@ -23,6 +23,7 @@ internal sealed class ClaudeRadarSnapshot
     public ClaudeRadarServiceState RatingsState { get; set; }
     public ClaudeRadarServiceState ClaudeStatusState { get; set; }
     public ClaudeRadarServiceState ClaudeCodeState { get; set; }
+    public string ClaudeCodeErrorCode { get; set; }
     public string SelectedModelKey { get; set; }
     public string SelectedModelName { get; set; }
     public List<ClaudeRadarModelEntry> Models { get; set; }
@@ -51,6 +52,7 @@ internal sealed class ClaudeRadarSnapshot
             RatingsState = ClaudeRadarServiceState.Unknown,
             ClaudeStatusState = ClaudeRadarServiceState.Unknown,
             ClaudeCodeState = ClaudeRadarServiceState.Unknown,
+            ClaudeCodeErrorCode = string.Empty,
             SelectedModelKey = string.Empty,
             SelectedModelName = string.Empty,
             Models = new List<ClaudeRadarModelEntry>(),
@@ -81,6 +83,7 @@ internal sealed class ClaudeRadarSnapshot
             RatingsState = this.RatingsState,
             ClaudeStatusState = this.ClaudeStatusState,
             ClaudeCodeState = this.ClaudeCodeState,
+            ClaudeCodeErrorCode = this.ClaudeCodeErrorCode,
             SelectedModelKey = this.SelectedModelKey,
             SelectedModelName = this.SelectedModelName,
             Models = new List<ClaudeRadarModelEntry>(),

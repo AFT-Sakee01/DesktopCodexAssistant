@@ -1,6 +1,6 @@
 # 性能模式、主窗口与指标运行机制
 
-适用版本：1.0.4.54
+适用版本：1.0.4.94
 
 ## 1. 文档范围
 
@@ -26,7 +26,7 @@
 
 ## 2. 总体架构
 
-`WidgetForm` 是主窗口和运行协调器。它负责加载设置、检测全屏状态、创建其他窗口，并把运行时设置同步到各窗口。`PdhSampler` 负责读取 Windows PDH 性能计数器及系统硬件信息，渲染层不直接查询系统数据。
+`WidgetForm` 是主窗口和运行协调器。它负责加载设置、跟踪应用窗口状态、创建其他窗口，并把运行时设置同步到各窗口。`PdhSampler` 负责读取 Windows PDH 性能计数器及系统硬件信息，渲染层不直接查询系统数据。
 
 每个监控窗口保持自己的定时器和快照，不共享 UI 绘制线程之外的可变图形对象。耗时采样和网络请求在后台任务中执行，结果通过锁保护的快照传回 UI 线程。
 
@@ -150,8 +150,17 @@ flowchart LR
 
 功耗与温度读取采用单任务运行规则。采样正在执行时，新请求只合并为一个待处理请求，避免慢传感器导致任务堆积。
 
-### 4.6 全屏、休眠与显示恢复
+### 4.6 窗口状态、全屏、休眠与显示恢复
 
+- `ApplicationWindowStateTracker` 由 `WidgetForm` 在主窗口显示后启动，复用 `NativeMethods.WindowEventHook` 监听前台、创建、销毁、显示、隐藏、状态、位置、名称、父级和 cloaked/uncloaked 事件，并在主控制 tick 里全量重校验一次，避免 Windows 漏发事件后状态卡住。
+- 应用窗口状态来自 `NativeMethods.TryGetApplicationWindowInfo`：过滤本程序、SeelenUI、Shell/桌面、工具窗口、无标题窗口和 UWP frame 未稳定窗口；记录窗口矩形、所在显示器、最小化、`IsZoomed` 最大化和全屏标志。
+- 全屏判定采用 Seelen UI 同类策略：普通 `WS_THICKFRAME` 可调整窗口先排除，剩余窗口矩形在 2 px 容差内覆盖所在显示器才视为全屏，因此普通最大化不会被当成全屏。
+- `VisibilityMode` 分为五档：`AlwaysVisible` 总是可见、`HideWhenFullscreen` 全屏时不可见、`HideWhenMaximized` 最大化时不可见、`HideWhenOverlapped` 遮挡时不可见、`DesktopOnly` 仅桌面可见；默认值为 `HideWhenFullscreen`。最大化档同时包含全屏，因为全屏窗口也会覆盖当前显示器的工作区域。
+- `HideWhenFullscreen` 按每个监控窗口所在显示器判断最近前台的可交互应用窗口是否全屏；`HideWhenMaximized` 判断同屏是否存在最大化或全屏应用窗口；`HideWhenOverlapped` 使用同屏应用窗口矩形与监控窗口矩形相交判断遮挡；`DesktopOnly` 不由状态缓存隐藏，而由桌面层级/非置顶行为表达。
+- `VisibilityOverlapIgnoresOperationPanelEnabled` 只影响 `HideWhenOverlapped`：开启后左下角 `OperationForm` 不参与自身遮挡隐藏判定，RadialDial 展开后变大的同一窗口矩形也会一起跳过；全屏和最大化档不受该开关影响。
+- 主窗口和子窗口都通过 `ApplicationWindowStateTracker.ShouldHideForVisibilityMode` 做每窗体、每显示器判断，并分别调用子窗口 `SetHiddenForFullscreen`；不再用单个前台窗口状态隐藏所有窗口。
+- `AutoHoverOpacityMaximizedEnabled` 使用同一窗口状态缓存，只要存在非本程序、非 SeelenUI 的最大化或全屏应用窗口，就进入自动隐藏透明度状态。
+- `OperationRadialCoreAutoHideKeepAliveEnabled` 开启时，`WidgetForm` 复用共享悬停交互 tick 查询左下角 `OperationForm` 的 RadialDial 核心圆圈命中；命中期间重置空闲计时、清除自动隐藏来源，并让主窗口、Codex Radar、功耗、网络和连接检测窗口的悬停延迟状态复位。该保持显示行为只暂停自动/悬停隐藏计时器，不替代用户手动开启的隐藏来源。
 - 全屏隐藏时，各窗口停止不必要的悬停和绘制。
 - 主窗口在省电模式下跳过隐藏期间的昂贵 PDH 采样，但控制定时器仍运行，因此可以处理停止信号、设置变更和退出全屏。
 - 显示器关闭、会话锁定或系统休眠时，Codex 与功耗采样暂停。
@@ -392,7 +401,7 @@ Codex Radar 整窗随机测试启用后会暂停真实网站、额度、Claude �
 - 按压与悬停动画；
 - 左侧主区域的 Windows 按钮、内存饼图、自动切换和隐藏收缩布局。
 
-Windows 开始菜单左键不发送 Win 键，因为 SeelenUI 会捕获 Win 键并打开自己的应用菜单；也不能直接启动 `StartMenuExperienceHost` 的 AppsFolder 项，因为它会生成独立的 `ApplicationFrameWindow/StartDocked` 白窗。左键优先尝试原生任务栏 UI Automation；当 SeelenUI 隐藏 `Shell_TrayWnd` 导致 UIA 根树不可见时，回退到隐藏 `Shell_TrayWnd` 下的原生 `Start` 子窗口并发送 `BM_CLICK`。右键优先尝试原生任务栏 UIA，失败时回退 `Win+X` 打开 Windows Power User 菜单。
+Windows 开始菜单左键不发送 Win 键，因为 SeelenUI 会捕获 Win 键并打开自己的应用菜单；也不能直接启动 `StartMenuExperienceHost` 的 AppsFolder 项，因为它会生成独立的 `ApplicationFrameWindow/StartDocked` 白窗。左键优先尝试原生任务栏 UI Automation；当 SeelenUI 隐藏 `Shell_TrayWnd` 导致 UIA 根树不可见时，回退到隐藏 `Shell_TrayWnd` 下的原生 `Start` 子窗口并发送 `BM_CLICK`。Windows 大按钮、RadialDial 核心圆圈和电源/系统按钮的右键都调用 `NativeMethods.OpenWindowsStartContextMenu`；该入口优先右键原生开始按钮，失败时回退 `Win+X`，打开包含设备管理器、磁盘管理等项目的 Windows Power User 菜单。
 
 SeelenUI 电源菜单通过后台单飞任务启动 `slu.exe` 并等待最多 1.5 秒，UI 线程只更新按钮状态和执行 Windows 安全菜单回退。快速重复点击不会并发启动多个命令。
 
@@ -401,6 +410,14 @@ SeelenUI 电源菜单通过后台单飞任务启动 `slu.exe` 并等待最多 1.
 设置窗口关闭、异常销毁或被宿主清理时，主窗口会主动调用 `OperationForm.ClearTransientInteractionState()` 清除 hover、pressed、tooltip 和鼠标捕获状态。这是一次性生命周期清理，不新增常驻定时器或后台轮询。
 
 操作窗口自身使用 `WS_EX_NOACTIVATE`，点击它不会让本程序成为前台进程。因此操作面板的程序设置按钮不能只调用 `Form.Activate()`；单击会打开操作面板上方的特殊设置窗，双击才打开普通设置窗，宿主会先清理操作面板瞬态交互状态，再对已有窗口执行 `ShowWindow`/`SetForegroundWindow` 激活。这样用户从设置页 Alt+Tab 到浏览器复制内容后，既可以通过 Alt+Tab 回到设置页，也可以再次点操作面板按钮把相关窗口拉回。
+
+`OperationSettingsLogicExtensionEnabled` 默认关闭。开启后，扇形速控盘的「设置」分支在原有程序设置、特殊设置和 Windows 设置之后追加「常用逻辑」与「全部开关」两项；新增路径只通过 `OperationForm.BuildRadialCommonLogicBranch`、`OperationForm.BuildRadialAllSettingsBranch` 和 `NewSettingToggle` 生成 `RadialNode`，继续复用既有布局、命中、绘制、提示和点击分发逻辑。常用逻辑收纳现有系统快捷、AI/额度、Radar、维护和网络/功耗入口；全部开关按系统、隐藏与防烧屏、主指标、Radar 通用、Codex、Claude、网络功耗测试分层，隐藏与防烧屏内再把自动隐藏相关开关收纳到「自动隐藏」子层，单层上限随深度保持 3/5/7/9/11/13 的可操作约束。
+
+RadialDial 仍被 `PositionOperationWindow` 固定在左下角并只向右上 90 度象限增长；`OperationForm.ComputeRadialLayout` 会按同层节点密度选择弧宽。1-3 个节点保持 `RadialSparseArcStartDeg = 8` 到 `RadialSparseArcEndDeg = 82` 的紧凑弧，4-6 个节点使用 `RadialMediumArcStartDeg = 2` 到 `RadialMediumArcEndDeg = 88`，7 个及以上使用 `RadialDenseArcStartDeg = 0` 到 `RadialDenseArcEndDeg = 90`，再由 `ComputeRingRadius` 按实际弧宽计算最小半径，避免大分支在中间 74 度里挤成一列。不同层级的灰色同级轨道中心距由 `RadialLevelSpacingMultiplier = 2.0` 放大，减少多层环同时展开时的纵深拥挤。
+
+RadialDial 展开后的自动收回由 `OperationRadialIdleCollapseSeconds` 控制，默认 10 秒；设置为 0 时永不自动收回，设置页限制 1-60 秒。`OperationRadialIdleResetOnInteractionEnabled` 默认开启，开启时鼠标移动、按下或展开分支都会刷新 `radialLastInteractionUtc`；关闭时倒计时从打开菜单时持续计算，用户交互不延长本轮展开时间。`OperationRadialKeepOpenAfterLeafClickEnabled` 默认开启，点击末端叶子按钮后保持当前菜单展开并重置收回计时；关闭时恢复叶子执行后自动收起。
+
+RadialDial 核心圆圈双击会调用 `OperationForm.ToggleQuickGridWindow()`，在操作主按钮右上角显示 `OperationQuickGridForm`。该窗口复用分层窗口渲染和 `OperationForm.ExecuteQuickGridButton()`，背景板透明度复用操作面板的背景透明度计算；初始内容由 `BuildQuickGridItems()` 生成，按备份版 12 个小按钮顺序排列为纵向 3 格、横向 4 格：Windows 设置、电源菜单、悬停透明度、刷新、程序设置、任务管理器、重启、快速设置、电池暂停、实时字幕、电池恢复、AI Studio。网格基准常量仍为 `QuickGridCellPixels = 100`、`QuickGridGapPixels = 10`、`QuickGridPaddingPixels = 10`，`QuickGridColumns = 4`，实际显示再乘以 `QuickGridVisualScale = 1/3`；当前 12 项在 1x 样本中输出 147x111，未来新增项只需追加 `QuickGridItem`，窗口会继续按 4 列自动增加行数。显示期间点击网格空白或窗口外部会关闭；点击任意网格按钮时先关闭窗口再执行既有动作。`--render-operation` 会额外输出 `operation-quick-grid.png` 用于检查该窗口。
 
 FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞读取性能计数器。性能、均衡、省电模式的刷新间隔分别为 1、2、5 秒；值未变化时不重绘。
 
@@ -418,6 +435,8 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 - 内容透明度：控制文字、曲线、边框、图标等背景之外的内容。
 
 两项设置同时应用于主性能窗口和功耗/时间窗口。只改变整体 Alpha 时不会重新绘制全部内容，而是复用渲染缓冲并重新提交窗口。
+
+防烧屏微位移由 `Core/BurnInProtection.cs` 统一提供。`BurnInProtection.ShouldRefreshPosition` 以 7 分钟 slot 控制是否需要重新定位；各窗口在自己的 `Position*Window` 或等价维护入口中调用 `BurnInProtection.ApplyRuntimeOffset`，先按设置和目标工作区算出基准位置，再按命名 salt 得到不越界的微位移位置。现有 salt 为 `MainWidgetSalt = 1`、`CodexRadarSalt = 7`、`ClaudeRadarSalt = 31`、`PowerThermalSalt = 13`、`NetworkMonitorSalt = 19`、`ConnectionCheckSalt = 23`、`OperationPanelSalt = 29`。这些值是窗口之间错开微迁移相位的运行时契约；维护时必须引用命名常量，不能在窗口代码里写裸数字。
 
 ### 6.2 可见性与桌面层
 
@@ -442,6 +461,8 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 
 目标显示器留空时使用当前主显示器。指定显示器断开时，`FallbackDisconnectedDisplaysEnabled` 默认让对应模块回退到当前主显示器；关闭后保留该模块上次记录的显示器工作区，不强制挤回已有显示器。因此用户在当前分辨率和显示器组合下调整好的屏占比，会在切换分辨率、外接显示器模式变化或息屏唤醒后尽量保持一致。
 
+`ResolutionCompatibilityModeEnabled` 默认关闭。开启后，`WidgetSettings` 把保存的 `2880x1800` 参考布局视为逻辑画布，并通过 `ResolutionCompatibilityScalePercent` 在运行时投影主窗口、Codex Radar、Claude Radar、功耗温度、网络监控、连接检测和操作面板的位置与尺寸。`LayeredWidgetFormBase.ApplyLayerScaleFromSettings` 同步调整 `LayerScale`，让文字、线宽、圆角和图标跟随窗口缩放；低于 `100%` 用于压缩预览，超过 `100%` 用于放大预览。该模式不改写保存的真实布局坐标，全局编辑模式会临时关闭兼容投影，避免把预览坐标保存回正常布局。
+
 设置页“全局编辑”使用 `GlobalLayoutEditorForm` 打开全屏编辑层。底层遮罩为 50% 黑色，顶层透明交互层显示模块边框、顶部提示和拖拽辅助线。进入编辑模式后，`WidgetForm` 使用临时运行态设置禁用所有隐藏/悬停透明规则，并通过窗口层级刷新回调把所有模块保持在遮罩之上；拖拽过程中每次鼠标移动都会实时调用预览并刷新窗口层级。拖拽时，活动窗口四边中点会连接到当前屏幕四边并标注像素距离；与其他模块在水平或垂直方向可直线连接且间距小于 `500 px` 时，每个其他模块最多绘制一根连接线。Enter 保存并退出，Esc 放弃并还原进入编辑前的预览设置。
 
 ### 6.4 鼠标穿透与防遮挡
@@ -459,11 +480,13 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 
 覆盖开启默认开启。自动隐藏已经激活时，鼠标在窗口外的普通移动不会重置空闲计时，只有进入任意程序窗口的敏感命中范围后才解除自动隐藏。手动点击仍作为真实交互处理。
 
+左下角 RadialDial 核心圆圈可以作为自动隐藏 keep-alive 区域。默认开启时，鼠标静止停在该圆圈上也会持续重置自动隐藏计时器，并且清空普通悬停隐藏的延迟显现状态；该逻辑复用 `WidgetForm` 的共享交互 tick，不增加额外高频轮询。圆圈自身在悬停持续达到 `AutoHoverOpacityIdleSeconds` 后进入确认视觉态：`DrawRadialCoreAutoHideThresholdVisual` 使用 `CompositingMode.SourceCopy` 改写最终 layered-window 像素 alpha，而不是在已有圆圈上做 SourceOver 叠色；核心内部黑色遮罩按 95% 透明度写入，对应 `RadialCoreAutoHideThresholdDimAlpha = 13`；外层 3 px 绿色环状边框按 70% 透明度写入，对应 `RadialCoreAutoHideThresholdRingAlpha = 77`；该视觉反馈随 `OperationRadialCoreAutoHideKeepAliveEnabled` 自动启停，不单独暴露设置。
+
 反向隐藏默认开启，仅作用于操作面板手动激活的隐藏模式。鼠标进入某个程序窗口的敏感命中范围时，该窗口临时恢复正常透明度，并且不会再被“鼠标移上去隐藏”规则立即压回隐藏；鼠标移开后按设置延迟 `1-30 s` 重新隐藏。
 
 操作面板自身有一个额外边界：刚从左下角按钮开启手动隐藏后，鼠标通常仍在操作面板上。为避免操作面板立刻被反向隐藏恢复而看起来“按钮无效”，它会先保持隐藏，直到鼠标离开操作面板判定范围；之后再移回操作面板时，反向隐藏恢复照常生效。
 
-操作面板是主动交互窗口。隐藏反色会把灰白图标像素透明化，因此操作面板在像素后处理之后，为可见按钮的圆角区域补充隐藏命中遮罩。遮罩像素使用 `Alpha=64`，再叠加操作面板隐藏态整体透明度后约为 `12/255`，比 `Alpha=1` 的边界值更可靠；按钮间隙、圆角外部和 FPS 信息区域仍保持全透明穿透。
+操作面板是主动交互窗口。`OperationForm.IsLayeredBurnInColorProtectionActive` 始终返回 `false`，因此无论隐藏透明度由手动、空闲、最大化/全屏还是反向隐藏路径触发，操作面板都不执行 `BurnInProtection.ApplyHiddenModeColorProtection` 的反色和白灰透明化；它只保留整体隐藏透明度。RadialDial 核心圆圈长期悬停提示由 `DrawRadialCoreAutoHideThresholdVisual` 单独写入最终像素 alpha，不属于隐藏反色路径。
 
 ### 6.5 设置预览、保存与取消
 

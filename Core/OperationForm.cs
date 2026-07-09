@@ -54,6 +54,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly Func<bool> manualAiBlockAction;
     private readonly Func<bool, bool> setAiBlockAction;
     private readonly Func<bool, bool> setQuotaPlanAction;
+    private readonly Func<string, bool, bool> setBooleanSettingAction;
     private readonly System.Windows.Forms.Timer animationTimer;
     private readonly System.Windows.Forms.Timer foregroundFpsTimer;
     private readonly System.Windows.Forms.Timer restartSingleClickTimer;
@@ -92,8 +93,9 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private RectangleF[] buttonRects;
     private bool buttonRectsValid;
     private Bitmap interactionHitMask;
+    private OperationQuickGridForm quickGridForm;
 
-    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction)
+    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction, Func<string, bool, bool> setBooleanSettingAction)
     {
         this.currentSettings = settings.Clone();
         this.currentSettings.Normalize();
@@ -106,6 +108,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.manualAiBlockAction = manualAiBlockAction;
         this.setAiBlockAction = setAiBlockAction;
         this.setQuotaPlanAction = setQuotaPlanAction;
+        this.setBooleanSettingAction = setBooleanSettingAction;
         ApplicationIcon.ApplyTo(this);
         this.isAsusZenbookDevice = DetectAsusZenbookDevice();
         this.myAsusInstalled = DetectMyAsusInstalled();
@@ -133,12 +136,15 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
+        ApplyLayerScaleFromSettings(this.currentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = Color.Black;
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinOperationButtonSize, WidgetSettings.MinOperationButtonSize));
+        this.MaximumSize = new Size(4000, 4000);
         this.Size = GetDesiredSize();
         this.Cursor = Cursors.Hand;
 
@@ -188,6 +194,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.appSettingsSingleClickTimer.Stop();
         this.appSettingsSingleClickTimer.Tick -= OnAppSettingsSingleClickTimerTick;
         this.appSettingsSingleClickTimer.Dispose();
+        DisposeQuickGridForm();
         if (Interlocked.CompareExchange(ref this.foregroundFpsReadRunning, 0, 0) == 0)
         {
             this.foregroundFpsReader.Dispose();
@@ -237,6 +244,9 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.currentSettings.ManualHoverOpacityActive;
         this.currentSettings = settings.Clone();
         this.currentSettings.Normalize();
+        ApplyLayerScaleFromSettings(this.currentSettings);
+        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinOperationButtonSize, WidgetSettings.MinOperationButtonSize));
+        this.MaximumSize = new Size(4000, 4000);
         if (this.currentSettings.ForceHoverOpacityActive &&
             this.currentSettings.ManualHoverOpacityActive &&
             !wasManualHoverOpacityActive)
@@ -251,6 +261,11 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.suppressReverseHoverRevealUntilCursorLeaves = false;
             this.reverseHoverRevealUntilUtc = DateTime.MinValue;
             this.lastReverseHoverRevealActive = false;
+        }
+
+        if (!IsRadialDialActive() || !this.currentSettings.OperationRadialCoreAutoHideKeepAliveEnabled)
+        {
+            ClearRadialCoreAutoHideThresholdVisual();
         }
 
         ResetLayoutCaches();
@@ -304,6 +319,11 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         UpdateForegroundFpsTimer();
         RefreshSeelenUiStatus(DateTime.UtcNow, true);
         RefreshMemoryPieSnapshot(DateTime.UtcNow, true);
+        if (this.quickGridForm != null && !this.quickGridForm.IsDisposed)
+        {
+            this.quickGridForm.ApplyRuntimeSettings(this.currentSettings);
+        }
+
         RenderLayeredWindow();
     }
 
@@ -528,6 +548,23 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             return false;
         }
 
+        bool radialVisualChanged = false;
+        if (IsRadialDialActive())
+        {
+            DateTime nowUtc = DateTime.UtcNow;
+            radialVisualChanged = UpdateRadialCoreAutoHideThresholdVisual(nowUtc);
+            if (TickRadialIdleCollapse())
+            {
+                return true;
+            }
+        }
+
+        if (radialVisualChanged)
+        {
+            RenderLayeredWindow();
+            return true;
+        }
+
         bool active = IsReverseHoverRevealActive();
         if (active != this.lastReverseHoverRevealActive)
         {
@@ -615,7 +652,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         if (button == StartButtonIndex)
         {
-            return "左键：Windows 开始菜单\r\n右键：Windows 开始右键菜单\r\n优先调用系统入口，必要时使用 Windows 回退";
+            return "左键：Windows 开始菜单\r\n右键：Windows 系统工具菜单\r\n设备管理器、磁盘管理等";
         }
 
         if (button == WindowsSettingsButtonIndex)
@@ -625,7 +662,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         if (button == WindowsPowerMenuButtonIndex)
         {
-            return "打开 SeelenUI 电源界面\r\n不可用时尝试 Windows 安全菜单，无快捷键回退";
+            return "左键：SeelenUI 电源界面\r\n右键：Windows 系统工具菜单\r\n设备管理器、磁盘管理等";
         }
 
         if (button == RefreshButtonIndex)
@@ -758,6 +795,30 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         ExecuteButton(button, e.Button);
     }
 
+    protected override void OnMouseDoubleClick(MouseEventArgs e)
+    {
+        base.OnMouseDoubleClick(e);
+        if (e.Button != MouseButtons.Left)
+        {
+            return;
+        }
+
+        if (IsRadialDialActive())
+        {
+            if (RadialHitTest(e.Location).Kind == RadialHitKind.Core)
+            {
+                ToggleQuickGridWindow();
+            }
+
+            return;
+        }
+
+        if (HitTest(e.Location) == StartButtonIndex)
+        {
+            ToggleQuickGridWindow();
+        }
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
@@ -826,6 +887,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         if (button == WindowsPowerMenuButtonIndex)
         {
+            if (mouseButton == MouseButtons.Right)
+            {
+                OpenWindowsSystemToolsMenu();
+                return;
+            }
+
             BeginOpenSeelenPowerMenu();
             return;
         }
@@ -902,6 +969,17 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         {
             this.toggleHoverOpacityAction();
             return;
+        }
+    }
+
+    private void OpenWindowsSystemToolsMenu()
+    {
+        if (!NativeMethods.OpenWindowsStartContextMenu())
+        {
+            ShowOperationNotification(
+                "系统工具菜单",
+                "未能打开 Windows 系统工具菜单。",
+                ToolTipIcon.Warning);
         }
     }
 
@@ -2215,7 +2293,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     private bool AcceptsMouseButton(int button, MouseButtons mouseButton)
     {
-        if (!IsButtonEnabled(button))
+        if (!IsButtonVisible(button) || IsButtonUnavailable(button))
         {
             return false;
         }
@@ -2223,6 +2301,17 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         if (button == StartButtonIndex)
         {
             return mouseButton == MouseButtons.Left || mouseButton == MouseButtons.Right;
+        }
+
+        if (button == WindowsPowerMenuButtonIndex)
+        {
+            return mouseButton == MouseButtons.Right ||
+                (mouseButton == MouseButtons.Left && IsButtonEnabled(button));
+        }
+
+        if (!IsButtonEnabled(button))
+        {
+            return false;
         }
 
         return mouseButton == MouseButtons.Left;
@@ -2307,7 +2396,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     private int GetStartButtonSize()
     {
-        return Math.Max(WidgetSettings.MinOperationButtonSize, Math.Min(WidgetSettings.MaxOperationButtonSize, this.currentSettings.OperationButtonSize));
+        int logicalSize = Math.Max(WidgetSettings.MinOperationButtonSize, Math.Min(WidgetSettings.MaxOperationButtonSize, this.currentSettings.OperationButtonSize));
+        return this.currentSettings.ScaleResolutionCompatibilityPixels(logicalSize);
     }
 
     private int GetSmallButtonSize()
@@ -2323,8 +2413,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         }
 
         Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
-        int left = workArea.Left + Math.Max(0, this.currentSettings.OperationLeftOffset);
-        int top = workArea.Bottom - this.Height - Math.Max(0, this.currentSettings.OperationBottomOffset);
+        int left = workArea.Left + this.currentSettings.ScaleResolutionCompatibilityOffset(Math.Max(0, this.currentSettings.OperationLeftOffset));
+        int top = workArea.Bottom - this.Height - this.currentSettings.ScaleResolutionCompatibilityOffset(Math.Max(0, this.currentSettings.OperationBottomOffset));
         left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
         Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
@@ -3567,9 +3657,10 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     private bool IsBurnInColorProtectionActive()
     {
-        return BurnInProtection.ShouldApplyHiddenModeColorProtection(
-            this.currentSettings,
-            this.currentSettings.ForceHoverOpacityActive && !IsReverseHoverRevealActive());
+        // The operation panel is an active control surface. Hidden-mode color inversion can erase
+        // grayscale glyph pixels and make the panel feel broken, so it is disabled here regardless
+        // of which hidden trigger is active. RadialDial's long-core-hover visual is drawn separately.
+        return false;
     }
 
     private bool IsReverseHoverRevealActive()
@@ -3753,7 +3844,9 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         RunSingleFlightSelfTest();
         RunFpsIntervalSelfTest();
         RunSeelenPowerMenuResultSelfTest();
+        RunMouseButtonAcceptanceSelfTest();
         RunRadialDialSelfTest();
+        RunQuickGridSelfTest();
         AiQuickMenuForm.RunSelfTest();
     }
 
@@ -3840,6 +3933,24 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         AssertSelfTest(
             SeelenPowerMenuResult.Failed("failure").RequiresFallback,
             "failed result");
+    }
+
+    private static void RunMouseButtonAcceptanceSelfTest()
+    {
+        using (OperationForm form = CreateRadialDialSelfTestForm())
+        {
+            form.currentSettings.OperationPrimaryPanelMode = OperationPrimaryPanelMode.WindowsButton;
+            AssertSelfTest(
+                form.AcceptsMouseButton(StartButtonIndex, MouseButtons.Right),
+                "operation primary button accepts right-click for Windows system tools");
+            form.seelenPowerMenuRequestRunning = 1;
+            AssertSelfTest(
+                !form.AcceptsMouseButton(WindowsPowerMenuButtonIndex, MouseButtons.Left),
+                "Seelen power left-click remains blocked while the single-flight request is running");
+            AssertSelfTest(
+                form.AcceptsMouseButton(WindowsPowerMenuButtonIndex, MouseButtons.Right),
+                "Windows system-tools right-click remains available while Seelen power left-click is busy");
+        }
     }
 
     private static void AssertSelfTest(bool condition, string message)
