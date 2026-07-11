@@ -11,8 +11,11 @@ internal abstract class LayeredWidgetFormBase : Form
     private bool renderBufferValid;
     private bool lastRenderedBurnInColorProtectionActive;
     private bool layeredUpdateFailureLogged;
+    private long burnInShiftSlot = long.MinValue;
 
     protected float LayerScale { get; private set; } = 1.0f;
+
+    protected WidgetSettings CurrentSettings { get; set; }
 
     protected Bitmap LayeredRenderBitmap
     {
@@ -232,6 +235,16 @@ internal abstract class LayeredWidgetFormBase : Form
         path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
         path.CloseFigure();
         return path;
+    }
+
+    protected bool ShouldRefreshBurnInPosition()
+    {
+        return BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot);
+    }
+
+    protected static int ComputeOpacityAlpha(int transparencyPercent)
+    {
+        return 255 - DesignTokens.ClampByte(transparencyPercent * 255 / 100);
     }
 
     protected virtual byte GetApplicationOpacityAlpha()

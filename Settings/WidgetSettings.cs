@@ -294,7 +294,7 @@ internal sealed class WidgetSettings
     public const int MinResolutionCompatibilityScalePercent = 40;
     public const int MaxResolutionCompatibilityScalePercent = 200;
     public const int DefaultResolutionCompatibilityScalePercent = 100;
-    private const int CurrentSettingsVersion = 61;
+    private const int CurrentSettingsVersion = 63;
     private const int EffectivePerformanceModeCacheMs = 2000;
     private static readonly object EffectivePerformanceModeSync = new object();
     private static DateTime effectivePerformanceModeCacheUtc = DateTime.MinValue;
@@ -571,6 +571,7 @@ internal sealed class WidgetSettings
     public CodexRadarSoftwareMode CodexRadarSoftwareMode { get; set; }
     public bool RadarClockAutoSwitchModelEnabled { get; set; }
     public RadarClockTimeDisplayMode RadarClockTimeDisplayMode { get; set; }
+    public bool CodexRadarSpeedWindowCountdownEnabled { get; set; }
     public string ClaudeRadarModelKey { get; set; }
     public DisplayTimeZoneMode DisplayTimeZoneMode { get; set; }
     public string DisplayTimeZoneId { get; set; }
@@ -815,6 +816,7 @@ internal sealed class WidgetSettings
         this.CodexRadarSoftwareMode = defaults.CodexRadarSoftwareMode;
         this.RadarClockAutoSwitchModelEnabled = defaults.RadarClockAutoSwitchModelEnabled;
         this.RadarClockTimeDisplayMode = defaults.RadarClockTimeDisplayMode;
+        this.CodexRadarSpeedWindowCountdownEnabled = defaults.CodexRadarSpeedWindowCountdownEnabled;
         this.ClaudeRadarModelKey = defaults.ClaudeRadarModelKey;
         this.DisplayTimeZoneMode = defaults.DisplayTimeZoneMode;
         this.DisplayTimeZoneId = defaults.DisplayTimeZoneId;
@@ -1029,6 +1031,7 @@ internal sealed class WidgetSettings
         settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Auto;
         settings.RadarClockAutoSwitchModelEnabled = true;
         settings.RadarClockTimeDisplayMode = RadarClockTimeDisplayMode.Utc;
+        settings.CodexRadarSpeedWindowCountdownEnabled = true;
         settings.ClaudeRadarModelKey = string.Empty;
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
         settings.DisplayTimeZoneId = TimeZoneInfo.Local.Id;
@@ -1275,10 +1278,11 @@ internal sealed class WidgetSettings
         settings.CodexModelTokenEfficiencyLowThresholdPercent = 80;
         settings.CodexModelTimeEfficiencyLowThresholdPercent = 80;
         settings.CodexRadarModelVersion = CodexRadarModelVersion.Gpt55;
-        settings.CodexRadarModelKey = "gpt_55_xhigh";
+        settings.CodexRadarModelKey = CodexRadarModelCatalog.DefaultModelKey;
         settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Auto;
         settings.RadarClockAutoSwitchModelEnabled = true;
         settings.RadarClockTimeDisplayMode = RadarClockTimeDisplayMode.Utc;
+        settings.CodexRadarSpeedWindowCountdownEnabled = true;
         settings.ClaudeRadarModelKey = "";
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
         settings.DisplayTimeZoneId = "Tokyo Standard Time";
@@ -1505,6 +1509,7 @@ internal sealed class WidgetSettings
             CodexRadarSoftwareMode = this.CodexRadarSoftwareMode,
             RadarClockAutoSwitchModelEnabled = this.RadarClockAutoSwitchModelEnabled,
             RadarClockTimeDisplayMode = this.RadarClockTimeDisplayMode,
+            CodexRadarSpeedWindowCountdownEnabled = this.CodexRadarSpeedWindowCountdownEnabled,
             ClaudeRadarModelKey = this.ClaudeRadarModelKey,
             DisplayTimeZoneMode = this.DisplayTimeZoneMode,
             DisplayTimeZoneId = this.DisplayTimeZoneId,
@@ -1970,9 +1975,30 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (settingsVersion > 0 && settingsVersion < 62)
+        {
+            ApplyCodexRadarDefaultModelMigration(settings);
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 63)
+        {
+            settings.CodexRadarSpeedWindowCountdownEnabled = true;
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
+        if (settingsVersion > 0 && settingsVersion < 62)
+        {
+            // Empty legacy keys are populated by Normalize, so the migration must run once
+            // more after normalization to catch that otherwise invisible previous default.
+            ApplyCodexRadarDefaultModelMigration(settings);
+            settings.CodexRadarModelVersion =
+                CodexRadarModelCatalog.LegacyVersionFromKey(settings.CodexRadarModelKey);
+        }
+
         if (saveAfterMigration && saveAfterMigrationToSamePath)
         {
             try
@@ -2375,6 +2401,7 @@ internal sealed class WidgetSettings
             "CodexRadarSoftwareMode=" + this.CodexRadarSoftwareMode,
             "RadarClockAutoSwitchModelEnabled=" + this.RadarClockAutoSwitchModelEnabled,
             "RadarClockTimeDisplayMode=" + this.RadarClockTimeDisplayMode,
+            "CodexRadarSpeedWindowCountdownEnabled=" + this.CodexRadarSpeedWindowCountdownEnabled,
             "ClaudeRadarModelKey=" + this.ClaudeRadarModelKey,
             "DisplayTimeZoneMode=" + this.DisplayTimeZoneMode,
             "DisplayTimeZoneId=" + this.DisplayTimeZoneId,
@@ -3742,6 +3769,12 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "CodexRadarSpeedWindowCountdownEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.CodexRadarSpeedWindowCountdownEnabled = boolValue;
+            return;
+        }
+
         if (string.Equals(key, "RadarClockTimeDisplayMode", StringComparison.OrdinalIgnoreCase))
         {
             try
@@ -4054,6 +4087,19 @@ internal sealed class WidgetSettings
         workArea = GetModuleLayoutWorkArea(moduleId);
         EnsureUsableWorkArea(ref workArea);
         return workArea;
+    }
+
+    private static void ApplyCodexRadarDefaultModelMigration(WidgetSettings settings)
+    {
+        // Only move the previous product default. Explicit selections of any other archived
+        // model remain untouched and continue through the dynamic availability policy.
+        if (string.Equals(
+            CodexRadarModelCatalog.NormalizeModelKey(settings.CodexRadarModelKey),
+            CodexRadarModelCatalog.PreviousDefaultModelKey,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            settings.CodexRadarModelKey = CodexRadarModelCatalog.DefaultModelKey;
+        }
     }
 
     public float GetResolutionCompatibilityScaleFactor()
@@ -4929,6 +4975,11 @@ internal sealed class WidgetSettings
         AssertLayout(legacy.RadarClockTimeDisplayMode == RadarClockTimeDisplayMode.LastAttemptRefresh, "radar clock time display mode should parse last attempt");
         ApplyValue(legacy, "RadarClockTimeDisplayMode", "InvalidMode");
         AssertLayout(legacy.RadarClockTimeDisplayMode == RadarClockTimeDisplayMode.Utc, "invalid radar clock time display mode should normalize to UTC");
+        AssertLayout(legacy.CodexRadarSpeedWindowCountdownEnabled, "speed-window countdown should default enabled");
+        ApplyValue(legacy, "CodexRadarSpeedWindowCountdownEnabled", "False");
+        AssertLayout(!legacy.CodexRadarSpeedWindowCountdownEnabled, "speed-window countdown setting should parse false");
+        ApplyValue(legacy, "CodexRadarSpeedWindowCountdownEnabled", "True");
+        AssertLayout(legacy.CodexRadarSpeedWindowCountdownEnabled, "speed-window countdown setting should parse true");
         ApplyValue(legacy, "CodexRadarEnabled", "False");
         AssertLayout(!legacy.CodexRadarEnabled, "codex radar enabled setting should parse false");
         ApplyValue(legacy, "CodexRadarEnabled", "True");
@@ -4992,6 +5043,28 @@ internal sealed class WidgetSettings
             iqWebsiteScore.CodexModelIqBaselinePassed == DefaultCodexModelIqBaselinePassed &&
             iqWebsiteScore.CodexModelIqTestPassed == DefaultCodexModelIqBaselinePassed,
             "codex model iq website-score defaults should migrate from 6/10 to 7/10");
+
+        WidgetSettings codex56Default = CreateDefaults();
+        codex56Default.CodexRadarModelKey = CodexRadarModelCatalog.PreviousDefaultModelKey;
+        ApplyCodexRadarDefaultModelMigration(codex56Default);
+        AssertLayout(
+            string.Equals(
+                codex56Default.CodexRadarModelKey,
+                CodexRadarModelCatalog.DefaultModelKey,
+                StringComparison.OrdinalIgnoreCase),
+            "Codex Radar previous default model should migrate to GPT-5.6 Sol medium");
+
+        WidgetSettings emptyKeyLegacy = CreateDefaults();
+        emptyKeyLegacy.CodexRadarModelKey = string.Empty;
+        emptyKeyLegacy.CodexRadarModelVersion = CodexRadarModelVersion.Gpt55;
+        emptyKeyLegacy.Normalize();
+        ApplyCodexRadarDefaultModelMigration(emptyKeyLegacy);
+        AssertLayout(
+            string.Equals(
+                emptyKeyLegacy.CodexRadarModelKey,
+                CodexRadarModelCatalog.DefaultModelKey,
+                StringComparison.OrdinalIgnoreCase),
+            "empty legacy model key should reach GPT-5.6 default after normalize + migration re-run");
 
         WidgetSettings iqClamp = CreateDefaults();
         ApplyValue(iqClamp, "CodexModelIqBaselinePassed", "12");

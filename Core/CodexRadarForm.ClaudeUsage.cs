@@ -33,9 +33,9 @@ internal sealed partial class CodexRadarForm
 
     private SoftwareRuntimePresenceSnapshot RefreshSoftwareRuntimePresenceSnapshot(bool force)
     {
-        WidgetPerformanceMode mode = this.currentSettings == null
+        WidgetPerformanceMode mode = this.CurrentSettings == null
             ? WidgetPerformanceMode.BatterySaver
-            : WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
+            : WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode);
         SoftwareRuntimePresenceSnapshot snapshot = SoftwareRuntimePresence.GetSnapshot(mode, force);
         this.softwareRuntimePresenceSnapshot = snapshot ?? SoftwareRuntimePresenceSnapshot.Empty();
         return this.softwareRuntimePresenceSnapshot;
@@ -53,15 +53,15 @@ internal sealed partial class CodexRadarForm
 
     private void UpdateEffectiveCodexRadarSoftwareModeIfNeeded()
     {
-        if (this.currentSettings == null)
+        if (this.CurrentSettings == null)
         {
             return;
         }
 
-        if (this.currentSettings.CodexRadarSoftwareMode != CodexRadarSoftwareMode.Auto)
+        if (this.CurrentSettings.CodexRadarSoftwareMode != CodexRadarSoftwareMode.Auto)
         {
             RefreshSoftwareRuntimePresenceSnapshot(false);
-            if (this.effectiveCodexRadarSoftwareMode != this.currentSettings.CodexRadarSoftwareMode &&
+            if (this.effectiveCodexRadarSoftwareMode != this.CurrentSettings.CodexRadarSoftwareMode &&
                 UpdateEffectiveCodexRadarSoftwareMode(true))
             {
                 SwitchCodexRadarSoftwareFamily("软件设置切换");
@@ -100,14 +100,29 @@ internal sealed partial class CodexRadarForm
         }
 
         this.effectiveCodexRadarSoftwareMode = next;
+        if (changed)
+        {
+            SoftwareRuntimePresenceSnapshot presence = this.softwareRuntimePresenceSnapshot ??
+                SoftwareRuntimePresenceSnapshot.Empty();
+            Program.LogInfo(
+                "Radar software family changed. Previous=" +
+                previous +
+                " Next=" +
+                next +
+                " CodexRunning=" +
+                presence.CodexRunning +
+                " ClaudeRunning=" +
+                presence.ClaudeRunning);
+        }
+
         return changed;
     }
 
     private CodexRadarSoftwareMode ResolveCodexRadarSoftwareMode(bool force)
     {
-        CodexRadarSoftwareMode configured = this.currentSettings == null
+        CodexRadarSoftwareMode configured = this.CurrentSettings == null
             ? CodexRadarSoftwareMode.Auto
-            : this.currentSettings.CodexRadarSoftwareMode;
+            : this.CurrentSettings.CodexRadarSoftwareMode;
         SoftwareRuntimePresenceSnapshot presence = RefreshSoftwareRuntimePresenceSnapshot(force);
         bool foregroundDetected = false;
         CodexRadarSoftwareMode detected;
@@ -161,9 +176,9 @@ internal sealed partial class CodexRadarForm
 
     private int GetCodexRadarSoftwareAutoDetectSeconds()
     {
-        WidgetPerformanceMode mode = this.currentSettings == null
+        WidgetPerformanceMode mode = this.CurrentSettings == null
             ? WidgetPerformanceMode.BatterySaver
-            : WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
+            : WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode);
         if (mode == WidgetPerformanceMode.Smooth)
         {
             return 2;
@@ -188,6 +203,7 @@ internal sealed partial class CodexRadarForm
 
         string title = NativeMethods.GetWindowTitleForDisplay(handle);
         string processName = string.Empty;
+        string executablePath = string.Empty;
         int processId;
         if (NativeMethods.TryGetWindowProcessId(handle, out processId))
         {
@@ -202,29 +218,21 @@ internal sealed partial class CodexRadarForm
                 {
                     processName = process.ProcessName ?? string.Empty;
                 }
+
+                executablePath = NativeMethods.TryGetProcessImagePath(processId);
             }
             catch
             {
                 processName = string.Empty;
+                executablePath = string.Empty;
             }
         }
 
-        string combined = (processName + " " + title).ToLowerInvariant();
-        bool claude = combined.IndexOf("claude", StringComparison.Ordinal) >= 0;
-        bool codex = combined.IndexOf("codex", StringComparison.Ordinal) >= 0;
-        if (claude)
-        {
-            mode = CodexRadarSoftwareMode.Claude;
-            return true;
-        }
-
-        if (codex)
-        {
-            mode = CodexRadarSoftwareMode.Codex;
-            return true;
-        }
-
-        return false;
+        return SoftwareRuntimePresence.TryClassifySoftwareProcess(
+            processName,
+            executablePath,
+            title,
+            out mode);
     }
 
     private void SwitchCodexRadarSoftwareFamily(string trigger)
@@ -275,7 +283,7 @@ internal sealed partial class CodexRadarForm
     {
         mode = NormalizeEffectiveSoftwareMode(mode);
         RadarFamilyRuntimeState state = GetRadarFamilyState(mode);
-        string modelKey = this.currentSettings == null
+        string modelKey = this.CurrentSettings == null
             ? string.Empty
             : GetSelectedRadarModelKeyForSoftwareMode(mode);
         CodexRadarSnapshot radarSnapshot;
@@ -413,6 +421,7 @@ internal sealed partial class CodexRadarForm
 
     internal static void RunSoftwareModeGateSelfTest()
     {
+        SoftwareRuntimePresence.RunSelfTest();
         RadarSoftwareModeController.RunSelfTest();
 
         ClaudeRadarSnapshot claudeSnapshot = ClaudeRadarSnapshot.CreateDefault();
@@ -497,7 +506,7 @@ internal sealed partial class CodexRadarForm
         }
 
         Task<ClaudeCodeUsageSchedulerOutcome> task;
-        if (!ClaudeCodeUsageScheduler.TryStartOrJoin("codex_radar", this.currentSettings, "定时间隔", out task))
+        if (!ClaudeCodeUsageScheduler.TryStartOrJoin("codex_radar", this.CurrentSettings, "定时间隔", out task))
         {
             return;
         }
@@ -582,8 +591,8 @@ internal sealed partial class CodexRadarForm
             this.BeginInvoke((MethodInvoker)delegate
             {
                 if (this.IsDisposed ||
-                    this.currentSettings == null ||
-                    this.currentSettings.CodexRadarRandomTestEnabled ||
+                    this.CurrentSettings == null ||
+                    this.CurrentSettings.CodexRadarRandomTestEnabled ||
                     GetEffectiveCodexRadarSoftwareMode() != CodexRadarSoftwareMode.Claude)
                 {
                     return;
@@ -591,7 +600,14 @@ internal sealed partial class CodexRadarForm
 
                 DateTime nowUtc = DateTime.UtcNow;
                 this.lastQuotaRefreshUtc = nowUtc;
-                ApplyQuotaSnapshot(CodexRadarSoftwareMode.Claude, snapshot.Clone(), true, true, DateTime.Now, nowUtc, "claude");
+                ApplyQuotaSnapshot(
+                    CodexRadarSoftwareMode.Claude,
+                    snapshot.Clone(),
+                    true,
+                    true,
+                    DateTime.Now,
+                    nowUtc,
+                    string.IsNullOrWhiteSpace(snapshot.SourceKind) ? "claude_personal" : snapshot.SourceKind);
                 RenderLayeredWindow();
             });
         }
@@ -715,6 +731,7 @@ internal sealed partial class CodexRadarForm
             snapshot.WeeklyResetKnown = result.Snapshot.WeeklyResetKnown;
             snapshot.SourceUpdatedUtc = result.Snapshot.SourceUpdatedUtc;
             snapshot.SourceUpdatedKnown = result.Snapshot.SourceUpdatedKnown;
+            MarkQuotaSnapshotSource(snapshot, "claude_personal");
         }
 
         return new ClaudeCodeUsageResult

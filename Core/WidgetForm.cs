@@ -86,7 +86,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private Form settingsForm;
     private Form aiQuickMenuForm;
     private WidgetSettings savedSettings;
-    private WidgetSettings currentSettings;
     private PerfSnapshot snapshot;
     private int tickCount;
     private DateTime memoryCriticalSinceUtc;
@@ -129,7 +128,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private Size lastLoggedSize;
     private bool lastLoggedDesktopAttached;
     private bool positionLogInitialized;
-    private long burnInShiftSlot = long.MinValue;
     private readonly Dictionary<string, Font> fontCache = new Dictionary<string, Font>(StringComparer.Ordinal);
     private readonly CodexQuotaGoalPlanner codexQuotaGoalPlanner;
     private bool formClosing;
@@ -155,10 +153,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.stopEvent = stopEvent;
         this.useDesktopParent = useDesktopParent;
         this.savedSettings = settings.Clone();
-        this.currentSettings = settings.Clone();
+        this.CurrentSettings = settings.Clone();
         this.codexQuotaGoalPlanner = new CodexQuotaGoalPlanner();
-        this.manualForceHoverOpacityActive = this.currentSettings.ForceHoverOpacityActive;
-        this.currentSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
+        this.manualForceHoverOpacityActive = this.CurrentSettings.ForceHoverOpacityActive;
+        this.CurrentSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.lastMouseActivityPosition = Cursor.Position;
         this.lastMouseActivityUtc = DateTime.UtcNow;
         this.lastSettingsWriteUtc = GetSettingsWriteUtc();
@@ -197,7 +195,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
-        ApplyLayerScaleFromSettings(this.currentSettings);
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
@@ -205,18 +203,18 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
         this.Opacity = 1.0;
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
-        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
-        this.Size = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(this.currentSettings.Width, this.currentSettings.Height));
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
+        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
+        this.Size = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(this.CurrentSettings.Width, this.CurrentSettings.Height));
         ApplicationIcon.ApplyTo(this);
         this.ContextMenuStrip = BuildContextMenu();
         BuildNotifyIcon();
 
         this.timer = new System.Windows.Forms.Timer();
-        this.timer.Interval = WidgetSettings.GetWidgetSampleIntervalMs(this.currentSettings.PerformanceMode);
+        this.timer.Interval = WidgetSettings.GetWidgetSampleIntervalMs(this.CurrentSettings.PerformanceMode);
         this.timer.Tick += OnTimerTick;
         this.hoverTimer = new System.Windows.Forms.Timer();
-        this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+        this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         this.hoverTimer.Tick += OnHoverTimerTick;
         SystemEvents.SessionSwitch += OnSystemSessionSwitch;
     }
@@ -226,7 +224,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         base.OnShown(e);
         Program.LogInfo("Widget shown. Handle=0x" + this.Handle.ToInt64().ToString("X"));
         StartApplicationWindowStateTracking();
-        ApplyRuntimeSettings(this.currentSettings);
+        ApplyRuntimeSettings(this.CurrentSettings);
         PositionWidget();
 
         if (this.useDesktopParent)
@@ -241,17 +239,17 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         this.childWindowLifecycleStarted = true;
         EnsureRadarChildWindows();
-        this.powerThermalForm = new PowerThermalForm(this.currentSettings);
+        this.powerThermalForm = new PowerThermalForm(this.CurrentSettings);
         this.powerThermalForm.SetSharedInteractionPolling(true);
         this.powerThermalForm.Show(this);
-        this.networkMonitorForm = new NetworkMonitorForm(this.currentSettings);
+        this.networkMonitorForm = new NetworkMonitorForm(this.CurrentSettings);
         this.networkMonitorForm.SetSharedInteractionPolling(true);
         this.networkMonitorForm.Show(this);
-        this.connectionCheckForm = new ConnectionCheckForm(this.currentSettings);
+        this.connectionCheckForm = new ConnectionCheckForm(this.CurrentSettings);
         this.connectionCheckForm.SetSharedInteractionPolling(true);
         this.connectionCheckForm.Show(this);
         this.operationForm = new OperationForm(
-            this.currentSettings,
+            this.CurrentSettings,
             delegate { OpenSettings(); },
             delegate { ForceRefreshAllModules(); },
             delegate { RestartCurrentProcess(); },
@@ -324,7 +322,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         this.applicationWindowStateTracker.ProcessWindowEvent(eventId, windowHandle);
         UpdateVisibilityForMode();
-        if (this.currentSettings != null && this.currentSettings.AutoHoverOpacityMaximizedEnabled)
+        if (this.CurrentSettings != null && this.CurrentSettings.AutoHoverOpacityMaximizedEnabled)
         {
             UpdateAutomaticHoverOpacityTriggers();
         }
@@ -340,7 +338,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void EnsureRadarChildWindows()
     {
-        if (!this.childWindowLifecycleStarted || this.formClosing || this.currentSettings == null)
+        if (!this.childWindowLifecycleStarted || this.formClosing || this.CurrentSettings == null)
         {
             return;
         }
@@ -351,7 +349,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void EnsureCodexRadarWindow()
     {
-        if (!this.currentSettings.CodexRadarEnabled)
+        if (!this.CurrentSettings.CodexRadarEnabled)
         {
             CloseCodexRadarWindow();
             return;
@@ -362,10 +360,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        this.codexRadarForm = new CodexRadarForm(this.currentSettings, ShowWindowsNotification);
+        this.codexRadarForm = new CodexRadarForm(this.CurrentSettings, ShowWindowsNotification);
         this.codexRadarForm.SetSharedInteractionPolling(true);
         this.codexRadarForm.Show(this);
-        this.codexRadarForm.ApplyRuntimeSettings(this.currentSettings);
+        this.codexRadarForm.ApplyRuntimeSettings(this.CurrentSettings);
         if (ShouldHideFormForVisibilityMode(this.codexRadarForm))
         {
             this.codexRadarForm.SetHiddenForFullscreen(true);
@@ -376,7 +374,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void EnsureClaudeRadarWindow()
     {
-        if (!this.currentSettings.ClaudeRadarEnabled)
+        if (!this.CurrentSettings.ClaudeRadarEnabled)
         {
             CloseClaudeRadarWindow();
             return;
@@ -387,10 +385,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        this.claudeRadarForm = new ClaudeRadarForm(this.currentSettings, ShowWindowsNotification);
+        this.claudeRadarForm = new ClaudeRadarForm(this.CurrentSettings, ShowWindowsNotification);
         this.claudeRadarForm.SetSharedInteractionPolling(true);
         this.claudeRadarForm.Show(this);
-        this.claudeRadarForm.ApplyRuntimeSettings(this.currentSettings);
+        this.claudeRadarForm.ApplyRuntimeSettings(this.CurrentSettings);
         if (ShouldHideFormForVisibilityMode(this.claudeRadarForm))
         {
             this.claudeRadarForm.SetHiddenForFullscreen(true);
@@ -647,7 +645,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         if (IsPowerResumeEventType(eventType))
         {
-            this.pendingPowerResumeRestart = this.currentSettings.PowerResumeRestartEnabled;
+            this.pendingPowerResumeRestart = this.CurrentSettings.PowerResumeRestartEnabled;
             ScheduleDisplayRecovery("power resume 0x" + eventType.ToString("X"));
             return;
         }
@@ -719,13 +717,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private void RefreshAutomaticPerformanceMode(string reason)
     {
         WidgetSettings.InvalidateEffectivePerformanceModeCache();
-        if (this.currentSettings.PerformanceMode != WidgetPerformanceMode.WindowsPowerMode)
+        if (this.CurrentSettings.PerformanceMode != WidgetPerformanceMode.WindowsPowerMode)
         {
             return;
         }
 
         Program.LogInfo("Automatic performance mode refresh. Reason=" + reason);
-        ApplyRuntimeSettings(this.currentSettings);
+        ApplyRuntimeSettings(this.CurrentSettings);
     }
 
     private void OnSystemSessionSwitch(object sender, SessionSwitchEventArgs e)
@@ -910,7 +908,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.seelenUiWasRunningBeforePowerSuspend = false;
         this.seelenUiExecutablePathBeforePowerSuspend = string.Empty;
         this.pendingPowerResumeRestart = false;
-        if (this.currentSettings == null || !this.currentSettings.PowerResumeRestartEnabled)
+        if (this.CurrentSettings == null || !this.CurrentSettings.PowerResumeRestartEnabled)
         {
             return;
         }
@@ -934,7 +932,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         this.pendingPowerResumeRestart = false;
-        if (this.formClosing || this.IsDisposed || !this.currentSettings.PowerResumeRestartEnabled)
+        if (this.formClosing || this.IsDisposed || !this.CurrentSettings.PowerResumeRestartEnabled)
         {
             Program.LogInfo("Power resume application restart skipped because setting is disabled or form is closing.");
             return;
@@ -977,7 +975,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        if (!this.currentSettings.SeelenDockForegroundPulseEnabled)
+        if (!this.CurrentSettings.SeelenDockForegroundPulseEnabled)
         {
             this.seelenDockPulseTimer.Stop();
             this.nextSeelenDockPulseLocal = DateTime.MinValue;
@@ -1032,7 +1030,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        if (!this.currentSettings.SeelenDockForegroundPulseEnabled)
+        if (!this.CurrentSettings.SeelenDockForegroundPulseEnabled)
         {
             this.nextSeelenDockPulseLocal = DateTime.MinValue;
             return;
@@ -1061,7 +1059,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         this.winDRecoveryTimer.Stop();
-        if (!this.currentSettings.WinDRecoveryPulseEnabled)
+        if (!this.CurrentSettings.WinDRecoveryPulseEnabled)
         {
             this.winDWatcher.Stop();
             return;
@@ -1095,7 +1093,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        if (!this.currentSettings.WinDRecoveryPulseEnabled)
+        if (!this.CurrentSettings.WinDRecoveryPulseEnabled)
         {
             return;
         }
@@ -1109,7 +1107,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private void OnWinDRecoveryTimerTick(object sender, EventArgs e)
     {
         this.winDRecoveryTimer.Stop();
-        if (this.formClosing || this.IsDisposed || !this.currentSettings.WinDRecoveryPulseEnabled)
+        if (this.formClosing || this.IsDisposed || !this.CurrentSettings.WinDRecoveryPulseEnabled)
         {
             return;
         }
@@ -1121,7 +1119,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private bool PulseSeelenDockToFront(string reason, bool skipWhenForegroundMaximizedOrFullscreen, bool respectSetting)
     {
-        if (respectSetting && !this.currentSettings.SeelenDockForegroundPulseEnabled)
+        if (respectSetting && !this.CurrentSettings.SeelenDockForegroundPulseEnabled)
         {
             return false;
         }
@@ -1152,7 +1150,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void RestoreApplicationTopMostPriority()
     {
-        if (this.currentSettings.VisibilityMode == WidgetVisibilityMode.DesktopOnly)
+        if (this.CurrentSettings.VisibilityMode == WidgetVisibilityMode.DesktopOnly)
         {
             return;
         }
@@ -1189,7 +1187,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private bool ApplyDisplayLayoutForCurrentWorkArea()
     {
-        WidgetSettings adjustedSettings = this.currentSettings.Clone();
+        WidgetSettings adjustedSettings = this.CurrentSettings.Clone();
         if (!adjustedSettings.AdaptToCurrentWorkArea())
         {
             return false;
@@ -1261,7 +1259,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:update_visibility");
             UpdateVisibilityForMode();
             if (!this.hiddenForFullscreen &&
-                BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+                ShouldRefreshBurnInPosition())
             {
                 UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:position_burn_in_shift");
                 PositionWidget();
@@ -1276,11 +1274,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             if (this.codexQuotaGoalPlanner != null)
             {
                 UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:codex_quota_goal_plan");
-                this.codexQuotaGoalPlanner.ProcessMaintenanceTick(this.currentSettings, ShowWindowsNotification);
+                this.codexQuotaGoalPlanner.ProcessMaintenanceTick(this.CurrentSettings, ShowWindowsNotification);
             }
 
             if (this.hiddenForFullscreen &&
-                WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode) == WidgetPerformanceMode.BatterySaver)
+                WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode) == WidgetPerformanceMode.BatterySaver)
             {
                 // Keep the control tick alive for settings, stop, and visibility checks, but skip PDH sampling.
                 return;
@@ -1291,7 +1289,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             {
                 UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:pdh_sample");
                 this.snapshot = this.sampler.Sample(
-                    WidgetSettings.GetExpensiveHardwareSampleIntervalMs(this.currentSettings.PerformanceMode));
+                    WidgetSettings.GetExpensiveHardwareSampleIntervalMs(this.CurrentSettings.PerformanceMode));
             }
             finally
             {
@@ -1489,7 +1487,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void PositionWidget()
     {
-        Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModuleMain);
+        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleMain);
         Point location = CalculateLocation(workArea);
         int left = location.X;
         int top = location.Y;
@@ -1511,14 +1509,14 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             flags |= NativeMethods.SWP_SHOWWINDOW;
         }
 
-        if (this.currentSettings.VisibilityMode == WidgetVisibilityMode.DesktopOnly && !this.useDesktopParent)
+        if (this.CurrentSettings.VisibilityMode == WidgetVisibilityMode.DesktopOnly && !this.useDesktopParent)
         {
             flags |= NativeMethods.SWP_NOZORDER;
         }
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(this.currentSettings.VisibilityMode),
+            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode),
             left,
             top,
             this.Width,
@@ -1546,8 +1544,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private Point CalculateLocation(Rectangle workArea)
     {
-        int left = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleMain, workArea, this.currentSettings.LeftX);
-        int bottom = this.currentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleMain, workArea, this.currentSettings.BottomY);
+        int left = this.CurrentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleMain, workArea, this.CurrentSettings.LeftX);
+        int bottom = this.CurrentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleMain, workArea, this.CurrentSettings.BottomY);
         int top = bottom - this.Height + 1;
         left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
@@ -1684,7 +1682,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             "Forced hover opacity toggled from operation panel. ManualActive=" +
             this.manualForceHoverOpacityActive.ToString());
         ApplyCombinedHoverOpacityState("operation panel toggle");
-        return this.currentSettings.ForceHoverOpacityActive;
+        return this.CurrentSettings.ForceHoverOpacityActive;
     }
 
     internal bool PromptToggleAiRequestBlockingFromOperationPanel()
@@ -1695,15 +1693,15 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     internal bool SetAiRequestBlockingFromOperationPanel(bool enabled)
     {
-        bool currentlyBlocked = this.currentSettings != null &&
-            this.currentSettings.AiRequestProtectionManualBlockEnabled;
+        bool currentlyBlocked = this.CurrentSettings != null &&
+            this.CurrentSettings.AiRequestProtectionManualBlockEnabled;
         if (currentlyBlocked == enabled)
         {
             return true;
         }
 
         WidgetSettings nextSettings = this.savedSettings == null
-            ? (this.currentSettings == null ? WidgetSettings.CreateDefaults() : this.currentSettings.Clone())
+            ? (this.CurrentSettings == null ? WidgetSettings.CreateDefaults() : this.CurrentSettings.Clone())
             : this.savedSettings.Clone();
         nextSettings.AiRequestProtectionManualBlockEnabled = enabled;
         SaveSettings(nextSettings);
@@ -1729,15 +1727,15 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     internal bool SetCodexQuotaPlanFromOperationPanel(bool enabled)
     {
-        bool currentlyEnabled = this.currentSettings != null &&
-            this.currentSettings.CodexQuotaPlanEnabled;
+        bool currentlyEnabled = this.CurrentSettings != null &&
+            this.CurrentSettings.CodexQuotaPlanEnabled;
         if (currentlyEnabled == enabled)
         {
             return true;
         }
 
         WidgetSettings nextSettings = this.savedSettings == null
-            ? (this.currentSettings == null ? WidgetSettings.CreateDefaults() : this.currentSettings.Clone())
+            ? (this.CurrentSettings == null ? WidgetSettings.CreateDefaults() : this.CurrentSettings.Clone())
             : this.savedSettings.Clone();
         nextSettings.CodexQuotaPlanEnabled = enabled;
         SaveSettings(nextSettings);
@@ -1778,7 +1776,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             }
 
             WidgetSettings nextSettings = this.savedSettings == null
-                ? (this.currentSettings == null ? WidgetSettings.CreateDefaults() : this.currentSettings.Clone())
+                ? (this.CurrentSettings == null ? WidgetSettings.CreateDefaults() : this.CurrentSettings.Clone())
                 : this.savedSettings.Clone();
             bool currentValue = (bool)property.GetValue(nextSettings, null);
             if (currentValue == enabled)
@@ -1815,7 +1813,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         CleanupAiQuickMenuReference(this.aiQuickMenuForm, "stale special function menu before open");
         WidgetSettings baseline = this.savedSettings == null
-            ? (this.currentSettings == null ? WidgetSettings.CreateDefaults() : this.currentSettings.Clone())
+            ? (this.CurrentSettings == null ? WidgetSettings.CreateDefaults() : this.CurrentSettings.Clone())
             : this.savedSettings.Clone();
         baseline.Normalize();
         Form quickMenu = new AiQuickMenuForm(this, baseline);
@@ -2012,23 +2010,23 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         nextSettings.ForceHoverOpacityActive = IsCombinedHoverOpacityActive();
         nextSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
-        this.currentSettings = nextSettings;
-        ApplyLayerScaleFromSettings(this.currentSettings);
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
-        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
-        Program.ApplyPerformanceMode(this.currentSettings.PerformanceMode);
+        this.CurrentSettings = nextSettings;
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
+        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
+        Program.ApplyPerformanceMode(this.CurrentSettings.PerformanceMode);
         UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:timers");
         ApplyPerformanceTimerIntervals();
         UpdateSeelenDockPulseTimer();
         UpdateWinDRecoveryWatcher();
 
-        Size desiredSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(this.currentSettings.Width, this.currentSettings.Height));
+        Size desiredSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(this.CurrentSettings.Width, this.CurrentSettings.Height));
         if (this.Size != desiredSize)
         {
             this.Size = desiredSize;
         }
 
-        bool shouldBeTopMost = this.currentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
+        bool shouldBeTopMost = this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
         if (this.TopMost != shouldBeTopMost)
         {
             this.TopMost = shouldBeTopMost;
@@ -2060,37 +2058,37 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
         {
             UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_codex_radar");
-            this.codexRadarForm.ApplyRuntimeSettings(this.currentSettings);
+            this.codexRadarForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
         if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
         {
             UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_claude_radar");
-            this.claudeRadarForm.ApplyRuntimeSettings(this.currentSettings);
+            this.claudeRadarForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
         {
             UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_power_thermal");
-            this.powerThermalForm.ApplyRuntimeSettings(this.currentSettings);
+            this.powerThermalForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
         if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
         {
             UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_network");
-            this.networkMonitorForm.ApplyRuntimeSettings(this.currentSettings);
+            this.networkMonitorForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
         if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
         {
             UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_connection");
-            this.connectionCheckForm.ApplyRuntimeSettings(this.currentSettings);
+            this.connectionCheckForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
             UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_operation");
-            this.operationForm.ApplyRuntimeSettings(this.currentSettings);
+            this.operationForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
         UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:render");
@@ -2106,7 +2104,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.timer.Interval = sampleInterval;
         }
 
-        int hoverInterval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+        int hoverInterval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.hoverTimer.Interval != hoverInterval)
         {
             this.hoverTimer.Interval = hoverInterval;
@@ -2115,7 +2113,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private int GetCurrentWidgetTimerIntervalMs()
     {
-        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
+        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode);
         if (!this.hiddenForFullscreen)
         {
             return WidgetSettings.GetWidgetSampleIntervalMs(mode);
@@ -2287,8 +2285,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             }
 
             int desiredInterval = animationActive
-                ? WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode)
-                : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+                ? WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode)
+                : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
             if (this.hoverTimer.Interval != desiredInterval)
             {
                 this.hoverTimer.Interval = desiredInterval;
@@ -2308,7 +2306,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private bool UpdateAutomaticHoverOpacityTriggers()
     {
-        if (this.currentSettings == null)
+        if (this.CurrentSettings == null)
         {
             return false;
         }
@@ -2318,18 +2316,18 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         bool keepAliveStateChanged = UpdateOperationRadialCoreAutoHideKeepAlive(nowUtc);
 
         bool idleActive = false;
-        if (this.currentSettings.AutoHoverOpacityIdleEnabled)
+        if (this.CurrentSettings.AutoHoverOpacityIdleEnabled)
         {
             int idleSeconds = Math.Max(
                 WidgetSettings.MinAutoHoverOpacityIdleSeconds,
                 Math.Min(
                     WidgetSettings.MaxAutoHoverOpacityIdleSeconds,
-                    this.currentSettings.AutoHoverOpacityIdleSeconds));
+                    this.CurrentSettings.AutoHoverOpacityIdleSeconds));
             idleActive = (nowUtc - this.lastMouseActivityUtc).TotalSeconds >= idleSeconds;
         }
 
         bool maximizedActive =
-            this.currentSettings.AutoHoverOpacityMaximizedEnabled &&
+            this.CurrentSettings.AutoHoverOpacityMaximizedEnabled &&
             IsAnyApplicationWindowMaximizedOrFullscreen();
 
         if (this.operationRadialCoreAutoHideKeepAliveActive)
@@ -2361,8 +2359,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool UpdateOperationRadialCoreAutoHideKeepAlive(DateTime nowUtc)
     {
         bool active = false;
-        if (this.currentSettings != null &&
-            this.currentSettings.OperationRadialCoreAutoHideKeepAliveEnabled &&
+        if (this.CurrentSettings != null &&
+            this.CurrentSettings.OperationRadialCoreAutoHideKeepAliveEnabled &&
             !this.manualForceHoverOpacityActive &&
             this.operationForm != null &&
             !this.operationForm.IsDisposed)
@@ -2457,8 +2455,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private bool ShouldSuppressAutomaticHoverOpacityRelease(Point cursor, bool mouseButtonDown)
     {
-        if (this.currentSettings == null ||
-            !this.currentSettings.HoverOpacityCoverEnabled ||
+        if (this.CurrentSettings == null ||
+            !this.CurrentSettings.HoverOpacityCoverEnabled ||
             (!this.autoIdleHoverOpacityActive && !this.autoMaximizedHoverOpacityActive))
         {
             return false;
@@ -2476,13 +2474,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private bool IsPointInAnyManagedWindowActivationRange(Point cursor)
     {
-        return IsPointInFormActivationRange(this.currentSettings, this, cursor) ||
-            IsPointInFormActivationRange(this.currentSettings, this.codexRadarForm, cursor) ||
-            IsPointInFormActivationRange(this.currentSettings, this.claudeRadarForm, cursor) ||
-            IsPointInFormActivationRange(this.currentSettings, this.powerThermalForm, cursor) ||
-            IsPointInFormActivationRange(this.currentSettings, this.networkMonitorForm, cursor) ||
-            IsPointInFormActivationRange(this.currentSettings, this.connectionCheckForm, cursor) ||
-            IsPointInFormActivationRange(this.currentSettings, this.operationForm, cursor);
+        return IsPointInFormActivationRange(this.CurrentSettings, this, cursor) ||
+            IsPointInFormActivationRange(this.CurrentSettings, this.codexRadarForm, cursor) ||
+            IsPointInFormActivationRange(this.CurrentSettings, this.claudeRadarForm, cursor) ||
+            IsPointInFormActivationRange(this.CurrentSettings, this.powerThermalForm, cursor) ||
+            IsPointInFormActivationRange(this.CurrentSettings, this.networkMonitorForm, cursor) ||
+            IsPointInFormActivationRange(this.CurrentSettings, this.connectionCheckForm, cursor) ||
+            IsPointInFormActivationRange(this.CurrentSettings, this.operationForm, cursor);
     }
 
     private static bool IsPointInFormActivationRange(WidgetSettings settings, Form form, Point cursor)
@@ -2495,19 +2493,19 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void ApplyCombinedHoverOpacityState(string reason)
     {
-        if (this.currentSettings == null)
+        if (this.CurrentSettings == null)
         {
             return;
         }
 
         bool combined = IsCombinedHoverOpacityActive();
-        bool manualStateChanged = this.currentSettings.ManualHoverOpacityActive != this.manualForceHoverOpacityActive;
-        if (this.currentSettings.ForceHoverOpacityActive == combined && !manualStateChanged)
+        bool manualStateChanged = this.CurrentSettings.ManualHoverOpacityActive != this.manualForceHoverOpacityActive;
+        if (this.CurrentSettings.ForceHoverOpacityActive == combined && !manualStateChanged)
         {
             return;
         }
 
-        WidgetSettings nextSettings = this.currentSettings.Clone();
+        WidgetSettings nextSettings = this.CurrentSettings.Clone();
         nextSettings.ForceHoverOpacityActive = combined;
         UiHangWatchdog.MarkUiCheckpoint("hover.apply_combined:" + reason);
         this.applyingAutomaticHoverOpacityState = true;
@@ -2587,7 +2585,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool IsHoverOpacityTargetActive()
     {
         return HoverInteractionPolicy.IsHoverOpacityTargetActive(
-            this.currentSettings,
+            this.CurrentSettings,
             this.Bounds,
             this.hiddenForFullscreen,
             this.Visible,
@@ -2598,10 +2596,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private bool IsHoverOpacityRuntimeEnabled()
     {
-        return this.currentSettings.HoverOpacityEnabled ||
-            this.currentSettings.ForceHoverOpacityActive ||
-            this.currentSettings.AutoHoverOpacityIdleEnabled ||
-            this.currentSettings.AutoHoverOpacityMaximizedEnabled;
+        return this.CurrentSettings.HoverOpacityEnabled ||
+            this.CurrentSettings.ForceHoverOpacityActive ||
+            this.CurrentSettings.AutoHoverOpacityIdleEnabled ||
+            this.CurrentSettings.AutoHoverOpacityMaximizedEnabled;
     }
 
     private void ApplyClickThroughStyle()
@@ -2645,15 +2643,15 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         return WidgetSettings.ShouldEnableClickThrough(
-            this.currentSettings.ClickThroughMode,
-            this.currentSettings.VisibilityMode);
+            this.CurrentSettings.ClickThroughMode,
+            this.CurrentSettings.VisibilityMode);
     }
 
     private bool NeedsClickThroughPolling()
     {
         return WidgetSettings.ShouldEnableClickThrough(
-            this.currentSettings.ClickThroughMode,
-            this.currentSettings.VisibilityMode);
+            this.CurrentSettings.ClickThroughMode,
+            this.CurrentSettings.VisibilityMode);
     }
 
     private void UpdateVisibilityForMode()
@@ -2715,7 +2713,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.Show();
         }
 
-        bool shouldBeTopMost = this.currentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
+        bool shouldBeTopMost = this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
         if (this.TopMost != shouldBeTopMost)
         {
             this.TopMost = shouldBeTopMost;
@@ -2732,7 +2730,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private bool ShouldHideFormForVisibilityMode(Form form)
     {
-        if (this.currentSettings == null ||
+        if (this.CurrentSettings == null ||
             this.globalLayoutEditActive ||
             this.applicationWindowStateTracker == null ||
             form == null ||
@@ -2748,11 +2746,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             ? new Rectangle(form.Left, form.Top, form.Width, form.Height)
             : form.Bounds;
         bool ignoreOverlapForTarget =
-            this.currentSettings.VisibilityOverlapIgnoresOperationPanelEnabled &&
-            this.currentSettings.VisibilityMode == WidgetVisibilityMode.HideWhenOverlapped &&
+            this.CurrentSettings.VisibilityOverlapIgnoresOperationPanelEnabled &&
+            this.CurrentSettings.VisibilityMode == WidgetVisibilityMode.HideWhenOverlapped &&
             object.ReferenceEquals(form, this.operationForm);
         return this.applicationWindowStateTracker.ShouldHideForVisibilityMode(
-            this.currentSettings.VisibilityMode,
+            this.CurrentSettings.VisibilityMode,
             formBounds,
             screenBounds,
             ignoreOverlapForTarget);
@@ -3052,14 +3050,14 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool IsBurnInColorProtectionActive()
     {
         return BurnInProtection.ShouldApplyHiddenModeColorProtection(
-            this.currentSettings,
+            this.CurrentSettings,
             IsHoverOpacityTargetActive());
     }
 
     private List<MetricPanel> BuildMetricPanels()
     {
         List<MetricPanel> panels = new List<MetricPanel>();
-        string[] order = this.currentSettings.MetricOrder ?? WidgetSettings.DefaultMetricOrder;
+        string[] order = this.CurrentSettings.MetricOrder ?? WidgetSettings.DefaultMetricOrder;
         for (int i = 0; i < order.Length; i++)
         {
             AddMetricPanel(panels, order[i]);
@@ -3070,7 +3068,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void AddMetricPanel(List<MetricPanel> panels, string metricId)
     {
-        if (string.Equals(metricId, WidgetSettings.MetricCpu, StringComparison.OrdinalIgnoreCase) && this.currentSettings.ShowCpu)
+        if (string.Equals(metricId, WidgetSettings.MetricCpu, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowCpu)
         {
             MetricPanel cpuPanel = new MetricPanel(
                 new string[] { FormatHardwareNameForPanel(this.snapshot.CpuName), string.Format("CPU {0:0}%", this.snapshot.CpuPercent), FormatCpuFrequencyPair(this.snapshot.CpuFrequencyGhz, this.snapshot.CpuBaseFrequencyGhz) },
@@ -3080,7 +3078,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 false);
             cpuPanel.CoreValues = this.snapshot.CpuCorePercents;
             cpuPanel.UseHardwareStackText = true;
-            if (this.currentSettings.AlertTestEnabled)
+            if (this.CurrentSettings.AlertTestEnabled)
             {
                 cpuPanel.AlertPercent = 100.0;
                 cpuPanel.AlertIconVisible = true;
@@ -3090,7 +3088,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        if (string.Equals(metricId, WidgetSettings.MetricMemory, StringComparison.OrdinalIgnoreCase) && this.currentSettings.ShowMemory)
+        if (string.Equals(metricId, WidgetSettings.MetricMemory, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowMemory)
         {
             MetricPanel memoryPanel = new MetricPanel(
                 new string[]
@@ -3105,7 +3103,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 false);
             memoryPanel.AlertPercent = this.snapshot.MemoryPercent;
             memoryPanel.UseHardwareStackText = true;
-            if (this.currentSettings.AlertTestEnabled)
+            if (this.CurrentSettings.AlertTestEnabled)
             {
                 memoryPanel.AlertPercent = 100.0;
                 memoryPanel.AlertIconVisible = true;
@@ -3119,7 +3117,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        if (string.Equals(metricId, WidgetSettings.MetricDisk, StringComparison.OrdinalIgnoreCase) && this.currentSettings.ShowDisk)
+        if (string.Equals(metricId, WidgetSettings.MetricDisk, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowDisk)
         {
             MetricPanel diskPanel = new MetricPanel(
                 new string[]
@@ -3136,7 +3134,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             diskPanel.AlertPercent = GetDiskCombinedAlertPercent();
             diskPanel.UseHardwareStackText = true;
             diskPanel.UseCompactValueFont = true;
-            if (this.currentSettings.AlertTestEnabled)
+            if (this.CurrentSettings.AlertTestEnabled)
             {
                 diskPanel.AlertPercent = 100.0;
                 diskPanel.AlertIconVisible = true;
@@ -3150,7 +3148,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        if (string.Equals(metricId, WidgetSettings.MetricNetwork, StringComparison.OrdinalIgnoreCase) && this.currentSettings.ShowNetwork)
+        if (string.Equals(metricId, WidgetSettings.MetricNetwork, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowNetwork)
         {
             MetricPanel networkPanel = new MetricPanel(
                 GetNetworkPanelTextLines(),
@@ -3160,7 +3158,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 true);
             networkPanel.UseCompactValueFont = true;
             networkPanel.IsNetworkDisconnected = !this.snapshot.NetworkConnected;
-            if (this.currentSettings.AlertTestEnabled)
+            if (this.CurrentSettings.AlertTestEnabled)
             {
                 networkPanel.AlertPercent = 100.0;
                 networkPanel.AlertIconVisible = true;
@@ -3170,7 +3168,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        if (string.Equals(metricId, WidgetSettings.MetricGpu, StringComparison.OrdinalIgnoreCase) && this.currentSettings.ShowGpu)
+        if (string.Equals(metricId, WidgetSettings.MetricGpu, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowGpu)
         {
             MetricPanel gpuPanel = new MetricPanel(
                 new string[] { FormatHardwareNameForPanel(this.snapshot.GpuName), string.Format("GPU {0:0}%", this.snapshot.GpuPercent), FormatGbPair(this.snapshot.GpuMemoryUsedGb, this.snapshot.GpuMemoryTotalGb) },
@@ -3180,7 +3178,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 false);
             gpuPanel.AlertPercent = Math.Max(this.snapshot.GpuPercent, this.snapshot.GpuMemoryPercent);
             gpuPanel.UseHardwareStackText = true;
-            if (this.currentSettings.AlertTestEnabled)
+            if (this.CurrentSettings.AlertTestEnabled)
             {
                 gpuPanel.AlertPercent = 100.0;
                 gpuPanel.AlertIconVisible = true;
@@ -3194,7 +3192,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        if (string.Equals(metricId, WidgetSettings.MetricNpu, StringComparison.OrdinalIgnoreCase) && this.currentSettings.ShowNpu)
+        if (string.Equals(metricId, WidgetSettings.MetricNpu, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowNpu)
         {
             MetricPanel npuPanel = new MetricPanel(
                 new string[] { FormatHardwareNameForPanel(this.snapshot.NpuName), string.Format("NPU {0:0}%", this.snapshot.NpuPercent), FormatGbPair(this.snapshot.NpuMemoryUsedGb, this.snapshot.NpuMemoryTotalGb) },
@@ -3204,7 +3202,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 false);
             npuPanel.AlertPercent = Math.Max(this.snapshot.NpuPercent, this.snapshot.NpuMemoryPercent);
             npuPanel.UseHardwareStackText = true;
-            if (this.currentSettings.AlertTestEnabled)
+            if (this.CurrentSettings.AlertTestEnabled)
             {
                 npuPanel.AlertPercent = 100.0;
                 npuPanel.AlertIconVisible = true;
@@ -3330,14 +3328,12 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private int GetBackgroundOpacityAlpha()
     {
-        int alpha = (int)Math.Round(255.0 * (100 - this.currentSettings.BackgroundTransparencyPercent) / 100.0);
-        return Math.Max(0, Math.Min(255, alpha));
+        return ComputeOpacityAlpha(this.CurrentSettings.BackgroundTransparencyPercent);
     }
 
     private int GetContentOpacityAlpha()
     {
-        int alpha = (int)Math.Round(255.0 * (100 - this.currentSettings.ApplicationTransparencyPercent) / 100.0);
-        return Math.Max(0, Math.Min(255, alpha));
+        return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
     protected override byte GetApplicationOpacityAlpha()

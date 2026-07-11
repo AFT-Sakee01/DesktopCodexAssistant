@@ -20,7 +20,6 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     private readonly object samplingSync = new object();
     private readonly Dictionary<string, DateTime> thermalCriticalSinceUtc = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> thermalAlertNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-    private WidgetSettings currentSettings;
     private bool hiddenForFullscreen;
     private bool samplingWorkerRunning;
     private bool pendingPowerSample;
@@ -49,7 +48,6 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool autoHideKeepAliveActive;
     private bool sharedInteractionPolling;
-    private long burnInShiftSlot = long.MinValue;
     private readonly UiFontCache fontCache = new UiFontCache();
 
     private struct PowerReading
@@ -98,8 +96,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     public PowerThermalForm(WidgetSettings settings)
     {
-        this.currentSettings = settings.Clone();
-        this.currentSettings.Normalize();
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
         ApplicationIcon.ApplyTo(this);
 
         this.SetStyle(
@@ -110,22 +108,22 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
-        ApplyLayerScaleFromSettings(this.currentSettings);
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
-        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
+        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
         this.Size = GetDesiredSize();
 
         this.timer = new System.Windows.Forms.Timer();
         this.timer.Interval = GetNextRenderTickIntervalMs();
         this.timer.Tick += OnTimerTick;
         this.hoverTimer = new System.Windows.Forms.Timer();
-        this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+        this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         this.hoverTimer.Tick += OnHoverTimerTick;
         this.effectivePowerModeCallback = OnEffectivePowerModeChanged;
         SystemEvents.SessionSwitch += OnSystemSessionSwitch;
@@ -134,7 +132,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        ApplyRuntimeSettings(this.currentSettings);
+        ApplyRuntimeSettings(this.CurrentSettings);
         PositionPowerThermalWindow();
         this.timer.Start();
         RequestSampling(true, true, true);
@@ -381,14 +379,14 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     public void ApplyRuntimeSettings(WidgetSettings settings)
     {
-        ThermalTestMode oldThermalTestMode = this.currentSettings.ThermalTestMode;
-        WidgetPerformanceMode oldPerformanceMode = this.currentSettings.PerformanceMode;
-        this.currentSettings = settings.Clone();
-        this.currentSettings.Normalize();
-        ApplyLayerScaleFromSettings(this.currentSettings);
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
-        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
-        if (oldThermalTestMode != this.currentSettings.ThermalTestMode)
+        ThermalTestMode oldThermalTestMode = this.CurrentSettings.ThermalTestMode;
+        WidgetPerformanceMode oldPerformanceMode = this.CurrentSettings.PerformanceMode;
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
+        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
+        if (oldThermalTestMode != this.CurrentSettings.ThermalTestMode)
         {
             this.thermalCriticalSinceUtc.Clear();
             this.thermalAlertNames.Clear();
@@ -402,7 +400,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             SetSizeWithoutImmediateRender(desiredSize);
         }
 
-        bool shouldBeTopMost = this.currentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
+        bool shouldBeTopMost = this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
         if (this.TopMost != shouldBeTopMost)
         {
             this.TopMost = shouldBeTopMost;
@@ -424,8 +422,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         PositionPowerThermalWindow();
         RenderLayeredWindow();
 
-        if (oldThermalTestMode != this.currentSettings.ThermalTestMode ||
-            oldPerformanceMode != this.currentSettings.PerformanceMode)
+        if (oldThermalTestMode != this.CurrentSettings.ThermalTestMode ||
+            oldPerformanceMode != this.CurrentSettings.PerformanceMode)
         {
             RequestSampling(true, true, true);
         }
@@ -522,7 +520,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     {
         ScheduleNextRenderTick();
 
-        int hoverInterval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+        int hoverInterval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.hoverTimer.Interval != hoverInterval)
         {
             this.hoverTimer.Interval = hoverInterval;
@@ -561,7 +559,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     private SamplingPolicy GetSamplingPolicy()
     {
         // "Smooth" is the legacy persisted enum name for the user-facing Performance mode.
-        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
+        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode);
         SamplingPolicy policy = new SamplingPolicy();
         if (mode == WidgetPerformanceMode.Smooth)
         {
@@ -644,7 +642,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             this.samplingWorkerRunning = true;
         }
 
-        ThermalTestMode thermalTestMode = this.currentSettings.ThermalTestMode;
+        ThermalTestMode thermalTestMode = this.CurrentSettings.ThermalTestMode;
         List<string> simulatedNames = new List<string>();
         if (readThermal && thermalTestMode != ThermalTestMode.Off)
         {
@@ -738,7 +736,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             UpdateThermalCriticalStates(
                 this.cachedThermalReadings,
                 result.SampledUtc,
-                this.currentSettings.ThermalTestMode != ThermalTestMode.Off);
+                this.CurrentSettings.ThermalTestMode != ThermalTestMode.Off);
         }
 
         List<ThermalReading> newAlerts = GetThermalAlerts();
@@ -762,7 +760,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         bool positionChanged = false;
         if (!this.hiddenForFullscreen &&
             this.Visible &&
-            BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+            ShouldRefreshBurnInPosition())
         {
             PositionPowerThermalWindow();
             positionChanged = true;
@@ -815,8 +813,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     {
         bool animationActive = ProcessInteractionTick();
         int desiredInterval = animationActive
-            ? WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode)
-            : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+            ? WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode)
+            : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.hoverTimer.Interval != desiredInterval)
         {
             this.hoverTimer.Interval = desiredInterval;
@@ -929,7 +927,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     private bool IsHoverOpacityTargetActive()
     {
         return HoverInteractionPolicy.IsHoverOpacityTargetActive(
-            this.currentSettings,
+            this.CurrentSettings,
             this.Bounds,
             this.hiddenForFullscreen,
             this.Visible,
@@ -940,7 +938,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     private bool IsHoverOpacityRuntimeEnabled()
     {
-        return this.currentSettings.HoverOpacityEnabled || this.currentSettings.ForceHoverOpacityActive;
+        return this.CurrentSettings.HoverOpacityEnabled || this.CurrentSettings.ForceHoverOpacityActive;
     }
 
     private void PositionPowerThermalWindow()
@@ -950,7 +948,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             return;
         }
 
-        Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModulePowerThermal);
+        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModulePowerThermal);
         Size desiredSize = GetDesiredSize();
         if (this.Size != desiredSize)
         {
@@ -962,22 +960,22 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         {
             int baseWidth = Math.Max(
                 WidgetSettings.MinPowerThermalWidth,
-                Math.Min(WidgetSettings.MaxPowerThermalWidth, this.currentSettings.PowerThermalWidth));
-            int mappedLeft = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModulePowerThermal, workArea, this.currentSettings.PowerThermalLeftX);
-            int anchorRight = mappedLeft + this.currentSettings.ScaleResolutionCompatibilityPixels(baseWidth);
+                Math.Min(WidgetSettings.MaxPowerThermalWidth, this.CurrentSettings.PowerThermalWidth));
+            int mappedLeft = this.CurrentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModulePowerThermal, workArea, this.CurrentSettings.PowerThermalLeftX);
+            int anchorRight = mappedLeft + this.CurrentSettings.ScaleResolutionCompatibilityPixels(baseWidth);
             anchorRight = Math.Max(workArea.Left + this.Width, Math.Min(anchorRight, workArea.Right));
             left = anchorRight - this.Width;
             left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
         }
         else
         {
-            left = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModulePowerThermal, workArea, this.currentSettings.PowerThermalLeftX);
+            left = this.CurrentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModulePowerThermal, workArea, this.CurrentSettings.PowerThermalLeftX);
             left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
         }
 
-        int baseHeight = Math.Max(WidgetSettings.MinPowerThermalHeight, this.currentSettings.PowerThermalHeight);
-        int mappedBottom = this.currentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModulePowerThermal, workArea, this.currentSettings.PowerThermalBottomY);
-        int top = mappedBottom - this.currentSettings.ScaleResolutionCompatibilityPixels(baseHeight) + 1;
+        int baseHeight = Math.Max(WidgetSettings.MinPowerThermalHeight, this.CurrentSettings.PowerThermalHeight);
+        int mappedBottom = this.CurrentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModulePowerThermal, workArea, this.CurrentSettings.PowerThermalBottomY);
+        int top = mappedBottom - this.CurrentSettings.ScaleResolutionCompatibilityPixels(baseHeight) + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
         Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
             new Point(left, top),
@@ -990,7 +988,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(this.currentSettings.VisibilityMode),
+            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode),
             left,
             top,
             this.Width,
@@ -1008,9 +1006,9 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     private Size GetDesiredSize(List<ThermalReading> alerts)
     {
-        int width = this.currentSettings.PowerThermalWidth;
-        int height = Math.Max(WidgetSettings.MinPowerThermalHeight, Math.Min(WidgetSettings.MaxPowerThermalHeight, this.currentSettings.PowerThermalHeight));
-        if (this.currentSettings.PowerThermalAutoSizeEnabled)
+        int width = this.CurrentSettings.PowerThermalWidth;
+        int height = Math.Max(WidgetSettings.MinPowerThermalHeight, Math.Min(WidgetSettings.MaxPowerThermalHeight, this.CurrentSettings.PowerThermalHeight));
+        if (this.CurrentSettings.PowerThermalAutoSizeEnabled)
         {
             if (IsPowerThermalAutoLeft())
             {
@@ -1026,19 +1024,19 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         width = Math.Max(WidgetSettings.MinPowerThermalWidth, Math.Min(WidgetSettings.MaxPowerThermalWidth, width));
         int maxHeight = IsPowerThermalAutoDown() ? WidgetSettings.MaxPowerThermalAutoHeight : WidgetSettings.MaxPowerThermalHeight;
         height = Math.Max(WidgetSettings.MinPowerThermalHeight, Math.Min(maxHeight, height));
-        return this.currentSettings.ScaleResolutionCompatibilitySize(new Size(width, height));
+        return this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(width, height));
     }
 
     private bool IsPowerThermalAutoLeft()
     {
-        return this.currentSettings.PowerThermalAutoSizeEnabled &&
-            this.currentSettings.PowerThermalAutoDirection == PowerThermalAutoDirection.Left;
+        return this.CurrentSettings.PowerThermalAutoSizeEnabled &&
+            this.CurrentSettings.PowerThermalAutoDirection == PowerThermalAutoDirection.Left;
     }
 
     private bool IsPowerThermalAutoDown()
     {
-        return this.currentSettings.PowerThermalAutoSizeEnabled &&
-            this.currentSettings.PowerThermalAutoDirection == PowerThermalAutoDirection.Down;
+        return this.CurrentSettings.PowerThermalAutoSizeEnabled &&
+            this.CurrentSettings.PowerThermalAutoDirection == PowerThermalAutoDirection.Down;
     }
 
     private int GetThermalAutoExtensionWidth(List<ThermalReading> alerts)
@@ -1103,8 +1101,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     private int GetMaxVisibleThermalAlerts()
     {
-        int count = this.currentSettings.PowerThermalAutoSizeEnabled
-            ? this.currentSettings.PowerThermalVisibleAlertCount
+        int count = this.CurrentSettings.PowerThermalAutoSizeEnabled
+            ? this.CurrentSettings.PowerThermalVisibleAlertCount
             : WidgetSettings.DefaultPowerThermalVisibleAlerts;
         return Math.Max(
             WidgetSettings.MinPowerThermalVisibleAlerts,
@@ -1189,15 +1187,15 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         }
 
         return WidgetSettings.ShouldEnableClickThrough(
-            this.currentSettings.ClickThroughMode,
-            this.currentSettings.VisibilityMode);
+            this.CurrentSettings.ClickThroughMode,
+            this.CurrentSettings.VisibilityMode);
     }
 
     private bool NeedsClickThroughPolling()
     {
         return WidgetSettings.ShouldEnableClickThrough(
-            this.currentSettings.ClickThroughMode,
-            this.currentSettings.VisibilityMode);
+            this.CurrentSettings.ClickThroughMode,
+            this.CurrentSettings.VisibilityMode);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -1294,7 +1292,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         {
             powerWidth = Math.Max(
                 WidgetSettings.MinPowerThermalWidth,
-                Math.Min(this.Width, this.currentSettings.PowerThermalWidth));
+                Math.Min(this.Width, this.CurrentSettings.PowerThermalWidth));
             powerRight = this.Width;
         }
         else
@@ -1338,7 +1336,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     private void DrawDownExtendedContent(Graphics g, List<ThermalReading> thermalAlerts, float contentTop)
     {
-        int baseHeight = Math.Max(WidgetSettings.MinPowerThermalHeight, Math.Min(WidgetSettings.MaxPowerThermalHeight, this.currentSettings.PowerThermalHeight));
+        int baseHeight = Math.Max(WidgetSettings.MinPowerThermalHeight, Math.Min(WidgetSettings.MaxPowerThermalHeight, this.CurrentSettings.PowerThermalHeight));
         float powerContentHeight = Math.Max(10, baseHeight - S(10));
         RectangleF powerRect = new RectangleF(0, contentTop, this.Width, powerContentHeight);
         DrawPowerModule(g, powerRect);
@@ -1519,9 +1517,9 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     {
         // Display-only fallback: some Windows builds keep EnergySaverStatus/SystemStatusFlag off
         // even when the user wants low battery to be treated visually as energy saver.
-        int threshold = this.currentSettings == null
+        int threshold = this.CurrentSettings == null
             ? WidgetSettings.DefaultPowerThermalManualEnergySaverThresholdPercent
-            : this.currentSettings.PowerThermalManualEnergySaverThresholdPercent;
+            : this.CurrentSettings.PowerThermalManualEnergySaverThresholdPercent;
         if (threshold <= 0 || !reading.BatteryPercentKnown)
         {
             return false;
@@ -2737,20 +2735,18 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     private bool IsBurnInColorProtectionActive()
     {
         return BurnInProtection.ShouldApplyHiddenModeColorProtection(
-            this.currentSettings,
+            this.CurrentSettings,
             IsHoverOpacityTargetActive());
     }
 
     private int GetBackgroundOpacityAlpha()
     {
-        int alpha = (int)Math.Round(255.0 * (100 - this.currentSettings.PowerThermalTransparencyPercent) / 100.0);
-        return Math.Max(0, Math.Min(255, alpha));
+        return ComputeOpacityAlpha(this.CurrentSettings.PowerThermalTransparencyPercent);
     }
 
     private int GetContentOpacityAlpha()
     {
-        int alpha = (int)Math.Round(255.0 * (100 - this.currentSettings.ApplicationTransparencyPercent) / 100.0);
-        return Math.Max(0, Math.Min(255, alpha));
+        return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
     protected override byte GetApplicationOpacityAlpha()

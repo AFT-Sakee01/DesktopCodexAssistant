@@ -1,6 +1,6 @@
 # 性能模式、主窗口与指标运行机制
 
-适用版本：1.0.4.94
+适用版本：1.0.4.96
 
 ## 1. 文档范围
 
@@ -109,6 +109,7 @@ flowchart LR
 - 尺寸不变时复用缓冲区。
 - 尺寸变化或窗口关闭时释放。
 - 仅透明度变化时复用已绘制内容，只调用 `UpdateLayeredWindow`。
+- 当前运行设置引用由 `LayeredWidgetFormBase.CurrentSettings` 持有，透明度百分比统一通过 `LayeredWidgetFormBase.ComputeOpacityAlpha` 转换为 alpha。
 - 网络窗口额外缓存内容层和字体，避免每帧创建 GDI 对象。
 
 这减少了托管对象分配、GDI 句柄波动和垃圾回收压力。
@@ -436,7 +437,7 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 
 两项设置同时应用于主性能窗口和功耗/时间窗口。只改变整体 Alpha 时不会重新绘制全部内容，而是复用渲染缓冲并重新提交窗口。
 
-防烧屏微位移由 `Core/BurnInProtection.cs` 统一提供。`BurnInProtection.ShouldRefreshPosition` 以 7 分钟 slot 控制是否需要重新定位；各窗口在自己的 `Position*Window` 或等价维护入口中调用 `BurnInProtection.ApplyRuntimeOffset`，先按设置和目标工作区算出基准位置，再按命名 salt 得到不越界的微位移位置。现有 salt 为 `MainWidgetSalt = 1`、`CodexRadarSalt = 7`、`ClaudeRadarSalt = 31`、`PowerThermalSalt = 13`、`NetworkMonitorSalt = 19`、`ConnectionCheckSalt = 23`、`OperationPanelSalt = 29`。这些值是窗口之间错开微迁移相位的运行时契约；维护时必须引用命名常量，不能在窗口代码里写裸数字。
+防烧屏微位移由 `Core/BurnInProtection.cs` 和 `LayeredWidgetFormBase.ShouldRefreshBurnInPosition` 统一提供。基类为每个窗口实例保存 7 分钟刷新 slot；各窗口在自己的 `Position*Window` 或等价维护入口中调用 `BurnInProtection.ApplyRuntimeOffset`，先按设置和目标工作区算出基准位置，再按命名 salt 得到不越界的微位移位置。现有 salt 为 `MainWidgetSalt = 1`、`CodexRadarSalt = 7`、`ClaudeRadarSalt = 31`、`PowerThermalSalt = 13`、`NetworkMonitorSalt = 19`、`ConnectionCheckSalt = 23`、`OperationPanelSalt = 29`。这些值是窗口之间错开微迁移相位的运行时契约；维护时必须引用命名常量，不能在窗口代码里写裸数字。
 
 ### 6.2 可见性与桌面层
 

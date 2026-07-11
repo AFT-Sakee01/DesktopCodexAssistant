@@ -60,6 +60,9 @@ internal sealed partial class CodexRadarForm
             this.NextInactiveRefreshUtc = DateTime.MinValue;
             this.FiveHourConsumptionRingBaselinePercent = -1;
             this.TrackedFiveHourResetLocal = DateTime.MinValue;
+            this.TrackedWeeklyResetLocal = DateTime.MinValue;
+            this.FiveHourRejectedIdentity = new RejectedIdentityPersistenceState();
+            this.WeeklyRejectedIdentity = new RejectedIdentityPersistenceState();
             this.WeeklyQuotaAtFiveHourWindowStartPercent = -1;
             this.Protection = new QuotaProtectionState();
         }
@@ -73,8 +76,28 @@ internal sealed partial class CodexRadarForm
         public DateTime NextInactiveRefreshUtc { get; set; }
         public int FiveHourConsumptionRingBaselinePercent { get; set; }
         public DateTime TrackedFiveHourResetLocal { get; set; }
+        public DateTime TrackedWeeklyResetLocal { get; set; }
+        public RejectedIdentityPersistenceState FiveHourRejectedIdentity { get; private set; }
+        public RejectedIdentityPersistenceState WeeklyRejectedIdentity { get; private set; }
         public int WeeklyQuotaAtFiveHourWindowStartPercent { get; set; }
         public QuotaProtectionState Protection { get; private set; }
+    }
+
+    // A provider can temporarily project an additional quota pool into the top-level fields.
+    // Track rejected identities only in memory so a repeatedly observed real pool can repair a
+    // wrong runtime anchor without making that tentative state survive a process restart.
+    private sealed class RejectedIdentityPersistenceState
+    {
+        public DateTime ResetLocal { get; set; }
+        public DateTime FirstSeenUtc { get; set; }
+        public int Count { get; set; }
+
+        public void Reset()
+        {
+            this.ResetLocal = DateTime.MinValue;
+            this.FirstSeenUtc = DateTime.MinValue;
+            this.Count = 0;
+        }
     }
 
     private sealed class QuotaProtectionState
@@ -150,7 +173,7 @@ internal sealed partial class CodexRadarForm
         {
             RadarFamilyRuntimeState state = GetActiveRadarFamilyState();
             state.RadarSnapshot = value;
-            state.ModelKey = this.currentSettings == null
+            state.ModelKey = this.CurrentSettings == null
                 ? string.Empty
                 : GetSelectedRadarModelKeyForSoftwareMode(state.Family);
             state.Touch();

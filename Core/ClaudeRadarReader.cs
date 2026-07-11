@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -10,6 +11,7 @@ using System.Web.Script.Serialization;
 
 internal static class ClaudeRadarReader
 {
+    private const int PersonalQuotaCacheMaxAgeMinutes = 360;
     private const string DataUrl = "https://claudecoderadar.com/data/claude-code-radar.json";
     private const string HomeUrl = "https://claudecoderadar.com/";
     private const string RatingsUrl = "https://claudecoderadar.com/api/model-ratings?history=14";
@@ -94,7 +96,7 @@ internal static class ClaudeRadarReader
                 }
 
                 tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-                File.WriteAllText(tempPath, next, new UTF8Encoding(false));
+                File.WriteAllText(tempPath, next, SharedEncoding.Utf8NoBom);
                 if (File.Exists(path))
                 {
                     File.Replace(tempPath, path, null);
@@ -453,6 +455,7 @@ internal static class ClaudeRadarReader
             snapshot.Community.RefreshSeconds = Math.Max(60, ReadIntValue(values, "CommunityRefreshSeconds", 900));
             if (string.Equals(ReadIniValue(values, "QuotaSource"), "site", StringComparison.OrdinalIgnoreCase))
             {
+                snapshot.Quota.Source = "site";
                 snapshot.Quota.FiveHourPercent = ReadIntValue(values, "FiveHourPercent", 0);
                 snapshot.Quota.WeeklyPercent = ReadIntValue(values, "WeeklyPercent", 0);
                 snapshot.Quota.FiveHourResetText = ReadIniValue(values, "FiveHourResetText");
@@ -523,6 +526,7 @@ internal static class ClaudeRadarReader
                 {
                     SourceKey = sourceKey,
                     DisplayName = EmptyFallback(entry.DisplayName, sourceKey),
+                    SourceDisplayName = (entry.SourceDisplayName ?? string.Empty).Trim(),
                     RatingKey = (entry.RatingKey ?? string.Empty).Trim(),
                     SortOrder = entry.SortOrder,
                     Enabled = entry.Enabled,
@@ -550,9 +554,34 @@ internal static class ClaudeRadarReader
         }
 
         ClaudeRadarQuotaSnapshot quota = ParseQuotaSnapshot(root);
-        if (!quota.Known || quota.FiveHourPercent != 59 || quota.WeeklyPercent != 40)
+        if (!quota.Known ||
+            quota.FiveHourPercent != 59 ||
+            quota.WeeklyPercent != 40 ||
+            !string.Equals(quota.Source, "site", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("Claude Radar quota parser self-test failed.");
+        }
+
+        DateTime quotaNowUtc = new DateTime(2026, 7, 11, 4, 0, 0, DateTimeKind.Utc);
+        ClaudeRadarQuotaSnapshot personalCache = ClaudeRadarQuotaSnapshot.CreateDefault();
+        personalCache.UpdatedAtKnown = true;
+        personalCache.UpdatedAtUtc = quotaNowUtc.AddMinutes(-359.0);
+        if (!IsPersonalQuotaCacheFresh(personalCache, quotaNowUtc))
+        {
+            throw new InvalidOperationException("Claude personal quota 359-minute cache freshness self-test failed.");
+        }
+
+        personalCache.UpdatedAtUtc = quotaNowUtc.AddMinutes(-361.0);
+        if (IsPersonalQuotaCacheFresh(personalCache, quotaNowUtc))
+        {
+            throw new InvalidOperationException("Claude personal quota 361-minute cache freshness self-test failed.");
+        }
+
+        personalCache.UpdatedAtKnown = false;
+        personalCache.UpdatedAtUtc = DateTime.MinValue;
+        if (IsPersonalQuotaCacheFresh(personalCache, quotaNowUtc))
+        {
+            throw new InvalidOperationException("Claude personal quota missing-timestamp cache self-test failed.");
         }
 
         ClaudeRadarQuotaLineSnapshot line = BuildQuotaLineSnapshot(root, false, false);
@@ -593,6 +622,7 @@ internal static class ClaudeRadarReader
         ApplyModelMapUpdate(entries, metrics, ratingKeys, true, new DateTime(2026, 7, 4, 0, 0, 0, DateTimeKind.Utc), events, true);
         if (entries.Count != 1 ||
             !string.IsNullOrEmpty(entries[0].RatingKey) ||
+            !string.Equals(entries[0].SourceDisplayName, "Opus 4.8 high", StringComparison.Ordinal) ||
             !string.Equals(entries[0].Status, "pending", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("Claude Radar model map self-test failed: new model auto-merged rating key.");
@@ -636,6 +666,78 @@ internal static class ClaudeRadarReader
             string.Equals(entries[0].SourceKey, entries[1].SourceKey, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("Claude Radar model map self-test failed: same-name source keys were merged.");
+        }
+
+        ClaudeRadarModelMetric renamedMetric = metrics[0].Clone();
+        renamedMetric.Name = "Opus 4.9 high";
+        List<ClaudeRadarModelMetric> renamedMetrics = new List<ClaudeRadarModelMetric> { renamedMetric };
+        List<ClaudeRadarModelEntry> renameEntries = new List<ClaudeRadarModelEntry>
+        {
+            new ClaudeRadarModelEntry
+            {
+                SourceKey = "m1",
+                DisplayName = "Opus 4.8 high",
+                SourceDisplayName = "Opus 4.8 high",
+                RatingKey = "opus48_high",
+                Enabled = true,
+                Status = "active"
+            }
+        };
+        events.Clear();
+        ApplyModelMapUpdate(renameEntries, renamedMetrics, ratingKeys, true, new DateTime(2026, 7, 4, 4, 10, 0, DateTimeKind.Utc), events, true);
+        if (!string.Equals(renameEntries[0].DisplayName, "Opus 4.9 high", StringComparison.Ordinal) ||
+            !string.Equals(renameEntries[0].SourceDisplayName, "Opus 4.9 high", StringComparison.Ordinal) ||
+            events.Any(delegate(ClaudeRadarModelCatalogEvent item) { return item.Kind == ClaudeRadarModelCatalogEventKind.Renamed; }))
+        {
+            throw new InvalidOperationException("Claude Radar model map self-test failed: source-following display name did not migrate cleanly.");
+        }
+
+        renameEntries[0].DisplayName = "My Opus";
+        renamedMetric.Name = "Opus 5 high";
+        events.Clear();
+        ApplyModelMapUpdate(renameEntries, renamedMetrics, ratingKeys, true, new DateTime(2026, 7, 4, 4, 20, 0, DateTimeKind.Utc), events, true);
+        if (!string.Equals(renameEntries[0].DisplayName, "My Opus", StringComparison.Ordinal) ||
+            !string.Equals(renameEntries[0].SourceDisplayName, "Opus 5 high", StringComparison.Ordinal) ||
+            events.Count(delegate(ClaudeRadarModelCatalogEvent item) { return item.Kind == ClaudeRadarModelCatalogEventKind.Renamed; }) != 1)
+        {
+            throw new InvalidOperationException("Claude Radar model map self-test failed: custom display name was overwritten or rename notification was lost.");
+        }
+
+        events.Clear();
+        ApplyModelMapUpdate(renameEntries, renamedMetrics, ratingKeys, true, new DateTime(2026, 7, 4, 4, 30, 0, DateTimeKind.Utc), events, true);
+        if (events.Any(delegate(ClaudeRadarModelCatalogEvent item) { return item.Kind == ClaudeRadarModelCatalogEventKind.Renamed; }))
+        {
+            throw new InvalidOperationException("Claude Radar model map self-test failed: unchanged source name raised a rename event.");
+        }
+
+        List<ClaudeRadarModelMetric> reorderedMetrics = new List<ClaudeRadarModelMetric>
+        {
+            new ClaudeRadarModelMetric { SourceKey = "m2", Name = "Model 2" },
+            new ClaudeRadarModelMetric { SourceKey = "m1", Name = "Model 1" }
+        };
+        List<ClaudeRadarModelEntry> reorderedEntries = new List<ClaudeRadarModelEntry>
+        {
+            new ClaudeRadarModelEntry { SourceKey = "retained", DisplayName = "Retained", SourceDisplayName = "Retained", SortOrder = 1, Enabled = true, Status = "active" },
+            new ClaudeRadarModelEntry { SourceKey = "m1", DisplayName = "Model 1", SourceDisplayName = "Model 1", SortOrder = 2, Enabled = true, Status = "active" },
+            new ClaudeRadarModelEntry { SourceKey = "m2", DisplayName = "Model 2", SourceDisplayName = "Model 2", SortOrder = 2, Enabled = true, Status = "active" }
+        };
+        events.Clear();
+        ApplyModelMapUpdate(reorderedEntries, reorderedMetrics, new HashSet<string>(StringComparer.OrdinalIgnoreCase), true, new DateTime(2026, 7, 4, 4, 40, 0, DateTimeKind.Utc), events, true);
+        if (FindMapEntry(reorderedEntries, "m2").SortOrder != 0 ||
+            FindMapEntry(reorderedEntries, "m1").SortOrder != 1 ||
+            FindMapEntry(reorderedEntries, "retained").SortOrder != 2)
+        {
+            throw new InvalidOperationException("Claude Radar model map self-test failed: complete catalog order did not lead retained rows.");
+        }
+
+        ClaudeRadarModelEntry parsedLegacyEntry;
+        ClaudeRadarModelEntry parsedCurrentEntry;
+        if (!TryParseModelMapLine("m1|Legacy|rating|2|True|False|active|2026-07-04T00:00:00Z|0|#112233", out parsedLegacyEntry) ||
+            !string.IsNullOrEmpty(parsedLegacyEntry.SourceDisplayName) ||
+            !TryParseModelMapLine("m1|Custom|rating|2|True|False|active|2026-07-04T00:00:00Z|0|#112233|Site Name", out parsedCurrentEntry) ||
+            !string.Equals(parsedCurrentEntry.SourceDisplayName, "Site Name", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Claude Radar model map self-test failed: 10/11-column compatibility changed.");
         }
 
         if (!string.Equals(NormalizePersistedModelStatus(new ClaudeRadarModelEntry { Enabled = true, RatingKey = string.Empty }), "pending", StringComparison.OrdinalIgnoreCase) ||
@@ -742,7 +844,7 @@ internal static class ClaudeRadarReader
                 historyPath,
                 "{bad json" + Environment.NewLine +
                 "{\"schema_version\":1,\"timestamp_utc\":\"2026-07-05T00:00:00Z\",\"metric\":\"base_d7\",\"value\":125.0,\"signature\":\"good2\"}" + Environment.NewLine,
-                new UTF8Encoding(false));
+                SharedEncoding.Utf8NoBom);
             List<double> values = ReadQuotaHistoryValues(historyPath, "base_d7", new DateTime(2026, 7, 3, 0, 0, 0, DateTimeKind.Utc));
             if (values.Count != 2 || Math.Abs(values[0] - 100.0) > 0.01 || Math.Abs(values[1] - 125.0) > 0.01)
             {
@@ -752,7 +854,7 @@ internal static class ClaudeRadarReader
             File.AppendAllText(
                 historyPath,
                 "{\"schema_version\":1,\"timestamp_utc\":\"2026-05-01T00:00:00Z\",\"metric\":\"base_d7\",\"value\":90.0,\"signature\":\"old\"}" + Environment.NewLine,
-                new UTF8Encoding(false));
+                SharedEncoding.Utf8NoBom);
             TrimQuotaHistory(historyPath, new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
             values = ReadQuotaHistoryValues(historyPath, "base_d7", new DateTime(2026, 7, 1, 0, 0, 0, DateTimeKind.Utc));
             if (values.Count != 2)
@@ -785,8 +887,8 @@ internal static class ClaudeRadarReader
             Directory.CreateDirectory(tempDir);
             string codexCachePath = Path.Combine(tempDir, "codex-radar-cache.ini");
             string codexQuotaPath = Path.Combine(tempDir, "quota.ini");
-            File.WriteAllText(codexCachePath, "codex-cache-sentinel", new UTF8Encoding(false));
-            File.WriteAllText(codexQuotaPath, "codex-quota-sentinel", new UTF8Encoding(false));
+            File.WriteAllText(codexCachePath, "codex-cache-sentinel", SharedEncoding.Utf8NoBom);
+            File.WriteAllText(codexQuotaPath, "codex-quota-sentinel", SharedEncoding.Utf8NoBom);
 
             if (LoadCache("selftest") != null)
             {
@@ -1447,6 +1549,7 @@ internal static class ClaudeRadarReader
     private static ClaudeRadarQuotaSnapshot ParseQuotaSnapshot(Dictionary<string, object> root)
     {
         ClaudeRadarQuotaSnapshot quota = ClaudeRadarQuotaSnapshot.CreateDefault();
+        quota.Source = "site";
         Dictionary<string, object> quotaRoot = ReadObject(root, "quota");
         if (quotaRoot == null)
         {
@@ -1570,22 +1673,35 @@ internal static class ClaudeRadarReader
             return false;
         }
 
-        if (!quota.UpdatedAtKnown)
+        if (!IsPersonalQuotaCacheFresh(quota, DateTime.UtcNow))
         {
-            try
-            {
-                quota.UpdatedAtUtc = File.GetLastWriteTimeUtc(ClaudeCodeQuotaCachePath);
-                quota.UpdatedAtKnown = quota.UpdatedAtUtc != DateTime.MinValue;
-            }
-            catch
-            {
-                quota.UpdatedAtUtc = DateTime.MinValue;
-                quota.UpdatedAtKnown = false;
-            }
+            return false;
         }
 
         quota.Known = true;
+        quota.Source = "personal";
         return true;
+    }
+
+    private static bool IsPersonalQuotaCacheFresh(ClaudeRadarQuotaSnapshot quota, DateTime nowUtc)
+    {
+        return quota != null &&
+            IsPersonalQuotaCacheFresh(quota.UpdatedAtKnown, quota.UpdatedAtUtc, nowUtc);
+    }
+
+    internal static bool IsPersonalQuotaCacheFresh(bool updatedAtKnown, DateTime updatedAtUtc, DateTime nowUtc)
+    {
+        if (!updatedAtKnown || updatedAtUtc == DateTime.MinValue)
+        {
+            return false;
+        }
+
+        DateTime updatedUtc = updatedAtUtc.Kind == DateTimeKind.Utc
+            ? updatedAtUtc
+            : updatedAtUtc.ToUniversalTime();
+        TimeSpan age = nowUtc - updatedUtc;
+        return age >= TimeSpan.FromMinutes(-2.0) &&
+            age <= TimeSpan.FromMinutes(PersonalQuotaCacheMaxAgeMinutes);
     }
 
     private static ClaudeRadarQuotaLineSnapshot BuildQuotaLineSnapshot(Dictionary<string, object> root, bool localFallbackEnabled, bool writeHistory)
@@ -1818,6 +1934,7 @@ internal static class ClaudeRadarReader
                 {
                     SourceKey = metric.SourceKey,
                     DisplayName = metric.Name,
+                    SourceDisplayName = metric.Name,
                     RatingKey = string.Empty,
                     Enabled = !metric.HistoricalOnly,
                     HistoricalOnly = metric.HistoricalOnly,
@@ -1837,9 +1954,34 @@ internal static class ClaudeRadarReader
             }
 
             string previousStatus = entry.Status ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(entry.DisplayName))
+            string sourceDisplayName = (metric.Name ?? string.Empty).Trim();
+            string previousSourceDisplayName = (entry.SourceDisplayName ?? string.Empty).Trim();
+            if (previousSourceDisplayName.Length == 0)
             {
-                entry.DisplayName = metric.Name;
+                // Ten-column maps predate source_display_name. Establish the baseline without
+                // claiming a rename that cannot be proven from the legacy row.
+                entry.SourceDisplayName = sourceDisplayName;
+                if (string.IsNullOrWhiteSpace(entry.DisplayName))
+                {
+                    entry.DisplayName = sourceDisplayName;
+                }
+            }
+            else if (sourceDisplayName.Length > 0 &&
+                !string.Equals(previousSourceDisplayName, sourceDisplayName, StringComparison.Ordinal))
+            {
+                bool followsSourceName = string.Equals(
+                    (entry.DisplayName ?? string.Empty).Trim(),
+                    previousSourceDisplayName,
+                    StringComparison.Ordinal);
+                entry.SourceDisplayName = sourceDisplayName;
+                if (followsSourceName)
+                {
+                    entry.DisplayName = sourceDisplayName;
+                }
+                else
+                {
+                    AddModelMapEvent(events, ClaudeRadarModelCatalogEventKind.Renamed, entry, sourceDisplayName);
+                }
             }
 
             entry.RatingKey = (entry.RatingKey ?? string.Empty).Trim();
@@ -1869,6 +2011,38 @@ internal static class ClaudeRadarReader
                 return string.Compare(left.SourceKey, right.SourceKey, StringComparison.OrdinalIgnoreCase);
             });
             return;
+        }
+
+        // A complete catalog is authoritative for ordering. Seen rows follow the site's exact
+        // sequence; retained history rows keep their old relative order behind the live rows.
+        int nextSortOrder = 0;
+        HashSet<string> orderedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; metrics != null && i < metrics.Count; i++)
+        {
+            ClaudeRadarModelMetric metric = metrics[i];
+            if (metric == null || string.IsNullOrWhiteSpace(metric.SourceKey) || !orderedKeys.Add(metric.SourceKey))
+            {
+                continue;
+            }
+
+            ClaudeRadarModelEntry orderedEntry = FindMapEntry(entries, metric.SourceKey);
+            if (orderedEntry != null)
+            {
+                orderedEntry.SortOrder = nextSortOrder++;
+            }
+        }
+
+        List<ClaudeRadarModelEntry> retainedEntries = entries
+            .Where(delegate(ClaudeRadarModelEntry item)
+            {
+                return item != null && !orderedKeys.Contains(item.SourceKey);
+            })
+            .OrderBy(delegate(ClaudeRadarModelEntry item) { return item.SortOrder; })
+            .ThenBy(delegate(ClaudeRadarModelEntry item) { return item.SourceKey; }, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        for (int i = 0; i < retainedEntries.Count; i++)
+        {
+            retainedEntries[i].SortOrder = nextSortOrder++;
         }
 
         for (int i = 0; i < entries.Count; i++)
@@ -1973,7 +2147,8 @@ internal static class ClaudeRadarReader
     private static void AddModelMapEvent(
         List<ClaudeRadarModelCatalogEvent> events,
         ClaudeRadarModelCatalogEventKind kind,
-        ClaudeRadarModelEntry entry)
+        ClaudeRadarModelEntry entry,
+        string eventDisplayName = null)
     {
         if (events == null || entry == null || string.IsNullOrWhiteSpace(entry.SourceKey))
         {
@@ -1984,7 +2159,7 @@ internal static class ClaudeRadarReader
         {
             Kind = kind,
             SourceKey = NormalizeSourceKey(entry.SourceKey),
-            DisplayName = EmptyFallback(entry.DisplayName, entry.SourceKey),
+            DisplayName = EmptyFallback(eventDisplayName, EmptyFallback(entry.DisplayName, entry.SourceKey)),
             Status = entry.Status ?? string.Empty
         });
     }
@@ -2008,31 +2183,11 @@ internal static class ClaudeRadarReader
                     continue;
                 }
 
-                string[] parts = line.Split('|');
-                if (parts.Length < 9)
+                ClaudeRadarModelEntry entry;
+                if (TryParseModelMapLine(line, out entry))
                 {
-                    continue;
+                    entries.Add(entry);
                 }
-
-                DateTime lastSeen;
-                DateTime.TryParse(parts[7], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out lastSeen);
-                int sortOrder;
-                int.TryParse(parts[3], out sortOrder);
-                int missing;
-                int.TryParse(parts[8], out missing);
-                entries.Add(new ClaudeRadarModelEntry
-                {
-                    SourceKey = NormalizeSourceKey(parts[0]),
-                    DisplayName = Unescape(parts[1]),
-                    RatingKey = parts[2],
-                    SortOrder = sortOrder,
-                    Enabled = bool.TrueString.Equals(parts[4], StringComparison.OrdinalIgnoreCase),
-                    HistoricalOnly = bool.TrueString.Equals(parts[5], StringComparison.OrdinalIgnoreCase),
-                    Status = parts[6],
-                    LastSeenUtc = lastSeen == DateTime.MinValue ? DateTime.MinValue : lastSeen.ToUniversalTime(),
-                    MissingSuccessCount = missing,
-                    Color = parts.Length >= 10 ? ParseColor(parts[9], GenerateModelColor(parts[0])) : GenerateModelColor(parts[0])
-                });
             }
         }
         catch (Exception ex)
@@ -2043,13 +2198,45 @@ internal static class ClaudeRadarReader
         return entries;
     }
 
+    private static bool TryParseModelMapLine(string line, out ClaudeRadarModelEntry entry)
+    {
+        entry = null;
+        string[] parts = (line ?? string.Empty).Split('|');
+        if (parts.Length < 9)
+        {
+            return false;
+        }
+
+        DateTime lastSeen;
+        DateTime.TryParse(parts[7], CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out lastSeen);
+        int sortOrder;
+        int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out sortOrder);
+        int missing;
+        int.TryParse(parts[8], NumberStyles.Integer, CultureInfo.InvariantCulture, out missing);
+        entry = new ClaudeRadarModelEntry
+        {
+            SourceKey = NormalizeSourceKey(parts[0]),
+            DisplayName = Unescape(parts[1]),
+            RatingKey = parts[2],
+            SortOrder = sortOrder,
+            Enabled = bool.TrueString.Equals(parts[4], StringComparison.OrdinalIgnoreCase),
+            HistoricalOnly = bool.TrueString.Equals(parts[5], StringComparison.OrdinalIgnoreCase),
+            Status = parts[6],
+            LastSeenUtc = lastSeen == DateTime.MinValue ? DateTime.MinValue : lastSeen.ToUniversalTime(),
+            MissingSuccessCount = missing,
+            Color = parts.Length >= 10 ? ParseColor(parts[9], GenerateModelColor(parts[0])) : GenerateModelColor(parts[0]),
+            SourceDisplayName = parts.Length >= 11 ? Unescape(parts[10]) : string.Empty
+        };
+        return entry.SourceKey.Length > 0;
+    }
+
     private static void SaveModelMapUnlocked(List<ClaudeRadarModelEntry> entries)
     {
         try
         {
             Directory.CreateDirectory(GetStorageDirectoryPath());
             List<string> lines = new List<string>();
-            lines.Add("# source_key|display_name|rating_key|sort_order|enabled|historical_only|status|last_seen_utc|missing_success_count|color");
+            lines.Add("# source_key|display_name|rating_key|sort_order|enabled|historical_only|status|last_seen_utc|missing_success_count|color|source_display_name");
             for (int i = 0; entries != null && i < entries.Count; i++)
             {
                 ClaudeRadarModelEntry entry = entries[i];
@@ -2068,10 +2255,11 @@ internal static class ClaudeRadarReader
                     "|" + NormalizePersistedModelStatus(entry) +
                     "|" + (entry.LastSeenUtc == DateTime.MinValue ? string.Empty : entry.LastSeenUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)) +
                     "|" + entry.MissingSuccessCount.ToString(CultureInfo.InvariantCulture) +
-                    "|" + ColorTranslator.ToHtml(entry.Color));
+                    "|" + ColorTranslator.ToHtml(entry.Color) +
+                    "|" + Escape(entry.SourceDisplayName));
             }
 
-            File.WriteAllLines(ModelMapPath, lines.ToArray(), new UTF8Encoding(false));
+            File.WriteAllLines(ModelMapPath, lines.ToArray(), SharedEncoding.Utf8NoBom);
         }
         catch (Exception ex)
         {
@@ -2157,7 +2345,7 @@ internal static class ClaudeRadarReader
                 }
 
                 tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-                File.WriteAllText(tempPath, next, new UTF8Encoding(false));
+                File.WriteAllText(tempPath, next, SharedEncoding.Utf8NoBom);
                 if (File.Exists(path))
                 {
                     File.Replace(tempPath, path, null);
@@ -2232,7 +2420,7 @@ internal static class ClaudeRadarReader
                     ",\"value\":" + value.ToString("0.###", CultureInfo.InvariantCulture) +
                     ",\"source_url\":\"" + JsonEscape(DataUrl) + "\"" +
                     ",\"signature\":\"" + JsonEscape(signature) + "\"}";
-                File.AppendAllText(path, line + Environment.NewLine, new UTF8Encoding(false));
+                File.AppendAllText(path, line + Environment.NewLine, SharedEncoding.Utf8NoBom);
                 TrimQuotaHistory(path, DateTime.UtcNow.AddDays(-30.0));
             }
             catch (Exception ex)
@@ -2274,7 +2462,7 @@ internal static class ClaudeRadarReader
 
         if (kept.Count != lines.Length)
         {
-            File.WriteAllLines(path, kept.ToArray(), new UTF8Encoding(false));
+            File.WriteAllLines(path, kept.ToArray(), SharedEncoding.Utf8NoBom);
         }
     }
 

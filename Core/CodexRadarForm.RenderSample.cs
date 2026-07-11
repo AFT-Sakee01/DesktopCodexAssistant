@@ -30,7 +30,7 @@ internal sealed partial class CodexRadarForm
             {
                 // Replicate a 2880x1800 @ 200% display: scale=2 matches real DPI, and CodexRadarWidth/
                 // Height are already the real physical pixel size (see CodexRadarForm.cs's
-                // `this.Size = new Size(this.currentSettings.CodexRadarWidth, ...)` - there is no
+                // `this.Size = new Size(this.CurrentSettings.CodexRadarWidth, ...)` - there is no
                 // separate DPI multiplication at runtime). An earlier `* 2` here rendered a canvas
                 // twice as wide as any real window ever is, which hid genuine overflow/truncation
                 // (e.g. "13:00" clipping to "13...") that only shows up at the true width.
@@ -86,7 +86,124 @@ internal sealed partial class CodexRadarForm
                 }
             }
         }
+
+        RenderSpeedWindowCountdownSample(outputDir);
+        RenderClaudeQuotaSourceSample(outputDir, "claude_site_public", "codexradar-claude-quota-site.png");
+        RenderClaudeQuotaSourceSample(outputDir, "claude_personal", "codexradar-claude-quota-personal.png");
     }
+
+    private static void RenderClaudeQuotaSourceSample(string outputDir, string sourceKind, string fileName)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Claude;
+        settings.Normalize();
+        using (CodexRadarForm form = new CodexRadarForm(settings, null))
+        {
+            form.SetLayerScale(2.0f);
+            form.MaximumSize = new Size(4000, 4000);
+            form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
+            form.effectiveCodexRadarSoftwareMode = CodexRadarSoftwareMode.Claude;
+            form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
+            QuotaRuntimeState quotaState = form.GetQuotaRuntimeState(CodexRadarSoftwareMode.Claude);
+            quotaState.Snapshot = CodexQuotaSnapshot.CreateDefault();
+            quotaState.SourceKnown = false;
+            ResetQuotaReadDeltaTracking(quotaState);
+            DateTime nowLocal = DateTime.Now;
+            CodexQuotaSnapshot quota = CodexQuotaSnapshot.CreateDefault();
+            quota.FiveHourPercent = 68;
+            quota.WeeklyPercent = 42;
+            quota.FiveHourResetKnown = true;
+            quota.FiveHourResetLocal = nowLocal.AddHours(2.0);
+            quota.WeeklyResetKnown = true;
+            quota.WeeklyResetLocal = nowLocal.AddDays(3.0);
+            quota.SourceUpdatedKnown = true;
+            quota.SourceUpdatedUtc = DateTime.UtcNow;
+            form.ApplyQuotaSnapshot(
+                CodexRadarSoftwareMode.Claude,
+                quota,
+                true,
+                true,
+                nowLocal,
+                DateTime.UtcNow,
+                sourceKind,
+                false);
+            RenderSampleSupport.SaveComposited(
+                outputDir,
+                fileName,
+                form.Width,
+                form.Height,
+                form.GetApplicationOpacityAlpha(),
+                form.DrawRenderSampleIsolatedLayers);
+        }
+    }
+
+    private static void RenderSpeedWindowCountdownSample(string outputDir)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+        settings.CodexRadarSpeedWindowCountdownEnabled = true;
+        settings.Normalize();
+        using (CodexRadarForm form = new CodexRadarForm(settings, null))
+        {
+            form.SetLayerScale(2.0f);
+            form.MaximumSize = new Size(4000, 4000);
+            form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
+            form.effectiveCodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+            form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
+            DateTime now = DateTime.Now;
+            form.codexRadarSnapshot.SpeedWindowKnown = true;
+            form.codexRadarSnapshot.SpeedWindowOpen = true;
+            form.codexRadarSnapshot.SpeedWindowStatus = "open";
+            form.codexRadarSnapshot.SpeedWindowOpenedAtLocal = now.AddHours(-12.0);
+            form.codexRadarSnapshot.SpeedWindowOpenedAtKnown = true;
+            form.codexRadarSnapshot.SpeedWindowClosedAtLocal = now.AddHours(36.0);
+            form.codexRadarSnapshot.SpeedWindowClosedAtKnown = true;
+            RenderSpeedWindowCountdownSample(outputDir, form, true);
+            RenderSpeedWindowCountdownSample(outputDir, form, false);
+        }
+    }
+
+    private static void RenderSpeedWindowCountdownSample(
+        string outputDir,
+        CodexRadarForm form,
+        bool countdownEnabled)
+    {
+        form.CurrentSettings.CodexRadarSpeedWindowCountdownEnabled = countdownEnabled;
+        string fileName = countdownEnabled
+            ? "codexradar-speed-window-countdown.png"
+            : "codexradar-speed-window-countdown-disabled.png";
+        RenderSampleSupport.SaveComposited(
+            outputDir,
+            fileName,
+            form.Width,
+            form.Height,
+            form.GetApplicationOpacityAlpha(),
+            form.DrawRenderSampleIsolatedLayers);
+        Console.WriteLine(
+            countdownEnabled
+                ? "SpeedWindowCountdown -> " + fileName
+                : "SpeedWindowCountdown(disabled) -> " + fileName);
+    }
+
+    private void DrawRenderSampleIsolatedLayers(Graphics target)
+    {
+        // GDI+ can lose already-painted sibling pixels when text is rasterized directly onto a
+        // premultiplied transparent bitmap. Isolate the real background/content paths so every
+        // acceptance fixture is a complete frame, including consecutive quota-source variants.
+        using (Bitmap background = new Bitmap(this.Width, this.Height, PixelFormat.Format32bppArgb))
+        using (Bitmap content = new Bitmap(this.Width, this.Height, PixelFormat.Format32bppArgb))
+        using (Graphics backgroundGraphics = Graphics.FromImage(background))
+        using (Graphics contentGraphics = Graphics.FromImage(content))
+        {
+            backgroundGraphics.Clear(Color.Transparent);
+            DrawCodexRadarBackground(backgroundGraphics);
+            contentGraphics.Clear(Color.Transparent);
+            DrawCodexRadarContentLayer(contentGraphics);
+            target.DrawImageUnscaled(background, 0, 0);
+            target.DrawImageUnscaled(content, 0, 0);
+        }
+    }
+
 
     // Current-mode sample: real settings.ini (size/variant/transparency/manual offsets) plus
     // whatever disk caches the constructor loaded (codex-radar-cache.ini, quota snapshots), drawn

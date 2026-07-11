@@ -63,7 +63,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly ToolTip hoverToolTip;
     private readonly bool isAsusZenbookDevice;
     private readonly UiFontCache fontCache = new UiFontCache();
-    private WidgetSettings currentSettings;
     private bool hiddenForFullscreen;
     private bool displaySuspended;
     private volatile bool formClosing;
@@ -88,7 +87,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private bool suppressReverseHoverRevealUntilCursorLeaves;
     private int? foregroundFrameRate;
     private MemoryPieSnapshot memoryPieSnapshot = MemoryPieSnapshot.Empty;
-    private long burnInShiftSlot = long.MinValue;
     private readonly double[] hoverProgress = new double[ButtonCount];
     private RectangleF[] buttonRects;
     private bool buttonRectsValid;
@@ -97,8 +95,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction, Func<string, bool, bool> setBooleanSettingAction)
     {
-        this.currentSettings = settings.Clone();
-        this.currentSettings.Normalize();
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
         this.openSettingsAction = openSettingsAction;
         this.forceRefreshAction = forceRefreshAction;
         this.restartAction = restartAction;
@@ -136,25 +134,25 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
-        ApplyLayerScaleFromSettings(this.currentSettings);
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = Color.Black;
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinOperationButtonSize, WidgetSettings.MinOperationButtonSize));
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinOperationButtonSize, WidgetSettings.MinOperationButtonSize));
         this.MaximumSize = new Size(4000, 4000);
         this.Size = GetDesiredSize();
         this.Cursor = Cursors.Hand;
 
         this.animationTimer = new System.Windows.Forms.Timer();
-        this.animationTimer.Interval = WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode);
+        this.animationTimer.Interval = WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode);
         this.animationTimer.Tick += OnAnimationTimerTick;
 
         this.foregroundFpsReader = new ForegroundFpsReader();
         this.foregroundFpsTimer = new System.Windows.Forms.Timer();
-        this.foregroundFpsTimer.Interval = GetForegroundFpsRefreshIntervalMs(this.currentSettings.PerformanceMode);
+        this.foregroundFpsTimer.Interval = GetForegroundFpsRefreshIntervalMs(this.CurrentSettings.PerformanceMode);
         this.foregroundFpsTimer.Tick += OnForegroundFpsTimerTick;
         this.restartSingleClickTimer = new System.Windows.Forms.Timer();
         this.restartSingleClickTimer.Interval = Math.Max(1, SystemInformation.DoubleClickTime);
@@ -173,7 +171,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        ApplyRuntimeSettings(this.currentSettings);
+        ApplyRuntimeSettings(this.CurrentSettings);
         UpdateForegroundFpsTimer();
         PositionOperationWindow();
         RenderLayeredWindow();
@@ -240,42 +238,42 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     public void ApplyRuntimeSettings(WidgetSettings settings)
     {
         bool wasManualHoverOpacityActive =
-            this.currentSettings != null &&
-            this.currentSettings.ManualHoverOpacityActive;
-        this.currentSettings = settings.Clone();
-        this.currentSettings.Normalize();
-        ApplyLayerScaleFromSettings(this.currentSettings);
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinOperationButtonSize, WidgetSettings.MinOperationButtonSize));
+            this.CurrentSettings != null &&
+            this.CurrentSettings.ManualHoverOpacityActive;
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinOperationButtonSize, WidgetSettings.MinOperationButtonSize));
         this.MaximumSize = new Size(4000, 4000);
-        if (this.currentSettings.ForceHoverOpacityActive &&
-            this.currentSettings.ManualHoverOpacityActive &&
+        if (this.CurrentSettings.ForceHoverOpacityActive &&
+            this.CurrentSettings.ManualHoverOpacityActive &&
             !wasManualHoverOpacityActive)
         {
             this.suppressReverseHoverRevealUntilCursorLeaves = true;
             this.reverseHoverRevealUntilUtc = DateTime.MinValue;
             this.lastReverseHoverRevealActive = false;
         }
-        else if (!this.currentSettings.ForceHoverOpacityActive ||
-            !this.currentSettings.ManualHoverOpacityActive)
+        else if (!this.CurrentSettings.ForceHoverOpacityActive ||
+            !this.CurrentSettings.ManualHoverOpacityActive)
         {
             this.suppressReverseHoverRevealUntilCursorLeaves = false;
             this.reverseHoverRevealUntilUtc = DateTime.MinValue;
             this.lastReverseHoverRevealActive = false;
         }
 
-        if (!IsRadialDialActive() || !this.currentSettings.OperationRadialCoreAutoHideKeepAliveEnabled)
+        if (!IsRadialDialActive() || !this.CurrentSettings.OperationRadialCoreAutoHideKeepAliveEnabled)
         {
             ClearRadialCoreAutoHideThresholdVisual();
         }
 
         ResetLayoutCaches();
-        int animationInterval = WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode);
+        int animationInterval = WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.animationTimer.Interval != animationInterval)
         {
             this.animationTimer.Interval = animationInterval;
         }
 
-        int foregroundFpsInterval = GetForegroundFpsRefreshIntervalMs(this.currentSettings.PerformanceMode);
+        int foregroundFpsInterval = GetForegroundFpsRefreshIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.foregroundFpsTimer.Interval != foregroundFpsInterval)
         {
             this.foregroundFpsTimer.Interval = foregroundFpsInterval;
@@ -298,7 +296,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.Size = desiredSize;
         }
 
-        bool shouldBeTopMost = this.currentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
+        bool shouldBeTopMost = this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
         if (this.TopMost != shouldBeTopMost)
         {
             this.TopMost = shouldBeTopMost;
@@ -321,7 +319,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         RefreshMemoryPieSnapshot(DateTime.UtcNow, true);
         if (this.quickGridForm != null && !this.quickGridForm.IsDisposed)
         {
-            this.quickGridForm.ApplyRuntimeSettings(this.currentSettings);
+            this.quickGridForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
         RenderLayeredWindow();
@@ -416,7 +414,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             return;
         }
 
-        if (BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+        if (ShouldRefreshBurnInPosition())
         {
             PositionOperationWindow();
         }
@@ -712,7 +710,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         if (button == HoverOpacityToggleButtonIndex)
         {
-            return this.currentSettings.ForceHoverOpacityActive
+            return this.CurrentSettings.ForceHoverOpacityActive
                 ? "恢复模块透明度"
                 : "切换到悬停透明度";
         }
@@ -2239,7 +2237,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     {
         if (button == HoverOpacityToggleButtonIndex)
         {
-            return this.currentSettings.ForceHoverOpacityActive;
+            return this.CurrentSettings.ForceHoverOpacityActive;
         }
 
         return false;
@@ -2267,7 +2265,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     private OperationPrimaryPanelMode GetResolvedPrimaryPanelMode()
     {
-        OperationPrimaryPanelMode mode = this.currentSettings.OperationPrimaryPanelMode;
+        OperationPrimaryPanelMode mode = this.CurrentSettings.OperationPrimaryPanelMode;
         if (mode == OperationPrimaryPanelMode.Auto ||
             !Enum.IsDefined(typeof(OperationPrimaryPanelMode), mode))
         {
@@ -2283,7 +2281,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     {
         return this.isAsusZenbookDevice &&
             this.myAsusInstalled &&
-            !this.currentSettings.ForceShowForegroundFpsEnabled;
+            !this.CurrentSettings.ForceShowForegroundFpsEnabled;
     }
 
     private bool ShouldDrawFpsPanel()
@@ -2396,8 +2394,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     private int GetStartButtonSize()
     {
-        int logicalSize = Math.Max(WidgetSettings.MinOperationButtonSize, Math.Min(WidgetSettings.MaxOperationButtonSize, this.currentSettings.OperationButtonSize));
-        return this.currentSettings.ScaleResolutionCompatibilityPixels(logicalSize);
+        int logicalSize = Math.Max(WidgetSettings.MinOperationButtonSize, Math.Min(WidgetSettings.MaxOperationButtonSize, this.CurrentSettings.OperationButtonSize));
+        return this.CurrentSettings.ScaleResolutionCompatibilityPixels(logicalSize);
     }
 
     private int GetSmallButtonSize()
@@ -2412,9 +2410,9 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             return;
         }
 
-        Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
-        int left = workArea.Left + this.currentSettings.ScaleResolutionCompatibilityOffset(Math.Max(0, this.currentSettings.OperationLeftOffset));
-        int top = workArea.Bottom - this.Height - this.currentSettings.ScaleResolutionCompatibilityOffset(Math.Max(0, this.currentSettings.OperationBottomOffset));
+        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
+        int left = workArea.Left + this.CurrentSettings.ScaleResolutionCompatibilityOffset(Math.Max(0, this.CurrentSettings.OperationLeftOffset));
+        int top = workArea.Bottom - this.Height - this.CurrentSettings.ScaleResolutionCompatibilityOffset(Math.Max(0, this.CurrentSettings.OperationBottomOffset));
         left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
         Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
@@ -2428,7 +2426,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(this.currentSettings.VisibilityMode),
+            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode),
             left,
             top,
             this.Width,
@@ -2535,7 +2533,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     // sibling partial file (OperationForm.<Name>.cs) to introduce an alternate layout.
     private void DrawOperationWindow(Graphics g)
     {
-        switch (this.currentSettings.OperationRenderVariant)
+        switch (this.CurrentSettings.OperationRenderVariant)
         {
             case OperationRenderVariant.Typographic:
                 DrawOperationWindowTypographic(g);
@@ -2655,7 +2653,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             g.DrawPath(borderPen, path);
         }
 
-        if (this.currentSettings.OperationMemoryPieEnabled)
+        if (this.CurrentSettings.OperationMemoryPieEnabled)
         {
             DrawMemoryPie(g, rect, pieForegroundColor);
         }
@@ -2751,7 +2749,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         int backgroundAlpha = GetBackgroundOpacityAlpha();
         float radius = Math.Max(S(5), rect.Height * 0.24f);
-        bool forcedFps = this.currentSettings.ForceShowForegroundFpsEnabled;
+        bool forcedFps = this.CurrentSettings.ForceShowForegroundFpsEnabled;
         using (GraphicsPath path = RoundedSegment(rect, radius, false, true, false))
         using (SolidBrush fillBrush = new SolidBrush(forcedFps
             ? DesignTokens.WithAlpha(accentFill, ScaleAlpha(72, backgroundAlpha))
@@ -3497,11 +3495,11 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         using (Pen backPen = new Pen(DesignTokens.White(150), stroke))
         using (Pen frontPen = new Pen(DesignTokens.White(238), stroke))
         using (Pen slashPen = new Pen(
-            this.currentSettings.ForceHoverOpacityActive
+            this.CurrentSettings.ForceHoverOpacityActive
                 ? DesignTokens.WithAlpha(DesignTokens.Colors.TextOnAccent, 232)
                 : DesignTokens.WithAlpha(inactiveSlashColor, 248),
             Math.Max(1.0f, 1.35f * this.LayerScale)))
-        using (SolidBrush frontBrush = new SolidBrush(DesignTokens.White(this.currentSettings.ForceHoverOpacityActive ? 90 : 42)))
+        using (SolidBrush frontBrush = new SolidBrush(DesignTokens.White(this.CurrentSettings.ForceHoverOpacityActive ? 90 : 42)))
         {
             backPen.StartCap = LineCap.Round;
             backPen.EndCap = LineCap.Round;
@@ -3594,7 +3592,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     private void UpdateForegroundFpsTimer()
     {
-        int interval = GetForegroundFpsRefreshIntervalMs(this.currentSettings.PerformanceMode);
+        int interval = GetForegroundFpsRefreshIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.foregroundFpsTimer.Interval != interval)
         {
             this.foregroundFpsTimer.Interval = interval;
@@ -3650,7 +3648,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     private byte GetLayeredWindowOpacityAlpha()
     {
-        return (byte)(this.currentSettings.ForceHoverOpacityActive && !IsReverseHoverRevealActive()
+        return (byte)(this.CurrentSettings.ForceHoverOpacityActive && !IsReverseHoverRevealActive()
             ? ForcedOperationOpacityAlpha
             : 255);
     }
@@ -3667,7 +3665,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     {
         if (this.suppressReverseHoverRevealUntilCursorLeaves)
         {
-            if (HoverInteractionPolicy.IsCursorInActivationRange(this.currentSettings, this.Bounds))
+            if (HoverInteractionPolicy.IsCursorInActivationRange(this.CurrentSettings, this.Bounds))
             {
                 this.reverseHoverRevealUntilUtc = DateTime.MinValue;
                 return false;
@@ -3677,7 +3675,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         }
 
         return HoverInteractionPolicy.IsReverseRevealActive(
-            this.currentSettings,
+            this.CurrentSettings,
             this.Bounds,
             ref this.reverseHoverRevealUntilUtc);
     }
@@ -3939,7 +3937,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     {
         using (OperationForm form = CreateRadialDialSelfTestForm())
         {
-            form.currentSettings.OperationPrimaryPanelMode = OperationPrimaryPanelMode.WindowsButton;
+            form.CurrentSettings.OperationPrimaryPanelMode = OperationPrimaryPanelMode.WindowsButton;
             AssertSelfTest(
                 form.AcceptsMouseButton(StartButtonIndex, MouseButtons.Right),
                 "operation primary button accepts right-click for Windows system tools");
@@ -4074,9 +4072,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     {
         int transparency = Math.Max(
             WidgetSettings.MinBackgroundTransparency,
-            Math.Min(WidgetSettings.MaxBackgroundTransparency, this.currentSettings.OperationBackgroundTransparencyPercent));
-        int alpha = (int)Math.Round(255.0 * (100 - transparency) / 100.0);
-        return ClampByte(alpha);
+            Math.Min(WidgetSettings.MaxBackgroundTransparency, this.CurrentSettings.OperationBackgroundTransparencyPercent));
+        return ComputeOpacityAlpha(transparency);
     }
 
     private static int ScaleAlpha(int value, int alpha)

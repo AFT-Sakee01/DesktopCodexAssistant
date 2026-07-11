@@ -5,7 +5,6 @@ using System.Text;
 
 internal static class SecretStore
 {
-    private static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
 
     public static string Protect(string secret)
     {
@@ -105,7 +104,7 @@ internal static class SecretStore
         string tempPath = encryptedPath + ".tmp";
         try
         {
-            File.WriteAllText(tempPath, Protect(secret ?? string.Empty) + Environment.NewLine, Utf8NoBom);
+            File.WriteAllText(tempPath, Protect(secret ?? string.Empty) + Environment.NewLine, SharedEncoding.Utf8NoBom);
             if (File.Exists(encryptedPath))
             {
                 File.Replace(tempPath, encryptedPath, null);
@@ -156,7 +155,7 @@ internal static class SecretStore
         {
             string encrypted = Path.Combine(root, "secret.bin");
             string legacy = Path.Combine(root, "secret.txt");
-            File.WriteAllText(legacy, " legacy-value " + Environment.NewLine, Utf8NoBom);
+            File.WriteAllText(legacy, " legacy-value " + Environment.NewLine, SharedEncoding.Utf8NoBom);
 
             string secret;
             bool migrated;

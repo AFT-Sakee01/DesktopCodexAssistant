@@ -704,6 +704,7 @@ internal static class Program
             DeepSeekBalanceMonitor.RunSelfTest();
             ServiceAlertDebouncer.RunSelfTest();
             ClaudeCodeUsageReader.RunSelfTest();
+            ClaudeCodeUsageScheduler.RunSelfTest();
             CodexRadarForm.RunSoftwareModeGateSelfTest();
             CodexQuotaGoalPlanner.RunSelfTest();
             RadarRuntimeDiagnostics.RunSelfTest();

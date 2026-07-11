@@ -11,7 +11,6 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
     private readonly System.Windows.Forms.Timer timer;
     private readonly System.Windows.Forms.Timer hoverTimer;
     private readonly CleanIpConnectionReader reader;
-    private WidgetSettings currentSettings;
     private CleanIpConnectionSnapshot snapshot;
     private bool hiddenForFullscreen;
     private double hoverOpacityProgress;
@@ -20,13 +19,12 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
     private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool autoHideKeepAliveActive;
     private bool sharedInteractionPolling;
-    private long burnInShiftSlot = long.MinValue;
     private readonly UiFontCache fontCache = new UiFontCache();
 
     public ConnectionCheckForm(WidgetSettings settings)
     {
-        this.currentSettings = settings.Clone();
-        this.currentSettings.Normalize();
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
         this.reader = new CleanIpConnectionReader();
         this.snapshot = new CleanIpConnectionSnapshot();
         ApplicationIcon.ApplyTo(this);
@@ -39,30 +37,30 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
-        ApplyLayerScaleFromSettings(this.currentSettings);
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MinConnectionCheckHeight));
-        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxConnectionCheckWidth, WidgetSettings.MaxConnectionCheckHeight));
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MinConnectionCheckHeight));
+        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxConnectionCheckWidth, WidgetSettings.MaxConnectionCheckHeight));
         this.Size = GetDesiredSize();
 
         this.timer = new System.Windows.Forms.Timer();
         this.timer.Interval = GetNextRenderTickIntervalMs();
         this.timer.Tick += OnTimerTick;
         this.hoverTimer = new System.Windows.Forms.Timer();
-        this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+        this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         this.hoverTimer.Tick += OnHoverTimerTick;
     }
 
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        ApplyRuntimeSettings(this.currentSettings);
-        this.snapshot = this.reader.GetSnapshot(this.currentSettings);
+        ApplyRuntimeSettings(this.CurrentSettings);
+        this.snapshot = this.reader.GetSnapshot(this.CurrentSettings);
         PositionConnectionCheckWindow();
         this.timer.Start();
     }
@@ -113,13 +111,13 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
 
     public void ApplyRuntimeSettings(WidgetSettings settings)
     {
-        this.currentSettings = settings.Clone();
-        this.currentSettings.Normalize();
-        ApplyLayerScaleFromSettings(this.currentSettings);
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MinConnectionCheckHeight));
-        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxConnectionCheckWidth, WidgetSettings.MaxConnectionCheckHeight));
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MinConnectionCheckHeight));
+        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxConnectionCheckWidth, WidgetSettings.MaxConnectionCheckHeight));
         ApplyPerformanceTimerIntervals();
-        this.snapshot = this.reader.GetSnapshot(this.currentSettings);
+        this.snapshot = this.reader.GetSnapshot(this.CurrentSettings);
 
         Size desiredSize = GetDesiredSize();
         if (this.Size != desiredSize)
@@ -127,7 +125,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
             this.Size = desiredSize;
         }
 
-        bool shouldBeTopMost = this.currentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
+        bool shouldBeTopMost = this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
         if (this.TopMost != shouldBeTopMost)
         {
             this.TopMost = shouldBeTopMost;
@@ -205,7 +203,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
         try
         {
             // The reader decides when to perform I/O; the form redraws only changed display fields.
-            CleanIpConnectionSnapshot nextSnapshot = this.reader.GetSnapshot(this.currentSettings);
+            CleanIpConnectionSnapshot nextSnapshot = this.reader.GetSnapshot(this.CurrentSettings);
             bool displayChanged = !HasSameDisplayData(this.snapshot, nextSnapshot);
             this.snapshot = nextSnapshot;
             Size desiredSize = GetDesiredSize();
@@ -220,7 +218,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
             bool positionChanged = false;
             if (!this.hiddenForFullscreen &&
                 this.Visible &&
-                BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+                ShouldRefreshBurnInPosition())
             {
                 PositionConnectionCheckWindow();
                 positionChanged = true;
@@ -241,7 +239,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
     {
         ScheduleNextRenderTick();
 
-        int hoverInterval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+        int hoverInterval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.hoverTimer.Interval != hoverInterval)
         {
             this.hoverTimer.Interval = hoverInterval;
@@ -260,7 +258,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
     private int GetNextRenderTickIntervalMs()
     {
         DateTime now = DateTime.Now;
-        int targetInterval = WidgetSettings.GetPanelRenderIntervalMs(this.currentSettings.PerformanceMode);
+        int targetInterval = WidgetSettings.GetPanelRenderIntervalMs(this.CurrentSettings.PerformanceMode);
         int elapsedInInterval = (int)(now.TimeOfDay.TotalMilliseconds % targetInterval);
         int interval = targetInterval - elapsedInInterval + RenderSecondBoundaryOffsetMs;
         if (interval <= RenderSecondBoundaryOffsetMs)
@@ -275,8 +273,8 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
     {
         bool animationActive = ProcessInteractionTick();
         int desiredInterval = animationActive
-            ? WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode)
-            : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+            ? WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode)
+            : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.hoverTimer.Interval != desiredInterval)
         {
             this.hoverTimer.Interval = desiredInterval;
@@ -389,7 +387,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
     private bool IsHoverOpacityTargetActive()
     {
         return HoverInteractionPolicy.IsHoverOpacityTargetActive(
-            this.currentSettings,
+            this.CurrentSettings,
             this.Bounds,
             this.hiddenForFullscreen,
             this.Visible,
@@ -400,7 +398,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
 
     private bool IsHoverOpacityRuntimeEnabled()
     {
-        return this.currentSettings.HoverOpacityEnabled || this.currentSettings.ForceHoverOpacityActive;
+        return this.CurrentSettings.HoverOpacityEnabled || this.CurrentSettings.ForceHoverOpacityActive;
     }
 
     private void ApplyClickThroughStyle()
@@ -444,15 +442,15 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
         }
 
         return WidgetSettings.ShouldEnableClickThrough(
-            this.currentSettings.ClickThroughMode,
-            this.currentSettings.VisibilityMode);
+            this.CurrentSettings.ClickThroughMode,
+            this.CurrentSettings.VisibilityMode);
     }
 
     private bool NeedsClickThroughPolling()
     {
         return WidgetSettings.ShouldEnableClickThrough(
-            this.currentSettings.ClickThroughMode,
-            this.currentSettings.VisibilityMode);
+            this.CurrentSettings.ClickThroughMode,
+            this.CurrentSettings.VisibilityMode);
     }
 
     private void PositionConnectionCheckWindow()
@@ -462,15 +460,15 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
             return;
         }
 
-        Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModuleConnectionCheck);
+        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleConnectionCheck);
         Size desiredSize = GetDesiredSize();
         if (this.Size != desiredSize)
         {
             this.Size = desiredSize;
         }
 
-        int mappedLeft = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleConnectionCheck, workArea, this.currentSettings.ConnectionCheckLeftX);
-        int mappedBottom = this.currentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleConnectionCheck, workArea, this.currentSettings.ConnectionCheckBottomY);
+        int mappedLeft = this.CurrentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleConnectionCheck, workArea, this.CurrentSettings.ConnectionCheckLeftX);
+        int mappedBottom = this.CurrentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleConnectionCheck, workArea, this.CurrentSettings.ConnectionCheckBottomY);
         int left = Math.Max(workArea.Left, Math.Min(mappedLeft, workArea.Right - this.Width));
         int top = mappedBottom - this.Height + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
@@ -485,7 +483,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(this.currentSettings.VisibilityMode),
+            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode),
             left,
             top,
             this.Width,
@@ -498,7 +496,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
 
     private Size GetDesiredSize()
     {
-        return this.currentSettings.ScaleResolutionCompatibilitySize(new Size(this.currentSettings.ConnectionCheckWidth, this.currentSettings.ConnectionCheckHeight));
+        return this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(this.CurrentSettings.ConnectionCheckWidth, this.CurrentSettings.ConnectionCheckHeight));
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -1570,26 +1568,23 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
     private bool IsBurnInColorProtectionActive()
     {
         return BurnInProtection.ShouldApplyHiddenModeColorProtection(
-            this.currentSettings,
+            this.CurrentSettings,
             IsHoverOpacityTargetActive());
     }
 
     private int GetBackgroundOpacityAlpha()
     {
-        int alpha = (int)Math.Round(255.0 * (100 - this.currentSettings.ConnectionCheckTransparencyPercent) / 100.0);
-        return Math.Max(0, Math.Min(255, alpha));
+        return ComputeOpacityAlpha(this.CurrentSettings.ConnectionCheckTransparencyPercent);
     }
 
     private int GetBorderOpacityAlpha()
     {
-        int alpha = (int)Math.Round(255.0 * (100 - this.currentSettings.ConnectionCheckBorderTransparencyPercent) / 100.0);
-        return Math.Max(0, Math.Min(255, alpha));
+        return ComputeOpacityAlpha(this.CurrentSettings.ConnectionCheckBorderTransparencyPercent);
     }
 
     private int GetContentOpacityAlpha()
     {
-        int alpha = (int)Math.Round(255.0 * (100 - this.currentSettings.ApplicationTransparencyPercent) / 100.0);
-        return Math.Max(0, Math.Min(255, alpha));
+        return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
     protected override byte GetApplicationOpacityAlpha()

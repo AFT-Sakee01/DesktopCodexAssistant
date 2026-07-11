@@ -4,6 +4,47 @@ using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Text.RegularExpressions;
 
+// Source semantics stay caller-owned: this helper only resolves the reset-label treatment that
+// both Claude views must apply before handing a QuotaRingDrawSpec to the shared renderer.
+internal static class ClaudeQuotaSourcePresentation
+{
+    public static bool IsPublicSiteSource(string source)
+    {
+        return string.Equals(source, "site", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(source, "claude_site_public", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static void ResolveResetDisplay(
+        string source,
+        Color defaultColor,
+        out Color displayColor,
+        out bool forceDisplayColor)
+    {
+        bool publicSite = IsPublicSiteSource(source);
+        displayColor = publicSite
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245)
+            : defaultColor;
+        forceDisplayColor = publicSite;
+    }
+
+    internal static void RunSelfTest()
+    {
+        Color color;
+        bool force;
+        ResolveResetDisplay("site", Color.White, out color, out force);
+        if (!force || color != DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245))
+        {
+            throw new InvalidOperationException("Claude public-site quota reset presentation self-test failed.");
+        }
+
+        ResolveResetDisplay("personal", Color.White, out color, out force);
+        if (force || color != Color.White)
+        {
+            throw new InvalidOperationException("Claude personal quota reset presentation self-test failed.");
+        }
+    }
+}
+
 // Quota-ring painting shared by the CodexRadarForm shared window (Claude mode) and the
 // standalone ClaudeRadarForm. Both windows used to keep an independent copy of this exact
 // paint code (GetQuotaColor/GetClaudeQuotaColor, GetQuotaConsumptionRingColor/
@@ -104,7 +145,7 @@ internal static class QuotaRingPresentation
         }
 
         Color displayColor = spec.ResetDisplayColor;
-        if (!spec.Running)
+        if (!spec.Running && !spec.ForceResetDisplayColor)
         {
             displayColor = DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
         }
@@ -139,6 +180,7 @@ internal static class QuotaRingPresentation
 
     internal static void RunSelfTest()
     {
+        ClaudeQuotaSourcePresentation.RunSelfTest();
         ClaudeRadarResetTextFormatter.RunSelfTest();
 
         if (GetRingColor(85) != DesignTokens.WithAlpha(DesignTokens.Colors.QuotaGood, 235) ||
@@ -300,7 +342,7 @@ internal static class ClaudeRadarResetTextFormatter
 
 // Plain data-holder passed to QuotaRingPresentation.DrawQuotaRing. ResetDisplayText/
 // ResetDisplayColor are computed by the caller (each window has its own family-specific
-// reset-label logic - e.g. Codex's speed-window flash text vs Claude's plain "已重置") so this
+// reset-label logic - e.g. Codex's speed-window forced-gold time vs Claude's plain "已重置") so this
 // type stays free of any per-family knowledge.
 internal sealed class QuotaRingDrawSpec
 {
@@ -308,6 +350,9 @@ internal sealed class QuotaRingDrawSpec
     public int ConsumptionRingPercent;
     public string ResetDisplayText;
     public Color ResetDisplayColor;
+    // Codex speed-window time stays gold even when its local process is not running; quota
+    // numbers still follow AnySupportedAppRunning and retain the existing gray inactive rule.
+    public bool ForceResetDisplayColor;
     public bool Running;
     public bool AnySupportedAppRunning;
     public bool QuotaValueKnown;

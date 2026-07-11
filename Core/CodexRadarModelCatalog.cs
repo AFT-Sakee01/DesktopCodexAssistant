@@ -41,10 +41,25 @@ internal sealed class CodexRadarModelCatalogUpdate
     public readonly List<CodexRadarModelInfo> Deleted = new List<CodexRadarModelInfo>();
 }
 
+internal sealed class CodexRadarModelCatalogNotificationSummary
+{
+    public int AddedCount { get; set; }
+    public int UnavailableCount { get; set; }
+    public int DeletedCount { get; set; }
+    public readonly List<string> RepresentativeLabels = new List<string>();
+
+    public int TotalCount
+    {
+        get { return this.AddedCount + this.UnavailableCount + this.DeletedCount; }
+    }
+}
+
 internal static class CodexRadarModelCatalog
 {
-    public const string DefaultModelKey = "gpt_55_xhigh";
+    public const string DefaultModelKey = "gpt_56_sol_medium";
+    public const string PreviousDefaultModelKey = "gpt_55_xhigh";
     private const int DeleteAfterMissingCount = 3;
+    public const int ConsolidatedNotificationThreshold = 4;
 
     public static string CatalogPath
     {
@@ -74,7 +89,7 @@ internal static class CodexRadarModelCatalog
             {
                 string prefix = "Model" + i.ToString(CultureInfo.InvariantCulture);
                 string key = NormalizeModelKey(GetValue(values, prefix + "Key", string.Empty));
-                if (key.Length == 0 || seen.Contains(key))
+                if (key.Length == 0)
                 {
                     continue;
                 }
@@ -82,14 +97,36 @@ internal static class CodexRadarModelCatalog
                 bool available;
                 int missingCount;
                 DateTime lastSeenUtc;
-                models.Add(new CodexRadarModelInfo
+                CodexRadarModelInfo candidate = new CodexRadarModelInfo
                 {
                     Key = key,
                     Label = GetDisplayLabel(GetValue(values, prefix + "Label", string.Empty), key),
                     Available = !TryReadBool(values, prefix + "Available", out available) || available,
                     MissingCount = TryReadInt(values, prefix + "MissingCount", out missingCount) ? Math.Max(0, missingCount) : 0,
                     LastSeenUtc = TryReadUtc(values, prefix + "LastSeenUtc", out lastSeenUtc) ? lastSeenUtc : DateTime.MinValue
-                });
+                };
+                if (seen.Contains(key))
+                {
+                    // Older builds could persist gpt_5_6_* and gpt_56_* as separate records.
+                    // Treat one record as an indivisible observation so a newer unavailable
+                    // state cannot be revived by an older optimistic field value.
+                    for (int modelIndex = 0; modelIndex < models.Count; modelIndex++)
+                    {
+                        CodexRadarModelInfo existing = models[modelIndex];
+                        if (!string.Equals(existing.Key, key, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        MergeDuplicateCatalogRecord(existing, candidate);
+
+                        break;
+                    }
+
+                    continue;
+                }
+
+                models.Add(candidate);
                 seen.Add(key);
             }
 
@@ -102,10 +139,58 @@ internal static class CodexRadarModelCatalog
         }
     }
 
-    public static CodexRadarModelCatalogUpdate MergeAndSave(IList<CodexRadarModelInfo> discovered)
+    public static CodexRadarModelCatalogUpdate MergeAndSave(
+        IList<CodexRadarModelInfo> discovered,
+        bool completeCatalog)
     {
-        CodexRadarModelCatalogUpdate update = new CodexRadarModelCatalogUpdate();
         List<CodexRadarModelInfo> existing = LoadModels();
+        CodexRadarModelCatalogUpdate update;
+        List<CodexRadarModelInfo> merged = MergeCatalogRecords(
+            existing,
+            discovered,
+            completeCatalog,
+            DateTime.UtcNow,
+            out update);
+        if (merged != null)
+        {
+            SaveModels(merged);
+        }
+
+        return update;
+    }
+
+    internal static void MergeDuplicateCatalogRecord(
+        CodexRadarModelInfo existing,
+        CodexRadarModelInfo candidate)
+    {
+        if (existing == null || candidate == null)
+        {
+            return;
+        }
+
+        bool candidateWins =
+            candidate.LastSeenUtc > existing.LastSeenUtc ||
+            (candidate.LastSeenUtc == existing.LastSeenUtc &&
+             candidate.Available && !existing.Available);
+        if (!candidateWins)
+        {
+            return;
+        }
+
+        existing.Label = candidate.Label;
+        existing.Available = candidate.Available;
+        existing.MissingCount = candidate.MissingCount;
+        existing.LastSeenUtc = candidate.LastSeenUtc;
+    }
+
+    private static List<CodexRadarModelInfo> MergeCatalogRecords(
+        IList<CodexRadarModelInfo> existing,
+        IList<CodexRadarModelInfo> discovered,
+        bool completeCatalog,
+        DateTime observedUtc,
+        out CodexRadarModelCatalogUpdate update)
+    {
+        update = new CodexRadarModelCatalogUpdate();
         Dictionary<string, CodexRadarModelInfo> discoveredByKey =
             new Dictionary<string, CodexRadarModelInfo>(StringComparer.OrdinalIgnoreCase);
         if (discovered != null)
@@ -130,19 +215,19 @@ internal static class CodexRadarModelCatalog
                     Label = GetDisplayLabel(model.Label, key),
                     Available = true,
                     MissingCount = 0,
-                    LastSeenUtc = DateTime.UtcNow
+                    LastSeenUtc = observedUtc
                 };
             }
         }
 
         if (discoveredByKey.Count == 0)
         {
-            return update;
+            return null;
         }
 
         Dictionary<string, CodexRadarModelInfo> existingByKey =
             new Dictionary<string, CodexRadarModelInfo>(StringComparer.OrdinalIgnoreCase);
-        for (int i = 0; i < existing.Count; i++)
+        for (int i = 0; existing != null && i < existing.Count; i++)
         {
             CodexRadarModelInfo model = existing[i];
             if (model != null && !string.IsNullOrEmpty(model.Key) && !existingByKey.ContainsKey(model.Key))
@@ -152,7 +237,7 @@ internal static class CodexRadarModelCatalog
         }
 
         List<CodexRadarModelInfo> merged = new List<CodexRadarModelInfo>();
-        for (int i = 0; i < existing.Count; i++)
+        for (int i = 0; existing != null && i < existing.Count; i++)
         {
             CodexRadarModelInfo old = existing[i];
             if (old == null || string.IsNullOrEmpty(old.Key))
@@ -165,6 +250,12 @@ internal static class CodexRadarModelCatalog
             {
                 merged.Add(fresh.Clone());
                 discoveredByKey.Remove(old.Key);
+                continue;
+            }
+
+            if (!completeCatalog)
+            {
+                merged.Add(old.Clone());
                 continue;
             }
 
@@ -195,8 +286,7 @@ internal static class CodexRadarModelCatalog
             }
         }
 
-        SaveModels(merged);
-        return update;
+        return merged;
     }
 
     public static void SaveModels(IList<CodexRadarModelInfo> models)
@@ -220,7 +310,7 @@ internal static class CodexRadarModelCatalog
                 lines.Add(prefix + "LastSeenUtc=" + (model.LastSeenUtc == DateTime.MinValue ? string.Empty : model.LastSeenUtc.ToString("o", CultureInfo.InvariantCulture)));
             }
 
-            File.WriteAllLines(tempPath, lines.ToArray(), new UTF8Encoding(false));
+            File.WriteAllLines(tempPath, lines.ToArray(), SharedEncoding.Utf8NoBom);
             if (File.Exists(CatalogPath))
             {
                 File.Replace(tempPath, CatalogPath, null);
@@ -244,11 +334,15 @@ internal static class CodexRadarModelCatalog
             return string.Empty;
         }
 
-        normalized = normalized.Replace("gpt-5.5", "gpt_55");
-        normalized = normalized.Replace("gpt-5.4", "gpt_54");
         normalized = Regex.Replace(normalized, "[^a-z0-9]+", "_").Trim('_');
-        normalized = normalized.Replace("gpt_5_5", "gpt_55");
-        normalized = normalized.Replace("gpt_5_4", "gpt_54");
+        // Website JSON mixes model values such as gpt-5.6-sol with comparison keys such as
+        // gpt_56_sol_medium. Collapse the dotted form generically so one model cannot occupy
+        // two catalog/cache identities when the site adds another minor version.
+        normalized = Regex.Replace(
+            normalized,
+            "^gpt_([0-9]+)_([0-9]+)(?=_|$)",
+            "gpt_$1$2",
+            RegexOptions.IgnoreCase);
         return normalized;
     }
 
@@ -278,14 +372,26 @@ internal static class CodexRadarModelCatalog
         }
 
         string normalized = NormalizeModelKey(key);
-        if (normalized.StartsWith("gpt_55_", StringComparison.OrdinalIgnoreCase))
+        Match versioned = Regex.Match(
+            normalized,
+            "^gpt_([0-9])([0-9]+)_(.+)$",
+            RegexOptions.IgnoreCase);
+        if (versioned.Success)
         {
-            return "GPT-5.5 " + normalized.Substring("gpt_55_".Length).Replace('_', ' ');
-        }
+            string[] segments = versioned.Groups[3].Value.Split('_');
+            for (int i = 0; i < segments.Length; i++)
+            {
+                string segment = (segments[i] ?? string.Empty).ToLowerInvariant();
+                if (!IsReasoningEffortSegment(segment) && segment.Length > 0)
+                {
+                    segment = char.ToUpperInvariant(segment[0]) + segment.Substring(1);
+                }
 
-        if (normalized.StartsWith("gpt_54_", StringComparison.OrdinalIgnoreCase))
-        {
-            return "GPT-5.4 " + normalized.Substring("gpt_54_".Length).Replace('_', ' ');
+                segments[i] = segment;
+            }
+
+            return "GPT-" + versioned.Groups[1].Value + "." + versioned.Groups[2].Value +
+                " " + string.Join(" ", segments);
         }
 
         return normalized.Length == 0 ? "--" : normalized.Replace('_', ' ');
@@ -293,9 +399,149 @@ internal static class CodexRadarModelCatalog
 
     public static bool IsDefaultModelKey(string key)
     {
-        return string.Equals(NormalizeModelKey(key), DefaultModelKey, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(NormalizeModelKey(key), "gpt_55_medium", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(NormalizeModelKey(key), "gpt_54_xhigh", StringComparison.OrdinalIgnoreCase);
+        string normalized = NormalizeModelKey(key);
+        return string.Equals(normalized, DefaultModelKey, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "gpt_56_sol_ultra", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "gpt_56_sol_low", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "gpt_56_terra_medium", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(normalized, "gpt_56_luna_medium", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static CodexRadarModelCatalogNotificationSummary BuildNotificationSummary(
+        CodexRadarModelCatalogUpdate update)
+    {
+        CodexRadarModelCatalogNotificationSummary summary = new CodexRadarModelCatalogNotificationSummary();
+        if (update == null)
+        {
+            return summary;
+        }
+
+        summary.AddedCount = update.Added.Count;
+        summary.UnavailableCount = update.Unavailable.Count;
+        summary.DeletedCount = update.Deleted.Count;
+        AddRepresentativeLabels(summary, update.Added);
+        AddRepresentativeLabels(summary, update.Unavailable);
+        AddRepresentativeLabels(summary, update.Deleted);
+        return summary;
+    }
+
+    internal static void RunSelfTest()
+    {
+        DateTime t1 = new DateTime(2026, 7, 10, 0, 0, 0, DateTimeKind.Utc);
+        DateTime t2 = t1.AddMinutes(1);
+        CodexRadarModelInfo existing = TestModel("gpt_56_sol_medium", "old", true, 0, t1);
+        MergeDuplicateCatalogRecord(existing, TestModel("gpt_56_sol_medium", "new", false, 2, t2));
+        AssertCatalog(existing.Label == "new" && !existing.Available && existing.MissingCount == 2 && existing.LastSeenUtc == t2,
+            "newer unavailable duplicate must replace the older optimistic record");
+
+        existing = TestModel("gpt_56_sol_medium", "old", false, 2, t1);
+        MergeDuplicateCatalogRecord(existing, TestModel("gpt_56_sol_medium", "new", true, 0, t2));
+        AssertCatalog(existing.Available && existing.MissingCount == 0 && existing.Label == "new",
+            "newer available duplicate must replace the older unavailable record");
+
+        existing = TestModel("gpt_56_sol_medium", "old", false, 2, DateTime.MinValue);
+        MergeDuplicateCatalogRecord(existing, TestModel("gpt_56_sol_medium", "new", true, 0, DateTime.MinValue));
+        AssertCatalog(existing.Available && existing.Label == "new",
+            "equal legacy timestamps must prefer the available record");
+
+        existing = TestModel("gpt_56_sol_medium", "first", true, 0, t1);
+        MergeDuplicateCatalogRecord(existing, TestModel("gpt_56_sol_medium", "second", true, 0, t1));
+        AssertCatalog(existing.Label == "first", "equal duplicate observations must preserve file order");
+
+        AssertCatalog(GetDisplayLabel(string.Empty, "gpt_56_sol_medium") == "GPT-5.6 Sol medium", "Sol label casing");
+        AssertCatalog(GetDisplayLabel(string.Empty, "gpt_56_terra_medium") == "GPT-5.6 Terra medium", "Terra label casing");
+        AssertCatalog(GetDisplayLabel(string.Empty, "gpt_57_nova_high") == "GPT-5.7 Nova high", "Nova label casing");
+        AssertCatalog(GetDisplayLabel(string.Empty, "gpt_55_xhigh") == "GPT-5.5 xhigh", "effort-only label casing");
+
+        List<CodexRadarModelInfo> baseline = new List<CodexRadarModelInfo>
+        {
+            TestModel("gpt_56_sol_medium", "Sol", true, 0, t1),
+            TestModel("gpt_56_terra_medium", "Terra", true, 0, t1)
+        };
+        List<CodexRadarModelInfo> partial = new List<CodexRadarModelInfo>
+        {
+            TestModel("gpt_56_sol_medium", "Sol", true, 0, t2),
+            TestModel("gpt_57_nova_high", "Nova", true, 0, t2)
+        };
+        CodexRadarModelCatalogUpdate partialUpdate;
+        List<CodexRadarModelInfo> partialMerged = MergeCatalogRecords(baseline, partial, false, t2, out partialUpdate);
+        AssertCatalog(FindModel(partialMerged, "gpt_56_terra_medium").MissingCount == 0 && partialUpdate.Added.Count == 1,
+            "an incomplete catalog must preserve missing records and still add discoveries");
+
+        CodexRadarModelCatalogUpdate completeUpdate;
+        List<CodexRadarModelInfo> completeMerged = MergeCatalogRecords(baseline, partial, true, t2, out completeUpdate);
+        AssertCatalog(FindModel(completeMerged, "gpt_56_terra_medium").MissingCount == 1 && completeUpdate.Unavailable.Count == 1,
+            "a complete catalog must advance missing counters");
+
+        CodexRadarModelCatalogUpdate notificationUpdate = new CodexRadarModelCatalogUpdate();
+        for (int i = 0; i < 5; i++)
+        {
+            notificationUpdate.Added.Add(TestModel("gpt_57_test_" + i.ToString(CultureInfo.InvariantCulture), "Model " + i.ToString(CultureInfo.InvariantCulture), true, 0, t2));
+        }
+
+        CodexRadarModelCatalogNotificationSummary summary = BuildNotificationSummary(notificationUpdate);
+        AssertCatalog(summary.TotalCount == 5 && summary.AddedCount == 5 && summary.RepresentativeLabels.Count == 3,
+            "catalog replacement summary must cap representative labels at three");
+    }
+
+    private static bool IsReasoningEffortSegment(string value)
+    {
+        return string.Equals(value, "xhigh", StringComparison.Ordinal) ||
+            string.Equals(value, "ultra", StringComparison.Ordinal) ||
+            string.Equals(value, "high", StringComparison.Ordinal) ||
+            string.Equals(value, "medium", StringComparison.Ordinal) ||
+            string.Equals(value, "low", StringComparison.Ordinal);
+    }
+
+    private static void AddRepresentativeLabels(
+        CodexRadarModelCatalogNotificationSummary summary,
+        IList<CodexRadarModelInfo> models)
+    {
+        for (int i = 0; models != null && i < models.Count && summary.RepresentativeLabels.Count < 3; i++)
+        {
+            CodexRadarModelInfo model = models[i];
+            summary.RepresentativeLabels.Add(GetDisplayLabel(
+                model == null ? string.Empty : model.Label,
+                model == null ? string.Empty : model.Key));
+        }
+    }
+
+    private static CodexRadarModelInfo TestModel(
+        string key,
+        string label,
+        bool available,
+        int missingCount,
+        DateTime lastSeenUtc)
+    {
+        return new CodexRadarModelInfo
+        {
+            Key = key,
+            Label = label,
+            Available = available,
+            MissingCount = missingCount,
+            LastSeenUtc = lastSeenUtc
+        };
+    }
+
+    private static CodexRadarModelInfo FindModel(IList<CodexRadarModelInfo> models, string key)
+    {
+        for (int i = 0; models != null && i < models.Count; i++)
+        {
+            if (string.Equals(models[i].Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                return models[i];
+            }
+        }
+
+        throw new InvalidOperationException("Codex Radar model catalog self-test could not find " + key + ".");
+    }
+
+    private static void AssertCatalog(bool condition, string message)
+    {
+        if (!condition)
+        {
+            throw new InvalidOperationException("Codex Radar model catalog self-test failed: " + message + ".");
+        }
     }
 
     public static string LegacyKeyFromVersion(CodexRadarModelVersion version)
@@ -310,7 +556,7 @@ internal static class CodexRadarModelCatalog
             return "gpt_54_xhigh";
         }
 
-        return DefaultModelKey;
+        return PreviousDefaultModelKey;
     }
 
     public static CodexRadarModelVersion LegacyVersionFromKey(string key)
@@ -334,9 +580,11 @@ internal static class CodexRadarModelCatalog
         DateTime nowUtc = DateTime.UtcNow;
         return new List<CodexRadarModelInfo>
         {
-            new CodexRadarModelInfo { Key = DefaultModelKey, Label = "GPT-5.5 xhigh", Available = true, LastSeenUtc = nowUtc },
-            new CodexRadarModelInfo { Key = "gpt_55_medium", Label = "GPT-5.5 medium", Available = true, LastSeenUtc = nowUtc },
-            new CodexRadarModelInfo { Key = "gpt_54_xhigh", Label = "GPT-5.4 xhigh", Available = true, LastSeenUtc = nowUtc }
+            new CodexRadarModelInfo { Key = "gpt_56_sol_ultra", Label = "GPT-5.6 Sol ultra", Available = true, LastSeenUtc = nowUtc },
+            new CodexRadarModelInfo { Key = DefaultModelKey, Label = "GPT-5.6 Sol medium", Available = true, LastSeenUtc = nowUtc },
+            new CodexRadarModelInfo { Key = "gpt_56_sol_low", Label = "GPT-5.6 Sol low", Available = true, LastSeenUtc = nowUtc },
+            new CodexRadarModelInfo { Key = "gpt_56_terra_medium", Label = "GPT-5.6 Terra medium", Available = true, LastSeenUtc = nowUtc },
+            new CodexRadarModelInfo { Key = "gpt_56_luna_medium", Label = "GPT-5.6 Luna medium", Available = true, LastSeenUtc = nowUtc }
         };
     }
 

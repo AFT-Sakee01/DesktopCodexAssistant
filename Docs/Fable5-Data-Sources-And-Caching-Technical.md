@@ -1,6 +1,6 @@
 # Fable5-Data-Sources-And-Caching-Technical — 数据源、Fallback 链与缓存位置详解
 
-适用版本：`1.0.4.81`。生成时间：2026-07-09。
+适用版本：`1.0.5.06`。生成时间：2026-07-11。
 本文回答三个问题：**每个模块从哪个网站/本地文件的哪个位置读什么、失败时按什么顺序 fallback、结果缓存在哪个文件里**。所有 URL、路径、常量均直接摘自源码并附出处；刷新频率与调度规则的权威文档是 `Docs/Component-Refresh-Rules.md`，本文只在必要处引用不重复。
 
 约定：`<DATA>` = `%LOCALAPPDATA%\DesktopCodexAssistant`（`Logger.DirectoryPath`）；`<HOME>` = `%USERPROFILE%`。
@@ -15,12 +15,13 @@
 
 | 优先级 | URL | 读取内容 | 门控设置 |
 |---|---|---|---|
-| 1 | `https://codexradar.com/current.json` | 当日批次模型数据：`score`、`passed`、`tasks`/`valid_tasks`、`total_tokens`/`n_input_tokens`+`n_output_tokens`、`serial_task_seconds`（用于 token/时间效率）、状态色（green/yellow/orange/red 别名归一化）、数据日期与上下午窗口；`model_iq` 全模型分数还用于推导 IQ 环显示上限 | `CodexRadarPublicJsonEnabled` |
+| 1 | `https://codexradar.com/current.json` | 当日批次模型数据：`score`、`passed`、`tasks`/`valid_tasks`、`total_tokens`/`n_input_tokens`+`n_output_tokens`、`serial_task_seconds`（用于 token/时间效率）、状态色、数据日期与上下午窗口；`model_iq` 全模型分数用于推导 IQ 环显示上限；`window.opened_at/closed_at` 用于可选速蹬结束倒计时 | `CodexRadarPublicJsonEnabled` |
 | 1b | `https://codexradar.com/api/v1/current` | 授权完整 API（服务可用性探测按钮也会测它） | 同上 |
-| 2 | `https://codexradar.com/`（首页 HTML） | 两种用途：(a) **补齐**——JSON 成功但缺首页额度雷达、网页短数据标签、IQ 常态区或 IQ 图表显示上限时抓取补齐，补齐失败不覆盖 JSON 结果；(b) **回退**——JSON 失败时作为数据回退 | `CodexRadarHtmlFallbackEnabled` |
+| 2 | `https://codexradar.com/`（首页 HTML） | 两种用途：(a) **补齐**——JSON 成功但缺首页额度雷达、网页短数据标签、IQ 常态区或 IQ 图表显示上限时抓取补齐，补齐失败不覆盖 JSON 结果；(b) **回退**——JSON 失败时作为数据回退；兼容 `data-window-opened-at/closes-at` | `CodexRadarHtmlFallbackEnabled` |
 | 3 | `https://codexradar.com/feed.xml`（RSS） | 最后一层回退（文件内 9576 行附近） | `CodexRadarRssFallbackEnabled` |
 | 附 | `https://codexradar.com/api/model-ratings?history=14` | 模型社区评分 14 天历史 | — |
 
+- 模型键：`CodexRadarModelCatalog.NormalizeModelKey` 将 `gpt-5.6-sol` + `medium` 与 `gpt_56_sol_medium` 归并为同一身份；目录加载同时折叠旧版遗留的 `gpt_5_6_*` 重复项。默认检测 `gpt_56_sol_medium`，各模型继续使用独立的 `Codex.Model.<key>.*` 缓存前缀，不能复用旧 `Gpt55.*` 前缀。
 - IQ 环：分数优先使用网站 `score`；显示上限从同次 `model_iq` 全模型分数或首页 `IQ指数` 历史值取最高值并缓存为 `DisplayMaxScore`。基准默认自动跟随网站 `valid_tasks` 和常态区推导 `n/N`，关闭自动后使用 `settings.ini` 的 `CodexModelIqBaselinePassed` / `CodexModelIqBaselineValidTasks`。
 - 效率计算：`模型效率 = (当前 passed/total_tokens) ÷ (基线 passed/total_tokens)`，时间效率同理用 `serial_task_seconds`；Token/时间效率基线存在 `settings.ini` 的 `CodexModel*EfficiencyBaseline*` 系列键。
 - 刷新节奏：启动/恢复/模型切换/数据源设置变化/手动刷新触发一次错峰请求；常规自动刷新在**北京时间每小时整点**一次（`TimeZoneUtilities.GetNextBeijingHourUtc`）；失败 10 min 重试。
@@ -29,8 +30,8 @@
 
 | 文件 | 内容 | TTL |
 |---|---|---|
-| `<DATA>\codex-radar-cache.ini` | 按 `软件模式+模型 key` 前缀分组的键值：`SavedUtc / RefreshedUtc / DataDate / DataWindowHour / DataLabel / PassRate / DisplayMaxScore / Passed / ValidTasks / Status / TimeEfficiency / TokenEfficiency / EfficiencyPassed / EfficiencySeconds / EfficiencyTokens / NormalLow / NormalHigh / History`。`RefreshedUtc` 是当前 IQ 内容首次被记录到的时间；同内容再次请求成功时保留旧值，用于 12/24 小时时钟小绿点。`DisplayMaxScore` 让请求失败时 IQ 环继续沿用最近一次网站图表上限。绿点可见性由运行时按真实时间差计算，Codex 超过 12 h、Claude 超过 24 h 后不再显示；刷新到当前时间的连接弧只在该绿点仍有效时绘制。渲染缓存按当前分钟失效，避免旧 bitmap 冻结过期绿点。启动时 `LoadCodexRadarCache` 先回显缓存再联网 | `CodexModelCacheRetentionDays = 7` 天；Codex 模式还兼容读 legacy 前缀 |
-| `<DATA>\codex-radar-models.ini` | 模型目录（`CodexRadarModelCatalog`），驱动设置页模型下拉 | 持久 |
+| `<DATA>\codex-radar-cache.ini` | 按 `软件模式+模型 key` 前缀分组的键值；除原 IQ/效率字段外持久化 `ContentSignature` 与 `CheckedAtUtc`。同内容跨重启保留旧 `RefreshedUtc`；空 key 使用 `Model.default.`，未知 `DataWindowHour` 为空。`DisplayMaxScore` 让请求失败时沿用最近图表上限，启动先回显缓存再联网 | `CodexModelCacheRetentionDays = 7` 天；Codex 模式还兼容读 legacy 前缀 |
+| `<DATA>\codex-radar-models.ini` | 模型目录（`CodexRadarModelCatalog`），驱动设置页模型下拉。完整 JSON 才推进未见模型的缺失计数；HTML/不完整 JSON 只新增或刷新已见模型；重复 key 采用较新整条记录 | 持久 |
 | `<DATA>\quota-reset-state.ini` | 额度 reset 到期后的保护状态（`LoadQuotaResetState`，约 13008 行） | 持久 |
 | `<DATA>\codex-radar-service-probe.txt` | 设置页"检测服务可用性"按钮的一次性诊断输出 | 覆盖写 |
 
@@ -51,11 +52,13 @@
   3. `<HOME>\.codex\auth.json` —— 用 JavaScriptSerializer 递归找第一个 `access_token`/`accessToken` 字段。
 - 节奏：正常 300 s / 失败 600 s / HTTP 429 冷却 900 s，单飞；快照新鲜窗口 900 s。
 - 门控：仅当检测软件为 CODEX 且本地 Codex 进程在运行（`SoftwareRuntimePresence`）；AI 请求保护（手动阻断或 GFW 明确阻断）命中时本轮不读 token、不发请求，按 `AI_BLOCK` 失败间隔处理。
-- 字段单位：`used_percent` / `used_percentage` 是百分数，`1` 表示已用 1%；`utilization` 在 0–1 区间时按比例换算，`0.01` 表示已用 1%。provider 单次样本若把 5 小时或周余额从高位直接变成 0 且 reset 时间没有实质推进，会被拒绝写入内存和 `quota.ini`，并记录 `provider_*_zero_drop_ignored_keep_previous_snapshot`。
+- 字段单位：`used_percent` / `used_percentage` 是百分数，`1` 表示已用 1%；`utilization` 在 0–1 区间时按比例换算。5 小时和周 reset anchor 独立进行确定性身份判定；中途干扰池按环恢复旧值，两个环均拒绝时不写缓存或 `quota.ini`，记录 `interference_pool_sample_ignored`。同一被拒身份连续出现至少 3 次且跨度至少 10 分钟时，`EvaluateQuotaWindowIdentity` 通过内存态 `RejectedIdentityPersistenceState` 翻正基线并记录 `reset_confirmed_by_rejected_persistence`；任何被接受样本或另一被拒身份都会清零该计数。身份变化时原始 body 仅写 `<DATA>\codex-usage-identity-change-*.json`，不含授权 header，最多 8 份。
+- 幻影池归因：2026-07-11 的 5 份原始响应均包含附加池 `GPT-5.3-Codex-Spark` / `codex_bengalfox`。其中后 3 份顶层 primary 的 `reset_at/used_percent`（`1783760842/0`、`1783761145/0`、`1783761406/0`）与附加池 primary 完全一致，而顶层 secondary 始终与附加池 secondary 不同。这证明上游可把附加池 primary 投影进顶层 `rate_limit`，同时保留基础池 secondary，形成混合顶层视图，而不是单纯的本地缓存或副本不一致。
+- 已知限制：响应没有稳定字段声明顶层窗口当前属于哪个池，程序不能按池名硬编码。运行时因此只依赖 reset identity、已接受事件/session/新生窗口等证据、10 分钟被拒持续性纠错和 30 分钟 gap rebaseline；原始响应仅用于诊断，不参与在线判定。
 
 ### 2.2 Codex 重置卡：ChatGPT reset credits API
 
-- URL：`https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`，超时 10 s。
+- URL：`https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`，超时 10 s；与 usage provider 互相保持至少 10 s 启动错峰。
 - 凭据：复用 §2.1 的 `CODEX_ACCESS_TOKEN` / `auth.json` 只读 token 链路，不写回、不刷新、不记录 token。
 - 节奏：当前共享窗口为 CODEX 模式且非随机测试时运行；成功 3600 s / 失败 900 s，启动/恢复类触发在最近 60 s 已成功读取时去抖，操作面板强制刷新会立即排队。
 - 解析与缓存：只解析响应中的 `credits` 数组和每张卡的过期时间字段；结果只保存在内存 `CodexResetCreditsSnapshot`，不写持久化文件。底部 `RS` 显示剩余卡数与最早过期剩余时间，超过 24 小时显示天数。网络检查历史只记录摘要、数量和最早过期剩余小时，不保存响应体、卡片 ID 或凭据。
@@ -72,7 +75,8 @@
 | 文件 | 写入者 | 用途 |
 |---|---|---|
 | `<DATA>\quota.ini` | `CodexRadarForm.TryWriteQuotaIniSnapshot`（Claude 模式写 `claude-quota.ini`，否则写 `quota.ini`） | 最近一次成功的 5h/周额度快照；`CodexQuotaGoalPlanner`（额度计划）只复用此缓存做暂停/恢复判断 |
-| `<DATA>\quota-decision-history.jsonl` | `QuotaDecisionHistoryLogger` | 每次真实额度读取后的判定记录；包含 `software_family`、来源类型、上游 used 字段名、原值、归一化值、可疑 provider 零值/提前满额拒绝原因；15 s/32 KiB 批量落盘，约 48 h 滚动 |
+| `<DATA>\quota-decision-history.jsonl` | `QuotaDecisionHistoryLogger` | 每次真实额度读取后的判定记录；包含来源、原始/最终余额、原始/跟踪 reset anchor、anchor age、身份确认原因和消耗环；15 s/32 KiB 批量落盘，约 48 h 滚动 |
+| `<DATA>\codex-usage-identity-change-*.json` | `CodexRadarForm.CodexUsage` | 仅在 provider reset 身份变化时保存脱敏前提下的原始响应 body，用于上游池诊断；不含请求 header、token 或 auth 文件内容 | 最近 8 份 |
 | `<DATA>\codex-quota-plan-state.json` | `CodexQuotaGoalPlanner` | 额度计划 goal 暂停/恢复状态（通过 `codex app-server` 写 `usageLimited`/`active`） |
 
 ---
@@ -107,25 +111,24 @@
 
 ## 4. Claude Code 个人额度（5h / 7d 环）
 
-源码：`Core/ClaudeCodeUsageReader.cs`。这是最容易误解的链路——**默认路径不发任何 Claude API 请求**。
+源码：`Core/ClaudeCodeUsageReader.cs`。是否发 Claude API 请求取决于是否显式配置 setup token：有 token 时 OAuth 是权威首选源；无 token 时保持零 API 消耗的 statusline 路径。
 
-### 4.1 默认链（零 API 消耗）
+### 4.1 来源顺序与失败边界
 
-1. **statusline 桥缓存**：读 `<DATA>\claude-statusline-quota.ini`；有效期 `StatusLineCacheMaxAgeMinutes = 360`（6 小时）。有效则写入 `<DATA>\claude-quota.ini` 并刷新额度环，结束。
-2. **桥安装**：缓存缺失时，自动安装 `<HOME>\.claude\desktop-codex-statusline-bridge.ps1`（文件内嵌 PowerShell 脚本，标记 `# Desktop Codex Assistant Claude statusline bridge v2`），并把它注册进 `<HOME>\.claude\settings.json` 的 `statusLine` 命令。之后等 Claude Code CLI 下一次真实渲染 statusline 时，由桥脚本把额度写入上述 ini（`Source=claude_statusline`）。
+1. **已配置 setup token**：token 来源 = 环境变量 `CLAUDE_CODE_OAUTH_TOKEN` 或 DPAPI CurrentUser 保护的 `<DATA>\claude-code-oauth-token.bin`（同目录同名旧 `.txt` 首次读取时迁移为 `.bin` 并改名为 `.txt.migrated`）。先 GET `https://api.anthropic.com/api/oauth/usage`，成功即作为 `personal` 权威结果；401/403 返回 `TOKEN_INVALID`，不再尝试 Messages 头，设置页提示重新绑定。
+2. **OAuth 非认证类失败**：只有网络、限流、服务端或解析类失败才允许 POST `https://api.anthropic.com/v1/messages` 读取限额响应头；该请求可能消耗极少量配额。若 setup-token 路径仍未成功，再回落新鲜 statusline 缓存。
+3. **未配置 token**：读 `<DATA>\claude-statusline-quota.ini`；有效期 `StatusLineCacheMaxAgeMinutes = 360`（6 小时）。缓存缺失时自动安装 `<HOME>\.claude\desktop-codex-statusline-bridge.ps1`（标记 `# Desktop Codex Assistant Claude statusline bridge v2`），并把它注册进 `<HOME>\.claude\settings.json` 的 `statusLine` 命令，然后重读一次。
    - 用户已有自定义 statusline → **不覆盖**，返回 `STATUSLINE_CUSTOM`，继续用站点公开 quota 或旧缓存。
-   - Claude 桌面 App 不执行 statusLine（终端特性），纯桌面机器缓存会永远为空 → 落到第 3 步。
-3. **setup-token 路径**（仅当已配置 token 才走）：token 来源 = 环境变量 `CLAUDE_CODE_OAUTH_TOKEN` 或 DPAPI CurrentUser 保护的 `<DATA>\claude-code-oauth-token.bin`（同目录同名旧 `.txt` 首次读取时会迁移为 `.bin` 并改名为 `.txt.migrated`；`NormalizeSetupToken` 能剥掉 `export X=`、`$env:X=` 等包装）。
-   - 先 GET `https://api.anthropic.com/api/oauth/usage`（免费，header `anthropic-beta: oauth-2025-04-20`）；
-   - 失败再 fallback POST `https://api.anthropic.com/v1/messages` 读响应头限额（**会消耗极少量配额**）。
-   - 注意：按 `Component-Refresh-Rules.md` §4，当前调度**默认不调用** `ReadViaSetupToken`，它是保留的非默认回滚路径；实际代码在 statusline 缓存无效且 token 已配置时仍会走它（`Read()` 104–107 行）。
-4. 都不可用 → `NO_STATUSLINE_CACHE` / `NO_SETUP_TOKEN` 错误态；显示层可用带 `QuotaSource=site` 的站点公开数据兜底（个人缓存必须同时含 5h 和 7d 才有效）。
+   - Claude 桌面 App 不执行 statusLine（终端特性），纯桌面机器缓存可能一直为空。
+4. 未配置 token 且 statusline 不可用 → `NO_SETUP_TOKEN`；显示层可用标记为 `site` / `claude_site_public` 的站点公开额度兜底。个人 `claude-quota.ini` 必须同时含 5h、7d、`UpdatedAtUtc`，且年龄不超过 `PersonalQuotaCacheMaxAgeMinutes = 360`；缺时间戳或超龄即拒绝。
+
+站点公开额度不是当前用户个人额度。两种 Claude 窗口均把站点源的 5h/7d **重置时间**绘制为 Danger 红色，个人源保持原色；额度数字、环颜色和几何不变。站点源与个人源切换时，共享窗口重建 Claude family 的 delta 基线，并在决策日志 `detail` 记录 `source_switch`，避免跨账号数值形成虚假消耗或回升。
 
 ### 4.2 双消费者
 
 - CodexRadarForm（Claude 软件模式，`CodexRadarForm.ClaudeUsage.cs`）：300/600/900 s 三档。
 - ClaudeRadarForm（固定 Claude 窗口）：5/10/15 min 三档，窗口级单飞；要求 Claude 本地进程运行、窗口可见、非随机测试。
-- 成功结果统一写 `<DATA>\claude-quota.ini`（原子写：临时文件 + `File.Replace`，内容相同不重写）。
+- 成功的个人结果统一写 `<DATA>\claude-quota.ini`（原子写：临时文件 + `File.Replace`，内容相同不重写）。
 
 ---
 
@@ -222,9 +225,10 @@
 | `quota-reset-state.ini` | CodexRadarForm | reset 到期保护状态 | 持久 |
 | `codex-quota-plan-state.json` | CodexQuotaGoalPlanner | 额度计划状态 | 持久 |
 | `quota-decision-history.jsonl` | QuotaDecisionHistoryLogger | 额度判定历史；含 provider/session/cache 来源诊断 | ~48 h 滚动 |
+| `codex-usage-identity-change-*.json` | CodexRadarForm.CodexUsage | provider 窗口身份变化原始 body 诊断；不含授权 header | 最近 8 份 |
 | `network-check-history.jsonl` | NetworkCheckHistoryLogger | 网络检查历史 | 启动+每 6 h 修剪 |
 | `deepseek-balance-history.jsonl` | DeepSeekBalanceMonitor | 余额样本 | 48 h |
-| Codex 重置卡内存快照 | CodexRadarForm.CodexUsage | `rate-limit-reset-credits` 的剩余卡数和过期时间 | 不持久化；成功 1 h / 失败 15 min 刷新 |
+| Codex 重置卡内存快照 | CodexRadarForm.CodexUsage | `rate-limit-reset-credits` 的剩余卡数和过期时间；与 usage provider 互相 10 s 错峰 | 不持久化；成功 1 h / 失败 15 min 刷新 |
 | `ui-hang-watchdog.jsonl` | UiHangWatchdog | UI 无响应记录（>10 s 挂起） | 持久 |
 | `codex-radar-service-probe.txt` | CodexRadarForm | 服务可用性一次性诊断 | 覆盖写 |
 | `idle-cpu-diagnosis-*.txt` / `radar-runtime-diagnosis-*` | 诊断命令 | 诊断报告（含 `-latest` 别名） | 手动 |

@@ -512,7 +512,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             // 对应 WidgetSettings 属性仍保留，Classic 布局若通过 settings.ini 设置仍生效；
             // 均布变体本就忽略这些设置。恢复入口时把下方分组加回，并同步 VerifySelfTest 必需绑定。
             new string[] { "共享小窗", "CodexRadarEnabled", "CodexRadarSoftwareMode", "CodexRadarTransparencyPercent" },
-            new string[] { "CODEX 模式数据", "CodexRadarModelKey" },
+            new string[] { "CODEX 模式数据", "CodexRadarModelKey", "CodexRadarSpeedWindowCountdownEnabled" },
             new string[] { "!CodexRadar.com 读取链路", "CodexRadarPublicJsonEnabled", "CodexRadarHtmlFallbackEnabled", "CodexRadarRssFallbackEnabled", "CodexRadarServiceProbeToken" },
             new string[] { "!额度保护", "CodexQuotaDueResetProtectionEnabled", "CodexQuotaRssResetProtectionEnabled",
                            "CodexQuotaProviderZeroDropProtectionEnabled", "CodexQuotaDuplicateSameBalanceRingProtectionEnabled",
@@ -1060,18 +1060,36 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         bool configured = IsClaudeSetupTokenConfiguredForUi();
-        statusHint.Text = configured ? "状态：已配置" : "状态：未配置（额度环将显示满环红色）";
-        statusHint.ForeColor = configured ? DesignTokens.Colors.Success : DesignTokens.Colors.Danger;
+        bool invalid = configured && IsClaudeSetupTokenInvalidForUi();
+        statusHint.Text = invalid
+            ? "状态：令牌已失效，请重新绑定"
+            : (configured ? "状态：已配置" : "状态：未配置（额度环将显示满环红色）");
+        statusHint.ForeColor = configured && !invalid ? DesignTokens.Colors.Success : DesignTokens.Colors.Danger;
     }
 
     private static string GetClaudeSetupTokenButtonText()
     {
+        if (IsClaudeSetupTokenConfiguredForUi() && IsClaudeSetupTokenInvalidForUi())
+        {
+            return "令牌已失效，请重新绑定";
+        }
+
         return IsClaudeSetupTokenConfiguredForUi() ? "已配置 · 修改" : "未配置 · 立即设置";
     }
 
     private static Color GetClaudeSetupTokenAccentColor()
     {
-        return IsClaudeSetupTokenConfiguredForUi() ? DesignTokens.Colors.Success : DesignTokens.Colors.Danger;
+        return IsClaudeSetupTokenConfiguredForUi() && !IsClaudeSetupTokenInvalidForUi()
+            ? DesignTokens.Colors.Success
+            : DesignTokens.Colors.Danger;
+    }
+
+    private static bool IsClaudeSetupTokenInvalidForUi()
+    {
+        return string.Equals(
+            ClaudeCodeUsageScheduler.LastErrorCode,
+            "TOKEN_INVALID",
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsClaudeSetupTokenConfiguredForUi()
@@ -1110,6 +1128,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                     File.Delete(path);
                 }
 
+                ClaudeCodeUsageScheduler.ClearLastError();
                 return true;
             }
 
@@ -1119,7 +1138,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 Directory.CreateDirectory(directory);
             }
 
-            File.WriteAllText(path, trimmed, new UTF8Encoding(false));
+            File.WriteAllText(path, trimmed, SharedEncoding.Utf8NoBom);
+            ClaudeCodeUsageScheduler.ClearLastError();
             return true;
         }
         catch (Exception ex)
@@ -3316,6 +3336,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexRadarModelKey",
             "RadarClockAutoSwitchModelEnabled",
             "RadarClockTimeDisplayMode",
+            "CodexRadarSpeedWindowCountdownEnabled",
             "DisplayTimeZoneMode",
             "DisplayTimeZoneId",
             "CodexRadarPublicJsonEnabled",
@@ -3739,6 +3760,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarModelVersion", "旧模型版本" },
         { "RadarClockAutoSwitchModelEnabled", "过期自动切换模型" },
         { "RadarClockTimeDisplayMode", "时钟时间显示" },
+        { "CodexRadarSpeedWindowCountdownEnabled", "速蹬结束倒计时" },
         { "CodexRadarEnabled", "启用共享 Radar 小窗" },
         { "CodexRadarTransparencyPercent", "Codex Radar 透明度" },
         { "ClaudeRadarEnabled", "启用独立 Claude Radar" },
@@ -3896,6 +3918,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarModelVersion", "兼容旧配置的模型版本枚举；日常使用上方 CODEX 模型选择，不需要改这里。" },
         { "RadarClockAutoSwitchModelEnabled", "Codex/Claude Radar 时钟跨过完整周期仍没有当前模型 IQ 更新时，自动切到同站点当天最近刷新 IQ 的模型。" },
         { "RadarClockTimeDisplayMode", "控制两个 Radar 时钟中心下方时间：UTC、当前本机时间、上次尝试刷新，或上次实际 IQ 刷新。" },
+        { "CodexRadarSpeedWindowCountdownEnabled", "速蹬窗口有明确结束时间时，用天蓝色消退圆环、小时倒计时和 RST 取代右侧 IQ 时钟；关闭后仍保留左侧额度时间强制金色。" },
         { "CodexRadarPublicJsonEnabled", "读取 codexradar.com/current.json 公开摘要层，包含窗口、预测和 API 可用性说明。" },
         { "CodexRadarHtmlFallbackEnabled", "公开 JSON 缺少展示字段时，从 codexradar.com 首页补齐 IQ、效率、额度线和模型目录展示数据。" },
         { "CodexRadarRssFallbackEnabled", "读取 CodexRadar feed.xml 的重置提醒；关闭后不会用 RSS 触发额度重置保护。" },

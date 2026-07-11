@@ -1,6 +1,6 @@
 # 接口与复用资源汇总
 
-适用版本：1.0.4.59
+适用版本：1.0.5.03
 
 ## 1. 文档用途
 
@@ -25,7 +25,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 
 | 索引 ID | 服务 | 所属模块 | 复用重点 |
 | --- | --- | --- | --- |
-| `external_api.codex_radar.current` | Codex Radar current.json | `CodexRadarForm` | 北京时间整点调度、半日 IQ 窗口、速蹬窗口、RSS 链接、动态模型目录、JSON/HTML 回退和模型缓存 |
+| `external_api.codex_radar.current` | Codex Radar current.json | `CodexRadarForm` | 北京时间整点调度、半日 IQ 窗口、速蹬 `opened_at/closed_at`、RSS 链接、动态模型目录、JSON/HTML 回退和模型缓存 |
 | `external_api.codex_radar.feed` | Codex Radar RSS | `CodexRadarForm` | 只跟随 current.json 成功响应读取，用 GUID/pubDate 去重额外重置 |
 | `external_api.claude.status` | Claude Statuspage | `CodexRadarForm` | 单行 API 摘要和服务健康状态映射 |
 | `external_api.codex_provider.usage` | ChatGPT Codex usage | `CodexRadarForm` | 当前软件为 `CODEX` 时优先读取 5h/7d 用量；单飞、5 min 正常周期、429 15 min 冷却；旧 session/quota.ini 作为 fallback |
@@ -114,6 +114,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | 索引 ID | 组件 | 复用规则 |
 | --- | --- | --- |
 | `internal_api.widget_settings` | 设置、迁移、布局与性能策略 | 新设置完整接入读写和自测链 |
+| `internal_api.software_runtime_presence` | Codex/Claude 运行态与软件身份分类 | 复用包路径、进程名、产品元数据和受限标题回退；常规查询走缓存快照，未知进程名只允许使用 60 s 漏判发现，不在绘制路径枚举进程 |
 | `internal_api.logger` | 缓冲日志、错误日志和 GFW 日志 | 高频事件聚合或只记录状态变化；目录大小扫描默认 10 分钟节流，活动日志轮转时强制执行 |
 | `internal_api.timing_stats` | 12 小时滚动耗时统计 | 新增性能计时点复用内存滚动窗口和 15 分钟摘要日志 |
 | `internal_api.idle_cpu_diagnostics` | 空闲 CPU 飙升归因 | 复用一次性 CPU/进程采样、事件日志扫描和公式化归因规则 |
@@ -124,7 +125,11 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `internal_api.clean_ip_reader` | 出口身份快照 | 复用单飞和网络事件 |
 | `internal_api.native_methods` | Windows 互操作门面 | 避免散落 P/Invoke |
 | `internal_api.design_tokens` | 色彩、透明度、圆角和字体 | 禁止重复硬编码语义色 |
+| `internal_api.quota_ring_presentation` | Codex/Claude 共用额度环绘制 | 余额环、消耗环、数字和重置文本统一绘制；仅 Codex 速蹬时间可用显式标志绕过未运行降亮，数字规则不得一起绕过 |
+| `internal_api.radar_clock_dial` | Codex/Claude 共用 IQ 时钟状态机与绘制 | 周期边界、状态色、刷新点、弧线、日期/时间标签和 12 h/24 h 自测统一复用；窗体只注入快照字段、字体与 fitted-text 委托 |
+| `internal_api.claude_radar_clock_auto_switch_selector` | Claude 时钟模型选择器 | 共享窗和独立窗都传入完整候选集；全局最新已是当前模型或并列包含当前模型时禁止写设置，独立窗启用时共享窗不得争用写入权 |
 | `internal_api.ui_font_cache` | 字体缓存 | 每个窗口生命周期内复用 |
+| `internal_api.shared_encoding` | UTF-8 no BOM 编码常量 | 持久化文本写入复用 `SharedEncoding.Utf8NoBom`，不在调用点重复 `new UTF8Encoding(false)` |
 | `internal_api.burn_in_protection` | 像素位移和隐藏反色 | 新窗口分配独立 salt；操作面板隐藏态只为可见按钮恢复命中 Alpha |
 | `internal_api.hover_interaction_policy` | 鼠标隐藏命中策略 | 敏感鼠标范围、延迟显现、覆盖开启和反向隐藏统一复用，不在窗口中重复点命中或倒计时逻辑 |
 | `internal_api.time_zone_utilities` | 北京时间调度和显示时区 | 区分业务时间与显示时间 |
@@ -180,7 +185,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 - `ProcessSharedInteractionTick`
 - `ProcessSharedMaintenanceTick`，仅由需要共享低频维护的模块实现
 
-分层窗口同时复用 `NativeMethods.LayeredBitmapSurface`、`UiFontCache`、`DesignTokens`、`BurnInProtection`、内容变化判断和透明度-only 提交。
+分层窗口同时复用 `NativeMethods.LayeredBitmapSurface`、`UiFontCache`、`DesignTokens`、`BurnInProtection`、`LayeredWidgetFormBase.CurrentSettings`、`LayeredWidgetFormBase.ShouldRefreshBurnInPosition`、`LayeredWidgetFormBase.ComputeOpacityAlpha`、内容变化判断和透明度-only 提交。
 
 ## 9. 索引维护规则
 

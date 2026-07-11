@@ -24,7 +24,7 @@ internal sealed class ClaudeRadarModelMapEditorForm : Form
 
         Label hint = new Label();
         hint.AutoSize = false;
-        hint.Text = "编辑 display_name、rating_key、sort_order 和 enabled；source_key 来自网站，不允许在这里改名。";
+        hint.Text = "编辑 display_name、rating_key、sort_order 和 enabled；source_key/source_display_name 来自网站，只读。";
         hint.ForeColor = DesignTokens.White(210);
         hint.Font = new Font("Microsoft YaHei UI", 9.0f, FontStyle.Regular);
         hint.Location = new Point(14, 12);
@@ -77,6 +77,13 @@ internal sealed class ClaudeRadarModelMapEditorForm : Form
             Name = "DisplayName",
             HeaderText = "display_name",
             Width = 220
+        });
+        this.grid.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "SourceDisplayName",
+            HeaderText = "source_display_name",
+            ReadOnly = true,
+            Width = 190
         });
         this.grid.Columns.Add(new DataGridViewTextBoxColumn
         {
@@ -134,6 +141,7 @@ internal sealed class ClaudeRadarModelMapEditorForm : Form
             this.grid.Rows.Add(
                 entry.SourceKey,
                 entry.DisplayName,
+                entry.SourceDisplayName,
                 entry.RatingKey,
                 entry.SortOrder.ToString(CultureInfo.InvariantCulture),
                 entry.Enabled,
@@ -176,6 +184,7 @@ internal sealed class ClaudeRadarModelMapEditorForm : Form
                 {
                     SourceKey = sourceKey,
                     DisplayName = Convert.ToString(row.Cells["DisplayName"].Value, CultureInfo.InvariantCulture) ?? string.Empty,
+                    SourceDisplayName = original.SourceDisplayName,
                     RatingKey = Convert.ToString(row.Cells["RatingKey"].Value, CultureInfo.InvariantCulture) ?? string.Empty,
                     SortOrder = sortOrder,
                     Enabled = row.Cells["Enabled"].Value is bool && (bool)row.Cells["Enabled"].Value,

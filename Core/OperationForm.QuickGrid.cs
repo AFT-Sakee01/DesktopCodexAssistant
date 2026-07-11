@@ -31,7 +31,7 @@ internal sealed partial class OperationForm
             this.quickGridForm = new OperationQuickGridForm(this);
         }
 
-        this.quickGridForm.ApplyRuntimeSettings(this.currentSettings);
+        this.quickGridForm.ApplyRuntimeSettings(this.CurrentSettings);
         return this.quickGridForm;
     }
 
@@ -331,7 +331,7 @@ internal sealed partial class OperationForm
             this.items = owner.BuildQuickGridItems();
             ApplicationIcon.ApplyTo(this);
             InitializeLayerScaleFromCurrentDpi();
-            ApplyLayerScaleFromSettings(owner.currentSettings);
+            ApplyLayerScaleFromSettings(owner.CurrentSettings);
             this.FormBorderStyle = FormBorderStyle.None;
             this.ShowInTaskbar = false;
             this.TopMost = false;
@@ -532,7 +532,7 @@ internal sealed partial class OperationForm
 
         private void PositionNearOperationMainButton()
         {
-            Rectangle workArea = this.owner.currentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
+            Rectangle workArea = this.owner.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
             RectangleF anchorScreenRect = this.owner.GetQuickGridAnchorScreenRect();
             this.Location = ComputeQuickGridPopupLocation(
                 workArea,
@@ -600,7 +600,7 @@ internal sealed partial class OperationForm
             {
                 fill = DesignTokens.WithAlpha(Color.FromArgb(255, 236, 170), ClampByte(fillAlpha + 20));
             }
-            else if (item.ButtonIndex == HoverOpacityToggleButtonIndex && this.owner.currentSettings.ForceHoverOpacityActive)
+            else if (item.ButtonIndex == HoverOpacityToggleButtonIndex && this.owner.CurrentSettings.ForceHoverOpacityActive)
             {
                 fill = DesignTokens.WithAlpha(Color.FromArgb(178, 225, 255), ClampByte(fillAlpha + 42));
             }

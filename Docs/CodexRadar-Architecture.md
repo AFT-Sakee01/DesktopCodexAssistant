@@ -1,6 +1,6 @@
 # Codex 监测窗口技术说明
 
-适用版本：1.0.4.81
+适用版本：1.0.5.05
 
 ## 1. 范围
 
@@ -17,14 +17,14 @@
 
 - 上环：时间效率
 - 下环：Token 效率
-- 底部元信息：当前 `EvenRow` 布局在左下方显示软件族品牌文本 `Codex` / `Claude`、`RC:xxx`、模式辅助项和 `LLM:...`；辅助项在 Codex 模式显示重置卡 `RS:n 剩余时间`，在 Claude 模式显示 DeepSeek 余额 `DS:￥n`
+- 底部元信息：当前 `EvenRow` 布局在左下方显示软件族品牌文本 `Codex` / `Claude`、`RC:xxx`、模式辅助项和 `LLM:...`；辅助项在 Codex 模式显示重置卡 `RS:n 剩余时间`，在 Claude 模式显示 DeepSeek 余额 `DS:￥n`。Codex 5.6 系列的 `LLM` 缩写按“版本 + 系列首字母 + 档位”生成，例如 Sol low 为 `5.6SL`、Luna high 为 `5.6LH`、Sol medium 为 `5.6SM`
 - 右侧状态：Model IQ 时钟圆盘和服务 LED 列。时钟圆盘显示网页数据标签和可配置时间；Codex 与 Claude 模式都显示 `R/O/C/D`，其中 `D` 始终表示 DeepSeek 官方 API 可达性，和余额 key 是否配置分离。
 
 右侧额度区：
 
 - 5 小时余额环
 - 周余额环
-- 速蹬窗口开启且结束时间未过期时，额度重置文字在金色 `速蹬！`、原白色正常额度重置时间/日期、黄色额外重置目标时间/日期之间轮播；额外目标来自网站 `closed_at` 或首页 `data-window-closes-at`，5 小时行显示时间、周行显示日期；`closed_at` 早于当前本地时间时本地快照强制视为已关闭；RSS 重置保护态右侧显示金色 `已重置`；额度环内数字有已知数值且 Codex/Claude 任一受支持本地软件运行时为白色，两者都未运行或数值未知时为灰色
+- 速蹬窗口开启时不再轮播 `速蹬！`：5 小时行始终显示原额度重置时间、周行始终显示原额度重置日期，两者强制使用金色且不受 Codex 未运行降亮影响；额度环内数字仍保持原规则，有已知数值且 Codex/Claude 任一受支持本地软件运行时为白色，两者都未运行或数值未知时为灰色。RSS 重置保护态只在非速蹬状态显示金色 `已重置`
 - 中间健康/额度雷达块：额度雷达线移动到 IQ 模块左侧，取代原灰色分割竖线；Codex 模式使用 CodexRadar 公开额度雷达，Claude 模式把 `ClaudeRadarSnapshot.QuotaLine` 转换为同一 `CodexQuotaRadarSnapshot` 代表线；当前 `EvenRow` 状态格显示 API 状态摘要、网页数据标签和更新时间，左下方显示 `软件族品牌/RC/辅助项/LLM` 元信息
 - 右侧 IQ 环和 `增智`、`常态`、`降智` 状态字样
 
@@ -102,14 +102,19 @@ flowchart LR
 
 `CodexRadarSoftwareMode` 控制额度来源、窗口软件族内描边和底部软件族品牌文本；额度环数字颜色由共享运行态快照决定，不再表达软件族：
 
-- `Auto`：先读取 `SoftwareRuntimePresence` 的 Codex/Claude 进程快照。两者都未运行时保持上一次有效软件并跳过前台检测；只有一者运行时直接选择该软件；只有两者都运行时才按前台窗口标题/进程名识别 `codex` 或 `claude`，忽略本程序自身窗口；无法识别时保持上一次有效软件，初始回退到 `CODEX`。
+- `Auto`：先读取 `SoftwareRuntimePresence` 的 Codex/Claude 进程快照。两者都未运行时保持上一次有效软件并跳过前台检测；只有一者运行时直接选择该软件；只有两者都运行时才识别前台软件。身份判断依次使用安装包路径、专用进程名、可执行文件 `ProductName/FileDescription` 和非浏览器窗口标题；新版 Codex 即使主进程名和标题都为 `ChatGPT`，也会由 `OpenAI.Codex_*` 包路径识别，真正的 `OpenAI.ChatGPT-Desktop_*` 不会冒充 Codex。无法识别时保持上一次有效软件，初始回退到 `CODEX`。
 - `Codex`：优先使用 ChatGPT usage provider API；旧本地 Codex session 日志和 `quota.ini` 作为 fallback。额度数字灰显由共享 Codex/Claude 运行态决定：只有两者都未运行或无数值时灰显，任一受支持程序运行且有数值时保持白色；保留 RSS 重置保护、速蹬窗口提示和消耗环逻辑；窗口绘制 3 px 深蓝色内描边，底部显示蓝色斜体 `Codex`。
 - `Claude`：通过 `ClaudeCodeUsageScheduler` 与独立 Claude Radar 共用一次 Claude Code usage 刷新，默认读取本地 statusline quota cache，显式配置 setup-token 时才可能触达 Claude OAuth usage fallback；成功快照会写入独立的 `%LOCALAPPDATA%\DesktopCodexAssistant\claude-quota.ini`，并复用与 CODEX 相同的额度应用、消耗环判定和 `quota-decision-history.jsonl` 日志路径，但运行态、额度来源、消耗环基线和 Radar 网站健康状态均写入 Claude 专属 `RadarFamilyRuntimeState`，不会消费 Codex RSS/速蹬/额外重置保护；窗口绘制 3 px 橙色内描边，底部显示橙色粗体 `Claude`。
 - Claude Radar/Claude Code 的 reset 文本通过共享 `ClaudeRadarResetTextFormatter` 解析，长中文网站文案在共享窗口和独立 Claude 窗口中统一显示为 `HH:mm` / `MM/dd`。
+- Claude 模型时钟的自动选择统一调用 `ClaudeRadarClockAutoSwitchSelector`。独立 Claude Radar 启用时由独立窗口唯一写入 `ClaudeRadarModelKey`；独立窗口关闭后，共享窗口的 Claude 模式才接管该写入，具体刷新边界见 `Docs/Component-Refresh-Rules.md`。
 
-ChatGPT usage provider 读取 `used_percent` / `used_percentage` / `utilization` 和 `reset_at` / `resets_at`，并把 provider 快照保留约 15 分钟；过期后即使上一次 provider 成功，也允许 session fallback 更新显示，避免服务端接口不可用时长期冻结旧值。`used_percent` 与 `used_percentage` 按百分数处理，`1` 表示已用 1%；只有 `utilization` 在 0–1 区间时按比例换算，`0.01` 表示已用 1%。provider 单次样本如果把 5 小时或周余额从高位直接打到 `0` 且 reset 时间没有实质推进，会被视为可疑零值快照并丢弃，继续保留上一帧和 `quota.ini`，直到下一次有效样本确认。session JSONL 回退中读取 `event_msg -> token_count -> rate_limits`。`primary` 通常对应 5 小时窗口，`secondary` 通常对应周窗口；如果存在 `window_minutes`，以是否小于等于 300 分钟重新判断。
+ChatGPT usage provider 读取 `used_percent` / `used_percentage` / `utilization` 和 `reset_at` / `resets_at`，并把 provider 快照保留约 15 分钟；过期后即使上一次 provider 成功，也允许 session fallback 更新显示，避免服务端接口不可用时长期冻结旧值。`used_percent` 与 `used_percentage` 按百分数处理，`1` 表示已用 1%；只有 `utilization` 在 0–1 区间时按比例换算，`0.01` 表示已用 1%。session JSONL 回退中读取 `event_msg -> token_count -> rate_limits`。`primary` 通常对应 5 小时窗口，`secondary` 通常对应周窗口；如果存在 `window_minutes`，以是否小于等于 300 分钟重新判断。
 
-共享运行态快照只按明确可执行名查询 Codex/Claude 进程，绘制路径只读最近快照，不做进程枚举或前台查询。运行态快照和额度扫描使用不同周期：
+Provider 的 5 小时和周窗口分别按 reset anchor 做确定性身份判定，两个环互不连带。与当前 anchor 相差不超过 2 分钟视为同一窗口；身份变化仅在旧窗口已到期、余额至少 99 且新 anchor 年龄为 -2 至 8 分钟、6 小时内有 Radar reset 事件、来源为 session，或距离上个接受样本超过 30 分钟时接受。其余中途跳池样本按环恢复到上个接受值，两个环都被拒绝时 `reason=interference_pool_sample_ignored`，不写 provider cache、`quota.ini` 或消耗环状态。判定日志记录原始/跟踪 anchor、anchor age 和确认原因，不再设置等待确认状态。
+
+窗口身份真实变化时，仅把 provider 原始 JSON body 写入 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-usage-identity-change-*.json`，不包含 Authorization/header/token，最多保留最近 8 份。Provider 用量与重置卡请求仍保留各自周期和单飞，但若另一端点正在请求，启动至少错开 10 秒，避免同一账户端点同时突发。
+
+共享运行态快照的常规路径只查询明确可执行名以及已经学习到的别名；绘制路径只读最近快照，不做进程枚举或前台查询。如果已知名称漏判某个软件，最多每 60 秒执行一次仅含主窗口进程的身份发现，并把通过包路径或产品元数据确认的新进程名缓存回常规路径。自动软件族实际变化时只记录一条状态变化日志，便于后续更新诊断。运行态快照和额度扫描使用不同周期：
 
 | 项目 | 性能 | 均衡 | 省电 |
 | --- | ---: | ---: | ---: |
@@ -123,7 +128,7 @@ CODEX 成功从 provider 或 session 读取额度后会写回 `quota.ini`；CLAU
 
 CodexRadar RSS 中出现新的“用量限制已重置”记录时，默认会同时保护 5 小时和周额度；该行为受复杂选项 `CodexQuotaRssResetProtectionEnabled` 控制且默认开启。两个环立即显示 100，右侧时间位置显示金色 `已重置`；额度环弧线仍按当前剩余额度使用原本颜色，不额外变金。额度环图层从下到上为灰色底环、与左侧效率环一致的淡绿色 `#8EF2B9` 消耗环、当前余额环。消耗环不是单独的差值短段，而是上次读取或窗口基线余额对应的完整弧层；当前余额环覆盖共同部分后，露出的尾段自然表示消耗。五小时环的消耗环基准是上上次真实检测到的余额，并与上次检测到的余额比较：如果上上次为 67、上次为 57，则先绘制 67 的消耗环完整弧，再绘制 57 的当前余额弧，视觉上只露出 10 的淡绿色尾段；如果连续两次日志或刷新读到相同的五小时余额，默认通过 `CodexQuotaDuplicateSameBalanceRingProtectionEnabled` 保留已有消耗环基线，不清空也不重建，直到余额再次上涨、下降或来源失效。周额度环不再显示自己的最近读取下降段，消耗环基准为上一次 5 小时窗口开始时的周额度；默认允许用五小时余额上涨识别手动重置卡，只有开启 `CodexQuotaStrictFiveHourResetBoundaryEnabled` 后才要求旧 5 小时 reset 到期并推进，或在没有 reset 边界时退回余额上涨识别。Provider 零值保护 `CodexQuotaProviderZeroDropProtectionEnabled` 默认开启：单次 provider 样本把高余额直接报为 0 且 reset 时间没有实质推进时拒绝整份样本。Provider 5 小时提前满额保护、周额度突增保护和周基线自动修复分别由 `CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled`、`CodexQuotaProviderWeeklySpikeProtectionEnabled`、`CodexQuotaWeeklyBaselineAutoRepairEnabled` 控制，默认关闭，避免把手动重置卡误判为抖动；开启后被拒绝样本不写 `quota.ini`，也不更新 5 小时或周额度消耗环基线。首次读取、无有效来源或保护态不显示可见消耗环尾段。环内数字不再按软件族着色：有已知数值且 Codex/Claude 任一受支持本地软件运行时为白色；两者都未运行或数值未知时为灰色。RSS 发布时间只用于判断事件新旧；保护建立时间使用本机检测到该 RSS 的时间，避免启动前已经存在的 quota 样本立刻释放 100 保护。保护释放条件仍与本地到期保护相同，必须等到新的 quota 样本证明已经进入下一窗口，避免旧 session 文件把显示再次覆盖成低额度。RSS 重置事件使用 GUID、发布时间和“已保护 GUID”写入 `quota-reset-state.ini` 去重；首次升级后如果最新重置发生在 36 小时内，也会触发一次，防止刚恢复的 RSS 提醒被当作旧基线忽略。
 
-每次额度读取完成并执行消耗环判定后，会向 `%LOCALAPPDATA%\DesktopCodexAssistant\quota-decision-history.jsonl` 追加一条 JSONL 诊断记录。记录中的 `software_family` 标明本次判定属于 Codex 还是 Claude，`*_balance_percent` 是最终显示余额，`*_raw_balance_percent` 是本次读取原始余额，`source_kind` 标记 provider/session/cache/claude/default，`*_source_used_field`、`*_source_raw_used_value` 和 `*_source_normalized_used_percent` 用于定位上游字段单位问题，`*_consumption_ring_percent` 是实际露出的消耗尾段，`*_consumption_baseline_percent` 是绘制在当前余额环下方的完整基线环，`reason` 说明为什么保留、重置、丢弃可疑 provider 零值或更新基线。日志不在 `DrawQuotaRow`、hover 动画或 layered-window 重绘路径写入，避免绘制帧造成写放大；记录器使用 15 秒或 32 KiB 批量落盘，启动和每 6 小时按约 48 小时窗口清理旧行。
+每次额度读取完成并执行消耗环判定后，会向 `%LOCALAPPDATA%\DesktopCodexAssistant\quota-decision-history.jsonl` 追加一条 JSONL 诊断记录。记录中的 `software_family` 标明本次判定属于 Codex 还是 Claude，`*_balance_percent` 是最终显示余额，`*_raw_balance_percent` 是本次读取原始余额，`source_kind` 标记 provider/session/cache/claude/default，`*_source_used_field`、`*_source_raw_used_value` 和 `*_source_normalized_used_percent` 用于定位上游字段单位问题，`*_raw_reset_local`、`*_tracked_reset_local`、`*_anchor_age_minutes` 与 `identity_decision_reason` 记录窗口身份判定，`*_consumption_ring_percent` 是实际露出的消耗尾段，`*_consumption_baseline_percent` 是绘制在当前余额环下方的完整基线环。日志不在 `DrawQuotaRow`、hover 动画或 layered-window 重绘路径写入，避免绘制帧造成写放大；记录器使用 15 秒或 32 KiB 批量落盘，启动和每 6 小时按约 48 小时窗口清理旧行。
 
 ## 6. 网站请求调度
 
@@ -147,20 +152,33 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，默认会�
 
 `current.json` 现在可能只返回公开摘要，例如 `api_access.full_api_status=authorization_required`，而不包含 `model_iq`。读取顺序由设置页控制：公开 JSON 层启用时先读取 `current.json` 的窗口、RSS 和 API 可用性说明；JSON 缺失 `model_iq` 且首页 HTML 回退启用时，再请求首页并从 `codex-radar:summary`、模型对比表和 SVG 标题读取同一批模型数据；RSS 层启用时才读取 `feed.xml` 的重置提醒。公开 JSON 已含 `model_iq` 但缺少页面展示字段时，也会在 HTML 回退启用时读取首页，只合并网页数据标签和 IQ 常态区，不把这次展示字段补齐失败当作 JSON 层故障。这样把网站公开 API 收窄、路由变化和真实网络故障区分开，避免把可回退的数据源误报为 Rader 黄色叉。
 
+速蹬窗口读取 `window.opened_at` 与 `window.closed_at`；首页回退兼容 `data-window-opened-at` / `data-window-closes-at`。显式窗口快照会同时覆盖两个时间的 known 状态，因此新响应把 `closed_at` 从时间改为 `null` 时会立即清除旧结束目标，不得沿用上次倒计时。
+
 首页 HTML 回退的当前模型对比表会用紧凑单位显示耗时，例如 `3.4h`；历史和 SVG 标题仍使用 `204分钟`。当前对比表的耗时必须走专用 duration 解析，按 `h/小时`、`min/分钟`、`s/秒` 转换为 `serialSeconds`，不得复用 Token 数值的 `K/M/B` 通用解析，否则会把小时误当分钟或把 `min` 误判为百万。
 
-首页 HTML 的 Model IQ 图表标题用于生成短数据标签，例如 `7.2_pm_2`；`model-iq-band-label` 用于读取常态区，例如 `90-110常态区`。这些字段只影响界面显示和 IQ 状态分段，结构化 JSON 成功时仍以 JSON 的 `model_iq` 数值为准。
+首页 HTML 的 Model IQ 图表标题用于生成短数据标签，例如 `7.2_pm_2`；模型描述允许由系列和档位两个词组成，例如 `GPT-5.6 Sol medium`。`model-iq-band-label` 用于读取常态区，例如 `90-110常态区`。这些字段只影响界面显示和 IQ 状态分段，结构化 JSON 成功时仍以 JSON 的 `model_iq` 数值为准。
 
 监测模型由结构化 `model_iq` 或首页 HTML 动态发现：
 
-- `model_iq.latest` 是网站当前默认模型，key 由 `model` + `reasoning_effort` 规范化得到，例如 `gpt_55_xhigh`。
+- `model_iq.latest` 是网站当前默认模型，key 由 `model` + `reasoning_effort` 规范化得到；网站的 `gpt-5.6-sol` + `medium` 与 comparison key `gpt_56_sol_medium` 必须归并为同一键，禁止分别写入目录或缓存。
 - `model_iq.comparisons` 下的任意对象都按同一结构解析，字典 key 或对象内 `model/reasoning_effort` 均可作为稳定模型 key。
-- 模型目录保存到 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-radar-models.ini`，设置页按目录生成模型下拉框；不可用但未删除的模型保留并标注 `暂不可用`，避免手写模型 key。`1.0.4.37` 起，新增、暂不可用和删除三类 Windows 通知会先写入 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-radar-notification-state.ini`，按规范化模型 key 和事件状态去重；同一模型同一状态跨刷新和跨重启只通知一次，状态从删除恢复为加入时仍通知一次。`1.0.4.39` 起，同一刷新批次中 JSON 与 HTML 回退对同一 key 给出冲突事件时先合并，只保留 Added > Unavailable > Deleted 的最终通知状态。
-- 新模型首次发现时触发 Windows 通知；模型首次从成功响应中缺失时标记为暂不可用并保留灰色禁用按钮；连续 3 次成功响应都缺失后才判定删除、移出目录并通知一次。
+- 模型目录保存到 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-radar-models.ini`，设置页按目录生成模型下拉框；不可用但未删除的模型保留并标注 `暂不可用`，避免手写模型 key。重复 key 按整条记录合并：时间较新者的 Label/Available/MissingCount/LastSeen 全部生效；时间相同时可用记录优先，再相同时保留先到记录。默认检测模型是 `gpt_56_sol_medium`；设置 Version 62 及更早配置会在 `Normalize` 后补跑默认模型迁移，空 key 也能迁移，其他显式选择保持不变。新增、暂不可用和删除通知按规范化 key/状态跨重启去重；同批事件超过 4 条时合并为摘要，当前选择模型被停用或删除时摘要和单条通知都会明确指出。
+- 只有结构化 JSON 提供的归一化去重模型数与来源模型数一致时才视为完整目录，允许缺失计数推进；首页 HTML 和不完整 JSON 只新增/刷新已见模型，不把未见模型标记为缺失。连续 3 次完整成功目录都缺失后才判定删除。当前选择模型被删除且自动切换开启时，立即从非历史可用候选中选取最新项。
 
-模型切换或检测软件切换会优先加载对应模型未过期的本地缓存并立即安排一次请求。缓存键同时包含软件族和模型：新写入使用 `Codex.*` 或 `Claude.*` 前缀；旧版无前缀缓存只作为 `CODEX` 只读兼容回退，避免 Claude/Codex 数据混显。
+模型生命周期仍有三项明确限制：Codex 换代时 `DefaultModelKey`、种子列表和 `IsDefaultModelKey` 清单仍需随版本发布更新；Claude 的 `m-key` 被视为稳定身份，站点若复用旧 key 指向新模型会让历史归属串联；Claude 删除条目会以 `Enabled=false` 保留在映射表中，而 Codex 达到删除阈值后移出目录，两侧保留策略有意不同。
 
-### 6.1 北京时间整点监测
+模型切换或检测软件切换会优先加载对应模型未过期的本地缓存并立即安排一次请求。缓存键同时包含软件族和模型：新写入使用 `Codex.*` 或 `Claude.*` 前缀；旧版无前缀缓存只作为 `CODEX` 只读兼容回退，避免 Claude/Codex 数据混显。Codex 缓存额外持久化 `ContentSignature` 和 `CheckedAtUtc`，同内容跨重启保留原 `RefreshedUtc`；空模型 key 使用 `Model.default.` 哨兵，未知 `DataWindowHour` 写为空值而不是强制上午窗口。
+
+### 6.1 已知限制
+
+1. 模型 key 归一化仍假设 GPT 主版本为一位数；GPT-10+ 或归一化碰撞需要同步修改 key 与短标签规则。
+2. 从已删除目录重建时，旧 5.5/5.4 默认模型可能产生一次加入通知。
+3. 缺失的 `Passed` 仍由现有估算规则补齐，并明确视为估算值。
+4. 旧 `gpt_5_6_*` 缓存身份不能完全恢复；兼容缓存按 7 天 TTL 自然清理。
+5. 模型离线超过 7 天且没有新请求成功时，该模型显示为空直到首次抓取完成。
+6. 速蹬窗口开关状态不写入模型缓存，重启后等待第一次网站抓取恢复。
+
+### 6.2 北京时间整点监测
 
 网站数据以 `Asia/Shanghai` 为业务时区。常规自动请求按北京时间整点执行：
 
@@ -169,7 +187,9 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，默认会�
 3. 如果网站在该整点没有发布新 IQ 批次，也不再追加 10 分钟轮询，继续等待下一个整点。
 4. HTTP、解析、超时、不可达或所选模型字段失败时，每 10 分钟重试。
 
-网站 Model IQ 批次仍按站点业务字段解析：结构化 JSON 中的 `2026-06-16-am/pm` 会被解析成对应半日窗口，旧 date-only 数据按 0 点批次兼容。EvenRow 时钟的变黄边界单独按本机系统时间计算：Codex 以系统 0 点/12 点作为 12 小时圆环边界，Claude 以系统 0 点作为 24 小时圆环边界；颜色只认模型 IQ 数据窗口或 Claude 模型 `latest_at`，不把本地请求时间当作已更新。当前时间白点从顶部边界顺时针前进；12 点钟方向固定绘制一小道绿色竖线作为周期起点；小绿点表示 `ModelIqRefreshedAtLocal` 或 Claude `latest_at` 对应的新内容记录位置，Codex 保留 12 小时，Claude 保留 24 小时，下一圈到达后消失。小绿点仍有效时，时钟圆弧从小绿点顺时针连接到当前白点；小绿点过期后不再用旧刷新点绘制连接弧。`RadarClockTimeDisplayMode` 控制圆盘中心下方时间，默认 `Utc`；其他值可显示本机当前时间、上次尝试刷新时间或上次实际 IQ 刷新时间。`1.0.4.27` 起，时间下方额外绘制同色短标签 `UTC`、`LAST`、`REF` 或 `NOW`，分别对应 UTC 时间、上次尝试获取时间、上次成功刷新时间和当前时间；该标签使用独立空白矩形，不改变既有日期与时间矩形的大小或位置。渲染场景缓存 key 包含当前分钟、该时间模式和上次尝试刷新时间，避免小绿点或中心时间因旧 bitmap 继续显示。
+网站 Model IQ 批次仍按站点业务字段解析：结构化 JSON 中的 `2026-06-16-am/pm` 会被解析成对应半日窗口，旧 date-only 数据按 0 点批次兼容。`Core/RadarClockDial.cs` 是共享窗和独立 Claude 窗普通 IQ 时钟的单一状态机、周期几何和绘制实现；`CodexRadarForm.DrawEvenRowBatchDial` 与 `ClaudeRadarForm.DrawClaudeEvenRowBatchDial` 只负责把各自快照、刷新时间、字体和 fitted-text 委托组装成输入。Codex 以系统 0 点/12 点作为 12 小时圆环边界，共享窗 Claude 模式与独立 Claude 窗以系统 0 点作为 24 小时圆环边界；两处自动模型切换同样调用 `RadarClockDial.GetCycleBoundaryLocal`。颜色只认模型 IQ 数据窗口或 Claude 模型 `latest_at`，不把本地请求时间当作已更新。状态按发布落后窗口数分档：本窗口和落后 1 个窗口均为绿色，落后 2 个窗口为黄色并从当前边界绘制等待弧，落后至少 3 个窗口时绘制低透明度红色满环并叠加当前窗口的高亮红色等待段；自动切换继续以 `batch < previousBoundary` 为门槛，与黄色档起点一致。当前时间白点从顶部边界顺时针前进；12 点钟方向固定绘制中性白色边界刻度；小绿点表示 `ModelIqRefreshedAtLocal` 或 Claude `latest_at` 对应的新内容记录位置，Codex 保留 12 小时，Claude 保留 24 小时，下一圈到达后消失。小绿点仍有效时，时钟圆弧从小绿点顺时针连接到当前白点。`pm2` 与 `n2`（含 `_2`、`-2`）都显示同窗口第二次发布徽标；徽标变化不改变状态档位。`RadarClockTimeDisplayMode` 控制圆盘中心下方时间，默认 `Utc`；其他值可显示本机当前时间、上次尝试刷新时间或上次实际 IQ 刷新时间。时间下方绘制同色短标签 `UTC`、`LAST`、`REF` 或 `NOW`，分别对应 UTC 时间、上次尝试获取时间、上次成功刷新时间和当前时间；该标签使用独立空白矩形，不改变既有日期与时间矩形的大小或位置。渲染场景缓存 key 包含当前分钟、该时间模式和上次尝试刷新时间，避免小绿点或中心时间因旧 bitmap 继续显示。
+
+当 Codex 速蹬窗口 open、`closed_at` 明确且仍在未来、并且 `CodexRadarSpeedWindowCountdownEnabled=true` 时，右侧圆盘临时切换为结束倒计时：圆环以 12 点为起点，用 `DesignTokens.Colors.SpeedWindowCountdown` 天蓝色按剩余比例从满环消退；中心时间显示 `HHH:mm`，最高 `100:00`，下方状态固定为同色 `RST`。有合法 `opened_at` 时按完整 `opened_at → closed_at` 计算比例，超过 100 小时只显示最后 100 小时；缺少开始时间时使用固定 100 小时分母。关闭设置、`closed_at` 缺失/撤销、时间到期或窗口转为 closed 后立即恢复普通 IQ 时钟；该覆盖态复用现有分钟渲染 tick，不增加网络请求或独立定时器。
 
 ## 7. 服务健康状态与额度雷达块
 
@@ -398,7 +418,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
 4. 断网后三项服务变灰，恢复后按错峰时间重新检测。
 5. JSON 和首页 HTML 回退均能读取所选模型，Rader 不误报黄色叉。
 6. RSS 最新重置项只触发一次金色 100 保护，右侧显示 `已重置`；相同 GUID 重启后不重复触发。
-7. 速蹬窗口开启且 `closed_at` 尚未过期时额度右侧文字在金色 `速蹬！`、原白色正常额度重置时间/日期、黄色额外重置目标时间/日期之间轮播；黄色目标时间可从 `current.json.window.closed_at` 或首页 `data-window-closes-at` 回退读取，五小时行显示目标时间，周行显示目标日期；过期关闭时间必须压过旧 open 快照，避免结束后继续提示速蹬；环弧颜色不因速蹬或保护态改变，灰色底环保持在最下方，和左侧效率环一致的淡绿色 `#8EF2B9` 消耗环绘制在底环上方和当前余额环下方，五小时消耗环使用上上次检测余额与上次检测余额的差异，周消耗环使用上次五小时窗口开始时的周额度，环内数字有已知数值且 Codex/Claude 任一受支持软件运行时为白色，两者都未运行或数值未知时为灰色。
+7. 速蹬窗口开启时，五小时额度行始终显示原重置时间、周额度行始终显示原重置日期，并强制保持金色，不再轮播 `速蹬！` 或额外目标时间；环弧颜色不因速蹬或保护态改变。若 `closed_at` 明确且尚未过期、并且设置允许，右侧 IQ 时钟临时显示天蓝色消退环、最高 `100:00` 的倒计时与 `RST`；结束时间改变、撤销或过期时由下一次快照或当前时间判定立即恢复普通时钟。灰色底环保持在最下方，和左侧效率环一致的淡绿色 `#8EF2B9` 消耗环绘制在底环上方和当前余额环下方，五小时消耗环使用上上次检测余额与上次检测余额的差异，周消耗环使用上次五小时窗口开始时的周额度，环内数字有已知数值且 Codex/Claude 任一受支持软件运行时为白色，两者都未运行或数值未知时为灰色。
 8. 当前 EvenRow 左下方完整显示 `软件族/RC/辅助项/LLM`，四项按可见像素盒居中，不显示五阶段连接点线；底部软件族项显示 `Codex` 或 `Claude` 且使用对应蓝/橙品牌样式；辅助项在 Codex 模式为 RS，在 Claude 模式为 DS；右侧只显示 API 摘要和 IQ `已更新/时间`。
 9. 三种模型缓存各自保留 7 个完整属性样本，程序重启和模型切换可恢复；缓存超过 7 天后拒绝加载。
 10. 左侧双效率环分别按时间/Token 规则绘制。

@@ -252,6 +252,10 @@ internal sealed class RadarSoftwareModeController
         {
             throw new InvalidOperationException("Radar software mode self-test failed: decision shape.");
         }
+
+        ClaudeRadarClockAutoSwitchSelector.RunSelfTest();
+        RadarClockDial.RunSelfTest();
+        CodexRadarModelCatalog.RunSelfTest();
     }
 
     private static void AssertMode(CodexRadarSoftwareMode actual, CodexRadarSoftwareMode expected, string message)

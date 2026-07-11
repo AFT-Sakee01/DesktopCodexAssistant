@@ -15,7 +15,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     private readonly System.Windows.Forms.Timer timer;
     private readonly System.Windows.Forms.Timer hoverTimer;
     private readonly NetworkMonitorReader reader;
-    private WidgetSettings currentSettings;
     private NetworkMonitorSnapshot snapshot;
     private bool hiddenForFullscreen;
     private bool cloudEndpointCheckingBlink;
@@ -30,13 +29,12 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     private bool sharedInteractionPolling;
     private Bitmap contentBitmap;
     private Graphics contentGraphics;
-    private long burnInShiftSlot = long.MinValue;
     private readonly Dictionary<string, Font> fontCache = new Dictionary<string, Font>(StringComparer.Ordinal);
 
     public NetworkMonitorForm(WidgetSettings settings)
     {
-        this.currentSettings = settings.Clone();
-        this.currentSettings.Normalize();
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
         this.reader = new NetworkMonitorReader();
         this.snapshot = new NetworkMonitorSnapshot();
         ApplicationIcon.ApplyTo(this);
@@ -49,30 +47,30 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
-        ApplyLayerScaleFromSettings(this.currentSettings);
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MinNetworkMonitorHeight));
-        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorHeight));
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MinNetworkMonitorHeight));
+        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorHeight));
         this.Size = GetDesiredSize();
 
         this.timer = new System.Windows.Forms.Timer();
         this.timer.Interval = GetNextRenderTickIntervalMs();
         this.timer.Tick += OnTimerTick;
         this.hoverTimer = new System.Windows.Forms.Timer();
-        this.hoverTimer.Interval = WidgetSettings.GetNetworkIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+        this.hoverTimer.Interval = WidgetSettings.GetNetworkIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         this.hoverTimer.Tick += OnHoverTimerTick;
     }
 
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        ApplyRuntimeSettings(this.currentSettings);
-        this.snapshot = this.reader.GetSnapshot(this.currentSettings);
+        ApplyRuntimeSettings(this.CurrentSettings);
+        this.snapshot = this.reader.GetSnapshot(this.CurrentSettings);
         PositionNetworkMonitorWindow();
         this.timer.Start();
     }
@@ -126,13 +124,13 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     public void ApplyRuntimeSettings(WidgetSettings settings)
     {
-        this.currentSettings = settings.Clone();
-        this.currentSettings.Normalize();
-        ApplyLayerScaleFromSettings(this.currentSettings);
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MinNetworkMonitorHeight));
-        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorHeight));
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MinNetworkMonitorHeight));
+        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorHeight));
         ApplyPerformanceTimerIntervals();
-        this.snapshot = this.reader.GetSnapshot(this.currentSettings);
+        this.snapshot = this.reader.GetSnapshot(this.CurrentSettings);
 
         Size desiredSize = GetDesiredSize();
         if (this.Size != desiredSize)
@@ -140,7 +138,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             this.Size = desiredSize;
         }
 
-        bool shouldBeTopMost = this.currentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
+        bool shouldBeTopMost = this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
         if (this.TopMost != shouldBeTopMost)
         {
             this.TopMost = shouldBeTopMost;
@@ -218,7 +216,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         try
         {
             // The reader owns I/O; this timer consumes snapshots and redraws only visible changes.
-            NetworkMonitorSnapshot nextSnapshot = this.reader.GetSnapshot(this.currentSettings);
+            NetworkMonitorSnapshot nextSnapshot = this.reader.GetSnapshot(this.CurrentSettings);
             bool displayChanged = !HasSameDisplayData(this.snapshot, nextSnapshot);
             bool blinkChanged = GetDisplayAccessState(nextSnapshot) == NetworkAccessState.Online &&
                 HasCheckingCloudEndpoint(nextSnapshot);
@@ -241,7 +239,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             bool positionChanged = false;
             if (!this.hiddenForFullscreen &&
                 this.Visible &&
-                BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+                ShouldRefreshBurnInPosition())
             {
                 PositionNetworkMonitorWindow();
                 positionChanged = true;
@@ -262,7 +260,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     {
         ScheduleNextRenderTick();
 
-        int hoverInterval = WidgetSettings.GetNetworkIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+        int hoverInterval = WidgetSettings.GetNetworkIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.hoverTimer.Interval != hoverInterval)
         {
             this.hoverTimer.Interval = hoverInterval;
@@ -282,7 +280,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     {
         // Align panel wakeups to wall-clock boundaries instead of preserving arbitrary startup offsets.
         DateTime now = DateTime.Now;
-        int targetInterval = WidgetSettings.GetPanelRenderIntervalMs(this.currentSettings.PerformanceMode);
+        int targetInterval = WidgetSettings.GetPanelRenderIntervalMs(this.CurrentSettings.PerformanceMode);
         int elapsedInInterval = (int)(now.TimeOfDay.TotalMilliseconds % targetInterval);
         int interval = targetInterval - elapsedInInterval + RenderSecondBoundaryOffsetMs;
         if (interval <= RenderSecondBoundaryOffsetMs)
@@ -297,8 +295,8 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     {
         bool animationActive = ProcessInteractionTick();
         int desiredInterval = animationActive
-            ? WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode)
-            : WidgetSettings.GetNetworkIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+            ? WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode)
+            : WidgetSettings.GetNetworkIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.hoverTimer.Interval != desiredInterval)
         {
             this.hoverTimer.Interval = desiredInterval;
@@ -411,7 +409,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     private bool IsHoverOpacityTargetActive()
     {
         return HoverInteractionPolicy.IsHoverOpacityTargetActive(
-            this.currentSettings,
+            this.CurrentSettings,
             this.Bounds,
             this.hiddenForFullscreen,
             this.Visible,
@@ -422,7 +420,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private bool IsHoverOpacityRuntimeEnabled()
     {
-        return this.currentSettings.HoverOpacityEnabled || this.currentSettings.ForceHoverOpacityActive;
+        return this.CurrentSettings.HoverOpacityEnabled || this.CurrentSettings.ForceHoverOpacityActive;
     }
 
     private void ApplyClickThroughStyle()
@@ -466,15 +464,15 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         }
 
         return WidgetSettings.ShouldEnableClickThrough(
-            this.currentSettings.ClickThroughMode,
-            this.currentSettings.VisibilityMode);
+            this.CurrentSettings.ClickThroughMode,
+            this.CurrentSettings.VisibilityMode);
     }
 
     private bool NeedsClickThroughPolling()
     {
         return WidgetSettings.ShouldEnableClickThrough(
-            this.currentSettings.ClickThroughMode,
-            this.currentSettings.VisibilityMode);
+            this.CurrentSettings.ClickThroughMode,
+            this.CurrentSettings.VisibilityMode);
     }
 
     private void PositionNetworkMonitorWindow()
@@ -484,7 +482,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             return;
         }
 
-        Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModuleNetworkMonitor);
+        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleNetworkMonitor);
         Size desiredSize = GetDesiredSize();
         if (this.Size != desiredSize)
         {
@@ -492,13 +490,13 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         }
 
         int baseWidth = GetNetworkMonitorAnchorWidth();
-        int mappedLeft = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleNetworkMonitor, workArea, this.currentSettings.NetworkMonitorLeftX);
-        int baseRight = mappedLeft + this.currentSettings.ScaleResolutionCompatibilityPixels(baseWidth);
+        int mappedLeft = this.CurrentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleNetworkMonitor, workArea, this.CurrentSettings.NetworkMonitorLeftX);
+        int baseRight = mappedLeft + this.CurrentSettings.ScaleResolutionCompatibilityPixels(baseWidth);
         baseRight = Math.Max(workArea.Left + this.Width, Math.Min(baseRight, workArea.Right));
         int left = Math.Max(workArea.Left, Math.Min(baseRight - this.Width, workArea.Right - this.Width));
-        int baseHeight = Math.Max(WidgetSettings.MinNetworkMonitorHeight, this.currentSettings.NetworkMonitorHeight);
-        int mappedBottom = this.currentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleNetworkMonitor, workArea, this.currentSettings.NetworkMonitorBottomY);
-        int top = mappedBottom - this.currentSettings.ScaleResolutionCompatibilityPixels(baseHeight) + 1;
+        int baseHeight = Math.Max(WidgetSettings.MinNetworkMonitorHeight, this.CurrentSettings.NetworkMonitorHeight);
+        int mappedBottom = this.CurrentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleNetworkMonitor, workArea, this.CurrentSettings.NetworkMonitorBottomY);
+        int top = mappedBottom - this.CurrentSettings.ScaleResolutionCompatibilityPixels(baseHeight) + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
         Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
             new Point(left, top),
@@ -511,7 +509,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(this.currentSettings.VisibilityMode),
+            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode),
             left,
             top,
             this.Width,
@@ -525,29 +523,29 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     private Size GetDesiredSize()
     {
         int width = GetEffectiveNetworkMonitorWidth();
-        return this.currentSettings.ScaleResolutionCompatibilitySize(new Size(width, this.currentSettings.NetworkMonitorHeight));
+        return this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(width, this.CurrentSettings.NetworkMonitorHeight));
     }
 
     private int GetNetworkMonitorAnchorWidth()
     {
-        if (this.currentSettings.NetworkMonitorRenderVariant != NetworkMonitorRenderVariant.Classic)
+        if (this.CurrentSettings.NetworkMonitorRenderVariant != NetworkMonitorRenderVariant.Classic)
         {
-            return Math.Max(WidgetSettings.MinNetworkMonitorWidth, this.currentSettings.NetworkMonitorWidth);
+            return Math.Max(WidgetSettings.MinNetworkMonitorWidth, this.CurrentSettings.NetworkMonitorWidth);
         }
 
         return Math.Min(
             ClassicStripLayout.WidthMaximum,
-            Math.Max(ClassicStripLayout.WidthCompact, this.currentSettings.NetworkMonitorWidth));
+            Math.Max(ClassicStripLayout.WidthCompact, this.CurrentSettings.NetworkMonitorWidth));
     }
 
     private int GetEffectiveNetworkMonitorWidth()
     {
-        if (this.currentSettings.NetworkMonitorRenderVariant != NetworkMonitorRenderVariant.Classic)
+        if (this.CurrentSettings.NetworkMonitorRenderVariant != NetworkMonitorRenderVariant.Classic)
         {
-            return this.currentSettings.NetworkMonitorWidth;
+            return this.CurrentSettings.NetworkMonitorWidth;
         }
 
-        int baseWidth = Math.Max(ClassicStripLayout.WidthCompact, this.currentSettings.NetworkMonitorWidth);
+        int baseWidth = Math.Max(ClassicStripLayout.WidthCompact, this.CurrentSettings.NetworkMonitorWidth);
         int targetWidth = Math.Max(baseWidth, GetClassicStripContentWidthPreset());
         return Math.Min(ClassicStripLayout.WidthMaximum, targetWidth);
     }
@@ -3026,7 +3024,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     private bool IsBurnInColorProtectionActive()
     {
         return BurnInProtection.ShouldApplyHiddenModeColorProtection(
-            this.currentSettings,
+            this.CurrentSettings,
             IsHoverOpacityTargetActive());
     }
 
@@ -3117,14 +3115,12 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private int GetBackgroundOpacityAlpha()
     {
-        int alpha = (int)Math.Round(255.0 * (100 - this.currentSettings.NetworkMonitorTransparencyPercent) / 100.0);
-        return Math.Max(0, Math.Min(255, alpha));
+        return ComputeOpacityAlpha(this.CurrentSettings.NetworkMonitorTransparencyPercent);
     }
 
     private int GetContentOpacityAlpha()
     {
-        int alpha = (int)Math.Round(255.0 * (100 - this.currentSettings.ApplicationTransparencyPercent) / 100.0);
-        return Math.Max(0, Math.Min(255, alpha));
+        return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
     protected override byte GetApplicationOpacityAlpha()

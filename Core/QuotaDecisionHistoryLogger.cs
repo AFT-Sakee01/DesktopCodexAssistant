@@ -20,7 +20,6 @@ internal static class QuotaDecisionHistoryLogger
     private const int MaxTextFieldLength = 240;
     private static readonly TimeSpan RetentionWindow = TimeSpan.FromHours(RetentionHours);
     private static readonly object SyncRoot = new object();
-    private static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
     private static readonly StringBuilder PendingLines = new StringBuilder();
     private static readonly Timer FlushTimer;
     private static DateTime lastTrimUtc = DateTime.MinValue;
@@ -98,7 +97,7 @@ internal static class QuotaDecisionHistoryLogger
                 }
 
                 PendingLines.Append(line);
-                pendingBytes += Utf8NoBom.GetByteCount(line);
+                pendingBytes += SharedEncoding.Utf8NoBom.GetByteCount(line);
                 if (pendingBytes >= MaxBufferedHistoryBytes)
                 {
                     FlushBufferLocked();
@@ -190,7 +189,7 @@ internal static class QuotaDecisionHistoryLogger
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(LogPath));
-        File.AppendAllText(LogPath, text, Utf8NoBom);
+        File.AppendAllText(LogPath, text, SharedEncoding.Utf8NoBom);
     }
 
     private static void TrimLocked()
@@ -207,7 +206,7 @@ internal static class QuotaDecisionHistoryLogger
 
         try
         {
-            string[] lines = File.ReadAllLines(path, Utf8NoBom);
+            string[] lines = File.ReadAllLines(path, SharedEncoding.Utf8NoBom);
             for (int i = 0; i < lines.Length; i++)
             {
                 string line = lines[i];
@@ -234,7 +233,7 @@ internal static class QuotaDecisionHistoryLogger
                 }
                 else
                 {
-                    File.WriteAllLines(path, kept, Utf8NoBom);
+                    File.WriteAllLines(path, kept, SharedEncoding.Utf8NoBom);
                 }
             }
         }
@@ -430,7 +429,7 @@ internal static class QuotaDecisionHistoryLogger
             }
 
             Flush();
-            string[] readLines = File.ReadAllLines(testPath, Utf8NoBom);
+            string[] readLines = File.ReadAllLines(testPath, SharedEncoding.Utf8NoBom);
             if (readLines.Length != 2)
             {
                 throw new InvalidOperationException("Quota decision history self-test: expected 2 lines, got " + readLines.Length);
@@ -466,9 +465,9 @@ internal static class QuotaDecisionHistoryLogger
                 { "source_known", true },
                 { "codex_running", true }
             };
-            File.WriteAllText(testPath, new JavaScriptSerializer().Serialize(oldEntry) + "\n" + readLines[0] + "\n", Utf8NoBom);
+            File.WriteAllText(testPath, new JavaScriptSerializer().Serialize(oldEntry) + "\n" + readLines[0] + "\n", SharedEncoding.Utf8NoBom);
             Trim();
-            string[] trimmedLines = File.ReadAllLines(testPath, Utf8NoBom);
+            string[] trimmedLines = File.ReadAllLines(testPath, SharedEncoding.Utf8NoBom);
             if (trimmedLines.Length != 1)
             {
                 throw new InvalidOperationException("Quota decision history self-test: trim logic expected 1 kept row, got " + trimmedLines.Length);

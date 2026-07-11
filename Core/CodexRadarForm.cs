@@ -49,6 +49,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private const int CodexRadarStatusTimeoutMs = 10000;
     private const int CodexModelHistoryDays = 366;
     private const int CodexModelCacheRetentionDays = 7;
+    private const double QuotaIdentityToleranceMinutes = 2.0;
+    private const double QuotaNewbornToleranceMinutes = 8.0;
+    private const double QuotaResetEventCorroborationHours = 6.0;
+    private const double QuotaGapRebaselineMinutes = 30.0;
+    private const int QuotaRejectedPersistenceMinSamples = 3;
+    private const double QuotaRejectedPersistenceMinMinutes = 10.0;
     private const string QuotaRadarTierPlus = "plus";
     private const string QuotaRadarTierPro5x = "pro5x";
     private const string QuotaRadarTierPro20x = "pro20x";
@@ -72,7 +78,6 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private readonly object codexRadarNotificationStateLock = new object();
     private readonly Dictionary<string, string> codexRadarNotificationState =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-    private WidgetSettings currentSettings;
     private bool hiddenForFullscreen;
     private int renderTickCount;
     private double hoverOpacityProgress;
@@ -114,7 +119,6 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private readonly Dictionary<string, Bitmap> renderSceneBitmapCache = new Dictionary<string, Bitmap>();
     private readonly Queue<string> renderSceneBitmapCacheOrder = new Queue<string>();
     private int renderSceneSettingsRevision;
-    private long burnInShiftSlot = long.MinValue;
     private readonly UiFontCache fontCache = new UiFontCache();
     private DateTime lastRenderedClockSecondLocal;
 
@@ -196,6 +200,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public double WeeklyNormalizedUsedPercent { get; set; }
         public bool FiveHourUsageDiagnosticKnown { get; set; }
         public bool WeeklyUsageDiagnosticKnown { get; set; }
+        public string ProviderRawResponseBody { get; set; }
 
         public static CodexQuotaSnapshot CreateDefault()
         {
@@ -217,7 +222,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 FiveHourNormalizedUsedPercent = 0.0,
                 WeeklyNormalizedUsedPercent = 0.0,
                 FiveHourUsageDiagnosticKnown = false,
-                WeeklyUsageDiagnosticKnown = false
+                WeeklyUsageDiagnosticKnown = false,
+                ProviderRawResponseBody = string.Empty
             };
         }
 
@@ -241,7 +247,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 FiveHourNormalizedUsedPercent = this.FiveHourNormalizedUsedPercent,
                 WeeklyNormalizedUsedPercent = this.WeeklyNormalizedUsedPercent,
                 FiveHourUsageDiagnosticKnown = this.FiveHourUsageDiagnosticKnown,
-                WeeklyUsageDiagnosticKnown = this.WeeklyUsageDiagnosticKnown
+                WeeklyUsageDiagnosticKnown = this.WeeklyUsageDiagnosticKnown,
+                ProviderRawResponseBody = this.ProviderRawResponseBody
             };
         }
     }
@@ -281,16 +288,37 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public DateTime RawSourceUpdatedUtc { get; set; }
         public bool RawSourceUpdatedKnown { get; set; }
         public DateTime RawFiveHourResetLocal { get; set; }
+        public DateTime RawWeeklyResetLocal { get; set; }
+        public string IdentityDecisionReason { get; set; }
+        public double? FiveHourAnchorAgeMinutes { get; set; }
+        public double? WeeklyAnchorAgeMinutes { get; set; }
+        public bool IdentitySampleRejected { get; set; }
+        public int FiveHourRejectedPersistenceCount { get; set; }
+        public DateTime FiveHourRejectedPersistenceFirstSeenUtc { get; set; }
+        public int WeeklyRejectedPersistenceCount { get; set; }
+        public DateTime WeeklyRejectedPersistenceFirstSeenUtc { get; set; }
         public int PreviousFiveHourPercent { get; set; } = -1;
         public int PreviousWeeklyPercent { get; set; } = -1;
         public DateTime PreviousSourceUpdatedUtc { get; set; }
         public int PreviousFiveHourBaselinePercent { get; set; } = -1;
         public int PreviousWeeklyBaselinePercent { get; set; } = -1;
         public DateTime PreviousTrackedFiveHourResetLocal { get; set; }
+        public DateTime PreviousTrackedWeeklyResetLocal { get; set; }
         public int NextFiveHourBaselinePercent { get; set; } = -1;
         public int NextWeeklyBaselinePercent { get; set; } = -1;
         public DateTime NextTrackedFiveHourResetLocal { get; set; }
+        public DateTime NextTrackedWeeklyResetLocal { get; set; }
         public DateTime NextSourceUpdatedUtc { get; set; }
+    }
+
+    private sealed class QuotaWindowIdentityDecision
+    {
+        public bool IdentitySame { get; set; }
+        public bool Accepted { get; set; }
+        public string Reason { get; set; }
+        public double? AnchorAgeMinutes { get; set; }
+        public int RejectedPersistenceCount { get; set; }
+        public DateTime RejectedPersistenceFirstSeenUtc { get; set; }
     }
 
     private sealed class QuotaProtectionOptions
@@ -340,6 +368,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public DateTime CheckedAtLocal { get; set; }
         public bool CheckedAtKnown { get; set; }
         public DateTime ModelIqRefreshedAtLocal { get; set; }
+        public string ModelIqCachedContentSignature { get; set; }
         public DateTime ModelIqDataDateLocal { get; set; }
         public int ModelIqDataWindowStartHourLocal { get; set; }
         public string ModelIqDataLabel { get; set; }
@@ -395,6 +424,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 CheckedAtLocal = DateTime.MinValue,
                 CheckedAtKnown = false,
                 ModelIqRefreshedAtLocal = DateTime.MinValue,
+                ModelIqCachedContentSignature = string.Empty,
                 ModelIqDataDateLocal = DateTime.MinValue,
                 ModelIqDataWindowStartHourLocal = 0,
                 ModelIqDataLabel = string.Empty,
@@ -452,6 +482,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 CheckedAtLocal = this.CheckedAtLocal,
                 CheckedAtKnown = this.CheckedAtKnown,
                 ModelIqRefreshedAtLocal = this.ModelIqRefreshedAtLocal,
+                ModelIqCachedContentSignature = this.ModelIqCachedContentSignature,
                 ModelIqDataDateLocal = this.ModelIqDataDateLocal,
                 ModelIqDataWindowStartHourLocal = this.ModelIqDataWindowStartHourLocal,
                 ModelIqDataLabel = this.ModelIqDataLabel,
@@ -510,6 +541,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public string Key { get; set; }
         public DateTime LatestLocal { get; set; }
         public bool LatestKnown { get; set; }
+        public bool HistoricalOnly { get; set; }
 
         public RadarClockModelCandidate Clone()
         {
@@ -517,7 +549,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             {
                 Key = this.Key ?? string.Empty,
                 LatestLocal = this.LatestLocal,
-                LatestKnown = this.LatestKnown
+                LatestKnown = this.LatestKnown,
+                HistoricalOnly = this.HistoricalOnly
             };
         }
     }
@@ -704,8 +737,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     public CodexRadarForm(WidgetSettings settings, Action<string, string, ToolTipIcon> notificationAction)
     {
         this.notificationAction = notificationAction;
-        this.currentSettings = settings.Clone();
-        this.currentSettings.Normalize();
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
         ApplicationIcon.ApplyTo(this);
         UpdateEffectiveCodexRadarSoftwareMode(true);
         LoadSelectedQuotaCacheIntoDisplay();
@@ -729,22 +762,22 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             true);
 
         InitializeLayerScaleFromCurrentDpi();
-        ApplyLayerScaleFromSettings(this.currentSettings);
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
 
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
-        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight + S(32)));
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
+        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight + S(32)));
         this.Size = GetDesiredCodexRadarSize();
 
         this.timer = new System.Windows.Forms.Timer();
         this.timer.Interval = GetNextCodexRadarTickIntervalMs();
         this.timer.Tick += OnTimerTick;
         this.hoverTimer = new System.Windows.Forms.Timer();
-        this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+        this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         this.hoverTimer.Tick += OnHoverTimerTick;
         PrimeCodexWebRefreshSchedule(DateTime.UtcNow);
         SystemEvents.SessionSwitch += OnSystemSessionSwitch;
@@ -755,7 +788,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        ApplyRuntimeSettings(this.currentSettings);
+        ApplyRuntimeSettings(this.CurrentSettings);
         ScheduleNextCodexRadarTick();
         this.timer.Start();
     }
@@ -811,7 +844,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             // interval and single-flight guard, so a faster UI mode does not multiply web traffic.
             UpdateEffectiveCodexRadarSoftwareModeIfNeeded();
             UpdateCodexRadarRandomTestIfNeeded();
-            if (!this.currentSettings.CodexRadarRandomTestEnabled)
+            if (!this.CurrentSettings.CodexRadarRandomTestEnabled)
             {
                 if (ServiceHealthProbeEnabled)
                 {
@@ -843,7 +876,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             bool positionChanged = false;
             if (!this.hiddenForFullscreen &&
                 this.Visible &&
-                BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot))
+                ShouldRefreshBurnInPosition())
             {
                 PositionCodexRadar();
                 positionChanged = true;
@@ -901,24 +934,24 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     public void ApplyRuntimeSettings(WidgetSettings settings)
     {
-        CodexRadarTestMode oldCodexRadarTestMode = this.currentSettings.CodexRadarTestMode;
-        ServiceHealthTestMode oldServiceHealthTestMode = this.currentSettings.ServiceHealthTestMode;
-        string oldModelKey = this.currentSettings.CodexRadarModelKey;
-        CodexRadarSoftwareMode oldConfiguredSoftwareMode = this.currentSettings.CodexRadarSoftwareMode;
+        CodexRadarTestMode oldCodexRadarTestMode = this.CurrentSettings.CodexRadarTestMode;
+        ServiceHealthTestMode oldServiceHealthTestMode = this.CurrentSettings.ServiceHealthTestMode;
+        string oldModelKey = this.CurrentSettings.CodexRadarModelKey;
+        CodexRadarSoftwareMode oldConfiguredSoftwareMode = this.CurrentSettings.CodexRadarSoftwareMode;
         CodexRadarSoftwareMode oldEffectiveSoftwareMode = GetEffectiveCodexRadarSoftwareMode();
-        bool oldRandomTestEnabled = this.currentSettings.CodexRadarRandomTestEnabled;
-        int oldRandomTestToken = this.currentSettings.CodexRadarRandomTestRefreshToken;
-        bool oldPublicJsonEnabled = this.currentSettings.CodexRadarPublicJsonEnabled;
-        bool oldHtmlFallbackEnabled = this.currentSettings.CodexRadarHtmlFallbackEnabled;
-        bool oldRssFallbackEnabled = this.currentSettings.CodexRadarRssFallbackEnabled;
-        int oldServiceProbeToken = this.currentSettings.CodexRadarServiceProbeToken;
-        int oldDeepSeekApiKeyRevision = this.currentSettings.DeepSeekApiKeyRevision;
+        bool oldRandomTestEnabled = this.CurrentSettings.CodexRadarRandomTestEnabled;
+        int oldRandomTestToken = this.CurrentSettings.CodexRadarRandomTestRefreshToken;
+        bool oldPublicJsonEnabled = this.CurrentSettings.CodexRadarPublicJsonEnabled;
+        bool oldHtmlFallbackEnabled = this.CurrentSettings.CodexRadarHtmlFallbackEnabled;
+        bool oldRssFallbackEnabled = this.CurrentSettings.CodexRadarRssFallbackEnabled;
+        int oldServiceProbeToken = this.CurrentSettings.CodexRadarServiceProbeToken;
+        int oldDeepSeekApiKeyRevision = this.CurrentSettings.DeepSeekApiKeyRevision;
         CacheCodexRadarDisplayMode(oldEffectiveSoftwareMode);
-        this.currentSettings = settings.Clone();
-        this.currentSettings.Normalize();
-        ApplyLayerScaleFromSettings(this.currentSettings);
-        this.MinimumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
-        this.MaximumSize = this.currentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight + S(32)));
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
+        ApplyLayerScaleFromSettings(this.CurrentSettings);
+        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
+        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight + S(32)));
         unchecked
         {
             this.renderSceneSettingsRevision++;
@@ -927,24 +960,24 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool effectiveSoftwareChanged = UpdateEffectiveCodexRadarSoftwareMode(true);
         ApplyPerformanceTimerIntervals();
 
-        if (this.currentSettings.CodexRadarRandomTestEnabled &&
+        if (this.CurrentSettings.CodexRadarRandomTestEnabled &&
             (!oldRandomTestEnabled ||
-             oldRandomTestToken != this.currentSettings.CodexRadarRandomTestRefreshToken ||
+             oldRandomTestToken != this.CurrentSettings.CodexRadarRandomTestRefreshToken ||
              this.codexRadarRandomTestSnapshot == null))
         {
             GenerateCodexRadarRandomTestSnapshot();
         }
-        else if (oldRandomTestEnabled && !this.currentSettings.CodexRadarRandomTestEnabled)
+        else if (oldRandomTestEnabled && !this.CurrentSettings.CodexRadarRandomTestEnabled)
         {
             this.codexRadarRandomTestSnapshot = null;
             PrimeCodexWebRefreshSchedule(DateTime.UtcNow);
             RequestServiceNetworkRefresh();
         }
 
-        bool softwareSettingChanged = oldConfiguredSoftwareMode != this.currentSettings.CodexRadarSoftwareMode ||
+        bool softwareSettingChanged = oldConfiguredSoftwareMode != this.CurrentSettings.CodexRadarSoftwareMode ||
             oldEffectiveSoftwareMode != GetEffectiveCodexRadarSoftwareMode() ||
             effectiveSoftwareChanged;
-        if (!string.Equals(oldModelKey, this.currentSettings.CodexRadarModelKey, StringComparison.OrdinalIgnoreCase) ||
+        if (!string.Equals(oldModelKey, this.CurrentSettings.CodexRadarModelKey, StringComparison.OrdinalIgnoreCase) ||
             softwareSettingChanged)
         {
             if (softwareSettingChanged)
@@ -958,9 +991,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             }
         }
 
-        if (oldPublicJsonEnabled != this.currentSettings.CodexRadarPublicJsonEnabled ||
-            oldHtmlFallbackEnabled != this.currentSettings.CodexRadarHtmlFallbackEnabled ||
-            oldRssFallbackEnabled != this.currentSettings.CodexRadarRssFallbackEnabled)
+        if (oldPublicJsonEnabled != this.CurrentSettings.CodexRadarPublicJsonEnabled ||
+            oldHtmlFallbackEnabled != this.CurrentSettings.CodexRadarHtmlFallbackEnabled ||
+            oldRssFallbackEnabled != this.CurrentSettings.CodexRadarRssFallbackEnabled)
         {
             lock (this.codexRadarStatusLock)
             {
@@ -971,21 +1004,21 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             SetRadarServiceHealth(ServiceHealthState.Unknown);
         }
 
-        if (oldServiceProbeToken != this.currentSettings.CodexRadarServiceProbeToken &&
-            this.currentSettings.CodexRadarServiceProbeToken > 0)
+        if (oldServiceProbeToken != this.CurrentSettings.CodexRadarServiceProbeToken &&
+            this.CurrentSettings.CodexRadarServiceProbeToken > 0)
         {
             StartCodexRadarServiceProbe();
         }
 
-        if (oldDeepSeekApiKeyRevision != this.currentSettings.DeepSeekApiKeyRevision)
+        if (oldDeepSeekApiKeyRevision != this.CurrentSettings.DeepSeekApiKeyRevision)
         {
             RequestDeepSeekBalanceRefresh("DeepSeek 配置");
             RefreshDeepSeekBalanceIfNeeded();
         }
 
-        if (oldCodexRadarTestMode != this.currentSettings.CodexRadarTestMode)
+        if (oldCodexRadarTestMode != this.CurrentSettings.CodexRadarTestMode)
         {
-            if (this.currentSettings.CodexRadarTestMode == CodexRadarTestMode.Off)
+            if (this.CurrentSettings.CodexRadarTestMode == CodexRadarTestMode.Off)
             {
                 PrimeCodexWebRefreshSchedule(DateTime.UtcNow);
             }
@@ -994,9 +1027,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         if (ServiceHealthProbeEnabled &&
-            oldServiceHealthTestMode != this.currentSettings.ServiceHealthTestMode)
+            oldServiceHealthTestMode != this.CurrentSettings.ServiceHealthTestMode)
         {
-            if (this.currentSettings.ServiceHealthTestMode == ServiceHealthTestMode.Off)
+            if (this.CurrentSettings.ServiceHealthTestMode == ServiceHealthTestMode.Off)
             {
                 ResetServiceHealthAfterTestMode();
             }
@@ -1008,7 +1041,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             RenderLayeredWindow();
         }
         else if (ServiceHealthProbeEnabled &&
-            this.currentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off)
+            this.CurrentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off)
         {
             ApplyServiceHealthTestMode();
         }
@@ -1019,7 +1052,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             this.Size = desiredSize;
         }
 
-        bool shouldBeTopMost = this.currentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
+        bool shouldBeTopMost = this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
         if (this.TopMost != shouldBeTopMost)
         {
             this.TopMost = shouldBeTopMost;
@@ -1084,7 +1117,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void StartCodexRadarServiceProbe()
     {
-        int token = this.currentSettings.CodexRadarServiceProbeToken;
+        int token = this.CurrentSettings.CodexRadarServiceProbeToken;
         lock (this.codexRadarStatusLock)
         {
             if (token == this.codexRadarServiceProbeToken ||
@@ -1097,10 +1130,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             this.codexRadarServiceProbeRunning = true;
         }
 
-        string modelKey = this.currentSettings.CodexRadarModelKey;
-        bool publicJsonEnabled = this.currentSettings.CodexRadarPublicJsonEnabled;
-        bool htmlFallbackEnabled = this.currentSettings.CodexRadarHtmlFallbackEnabled;
-        bool rssFallbackEnabled = this.currentSettings.CodexRadarRssFallbackEnabled;
+        string modelKey = this.CurrentSettings.CodexRadarModelKey;
+        bool publicJsonEnabled = this.CurrentSettings.CodexRadarPublicJsonEnabled;
+        bool htmlFallbackEnabled = this.CurrentSettings.CodexRadarHtmlFallbackEnabled;
+        bool rssFallbackEnabled = this.CurrentSettings.CodexRadarRssFallbackEnabled;
         Task.Run((Action)delegate
         {
             string path = string.Empty;
@@ -1115,7 +1148,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                     rssFallbackEnabled);
                 Directory.CreateDirectory(Logger.DirectoryPath);
                 path = Path.Combine(Logger.DirectoryPath, "codex-radar-service-probe.txt");
-                File.WriteAllText(path, report, new UTF8Encoding(false));
+                File.WriteAllText(path, report, SharedEncoding.Utf8NoBom);
                 success = true;
                 if (this.notificationAction != null)
                 {
@@ -1296,7 +1329,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     {
         ScheduleNextCodexRadarTick();
 
-        int hoverInterval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+        int hoverInterval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.hoverTimer.Interval != hoverInterval)
         {
             this.hoverTimer.Interval = hoverInterval;
@@ -1316,9 +1349,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     {
         // Boundary alignment keeps the clock stable and groups wakeups with the other panels.
         DateTime now = DateTime.Now;
-        int targetInterval = WidgetSettings.GetPanelRenderIntervalMs(this.currentSettings.PerformanceMode);
-        if (this.currentSettings.CodexRadarRandomTestEnabled &&
-            this.currentSettings.CodexRadarRandomTestAutoRefresh)
+        int targetInterval = WidgetSettings.GetPanelRenderIntervalMs(this.CurrentSettings.PerformanceMode);
+        if (this.CurrentSettings.CodexRadarRandomTestEnabled &&
+            this.CurrentSettings.CodexRadarRandomTestAutoRefresh)
         {
             targetInterval = Math.Min(targetInterval, 1000);
         }
@@ -1335,7 +1368,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void UpdateCodexRadarRandomTestIfNeeded()
     {
-        if (!this.currentSettings.CodexRadarRandomTestEnabled)
+        if (!this.CurrentSettings.CodexRadarRandomTestEnabled)
         {
             return;
         }
@@ -1343,9 +1376,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         DateTime nowUtc = DateTime.UtcNow;
         bool tokenChanged =
             this.codexRadarRandomTestRefreshToken !=
-            this.currentSettings.CodexRadarRandomTestRefreshToken;
+            this.CurrentSettings.CodexRadarRandomTestRefreshToken;
         bool automaticDue =
-            this.currentSettings.CodexRadarRandomTestAutoRefresh &&
+            this.CurrentSettings.CodexRadarRandomTestAutoRefresh &&
             (this.nextCodexRadarRandomTestRefreshUtc == DateTime.MinValue ||
              nowUtc >= this.nextCodexRadarRandomTestRefreshUtc);
         if (this.codexRadarRandomTestSnapshot == null || tokenChanged || automaticDue)
@@ -1357,7 +1390,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private void GenerateCodexRadarRandomTestSnapshot()
     {
         int seed = unchecked(
-            this.currentSettings.CodexRadarRandomTestRefreshToken * 397 ^
+            this.CurrentSettings.CodexRadarRandomTestRefreshToken * 397 ^
             DateTime.UtcNow.Ticks.GetHashCode());
         Random random = new Random(seed);
         CodexRadarRandomTestSnapshot test = new CodexRadarRandomTestSnapshot();
@@ -1459,7 +1492,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         this.codexRadarRandomTestSnapshot = test;
         this.codexRadarRandomTestRefreshToken =
-            this.currentSettings.CodexRadarRandomTestRefreshToken;
+            this.CurrentSettings.CodexRadarRandomTestRefreshToken;
         this.nextCodexRadarRandomTestRefreshUtc = DateTime.UtcNow.AddSeconds(1.0);
     }
 
@@ -1551,8 +1584,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     {
         bool animationActive = ProcessInteractionTick();
         int desiredInterval = animationActive
-            ? WidgetSettings.GetHoverAnimationIntervalMs(this.currentSettings.PerformanceMode)
-            : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.currentSettings.PerformanceMode);
+            ? WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode)
+            : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.hoverTimer.Interval != desiredInterval)
         {
             this.hoverTimer.Interval = desiredInterval;
@@ -1665,7 +1698,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private bool IsHoverOpacityTargetActive()
     {
         return HoverInteractionPolicy.IsHoverOpacityTargetActive(
-            this.currentSettings,
+            this.CurrentSettings,
             this.Bounds,
             this.hiddenForFullscreen,
             this.Visible,
@@ -1676,7 +1709,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private bool IsHoverOpacityRuntimeEnabled()
     {
-        return this.currentSettings.HoverOpacityEnabled || this.currentSettings.ForceHoverOpacityActive;
+        return this.CurrentSettings.HoverOpacityEnabled || this.CurrentSettings.ForceHoverOpacityActive;
     }
 
     public void SetHiddenForFullscreen(bool hidden)
@@ -1716,15 +1749,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        Rectangle workArea = this.currentSettings.GetWorkAreaForModule(WidgetSettings.ModuleCodexRadar);
+        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleCodexRadar);
         Size desiredSize = GetDesiredCodexRadarSize();
         if (this.Size != desiredSize)
         {
             this.Size = desiredSize;
         }
 
-        int mappedLeft = this.currentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleCodexRadar, workArea, this.currentSettings.CodexRadarLeftX);
-        int mappedBottom = this.currentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleCodexRadar, workArea, this.currentSettings.CodexRadarBottomY);
+        int mappedLeft = this.CurrentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleCodexRadar, workArea, this.CurrentSettings.CodexRadarLeftX);
+        int mappedBottom = this.CurrentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleCodexRadar, workArea, this.CurrentSettings.CodexRadarBottomY);
         int left = Math.Max(workArea.Left, Math.Min(mappedLeft, workArea.Right - this.Width));
         int top = mappedBottom - this.Height + 1;
         top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
@@ -1739,7 +1772,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(this.currentSettings.VisibilityMode),
+            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode),
             left,
             top,
             this.Width,
@@ -1752,12 +1785,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private Size GetDesiredCodexRadarSize()
     {
-        return this.currentSettings.ScaleResolutionCompatibilitySize(new Size(this.currentSettings.CodexRadarWidth, this.currentSettings.CodexRadarHeight));
+        return this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(this.CurrentSettings.CodexRadarWidth, this.CurrentSettings.CodexRadarHeight));
     }
 
     private int GetThermalAlertExtraHeight()
     {
-        return Math.Max(S(24), Math.Min(S(32), (int)Math.Round(this.currentSettings.CodexRadarHeight * 0.42f)));
+        return Math.Max(S(24), Math.Min(S(32), (int)Math.Round(this.CurrentSettings.CodexRadarHeight * 0.42f)));
     }
 
     private void ApplyClickThroughStyle()
@@ -1801,15 +1834,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         return WidgetSettings.ShouldEnableClickThrough(
-            this.currentSettings.ClickThroughMode,
-            this.currentSettings.VisibilityMode);
+            this.CurrentSettings.ClickThroughMode,
+            this.CurrentSettings.VisibilityMode);
     }
 
     private bool NeedsClickThroughPolling()
     {
         return WidgetSettings.ShouldEnableClickThrough(
-            this.currentSettings.ClickThroughMode,
-            this.currentSettings.VisibilityMode);
+            this.CurrentSettings.ClickThroughMode,
+            this.CurrentSettings.VisibilityMode);
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -1983,7 +2016,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private QuotaDisplayState GatherQuotaDisplayState()
     {
         bool randomTest =
-            this.currentSettings.CodexRadarRandomTestEnabled &&
+            this.CurrentSettings.CodexRadarRandomTestEnabled &&
             this.codexRadarRandomTestSnapshot != null;
         CodexQuotaSnapshot snapshot = randomTest
             ? this.codexRadarRandomTestSnapshot.Quota
@@ -2069,8 +2102,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool quotaValueKnown,
         bool quotaProtected,
         int consumptionRingPercent,
+        string quotaSourceKind,
         CodexRadarSnapshot radarSnapshot,
-        bool dateText,
         bool forceDangerFullRing)
     {
         if (cellRect.Width <= 0 || cellRect.Height <= 0)
@@ -2084,7 +2117,18 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         string displayText;
         Color displayColor;
-        GetQuotaResetDisplayText(resetText, quotaProtected, radarSnapshot, dateText, out displayText, out displayColor);
+        GetQuotaResetDisplayText(resetText, quotaProtected, radarSnapshot, out displayText, out displayColor);
+        bool forceResetDisplayColor = IsCodexRadarSpeedWindowCurrentlyOpen(radarSnapshot, DateTime.Now);
+        if (GetEffectiveCodexRadarSoftwareMode() == CodexRadarSoftwareMode.Claude)
+        {
+            bool forceClaudeSourceColor;
+            ClaudeQuotaSourcePresentation.ResolveResetDisplay(
+                quotaSourceKind,
+                displayColor,
+                out displayColor,
+                out forceClaudeSourceColor);
+            forceResetDisplayColor = forceResetDisplayColor || forceClaudeSourceColor;
+        }
 
         QuotaRingDrawSpec spec = new QuotaRingDrawSpec
         {
@@ -2092,6 +2136,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             ConsumptionRingPercent = consumptionRingPercent,
             ResetDisplayText = displayText,
             ResetDisplayColor = displayColor,
+            ForceResetDisplayColor = forceResetDisplayColor,
             Running = codexRunning,
             AnySupportedAppRunning = anySupportedAppRunning,
             QuotaValueKnown = quotaValueKnown,
@@ -2342,7 +2387,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         string time = TimeZoneUtilities.ConvertToDisplayTime(
                 snapshot.ModelIqRefreshedAtLocal,
-                this.currentSettings)
+                this.CurrentSettings)
             .ToString("HH:mm", CultureInfo.CurrentCulture);
         if (IsCodexModelIqCurrentForBeijingWindow(snapshot, DateTime.UtcNow))
         {
@@ -2481,8 +2526,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             Math.Min(
                 WidgetSettings.MaxCodexModelEfficiencyLowThresholdPercent,
                 timeEfficiency
-                    ? this.currentSettings.CodexModelTimeEfficiencyLowThresholdPercent
-                    : this.currentSettings.CodexModelTokenEfficiencyLowThresholdPercent));
+                    ? this.CurrentSettings.CodexModelTimeEfficiencyLowThresholdPercent
+                    : this.CurrentSettings.CodexModelTokenEfficiencyLowThresholdPercent));
         if (efficiency < lowThreshold)
         {
             text = timeEfficiency ? "耗时" : "低效";
@@ -2972,7 +3017,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool claudeChecking = false;
         bool openAiChecking = false;
 
-        if (this.currentSettings.CodexRadarRandomTestEnabled &&
+        if (this.CurrentSettings.CodexRadarRandomTestEnabled &&
             this.codexRadarRandomTestSnapshot != null)
         {
             online = this.codexRadarRandomTestSnapshot.NetworkAvailable;
@@ -3042,9 +3087,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private CodexConnectionAlertCandidate[] GetDebouncedCodexApiServiceAlertCandidates(
         CodexConnectionAlertCandidate[] candidates)
     {
-        bool bypass = this.currentSettings == null ||
-            this.currentSettings.CodexRadarRandomTestEnabled ||
-            this.currentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off;
+        bool bypass = this.CurrentSettings == null ||
+            this.CurrentSettings.CodexRadarRandomTestEnabled ||
+            this.CurrentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off;
         lock (this.codexApiServiceAlertDebounceLock)
         {
             return ApplyCodexApiServiceAlertDebounce(
@@ -3337,35 +3382,16 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         string resetText,
         bool quotaProtected,
         CodexRadarSnapshot radarSnapshot,
-        bool dateText,
         out string displayText,
         out Color displayColor)
     {
         if (IsCodexRadarSpeedWindowCurrentlyOpen(radarSnapshot, DateTime.Now))
         {
-            int phase = Math.Abs(this.renderTickCount % 3);
-            if (phase == 0)
-            {
-                displayText = "速蹬！";
-                displayColor = GetCodexRadarSpeedWindowGoldColor();
-                return;
-            }
-
-            if (phase == 1)
-            {
-                displayText = resetText;
-                displayColor = DesignTokens.TextStrong(226);
-                return;
-            }
-
-            if (phase == 2)
-            {
-                if (TryGetCodexRadarExtraResetTargetText(radarSnapshot, dateText, out displayText))
-                {
-                    displayColor = DesignTokens.Colors.Warning;
-                    return;
-                }
-            }
+            // The speed-window state is already represented by the clock countdown. Keep the
+            // actual quota reset time/date stable and gold so animation cannot hide useful data.
+            displayText = resetText;
+            displayColor = GetCodexRadarSpeedWindowGoldColor();
+            return;
         }
 
         if (quotaProtected)
@@ -3414,33 +3440,6 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         snapshot.SpeedWindowStatus = "closed";
     }
 
-    private bool TryGetCodexRadarExtraResetTargetText(
-        CodexRadarSnapshot snapshot,
-        bool dateText,
-        out string text)
-    {
-        text = string.Empty;
-        if (snapshot == null)
-        {
-            return false;
-        }
-
-        DateTime local = DateTime.MinValue;
-        if (snapshot.SpeedWindowClosedAtKnown)
-        {
-            local = snapshot.SpeedWindowClosedAtLocal;
-        }
-
-        if (local == DateTime.MinValue)
-        {
-            return false;
-        }
-
-        text = TimeZoneUtilities.ConvertToDisplayTime(local, this.currentSettings)
-            .ToString(dateText ? "MM/dd" : "HH:mm", CultureInfo.CurrentCulture);
-        return true;
-    }
-
     private static Color GetCodexRadarSpeedWindowGoldColor()
     {
         return Color.FromArgb(255, 194, 72);
@@ -3449,15 +3448,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private CodexRadarSnapshot GetCodexRadarDisplaySnapshot()
     {
         CodexRadarSnapshot snapshot;
-        if (this.currentSettings.CodexRadarRandomTestEnabled &&
+        if (this.CurrentSettings.CodexRadarRandomTestEnabled &&
             this.codexRadarRandomTestSnapshot != null)
         {
             return this.codexRadarRandomTestSnapshot.Radar.Clone();
         }
 
-        if (this.currentSettings.CodexRadarTestMode != CodexRadarTestMode.Off)
+        if (this.CurrentSettings.CodexRadarTestMode != CodexRadarTestMode.Off)
         {
-            snapshot = BuildTestCodexRadarSnapshot(this.currentSettings.CodexRadarTestMode);
+            snapshot = BuildTestCodexRadarSnapshot(this.CurrentSettings.CodexRadarTestMode);
             ApplyCodexModelEfficiencyBaselineOverride(snapshot);
             ApplyCodexModelIqTestOverride(snapshot);
             ApplyCodexModelEfficiencyTestOverride(snapshot);
@@ -3510,12 +3509,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void ApplyCodexModelIqTestOverride(CodexRadarSnapshot snapshot)
     {
-        if (snapshot == null || !this.currentSettings.CodexModelIqTestEnabled)
+        if (snapshot == null || !this.CurrentSettings.CodexModelIqTestEnabled)
         {
             return;
         }
 
-        ApplyCodexModelIqScore(snapshot, this.currentSettings.CodexModelIqTestPassed);
+        ApplyCodexModelIqScore(snapshot, this.CurrentSettings.CodexModelIqTestPassed);
     }
 
     private void ApplyCodexModelEfficiencyBaselineOverride(CodexRadarSnapshot snapshot)
@@ -3530,7 +3529,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (TryCalculateCodexModelEfficiencyPercentForMode(
             snapshot,
             true,
-            this.currentSettings.CodexModelTokenEfficiencyBaselineMode,
+            this.CurrentSettings.CodexModelTokenEfficiencyBaselineMode,
             out tokenEfficiency))
         {
             snapshot.ModelIqTokenEfficiencyPercent = tokenEfficiency;
@@ -3541,7 +3540,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (TryCalculateCodexModelEfficiencyPercentForMode(
             snapshot,
             false,
-            this.currentSettings.CodexModelTimeEfficiencyBaselineMode,
+            this.CurrentSettings.CodexModelTimeEfficiencyBaselineMode,
             out timeEfficiency))
         {
             snapshot.ModelIqTimeEfficiencyPercent = timeEfficiency;
@@ -3556,7 +3555,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void ApplyCodexModelEfficiencyTestOverride(CodexRadarSnapshot snapshot)
     {
-        if (snapshot == null || !this.currentSettings.CodexModelEfficiencyTestEnabled)
+        if (snapshot == null || !this.CurrentSettings.CodexModelEfficiencyTestEnabled)
         {
             return;
         }
@@ -3565,12 +3564,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             WidgetSettings.MinCodexModelEfficiencyPercent,
             Math.Min(
                 WidgetSettings.MaxCodexModelEfficiencyPercent,
-                this.currentSettings.CodexModelTokenEfficiencyTestPercent));
+                this.CurrentSettings.CodexModelTokenEfficiencyTestPercent));
         snapshot.ModelIqTimeEfficiencyPercent = Math.Max(
             WidgetSettings.MinCodexModelEfficiencyPercent,
             Math.Min(
                 WidgetSettings.MaxCodexModelEfficiencyPercent,
-                this.currentSettings.CodexModelTimeEfficiencyTestPercent));
+                this.CurrentSettings.CodexModelTimeEfficiencyTestPercent));
         snapshot.ModelIqEfficiencyKnown = true;
     }
 
@@ -3592,11 +3591,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 snapshot.ModelIqEfficiencyPassed,
                 tokenEfficiency ? snapshot.ModelIqEfficiencyTotalTokens : snapshot.ModelIqEfficiencySerialSeconds,
                 tokenEfficiency
-                    ? this.currentSettings.CodexModelTokenEfficiencyBaselinePassed
-                    : this.currentSettings.CodexModelTimeEfficiencyBaselinePassed,
+                    ? this.CurrentSettings.CodexModelTokenEfficiencyBaselinePassed
+                    : this.CurrentSettings.CodexModelTimeEfficiencyBaselinePassed,
                 tokenEfficiency
-                    ? this.currentSettings.CodexModelTokenEfficiencyBaselineTokens
-                    : this.currentSettings.CodexModelTimeEfficiencyBaselineSeconds,
+                    ? this.CurrentSettings.CodexModelTokenEfficiencyBaselineTokens
+                    : this.CurrentSettings.CodexModelTimeEfficiencyBaselineSeconds,
                 out efficiencyPercent);
         }
 
@@ -3776,7 +3775,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         int validTasks = GetCodexModelIqManualBaselineValidTasks();
         return Math.Max(
             WidgetSettings.MinCodexModelIqPassed,
-            Math.Min(validTasks, this.currentSettings.CodexModelIqBaselinePassed));
+            Math.Min(validTasks, this.CurrentSettings.CodexModelIqBaselinePassed));
     }
 
     private double GetCodexModelIqBaselinePassed(CodexRadarSnapshot snapshot)
@@ -3810,7 +3809,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private bool TryGetCodexModelIqBaselineRatio(CodexRadarSnapshot snapshot, out double passed, out int validTasks)
     {
-        if (this.currentSettings.CodexModelIqBaselineAutoEnabled &&
+        if (this.CurrentSettings.CodexModelIqBaselineAutoEnabled &&
             TryGetCodexModelIqAutoBaselineRatio(snapshot, out passed, out validTasks))
         {
             return true;
@@ -3819,7 +3818,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         validTasks = GetCodexModelIqManualBaselineValidTasks();
         passed = Math.Max(
             WidgetSettings.MinCodexModelIqPassed,
-            Math.Min(validTasks, this.currentSettings.CodexModelIqBaselinePassed));
+            Math.Min(validTasks, this.CurrentSettings.CodexModelIqBaselinePassed));
         return validTasks > 0;
     }
 
@@ -3867,16 +3866,16 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         int validTasks = GetCodexModelIqManualBaselineValidTasks();
         int passed = Math.Max(
             WidgetSettings.MinCodexModelIqPassed,
-            Math.Min(validTasks, this.currentSettings.CodexModelIqBaselinePassed));
+            Math.Min(validTasks, this.CurrentSettings.CodexModelIqBaselinePassed));
         return passed / (double)Math.Max(1, validTasks) * InferCodexModelIqScoreScale(snapshot);
     }
 
     private int GetCodexModelIqManualBaselineValidTasks()
     {
         return NormalizeCodexModelIqValidTaskCount(
-            this.currentSettings.CodexModelIqBaselineValidTasks <= 0
+            this.CurrentSettings.CodexModelIqBaselineValidTasks <= 0
                 ? WidgetSettings.DefaultCodexModelIqBaselineValidTasks
-                : this.currentSettings.CodexModelIqBaselineValidTasks);
+                : this.CurrentSettings.CodexModelIqBaselineValidTasks);
     }
 
     private static int GetCodexModelIqWebsiteValidTasks(CodexRadarSnapshot snapshot)
@@ -4208,7 +4207,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return true;
     }
 
-    private void ApplyQuotaSnapshot(
+    private QuotaRingDecisionInfo ApplyQuotaSnapshot(
         CodexRadarSoftwareMode family,
         CodexQuotaSnapshot nextSnapshot,
         bool quotaKnown,
@@ -4217,10 +4216,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         DateTime detectedUtc,
         string sourceKind)
     {
-        ApplyQuotaSnapshot(family, nextSnapshot, quotaKnown, appRunning, nowLocal, detectedUtc, sourceKind, true);
+        return ApplyQuotaSnapshot(family, nextSnapshot, quotaKnown, appRunning, nowLocal, detectedUtc, sourceKind, true);
     }
 
-    private void ApplyQuotaSnapshot(
+    private QuotaRingDecisionInfo ApplyQuotaSnapshot(
         CodexRadarSoftwareMode family,
         CodexQuotaSnapshot nextSnapshot,
         bool quotaKnown,
@@ -4232,6 +4231,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     {
         family = NormalizeEffectiveSoftwareMode(family);
         QuotaRuntimeState quotaState = GetQuotaRuntimeState(family);
+        bool claudeSourceSwitch = family == CodexRadarSoftwareMode.Claude &&
+            TryRebaselineClaudeQuotaSource(quotaState, nextSnapshot, quotaKnown, sourceKind);
         MarkQuotaSnapshotSource(nextSnapshot, sourceKind);
         if (family == CodexRadarSoftwareMode.Codex && IsQuotaResetDue(nextSnapshot, nowLocal))
         {
@@ -4239,6 +4240,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         QuotaRingDecisionInfo quotaDecision = UpdateQuotaReadDeltaTrackingWithSettings(quotaState, nextSnapshot, quotaKnown);
+        if (claudeSourceSwitch)
+        {
+            quotaDecision.Reason = "source_switch_rebaseline";
+        }
         CodexQuotaSnapshot displaySnapshot = family == CodexRadarSoftwareMode.Codex
             ? ApplyQuotaResetProtections(family, nextSnapshot)
             : NormalizeQuotaSnapshot(nextSnapshot);
@@ -4249,6 +4254,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         {
             LogQuotaRingDecision(family, quotaDecision, displaySnapshot, quotaKnown, appRunning);
         }
+
+        return quotaDecision;
     }
 
     private void InitializeQuotaReadDeltaTracking(CodexQuotaSnapshot snapshot, bool sourceKnown)
@@ -4273,12 +4280,17 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         quotaState.TrackedFiveHourResetLocal = snapshot.FiveHourResetKnown
             ? snapshot.FiveHourResetLocal
             : DateTime.MinValue;
+        quotaState.TrackedWeeklyResetLocal = snapshot.WeeklyResetKnown
+            ? snapshot.WeeklyResetLocal
+            : DateTime.MinValue;
+        ResetRejectedIdentityPersistence(quotaState.FiveHourRejectedIdentity);
+        ResetRejectedIdentityPersistence(quotaState.WeeklyRejectedIdentity);
         quotaState.WeeklyQuotaAtFiveHourWindowStartPercent = ClampPercent(snapshot.WeeklyPercent);
     }
 
     private QuotaProtectionOptions GetQuotaProtectionOptions()
     {
-        return QuotaProtectionOptions.FromSettings(this.currentSettings);
+        return QuotaProtectionOptions.FromSettings(this.CurrentSettings);
     }
 
     private QuotaRingDecisionInfo UpdateQuotaReadDeltaTrackingWithSettings(
@@ -4286,7 +4298,17 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         CodexQuotaSnapshot snapshot,
         bool sourceKnown)
     {
-        return UpdateQuotaReadDeltaTracking(quotaState, snapshot, sourceKnown, GetQuotaProtectionOptions());
+        bool codexIdentityHardening = object.ReferenceEquals(quotaState, this.codexRuntimeState.Quota);
+        DateTime corroboratingResetEventUtc = codexIdentityHardening
+            ? this.codexRuntimeState.Quota.Protection.LastRadarResetEventUtc
+            : DateTime.MinValue;
+        return UpdateQuotaReadDeltaTracking(
+            quotaState,
+            snapshot,
+            sourceKnown,
+            GetQuotaProtectionOptions(),
+            codexIdentityHardening,
+            corroboratingResetEventUtc);
     }
 
     private static QuotaRingDecisionInfo UpdateQuotaReadDeltaTracking(QuotaRuntimeState quotaState, CodexQuotaSnapshot snapshot, bool sourceKnown)
@@ -4295,14 +4317,18 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             quotaState,
             snapshot,
             sourceKnown,
-            QuotaProtectionOptions.LegacyRuntimeDefaults());
+            QuotaProtectionOptions.LegacyRuntimeDefaults(),
+            false,
+            DateTime.MinValue);
     }
 
     private static QuotaRingDecisionInfo UpdateQuotaReadDeltaTracking(
         QuotaRuntimeState quotaState,
         CodexQuotaSnapshot snapshot,
         bool sourceKnown,
-        QuotaProtectionOptions protectionOptions)
+        QuotaProtectionOptions protectionOptions,
+        bool codexIdentityHardening,
+        DateTime corroboratingResetEventUtc)
     {
         if (protectionOptions == null)
         {
@@ -4327,6 +4353,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         DateTime fiveHourResetLocal = snapshot.FiveHourResetKnown
             ? snapshot.FiveHourResetLocal
             : DateTime.MinValue;
+        DateTime weeklyResetLocal = snapshot.WeeklyResetKnown
+            ? snapshot.WeeklyResetLocal
+            : DateTime.MinValue;
         bool weeklyConsumptionBaselineRepaired = false;
         if (quotaState.LastFiveHourReadPercent < 0 || quotaState.LastWeeklyReadPercent < 0)
         {
@@ -4339,6 +4368,68 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             sourceUtc < quotaState.LastReadSourceUtc)
         {
             return CompleteQuotaRingDecisionInfo(quotaState, decision, "stale_source_ignored");
+        }
+
+        if (codexIdentityHardening)
+        {
+            DateTime sampleUtc = sourceUtc == DateTime.MinValue ? DateTime.UtcNow : sourceUtc;
+            QuotaWindowIdentityDecision fiveHourIdentity = EvaluateQuotaWindowIdentity(
+                quotaState.TrackedFiveHourResetLocal,
+                fiveHourResetLocal,
+                fiveHourPercent,
+                snapshot.SourceKind,
+                sampleUtc,
+                quotaState.LastReadSourceUtc,
+                corroboratingResetEventUtc,
+                TimeSpan.FromHours(5.0),
+                quotaState.FiveHourRejectedIdentity);
+            QuotaWindowIdentityDecision weeklyIdentity = EvaluateQuotaWindowIdentity(
+                quotaState.TrackedWeeklyResetLocal,
+                weeklyResetLocal,
+                weeklyPercent,
+                snapshot.SourceKind,
+                sampleUtc,
+                quotaState.LastReadSourceUtc,
+                corroboratingResetEventUtc,
+                TimeSpan.FromDays(7.0),
+                quotaState.WeeklyRejectedIdentity);
+            decision.FiveHourAnchorAgeMinutes = fiveHourIdentity.AnchorAgeMinutes;
+            decision.WeeklyAnchorAgeMinutes = weeklyIdentity.AnchorAgeMinutes;
+            decision.FiveHourRejectedPersistenceCount = fiveHourIdentity.RejectedPersistenceCount;
+            decision.FiveHourRejectedPersistenceFirstSeenUtc = fiveHourIdentity.RejectedPersistenceFirstSeenUtc;
+            decision.WeeklyRejectedPersistenceCount = weeklyIdentity.RejectedPersistenceCount;
+            decision.WeeklyRejectedPersistenceFirstSeenUtc = weeklyIdentity.RejectedPersistenceFirstSeenUtc;
+            decision.IdentityDecisionReason = CombineQuotaIdentityReasons(fiveHourIdentity, weeklyIdentity);
+
+            // A rejected provider identity must not reach the display snapshot. Replacing only
+            // that ring preserves the independent accepted ring while eliminating visible
+            // phantom-pool jumps before the ordinary delta tracker runs.
+            if (!fiveHourIdentity.Accepted)
+            {
+                fiveHourPercent = quotaState.LastFiveHourReadPercent;
+                snapshot.FiveHourPercent = fiveHourPercent;
+                fiveHourResetLocal = quotaState.TrackedFiveHourResetLocal;
+                snapshot.FiveHourResetLocal = fiveHourResetLocal;
+                snapshot.FiveHourResetKnown = fiveHourResetLocal != DateTime.MinValue;
+            }
+
+            if (!weeklyIdentity.Accepted)
+            {
+                weeklyPercent = quotaState.LastWeeklyReadPercent;
+                snapshot.WeeklyPercent = weeklyPercent;
+                weeklyResetLocal = quotaState.TrackedWeeklyResetLocal;
+                snapshot.WeeklyResetLocal = weeklyResetLocal;
+                snapshot.WeeklyResetKnown = weeklyResetLocal != DateTime.MinValue;
+            }
+
+            if (!fiveHourIdentity.Accepted && !weeklyIdentity.Accepted)
+            {
+                decision.IdentitySampleRejected = true;
+                return CompleteQuotaRingDecisionInfo(
+                    quotaState,
+                    decision,
+                    "interference_pool_sample_ignored");
+            }
         }
 
         if (protectionOptions.WeeklyBaselineAutoRepairEnabled &&
@@ -4413,6 +4504,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 quotaState.WeeklyQuotaAtFiveHourWindowStartPercent = weeklyPercent;
             }
 
+            if (weeklyResetLocal != DateTime.MinValue)
+            {
+                quotaState.TrackedWeeklyResetLocal = weeklyResetLocal;
+            }
+
             if (sourceUtc != DateTime.MinValue)
             {
                 quotaState.LastReadSourceUtc = sourceUtc;
@@ -4441,6 +4537,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (fiveHourResetLocal != DateTime.MinValue)
         {
             quotaState.TrackedFiveHourResetLocal = fiveHourResetLocal;
+        }
+
+        if (weeklyResetLocal != DateTime.MinValue)
+        {
+            quotaState.TrackedWeeklyResetLocal = weeklyResetLocal;
         }
 
         if (fiveHourChanged)
@@ -4472,6 +4573,169 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 fiveHourWindowAdvanced,
                 weeklyWindowAdvanced,
                 weeklyConsumptionBaselineRepaired));
+    }
+
+    private static QuotaWindowIdentityDecision EvaluateQuotaWindowIdentity(
+        DateTime trackedResetLocal,
+        DateTime incomingResetLocal,
+        int incomingBalancePercent,
+        string sourceKind,
+        DateTime sampleUtc,
+        DateTime lastAcceptedUtc,
+        DateTime corroboratingResetEventUtc,
+        TimeSpan windowLength,
+        RejectedIdentityPersistenceState rejectedPersistence = null)
+    {
+        QuotaWindowIdentityDecision decision = new QuotaWindowIdentityDecision
+        {
+            IdentitySame = true,
+            Accepted = true,
+            Reason = "identity_same",
+            AnchorAgeMinutes = null,
+            RejectedPersistenceCount = 0,
+            RejectedPersistenceFirstSeenUtc = DateTime.MinValue
+        };
+        if (trackedResetLocal == DateTime.MinValue || incomingResetLocal == DateTime.MinValue)
+        {
+            ResetRejectedIdentityPersistence(rejectedPersistence);
+            return decision;
+        }
+
+        double identityDeltaMinutes = Math.Abs((incomingResetLocal - trackedResetLocal).TotalMinutes);
+        if (identityDeltaMinutes <= QuotaIdentityToleranceMinutes)
+        {
+            ResetRejectedIdentityPersistence(rejectedPersistence);
+            return decision;
+        }
+
+        decision.IdentitySame = false;
+        DateTime sampleLocal = sampleUtc.ToLocalTime();
+        double remainingMinutes = (incomingResetLocal - sampleLocal).TotalMinutes;
+        decision.AnchorAgeMinutes = windowLength.TotalMinutes - remainingMinutes;
+        if (trackedResetLocal <= sampleLocal)
+        {
+            decision.Accepted = true;
+            decision.Reason = "reset_confirmed_by_expiry";
+            ResetRejectedIdentityPersistence(rejectedPersistence);
+            return decision;
+        }
+
+        // Provider reset anchors can be a few seconds beyond the nominal window length.
+        // Reuse the two-minute identity tolerance as clock-skew allowance so the observed
+        // +1s/+33s newborn samples remain immediate resets, while mid-window identities fail.
+        if (decision.AnchorAgeMinutes.Value >= -QuotaIdentityToleranceMinutes &&
+            decision.AnchorAgeMinutes.Value <= QuotaNewbornToleranceMinutes &&
+            ClampPercent(incomingBalancePercent) >= 99)
+        {
+            decision.Accepted = true;
+            decision.Reason = "reset_confirmed_by_newborn";
+            ResetRejectedIdentityPersistence(rejectedPersistence);
+            return decision;
+        }
+
+        if (corroboratingResetEventUtc != DateTime.MinValue)
+        {
+            double eventAgeHours = (sampleUtc - NormalizeStateUtc(corroboratingResetEventUtc)).TotalHours;
+            if (eventAgeHours >= 0.0 && eventAgeHours <= QuotaResetEventCorroborationHours)
+            {
+                decision.Accepted = true;
+                decision.Reason = "reset_confirmed_by_event";
+                ResetRejectedIdentityPersistence(rejectedPersistence);
+                return decision;
+            }
+        }
+
+        if (string.Equals(sourceKind, "session", StringComparison.OrdinalIgnoreCase))
+        {
+            decision.Accepted = true;
+            decision.Reason = "reset_confirmed_by_session";
+            ResetRejectedIdentityPersistence(rejectedPersistence);
+            return decision;
+        }
+
+        if (lastAcceptedUtc != DateTime.MinValue &&
+            (sampleUtc - lastAcceptedUtc).TotalMinutes > QuotaGapRebaselineMinutes)
+        {
+            decision.Accepted = true;
+            decision.Reason = "gap_rebaseline";
+            ResetRejectedIdentityPersistence(rejectedPersistence);
+            return decision;
+        }
+
+        decision.Accepted = false;
+        decision.Reason = "interference_pool_sample_ignored";
+        if (TrackRejectedIdentityPersistence(rejectedPersistence, incomingResetLocal, sampleUtc, decision))
+        {
+            decision.Accepted = true;
+            decision.Reason = "reset_confirmed_by_rejected_persistence";
+            ResetRejectedIdentityPersistence(rejectedPersistence);
+        }
+        return decision;
+    }
+
+    private static bool TrackRejectedIdentityPersistence(
+        RejectedIdentityPersistenceState state,
+        DateTime incomingResetLocal,
+        DateTime sampleUtc,
+        QuotaWindowIdentityDecision decision)
+    {
+        if (state == null || decision == null || incomingResetLocal == DateTime.MinValue)
+        {
+            return false;
+        }
+
+        DateTime normalizedSampleUtc = NormalizeStateUtc(sampleUtc == DateTime.MinValue ? DateTime.UtcNow : sampleUtc);
+        bool sameRejectedIdentity = state.ResetLocal != DateTime.MinValue &&
+            Math.Abs((incomingResetLocal - state.ResetLocal).TotalMinutes) <= QuotaIdentityToleranceMinutes;
+        if (!sameRejectedIdentity || state.FirstSeenUtc == DateTime.MinValue || normalizedSampleUtc < state.FirstSeenUtc)
+        {
+            state.Reset();
+            state.ResetLocal = incomingResetLocal;
+            state.FirstSeenUtc = normalizedSampleUtc;
+            state.Count = 1;
+        }
+        else
+        {
+            state.Count++;
+        }
+
+        decision.RejectedPersistenceCount = state.Count;
+        decision.RejectedPersistenceFirstSeenUtc = state.FirstSeenUtc;
+        return state.Count >= QuotaRejectedPersistenceMinSamples &&
+            (normalizedSampleUtc - state.FirstSeenUtc).TotalMinutes >= QuotaRejectedPersistenceMinMinutes;
+    }
+
+    private static void ResetRejectedIdentityPersistence(RejectedIdentityPersistenceState state)
+    {
+        if (state != null)
+        {
+            state.Reset();
+        }
+    }
+
+    private static string CombineQuotaIdentityReasons(
+        QuotaWindowIdentityDecision fiveHour,
+        QuotaWindowIdentityDecision weekly)
+    {
+        List<string> reasons = new List<string>();
+        AddQuotaIdentityReason(reasons, fiveHour);
+        AddQuotaIdentityReason(reasons, weekly);
+        return string.Join(";", reasons.ToArray());
+    }
+
+    private static void AddQuotaIdentityReason(
+        List<string> reasons,
+        QuotaWindowIdentityDecision decision)
+    {
+        if (decision == null || decision.IdentitySame || string.IsNullOrEmpty(decision.Reason))
+        {
+            return;
+        }
+
+        if (!reasons.Contains(decision.Reason))
+        {
+            reasons.Add(decision.Reason);
+        }
     }
 
     private static int GetNextFiveHourConsumptionRingBaseline(
@@ -4539,6 +4803,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         quotaState.LastReadSourceUtc = DateTime.MinValue;
         quotaState.FiveHourConsumptionRingBaselinePercent = -1;
         quotaState.TrackedFiveHourResetLocal = DateTime.MinValue;
+        quotaState.TrackedWeeklyResetLocal = DateTime.MinValue;
+        ResetRejectedIdentityPersistence(quotaState.FiveHourRejectedIdentity);
+        ResetRejectedIdentityPersistence(quotaState.WeeklyRejectedIdentity);
         quotaState.WeeklyQuotaAtFiveHourWindowStartPercent = -1;
     }
 
@@ -4554,9 +4821,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             PreviousFiveHourBaselinePercent = quotaState.FiveHourConsumptionRingBaselinePercent,
             PreviousWeeklyBaselinePercent = quotaState.WeeklyQuotaAtFiveHourWindowStartPercent,
             PreviousTrackedFiveHourResetLocal = quotaState.TrackedFiveHourResetLocal,
+            PreviousTrackedWeeklyResetLocal = quotaState.TrackedWeeklyResetLocal,
             NextFiveHourBaselinePercent = quotaState.FiveHourConsumptionRingBaselinePercent,
             NextWeeklyBaselinePercent = quotaState.WeeklyQuotaAtFiveHourWindowStartPercent,
             NextTrackedFiveHourResetLocal = quotaState.TrackedFiveHourResetLocal,
+            NextTrackedWeeklyResetLocal = quotaState.TrackedWeeklyResetLocal,
             NextSourceUpdatedUtc = quotaState.LastReadSourceUtc
         };
 
@@ -4582,6 +4851,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             decision.RawFiveHourResetLocal = snapshot.FiveHourResetKnown
                 ? snapshot.FiveHourResetLocal
                 : DateTime.MinValue;
+            decision.RawWeeklyResetLocal = snapshot.WeeklyResetKnown
+                ? snapshot.WeeklyResetLocal
+                : DateTime.MinValue;
         }
 
         return decision;
@@ -4597,10 +4869,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             decision = new QuotaRingDecisionInfo();
         }
 
-        decision.Reason = reason;
+        decision.Reason = string.IsNullOrEmpty(decision.IdentityDecisionReason)
+            ? reason
+            : (string.IsNullOrEmpty(reason) || string.Equals(decision.IdentityDecisionReason, reason, StringComparison.Ordinal)
+                ? decision.IdentityDecisionReason
+                : decision.IdentityDecisionReason + ";" + reason);
         decision.NextFiveHourBaselinePercent = quotaState.FiveHourConsumptionRingBaselinePercent;
         decision.NextWeeklyBaselinePercent = quotaState.WeeklyQuotaAtFiveHourWindowStartPercent;
         decision.NextTrackedFiveHourResetLocal = quotaState.TrackedFiveHourResetLocal;
+        decision.NextTrackedWeeklyResetLocal = quotaState.TrackedWeeklyResetLocal;
         decision.NextSourceUpdatedUtc = quotaState.LastReadSourceUtc;
         return decision;
     }
@@ -4727,6 +5004,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 { "five_hour_reset_local", decision.RawFiveHourResetLocal },
                 { "tracked_five_hour_reset_before", decision.PreviousTrackedFiveHourResetLocal },
                 { "tracked_five_hour_reset_after", decision.NextTrackedFiveHourResetLocal },
+                { "five_hour_anchor_age_minutes", decision.FiveHourAnchorAgeMinutes.HasValue ? (object)Math.Round(decision.FiveHourAnchorAgeMinutes.Value, 3) : null },
+                { "five_hour_rejected_persistence_count", decision.FiveHourRejectedPersistenceCount },
+                { "five_hour_rejected_persistence_first_seen_utc", decision.FiveHourRejectedPersistenceFirstSeenUtc == DateTime.MinValue ? null : (object)decision.FiveHourRejectedPersistenceFirstSeenUtc },
                 { "weekly_balance_percent", displayWeeklyPercent },
                 { "weekly_raw_balance_percent", decision.RawWeeklyPercent },
                 { "weekly_source_used_field", EmptyFallback(decision.RawWeeklyUsedFieldName, string.Empty) },
@@ -4738,7 +5018,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 { "weekly_previous_baseline_percent", PercentOrNull(decision.PreviousWeeklyBaselinePercent) },
                 { "weekly_protected", weeklyProtected },
                 { "weekly_gold", weeklyGold },
+                { "weekly_reset_local", decision.RawWeeklyResetLocal },
+                { "tracked_weekly_reset_before", decision.PreviousTrackedWeeklyResetLocal },
+                { "tracked_weekly_reset_after", decision.NextTrackedWeeklyResetLocal },
+                { "weekly_anchor_age_minutes", decision.WeeklyAnchorAgeMinutes.HasValue ? (object)Math.Round(decision.WeeklyAnchorAgeMinutes.Value, 3) : null },
+                { "weekly_rejected_persistence_count", decision.WeeklyRejectedPersistenceCount },
+                { "weekly_rejected_persistence_first_seen_utc", decision.WeeklyRejectedPersistenceFirstSeenUtc == DateTime.MinValue ? null : (object)decision.WeeklyRejectedPersistenceFirstSeenUtc },
                 { "source_kind", EmptyFallback(decision.SourceKind, "unknown") },
+                { "detail", (decision.Reason ?? string.Empty).IndexOf("source_switch", StringComparison.OrdinalIgnoreCase) >= 0 ? "source_switch" : string.Empty },
                 { "source_updated_utc", decision.RawSourceUpdatedUtc },
                 { "source_updated_known", decision.RawSourceUpdatedKnown },
                 { "tracked_source_updated_before_utc", decision.PreviousSourceUpdatedUtc },
@@ -4768,7 +5055,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        if (this.currentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off)
+        if (this.CurrentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off)
         {
             ApplyServiceHealthTestMode();
             return;
@@ -4946,7 +5233,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        if (this.currentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off)
+        if (this.CurrentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off)
         {
             ApplyServiceHealthTestMode();
             return;
@@ -4984,7 +5271,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        if (this.currentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off)
+        if (this.CurrentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off)
         {
             ApplyServiceHealthTestMode();
             return;
@@ -5003,7 +5290,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        if (this.currentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off)
+        if (this.CurrentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off)
         {
             ApplyServiceHealthTestMode();
             return;
@@ -5077,7 +5364,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        ServiceHealthTestMode mode = this.currentSettings.ServiceHealthTestMode;
+        ServiceHealthTestMode mode = this.CurrentSettings.ServiceHealthTestMode;
         if (mode == ServiceHealthTestMode.Off)
         {
             return;
@@ -5214,7 +5501,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        WidgetSettings settings = this.currentSettings == null ? null : this.currentSettings.Clone();
+        WidgetSettings settings = this.CurrentSettings == null ? null : this.CurrentSettings.Clone();
         if (settings == null)
         {
             return;
@@ -5268,7 +5555,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        WidgetSettings settings = this.currentSettings == null ? null : this.currentSettings.Clone();
+        WidgetSettings settings = this.CurrentSettings == null ? null : this.CurrentSettings.Clone();
         if (settings == null)
         {
             return;
@@ -5311,7 +5598,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void RefreshCodexRadarStatusIfNeeded()
     {
-        if (this.currentSettings.CodexRadarTestMode != CodexRadarTestMode.Off)
+        if (this.CurrentSettings.CodexRadarTestMode != CodexRadarTestMode.Off)
         {
             return;
         }
@@ -5354,7 +5641,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        WidgetSettings requestSettings = this.currentSettings.Clone();
+        WidgetSettings requestSettings = this.CurrentSettings.Clone();
         Task.Run((Action)delegate
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
@@ -5509,19 +5796,19 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     {
         if (softwareMode == CodexRadarSoftwareMode.Claude)
         {
-            return this.currentSettings == null ? string.Empty : (this.currentSettings.ClaudeRadarModelKey ?? string.Empty);
+            return this.CurrentSettings == null ? string.Empty : (this.CurrentSettings.ClaudeRadarModelKey ?? string.Empty);
         }
 
-        return this.currentSettings == null
+        return this.CurrentSettings == null
             ? CodexRadarModelCatalog.DefaultModelKey
-            : (this.currentSettings.CodexRadarModelKey ?? CodexRadarModelCatalog.DefaultModelKey);
+            : (this.CurrentSettings.CodexRadarModelKey ?? CodexRadarModelCatalog.DefaultModelKey);
     }
 
-    private void ApplyRadarClockAutoSwitchIfNeeded()
+    private void ApplyRadarClockAutoSwitchIfNeeded(bool forceCurrentSelectionUnavailable = false)
     {
-        if (this.currentSettings == null ||
-            !this.currentSettings.RadarClockAutoSwitchModelEnabled ||
-            this.currentSettings.CodexRadarRandomTestEnabled)
+        if (this.CurrentSettings == null ||
+            !this.CurrentSettings.RadarClockAutoSwitchModelEnabled ||
+            this.CurrentSettings.CodexRadarRandomTestEnabled)
         {
             return;
         }
@@ -5540,13 +5827,20 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         CodexRadarSoftwareMode softwareMode = GetEffectiveCodexRadarSoftwareMode();
+        if (softwareMode == CodexRadarSoftwareMode.Claude &&
+            !ClaudeRadarClockAutoSwitchSelector.ShouldSharedWindowOwnClaudeSelection(
+                this.CurrentSettings.ClaudeRadarEnabled))
+        {
+            return;
+        }
+
         double cycleHours = softwareMode == CodexRadarSoftwareMode.Claude ? 24.0 : 12.0;
         DateTime nowLocal = DateTime.Now;
-        DateTime boundary = GetEvenRowDialCycleBoundaryLocal(nowLocal, cycleHours);
+        DateTime boundary = RadarClockDial.GetCycleBoundaryLocal(nowLocal, cycleHours);
         DateTime previousBoundary = boundary.AddHours(-cycleHours);
         DateTime currentDataLocal;
         bool currentKnown = TryGetRadarClockDataTime(snapshot, softwareMode, out currentDataLocal);
-        if (currentKnown && currentDataLocal >= previousBoundary)
+        if (!forceCurrentSelectionUnavailable && currentKnown && currentDataLocal >= previousBoundary)
         {
             return;
         }
@@ -5698,31 +5992,29 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return false;
         }
 
-        string normalizedCurrent = WidgetSettings.NormalizeClaudeRadarModelKey(currentKey);
+        List<ClaudeRadarClockAutoSwitchCandidate> candidates = new List<ClaudeRadarClockAutoSwitchCandidate>();
         for (int i = 0; i < snapshot.ClockModelCandidates.Count; i++)
         {
             RadarClockModelCandidate candidate = snapshot.ClockModelCandidates[i];
-            if (candidate == null || !candidate.LatestKnown || candidate.LatestLocal == DateTime.MinValue)
+            if (candidate == null || candidate.HistoricalOnly)
             {
                 continue;
             }
 
-            string key = WidgetSettings.NormalizeClaudeRadarModelKey(candidate.Key);
-            if (key.Length == 0 ||
-                string.Equals(key, normalizedCurrent, StringComparison.OrdinalIgnoreCase) ||
-                candidate.LatestLocal < minimumDataLocal)
+            candidates.Add(new ClaudeRadarClockAutoSwitchCandidate
             {
-                continue;
-            }
-
-            if (candidate.LatestLocal > targetDataLocal)
-            {
-                targetKey = key;
-                targetDataLocal = candidate.LatestLocal;
-            }
+                Key = candidate.Key,
+                LatestKnown = candidate.LatestKnown,
+                LatestLocal = candidate.LatestLocal
+            });
         }
 
-        return targetKey.Length > 0;
+        return ClaudeRadarClockAutoSwitchSelector.TrySelectLatestModel(
+            currentKey,
+            minimumDataLocal,
+            candidates,
+            out targetKey,
+            out targetDataLocal);
     }
 
     private static bool TryReadClaudeRadarStatusForSharedWindow(
@@ -5811,7 +6103,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                     {
                         Key = candidateMetric.SourceKey,
                         LatestLocal = candidateMetric.LatestAtUtc.ToLocalTime(),
-                        LatestKnown = true
+                        LatestKnown = true,
+                        HistoricalOnly = candidateMetric.HistoricalOnly
                     });
                 }
             }
@@ -6058,17 +6351,28 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         string targetSignature = BuildCodexModelIqContentSignature(target);
-        string sourceSignature = BuildCodexModelIqContentSignature(source);
+        string sourceSignature = !string.IsNullOrEmpty(source.ModelIqCachedContentSignature)
+            ? source.ModelIqCachedContentSignature
+            : BuildCodexModelIqContentSignature(source);
         if (targetSignature.Length == 0 ||
             sourceSignature.Length == 0 ||
             !string.Equals(targetSignature, sourceSignature, StringComparison.Ordinal))
         {
+            if (!string.IsNullOrEmpty(source.ModelIqCachedContentSignature) &&
+                targetSignature.Length > 0 &&
+                !string.Equals(targetSignature, sourceSignature, StringComparison.Ordinal))
+            {
+                Program.LogInfo("Codex IQ cached content changed. SourceSignature=" + sourceSignature +
+                    ", TargetSignature=" + targetSignature);
+            }
+
             return;
         }
 
         // RefreshedUtc drives the small clock marker. Reusing it for identical IQ content prevents
         // hourly same-data reads from moving the marker away from the true first-seen time.
         target.ModelIqRefreshedAtLocal = source.ModelIqRefreshedAtLocal;
+        target.ModelIqCachedContentSignature = source.ModelIqCachedContentSignature;
         target.ModelIqRefreshedAtKnown = true;
     }
 
@@ -6118,6 +6422,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         target.ModelIqEfficiencyInputKnown = source.ModelIqEfficiencyInputKnown;
         target.ModelIqEfficiencyKnown = source.ModelIqEfficiencyKnown;
         target.ModelIqRefreshedAtLocal = source.ModelIqRefreshedAtLocal;
+        target.ModelIqCachedContentSignature = source.ModelIqCachedContentSignature;
         target.ModelIqDataDateLocal = source.ModelIqDataDateLocal;
         target.ModelIqDataWindowStartHourLocal = source.ModelIqDataWindowStartHourLocal;
         target.ModelIqDataLabel = source.ModelIqDataLabel;
@@ -6240,9 +6545,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             target.SpeedWindowEventId = source.SpeedWindowEventId;
             target.SpeedWindowOpenedAtLocal = source.SpeedWindowOpenedAtLocal;
             target.SpeedWindowOpenedAtKnown = source.SpeedWindowOpenedAtKnown;
+            target.SpeedWindowClosedAtLocal = source.SpeedWindowClosedAtLocal;
+            target.SpeedWindowClosedAtKnown = source.SpeedWindowClosedAtKnown;
         }
-
-        if (source.SpeedWindowClosedAtKnown)
+        else if (source.SpeedWindowClosedAtKnown)
         {
             target.SpeedWindowClosedAtLocal = source.SpeedWindowClosedAtLocal;
             target.SpeedWindowClosedAtKnown = true;
@@ -6458,7 +6764,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 if (parsed)
                 {
                     catalogUpdate = CodexRadarModelCatalog.MergeAndSave(
-                        ExtractCodexRadarHtmlModelCatalog(content));
+                        ExtractCodexRadarHtmlModelCatalog(content),
+                        false);
                 }
             }
 
@@ -6690,7 +6997,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         catalogUpdate = CodexRadarModelCatalog.MergeAndSave(
-            ExtractCodexRadarHtmlModelCatalog(content));
+            ExtractCodexRadarHtmlModelCatalog(content),
+            false);
         health = GetCodexRadarSnapshotHealth(snapshot);
         return true;
     }
@@ -7356,8 +7664,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             }
 
             Dictionary<string, object> rootModelIq = GetQuotaObject(root, "model_iq");
+            List<CodexRadarModelInfo> discoveredModels = ExtractCodexRadarModelCatalog(rootModelIq);
             catalogUpdate = CodexRadarModelCatalog.MergeAndSave(
-                ExtractCodexRadarModelCatalog(rootModelIq));
+                discoveredModels,
+                IsCodexRadarCompleteCatalog(rootModelIq, discoveredModels));
             snapshot = CodexRadarSnapshot.CreateDefault();
             DateTime checkedAt;
             if (TryGetQuotaDate(root, "checked_at", out checkedAt) ||
@@ -8071,6 +8381,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         DateTime closesAt;
+        DateTime opensAt;
+        if (TryGetCodexRadarHtmlDateAttribute(html, "data-window-opened-at", out opensAt))
+        {
+            snapshot.SpeedWindowOpenedAtLocal = opensAt;
+            snapshot.SpeedWindowOpenedAtKnown = true;
+        }
+
         if (TryGetCodexRadarHtmlDateAttribute(html, "data-window-closes-at", out closesAt))
         {
             snapshot.SpeedWindowKnown = true;
@@ -8399,13 +8716,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         string latestLabel = string.Empty;
         MatchCollection matches = Regex.Matches(
             WebUtility.HtmlDecode(content),
-            "<title>\\s*([0-9]{1,2}\\.[0-9]{1,2}(?:_(?:am|pm)(?:_[0-9]+)?|_n)?)\\s+GPT-5\\.([0-9]+)\\s+([a-z0-9_-]+):",
+            "<title>\\s*([0-9]{1,2}\\.[0-9]{1,2}(?:_(?:am|pm)(?:_[0-9]+)?|_n)?)\\s+GPT-5\\.([0-9]+)\\s+([a-z0-9_-]+(?:\\s+[a-z0-9_-]+)?):",
             RegexOptions.IgnoreCase);
         for (int i = 0; i < matches.Count; i++)
         {
             string candidateKey = CodexRadarModelCatalog.BuildModelKey(
                 "gpt-5." + matches[i].Groups[2].Value,
-                matches[i].Groups[3].Value,
+                Regex.Replace(matches[i].Groups[3].Value.Trim(), "\\s+", "_"),
                 string.Empty);
             if (string.Equals(candidateKey, expectedKey, StringComparison.OrdinalIgnoreCase))
             {
@@ -8440,7 +8757,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         List<CodexModelHistoryPoint> history = new List<CodexModelHistoryPoint>();
         MatchCollection matches = Regex.Matches(
             WebUtility.HtmlDecode(content),
-            "(?:(\\d{1,2})月(\\d{1,2})日|(\\d{1,2})\\.(\\d{1,2})(?:_(am|pm|n)(?:_[0-9]+)?)?)\\s+GPT-5\\.(\\d+)\\s+([a-z0-9_-]+):\\s*" +
+            "(?:(\\d{1,2})月(\\d{1,2})日|(\\d{1,2})\\.(\\d{1,2})(?:_(am|pm|n)(?:_[0-9]+)?)?)\\s+GPT-5\\.(\\d+)\\s+([a-z0-9_-]+(?:\\s+[a-z0-9_-]+)?):\\s*" +
                 "IQ指数\\s*([0-9.]+),\\s*(\\d+)\\s*/\\s*(\\d+),\\s*" +
                 "费用\\s*\\$[0-9.]+,\\s*耗时\\s*(\\d+)分钟,\\s*" +
                 "cache命中率\\s*([0-9.]+)%",
@@ -8451,7 +8768,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             Match match = matches[i];
             string candidateKey = CodexRadarModelCatalog.BuildModelKey(
                 "gpt-5." + match.Groups[6].Value,
-                match.Groups[7].Value,
+                Regex.Replace(match.Groups[7].Value.Trim(), "\\s+", "_"),
                 string.Empty);
             if (!string.Equals(candidateKey, expectedKey, StringComparison.OrdinalIgnoreCase))
             {
@@ -8614,6 +8931,33 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         return models;
+    }
+
+    private static bool IsCodexRadarCompleteCatalog(
+        Dictionary<string, object> modelIq,
+        IList<CodexRadarModelInfo> extracted)
+    {
+        if (modelIq == null || extracted == null || extracted.Count == 0)
+        {
+            return false;
+        }
+
+        int sourceModelCount = 1;
+        Dictionary<string, object> comparisons = GetQuotaObject(modelIq, "comparisons");
+        if (comparisons != null)
+        {
+            foreach (KeyValuePair<string, object> pair in comparisons)
+            {
+                if (pair.Value is Dictionary<string, object>)
+                {
+                    sourceModelCount++;
+                }
+            }
+        }
+
+        // Extraction de-duplicates normalized keys. Equality proves the source was readable
+        // and that normalization did not collapse two distinct catalog entries.
+        return extracted.Count == sourceModelCount;
     }
 
     private static List<CodexRadarModelInfo> ExtractCodexRadarHtmlModelCatalog(string content)
@@ -9686,7 +10030,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private double GetQuotaActiveRefreshSeconds()
     {
-        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
+        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode);
         if (mode == WidgetPerformanceMode.Smooth)
         {
             return 10.0;
@@ -9702,7 +10046,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private double GetQuotaProcessCheckSeconds()
     {
-        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
+        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode);
         if (mode == WidgetPerformanceMode.Smooth)
         {
             return 3.0;
@@ -9718,7 +10062,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private TimeSpan GetQuotaInactiveRefreshInterval()
     {
-        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode);
+        WidgetPerformanceMode mode = WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode);
         if (mode == WidgetPerformanceMode.Smooth)
         {
             return TimeSpan.FromMinutes(10.0);
@@ -9736,7 +10080,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     {
         if (this.lastQuotaProcessCheckUtc != DateTime.MinValue &&
             (nowUtc - this.lastQuotaProcessCheckUtc).TotalSeconds < SoftwareRuntimePresence.GetPresenceRefreshSeconds(
-                WidgetSettings.GetEffectivePerformanceMode(this.currentSettings.PerformanceMode)))
+                WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode)))
         {
             changed = false;
             return this.quotaCodexProcessRunning;
@@ -9836,6 +10180,32 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             }
         }
 
+        string selectedKey = CodexRadarModelCatalog.NormalizeModelKey(
+            this.CurrentSettings == null ? string.Empty : this.CurrentSettings.CodexRadarModelKey);
+        bool selectedUnavailable = ContainsCodexRadarModelKey(emitted.Unavailable, selectedKey);
+        bool selectedDeleted = ContainsCodexRadarModelKey(emitted.Deleted, selectedKey);
+        CodexRadarModelCatalogNotificationSummary summary =
+            CodexRadarModelCatalog.BuildNotificationSummary(emitted);
+        if (summary.TotalCount >= CodexRadarModelCatalog.ConsolidatedNotificationThreshold)
+        {
+            string representatives = summary.RepresentativeLabels.Count == 0
+                ? string.Empty
+                : "；代表模型：" + string.Join("、", summary.RepresentativeLabels.ToArray());
+            string selectedNotice = selectedDeleted
+                ? "；当前选中模型已删除"
+                : (selectedUnavailable ? "；当前选中模型已暂不可用" : string.Empty);
+            ShowCodexNotification(
+                "Codex Radar 模型目录换代",
+                "新增 " + summary.AddedCount.ToString(CultureInfo.InvariantCulture) +
+                "，暂不可用 " + summary.UnavailableCount.ToString(CultureInfo.InvariantCulture) +
+                "，删除 " + summary.DeletedCount.ToString(CultureInfo.InvariantCulture) + representatives + selectedNotice + "。",
+                summary.UnavailableCount > 0 || summary.DeletedCount > 0
+                    ? ToolTipIcon.Warning
+                    : ToolTipIcon.Info);
+            HandleSelectedCodexRadarModelCatalogChange(emitted, selectedKey);
+            return;
+        }
+
         for (int i = 0; i < emitted.Added.Count; i++)
         {
             CodexRadarModelInfo model = emitted.Added[i];
@@ -9850,7 +10220,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             CodexRadarModelInfo model = emitted.Unavailable[i];
             ShowCodexNotification(
                 "Codex Radar 模型暂不可用",
-                CodexRadarModelCatalog.GetDisplayLabel(model == null ? string.Empty : model.Label, model == null ? string.Empty : model.Key) + " 本次没有出现在网站模型列表中，暂时保留但不可选。",
+                CodexRadarModelCatalog.GetDisplayLabel(model == null ? string.Empty : model.Label, model == null ? string.Empty : model.Key) +
+                    (IsSameCodexRadarModel(model, selectedKey) ? "（当前选中模型）" : string.Empty) +
+                    " 本次没有出现在网站模型列表中，暂时保留但不可选。",
                 ToolTipIcon.Warning);
         }
 
@@ -9859,9 +10231,67 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             CodexRadarModelInfo model = emitted.Deleted[i];
             ShowCodexNotification(
                 "Codex Radar 模型已删除",
-                CodexRadarModelCatalog.GetDisplayLabel(model == null ? string.Empty : model.Label, model == null ? string.Empty : model.Key) + " 连续多次未出现在网站模型列表中，已从检测列表移除。",
+                CodexRadarModelCatalog.GetDisplayLabel(model == null ? string.Empty : model.Label, model == null ? string.Empty : model.Key) +
+                    (IsSameCodexRadarModel(model, selectedKey) ? "（当前选中模型）" : string.Empty) +
+                    " 连续多次未出现在网站模型列表中，已从检测列表移除。",
                 ToolTipIcon.Warning);
         }
+
+        HandleSelectedCodexRadarModelCatalogChange(emitted, selectedKey);
+    }
+
+    private void HandleSelectedCodexRadarModelCatalogChange(
+        CodexRadarModelCatalogUpdate update,
+        string selectedKey)
+    {
+        if (!ContainsCodexRadarModelKey(update == null ? null : update.Deleted, selectedKey) ||
+            this.CurrentSettings == null ||
+            !this.CurrentSettings.RadarClockAutoSwitchModelEnabled)
+        {
+            return;
+        }
+
+        this.lastRadarClockAutoSwitchSignature = string.Empty;
+        try
+        {
+            if (!this.IsDisposed && this.IsHandleCreated)
+            {
+                this.BeginInvoke((MethodInvoker)delegate
+                {
+                    if (!this.IsDisposed)
+                    {
+                        ApplyRadarClockAutoSwitchIfNeeded(true);
+                    }
+                });
+            }
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
+    private static bool ContainsCodexRadarModelKey(
+        IList<CodexRadarModelInfo> models,
+        string normalizedKey)
+    {
+        for (int i = 0; models != null && i < models.Count; i++)
+        {
+            if (IsSameCodexRadarModel(models[i], normalizedKey))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsSameCodexRadarModel(CodexRadarModelInfo model, string normalizedKey)
+    {
+        return model != null && normalizedKey.Length > 0 &&
+            string.Equals(
+                CodexRadarModelCatalog.NormalizeModelKey(model.Key),
+                normalizedKey,
+                StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CodexRadarNotificationStatePath
@@ -9926,7 +10356,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 }
             }
 
-            File.WriteAllLines(CodexRadarNotificationStatePath, lines.ToArray(), new UTF8Encoding(false));
+            File.WriteAllLines(CodexRadarNotificationStatePath, lines.ToArray(), SharedEncoding.Utf8NoBom);
         }
         catch (Exception ex)
         {
@@ -10526,14 +10956,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 }
 
                 CodexRadarSnapshot snapshot = CodexRadarSnapshot.CreateDefault();
+                ApplyCodexRadarCacheHardeningValues(values, prefix, snapshot);
                 snapshot.ModelIqDataDateLocal = dataDate.Date;
                 snapshot.ModelIqDataDateKnown = true;
-                int dataWindowHour;
-                if (TryReadCacheInt(values, prefix + "DataWindowHour", out dataWindowHour))
-                {
-                    snapshot.ModelIqDataWindowStartHourLocal = dataWindowHour >= 12 ? 12 : 0;
-                    snapshot.ModelIqDataWindowKnown = true;
-                }
 
                 snapshot.ModelIqDataLabel = GetCacheValue(values, prefix + "DataLabel", string.Empty);
                 if (string.IsNullOrWhiteSpace(snapshot.ModelIqDataLabel))
@@ -10678,10 +11103,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 values[prefix + "RefreshedUtc"] = snapshot.ModelIqRefreshedAtKnown
                     ? snapshot.ModelIqRefreshedAtLocal.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)
                     : string.Empty;
+                WriteCodexRadarCacheHardeningValues(values, prefix, snapshot);
                 values[prefix + "DataDate"] = snapshot.ModelIqDataDateLocal.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
-                values[prefix + "DataWindowHour"] = (snapshot.ModelIqDataWindowKnown
-                    ? (snapshot.ModelIqDataWindowStartHourLocal >= 12 ? 12 : 0)
-                    : 0).ToString(CultureInfo.InvariantCulture);
                 values[prefix + "DataLabel"] = snapshot.ModelIqDataLabelKnown
                     ? snapshot.ModelIqDataLabel
                     : FormatCodexModelIqDataLabel(
@@ -10716,7 +11139,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                     }
                 }
 
-                File.WriteAllLines(tempPath, lines.ToArray(), new UTF8Encoding(false));
+                File.WriteAllLines(tempPath, lines.ToArray(), SharedEncoding.Utf8NoBom);
                 if (File.Exists(path))
                 {
                     File.Replace(tempPath, path, null);
@@ -10730,6 +11153,42 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             {
                 Program.LogException(ex);
             }
+        }
+    }
+
+    private static void WriteCodexRadarCacheHardeningValues(
+        Dictionary<string, string> values,
+        string prefix,
+        CodexRadarSnapshot snapshot)
+    {
+        values[prefix + "ContentSignature"] = BuildCodexModelIqContentSignature(snapshot);
+        values[prefix + "CheckedAtUtc"] = snapshot.CheckedAtKnown
+            ? snapshot.CheckedAtLocal.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)
+            : string.Empty;
+        values[prefix + "DataWindowHour"] = snapshot.ModelIqDataWindowKnown
+            ? (snapshot.ModelIqDataWindowStartHourLocal >= 12 ? 12 : 0).ToString(CultureInfo.InvariantCulture)
+            : string.Empty;
+    }
+
+    private static void ApplyCodexRadarCacheHardeningValues(
+        Dictionary<string, string> values,
+        string prefix,
+        CodexRadarSnapshot snapshot)
+    {
+        snapshot.ModelIqCachedContentSignature =
+            GetCacheValue(values, prefix + "ContentSignature", string.Empty);
+        DateTime checkedAtUtc;
+        if (TryReadCacheUtc(values, prefix + "CheckedAtUtc", out checkedAtUtc))
+        {
+            snapshot.CheckedAtLocal = checkedAtUtc.ToLocalTime();
+            snapshot.CheckedAtKnown = true;
+        }
+
+        int dataWindowHour;
+        if (TryReadCacheInt(values, prefix + "DataWindowHour", out dataWindowHour))
+        {
+            snapshot.ModelIqDataWindowStartHourLocal = dataWindowHour >= 12 ? 12 : 0;
+            snapshot.ModelIqDataWindowKnown = true;
         }
     }
 
@@ -10767,6 +11226,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private static string GetLegacyCodexRadarCachePrefix(string modelKey)
     {
         string key = CodexRadarModelCatalog.NormalizeModelKey(modelKey);
+        if (key.Length == 0)
+        {
+            return "Model.default.";
+        }
+
         if (string.Equals(key, "gpt_55_medium", StringComparison.OrdinalIgnoreCase))
         {
             return "Gpt55Medium.";
@@ -10777,7 +11241,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return "Gpt54.";
         }
 
-        if (string.Equals(key, CodexRadarModelCatalog.DefaultModelKey, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(key, CodexRadarModelCatalog.PreviousDefaultModelKey, StringComparison.OrdinalIgnoreCase))
         {
             return "Gpt55.";
         }
@@ -11259,6 +11723,55 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         snapshot.SourceKind = string.IsNullOrWhiteSpace(sourceKind)
             ? "unknown"
             : sourceKind.Trim();
+    }
+
+    private static bool ShouldRebaselineClaudeQuotaSource(string previousSource, string nextSource)
+    {
+        string previousClass = GetClaudeQuotaSourceClass(previousSource);
+        string nextClass = GetClaudeQuotaSourceClass(nextSource);
+        return previousClass.Length > 0 &&
+            nextClass.Length > 0 &&
+            !string.Equals(previousClass, nextClass, StringComparison.Ordinal);
+    }
+
+    private static bool TryRebaselineClaudeQuotaSource(
+        QuotaRuntimeState quotaState,
+        CodexQuotaSnapshot nextSnapshot,
+        bool sourceKnown,
+        string nextSource)
+    {
+        if (quotaState == null ||
+            !sourceKnown ||
+            !quotaState.SourceKnown ||
+            nextSnapshot == null ||
+            !ShouldRebaselineClaudeQuotaSource(
+                quotaState.Snapshot == null ? string.Empty : quotaState.Snapshot.SourceKind,
+                nextSource))
+        {
+            return false;
+        }
+
+        MarkQuotaSnapshotSource(nextSnapshot, nextSource);
+        InitializeQuotaReadDeltaTracking(quotaState, nextSnapshot, true);
+        return true;
+    }
+
+    private static string GetClaudeQuotaSourceClass(string sourceKind)
+    {
+        string value = (sourceKind ?? string.Empty).Trim();
+        if (ClaudeQuotaSourcePresentation.IsPublicSiteSource(value))
+        {
+            return "site";
+        }
+
+        if (value.StartsWith("claude_personal", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "claude", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "cache", StringComparison.OrdinalIgnoreCase))
+        {
+            return "personal";
+        }
+
+        return string.Empty;
     }
 
     private static void SetQuotaUsageDiagnostics(
@@ -11947,6 +12460,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         bool found = false;
+        bool foundFiveHourPercent = false;
+        bool foundWeeklyPercent = false;
         try
         {
             string[] lines = File.ReadAllLines(path);
@@ -11972,11 +12487,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 {
                     snapshot.FiveHourPercent = ClampPercent(percent);
                     found = true;
+                    foundFiveHourPercent = true;
                 }
                 else if (string.Equals(key, "WeeklyPercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out percent))
                 {
                     snapshot.WeeklyPercent = ClampPercent(percent);
                     found = true;
+                    foundWeeklyPercent = true;
                 }
                 else if (string.Equals(key, "FiveHourReset", StringComparison.OrdinalIgnoreCase) && DateTime.TryParse(value, out dateTime))
                 {
@@ -12009,10 +12526,25 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return false;
         }
 
+        if (softwareMode == CodexRadarSoftwareMode.Claude &&
+            (!foundFiveHourPercent ||
+             !foundWeeklyPercent ||
+             !ClaudeRadarReader.IsPersonalQuotaCacheFresh(
+                 snapshot.SourceUpdatedKnown,
+                 snapshot.SourceUpdatedUtc,
+                 DateTime.UtcNow)))
+        {
+            return false;
+        }
+
         if (found)
         {
-            MarkQuotaSnapshotSource(snapshot, "cache");
-            if (!snapshot.SourceUpdatedKnown)
+            MarkQuotaSnapshotSource(
+                snapshot,
+                softwareMode == CodexRadarSoftwareMode.Claude
+                    ? "claude_personal_cache"
+                    : "cache");
+            if (softwareMode != CodexRadarSoftwareMode.Claude && !snapshot.SourceUpdatedKnown)
             {
                 snapshot.SourceUpdatedUtc = SafeGetLastWriteTimeUtc(path);
                 snapshot.SourceUpdatedKnown = snapshot.SourceUpdatedUtc != DateTime.MinValue;
@@ -12080,7 +12612,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             }
 
             string tempPath = path + ".tmp";
-            File.WriteAllText(tempPath, next, new UTF8Encoding(false));
+            File.WriteAllText(tempPath, next, SharedEncoding.Utf8NoBom);
             if (File.Exists(path))
             {
                 File.Delete(path);
@@ -12404,12 +12936,16 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     internal static void RunStatusAndQuotaSelfTest()
     {
-        RunEvenRowDialFreshnessSelfTest();
+        RadarClockDial.RunSelfTest();
         RunCodexModelIqRefreshMarkerSelfTest();
+        RunCodexRadarCacheHardeningSelfTest();
+        RunCodexQuotaIdentityHardeningSelfTest();
         RunCodexModelIqDynamicScaleSelfTest();
         RunCodexApiServiceAlertDebounceSelfTest();
         RunRadarFamilyRuntimeIsolationSelfTest();
         RunCodexRadarNotificationStateSelfTest();
+        RunCodexRadarCatalogCompletenessSelfTest();
+        RunClaudeSharedClockCandidateFilterSelfTest();
         RunClaudeSharedQuotaLineSelfTest();
         RunCodexResetCreditsSelfTest();
         QuotaRingPresentation.RunSelfTest();
@@ -12576,21 +13112,65 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Codex Radar Claude community label formatting failed.");
         }
 
+        if (!string.Equals(
+                CodexRadarModelCatalog.BuildModelKey("gpt-5.6-sol", "low", string.Empty),
+                "gpt_56_sol_low",
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                CodexRadarModelCatalog.NormalizeModelKey("gpt_5_6_luna_high"),
+                "gpt_56_luna_high",
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                FormatCodexRadarCurrentModelShortLabel("gpt_56_sol_low", "GPT-5.6 Sol low"),
+                "5.6SL",
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                FormatCodexRadarCurrentModelShortLabel("gpt_56_luna_high", "GPT-5.6 Luna high"),
+                "5.6LH",
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Codex Radar GPT-5.6 model identity or short-label formatting failed.");
+        }
+
+        CodexRadarSnapshot codex56Snapshot;
+        CodexRadarModelCatalogUpdate codex56Update;
+        string codex56Json =
+            "{\"model_iq\":{\"latest\":{\"date\":\"2026-07-10-am\",\"score\":116.7,\"passed\":7,\"tasks\":10," +
+            "\"valid_tasks\":9,\"model\":\"gpt-5.6-sol\",\"reasoning_effort\":\"ultra\"}," +
+            "\"comparisons\":{\"gpt_56_sol_medium\":{\"label\":\"GPT-5.6 Sol medium\",\"latest\":{" +
+            "\"date\":\"2026-07-10-am\",\"score\":120.0,\"passed\":8,\"tasks\":10,\"valid_tasks\":10," +
+            "\"model\":\"gpt-5.6-sol\",\"reasoning_effort\":\"medium\"}}}}}";
+        if (!TryParseCodexRadarStatus(
+                codex56Json,
+                CodexRadarModelCatalog.DefaultModelKey,
+                false,
+                out codex56Snapshot,
+                out codex56Update) ||
+            codex56Snapshot == null ||
+            !codex56Snapshot.ModelIqKnown ||
+            Math.Abs(codex56Snapshot.ModelIqPassRatePercent - 120.0) > 0.001 ||
+            codex56Snapshot.ModelIqPassed != 8 ||
+            codex56Snapshot.ModelIqValidTasks != 10)
+        {
+            throw new InvalidOperationException("Codex Radar GPT-5.6 comparison selection did not use Sol medium data.");
+        }
+
         DateTime beijingNow = TimeZoneInfo.ConvertTime(DateTime.UtcNow, TimeZoneUtilities.GetBeijingTimeZone());
         string monthText = beijingNow.Month.ToString(CultureInfo.InvariantCulture);
         string dayText = beijingNow.Day.ToString(CultureInfo.InvariantCulture);
         string windowClosesAtText = beijingNow.AddHours(1.0).ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture) + "+08:00";
+        string windowOpenedAtText = beijingNow.AddHours(-1.0).ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture) + "+08:00";
         string html =
             "<!-- codex-radar:summary:start -->" +
             "<span class=\"window-source-kicker\">速蹬窗口开启</span>" +
-            "<div data-window-clock data-window-closes-at=\"" + windowClosesAtText + "\"></div>" +
-            "<div class=\"model-iq-score-chip\" data-model-key=\"gpt_55_xhigh\"><span>GPT-5.5-xhigh</span></div>" +
+            "<div data-window-clock data-window-opened-at=\"" + windowOpenedAtText + "\" data-window-closes-at=\"" + windowClosesAtText + "\"></div>" +
+            "<div class=\"model-iq-score-chip\" data-model-key=\"gpt_56_sol_medium\"><span>GPT-5.6-Sol-medium</span></div>" +
             "<h2>降智雷达 <span>" + monthText + "月" + dayText + "日13:59更新</span></h2>" +
-            "<div class=\"model-iq-compare-row\"><span>通过数</span><strong class=\"model-iq-column-gpt_55_xhigh\">6/10</strong></div>" +
-            "<div class=\"model-iq-compare-row\"><span>IQ</span><strong class=\"model-iq-column-gpt_55_xhigh\">90.0</strong></div>" +
-            "<div class=\"model-iq-compare-row\"><span>耗时</span><strong class=\"model-iq-column-gpt_55_xhigh\">3.4h</strong></div>" +
-            "<div class=\"model-iq-compare-row\"><span>总tokens</span><strong class=\"model-iq-column-gpt_55_xhigh\">42.3M</strong></div>" +
-            "<title>" + monthText + "." + dayText + "_pm GPT-5.5 xhigh: IQ指数 90.0, 6/10, 费用 $42.00, 耗时 204分钟, cache命中率 95.2%</title>" +
+            "<div class=\"model-iq-compare-row\"><span>通过数</span><strong class=\"model-iq-column-gpt_56_sol_medium\">6/10</strong></div>" +
+            "<div class=\"model-iq-compare-row\"><span>IQ</span><strong class=\"model-iq-column-gpt_56_sol_medium\">90.0</strong></div>" +
+            "<div class=\"model-iq-compare-row\"><span>耗时</span><strong class=\"model-iq-column-gpt_56_sol_medium\">3.4h</strong></div>" +
+            "<div class=\"model-iq-compare-row\"><span>总tokens</span><strong class=\"model-iq-column-gpt_56_sol_medium\">42.3M</strong></div>" +
+            "<title>" + monthText + "." + dayText + "_pm GPT-5.6 Sol medium: IQ指数 90.0, 6/10, 费用 $42.00, 耗时 204分钟, cache命中率 95.2%</title>" +
             "<svg><text class=\"model-iq-band-label\">90-110常态区</text></svg>" +
             "<section class=\"quota-radar\" aria-label=\"额度雷达\">" +
             "<h2>额度雷达 <span>" + monthText + "月" + dayText + "日10:14更新</span></h2>" +
@@ -12614,6 +13194,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             if (!htmlSnapshot.ModelIqKnown) htmlFailures.Add("ModelIqKnown=false");
             if (!htmlSnapshot.SpeedWindowKnown) htmlFailures.Add("SpeedWindowKnown=false");
             if (!htmlSnapshot.SpeedWindowOpen) htmlFailures.Add("SpeedWindowOpen=false");
+            if (!htmlSnapshot.SpeedWindowOpenedAtKnown) htmlFailures.Add("SpeedWindowOpenedAtKnown=false");
             if (!htmlSnapshot.SpeedWindowClosedAtKnown) htmlFailures.Add("SpeedWindowClosedAtKnown=false");
             if (Math.Abs(htmlSnapshot.ModelIqEfficiencyTotalTokens - 42300000.0) > 1.0)
             {
@@ -12722,6 +13303,59 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         {
             throw new InvalidOperationException("Expired speed window should normalize to closed.");
         }
+
+        DateTime countdownNow = new DateTime(2026, 7, 10, 12, 0, 0, DateTimeKind.Local);
+        CodexRadarSnapshot countdownWindow = CodexRadarSnapshot.CreateDefault();
+        countdownWindow.SpeedWindowKnown = true;
+        countdownWindow.SpeedWindowOpen = true;
+        countdownWindow.SpeedWindowStatus = "open";
+        countdownWindow.SpeedWindowOpenedAtLocal = countdownNow.AddHours(-20.0);
+        countdownWindow.SpeedWindowOpenedAtKnown = true;
+        countdownWindow.SpeedWindowClosedAtLocal = countdownNow.AddHours(20.0);
+        countdownWindow.SpeedWindowClosedAtKnown = true;
+        int countdownMinutes;
+        float countdownRatio;
+        if (!TryGetCodexRadarSpeedWindowCountdown(
+                countdownWindow,
+                countdownNow,
+                out countdownMinutes,
+                out countdownRatio) ||
+            countdownMinutes != 1200 ||
+            Math.Abs(countdownRatio - 0.5f) > 0.001f ||
+            !string.Equals(FormatSpeedWindowCountdownTime(countdownMinutes), "20:00", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Speed-window countdown should use opened_at/closed_at progress.");
+        }
+
+        countdownWindow.SpeedWindowOpenedAtLocal = countdownNow.AddHours(-30.0);
+        countdownWindow.SpeedWindowClosedAtLocal = countdownNow.AddHours(120.0);
+        if (!TryGetCodexRadarSpeedWindowCountdown(
+                countdownWindow,
+                countdownNow,
+                out countdownMinutes,
+                out countdownRatio) ||
+            countdownMinutes != 6000 ||
+            Math.Abs(countdownRatio - 1.0f) > 0.001f ||
+            !string.Equals(FormatSpeedWindowCountdownTime(countdownMinutes), "100:00", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Speed-window countdown should clamp display and ring basis to 100 hours.");
+        }
+
+        CodexRadarSnapshot mergedWindow = countdownWindow.Clone();
+        CodexRadarSnapshot sourceWithoutClose = CodexRadarSnapshot.CreateDefault();
+        sourceWithoutClose.SpeedWindowKnown = true;
+        sourceWithoutClose.SpeedWindowOpen = true;
+        sourceWithoutClose.SpeedWindowStatus = "open";
+        CopyCodexRadarWindowSnapshot(mergedWindow, sourceWithoutClose);
+        if (mergedWindow.SpeedWindowClosedAtKnown ||
+            TryGetCodexRadarSpeedWindowCountdown(
+                mergedWindow,
+                countdownNow,
+                out countdownMinutes,
+                out countdownRatio))
+        {
+            throw new InvalidOperationException("Explicit open snapshot without closed_at should clear an older countdown target.");
+        }
     }
 
     private static void RunRadarFamilyRuntimeIsolationSelfTest()
@@ -12780,6 +13414,22 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             !string.Equals(claudeDuplicateDecision.Reason, "duplicate_source_same_balance_keep_existing_rings", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Radar runtime isolation self-test failed: duplicate Claude sample did not preserve consumption ring.");
+        }
+
+        MarkQuotaSnapshotSource(claudeQuota.Snapshot, "claude_site_public");
+        CodexQuotaSnapshot personalQuota = CreateRuntimeIsolationQuotaSnapshot(64, 32, sourceUtc.AddMinutes(4.0));
+        bool sourceRebaselined = TryRebaselineClaudeQuotaSource(claudeQuota, personalQuota, true, "claude_personal");
+        QuotaRingDecisionInfo sourceSwitchDecision = UpdateQuotaReadDeltaTracking(claudeQuota, personalQuota, true);
+        if (!sourceRebaselined ||
+            claudeQuota.LastFiveHourReadPercent != 64 ||
+            claudeQuota.LastWeeklyReadPercent != 32 ||
+            claudeQuota.FiveHourConsumptionRingBaselinePercent != -1 ||
+            claudeQuota.WeeklyQuotaAtFiveHourWindowStartPercent != 32 ||
+            sourceSwitchDecision.NextFiveHourBaselinePercent != -1 ||
+            (sourceSwitchDecision.Reason ?? string.Empty).IndexOf("consumption", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            ShouldRebaselineClaudeQuotaSource("claude_personal_cache", "claude_personal"))
+        {
+            throw new InvalidOperationException("Radar runtime isolation self-test failed: Claude source switch did not rebuild the quota baseline.");
         }
 
         CodexQuotaSnapshot codexNearFull = CreateRuntimeIsolationQuotaSnapshot(99, 13, sourceUtc.AddMinutes(3.0));
@@ -13074,76 +13724,60 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
     }
 
-    private static void RunEvenRowDialFreshnessSelfTest()
+    private static void RunCodexRadarCatalogCompletenessSelfTest()
     {
-        DateTime codexNow = new DateTime(2026, 7, 7, 13, 30, 0);
-        AssertCodexRadarColor(
-            ComputeEvenRowDialStatusColor(true, new DateTime(2026, 7, 7, 12, 0, 0), false, DateTime.MinValue, 12.0, codexNow),
-            DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245),
-            "Codex 12h current period should be green");
-        AssertCodexRadarColor(
-            ComputeEvenRowDialStatusColor(true, new DateTime(2026, 7, 7, 0, 0, 0), false, DateTime.MinValue, 12.0, codexNow),
-            DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245),
-            "Codex 12h previous period should be yellow");
-        AssertCodexRadarColor(
-            ComputeEvenRowDialStatusColor(true, new DateTime(2026, 7, 6, 12, 0, 0), false, DateTime.MinValue, 12.0, codexNow),
-            DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245),
-            "Codex 12h missed full period should be red");
-
-        DateTime claudeNow = new DateTime(2026, 7, 7, 13, 30, 0);
-        AssertCodexRadarColor(
-            ComputeEvenRowDialStatusColor(true, new DateTime(2026, 7, 7, 0, 0, 0), false, DateTime.MinValue, 24.0, claudeNow),
-            DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245),
-            "Claude 24h current day should be green in shared window");
-        AssertCodexRadarColor(
-            ComputeEvenRowDialStatusColor(true, new DateTime(2026, 7, 6, 0, 0, 0), false, DateTime.MinValue, 24.0, claudeNow),
-            DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245),
-            "Claude 24h previous day should be yellow in shared window");
-        AssertCodexRadarColor(
-            ComputeEvenRowDialStatusColor(true, new DateTime(2026, 7, 5, 0, 0, 0), false, DateTime.MinValue, 24.0, claudeNow),
-            DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245),
-            "Claude 24h missed full day should be red in shared window");
-
-        float markerAngle;
-        DateTime codexBoundary = GetEvenRowDialCycleBoundaryLocal(codexNow, 12.0);
-        if (!TryGetEvenRowClockMarkerAngle(new DateTime(2026, 7, 7, 12, 15, 0), codexNow, codexBoundary, 12.0, out markerAngle) ||
-            Math.Abs(markerAngle - (-82.5f)) > 0.01f)
+        Dictionary<string, object> comparisons = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
         {
-            throw new InvalidOperationException("Codex 12h refresh marker angle should advance clockwise from the top boundary.");
+            { "gpt_56_terra_medium", new Dictionary<string, object>() },
+            { "gpt_57_nova_high", new Dictionary<string, object>() }
+        };
+        Dictionary<string, object> modelIq = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "latest", new Dictionary<string, object>() },
+            { "comparisons", comparisons }
+        };
+        List<CodexRadarModelInfo> extracted = ExtractCodexRadarModelCatalog(modelIq);
+        if (!IsCodexRadarCompleteCatalog(modelIq, extracted))
+        {
+            throw new InvalidOperationException("Complete Codex Radar JSON catalog was rejected by the completeness gate.");
         }
 
-        if (!TryGetEvenRowClockMarkerAngle(new DateTime(2026, 7, 7, 11, 0, 0), codexNow, codexBoundary, 12.0, out markerAngle) ||
-            Math.Abs(markerAngle - 240.0f) > 0.01f)
+        comparisons["gpt_5_7_nova_high"] = new Dictionary<string, object>();
+        extracted = ExtractCodexRadarModelCatalog(modelIq);
+        if (IsCodexRadarCompleteCatalog(modelIq, extracted))
         {
-            throw new InvalidOperationException("Codex 12h refresh marker should remain visible across the boundary until one full lap.");
+            throw new InvalidOperationException("Normalized Codex Radar catalog key collision was accepted as complete.");
         }
+    }
 
-        float codexCurrentAngle = -90.0f + (float)((codexNow - codexBoundary).TotalHours / 12.0 * 360.0);
-        if (Math.Abs(ComputeEvenRowClockSweep(markerAngle, codexCurrentAngle) - 75.0f) > 0.01f)
+    private static void RunClaudeSharedClockCandidateFilterSelfTest()
+    {
+        CodexRadarSnapshot snapshot = CodexRadarSnapshot.CreateDefault();
+        snapshot.ClockModelCandidates.Add(new RadarClockModelCandidate
         {
-            throw new InvalidOperationException("Codex 12h clock arc should connect the previous refresh marker to the current pointer.");
-        }
-
-        if (TryGetEvenRowClockMarkerAngle(codexNow.AddHours(-12.0), codexNow, codexBoundary, 12.0, out markerAngle))
+            Key = "m2",
+            LatestKnown = true,
+            LatestLocal = new DateTime(2026, 7, 10, 12, 0, 0),
+            HistoricalOnly = true
+        });
+        snapshot.ClockModelCandidates.Add(new RadarClockModelCandidate
         {
-            throw new InvalidOperationException("Codex 12h refresh marker should expire after one full lap.");
-        }
-
-        DateTime claudeBoundary = GetEvenRowDialCycleBoundaryLocal(claudeNow, 24.0);
-        if (!TryGetEvenRowClockMarkerAngle(claudeNow.AddHours(-23.9), claudeNow, claudeBoundary, 24.0, out markerAngle))
+            Key = "m3",
+            LatestKnown = true,
+            LatestLocal = new DateTime(2026, 7, 10, 11, 0, 0),
+            HistoricalOnly = false
+        });
+        string targetKey;
+        DateTime targetLocal;
+        if (!TryFindClaudeSharedClockAutoSwitchTarget(
+                "m1",
+                new DateTime(2026, 7, 10, 0, 0, 0),
+                snapshot,
+                out targetKey,
+                out targetLocal) ||
+            !string.Equals(targetKey, "m3", StringComparison.Ordinal))
         {
-            throw new InvalidOperationException("Claude shared 24h refresh marker should remain before one full lap.");
-        }
-
-        float claudeCurrentAngle = -90.0f + (float)((claudeNow - claudeBoundary).TotalHours / 24.0 * 360.0);
-        if (Math.Abs(ComputeEvenRowClockSweep(markerAngle, claudeCurrentAngle) - 358.5f) > 0.01f)
-        {
-            throw new InvalidOperationException("Claude shared 24h clock arc should connect the previous refresh marker to the current pointer.");
-        }
-
-        if (TryGetEvenRowClockMarkerAngle(claudeNow.AddHours(-24.0), claudeNow, claudeBoundary, 24.0, out markerAngle))
-        {
-            throw new InvalidOperationException("Claude shared 24h refresh marker should expire at one full lap.");
+            throw new InvalidOperationException("Shared Claude clock auto-switch selected a historical-only model.");
         }
     }
 
@@ -13162,6 +13796,241 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (changedContent.ModelIqRefreshedAtLocal == source.ModelIqRefreshedAtLocal)
         {
             throw new InvalidOperationException("Changed Codex IQ content should keep the new refresh marker time.");
+        }
+
+        CodexRadarSnapshot enrichedCached = source.Clone();
+        enrichedCached.ModelIqCachedContentSignature = BuildCodexModelIqContentSignature(source);
+        enrichedCached.ModelIqPassedKnown = false;
+        CodexRadarSnapshot sameAfterRestart = BuildModelIqRefreshMarkerTestSnapshot(88, new DateTime(2026, 7, 7, 14, 10, 0));
+        PreserveCodexModelIqRefreshTimeIfContentUnchanged(sameAfterRestart, enrichedCached);
+        if (sameAfterRestart.ModelIqRefreshedAtLocal != source.ModelIqRefreshedAtLocal)
+        {
+            throw new InvalidOperationException("Persisted Codex IQ signature did not survive cache enrichment across restart.");
+        }
+
+        CodexRadarSnapshot changedAfterRestart = BuildModelIqRefreshMarkerTestSnapshot(89, new DateTime(2026, 7, 7, 14, 10, 0));
+        PreserveCodexModelIqRefreshTimeIfContentUnchanged(changedAfterRestart, enrichedCached);
+        if (changedAfterRestart.ModelIqRefreshedAtLocal == source.ModelIqRefreshedAtLocal)
+        {
+            throw new InvalidOperationException("Persisted Codex IQ signature hid a real content change.");
+        }
+
+        enrichedCached.ModelIqCachedContentSignature = string.Empty;
+        CodexRadarSnapshot legacyCacheTarget = BuildModelIqRefreshMarkerTestSnapshot(88, new DateTime(2026, 7, 7, 15, 10, 0));
+        PreserveCodexModelIqRefreshTimeIfContentUnchanged(legacyCacheTarget, enrichedCached);
+        if (legacyCacheTarget.ModelIqRefreshedAtLocal == source.ModelIqRefreshedAtLocal)
+        {
+            throw new InvalidOperationException("Legacy cache without a signature did not use the computed fallback.");
+        }
+    }
+
+    private static void RunCodexRadarCacheHardeningSelfTest()
+    {
+        if (!string.Equals(GetLegacyCodexRadarCachePrefix(string.Empty), "Model.default.", StringComparison.Ordinal) ||
+            !string.Equals(GetLegacyCodexRadarCachePrefix(null), "Model.default.", StringComparison.Ordinal) ||
+            GetCodexRadarCachePrefix(CodexRadarSoftwareMode.Codex, string.Empty).IndexOf("Model." + ".", StringComparison.Ordinal) >= 0)
+        {
+            throw new InvalidOperationException("Codex Radar empty cache key did not use the default sentinel.");
+        }
+
+        CodexRadarSnapshot source = BuildModelIqRefreshMarkerTestSnapshot(88, new DateTime(2026, 7, 7, 12, 10, 0));
+        source.CheckedAtKnown = true;
+        source.CheckedAtLocal = new DateTime(2026, 7, 7, 12, 5, 0, DateTimeKind.Local);
+        source.ModelIqDataWindowKnown = false;
+        Dictionary<string, string> values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        WriteCodexRadarCacheHardeningValues(values, "Test.", source);
+        CodexRadarSnapshot loaded = CodexRadarSnapshot.CreateDefault();
+        ApplyCodexRadarCacheHardeningValues(values, "Test.", loaded);
+        if (loaded.ModelIqDataWindowKnown ||
+            !loaded.CheckedAtKnown ||
+            loaded.CheckedAtLocal != source.CheckedAtLocal ||
+            !string.Equals(loaded.ModelIqCachedContentSignature, BuildCodexModelIqContentSignature(source), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Codex Radar cache hardening values did not round-trip faithfully.");
+        }
+    }
+
+    private static void RunCodexQuotaIdentityHardeningSelfTest()
+    {
+        DateTime sampleLocal = new DateTime(2026, 7, 11, 0, 50, 6, DateTimeKind.Local);
+        DateTime sampleUtc = sampleLocal.ToUniversalTime();
+        DateTime tracked = new DateTime(2026, 7, 11, 3, 4, 22, DateTimeKind.Local);
+        QuotaWindowIdentityDecision phantom = EvaluateQuotaWindowIdentity(
+            tracked,
+            new DateTime(2026, 7, 11, 4, 11, 51, DateTimeKind.Local),
+            99,
+            "provider",
+            sampleUtc,
+            sampleUtc.AddMinutes(-3),
+            DateTime.MinValue,
+            TimeSpan.FromHours(5));
+        AssertQuotaIdentity(!phantom.Accepted && phantom.Reason == "interference_pool_sample_ignored", "phantom pool sample");
+
+        QuotaRuntimeState phantomState = new QuotaRuntimeState();
+        phantomState.LastFiveHourReadPercent = 8;
+        phantomState.LastWeeklyReadPercent = 60;
+        phantomState.LastReadSourceUtc = sampleUtc.AddMinutes(-3);
+        phantomState.TrackedFiveHourResetLocal = tracked;
+        phantomState.TrackedWeeklyResetLocal = sampleLocal.AddDays(2);
+        CodexQuotaSnapshot phantomSnapshot = CodexQuotaSnapshot.CreateDefault();
+        phantomSnapshot.FiveHourPercent = 97;
+        phantomSnapshot.WeeklyPercent = 99;
+        phantomSnapshot.FiveHourResetKnown = true;
+        phantomSnapshot.FiveHourResetLocal = new DateTime(2026, 7, 11, 4, 11, 51, DateTimeKind.Local);
+        phantomSnapshot.WeeklyResetKnown = true;
+        phantomSnapshot.WeeklyResetLocal = sampleLocal.AddDays(3);
+        phantomSnapshot.SourceUpdatedKnown = true;
+        phantomSnapshot.SourceUpdatedUtc = sampleUtc;
+        MarkQuotaSnapshotSource(phantomSnapshot, "provider");
+        QuotaRingDecisionInfo phantomDecision = UpdateQuotaReadDeltaTracking(
+            phantomState, phantomSnapshot, true, QuotaProtectionOptions.LegacyRuntimeDefaults(), true, DateTime.MinValue);
+        AssertQuotaIdentity(
+            phantomDecision.IdentitySampleRejected &&
+            phantomDecision.Reason == "interference_pool_sample_ignored" &&
+            phantomState.LastFiveHourReadPercent == 8 &&
+            phantomState.LastWeeklyReadPercent == 60 &&
+            phantomSnapshot.FiveHourPercent == 8 &&
+            phantomSnapshot.WeeklyPercent == 60,
+            "phantom sample full-state rejection");
+
+        DateTime resetLocal = new DateTime(2026, 7, 11, 8, 4, 30, DateTimeKind.Local);
+        DateTime resetUtc = resetLocal.ToUniversalTime();
+        QuotaWindowIdentityDecision newbornFive = EvaluateQuotaWindowIdentity(
+            resetLocal.AddHours(1),
+            resetLocal.AddHours(5).AddSeconds(1),
+            100,
+            "provider",
+            resetUtc,
+            resetUtc.AddMinutes(-3),
+            DateTime.MinValue,
+            TimeSpan.FromHours(5));
+        QuotaWindowIdentityDecision newbornWeek = EvaluateQuotaWindowIdentity(
+            resetLocal.AddDays(2),
+            resetLocal.AddDays(7).AddSeconds(33),
+            100,
+            "provider",
+            resetUtc,
+            resetUtc.AddMinutes(-3),
+            DateTime.MinValue,
+            TimeSpan.FromDays(7));
+        AssertQuotaIdentity(newbornFive.Accepted && newbornFive.Reason == "reset_confirmed_by_newborn" &&
+            newbornWeek.Accepted && newbornWeek.Reason == "reset_confirmed_by_newborn", "newborn reset");
+
+        QuotaWindowIdentityDecision boundarySeven = EvaluateQuotaWindowIdentity(
+            tracked, sampleLocal.AddHours(5).AddMinutes(-7), 100, "provider", sampleUtc,
+            sampleUtc.AddMinutes(-3), DateTime.MinValue, TimeSpan.FromHours(5));
+        QuotaWindowIdentityDecision boundaryNine = EvaluateQuotaWindowIdentity(
+            tracked, sampleLocal.AddHours(5).AddMinutes(-9), 100, "provider", sampleUtc,
+            sampleUtc.AddMinutes(-3), DateTime.MinValue, TimeSpan.FromHours(5));
+        AssertQuotaIdentity(boundarySeven.Accepted && !boundaryNine.Accepted, "newborn tolerance boundary");
+
+        QuotaWindowIdentityDecision expired = EvaluateQuotaWindowIdentity(
+            sampleLocal.AddMinutes(-1), sampleLocal.AddHours(4), 90, "provider", sampleUtc,
+            sampleUtc.AddMinutes(-3), DateTime.MinValue, TimeSpan.FromHours(5));
+        AssertQuotaIdentity(expired.Accepted && expired.Reason == "reset_confirmed_by_expiry", "expired window");
+
+        QuotaWindowIdentityDecision eventConfirmed = EvaluateQuotaWindowIdentity(
+            tracked, sampleLocal.AddHours(4), 90, "provider", sampleUtc,
+            sampleUtc.AddMinutes(-3), sampleUtc.AddHours(-1), TimeSpan.FromHours(5));
+        AssertQuotaIdentity(eventConfirmed.Accepted && eventConfirmed.Reason == "reset_confirmed_by_event", "reset event");
+
+        QuotaWindowIdentityDecision sessionConfirmed = EvaluateQuotaWindowIdentity(
+            tracked, sampleLocal.AddHours(4), 90, "session", sampleUtc,
+            sampleUtc.AddMinutes(-3), DateTime.MinValue, TimeSpan.FromHours(5));
+        AssertQuotaIdentity(sessionConfirmed.Accepted && sessionConfirmed.Reason == "reset_confirmed_by_session", "session source");
+
+        QuotaWindowIdentityDecision gapForty = EvaluateQuotaWindowIdentity(
+            tracked, sampleLocal.AddHours(4), 90, "provider", sampleUtc,
+            sampleUtc.AddMinutes(-40), DateTime.MinValue, TimeSpan.FromHours(5));
+        QuotaWindowIdentityDecision gapTwenty = EvaluateQuotaWindowIdentity(
+            tracked, sampleLocal.AddHours(4), 90, "provider", sampleUtc,
+            sampleUtc.AddMinutes(-20), DateTime.MinValue, TimeSpan.FromHours(5));
+        AssertQuotaIdentity(gapForty.Accepted && gapForty.Reason == "gap_rebaseline" && !gapTwenty.Accepted,
+            "gap rebaseline boundary");
+
+        DateTime wrongTracked = sampleLocal.AddHours(2.0);
+        DateTime realReset = sampleLocal.AddHours(4.0);
+        RejectedIdentityPersistenceState persistentReal = new RejectedIdentityPersistenceState();
+        QuotaWindowIdentityDecision persistentFirst = EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 22, "provider", sampleUtc, sampleUtc.AddMinutes(-3),
+            DateTime.MinValue, TimeSpan.FromHours(5), persistentReal);
+        QuotaWindowIdentityDecision persistentSecond = EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 21, "provider", sampleUtc.AddMinutes(5), sampleUtc.AddMinutes(2),
+            DateTime.MinValue, TimeSpan.FromHours(5), persistentReal);
+        QuotaWindowIdentityDecision persistentThird = EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 20, "provider", sampleUtc.AddMinutes(10), sampleUtc.AddMinutes(7),
+            DateTime.MinValue, TimeSpan.FromHours(5), persistentReal);
+        AssertQuotaIdentity(
+            !persistentFirst.Accepted && !persistentSecond.Accepted &&
+            persistentThird.Accepted &&
+            persistentThird.Reason == "reset_confirmed_by_rejected_persistence" &&
+            persistentThird.RejectedPersistenceCount == QuotaRejectedPersistenceMinSamples &&
+            persistentThird.RejectedPersistenceFirstSeenUtc == sampleUtc,
+            "rejected persistence repairs wrong tracked identity");
+
+        RejectedIdentityPersistenceState interrupted = new RejectedIdentityPersistenceState();
+        QuotaWindowIdentityDecision interruptedPhantom = EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 99, "provider", sampleUtc, sampleUtc.AddMinutes(-3),
+            DateTime.MinValue, TimeSpan.FromHours(5), interrupted);
+        QuotaWindowIdentityDecision acceptedSame = EvaluateQuotaWindowIdentity(
+            wrongTracked, wrongTracked, 20, "provider", sampleUtc.AddMinutes(5), sampleUtc.AddMinutes(2),
+            DateTime.MinValue, TimeSpan.FromHours(5), interrupted);
+        QuotaWindowIdentityDecision interruptedAgain = EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 99, "provider", sampleUtc.AddMinutes(10), sampleUtc.AddMinutes(7),
+            DateTime.MinValue, TimeSpan.FromHours(5), interrupted);
+        AssertQuotaIdentity(
+            !interruptedPhantom.Accepted && acceptedSame.Accepted && !interruptedAgain.Accepted &&
+            interruptedAgain.RejectedPersistenceCount == 1,
+            "accepted sample clears rejected persistence");
+
+        RejectedIdentityPersistenceState alternating = new RejectedIdentityPersistenceState();
+        DateTime alternateReset = realReset.AddMinutes(8.0);
+        QuotaWindowIdentityDecision alternateA1 = EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 90, "provider", sampleUtc, sampleUtc.AddMinutes(-3),
+            DateTime.MinValue, TimeSpan.FromHours(5), alternating);
+        QuotaWindowIdentityDecision alternateB = EvaluateQuotaWindowIdentity(
+            wrongTracked, alternateReset, 90, "provider", sampleUtc.AddMinutes(5), sampleUtc.AddMinutes(2),
+            DateTime.MinValue, TimeSpan.FromHours(5), alternating);
+        QuotaWindowIdentityDecision alternateA2 = EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 90, "provider", sampleUtc.AddMinutes(10), sampleUtc.AddMinutes(7),
+            DateTime.MinValue, TimeSpan.FromHours(5), alternating);
+        QuotaWindowIdentityDecision alternateGap = EvaluateQuotaWindowIdentity(
+            wrongTracked, alternateReset, 90, "provider", sampleUtc.AddMinutes(40), sampleUtc,
+            DateTime.MinValue, TimeSpan.FromHours(5), alternating);
+        AssertQuotaIdentity(
+            !alternateA1.Accepted && !alternateB.Accepted && !alternateA2.Accepted &&
+            alternateA2.RejectedPersistenceCount == 1 &&
+            alternateGap.Accepted && alternateGap.Reason == "gap_rebaseline",
+            "alternating rejected identities require gap rebaseline");
+
+        QuotaRuntimeState state = new QuotaRuntimeState();
+        state.LastFiveHourReadPercent = 20;
+        state.LastWeeklyReadPercent = 60;
+        state.LastReadSourceUtc = sampleUtc.AddMinutes(-3);
+        state.TrackedFiveHourResetLocal = tracked;
+        state.TrackedWeeklyResetLocal = sampleLocal.AddDays(3);
+        CodexQuotaSnapshot partial = CodexQuotaSnapshot.CreateDefault();
+        partial.FiveHourPercent = 100;
+        partial.WeeklyPercent = 60;
+        partial.FiveHourResetKnown = true;
+        partial.FiveHourResetLocal = sampleLocal.AddHours(5).AddMinutes(-2);
+        partial.WeeklyResetKnown = true;
+        partial.WeeklyResetLocal = state.TrackedWeeklyResetLocal;
+        partial.SourceUpdatedKnown = true;
+        partial.SourceUpdatedUtc = sampleUtc;
+        MarkQuotaSnapshotSource(partial, "provider");
+        QuotaRingDecisionInfo partialDecision = UpdateQuotaReadDeltaTracking(
+            state, partial, true, QuotaProtectionOptions.LegacyRuntimeDefaults(), true, DateTime.MinValue);
+        AssertQuotaIdentity(state.LastFiveHourReadPercent == 100 && state.LastWeeklyReadPercent == 60 &&
+            partialDecision.Reason.IndexOf("reset_confirmed_by_newborn", StringComparison.Ordinal) >= 0,
+            "independent ring decision");
+    }
+
+    private static void AssertQuotaIdentity(bool condition, string scenario)
+    {
+        if (!condition)
+        {
+            throw new InvalidOperationException("Codex quota identity hardening self-test failed: " + scenario + ".");
         }
     }
 
@@ -13193,14 +14062,6 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         snapshot.ModelIqRefreshedAtLocal = refreshedAtLocal;
         snapshot.ModelIqRefreshedAtKnown = true;
         return snapshot;
-    }
-
-    private static void AssertCodexRadarColor(Color actual, Color expected, string message)
-    {
-        if (actual.ToArgb() != expected.ToArgb())
-        {
-            throw new InvalidOperationException(message);
-        }
     }
 
     // Legacy power/thermal UI is retained only as reference; PowerThermalForm owns that workload.
@@ -13407,9 +14268,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private List<ThermalReading> GetThermalAlerts()
     {
         DateTime now = DateTime.UtcNow;
-        if (this.currentSettings.ThermalTestMode != ThermalTestMode.Off)
+        if (this.CurrentSettings.ThermalTestMode != ThermalTestMode.Off)
         {
-            List<ThermalReading> simulated = BuildSimulatedThermalReadings(this.currentSettings.ThermalTestMode);
+            List<ThermalReading> simulated = BuildSimulatedThermalReadings(this.CurrentSettings.ThermalTestMode);
             UpdateThermalCriticalStates(simulated, now, true);
             simulated.Sort(CompareThermalReading);
             return simulated;
@@ -13802,6 +14663,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         snapshot.SourceUpdatedUtc = quota.UpdatedAtUtc;
         snapshot.SourceUpdatedKnown = quota.UpdatedAtKnown;
+        MarkQuotaSnapshotSource(snapshot, "claude_site_public");
         return true;
     }
 
@@ -13864,7 +14726,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         RadarFamilyRuntimeState activeFamilyState = GetActiveRadarFamilyState();
         StringBuilder key = new StringBuilder(512);
         key.Append(this.Width).Append('x').Append(this.Height).Append('|');
-        key.Append(this.currentSettings.CodexRadarRenderVariant).Append('|');
+        key.Append(this.CurrentSettings.CodexRadarRenderVariant).Append('|');
         key.Append(GetEffectiveCodexRadarSoftwareMode()).Append('|');
         key.Append(activeFamilyState.Revision).Append('|');
         key.Append(GetBackgroundOpacityAlpha()).Append('|');
@@ -13873,13 +14735,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         key.Append(this.renderTickCount & 1).Append('|');
         key.Append(GetSelectedRadarModelKeyForSoftwareMode(activeFamilyState.Family)).Append('|');
         key.Append(this.renderSceneSettingsRevision).Append('|');
-        key.Append(this.currentSettings.DisplayTimeZoneMode).Append('|');
-        key.Append(this.currentSettings.DisplayTimeZoneId ?? string.Empty).Append('|');
-        key.Append(this.currentSettings.RadarClockTimeDisplayMode).Append('|');
+        key.Append(this.CurrentSettings.DisplayTimeZoneMode).Append('|');
+        key.Append(this.CurrentSettings.DisplayTimeZoneId ?? string.Empty).Append('|');
+        key.Append(this.CurrentSettings.RadarClockTimeDisplayMode).Append('|');
+        key.Append(this.CurrentSettings.CodexRadarSpeedWindowCountdownEnabled ? '1' : '0').Append('|');
         key.Append(DateTime.Now.ToString("yyyyMMddHHmm", CultureInfo.InvariantCulture)).Append('|');
         key.Append(this.lastCodexRadarStatusAttemptLocal == DateTime.MinValue ? 0L : this.lastCodexRadarStatusAttemptLocal.Ticks).Append('|');
-        key.Append(this.currentSettings.CodexRadarRandomTestEnabled ? 'T' : 'R').Append('|');
-        key.Append(this.currentSettings.CodexRadarRandomTestRefreshToken).Append('|');
+        key.Append(this.CurrentSettings.CodexRadarRandomTestEnabled ? 'T' : 'R').Append('|');
+        key.Append(this.CurrentSettings.CodexRadarRandomTestRefreshToken).Append('|');
 
         AppendRadarSnapshotCacheSignature(key, radarSnapshot);
         AppendQuotaSnapshotCacheSignature(key, quotaState);
@@ -13936,6 +14799,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         key.Append(snapshot.ModelIqRefreshSucceeded ? '1' : '0').Append(',');
         key.Append(snapshot.SpeedWindowKnown ? '1' : '0').Append(',');
         key.Append(snapshot.SpeedWindowOpen ? '1' : '0').Append(',');
+        key.Append(snapshot.SpeedWindowOpenedAtKnown ? snapshot.SpeedWindowOpenedAtLocal.Ticks : 0).Append(',');
         key.Append(snapshot.SpeedWindowClosedAtKnown ? snapshot.SpeedWindowClosedAtLocal.Ticks : 0).Append(',');
         key.Append(snapshot.ResetEventKnown ? '1' : '0').Append(',');
         key.Append(snapshot.CommunityRatingKnown ? '1' : '0').Append(',');
@@ -13991,6 +14855,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         key.Append(snapshot.WeeklyPercent).Append(',');
         key.Append(snapshot.FiveHourResetKnown ? snapshot.FiveHourResetLocal.Ticks : 0).Append(',');
         key.Append(snapshot.WeeklyResetKnown ? snapshot.WeeklyResetLocal.Ticks : 0).Append(',');
+        key.Append(snapshot.SourceKind ?? string.Empty).Append(',');
         key.Append(quotaState.CodexRunning ? '1' : '0').Append(',');
         key.Append(quotaState.AnySupportedAppRunning ? '1' : '0').Append(',');
         key.Append(quotaState.QuotaValueKnown ? '1' : '0').Append(',');
@@ -14031,7 +14896,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private bool IsBurnInColorProtectionActive()
     {
         return BurnInProtection.ShouldApplyHiddenModeColorProtection(
-            this.currentSettings,
+            this.CurrentSettings,
             IsHoverOpacityTargetActive());
     }
 
@@ -14063,14 +14928,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private int GetBackgroundOpacityAlpha()
     {
-        int alpha = (int)Math.Round(255.0 * (100 - this.currentSettings.CodexRadarTransparencyPercent) / 100.0);
-        return Math.Max(0, Math.Min(255, alpha));
+        return ComputeOpacityAlpha(this.CurrentSettings.CodexRadarTransparencyPercent);
     }
 
     private int GetContentOpacityAlpha()
     {
-        int alpha = (int)Math.Round(255.0 * (100 - this.currentSettings.ApplicationTransparencyPercent) / 100.0);
-        return Math.Max(0, Math.Min(255, alpha));
+        return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
     protected override byte GetApplicationOpacityAlpha()

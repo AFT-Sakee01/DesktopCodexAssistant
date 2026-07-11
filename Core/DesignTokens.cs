@@ -41,6 +41,7 @@ internal static class DesignTokens
         public static readonly Color AccentGradientStart = Color.FromArgb(32, 189, 255);
         public static readonly Color AccentGradientEnd = Color.FromArgb(68, 126, 255);
         public static readonly Color AccentAlt = Color.FromArgb(226, 126, 255);
+        public static readonly Color SpeedWindowCountdown = Color.FromArgb(56, 189, 248);
         public static readonly Color Success = Color.FromArgb(134, 238, 100);
         public static readonly Color SuccessSoft = Color.FromArgb(95, 218, 132);
         public static readonly Color SuccessText = Color.FromArgb(170, 238, 190);

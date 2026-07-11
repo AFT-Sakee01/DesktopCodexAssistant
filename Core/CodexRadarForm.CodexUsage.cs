@@ -20,10 +20,13 @@ internal sealed partial class CodexRadarForm
     private const int CodexProviderUsageErrorRefreshSeconds = 600;
     private const int CodexProviderUsageRateLimitRefreshSeconds = 900;
     private const int CodexProviderUsageFreshSeconds = 900;
+    private const int CodexAccountEndpointStaggerSeconds = 10;
+    private const int CodexUsageIdentityDiagnosticRetention = 8;
     private const int CodexResetCreditsNormalRefreshSeconds = 3600;
     private const int CodexResetCreditsErrorRefreshSeconds = 900;
 
     private readonly object codexProviderUsageLock = new object();
+    private readonly object codexAccountEndpointStaggerLock = new object();
     private readonly object codexResetCreditsLock = new object();
     private DateTime nextCodexProviderUsageRefreshUtc;
     private DateTime nextCodexResetCreditsRefreshUtc;
@@ -193,6 +196,15 @@ internal sealed partial class CodexRadarForm
         }
 
         DateTime nowUtc = DateTime.UtcNow;
+        if (IsCodexProviderUsageRequestRunning())
+        {
+            lock (this.codexResetCreditsLock)
+            {
+                this.nextCodexResetCreditsRefreshUtc = nowUtc.AddSeconds(CodexAccountEndpointStaggerSeconds);
+            }
+
+            return;
+        }
         if (!IsNetworkAvailable())
         {
             bool changed = false;
@@ -218,21 +230,34 @@ internal sealed partial class CodexRadarForm
         }
 
         string trigger = "定时间隔";
-        lock (this.codexResetCreditsLock)
+        lock (this.codexAccountEndpointStaggerLock)
         {
-            if (this.codexResetCreditsRequestRunning ||
-                (this.nextCodexResetCreditsRefreshUtc != DateTime.MinValue &&
-                 nowUtc < this.nextCodexResetCreditsRefreshUtc))
+            if (IsCodexProviderUsageRequestRunning())
             {
+                lock (this.codexResetCreditsLock)
+                {
+                    this.nextCodexResetCreditsRefreshUtc = nowUtc.AddSeconds(CodexAccountEndpointStaggerSeconds);
+                }
+
                 return;
             }
 
-            this.codexResetCreditsRequestRunning = true;
-            trigger = EmptyFallback(this.codexResetCreditsRefreshTrigger, "定时间隔");
-            this.codexResetCreditsRefreshTrigger = "定时间隔";
-            CodexResetCreditsSnapshot running = this.codexResetCreditsSnapshot.Clone();
-            running.RequestRunning = true;
-            this.codexResetCreditsSnapshot = running;
+            lock (this.codexResetCreditsLock)
+            {
+                if (this.codexResetCreditsRequestRunning ||
+                    (this.nextCodexResetCreditsRefreshUtc != DateTime.MinValue &&
+                     nowUtc < this.nextCodexResetCreditsRefreshUtc))
+                {
+                    return;
+                }
+
+                this.codexResetCreditsRequestRunning = true;
+                trigger = EmptyFallback(this.codexResetCreditsRefreshTrigger, "定时间隔");
+                this.codexResetCreditsRefreshTrigger = "定时间隔";
+                CodexResetCreditsSnapshot running = this.codexResetCreditsSnapshot.Clone();
+                running.RequestRunning = true;
+                this.codexResetCreditsSnapshot = running;
+            }
         }
 
         Task.Run((Action)delegate
@@ -241,7 +266,7 @@ internal sealed partial class CodexRadarForm
             CodexResetCreditsResult result;
             try
             {
-                result = ReadCodexResetCredits(this.currentSettings);
+                result = ReadCodexResetCredits(this.CurrentSettings);
             }
             catch (Exception ex)
             {
@@ -316,6 +341,15 @@ internal sealed partial class CodexRadarForm
         }
 
         DateTime nowUtc = DateTime.UtcNow;
+        if (IsCodexResetCreditsRequestRunning())
+        {
+            lock (this.codexProviderUsageLock)
+            {
+                this.nextCodexProviderUsageRefreshUtc = nowUtc.AddSeconds(CodexAccountEndpointStaggerSeconds);
+            }
+
+            return;
+        }
         if (!IsNetworkAvailable())
         {
             SetCodexProviderUsageHealth(ServiceHealthState.Offline, "OFFLINE", "无网络");
@@ -328,18 +362,31 @@ internal sealed partial class CodexRadarForm
         }
 
         string trigger = "定时间隔";
-        lock (this.codexProviderUsageLock)
+        lock (this.codexAccountEndpointStaggerLock)
         {
-            if (this.codexProviderUsageRequestRunning ||
-                (this.nextCodexProviderUsageRefreshUtc != DateTime.MinValue &&
-                 nowUtc < this.nextCodexProviderUsageRefreshUtc))
+            if (IsCodexResetCreditsRequestRunning())
             {
+                lock (this.codexProviderUsageLock)
+                {
+                    this.nextCodexProviderUsageRefreshUtc = nowUtc.AddSeconds(CodexAccountEndpointStaggerSeconds);
+                }
+
                 return;
             }
 
-            this.codexProviderUsageRequestRunning = true;
-            trigger = EmptyFallback(this.codexProviderUsageRefreshTrigger, "定时间隔");
-            this.codexProviderUsageRefreshTrigger = "定时间隔";
+            lock (this.codexProviderUsageLock)
+            {
+                if (this.codexProviderUsageRequestRunning ||
+                    (this.nextCodexProviderUsageRefreshUtc != DateTime.MinValue &&
+                     nowUtc < this.nextCodexProviderUsageRefreshUtc))
+                {
+                    return;
+                }
+
+                this.codexProviderUsageRequestRunning = true;
+                trigger = EmptyFallback(this.codexProviderUsageRefreshTrigger, "定时间隔");
+                this.codexProviderUsageRefreshTrigger = "定时间隔";
+            }
         }
 
         Task.Run((Action)delegate
@@ -348,7 +395,7 @@ internal sealed partial class CodexRadarForm
             CodexProviderUsageResult result;
             try
             {
-                result = ReadCodexProviderUsage(this.currentSettings);
+                result = ReadCodexProviderUsage(this.CurrentSettings);
             }
             catch (Exception ex)
             {
@@ -413,8 +460,8 @@ internal sealed partial class CodexRadarForm
             this.BeginInvoke((MethodInvoker)delegate
             {
                 if (this.IsDisposed ||
-                    this.currentSettings == null ||
-                    this.currentSettings.CodexRadarRandomTestEnabled ||
+                    this.CurrentSettings == null ||
+                    this.CurrentSettings.CodexRadarRandomTestEnabled ||
                     GetEffectiveCodexRadarSoftwareMode() != CodexRadarSoftwareMode.Codex)
                 {
                     return;
@@ -424,6 +471,11 @@ internal sealed partial class CodexRadarForm
                 this.lastQuotaRefreshUtc = nowUtc;
                 CodexQuotaSnapshot providerSnapshot = NormalizeQuotaSnapshot(snapshot.Clone());
                 MarkQuotaSnapshotSource(providerSnapshot, "provider");
+                if (HasCodexProviderQuotaIdentityChange(providerSnapshot))
+                {
+                    WriteCodexUsageIdentityChangeDiagnostic(providerSnapshot.ProviderRawResponseBody);
+                }
+
                 bool codexRunning = GetLastSoftwareRuntimePresenceSnapshot().CodexRunning;
                 string rejectReason;
                 if (ShouldRejectSuspiciousProviderQuotaSnapshot(providerSnapshot, out rejectReason))
@@ -433,14 +485,25 @@ internal sealed partial class CodexRadarForm
                     return;
                 }
 
-                lock (this.codexProviderUsageLock)
+                QuotaRingDecisionInfo decision = ApplyQuotaSnapshot(
+                    CodexRadarSoftwareMode.Codex,
+                    providerSnapshot,
+                    true,
+                    codexRunning,
+                    DateTime.Now,
+                    nowUtc,
+                    "provider");
+                if (decision == null || !decision.IdentitySampleRejected)
                 {
-                    this.codexProviderQuotaSnapshot = providerSnapshot.Clone();
-                    this.codexProviderQuotaSourceKnown = true;
+                    lock (this.codexProviderUsageLock)
+                    {
+                        this.codexProviderQuotaSnapshot = providerSnapshot.Clone();
+                        this.codexProviderQuotaSourceKnown = true;
+                    }
+
+                    TryWriteQuotaIniSnapshot(providerSnapshot);
                 }
 
-                TryWriteQuotaIniSnapshot(providerSnapshot);
-                ApplyQuotaSnapshot(CodexRadarSoftwareMode.Codex, providerSnapshot.Clone(), true, codexRunning, DateTime.Now, nowUtc, "provider");
                 RenderLayeredWindow();
             });
         }
@@ -471,6 +534,81 @@ internal sealed partial class CodexRadarForm
 
             snapshot = this.codexProviderQuotaSnapshot.Clone();
             return true;
+        }
+    }
+
+    private bool IsCodexProviderUsageRequestRunning()
+    {
+        lock (this.codexProviderUsageLock)
+        {
+            return this.codexProviderUsageRequestRunning;
+        }
+    }
+
+    private bool IsCodexResetCreditsRequestRunning()
+    {
+        lock (this.codexResetCreditsLock)
+        {
+            return this.codexResetCreditsRequestRunning;
+        }
+    }
+
+    private bool HasCodexProviderQuotaIdentityChange(CodexQuotaSnapshot snapshot)
+    {
+        if (snapshot == null)
+        {
+            return false;
+        }
+
+        QuotaRuntimeState state = this.codexRuntimeState.Quota;
+        return HasQuotaResetIdentityChanged(
+                state.TrackedFiveHourResetLocal,
+                snapshot.FiveHourResetKnown ? snapshot.FiveHourResetLocal : DateTime.MinValue) ||
+            HasQuotaResetIdentityChanged(
+                state.TrackedWeeklyResetLocal,
+                snapshot.WeeklyResetKnown ? snapshot.WeeklyResetLocal : DateTime.MinValue);
+    }
+
+    private static bool HasQuotaResetIdentityChanged(DateTime trackedLocal, DateTime incomingLocal)
+    {
+        return trackedLocal != DateTime.MinValue &&
+            incomingLocal != DateTime.MinValue &&
+            Math.Abs((incomingLocal - trackedLocal).TotalMinutes) > QuotaIdentityToleranceMinutes;
+    }
+
+    private static void WriteCodexUsageIdentityChangeDiagnostic(string jsonBody)
+    {
+        if (string.IsNullOrWhiteSpace(jsonBody))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Logger.DirectoryPath);
+            string path = Path.Combine(
+                Logger.DirectoryPath,
+                "codex-usage-identity-change-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".json");
+            File.WriteAllText(path, jsonBody, SharedEncoding.Utf8NoBom);
+            FileInfo[] files = new DirectoryInfo(Logger.DirectoryPath).GetFiles("codex-usage-identity-change-*.json");
+            Array.Sort(files, delegate(FileInfo left, FileInfo right)
+            {
+                return right.LastWriteTimeUtc.CompareTo(left.LastWriteTimeUtc);
+            });
+            for (int i = CodexUsageIdentityDiagnosticRetention; i < files.Length; i++)
+            {
+                try
+                {
+                    files[i].Delete();
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
         }
     }
 
@@ -953,6 +1091,7 @@ internal sealed partial class CodexRadarForm
 
         snapshot.SourceUpdatedUtc = DateTime.UtcNow;
         snapshot.SourceUpdatedKnown = true;
+        snapshot.ProviderRawResponseBody = content;
         return new CodexProviderUsageResult
         {
             TokenConfigured = tokenConfigured,

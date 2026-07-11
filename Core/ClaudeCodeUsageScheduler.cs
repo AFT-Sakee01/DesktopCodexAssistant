@@ -17,6 +17,8 @@ internal static class ClaudeCodeUsageScheduler
     private static Task<ClaudeCodeUsageSchedulerOutcome> runningTask;
     private static DateTime nextRefreshUtc = DateTime.MinValue;
     private static string pendingTrigger = "首次刷新";
+    private static bool expectedCredentialMissCompletionLogged;
+    private static string lastErrorCode = string.Empty;
 
     public static bool IsRequestRunning
     {
@@ -26,6 +28,25 @@ internal static class ClaudeCodeUsageScheduler
             {
                 return runningTask != null && !runningTask.IsCompleted;
             }
+        }
+    }
+
+    public static string LastErrorCode
+    {
+        get
+        {
+            lock (SyncRoot)
+            {
+                return lastErrorCode;
+            }
+        }
+    }
+
+    public static void ClearLastError()
+    {
+        lock (SyncRoot)
+        {
+            lastErrorCode = string.Empty;
         }
     }
 
@@ -127,13 +148,17 @@ internal static class ClaudeCodeUsageScheduler
             nextRefreshUtc = nextUtc;
             runningTask = null;
             JoinedConsumers.Clear();
+            lastErrorCode = result.Success ? string.Empty : (result.ErrorCode ?? string.Empty);
         }
 
-        Program.LogInfo(
-            "Claude Code usage scheduler completed. Success=" + result.Success.ToString() +
-            ", State=" + result.State.ToString() +
-            ", ErrorCode=" + (result.ErrorCode ?? string.Empty) +
-            ", ElapsedMs=" + stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (ShouldLogCompletion(result))
+        {
+            Program.LogInfo(
+                "Claude Code usage scheduler completed. Success=" + result.Success.ToString() +
+                ", State=" + result.State.ToString() +
+                ", ErrorCode=" + (result.ErrorCode ?? string.Empty) +
+                ", ElapsedMs=" + stopwatch.ElapsedMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
 
         return new ClaudeCodeUsageSchedulerOutcome
         {
@@ -155,6 +180,73 @@ internal static class ClaudeCodeUsageScheduler
             ErrorCode = "ERROR",
             ErrorMessage = "请求失败"
         };
+    }
+
+    private static bool ShouldLogCompletion(ClaudeCodeUsageReadResult result)
+    {
+        lock (SyncRoot)
+        {
+            if (result != null && result.Success)
+            {
+                expectedCredentialMissCompletionLogged = false;
+                return true;
+            }
+
+            if (result != null &&
+                (string.Equals(result.ErrorCode, "NO_SETUP_TOKEN", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(result.ErrorCode, "NO_STATUSLINE_CACHE", StringComparison.OrdinalIgnoreCase)))
+            {
+                // An unbound desktop session is stable until the user adds a token or a statusline
+                // snapshot appears. Log the first miss, then stay quiet until success resets it.
+                if (expectedCredentialMissCompletionLogged)
+                {
+                    return false;
+                }
+
+                expectedCredentialMissCompletionLogged = true;
+            }
+
+            return true;
+        }
+    }
+
+    internal static void RunSelfTest()
+    {
+        bool previousState;
+        lock (SyncRoot)
+        {
+            previousState = expectedCredentialMissCompletionLogged;
+            expectedCredentialMissCompletionLogged = false;
+        }
+
+        try
+        {
+            ClaudeCodeUsageReadResult missingCache = new ClaudeCodeUsageReadResult
+            {
+                Success = false,
+                ErrorCode = "NO_SETUP_TOKEN"
+            };
+            ClaudeCodeUsageReadResult success = new ClaudeCodeUsageReadResult
+            {
+                Success = true,
+                ErrorCode = string.Empty
+            };
+
+            if (!ShouldLogCompletion(missingCache) ||
+                ShouldLogCompletion(missingCache) ||
+                !ShouldLogCompletion(success) ||
+                !ShouldLogCompletion(missingCache))
+            {
+                throw new InvalidOperationException("Claude Code usage scheduler completion-log suppression self-test failed.");
+            }
+        }
+        finally
+        {
+            lock (SyncRoot)
+            {
+                expectedCredentialMissCompletionLogged = previousState;
+            }
+        }
     }
 
     private static string NormalizeConsumerId(string consumerId)

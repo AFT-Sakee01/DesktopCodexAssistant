@@ -374,7 +374,7 @@ internal static class DeepSeekBalanceMonitor
                 historyPathOverride,
                 "{\"schema_version\":1,\"timestamp_utc\":\"" + now.AddHours(-49).ToString("O", CultureInfo.InvariantCulture) + "\",\"balance_cny\":100}\n" +
                 "{\"schema_version\":1,\"timestamp_utc\":\"" + now.AddHours(-1).ToString("O", CultureInfo.InvariantCulture) + "\",\"balance_cny\":90}\n",
-                new UTF8Encoding(false));
+                SharedEncoding.Utf8NoBom);
             ResetForTest();
             balanceReaderOverride = delegate(string key)
             {
@@ -431,7 +431,7 @@ internal static class DeepSeekBalanceMonitor
         }
 
         double rounded = Math.Round(Math.Max(0.0, displaySnapshot.BalanceCny), 0, MidpointRounding.AwayFromZero);
-        return "DS:\uFFE5" + rounded.ToString("0", CultureInfo.InvariantCulture);
+        return "DS:" + rounded.ToString("0", CultureInfo.InvariantCulture);
     }
 
     internal static string BuildCacheSignature(DeepSeekBalanceSnapshot displaySnapshot)

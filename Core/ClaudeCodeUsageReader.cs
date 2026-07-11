@@ -24,6 +24,7 @@ internal sealed class ClaudeCodeUsageSnapshot
         return new ClaudeRadarQuotaSnapshot
         {
             Known = true,
+            Source = "personal",
             FiveHourPercent = ClampPercent(this.FiveHourPercent),
             WeeklyPercent = ClampPercent(this.WeeklyPercent),
             FiveHourResetText = this.FiveHourResetKnown
@@ -82,42 +83,69 @@ internal static class ClaudeCodeUsageReader
 
     public static ClaudeCodeUsageReadResult Read(WidgetSettings settings)
     {
-        ClaudeCodeUsageSnapshot statusLineSnapshot;
+        string token = ReadConfiguredSetupToken();
+        return ResolveReadSources(
+            token,
+            delegate { return ReadViaSetupToken(settings); },
+            ReadStatusLineQuotaCacheResult,
+            delegate
+            {
+                string installErrorCode;
+                string installErrorMessage;
+                return EnsureStatusLineBridgeInstalled(out installErrorCode, out installErrorMessage);
+            });
+    }
+
+    private static ClaudeCodeUsageReadResult ResolveReadSources(
+        string token,
+        Func<ClaudeCodeUsageReadResult> readOAuth,
+        Func<ClaudeCodeUsageReadResult> readStatusLine,
+        Func<bool> ensureBridge)
+    {
+        bool tokenConfigured = !string.IsNullOrWhiteSpace(token);
+        ClaudeCodeUsageReadResult oauthResult = null;
+        if (tokenConfigured)
+        {
+            oauthResult = readOAuth == null ? null : readOAuth();
+            if (oauthResult != null && (oauthResult.Success || IsTokenInvalidResult(oauthResult)))
+            {
+                return oauthResult;
+            }
+        }
+
+        ClaudeCodeUsageReadResult statusLineResult = readStatusLine == null ? null : readStatusLine();
+        if (statusLineResult != null && statusLineResult.Success)
+        {
+            return statusLineResult;
+        }
+
+        bool bridgeReady = ensureBridge != null && ensureBridge();
+        if (bridgeReady)
+        {
+            statusLineResult = readStatusLine == null ? null : readStatusLine();
+            if (statusLineResult != null && statusLineResult.Success)
+            {
+                return statusLineResult;
+            }
+        }
+
+        if (tokenConfigured && oauthResult != null)
+        {
+            return oauthResult;
+        }
+
+        return BuildError(false, ClaudeRadarServiceState.Unavailable, "NO_SETUP_TOKEN", "未绑定setup-token");
+    }
+
+    private static ClaudeCodeUsageReadResult ReadStatusLineQuotaCacheResult()
+    {
+        ClaudeCodeUsageSnapshot snapshot;
         string errorCode;
         string errorMessage;
         ClaudeRadarServiceState errorState;
-        if (TryReadStatusLineQuotaCache(out statusLineSnapshot, out errorCode, out errorMessage, out errorState))
-        {
-            return BuildSuccess(statusLineSnapshot);
-        }
-
-        string installErrorCode;
-        string installErrorMessage;
-        bool bridgeReady = EnsureStatusLineBridgeInstalled(out installErrorCode, out installErrorMessage);
-        if (bridgeReady &&
-            TryReadStatusLineQuotaCache(out statusLineSnapshot, out errorCode, out errorMessage, out errorState))
-        {
-            return BuildSuccess(statusLineSnapshot);
-        }
-
-        // The Claude desktop app never executes the statusLine command (that is a terminal
-        // CLI feature), so on desktop-only machines the statusline cache stays empty forever.
-        // Fall back to the setup-token path whenever a token is configured.
-        if (!string.IsNullOrWhiteSpace(ReadConfiguredSetupToken()))
-        {
-            return ReadViaSetupToken(settings);
-        }
-
-        if (!bridgeReady)
-        {
-            return BuildError(false, ClaudeRadarServiceState.Unavailable, installErrorCode, installErrorMessage);
-        }
-
-        return BuildError(
-            false,
-            errorState,
-            string.IsNullOrWhiteSpace(errorCode) ? "NO_STATUSLINE_CACHE" : errorCode,
-            string.IsNullOrWhiteSpace(errorMessage) ? "等Claude刷新" : errorMessage);
+        return TryReadStatusLineQuotaCache(out snapshot, out errorCode, out errorMessage, out errorState)
+            ? BuildSuccess(snapshot)
+            : BuildError(false, errorState, errorCode, errorMessage);
     }
 
     // Used when a setup token is configured (CLAUDE_CODE_OAUTH_TOKEN env var or
@@ -147,6 +175,15 @@ internal static class ClaudeCodeUsageReader
         // order so we do not burn an extra request every normal polling cycle, and never log or
         // persist the OAuth token or response body.
         ClaudeCodeUsageReadResult usageResult = FetchUsageEndpoint(token);
+        return ResolveSetupTokenResult(
+            usageResult,
+            delegate { return FetchUsageViaMessagesHeaders(settings, token); });
+    }
+
+    private static ClaudeCodeUsageReadResult ResolveSetupTokenResult(
+        ClaudeCodeUsageReadResult usageResult,
+        Func<ClaudeCodeUsageReadResult> readHeaders)
+    {
         if (usageResult != null &&
             usageResult.Success &&
             usageResult.Snapshot != null &&
@@ -156,7 +193,14 @@ internal static class ClaudeCodeUsageReader
             return usageResult;
         }
 
-        ClaudeCodeUsageReadResult headerResult = FetchUsageViaMessagesHeaders(settings, token);
+        // An invalid credential cannot be repaired by the billable Messages endpoint. Returning
+        // immediately keeps the error actionable and guarantees that a 401/403 consumes no quota.
+        if (IsTokenInvalidResult(usageResult))
+        {
+            return usageResult;
+        }
+
+        ClaudeCodeUsageReadResult headerResult = readHeaders == null ? null : readHeaders();
         if (headerResult != null && headerResult.Success)
         {
             if (usageResult != null && usageResult.Success && usageResult.Snapshot != null)
@@ -169,6 +213,12 @@ internal static class ClaudeCodeUsageReader
         }
 
         return usageResult ?? headerResult ?? BuildError(true, ClaudeRadarServiceState.Unreachable, "NET", "无法连接");
+    }
+
+    private static bool IsTokenInvalidResult(ClaudeCodeUsageReadResult result)
+    {
+        return result != null &&
+            string.Equals(result.ErrorCode, "TOKEN_INVALID", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryReadStatusLineQuotaCache(
@@ -380,7 +430,7 @@ internal static class ClaudeCodeUsageReader
             }
 
             string json = new JavaScriptSerializer().Serialize(settings);
-            File.WriteAllText(settingsPath, json + Environment.NewLine, new UTF8Encoding(false));
+            File.WriteAllText(settingsPath, json + Environment.NewLine, SharedEncoding.Utf8NoBom);
         }
         catch
         {
@@ -427,7 +477,7 @@ internal static class ClaudeCodeUsageReader
             }
         }
 
-        File.WriteAllText(path, content, new UTF8Encoding(false));
+        File.WriteAllText(path, content, SharedEncoding.Utf8NoBom);
     }
 
     private static string BuildStatusLineBridgeScript()
@@ -549,7 +599,9 @@ internal static class ClaudeCodeUsageReader
                         statusCode == 401 || statusCode == 403
                             ? ClaudeRadarServiceState.Unavailable
                             : ClaudeRadarServiceState.Unreachable,
-                        statusCode.ToString(CultureInfo.InvariantCulture),
+                        statusCode == 401 || statusCode == 403
+                            ? "TOKEN_INVALID"
+                            : statusCode.ToString(CultureInfo.InvariantCulture),
                         GetHttpErrorReason(statusCode));
                 }
             }
@@ -662,7 +714,9 @@ internal static class ClaudeCodeUsageReader
                 statusCode == 401 || statusCode == 403
                     ? ClaudeRadarServiceState.Unavailable
                     : ClaudeRadarServiceState.Unreachable,
-                statusCode.ToString(CultureInfo.InvariantCulture),
+                statusCode == 401 || statusCode == 403
+                    ? "TOKEN_INVALID"
+                    : statusCode.ToString(CultureInfo.InvariantCulture),
                 GetHttpErrorReason(statusCode));
         }
 
@@ -890,6 +944,79 @@ internal static class ClaudeCodeUsageReader
         {
             throw new InvalidOperationException("Claude Code statusline quota cache self-test failed.");
         }
+
+        RunSourceOrderSelfTest();
+    }
+
+    private static void RunSourceOrderSelfTest()
+    {
+        ClaudeCodeUsageReadResult oauthSuccess = BuildSuccess(new ClaudeCodeUsageSnapshot
+        {
+            FiveHourPercent = 81,
+            WeeklyPercent = 72,
+            SourceUpdatedUtc = DateTime.UtcNow,
+            SourceUpdatedKnown = true
+        });
+        oauthSuccess.TokenConfigured = true;
+        ClaudeCodeUsageReadResult statusLineSuccess = BuildSuccess(new ClaudeCodeUsageSnapshot
+        {
+            FiveHourPercent = 31,
+            WeeklyPercent = 22,
+            SourceUpdatedUtc = DateTime.UtcNow,
+            SourceUpdatedKnown = true
+        });
+        int statusLineCalls = 0;
+        ClaudeCodeUsageReadResult selected = ResolveReadSources(
+            "oauth-test",
+            delegate { return oauthSuccess; },
+            delegate { statusLineCalls++; return statusLineSuccess; },
+            delegate { return true; });
+        if (!object.ReferenceEquals(selected, oauthSuccess) || statusLineCalls != 0)
+        {
+            throw new InvalidOperationException("Claude Code usage OAuth-first source order self-test failed.");
+        }
+
+        ClaudeCodeUsageReadResult networkFailure = BuildError(true, ClaudeRadarServiceState.Unreachable, "NET", "无法连接");
+        selected = ResolveReadSources(
+            "oauth-test",
+            delegate { return networkFailure; },
+            delegate { statusLineCalls++; return statusLineSuccess; },
+            delegate { return false; });
+        if (!object.ReferenceEquals(selected, statusLineSuccess))
+        {
+            throw new InvalidOperationException("Claude Code usage statusline fallback self-test failed.");
+        }
+
+        ClaudeCodeUsageReadResult missing = BuildError(false, ClaudeRadarServiceState.Incomplete, "NO_STATUSLINE_CACHE", "等Claude刷新");
+        selected = ResolveReadSources(
+            string.Empty,
+            null,
+            delegate { return missing; },
+            delegate { return false; });
+        if (selected == null || !string.Equals(selected.ErrorCode, "NO_SETUP_TOKEN", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Claude Code usage no-token short-circuit self-test failed.");
+        }
+
+        ClaudeCodeUsageReadResult invalid = ParseResponse("{}", true, 401);
+        int headerCalls = 0;
+        selected = ResolveSetupTokenResult(
+            invalid,
+            delegate { headerCalls++; return statusLineSuccess; });
+        if (!object.ReferenceEquals(selected, invalid) ||
+            !string.Equals(selected.ErrorCode, "TOKEN_INVALID", StringComparison.OrdinalIgnoreCase) ||
+            headerCalls != 0)
+        {
+            throw new InvalidOperationException("Claude Code usage invalid-token fallback suppression self-test failed.");
+        }
+
+        selected = ResolveSetupTokenResult(
+            networkFailure,
+            delegate { headerCalls++; return statusLineSuccess; });
+        if (!object.ReferenceEquals(selected, statusLineSuccess) || headerCalls != 1)
+        {
+            throw new InvalidOperationException("Claude Code usage network Messages fallback self-test failed.");
+        }
     }
 
     private static void RunSetupTokenSecretMigrationSelfTest()
@@ -900,7 +1027,7 @@ internal static class ClaudeCodeUsageReader
         {
             string encrypted = Path.Combine(root, SetupTokenFileName);
             string legacy = Path.Combine(root, LegacySetupTokenFileName);
-            File.WriteAllText(legacy, "export CLAUDE_CODE_OAUTH_TOKEN='oauth-migrated'\n", new UTF8Encoding(false));
+            File.WriteAllText(legacy, "export CLAUDE_CODE_OAUTH_TOKEN='oauth-migrated'\n", SharedEncoding.Utf8NoBom);
 
             string token;
             bool migrated;

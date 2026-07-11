@@ -140,6 +140,7 @@ internal sealed class ClaudeRadarSnapshot
 internal enum ClaudeRadarModelCatalogEventKind
 {
     Added,
+    Renamed,
     Reappeared,
     TemporarilyMissing,
     Deleted
@@ -168,6 +169,7 @@ internal sealed class ClaudeRadarModelEntry
 {
     public string SourceKey { get; set; }
     public string DisplayName { get; set; }
+    public string SourceDisplayName { get; set; }
     public string RatingKey { get; set; }
     public bool Enabled { get; set; }
     public bool HistoricalOnly { get; set; }
@@ -183,6 +185,7 @@ internal sealed class ClaudeRadarModelEntry
         {
             SourceKey = this.SourceKey,
             DisplayName = this.DisplayName,
+            SourceDisplayName = this.SourceDisplayName,
             RatingKey = this.RatingKey,
             Enabled = this.Enabled,
             HistoricalOnly = this.HistoricalOnly,
@@ -270,9 +273,131 @@ internal sealed class ClaudeRadarModelMetric
     }
 }
 
+internal sealed class ClaudeRadarClockAutoSwitchCandidate
+{
+    public string Key { get; set; }
+    public DateTime LatestLocal { get; set; }
+    public bool LatestKnown { get; set; }
+}
+
+// Both the shared and standalone Claude views can evaluate clock freshness. Keep selection pure
+// and deterministic so a temporarily missing selected-model timestamp cannot make them alternate
+// between the newest and second-newest models on every UI timer tick.
+internal static class ClaudeRadarClockAutoSwitchSelector
+{
+    public static bool TrySelectLatestModel(
+        string currentKey,
+        DateTime minimumDataLocal,
+        IList<ClaudeRadarClockAutoSwitchCandidate> candidates,
+        out string targetKey,
+        out DateTime targetDataLocal)
+    {
+        string normalizedCurrent = WidgetSettings.NormalizeClaudeRadarModelKey(currentKey);
+        string bestKey = string.Empty;
+        DateTime bestDataLocal = DateTime.MinValue;
+        for (int i = 0; candidates != null && i < candidates.Count; i++)
+        {
+            ClaudeRadarClockAutoSwitchCandidate candidate = candidates[i];
+            if (candidate == null ||
+                !candidate.LatestKnown ||
+                candidate.LatestLocal == DateTime.MinValue ||
+                candidate.LatestLocal < minimumDataLocal)
+            {
+                continue;
+            }
+
+            string key = WidgetSettings.NormalizeClaudeRadarModelKey(candidate.Key);
+            if (key.Length == 0)
+            {
+                continue;
+            }
+
+            if (bestKey.Length == 0 ||
+                candidate.LatestLocal > bestDataLocal ||
+                (candidate.LatestLocal == bestDataLocal &&
+                 ShouldPreferEqualTimestampKey(key, bestKey, normalizedCurrent)))
+            {
+                bestKey = key;
+                bestDataLocal = candidate.LatestLocal;
+            }
+        }
+
+        if (bestKey.Length == 0 ||
+            string.Equals(bestKey, normalizedCurrent, StringComparison.OrdinalIgnoreCase))
+        {
+            targetKey = string.Empty;
+            targetDataLocal = DateTime.MinValue;
+            return false;
+        }
+
+        targetKey = bestKey;
+        targetDataLocal = bestDataLocal;
+        return true;
+    }
+
+    public static bool ShouldSharedWindowOwnClaudeSelection(bool standaloneClaudeRadarEnabled)
+    {
+        return !standaloneClaudeRadarEnabled;
+    }
+
+    internal static void RunSelfTest()
+    {
+        DateTime boundary = new DateTime(2026, 7, 9, 0, 0, 0);
+        DateTime m1Time = new DateTime(2026, 7, 9, 11, 8, 46);
+        DateTime m9Time = new DateTime(2026, 7, 9, 11, 28, 12);
+        List<ClaudeRadarClockAutoSwitchCandidate> candidates = new List<ClaudeRadarClockAutoSwitchCandidate>
+        {
+            new ClaudeRadarClockAutoSwitchCandidate { Key = "m1", LatestKnown = true, LatestLocal = m1Time },
+            new ClaudeRadarClockAutoSwitchCandidate { Key = "m9", LatestKnown = true, LatestLocal = m9Time }
+        };
+
+        string targetKey;
+        DateTime targetTime;
+        if (!TrySelectLatestModel("m1", boundary, candidates, out targetKey, out targetTime) ||
+            !string.Equals(targetKey, "m9", StringComparison.OrdinalIgnoreCase) ||
+            targetTime != m9Time)
+        {
+            throw new InvalidOperationException("Claude Radar clock selector self-test failed: stale m1 did not select latest m9.");
+        }
+
+        if (TrySelectLatestModel("m9", boundary, candidates, out targetKey, out targetTime))
+        {
+            throw new InvalidOperationException("Claude Radar clock selector self-test failed: latest m9 bounced to second-newest m1.");
+        }
+
+        candidates[0].LatestLocal = m9Time;
+        if (TrySelectLatestModel("m1", boundary, candidates, out targetKey, out targetTime))
+        {
+            throw new InvalidOperationException("Claude Radar clock selector self-test failed: equal timestamp did not preserve current m1.");
+        }
+
+        if (ShouldSharedWindowOwnClaudeSelection(true) ||
+            !ShouldSharedWindowOwnClaudeSelection(false))
+        {
+            throw new InvalidOperationException("Claude Radar clock selector self-test failed: shared-window ownership gate.");
+        }
+    }
+
+    private static bool ShouldPreferEqualTimestampKey(
+        string candidateKey,
+        string bestKey,
+        string currentKey)
+    {
+        bool candidateIsCurrent = string.Equals(candidateKey, currentKey, StringComparison.OrdinalIgnoreCase);
+        bool bestIsCurrent = string.Equals(bestKey, currentKey, StringComparison.OrdinalIgnoreCase);
+        if (candidateIsCurrent != bestIsCurrent)
+        {
+            return candidateIsCurrent;
+        }
+
+        return string.Compare(candidateKey, bestKey, StringComparison.OrdinalIgnoreCase) < 0;
+    }
+}
+
 internal sealed class ClaudeRadarQuotaSnapshot
 {
     public bool Known { get; set; }
+    public string Source { get; set; }
     public int FiveHourPercent { get; set; }
     public int WeeklyPercent { get; set; }
     public string FiveHourResetText { get; set; }
@@ -285,6 +410,7 @@ internal sealed class ClaudeRadarQuotaSnapshot
         return new ClaudeRadarQuotaSnapshot
         {
             Known = false,
+            Source = string.Empty,
             FiveHourPercent = 0,
             WeeklyPercent = 0,
             FiveHourResetText = "N/A",
@@ -299,6 +425,7 @@ internal sealed class ClaudeRadarQuotaSnapshot
         return new ClaudeRadarQuotaSnapshot
         {
             Known = this.Known,
+            Source = this.Source,
             FiveHourPercent = this.FiveHourPercent,
             WeeklyPercent = this.WeeklyPercent,
             FiveHourResetText = this.FiveHourResetText,

@@ -563,7 +563,7 @@ internal sealed class CodexQuotaGoalPlanner
             Directory.CreateDirectory(Logger.DirectoryPath);
             string text = new JavaScriptSerializer().Serialize(root ?? new Dictionary<string, object>()) + Environment.NewLine;
             string tempPath = StatePath + ".tmp";
-            File.WriteAllText(tempPath, text, new UTF8Encoding(false));
+            File.WriteAllText(tempPath, text, SharedEncoding.Utf8NoBom);
             if (File.Exists(StatePath))
             {
                 File.Delete(StatePath);

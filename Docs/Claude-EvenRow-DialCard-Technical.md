@@ -1,7 +1,7 @@
 # Claude-EvenRow-DialCard-Technical.md — EvenRow 表盘状态卡技术说明
 
 > 作者模型：Claude（按项目规则，非 Codex 模型生成的文档使用模型名前缀）
-> 适用版本：1.0.4.27
+> 适用版本：1.0.5.06
 > 适用窗口：CodexRadar EvenRow 变体（`Core/CodexRadarForm.EvenRow.cs`）、独立 Claude Radar EvenRow（`Core/ClaudeRadarForm.cs`）
 
 ## 1. 概览
@@ -34,38 +34,41 @@ EvenRow 变体右侧的状态区域是**图形化状态卡**，由两部分组�
 - **当前指针**（白色小圆点，`White(235)`，直径 `S(4)`）落在当前时刻位置：0:00 在正上方（-90°），12:00 在正下方，角度按周期内已过时间顺时针增加。
 - **刷新标记**（绿色小圆点，`Success`，直径 `S(3)`）落在上次记录到新 IQ 内容的位置；Codex 共享窗口保留 12 小时，Claude 保留 24 小时，下一圈指针到达该位置后不再绘制。Codex 同内容重复请求会保留旧 `RefreshedUtc`，不移动刷新标记。
 - **时间模式短标**（`UTC` / `LAST` / `REF` / `NOW`）绘制在圈内时间下方，颜色与时间一致；短标使用新增矩形，不能挤压或移动既有日期、时间、外环、绿点和白点。
-- **晚测第二次**：后缀 `pm2` / `pm_2` / `pm-2`（尾数≥2）时，在标记点内侧绘制黄色小"2"角标（`ParseEvenRowBatchSuffix` / `ParseClaudeEvenRowBatchSuffix`）。
+- **周期边界刻度**：12 点钟方向使用 `DesignTokens.White(170)` 中性白色竖线，避免与“当前周期已更新”的 Success 绿混淆；绿色刷新标记保持不变。
+- **晚测第二次**：后缀 `pm2` / `pm_2` / `pm-2`（尾数≥2）时，在标记点内侧绘制黄色小"2"角标（`RadarClockDial.HasSecondRunSuffix`）。
 - **弧**：从周期顶部边界顺时针扫到当前时刻位置，线宽同轨道、圆头端帽。弧长即当前周期已走过的距离；颜色见 §3。
 
 ### 2.3 中心文字
-- 上行：批次日期，统一格式化为 **"x月x日"**（`FormatEvenRowDialDate` / `FormatClaudeEvenRowDialDate`：`"7.6"` 或 `"7/6"` → `"7月6日"`；已含"月"或无法解析则原样显示，shrink-to-fit 防溢出）。白色 `White(235)`。
-- 下行：最近一次本地成功刷新的 `HH:mm`（取自原"已更新/HH:mm"文字的时间段），颜色跟随 §3 的四级色。
+- 上行：批次日期由 `RadarClockDial.FormatDate` 统一格式化为 **"x月x日"**（`"7.6"` 或 `"7/6"` → `"7月6日"`；已含"月"或无法解析则原样显示，shrink-to-fit 防溢出）。白色 `White(235)`。
+- 下行：按 `RadarClockTimeDisplayMode` 显示 UTC、本机当前、上次尝试刷新或上次实际 IQ 刷新的 `HH:mm`，颜色跟随 §3 的四级色。
 - 中心文字区宽度 = 表盘直径 × 0.72。
 
 ### 2.4 批次标签解析链
 `GetCodexModelIqDataLabelDisplayText` / `GetClaudeModelIqDataLabelDisplayText`（数据源不变）
-→ `SplitEvenRowStatusHeroLabel`：按下划线切分（`"7.6_am"` → 主体+后缀）；无下划线时按"最后一个空格 + 其后含冒号"切分（`"7/6 10:59"` → `"7/6"`+`"10:59"`）；都不匹配则整体作主体。
-→ 主体走日期格式化，后缀走 `ParseEvenRowBatchSuffix`（am/pm/pm2/时间/未知）。
+→ `RadarClockDial.SplitDataLabel`：按下划线切分（`"7.6_am"` → 主体+后缀）；无下划线时按"最后一个空格 + 其后含冒号"切分（`"7/6 10:59"` → `"7/6"`+`"10:59"`）；都不匹配则整体作主体。
+→ 主体走 `RadarClockDial.FormatDate`，后缀只由 `RadarClockDial.HasSecondRunSuffix` 判定晚间第二次徽标；旧批次小时解析已经删除。
 未知形态安全回退：主体整体 shrink-fit 显示在表盘中心，无标记点无弧。
 
 ## 3. 边界新鲜度颜色规则
 
-实现：`ComputeEvenRowDialStatusColor`（Codex）/ `ComputeClaudeEvenRowDialStatusColor`（Claude），作用于**弧 + 中心时间文字**。
+实现：`RadarClockDial.ComputePhase` 每帧只计算一次互斥状态，`ComputeState` 同时产出颜色、角度、弧线、标记和中心文字，`Draw` 供共享 Codex/Claude 窗与独立 Claude 窗复用。窗体保留各自字体缓存与 fitted-text 委托，不在共享模块中访问快照或执行 I/O。
 
 **更新周期**：Codex 一天两测 → `cycle = 12h`；Claude 一天一测 → `cycle = 24h`。边界使用本机系统时间：Codex 为系统 0:00/12:00，Claude 为系统 0:00。
 
 | 优先级 | 条件 | 颜色 |
 |---|---|---|
-| 1 | 当前周期已有对应模型 IQ 数据窗口或 Claude `latest_at` | **绿** `Success` |
+| 1 | 当前周期已有对应模型 IQ 数据窗口或 Claude `latest_at` | **绿** `SuccessSoft`，alpha 255 |
 | 2 | 当前周期还没有，但上一个周期有数据 | **黄** `Warning` |
-| 3 | 上一个完整周期也没有数据 | **红** `Danger`，并在黄色满环上叠加 |
+| 3 | 已知批次时间早于上一周期边界 | **红** `Danger`，低透明度红色满环上叠加高亮红色当前周期弧 |
 | — | 批次与本地时间都未知 | 灰 `GlyphMuted` |
 
 - 红色只在错过上一个完整周期后出现；本地抓取时间不再作为“已更新”或“本地故障”的颜色依据。
+- 本地检查时间已知但模型批次时间未知时沿用红色状态文字，但不推断边界弧或满环；只有 `BatchKnown` 能证明错过周期并启用这两项几何。
 - 数据来源：
   - Codex 批次时刻 = `ModelIqDataDateLocal.Date + (WindowStartHour>=12 ? 12h : 0h)`（`ModelIqDataDateKnown` 守卫）；绿色刷新标记 = `ModelIqRefreshedAtLocal`（`ModelIqRefreshedAtKnown` 守卫）。
   - Claude 批次时刻与绿色刷新标记 = `GetClaudeLatestMetricLocalTime(local)`。
 - 刷新请求进行中沿用原闪烁机制（`renderTickCount` 奇偶帧 alpha 104）。
+- 状态弧的绿色与刷新标记刻意不同：当前周期状态使用不透明 `SuccessSoft`，刷新标记仍使用 `Success` alpha 245。主 `Success` alpha 255 在真实 PArgb 分层夹具中会触发 GDI+ 像素丢失，导致同层左侧五环、底栏等已绘内容不可见；`SuccessSoft` 保留完整 522×120 画面，因此不能为视觉统一而替换。
 
 ## 4. 服务 LED 灯柱
 
@@ -102,4 +105,4 @@ EvenRow 变体右侧的状态区域是**图形化状态卡**，由两部分组�
 
 - 弧表达的是当前周期进度，始终从顶部边界顺时针前进；批次是否过期以颜色（红/黄/绿）为准。
 - `pm2` 后缀的具体形态是按合理猜测兼容的（`pm2`/`pm_2`/`pm-2`），站点实际发布后如格式不同会安全回退为文字，不破版。
-- 表盘/灯柱颜色仅使用既有 OLED 安全色板（Success/Warning/Danger/GlyphMuted/品牌橙 232,128,54），无蓝色。
+- 表盘/灯柱颜色仅使用既有 OLED 安全色板（SuccessSoft/Success/Warning/Danger/GlyphMuted/品牌橙 232,128,54），无蓝色。

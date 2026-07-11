@@ -173,9 +173,9 @@ internal sealed partial class ConnectionCheckForm
                         form.SetLayerScale(2.0f);
                         form.Width = cellWidth;
                         form.Height = cellHeight;
-                        form.currentSettings.ConnectionCheckRenderVariant = variants[row];
-                        form.currentSettings.CleanIpBadgeTestMode = modes[col];
-                        form.snapshot = form.reader.GetSnapshot(form.currentSettings);
+                        form.CurrentSettings.ConnectionCheckRenderVariant = variants[row];
+                        form.CurrentSettings.CleanIpBadgeTestMode = modes[col];
+                        form.snapshot = form.reader.GetSnapshot(form.CurrentSettings);
 
                         int x = gap + col * (cellWidth + gap);
                         int y = gap + row * (rowHeight + gap);
@@ -220,7 +220,7 @@ internal sealed partial class ConnectionCheckForm
             form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.ConnectionCheckWidth, settings.ConnectionCheckHeight);
-            form.snapshot = form.reader.GetSnapshot(form.currentSettings);
+            form.snapshot = form.reader.GetSnapshot(form.CurrentSettings);
             RenderSampleSupport.SaveComposited(
                 outputDir,
                 "connectioncheck-current.png",

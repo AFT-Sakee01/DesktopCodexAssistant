@@ -15,7 +15,6 @@ internal static class UiHangWatchdog
     private const long MaxActiveLogBytes = 1024L * 1024L;
     private const int MaxArchives = 3;
     private static readonly object SyncRoot = new object();
-    private static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
     private static Thread workerThread;
     private static bool running;
     private static bool shutdownRequested;
@@ -212,7 +211,7 @@ internal static class UiHangWatchdog
             Directory.CreateDirectory(directoryPath);
             string path = Path.Combine(directoryPath, "ui-hang-watchdog.jsonl");
             RotateIfNeeded(path, 4096);
-            File.AppendAllText(path, BuildJsonLine(snapshot), Utf8NoBom);
+            File.AppendAllText(path, BuildJsonLine(snapshot), SharedEncoding.Utf8NoBom);
             EnforceArchiveLimit(directoryPath);
         }
         catch

@@ -1,0 +1,744 @@
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Text;
+using System.Globalization;
+
+internal enum RadarClockDialPhase
+{
+    NoData,
+    CurrentCycle,
+    WaitingCycle,
+    MissedCycle
+}
+
+internal sealed class RadarClockDialInput
+{
+    public bool BatchKnown;
+    public DateTime BatchTimeLocal;
+    public bool LocalKnown;
+    public DateTime RefreshMarkerTimeLocal;
+    public double CycleHours;
+    public DateTime NowLocal;
+    public DateTime NowUtc;
+    public bool RequestRunning;
+    public int RenderTick;
+    public string DataLabelText;
+    public RadarClockTimeDisplayMode TimeDisplayMode;
+    public bool LastAttemptKnown;
+    public DateTime LastAttemptLocal;
+    public bool LastActualKnown;
+    public DateTime LastActualLocal;
+}
+
+internal sealed class RadarClockDialState
+{
+    public RadarClockDialPhase Phase;
+    public Color StatusColor;
+    public float CurrentAngle;
+    public bool RefreshMarkerVisible;
+    public float RefreshMarkerAngle;
+    public float ArcStartAngle;
+    public float ArcSweepDegrees;
+    public bool WarningRingVisible;
+    public bool SecondRunBadge;
+    public string DateText;
+    public string TimeText;
+    public string ModeLabel;
+}
+
+internal sealed class RadarClockDialDrawContext
+{
+    public float LayerScale;
+    public Font DayFont;
+    public Font TimeFont;
+    public Font ModeFont;
+    public Font BadgeFont;
+    public Action<Graphics, string, Font, Brush, RectangleF, StringAlignment, float> DrawFittedText;
+}
+
+// Owns the shared Radar clock state machine and geometry. Window-specific snapshot access,
+// font caches, and text fitting stay at the call sites so this module remains side-effect free.
+internal static class RadarClockDial
+{
+    private const float BoundaryAngle = -90.0f;
+
+    internal static RadarClockDialPhase ComputePhase(
+        bool batchKnown,
+        DateTime batchTime,
+        bool localKnown,
+        double cycleHours,
+        DateTime now)
+    {
+        if (!batchKnown && !localKnown)
+        {
+            return RadarClockDialPhase.NoData;
+        }
+
+        DateTime boundary = GetCycleBoundaryLocal(now, cycleHours);
+        DateTime previousBoundary = boundary.AddHours(-cycleHours);
+        if (batchTime >= boundary)
+        {
+            return RadarClockDialPhase.CurrentCycle;
+        }
+
+        if (batchTime >= previousBoundary)
+        {
+            return RadarClockDialPhase.CurrentCycle;
+        }
+
+        return batchTime >= previousBoundary.AddHours(-cycleHours)
+            ? RadarClockDialPhase.WaitingCycle
+            : RadarClockDialPhase.MissedCycle;
+    }
+
+    internal static Color GetPhaseColor(RadarClockDialPhase phase)
+    {
+        switch (phase)
+        {
+            case RadarClockDialPhase.CurrentCycle:
+                // SuccessSoft avoids a GDI+ PArgb color-key collision observed with the primary
+                // success RGB while keeping the approved green state fully opaque.
+                return DesignTokens.WithAlpha(DesignTokens.Colors.SuccessSoft, 255);
+            case RadarClockDialPhase.WaitingCycle:
+                return DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245);
+            case RadarClockDialPhase.MissedCycle:
+                return DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245);
+            case RadarClockDialPhase.NoData:
+            default:
+                return DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
+        }
+    }
+
+    internal static RadarClockDialState ComputeState(RadarClockDialInput input)
+    {
+        if (input == null)
+        {
+            throw new ArgumentNullException("input");
+        }
+
+        double cycleHours = input.CycleHours > 0.0 ? input.CycleHours : 1.0;
+        RadarClockDialPhase phase = ComputePhase(
+            input.BatchKnown,
+            input.BatchTimeLocal,
+            input.LocalKnown,
+            cycleHours,
+            input.NowLocal);
+        Color statusColor = GetPhaseColor(phase);
+        if (input.RequestRunning && (input.RenderTick & 1) == 0)
+        {
+            statusColor = DesignTokens.WithAlpha(statusColor, 104);
+        }
+
+        DateTime boundary = GetCycleBoundaryLocal(input.NowLocal, cycleHours);
+        double elapsedHours = Math.Max(0.0, Math.Min(cycleHours, (input.NowLocal - boundary).TotalHours));
+        float elapsedSweep = (float)(elapsedHours / cycleHours * 360.0);
+        float currentAngle = BoundaryAngle + elapsedSweep;
+        float refreshMarkerAngle;
+        bool refreshMarkerVisible = GetMarkerAngle(
+            input.RefreshMarkerTimeLocal,
+            input.NowLocal,
+            boundary,
+            cycleHours,
+            out refreshMarkerAngle);
+
+        float arcStartAngle = refreshMarkerVisible ? refreshMarkerAngle : BoundaryAngle;
+        // A completed request without a model batch keeps the legacy red status color, but the
+        // missing timestamp cannot prove how many cycle boundaries elapsed. Do not invent a
+        // boundary arc or full warning ring until BatchKnown provides that temporal evidence.
+        bool batchAgeKnown = input.BatchKnown;
+        float arcSweep = refreshMarkerVisible
+            ? NormalizeSweep(refreshMarkerAngle, currentAngle)
+            : (batchAgeKnown &&
+                (phase == RadarClockDialPhase.WaitingCycle || phase == RadarClockDialPhase.MissedCycle)
+                ? elapsedSweep
+                : 0.0f);
+        bool warningRingVisible = batchAgeKnown && phase == RadarClockDialPhase.MissedCycle;
+        if (warningRingVisible)
+        {
+            arcSweep = Math.Max(2.0f, arcSweep);
+        }
+
+        string labelMain;
+        string labelSuffix;
+        SplitDataLabel(input.DataLabelText, out labelMain, out labelSuffix);
+
+        return new RadarClockDialState
+        {
+            Phase = phase,
+            StatusColor = statusColor,
+            CurrentAngle = currentAngle,
+            RefreshMarkerVisible = refreshMarkerVisible,
+            RefreshMarkerAngle = refreshMarkerAngle,
+            ArcStartAngle = arcStartAngle,
+            ArcSweepDegrees = arcSweep,
+            WarningRingVisible = warningRingVisible,
+            SecondRunBadge = HasSecondRunSuffix(labelSuffix),
+            DateText = FormatDate(labelMain),
+            TimeText = GetTimeText(input),
+            ModeLabel = GetModeLabel(input.TimeDisplayMode)
+        };
+    }
+
+    internal static DateTime GetCycleBoundaryLocal(DateTime now, double cycleHours)
+    {
+        if (cycleHours >= 23.5)
+        {
+            return now.Date;
+        }
+
+        int cycle = Math.Max(1, (int)Math.Round(cycleHours));
+        int hour = (now.Hour / cycle) * cycle;
+        return now.Date.AddHours(hour);
+    }
+
+    internal static bool GetMarkerAngle(
+        DateTime markerTime,
+        DateTime now,
+        DateTime cycleBoundary,
+        double cycleHours,
+        out float angle)
+    {
+        angle = BoundaryAngle;
+        if (markerTime == DateTime.MinValue || cycleHours <= 0.0)
+        {
+            return false;
+        }
+
+        double ageHours = (now - markerTime).TotalHours;
+        if (ageHours < 0.0 || ageHours >= cycleHours)
+        {
+            return false;
+        }
+
+        double elapsedHours = (markerTime - cycleBoundary).TotalHours;
+        while (elapsedHours < 0.0)
+        {
+            elapsedHours += cycleHours;
+        }
+
+        while (elapsedHours >= cycleHours)
+        {
+            elapsedHours -= cycleHours;
+        }
+
+        angle = BoundaryAngle + (float)(elapsedHours / cycleHours * 360.0);
+        return true;
+    }
+
+    internal static float NormalizeSweep(float startAngle, float endAngle)
+    {
+        float sweep = endAngle - startAngle;
+        while (sweep < 0.0f)
+        {
+            sweep += 360.0f;
+        }
+
+        while (sweep > 360.0f)
+        {
+            sweep -= 360.0f;
+        }
+
+        return sweep;
+    }
+
+    internal static void Draw(
+        Graphics g,
+        RectangleF rect,
+        RadarClockDialState state,
+        RadarClockDialDrawContext context)
+    {
+        if (g == null || state == null || context == null || context.DrawFittedText == null)
+        {
+            return;
+        }
+
+        // GDI+ text/arc rendering on a shared PArgb surface can affect pixels outside the dial
+        // when the caller has already painted sibling cells. Keep this reusable renderer inside
+        // its ownership rectangle and restore every caller-owned Graphics setting on exit.
+        GraphicsState savedState = g.Save();
+        try
+        {
+            g.SetClip(rect, CombineMode.Intersect);
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+
+        float dialDiameter = Math.Min(rect.Width, rect.Height) - Scale(1.0f, context.LayerScale);
+        dialDiameter = Math.Max(Scale(20.0f, context.LayerScale), dialDiameter);
+        RectangleF dial = new RectangleF(
+            rect.Left,
+            rect.Top + (rect.Height - dialDiameter) / 2.0f,
+            dialDiameter,
+            dialDiameter);
+        float stroke = Math.Max(2.0f, Scale(2.0f, context.LayerScale));
+        RectangleF arcRect = new RectangleF(
+            dial.Left + stroke / 2.0f,
+            dial.Top + stroke / 2.0f,
+            dial.Width - stroke,
+            dial.Height - stroke);
+
+        using (Pen trackPen = new Pen(DesignTokens.White(46), stroke))
+        {
+            g.DrawArc(trackPen, arcRect, BoundaryAngle, 360.0f);
+        }
+
+        if (state.WarningRingVisible)
+        {
+            using (Pen warningPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 90), stroke))
+            {
+                warningPen.StartCap = LineCap.Round;
+                warningPen.EndCap = LineCap.Round;
+                g.DrawArc(warningPen, arcRect, BoundaryAngle, 360.0f);
+            }
+        }
+
+        if (state.ArcSweepDegrees > 1.0f)
+        {
+            using (Pen arcPen = new Pen(state.StatusColor, stroke))
+            {
+                arcPen.StartCap = LineCap.Round;
+                arcPen.EndCap = LineCap.Round;
+                g.DrawArc(arcPen, arcRect, state.ArcStartAngle, state.ArcSweepDegrees);
+            }
+        }
+
+        DrawBoundaryTick(
+            g,
+            arcRect,
+            Math.Max(1.0f, stroke * 0.74f),
+            DesignTokens.White(170));
+
+        if (state.RefreshMarkerVisible)
+        {
+            DrawDot(
+                g,
+                arcRect,
+                state.RefreshMarkerAngle,
+                Math.Max(2.5f, Scale(3.0f, context.LayerScale)),
+                DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245));
+        }
+
+        DrawDot(
+            g,
+            arcRect,
+            state.CurrentAngle,
+            Math.Max(3.0f, Scale(4.0f, context.LayerScale)),
+            DesignTokens.White(235));
+
+        if (state.SecondRunBadge)
+        {
+            double markerRadians = BoundaryAngle * Math.PI / 180.0;
+            float radius = arcRect.Width / 2.0f;
+            float markerX = arcRect.Left + radius + (float)Math.Cos(markerRadians) * radius;
+            float markerY = arcRect.Top + radius + (float)Math.Sin(markerRadians) * radius;
+            float markerDiameter = Math.Max(3.0f, Scale(4.0f, context.LayerScale));
+            float badgeOffset = markerDiameter + Scale(2.0f, context.LayerScale);
+            RectangleF badgeRect = new RectangleF(
+                markerX - (float)Math.Cos(markerRadians) * badgeOffset - Scale(4.0f, context.LayerScale),
+                markerY - (float)Math.Sin(markerRadians) * badgeOffset - Scale(4.0f, context.LayerScale),
+                Scale(8.0f, context.LayerScale),
+                Scale(8.0f, context.LayerScale));
+            using (SolidBrush badgeBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245)))
+            {
+                DrawCenteredText(g, "2", context.BadgeFont, badgeBrush, badgeRect);
+            }
+        }
+
+        float innerWidth = dial.Width * 0.72f;
+        float centerX = dial.Left + dial.Width / 2.0f;
+        float centerY = dial.Top + dial.Height / 2.0f;
+        RectangleF dayRect = new RectangleF(
+            centerX - innerWidth / 2.0f,
+            centerY - Scale(11.0f, context.LayerScale),
+            innerWidth,
+            Scale(11.0f, context.LayerScale));
+        RectangleF timeRect = new RectangleF(
+            centerX - innerWidth / 2.0f,
+            centerY + Scale(1.0f, context.LayerScale),
+            innerWidth,
+            Scale(8.0f, context.LayerScale));
+        RectangleF modeRect = new RectangleF(
+            centerX - innerWidth / 2.0f,
+            centerY + Scale(9.0f, context.LayerScale),
+            innerWidth,
+            Scale(6.0f, context.LayerScale));
+        using (SolidBrush dayBrush = new SolidBrush(DesignTokens.White(235)))
+        using (SolidBrush timeBrush = new SolidBrush(state.StatusColor))
+        {
+            context.DrawFittedText(g, state.DateText, context.DayFont, dayBrush, dayRect, StringAlignment.Center, 6.0f);
+            context.DrawFittedText(g, state.TimeText, context.TimeFont, timeBrush, timeRect, StringAlignment.Center, 6.0f);
+            context.DrawFittedText(g, state.ModeLabel, context.ModeFont, timeBrush, modeRect, StringAlignment.Center, 4.5f);
+        }
+        }
+        finally
+        {
+            g.Restore(savedState);
+        }
+    }
+
+    internal static void DrawDot(
+        Graphics g,
+        RectangleF arcRect,
+        float angle,
+        float diameter,
+        Color color)
+    {
+        double radians = angle * Math.PI / 180.0;
+        float radius = arcRect.Width / 2.0f;
+        float x = arcRect.Left + radius + (float)Math.Cos(radians) * radius;
+        float y = arcRect.Top + radius + (float)Math.Sin(radians) * radius;
+        using (SolidBrush brush = new SolidBrush(color))
+        {
+            g.FillEllipse(brush, x - diameter / 2.0f, y - diameter / 2.0f, diameter, diameter);
+        }
+    }
+
+    internal static void DrawBoundaryTick(
+        Graphics g,
+        RectangleF arcRect,
+        float stroke,
+        Color color)
+    {
+        if (arcRect.Width <= 0.0f || arcRect.Height <= 0.0f)
+        {
+            return;
+        }
+
+        float x = arcRect.Left + arcRect.Width / 2.0f;
+        float y = arcRect.Top;
+        float length = Math.Max(3.0f, arcRect.Height * 0.18f);
+        using (Pen pen = new Pen(color, stroke))
+        {
+            pen.StartCap = LineCap.Round;
+            pen.EndCap = LineCap.Round;
+            g.DrawLine(pen, x, y - length * 0.35f, x, y + length * 0.65f);
+        }
+    }
+
+    internal static void SplitDataLabel(string dataLabelText, out string main, out string suffix)
+    {
+        string raw = (dataLabelText ?? string.Empty).Trim();
+        int underscore = raw.IndexOf('_');
+        if (underscore > 0 && underscore < raw.Length - 1)
+        {
+            main = raw.Substring(0, underscore);
+            suffix = raw.Substring(underscore + 1);
+            return;
+        }
+
+        int space = raw.LastIndexOf(' ');
+        if (space > 0 && space < raw.Length - 1 && raw.IndexOf(':', space) > space)
+        {
+            main = raw.Substring(0, space);
+            suffix = raw.Substring(space + 1);
+            return;
+        }
+
+        main = raw;
+        suffix = string.Empty;
+    }
+
+    internal static bool HasSecondRunSuffix(string suffix)
+    {
+        string raw = (suffix ?? string.Empty).Trim().ToLowerInvariant();
+        int prefixLength;
+        if (raw.StartsWith("pm", StringComparison.Ordinal))
+        {
+            prefixLength = 2;
+        }
+        else if (raw.StartsWith("n", StringComparison.Ordinal))
+        {
+            prefixLength = 1;
+        }
+        else
+        {
+            return false;
+        }
+
+        string rest = raw.Substring(prefixLength).TrimStart('_', '-', ' ');
+        int run;
+        return rest.Length > 0 &&
+            int.TryParse(rest, NumberStyles.Integer, CultureInfo.InvariantCulture, out run) &&
+            run >= 2;
+    }
+
+    internal static string FormatDate(string value)
+    {
+        string raw = (value ?? string.Empty).Trim();
+        if (raw.Length == 0 || raw.IndexOf('月') >= 0)
+        {
+            return raw;
+        }
+
+        int separator = raw.IndexOfAny(new char[] { '.', '/' });
+        int month;
+        int day;
+        if (separator > 0 && separator < raw.Length - 1 &&
+            int.TryParse(raw.Substring(0, separator), NumberStyles.Integer, CultureInfo.InvariantCulture, out month) &&
+            int.TryParse(raw.Substring(separator + 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out day) &&
+            month >= 1 && month <= 12 && day >= 1 && day <= 31)
+        {
+            return month.ToString(CultureInfo.InvariantCulture) + "月" + day.ToString(CultureInfo.InvariantCulture) + "日";
+        }
+
+        return raw;
+    }
+
+    internal static void RunSelfTest()
+    {
+        DateTime truthNow = new DateTime(2026, 7, 7, 13, 0, 0);
+        RunCycleTruthTable(12.0, truthNow, new DateTime(2026, 7, 7, 13, 0, 0), new DateTime(2026, 7, 7, 0, 0, 0), new DateTime(2026, 7, 6, 12, 0, 0), new DateTime(2026, 7, 6, 0, 0, 0));
+        RunCycleTruthTable(24.0, truthNow, new DateTime(2026, 7, 7, 13, 0, 0), new DateTime(2026, 7, 6, 0, 0, 0), new DateTime(2026, 7, 5, 0, 0, 0), new DateTime(2026, 7, 4, 0, 0, 0));
+
+        DateTime legacyNow = new DateTime(2026, 7, 7, 13, 30, 0);
+        DateTime codexBoundary = GetCycleBoundaryLocal(legacyNow, 12.0);
+        float markerAngle;
+        if (!GetMarkerAngle(new DateTime(2026, 7, 7, 12, 15, 0), legacyNow, codexBoundary, 12.0, out markerAngle) ||
+            Math.Abs(markerAngle - (-82.5f)) > 0.01f)
+        {
+            throw new InvalidOperationException("Codex 12h refresh marker angle should advance clockwise from the top boundary.");
+        }
+
+        if (!GetMarkerAngle(new DateTime(2026, 7, 7, 11, 0, 0), legacyNow, codexBoundary, 12.0, out markerAngle) ||
+            Math.Abs(markerAngle - 240.0f) > 0.01f)
+        {
+            throw new InvalidOperationException("Codex 12h refresh marker should remain visible across the boundary until one full lap.");
+        }
+
+        float codexCurrentAngle = BoundaryAngle + (float)((legacyNow - codexBoundary).TotalHours / 12.0 * 360.0);
+        if (Math.Abs(NormalizeSweep(markerAngle, codexCurrentAngle) - 75.0f) > 0.01f ||
+            GetMarkerAngle(legacyNow.AddHours(-12.0), legacyNow, codexBoundary, 12.0, out markerAngle))
+        {
+            throw new InvalidOperationException("Codex 12h refresh marker retention or sweep changed.");
+        }
+
+        DateTime claudeBoundary = GetCycleBoundaryLocal(legacyNow, 24.0);
+        if (!GetMarkerAngle(new DateTime(2026, 7, 7, 1, 0, 0), legacyNow, claudeBoundary, 24.0, out markerAngle) ||
+            Math.Abs(markerAngle - (-75.0f)) > 0.01f)
+        {
+            throw new InvalidOperationException("Claude 24h refresh marker angle should advance clockwise from midnight.");
+        }
+
+        if (!GetMarkerAngle(legacyNow.AddHours(-23.9), legacyNow, claudeBoundary, 24.0, out markerAngle))
+        {
+            throw new InvalidOperationException("Claude 24h refresh marker should remain before one full lap.");
+        }
+
+        float claudeCurrentAngle = BoundaryAngle + (float)((legacyNow - claudeBoundary).TotalHours / 24.0 * 360.0);
+        if (Math.Abs(NormalizeSweep(markerAngle, claudeCurrentAngle) - 358.5f) > 0.01f ||
+            GetMarkerAngle(legacyNow.AddHours(-24.0), legacyNow, claudeBoundary, 24.0, out markerAngle))
+        {
+            throw new InvalidOperationException("Claude 24h refresh marker retention or sweep changed.");
+        }
+
+        AssertSecondRun("7.7_pm2", true);
+        AssertSecondRun("7.7_pm_2", true);
+        AssertSecondRun("7.7_pm-2", true);
+        AssertSecondRun("7.7_n2", true);
+        AssertSecondRun("7.7_n_2", true);
+        AssertSecondRun("7.7_n-2", true);
+        AssertSecondRun("7.7_n", false);
+        AssertSecondRun("7.7_am", false);
+        AssertSecondRun("7.7_pm", false);
+        AssertSecondRun("7/7 07:30", false);
+
+        RadarClockDialInput firstRunInput = CreateTestInput(12.0, truthNow, new DateTime(2026, 7, 7, 12, 0, 0), truthNow);
+        firstRunInput.DataLabelText = "7.7_n";
+        RadarClockDialState firstRun = ComputeState(firstRunInput);
+        firstRunInput.DataLabelText = "7.7_n2";
+        RadarClockDialState secondRun = ComputeState(firstRunInput);
+        if (firstRun.Phase != secondRun.Phase || firstRun.SecondRunBadge || !secondRun.SecondRunBadge)
+        {
+            throw new InvalidOperationException("Radar clock same-window n to n2 publication changed phase or failed to toggle the second-run badge.");
+        }
+
+        RadarClockDialInput blinkingInput = CreateTestInput(12.0, truthNow, truthNow, truthNow);
+        blinkingInput.RequestRunning = true;
+        blinkingInput.RenderTick = 2;
+        if (ComputeState(blinkingInput).StatusColor.A != 104)
+        {
+            throw new InvalidOperationException("Radar clock request blink should use alpha 104 on even frames.");
+        }
+
+        blinkingInput.RenderTick = 3;
+        if (ComputeState(blinkingInput).StatusColor.A != 255)
+        {
+            throw new InvalidOperationException("Radar clock request blink should preserve status alpha on odd frames.");
+        }
+
+        if (!string.Equals(FormatDate("7.6"), "7月6日", StringComparison.Ordinal) ||
+            !string.Equals(FormatDate("7/6"), "7月6日", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Radar clock date formatting changed.");
+        }
+    }
+
+    private static void RunCycleTruthTable(
+        double cycleHours,
+        DateTime now,
+        DateTime currentBatch,
+        DateTime oneWindowLateBatch,
+        DateTime waitingBatch,
+        DateTime missedBatch)
+    {
+        RadarClockDialState current = ComputeState(CreateTestInput(cycleHours, now, currentBatch, now));
+        AssertState(current, RadarClockDialPhase.CurrentCycle, DesignTokens.WithAlpha(DesignTokens.Colors.SuccessSoft, 255), "current cycle");
+
+        RadarClockDialState oneWindowLate = ComputeState(CreateTestInput(cycleHours, now, oneWindowLateBatch, DateTime.MinValue));
+        AssertState(oneWindowLate, RadarClockDialPhase.CurrentCycle, DesignTokens.WithAlpha(DesignTokens.Colors.SuccessSoft, 255), "one-window-late current cycle");
+        if (oneWindowLate.WarningRingVisible || oneWindowLate.ArcSweepDegrees != 0.0f)
+        {
+            throw new InvalidOperationException("Radar clock one-window-late current cycle should remain green without warning geometry.");
+        }
+
+        RadarClockDialInput waitingInput = CreateTestInput(cycleHours, now, waitingBatch, DateTime.MinValue);
+        RadarClockDialState waiting = ComputeState(waitingInput);
+        AssertState(waiting, RadarClockDialPhase.WaitingCycle, DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245), "waiting cycle");
+        if (waiting.WarningRingVisible || waiting.ArcSweepDegrees <= 0.0f || waiting.ArcStartAngle != BoundaryAngle)
+        {
+            throw new InvalidOperationException("Radar clock waiting cycle arc should run from the current boundary.");
+        }
+
+        RadarClockDialState missed = ComputeState(CreateTestInput(cycleHours, now, missedBatch, DateTime.MinValue));
+        AssertState(missed, RadarClockDialPhase.MissedCycle, DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245), "missed cycle");
+        if (!missed.WarningRingVisible || missed.ArcSweepDegrees < 2.0f)
+        {
+            throw new InvalidOperationException("Radar clock missed cycle should show its warning ring and minimum arc.");
+        }
+
+        RadarClockDialInput noDataInput = CreateTestInput(cycleHours, now, DateTime.MinValue, DateTime.MinValue);
+        noDataInput.BatchKnown = false;
+        noDataInput.LocalKnown = false;
+        RadarClockDialState noData = ComputeState(noDataInput);
+        AssertState(noData, RadarClockDialPhase.NoData, DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230), "no data");
+        if (noData.WarningRingVisible || noData.ArcSweepDegrees != 0.0f)
+        {
+            throw new InvalidOperationException("Radar clock no-data phase should not draw a status arc.");
+        }
+
+        RadarClockDialInput checkedWithoutBatchInput = CreateTestInput(cycleHours, now, DateTime.MinValue, now);
+        checkedWithoutBatchInput.BatchKnown = false;
+        checkedWithoutBatchInput.LocalKnown = true;
+        RadarClockDialState checkedWithoutBatch = ComputeState(checkedWithoutBatchInput);
+        AssertState(checkedWithoutBatch, RadarClockDialPhase.MissedCycle, DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245), "checked without batch");
+        if (checkedWithoutBatch.WarningRingVisible || checkedWithoutBatch.ArcSweepDegrees != 0.0f)
+        {
+            throw new InvalidOperationException("Radar clock must not infer a cycle arc when the batch timestamp is unknown.");
+        }
+
+        DateTime boundary = GetCycleBoundaryLocal(now, cycleHours);
+        float markerAngle;
+        if (GetMarkerAngle(now.AddHours(-cycleHours), now, boundary, cycleHours, out markerAngle))
+        {
+            throw new InvalidOperationException("Radar clock refresh marker should expire at one full cycle.");
+        }
+
+        if (!GetMarkerAngle(boundary.AddMinutes(-30.0), now, boundary, cycleHours, out markerAngle) ||
+            markerAngle < -90.0f || markerAngle >= 270.0f ||
+            NormalizeSweep(markerAngle, current.CurrentAngle) < 0.0f ||
+            NormalizeSweep(markerAngle, current.CurrentAngle) > 360.0f)
+        {
+            throw new InvalidOperationException("Radar clock cross-boundary marker geometry is out of range.");
+        }
+    }
+
+    private static RadarClockDialInput CreateTestInput(
+        double cycleHours,
+        DateTime now,
+        DateTime batchTime,
+        DateTime markerTime)
+    {
+        return new RadarClockDialInput
+        {
+            BatchKnown = batchTime != DateTime.MinValue,
+            BatchTimeLocal = batchTime,
+            LocalKnown = markerTime != DateTime.MinValue,
+            RefreshMarkerTimeLocal = markerTime,
+            CycleHours = cycleHours,
+            NowLocal = now,
+            NowUtc = new DateTime(2026, 7, 7, 4, 0, 0, DateTimeKind.Utc),
+            DataLabelText = "7.7_pm",
+            TimeDisplayMode = RadarClockTimeDisplayMode.Utc,
+            LastAttemptKnown = true,
+            LastAttemptLocal = now.AddMinutes(-15.0),
+            LastActualKnown = markerTime != DateTime.MinValue,
+            LastActualLocal = markerTime
+        };
+    }
+
+    private static void AssertState(
+        RadarClockDialState state,
+        RadarClockDialPhase phase,
+        Color color,
+        string scenario)
+    {
+        if (state.Phase != phase || state.StatusColor.ToArgb() != color.ToArgb())
+        {
+            throw new InvalidOperationException("Radar clock " + scenario + " phase or color changed.");
+        }
+    }
+
+    private static void AssertSecondRun(string label, bool expected)
+    {
+        RadarClockDialInput input = CreateTestInput(24.0, new DateTime(2026, 7, 7, 13, 0, 0), new DateTime(2026, 7, 7, 1, 0, 0), DateTime.MinValue);
+        input.DataLabelText = label;
+        if (ComputeState(input).SecondRunBadge != expected)
+        {
+            throw new InvalidOperationException("Radar clock second-run suffix parsing changed for " + label + ".");
+        }
+    }
+
+    private static string GetTimeText(RadarClockDialInput input)
+    {
+        switch (input.TimeDisplayMode)
+        {
+            case RadarClockTimeDisplayMode.CurrentLocal:
+                return input.NowLocal.ToString("HH:mm", CultureInfo.CurrentCulture);
+            case RadarClockTimeDisplayMode.LastAttemptRefresh:
+                return input.LastAttemptKnown && input.LastAttemptLocal != DateTime.MinValue
+                    ? input.LastAttemptLocal.ToString("HH:mm", CultureInfo.CurrentCulture)
+                    : "--:--";
+            case RadarClockTimeDisplayMode.LastActualRefresh:
+                return input.LastActualKnown && input.LastActualLocal != DateTime.MinValue
+                    ? input.LastActualLocal.ToString("HH:mm", CultureInfo.CurrentCulture)
+                    : "--:--";
+            case RadarClockTimeDisplayMode.Utc:
+            default:
+                return input.NowUtc.ToString("HH:mm", CultureInfo.InvariantCulture);
+        }
+    }
+
+    private static string GetModeLabel(RadarClockTimeDisplayMode mode)
+    {
+        switch (mode)
+        {
+            case RadarClockTimeDisplayMode.CurrentLocal:
+                return "NOW";
+            case RadarClockTimeDisplayMode.LastAttemptRefresh:
+                return "LAST";
+            case RadarClockTimeDisplayMode.LastActualRefresh:
+                return "REF";
+            case RadarClockTimeDisplayMode.Utc:
+            default:
+                return "UTC";
+        }
+    }
+
+    private static void DrawCenteredText(Graphics g, string text, Font font, Brush brush, RectangleF rect)
+    {
+        using (StringFormat format = new StringFormat
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap
+        })
+        {
+            g.DrawString(text ?? string.Empty, font, brush, rect, format);
+        }
+    }
+
+    private static int Scale(float value, float layerScale)
+    {
+        return Math.Max(1, (int)Math.Round(value * layerScale));
+    }
+}

@@ -140,7 +140,7 @@ internal sealed partial class OperationForm
 
     private bool IsRadialDialActive()
     {
-        return this.currentSettings.OperationRenderVariant == OperationRenderVariant.RadialDial;
+        return this.CurrentSettings.OperationRenderVariant == OperationRenderVariant.RadialDial;
     }
 
     // Test/render-harness only: jumps to the root ring (open, nothing drilled) since that is the
@@ -220,8 +220,8 @@ internal sealed partial class OperationForm
     {
         bool hasBattery = ShouldShowBatteryCareButtons();
         bool settingsLogicExtension =
-            this.currentSettings != null &&
-            this.currentSettings.OperationSettingsLogicExtensionEnabled;
+            this.CurrentSettings != null &&
+            this.CurrentSettings.OperationSettingsLogicExtensionEnabled;
         if (this.cachedRadialRoots == null ||
             hasBattery != this.cachedRadialRootsHasBattery ||
             settingsLogicExtension != this.cachedRadialRootsSettingsLogicExtension)
@@ -253,9 +253,9 @@ internal sealed partial class OperationForm
             "链接阻断",
             RadialAdvancedColor,
             this.DrawChainLinkGlyph,
-            () => this.currentSettings.AiRequestProtectionManualBlockEnabled,
+            () => this.CurrentSettings.AiRequestProtectionManualBlockEnabled,
             ExecuteRadialLinkBlockToggle,
-            () => this.currentSettings.AiRequestProtectionManualBlockEnabled
+            () => this.CurrentSettings.AiRequestProtectionManualBlockEnabled
                 ? "点击关闭链接阻断"
                 : "点击开启链接阻断\r\n阻断本程序的 OpenAI / ChatGPT / Claude 请求"));
         special.Children.Add(NewToggle(
@@ -263,9 +263,9 @@ internal sealed partial class OperationForm
             "额度计划",
             RadialAdvancedColor,
             this.DrawPieWedgeGlyph,
-            () => this.currentSettings.CodexQuotaPlanEnabled,
+            () => this.CurrentSettings.CodexQuotaPlanEnabled,
             ExecuteRadialQuotaPlanToggle,
-            () => this.currentSettings.CodexQuotaPlanEnabled
+            () => this.CurrentSettings.CodexQuotaPlanEnabled
                 ? "点击关闭额度计划"
                 : "点击开启额度计划\r\n阈值和 goal 列表在普通设置中调整"));
         special.Children.Add(NewLeaf(
@@ -286,7 +286,7 @@ internal sealed partial class OperationForm
             () => ExecuteButton(WindowsSettingsButtonIndex, MouseButtons.Left),
             () => "系统设置\r\nWindows 设置"));
 
-        if (this.currentSettings.OperationSettingsLogicExtensionEnabled)
+        if (this.CurrentSettings.OperationSettingsLogicExtensionEnabled)
         {
             settings.Children.Add(BuildRadialCommonLogicBranch(includeBattery));
             settings.Children.Add(BuildRadialAllSettingsBranch());
@@ -372,9 +372,9 @@ internal sealed partial class OperationForm
             "悬停透明度",
             RadialAssistColor,
             this.DrawHalfMoonGlyph,
-            () => this.currentSettings.ForceHoverOpacityActive,
+            () => this.CurrentSettings.ForceHoverOpacityActive,
             () => ExecuteButton(HoverOpacityToggleButtonIndex, MouseButtons.Left),
-            () => this.currentSettings.ForceHoverOpacityActive ? "恢复模块透明度" : "切换到悬停透明度"));
+            () => this.CurrentSettings.ForceHoverOpacityActive ? "恢复模块透明度" : "切换到悬停透明度"));
         if (includeBattery)
         {
             assist.Children.Add(NewLeaf(
@@ -409,7 +409,7 @@ internal sealed partial class OperationForm
             RadialAssistColor,
             this.DrawHalfMoonGlyph,
             () => ExecuteButton(HoverOpacityToggleButtonIndex, MouseButtons.Left),
-            () => this.currentSettings.ForceHoverOpacityActive ? "恢复模块透明度" : "切换到悬停透明度"));
+            () => this.CurrentSettings.ForceHoverOpacityActive ? "恢复模块透明度" : "切换到悬停透明度"));
         visibility.Children.Add(NewSettingToggle("HoverOpacityEnabled", "common_hover_hide", "靠近隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.HoverOpacityEnabled));
         visibility.Children.Add(NewSettingToggle("AutoHoverOpacityIdleEnabled", "common_idle_hide", "空闲隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.AutoHoverOpacityIdleEnabled));
         visibility.Children.Add(NewSettingToggle("AutoHoverOpacityMaximizedEnabled", "common_max_hide", "最大化隐藏", RadialSettingsColor, this.DrawAppWindowGlyph, s => s.AutoHoverOpacityMaximizedEnabled));
@@ -423,9 +423,9 @@ internal sealed partial class OperationForm
             "链接阻断",
             RadialAdvancedColor,
             this.DrawChainLinkGlyph,
-            () => this.currentSettings.AiRequestProtectionManualBlockEnabled,
+            () => this.CurrentSettings.AiRequestProtectionManualBlockEnabled,
             ExecuteRadialLinkBlockToggle,
-            () => this.currentSettings.AiRequestProtectionManualBlockEnabled
+            () => this.CurrentSettings.AiRequestProtectionManualBlockEnabled
                 ? "点击关闭链接阻断"
                 : "点击开启链接阻断\r\n阻断本程序的 OpenAI / ChatGPT / Claude 请求"));
         aiQuota.Children.Add(NewSettingToggle("AiRequestProtectionAutoEnabled", "common_ai_auto_block", "自动阻断", RadialAdvancedColor, this.DrawChainLinkGlyph, s => s.AiRequestProtectionAutoEnabled));
@@ -434,9 +434,9 @@ internal sealed partial class OperationForm
             "额度计划",
             RadialAdvancedColor,
             this.DrawPieWedgeGlyph,
-            () => this.currentSettings.CodexQuotaPlanEnabled,
+            () => this.CurrentSettings.CodexQuotaPlanEnabled,
             ExecuteRadialQuotaPlanToggle,
-            () => this.currentSettings.CodexQuotaPlanEnabled
+            () => this.CurrentSettings.CodexQuotaPlanEnabled
                 ? "点击关闭额度计划"
                 : "点击开启额度计划\r\n阈值和 goal 列表在普通设置中调整"));
         aiQuota.Children.Add(NewSettingToggle("CodexQuotaPlanAutoResumePausedGoals", "common_quota_auto_resume", "恢复上次", RadialAdvancedColor, this.DrawRestartLoopGlyph, s => s.CodexQuotaPlanAutoResumePausedGoals));
@@ -551,9 +551,9 @@ internal sealed partial class OperationForm
             "手动阻断",
             RadialAdvancedColor,
             this.DrawChainLinkGlyph,
-            () => this.currentSettings.AiRequestProtectionManualBlockEnabled,
+            () => this.CurrentSettings.AiRequestProtectionManualBlockEnabled,
             ExecuteRadialLinkBlockToggle,
-            () => this.currentSettings.AiRequestProtectionManualBlockEnabled ? "点击关闭链接阻断" : "点击开启链接阻断"));
+            () => this.CurrentSettings.AiRequestProtectionManualBlockEnabled ? "点击关闭链接阻断" : "点击开启链接阻断"));
         codex.Children.Add(ai);
 
         RadialNode link = NewBranch("all_codex_link", "Codex 链路", RadialAdvancedColor, this.DrawChainLinkGlyph);
@@ -568,9 +568,9 @@ internal sealed partial class OperationForm
             "启用计划",
             RadialAdvancedColor,
             this.DrawPieWedgeGlyph,
-            () => this.currentSettings.CodexQuotaPlanEnabled,
+            () => this.CurrentSettings.CodexQuotaPlanEnabled,
             ExecuteRadialQuotaPlanToggle,
-            () => this.currentSettings.CodexQuotaPlanEnabled ? "点击关闭额度计划" : "点击开启额度计划"));
+            () => this.CurrentSettings.CodexQuotaPlanEnabled ? "点击关闭额度计划" : "点击开启额度计划"));
         quotaPlan.Children.Add(NewSettingToggle("CodexQuotaPlanAutoResumePausedGoals", "all_quota_auto_resume", "恢复上次", RadialAdvancedColor, this.DrawRestartLoopGlyph, s => s.CodexQuotaPlanAutoResumePausedGoals));
         codex.Children.Add(quotaPlan);
 
@@ -641,9 +641,9 @@ internal sealed partial class OperationForm
 
     private bool GetRadialSettingState(RadialSettingToggleDescriptor descriptor)
     {
-        return this.currentSettings != null &&
+        return this.CurrentSettings != null &&
             descriptor.GetState != null &&
-            descriptor.GetState(this.currentSettings);
+            descriptor.GetState(this.CurrentSettings);
     }
 
     private string GetRadialSettingToggleTooltip(RadialSettingToggleDescriptor descriptor)
@@ -1112,8 +1112,8 @@ internal sealed partial class OperationForm
 
     private bool ShouldKeepRadialMenuOpenAfterLeafClick()
     {
-        return this.currentSettings == null ||
-            this.currentSettings.OperationRadialKeepOpenAfterLeafClickEnabled;
+        return this.CurrentSettings == null ||
+            this.CurrentSettings.OperationRadialKeepOpenAfterLeafClickEnabled;
     }
 
     private void OpenRadialMenu()
@@ -1164,8 +1164,8 @@ internal sealed partial class OperationForm
     private bool UpdateRadialCoreAutoHideThresholdVisual(DateTime nowUtc)
     {
         bool coreKeepAliveActive =
-            this.currentSettings != null &&
-            this.currentSettings.OperationRadialCoreAutoHideKeepAliveEnabled &&
+            this.CurrentSettings != null &&
+            this.CurrentSettings.OperationRadialCoreAutoHideKeepAliveEnabled &&
             IsRadialCoreAutoHideKeepAliveActive();
 
         return UpdateRadialCoreAutoHideThresholdVisual(nowUtc, coreKeepAliveActive);
@@ -1198,9 +1198,9 @@ internal sealed partial class OperationForm
 
     private int GetRadialCoreAutoHideThresholdSeconds()
     {
-        int seconds = this.currentSettings == null
+        int seconds = this.CurrentSettings == null
             ? WidgetSettings.DefaultAutoHoverOpacityIdleSeconds
-            : this.currentSettings.AutoHoverOpacityIdleSeconds;
+            : this.CurrentSettings.AutoHoverOpacityIdleSeconds;
         if (seconds < WidgetSettings.MinAutoHoverOpacityIdleSeconds)
         {
             return WidgetSettings.MinAutoHoverOpacityIdleSeconds;
@@ -1224,12 +1224,12 @@ internal sealed partial class OperationForm
 
     private int GetRadialIdleCollapseSeconds()
     {
-        if (this.currentSettings == null)
+        if (this.CurrentSettings == null)
         {
             return WidgetSettings.DefaultOperationRadialIdleCollapseSeconds;
         }
 
-        int seconds = this.currentSettings.OperationRadialIdleCollapseSeconds;
+        int seconds = this.CurrentSettings.OperationRadialIdleCollapseSeconds;
         if (seconds <= WidgetSettings.NeverOperationRadialIdleCollapseSeconds)
         {
             return WidgetSettings.NeverOperationRadialIdleCollapseSeconds;
@@ -1251,8 +1251,8 @@ internal sealed partial class OperationForm
     private void ResetRadialIdleCollapseTimerForInteraction()
     {
         if (this.radialMenuOpen &&
-            this.currentSettings != null &&
-            this.currentSettings.OperationRadialIdleResetOnInteractionEnabled)
+            this.CurrentSettings != null &&
+            this.CurrentSettings.OperationRadialIdleResetOnInteractionEnabled)
         {
             this.radialLastInteractionUtc = DateTime.UtcNow;
         }
@@ -1310,7 +1310,7 @@ internal sealed partial class OperationForm
 
         try
         {
-            this.setAiBlockAction(!this.currentSettings.AiRequestProtectionManualBlockEnabled);
+            this.setAiBlockAction(!this.CurrentSettings.AiRequestProtectionManualBlockEnabled);
         }
         catch (Exception ex)
         {
@@ -1328,7 +1328,7 @@ internal sealed partial class OperationForm
 
         try
         {
-            this.setQuotaPlanAction(!this.currentSettings.CodexQuotaPlanEnabled);
+            this.setQuotaPlanAction(!this.CurrentSettings.CodexQuotaPlanEnabled);
         }
         catch (Exception ex)
         {
@@ -2179,7 +2179,7 @@ internal sealed partial class OperationForm
         float cy = rect.Top + rect.Height / 2.0f;
         float w = rect.Width * 0.22f;
         float h = rect.Height * 0.16f;
-        bool blocked = this.currentSettings.AiRequestProtectionManualBlockEnabled;
+        bool blocked = this.CurrentSettings.AiRequestProtectionManualBlockEnabled;
         using (Pen pen = NewGlyphPen(Math.Max(1.3f, 1.7f * this.LayerScale)))
         {
             g.DrawArc(pen, cx - w * 1.7f, cy - h, w * 1.5f, h * 2.0f, 90, 180);
@@ -2201,7 +2201,7 @@ internal sealed partial class OperationForm
         float cy = rect.Top + rect.Height / 2.0f;
         float r = Math.Min(rect.Width, rect.Height) * 0.46f;
         RectangleF circle = new RectangleF(cx - r, cy - r, r * 2.0f, r * 2.0f);
-        bool enabled = this.currentSettings.CodexQuotaPlanEnabled;
+        bool enabled = this.CurrentSettings.CodexQuotaPlanEnabled;
         using (SolidBrush wedge = new SolidBrush(DesignTokens.Glyph(enabled ? 235 : 150)))
         {
             g.FillPie(wedge, circle.X, circle.Y, circle.Width, circle.Height, -90, 110);
@@ -2290,7 +2290,7 @@ internal sealed partial class OperationForm
             AssertSelfTest(settingsLayout.Levels[1].Nodes.Exists(n => n.Id == "special_settings"), "settings children include the special-settings branch");
             AssertRadialQuadrant(settingsLayout);
 
-            form.currentSettings.OperationSettingsLogicExtensionEnabled = true;
+            form.CurrentSettings.OperationSettingsLogicExtensionEnabled = true;
             form.cachedRadialRoots = null;
             roots = form.GetRadialRoots();
             AssertRadialSiblingCaps(roots, 1, "extended root");
@@ -2328,7 +2328,7 @@ internal sealed partial class OperationForm
                 "dense quota protection ring uses the full available quadrant");
             AssertRadialQuadrant(quotaProtectionLayout);
 
-            form.currentSettings.OperationSettingsLogicExtensionEnabled = false;
+            form.CurrentSettings.OperationSettingsLogicExtensionEnabled = false;
             form.cachedRadialRoots = null;
             form.radialSelectionPathIds = new List<string> { "settings", "special_settings" };
             RadialLayout specialLayout = form.ComputeRadialLayout();
@@ -2348,30 +2348,30 @@ internal sealed partial class OperationForm
             AssertSelfTest(form.radialSelectionPathIds.Count == 1, "resolving a stale path also trims the stored id list");
 
             form.radialMenuOpen = true;
-            form.currentSettings.OperationRadialIdleCollapseSeconds = WidgetSettings.DefaultOperationRadialIdleCollapseSeconds;
+            form.CurrentSettings.OperationRadialIdleCollapseSeconds = WidgetSettings.DefaultOperationRadialIdleCollapseSeconds;
             form.radialLastInteractionUtc = DateTime.UtcNow.AddSeconds(-100);
             AssertSelfTest(form.ShouldRadialIdleCollapse(DateTime.UtcNow), "idle timeout elapsed should request a collapse");
             form.radialLastInteractionUtc = DateTime.UtcNow;
             AssertSelfTest(!form.ShouldRadialIdleCollapse(DateTime.UtcNow), "recent interaction should not request a collapse");
-            form.currentSettings.OperationRadialIdleCollapseSeconds = WidgetSettings.NeverOperationRadialIdleCollapseSeconds;
+            form.CurrentSettings.OperationRadialIdleCollapseSeconds = WidgetSettings.NeverOperationRadialIdleCollapseSeconds;
             form.radialLastInteractionUtc = DateTime.UtcNow.AddSeconds(-1000);
             AssertSelfTest(!form.ShouldRadialIdleCollapse(DateTime.UtcNow), "idle timeout set to never should not request a collapse");
-            form.currentSettings.OperationRadialIdleCollapseSeconds = 10;
-            form.currentSettings.OperationRadialIdleResetOnInteractionEnabled = false;
+            form.CurrentSettings.OperationRadialIdleCollapseSeconds = 10;
+            form.CurrentSettings.OperationRadialIdleResetOnInteractionEnabled = false;
             DateTime noResetInteractionUtc = DateTime.UtcNow.AddSeconds(-5);
             form.radialLastInteractionUtc = noResetInteractionUtc;
             form.ResetRadialIdleCollapseTimerForInteraction();
             AssertSelfTest(form.radialLastInteractionUtc == noResetInteractionUtc, "disabled interaction reset leaves the idle collapse timer unchanged");
-            form.currentSettings.OperationRadialIdleResetOnInteractionEnabled = true;
+            form.CurrentSettings.OperationRadialIdleResetOnInteractionEnabled = true;
             form.ResetRadialIdleCollapseTimerForInteraction();
             AssertSelfTest(form.radialLastInteractionUtc > noResetInteractionUtc, "enabled interaction reset refreshes the idle collapse timer");
-            form.currentSettings.OperationRadialKeepOpenAfterLeafClickEnabled = true;
+            form.CurrentSettings.OperationRadialKeepOpenAfterLeafClickEnabled = true;
             AssertSelfTest(form.ShouldKeepRadialMenuOpenAfterLeafClick(), "default leaf click setting keeps the radial menu open");
-            form.currentSettings.OperationRadialKeepOpenAfterLeafClickEnabled = false;
+            form.CurrentSettings.OperationRadialKeepOpenAfterLeafClickEnabled = false;
             AssertSelfTest(!form.ShouldKeepRadialMenuOpenAfterLeafClick(), "disabled leaf click setting closes the radial menu");
 
-            form.currentSettings.OperationRadialCoreAutoHideKeepAliveEnabled = true;
-            form.currentSettings.AutoHoverOpacityIdleSeconds = 2;
+            form.CurrentSettings.OperationRadialCoreAutoHideKeepAliveEnabled = true;
+            form.CurrentSettings.AutoHoverOpacityIdleSeconds = 2;
             DateTime visualStartUtc = new DateTime(2026, 7, 9, 0, 0, 0, DateTimeKind.Utc);
             AssertSelfTest(!form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc, true), "core keep-alive threshold starts without an immediate visual change");
             AssertSelfTest(!form.radialCoreAutoHideThresholdVisualActive, "core keep-alive visual is inactive before the threshold");
