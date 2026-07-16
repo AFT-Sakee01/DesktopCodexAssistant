@@ -70,21 +70,31 @@ internal sealed partial class CodexRadarForm
         x += ringCellWidth + ringGap;
 
         cellRect = GetEvenRowCompactRingCellRect(new RectangleF(x, bounds.Top, ringCellWidth, bounds.Height), compactCellHeight);
-        DrawEvenLayoutQuotaCell(
-            g,
-            cellRect,
-            quotaState.Snapshot.FiveHourPercent,
-            quotaState.Snapshot.FiveHourResetKnown
-                ? quotaState.Snapshot.FiveHourResetLocal.ToString("HH:mm", CultureInfo.CurrentCulture)
-                : "N/A",
-            quotaState.CodexRunning,
-            quotaState.AnySupportedAppRunning,
-            quotaState.QuotaValueKnown,
-            quotaState.FiveHourGold,
-            quotaState.FiveHourConsumptionRingPercent,
-            quotaState.Snapshot.SourceKind,
-            radarSnapshot,
-            quotaState.ForceDangerRing);
+        if (quotaState.Snapshot.FiveHourLimitAbsent)
+        {
+            // 5-hour limit removed: repurpose this cell as the weekly budget/pace ring.
+            DrawEvenLayoutWeeklyBudgetCell(g, cellRect, quotaState);
+        }
+        else
+        {
+            DrawEvenLayoutQuotaCell(
+                g,
+                cellRect,
+                quotaState.Snapshot.FiveHourPercent,
+                quotaState.Snapshot.FiveHourResetKnown
+                    ? quotaState.Snapshot.FiveHourResetLocal.ToString("HH:mm", CultureInfo.CurrentCulture)
+                    : "N/A",
+                quotaState.CodexRunning,
+                quotaState.AnySupportedAppRunning,
+                quotaState.QuotaValueKnown,
+                quotaState.FiveHourGold,
+                quotaState.FiveHourConsumptionRingPercent,
+                quotaState.Snapshot.SourceKind,
+                radarSnapshot,
+                quotaState.ForceDangerRing,
+                quotaState.QuotaResetRainbow,
+                quotaState.QuotaResetCreditSubDay);
+        }
         x += ringCellWidth + ringGap;
 
         cellRect = GetEvenRowCompactRingCellRect(new RectangleF(x, bounds.Top, ringCellWidth, bounds.Height), compactCellHeight);
@@ -102,7 +112,9 @@ internal sealed partial class CodexRadarForm
             quotaState.WeeklyConsumptionRingBlocked ? 0 : quotaState.WeeklyConsumptionRingPercent,
             quotaState.Snapshot.SourceKind,
             radarSnapshot,
-            quotaState.ForceDangerRing);
+            quotaState.ForceDangerRing,
+            quotaState.QuotaResetRainbow,
+            quotaState.QuotaResetCreditSubDay);
         x += ringCellWidth + ringGap;
 
         cellRect = GetEvenRowCompactRingCellRect(new RectangleF(x, bounds.Top, ringCellWidth, bounds.Height), compactCellHeight);
@@ -491,14 +503,8 @@ internal sealed partial class CodexRadarForm
             return true;
         }
 
-        if (snapshot != null &&
-            snapshot.CheckedAtKnown &&
-            snapshot.CheckedAtLocal != DateTime.MinValue)
-        {
-            localTime = snapshot.CheckedAtLocal;
-            return true;
-        }
-
+        // No fallback to snapshot.CheckedAtLocal: that is the site quota-radar monitored_at, not a
+        // local request attempt. Reporting it as LAST REF showed a site time after a cold restart.
         localTime = DateTime.MinValue;
         return false;
     }
@@ -556,7 +562,7 @@ internal sealed partial class CodexRadarForm
             Color itemColor = i == 0 ? GetCodexRadarServiceFamilyDisplayColor() : bottomTextColor;
             using (SolidBrush brush = new SolidBrush(itemColor))
             {
-                DrawEvenRowBottomInfoText(g, texts[i], itemFont, brush, itemRect);
+                RadarBottomInfoTextRenderer.DrawInkCenteredText(g, texts[i], itemFont, brush, itemRect);
             }
 
             x += width + gap;
@@ -803,114 +809,4 @@ internal sealed partial class CodexRadarForm
         }
     }
 
-    private static void DrawEvenRowBottomInfoText(Graphics g, string text, Font font, Brush brush, RectangleF rect)
-    {
-        string value = text ?? string.Empty;
-        if (value.Length == 0)
-        {
-            return;
-        }
-
-        float offsetX;
-        float offsetY;
-        if (TryMeasureEvenRowDrawnTextCenterOffset(g, value, font, rect.Size, out offsetX, out offsetY))
-        {
-            GraphicsState state = g.Save();
-            try
-            {
-                g.TranslateTransform(offsetX, offsetY);
-                DrawEvenRowStatusText(g, value, font, brush, rect);
-            }
-            finally
-            {
-                g.Restore(state);
-            }
-
-            return;
-        }
-
-        DrawEvenRowStatusText(g, value, font, brush, rect);
-    }
-
-    private static bool TryMeasureEvenRowDrawnTextCenterOffset(
-        Graphics sourceGraphics,
-        string text,
-        Font font,
-        SizeF rectSize,
-        out float offsetX,
-        out float offsetY)
-    {
-        offsetX = 0.0f;
-        offsetY = 0.0f;
-        if (sourceGraphics == null || string.IsNullOrEmpty(text) || font == null ||
-            rectSize.Width <= 1.0f || rectSize.Height <= 1.0f)
-        {
-            return false;
-        }
-
-        const int AlphaThreshold = 8;
-        float margin = Math.Max(2.0f, font.Size * 0.25f);
-        int width = Math.Max(4, (int)Math.Ceiling(rectSize.Width + margin * 2.0f));
-        int height = Math.Max(4, (int)Math.Ceiling(rectSize.Height + margin * 2.0f));
-
-        using (Bitmap bitmap = new Bitmap(width, height))
-        using (Graphics measureGraphics = Graphics.FromImage(bitmap))
-        using (SolidBrush measureBrush = new SolidBrush(Color.White))
-        {
-            measureGraphics.Clear(Color.Transparent);
-            measureGraphics.SmoothingMode = sourceGraphics.SmoothingMode;
-            measureGraphics.PixelOffsetMode = sourceGraphics.PixelOffsetMode;
-            measureGraphics.TextRenderingHint = sourceGraphics.TextRenderingHint;
-            measureGraphics.CompositingQuality = sourceGraphics.CompositingQuality;
-            DrawEvenRowStatusText(
-                measureGraphics,
-                text,
-                font,
-                measureBrush,
-                new RectangleF(margin, margin, rectSize.Width, rectSize.Height));
-
-            int minX = width;
-            int minY = height;
-            int maxX = -1;
-            int maxY = -1;
-            for (int y = 0; y < height; y++)
-            {
-                for (int x = 0; x < width; x++)
-                {
-                    if (bitmap.GetPixel(x, y).A <= AlphaThreshold)
-                    {
-                        continue;
-                    }
-
-                    if (x < minX) minX = x;
-                    if (x > maxX) maxX = x;
-                    if (y < minY) minY = y;
-                    if (y > maxY) maxY = y;
-                }
-            }
-
-            if (maxX < minX || maxY < minY)
-            {
-                return false;
-            }
-
-            float desiredCenterX = margin + rectSize.Width * 0.5f;
-            float desiredCenterY = margin + rectSize.Height * 0.5f;
-            float actualCenterX = (minX + maxX + 1.0f) * 0.5f;
-            float actualCenterY = (minY + maxY + 1.0f) * 0.5f;
-            offsetX = desiredCenterX - actualCenterX;
-            offsetY = desiredCenterY - actualCenterY;
-            if (Math.Abs(offsetX) > Math.Max(1.0f, rectSize.Width * 0.16f) ||
-                Math.Abs(offsetY) > Math.Max(1.0f, rectSize.Height * 0.35f))
-            {
-                offsetX = 0.0f;
-                offsetY = 0.0f;
-                return false;
-            }
-
-            if (Math.Abs(offsetX) < 0.2f) offsetX = 0.0f;
-            if (Math.Abs(offsetY) < 0.2f) offsetY = 0.0f;
-            return true;
-        }
-    }
 }

@@ -42,6 +42,9 @@ internal static class DesignTokens
         public static readonly Color AccentGradientEnd = Color.FromArgb(68, 126, 255);
         public static readonly Color AccentAlt = Color.FromArgb(226, 126, 255);
         public static readonly Color SpeedWindowCountdown = Color.FromArgb(56, 189, 248);
+        // Sky blue for the "quota reset detected" full ring (replaced the old celebratory rainbow,
+        // which is now reserved for a sub-day reset-credit indicator).
+        public static readonly Color QuotaResetSkyBlue = Color.FromArgb(56, 189, 248);
         public static readonly Color Success = Color.FromArgb(134, 238, 100);
         public static readonly Color SuccessSoft = Color.FromArgb(95, 218, 132);
         public static readonly Color SuccessText = Color.FromArgb(170, 238, 190);

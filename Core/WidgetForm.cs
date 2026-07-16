@@ -1155,7 +1155,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        IntPtr insertAfter = GetLayeredWidgetInsertAfter(true);
+        IntPtr insertAfter = GetLayeredWidgetInsertAfter(true, this.CurrentSettings.CodexPetZOrderProtectionEnabled);
         PulseFormToTopMost(this, insertAfter);
         PulseFormToTopMost(this.codexRadarForm, insertAfter);
         PulseFormToTopMost(this.claudeRadarForm, insertAfter);
@@ -1516,7 +1516,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode),
+            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
             left,
             top,
             this.Width,
@@ -2040,7 +2040,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:set_window_pos");
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(shouldBeTopMost),
+            GetLayeredWidgetInsertAfter(shouldBeTopMost, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
             0,
             0,
             0,

@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：1.0.5.05
+适用版本：1.0.5.39
 
 本文集中记录 Desktop Codex Assistant 各组件的刷新、轮询、手动刷新、网络事件、单飞任务和暂停恢复规则。修改定时器、刷新 token、网络事件、后台任务节流、测试模式或显示恢复逻辑时，应同步更新本文。
 
@@ -217,7 +217,26 @@ DNS 告警：
 | 设置窗口恢复 | 设置窗口关闭、异常销毁或被宿主清理后，`WidgetForm` 调用 `OperationForm.ClearTransientInteractionState()` 清除 hover、pressed、tooltip 和鼠标捕获状态，避免操作面板停在半交互状态。 |
 | 窗口层级 | 非桌面模式监测浮窗在设置应用、定位和 Win+D/Seelen 恢复拉前时复用 SeelenUI 感知 insert-after；有可见 TopMost Seelen `Tauri Window` 时选择 Seelen 顶层窗口栈里最靠下的一个并插入到其下方，否则回退普通 `HWND_TOPMOST`。不新增常驻定时器。 |
 
-## 8.1 鼠标隐藏与延迟显现
+## 8.1 Spec Board
+
+源码：`Core/SpecBoardForm.cs`、`Core/SpecBoardReader.cs`、`Core/OperationForm.SpecBoard.cs`、`Core/OperationForm.LauncherTrio.cs`
+
+| 触发 | 规则 |
+| --- | --- |
+| 呼出 | `OperationForm.ToggleSpecBoardWindow` 手动显示小看板后立即后台读取账本；自动模式由 `StartAutoPopupMonitoring` 在隐藏状态建立基线和 watcher。刷新使用单飞，运行中触发合并到下一轮。双击启动器的 Spec 按钮只调用 `ShowManagerWindow`，不显示小看板。 |
+| 单击/双击仲裁与互斥 | 只有经典 Start 按钮与 RadialDial 核心圆需要等待 `SystemInformation.DoubleClickTime` 后提交单击；双击先取消待执行单击，再吞掉第二次 MouseUp。Radial 单击菜单、双击两按钮启动器、Spec 小看板显示前必须关闭另外两个，后打开者覆盖先打开者；独立管理窗不参与互斥。窗口销毁或清理瞬态交互时必须取消待执行动作。 |
+| Spec 卡片交互 | 卡片单击等待 `SystemInformation.DoubleClickTime` 后复制 `SpecBoardRow.AbsolutePath`；双击取消待复制动作、吞掉第二次 MouseUp，再复用 `OpenRow` 打开文件。隐藏、挂起或销毁窗口时必须停止卡片单击计时器并清空待处理行，禁止隐藏后修改剪贴板。 |
+| 复制成功提示 | `Clipboard.SetText` 成功后在窗口右下角显示绿色提示 2 s，并重置自动收回时钟；现有 500 ms 维护 tick 到期后清空提示并重绘，不新增独立定时器。隐藏、挂起或销毁时立即清除提示。 |
+| 新鲜度已读 | 首次完整快照加载/损坏恢复时播种 `SpecBoardSeenState.json`；之后只在用户单击具体项目行时以当前 `ScanTimeUtc` 更新该项目并原子保存。“全部”行不清除项目状态，不增加轮询。 |
+| 管理窗口写入 | 管理窗纯用户触发，不新增定时器或轮询。每次写入重读并冲突校验，原子替换账本后复用小看板现有 watcher + 500 ms 防抖链路；隐藏小看板不影响管理窗。 |
+| 文件变化 | 自动弹窗开启时即为账本目录和 `PROJECTS.json` 中每个可用 `spec_glob` 目录创建 `FileSystemWatcher`；中央账本或项目 Spec 文件变化经 500 ms 防抖合并后做完整对账，使未登记的新文件也能立即出现。watcher 错误不递归记日志，依靠 60 s 轮询和 5 min 完整对账兜底。 |
+| 新 Spec 自动弹窗 | 首次完整快照只播种进程内 `project + spec_path` 基线；之后第一次出现且状态为未登记/待执行/需要修改/待验证的非丢失文件才弹出并高亮，已见项不因状态切换或重复 watcher 事件再次提示。`SpecBoardAutoPopupEnabled` 默认 true；`SpecBoardAutoPopupSeconds` 默认 5 s、范围 1-120。 |
+| 对账 | 显示/隐藏监测期间每 5 min、每次呼出、以及 watcher 信号时扫描注册项目的 `spec_glob`；扫描任务 3 s 未完成则放弃该轮结果并显示警告，不阻塞 UI。 |
+| 自动收回 | 手动小看板使用 `SpecBoardAutoHideSeconds`（默认 20 s、范围 0-600，0 关闭）；自动弹窗使用独立的 `SpecBoardAutoPopupSeconds`。两者在鼠标位于窗口内时暂停，移出后从完整时长重新计时。footer 的“关闭”只隐藏小看板。 |
+| 隐藏/挂起 | 普通隐藏且自动弹窗开启时保留 500 ms 维护计时器与 watcher；关闭自动弹窗且小看板不可见、进入全屏隐藏、显示挂起或销毁时停止全部 watcher/计时器。显示恢复后重建 layered 资源、重新定位并按当前设置恢复监测。 |
+| 网络与 AI 请求 | 纯本地只读功能，不发网络请求，不参与 AI 请求保护。 |
+
+## 8.2 鼠标隐藏与延迟显现
 
 - 普通“悬停透明”由 `HoverInteractionPolicy` 统一判断鼠标敏感范围；延迟显现可在设置中关闭。
 - 延迟显现开启时，鼠标离开判定区后继续隐藏 `HoverOpacityRevealDelaySeconds`，倒计时内重新进入判定区需持续 `HoverOpacityRevealResetSeconds` 才重置倒计时。

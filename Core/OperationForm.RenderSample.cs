@@ -63,6 +63,7 @@ internal sealed partial class OperationForm
         }
 
         RenderQuickGridSample(outputDir);
+        RenderLauncherTrioSample(outputDir);
     }
 
     // Current-mode sample: real settings.ini (button size/offsets/variant/transparency), drawn

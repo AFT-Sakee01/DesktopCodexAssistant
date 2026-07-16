@@ -281,6 +281,31 @@ internal sealed partial class OperationForm
         return new Point(left, top);
     }
 
+    private static void RenderLauncherTrioSample(string outputDir)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.OperationRenderVariant = OperationRenderVariant.RadialDial;
+        settings.Normalize();
+        using (OperationForm form = new OperationForm(
+            settings,
+            delegate { },
+            delegate { },
+            delegate { },
+            delegate(string title, string message, ToolTipIcon icon) { },
+            delegate { return true; },
+            delegate { return true; },
+            delegate { return true; },
+            delegate(bool enabled) { return enabled; },
+            delegate(bool enabled) { return enabled; },
+            delegate(string propertyName, bool enabled) { return enabled; }))
+        using (OperationLauncherTrioForm trio = new OperationLauncherTrioForm(form))
+        {
+            string path = System.IO.Path.Combine(outputDir, "operation-launcher-trio.png");
+            trio.SaveSample(path, 2.0f);
+            Console.WriteLine("LauncherTrio -> " + path);
+        }
+    }
+
     private static void RenderQuickGridSample(string outputDir)
     {
         WidgetSettings settings = WidgetSettings.CreateDefaults();
@@ -380,7 +405,7 @@ internal sealed partial class OperationForm
 
             NativeMethods.SetWindowPos(
                 this.Handle,
-                GetLayeredWidgetInsertAfter(true),
+                GetLayeredWidgetInsertAfter(true, this.owner.CurrentSettings.CodexPetZOrderProtectionEnabled),
                 this.Left,
                 this.Top,
                 this.Width,

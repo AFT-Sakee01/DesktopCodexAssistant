@@ -58,7 +58,12 @@ internal static class CodexRadarModelCatalog
 {
     public const string DefaultModelKey = "gpt_56_sol_medium";
     public const string PreviousDefaultModelKey = "gpt_55_xhigh";
-    private const int DeleteAfterMissingCount = 3;
+    // Deletion is time-based, not consecutive-miss-based: codexradar.com rotates which models carry
+    // fresh comparison data hour to hour, so a model can be legitimately absent from several hourly
+    // "complete" reads while still existing. Only mark it unavailable after it has been unseen for
+    // longer than a full daily cycle, and only delete after sustained multi-day absence.
+    private const double ModelUnavailableGraceHours = 26.0;
+    private const double ModelDeleteGraceHours = 7.0 * 24.0;
     public const int ConsolidatedNotificationThreshold = 4;
 
     public static string CatalogPath
@@ -259,22 +264,46 @@ internal static class CodexRadarModelCatalog
                 continue;
             }
 
+            // Absent from a COMPLETE read. codexradar.com legitimately drops a model from
+            // "comparisons" for hours at a time when it simply has no fresh test data for it that
+            // cycle, so a short consecutive-miss count deletes and re-adds live models every few
+            // hours (the observed "模型消失/新增" churn). Gate availability and deletion on how long
+            // the model has actually been unseen (LastSeenUtc), not on how many reads missed it, so
+            // an hourly roster gap never disturbs the catalog.
             CodexRadarModelInfo missing = old.Clone();
-            missing.Available = false;
             missing.MissingCount = Math.Max(0, missing.MissingCount) + 1;
-            if (missing.MissingCount >= DeleteAfterMissingCount)
+            if (missing.LastSeenUtc == DateTime.MinValue)
             {
-                update.Deleted.Add(missing.Clone());
+                // Legacy record without a baseline timestamp: start the grace clock now rather than
+                // treating an unknown age as infinitely old and deleting immediately.
+                missing.LastSeenUtc = observedUtc;
             }
-            else
+
+            double absentHours = (observedUtc - missing.LastSeenUtc).TotalHours;
+            if (absentHours >= ModelDeleteGraceHours)
             {
-                if (missing.MissingCount == 1)
+                // Sustained absence (days): the model is really gone. Drop it.
+                update.Deleted.Add(missing.Clone());
+                continue;
+            }
+
+            if (absentHours >= ModelUnavailableGraceHours)
+            {
+                // Absent longer than a full daily cycle: show it as unavailable but keep it. Notify
+                // only on the available -> unavailable transition so it fires at most once.
+                if (missing.Available)
                 {
                     update.Unavailable.Add(missing.Clone());
                 }
 
+                missing.Available = false;
                 merged.Add(missing);
+                continue;
             }
+
+            // Within grace: the site just has no fresh data this cycle. The model still exists;
+            // keep it available and silent.
+            merged.Add(missing);
         }
 
         foreach (CodexRadarModelInfo fresh in discoveredByKey.Values)
@@ -468,10 +497,45 @@ internal static class CodexRadarModelCatalog
         AssertCatalog(FindModel(partialMerged, "gpt_56_terra_medium").MissingCount == 0 && partialUpdate.Added.Count == 1,
             "an incomplete catalog must preserve missing records and still add discoveries");
 
+        // Absence is time-based: one complete read missing a model minutes after it was last seen
+        // must NOT flag it (the site rotates fresh-data models hourly), only sustained absence may.
         CodexRadarModelCatalogUpdate completeUpdate;
         List<CodexRadarModelInfo> completeMerged = MergeCatalogRecords(baseline, partial, true, t2, out completeUpdate);
-        AssertCatalog(FindModel(completeMerged, "gpt_56_terra_medium").MissingCount == 1 && completeUpdate.Unavailable.Count == 1,
-            "a complete catalog must advance missing counters");
+        CodexRadarModelInfo graced = FindModel(completeMerged, "gpt_56_terra_medium");
+        AssertCatalog(graced != null && graced.Available && graced.MissingCount == 1 &&
+            completeUpdate.Unavailable.Count == 0 && completeUpdate.Deleted.Count == 0,
+            "a complete catalog miss inside the grace window must keep the model available and silent");
+
+        DateTime afterUnavailableGrace = t1.AddHours(27.0);
+        CodexRadarModelCatalogUpdate unavailableUpdate;
+        List<CodexRadarModelInfo> unavailableMerged = MergeCatalogRecords(baseline, partial, true, afterUnavailableGrace, out unavailableUpdate);
+        CodexRadarModelInfo unavailableModel = FindModel(unavailableMerged, "gpt_56_terra_medium");
+        AssertCatalog(unavailableModel != null && !unavailableModel.Available &&
+            unavailableUpdate.Unavailable.Count == 1 && unavailableUpdate.Deleted.Count == 0,
+            "absence beyond the daily grace must mark the model unavailable exactly once");
+
+        CodexRadarModelCatalogUpdate repeatUpdate;
+        List<CodexRadarModelInfo> repeatMerged = MergeCatalogRecords(unavailableMerged, partial, true, afterUnavailableGrace.AddHours(1.0), out repeatUpdate);
+        AssertCatalog(FindModel(repeatMerged, "gpt_56_terra_medium") != null && repeatUpdate.Unavailable.Count == 0,
+            "an already-unavailable model must not repeat the unavailable notification");
+
+        DateTime afterDeleteGrace = t1.AddDays(8.0);
+        CodexRadarModelCatalogUpdate deleteUpdate;
+        List<CodexRadarModelInfo> deleteMerged = MergeCatalogRecords(baseline, partial, true, afterDeleteGrace, out deleteUpdate);
+        AssertCatalog(FindModel(deleteMerged, "gpt_56_terra_medium") == null && deleteUpdate.Deleted.Count == 1,
+            "absence beyond the multi-day grace must delete the model");
+
+        List<CodexRadarModelInfo> legacyBaseline = new List<CodexRadarModelInfo>
+        {
+            TestModel("gpt_56_sol_medium", "Sol", true, 0, t1),
+            TestModel("gpt_56_terra_medium", "Terra", true, 0, DateTime.MinValue)
+        };
+        CodexRadarModelCatalogUpdate legacyUpdate;
+        List<CodexRadarModelInfo> legacyMerged = MergeCatalogRecords(legacyBaseline, partial, true, afterDeleteGrace, out legacyUpdate);
+        CodexRadarModelInfo legacyModel = FindModel(legacyMerged, "gpt_56_terra_medium");
+        AssertCatalog(legacyModel != null && legacyModel.Available && legacyModel.LastSeenUtc == afterDeleteGrace &&
+            legacyUpdate.Deleted.Count == 0,
+            "a legacy record without LastSeenUtc must baseline its grace clock instead of deleting");
 
         CodexRadarModelCatalogUpdate notificationUpdate = new CodexRadarModelCatalogUpdate();
         for (int i = 0; i < 5; i++)
@@ -533,7 +597,7 @@ internal static class CodexRadarModelCatalog
             }
         }
 
-        throw new InvalidOperationException("Codex Radar model catalog self-test could not find " + key + ".");
+        return null;
     }
 
     private static void AssertCatalog(bool condition, string message)

@@ -36,6 +36,7 @@
 | `Docs/Interface-And-Reuse-Resources.md` | 参考 | 可复用资源/助手清单（人读版；机器版是接口索引） |
 | `Docs/Fable5-Data-Sources-And-Caching-Technical.md` | 参考 | 数据源 URL、fallback 链、缓存文件位置 |
 | `Docs/Fable5-Frontend-Rendering-Technical.md` | 规则 | 前端渲染管线、变体系统、sample/current 采样语义、绘制禁改清单与查验流程 |
+| `Docs/SpecBoard-Architecture.md` | 架构 | 跨项目 spec 账本读取、对账、看板窗口、交互与只读边界 |
 | `Docs/Indexes/FEATURE_INDEX.jsonl` | 索引 | 功能 → 文件/入口/设置键/接口/推荐测试 的机器索引 |
 | `Docs/Interfaces/INTERFACE_INDEX.jsonl` | 索引 | 全部接口与持久化资源的机器索引 |
 | `Docs/Technical/` + 其中 `INDEX.jsonl` | 快照 | 版本化执行规格（SPEC/GoalSpec），一经执行不可变 |

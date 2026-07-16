@@ -55,6 +55,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private const double QuotaGapRebaselineMinutes = 30.0;
     private const int QuotaRejectedPersistenceMinSamples = 3;
     private const double QuotaRejectedPersistenceMinMinutes = 10.0;
+    // An idle provider pool reports balance=100 with reset=now+window on every sample, which is
+    // indistinguishable from a genuine newborn window in a single reading. These two suppressions
+    // encode the difference over time: a real newborn happens at most once per window, and never
+    // minutes after the displayed pool was seen actively consuming.
+    private const double QuotaNewbornSuppressAfterConsumptionMinutes = 30.0;
+    private const double QuotaRejectedPersistenceStaleGapMinutes = 15.0;
     private const string QuotaRadarTierPlus = "plus";
     private const string QuotaRadarTierPro5x = "pro5x";
     private const string QuotaRadarTierPro20x = "pro20x";
@@ -200,6 +206,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public double WeeklyNormalizedUsedPercent { get; set; }
         public bool FiveHourUsageDiagnosticKnown { get; set; }
         public bool WeeklyUsageDiagnosticKnown { get; set; }
+        // True when the source reported a weekly window but no short (~5h) window at all - the
+        // provider temporarily lifted the 5h limit. The five-hour ring then shows a full "无限"
+        // state instead of inheriting whatever landed in the first payload slot.
+        public bool FiveHourLimitAbsent { get; set; }
         public string ProviderRawResponseBody { get; set; }
 
         public static CodexQuotaSnapshot CreateDefault()
@@ -223,6 +233,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 WeeklyNormalizedUsedPercent = 0.0,
                 FiveHourUsageDiagnosticKnown = false,
                 WeeklyUsageDiagnosticKnown = false,
+                FiveHourLimitAbsent = false,
                 ProviderRawResponseBody = string.Empty
             };
         }
@@ -248,6 +259,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 WeeklyNormalizedUsedPercent = this.WeeklyNormalizedUsedPercent,
                 FiveHourUsageDiagnosticKnown = this.FiveHourUsageDiagnosticKnown,
                 WeeklyUsageDiagnosticKnown = this.WeeklyUsageDiagnosticKnown,
+                FiveHourLimitAbsent = this.FiveHourLimitAbsent,
                 ProviderRawResponseBody = this.ProviderRawResponseBody
             };
         }
@@ -747,9 +759,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 GetEffectiveCodexRadarSoftwareMode(),
                 GetSelectedRadarModelKeyForSoftwareMode(GetEffectiveCodexRadarSoftwareMode())) ??
             CodexRadarSnapshot.CreateDefault();
-        this.lastCodexRadarStatusAttemptLocal = this.codexRadarSnapshot.CheckedAtKnown
-            ? this.codexRadarSnapshot.CheckedAtLocal
-            : DateTime.MinValue;
+        // LAST REF means the last local IQ request attempt this process made. The website's
+        // checked_at/monitored_at is a site quota-radar timestamp, not a local attempt, so the
+        // marker stays unknown until the first real request instead of borrowing the site time.
+        this.lastCodexRadarStatusAttemptLocal = DateTime.MinValue;
         LoadCodexRadarNotificationState();
         LoadQuotaResetState();
         InitializeQuotaSessionWatcher();
@@ -1062,7 +1075,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         UpdateHoverAnimationTimer();
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(shouldBeTopMost),
+            GetLayeredWidgetInsertAfter(shouldBeTopMost, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
             0,
             0,
             0,
@@ -1772,7 +1785,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode),
+            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
             left,
             top,
             this.Width,
@@ -2011,6 +2024,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public int WeeklyConsumptionRingPercent;
         public bool WeeklyConsumptionRingBlocked;
         public bool ForceDangerRing;
+        // Reset just detected (weekly quota jumped up) -> the two quota rings render solid sky blue.
+        public bool QuotaResetRainbow;
+        // A Codex reset credit expires in under a day -> the two quota rings render a static rainbow.
+        public bool QuotaResetCreditSubDay;
     }
 
     private QuotaDisplayState GatherQuotaDisplayState()
@@ -2068,6 +2085,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             ? ClampPercent(this.weeklyQuotaAtFiveHourWindowStartPercent)
             : 0;
         state.WeeklyConsumptionRingBlocked = weeklyProtected;
+        state.QuotaResetRainbow = this.CurrentSettings != null &&
+            this.CurrentSettings.CodexRadarQuotaResetRainbowEnabled &&
+            this.quotaSourceKnown &&
+            state.QuotaValueKnown &&
+            this.weeklyResetRainbowActive;
+        // Codex-only, always on (independent of the reset-detected setting): if the earliest active
+        // reset credit expires within a day the two quota rings render a static rainbow. Reset
+        // credits only exist in Codex mode, so this never fires for Claude.
+        state.QuotaResetCreditSubDay = !isClaude && HasSubDayActiveResetCredit(DateTime.UtcNow);
         return state;
     }
 
@@ -2104,7 +2130,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         int consumptionRingPercent,
         string quotaSourceKind,
         CodexRadarSnapshot radarSnapshot,
-        bool forceDangerFullRing)
+        bool forceDangerFullRing,
+        bool quotaResetDetected,
+        bool quotaResetCreditSubDay)
     {
         if (cellRect.Width <= 0 || cellRect.Height <= 0)
         {
@@ -2141,6 +2169,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             AnySupportedAppRunning = anySupportedAppRunning,
             QuotaValueKnown = quotaValueKnown,
             ForceDangerFullRing = forceDangerFullRing,
+            // Rainbow (sub-day reset credit) takes priority over the sky-blue reset-detected ring.
+            RainbowRing = quotaResetCreditSubDay && !forceDangerFullRing,
+            ResetDetectedRing = quotaResetDetected && !quotaResetCreditSubDay && !forceDangerFullRing,
             NumberFont = this.fontCache.GetUi(Math.Max(7.0f, ringRect.Width * 0.342f), FontStyle.Bold),
             LabelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold),
             DrawFittedLabel = delegate(Graphics graphics, string text, Font font, Brush brush, RectangleF rect)
@@ -2225,6 +2256,262 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         using (SolidBrush labelBrush = new SolidBrush(labelColor))
         {
             DrawCodexRadarFittedText(g, labelText, labelFont, labelBrush, textRect, StringAlignment.Center);
+        }
+    }
+
+    // When the 5-hour limit is absent (weekly-only accounts) the 5h ring cell has nothing to show,
+    // so it is repurposed as a weekly BUDGET ring: same shape as the other rings (arc + centre number
+    // + bottom label). The arc keeps the shared "remaining %" fill convention but is COLOURED by the
+    // efficiency (green on/under budget, amber slightly over, red well over). The centre shows the
+    // EFFICIENCY - the consumed/elapsed pace ratio (100 = exactly on the linear budget), no percent
+    // sign, capped at 200 for display so it can never blow up. The bottom shows the RUNWAY: how many
+    // hours the remaining quota lasts at the average rate so far ("70H"), or red "未计算" when the
+    // efficiency is over 200 (too little elapsed time / burning far over budget to project a duration).
+    private const double WeeklyBudgetWindowDays = 7.0;
+
+    private void DrawEvenLayoutWeeklyBudgetCell(Graphics g, RectangleF cellRect, QuotaDisplayState quotaState)
+    {
+        if (cellRect.Width <= 0 || cellRect.Height <= 0)
+        {
+            return;
+        }
+
+        RectangleF ringRect;
+        RectangleF textRect;
+        GetEvenLayoutCellRects(cellRect, out ringRect, out textRect);
+
+        CodexQuotaSnapshot snapshot = quotaState.Snapshot;
+        bool valueKnown = quotaState.QuotaValueKnown;
+        int remaining = ClampPercent(snapshot.WeeklyPercent);
+        int efficiencyPercent = 100;
+        bool durationKnown = false;
+        int runwayHours = 0;
+        bool known = valueKnown && TryComputeWeeklyBudget(
+            remaining, snapshot.WeeklyResetKnown, snapshot.WeeklyResetLocal, DateTime.Now,
+            out efficiencyPercent, out durationKnown, out runwayHours);
+
+        Color arcColor = known
+            ? GetWeeklyBudgetPaceColor(efficiencyPercent)
+            : DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
+
+        float stroke = Math.Max(2.0f, ringRect.Width * 0.14f);
+        RectangleF arcRect = new RectangleF(
+            ringRect.Left + stroke / 2.0f,
+            ringRect.Top + stroke / 2.0f,
+            ringRect.Width - stroke,
+            ringRect.Height - stroke);
+        using (Pen backgroundPen = new Pen(DesignTokens.White(78), stroke))
+        using (Pen valuePen = new Pen(arcColor, stroke))
+        {
+            backgroundPen.StartCap = LineCap.Flat;
+            backgroundPen.EndCap = LineCap.Flat;
+            valuePen.StartCap = LineCap.Round;
+            valuePen.EndCap = LineCap.Round;
+            g.DrawArc(backgroundPen, arcRect, -90.0f, 360.0f);
+            if (valueKnown && remaining > 0)
+            {
+                g.DrawArc(valuePen, arcRect, -90.0f, 360.0f * remaining / 100.0f);
+            }
+        }
+
+        // Centre: efficiency number, no percent sign.
+        string centerText = known
+            ? efficiencyPercent.ToString(CultureInfo.InvariantCulture)
+            : "--";
+        Color numberColor = known
+            ? DesignTokens.TextStrong(238)
+            : DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 235);
+        Font numberFont = this.fontCache.GetUi(Math.Max(7.0f, ringRect.Width * 0.34f), FontStyle.Bold);
+        using (SolidBrush numberBrush = new SolidBrush(numberColor))
+        {
+            DrawCodexRadarFittedText(g, centerText, numberFont, numberBrush, ringRect, StringAlignment.Center, 5.0f);
+        }
+
+        // Bottom: runway hours "<n>H", red "未计算" when the duration is not projectable, else muted.
+        string labelText;
+        Color labelColor;
+        if (!valueKnown)
+        {
+            labelText = "N/A";
+            labelColor = DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 235);
+        }
+        else if (!known)
+        {
+            labelText = "--";
+            labelColor = DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 235);
+        }
+        else if (!durationKnown)
+        {
+            labelText = "未计算";
+            labelColor = DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245);
+        }
+        else
+        {
+            labelText = runwayHours.ToString(CultureInfo.InvariantCulture) + "H";
+            labelColor = DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 235);
+        }
+
+        Font labelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold);
+        using (SolidBrush labelBrush = new SolidBrush(labelColor))
+        {
+            DrawCodexRadarFittedText(g, labelText, labelFont, labelBrush, textRect, StringAlignment.Center);
+        }
+    }
+
+    // Weekly budget model. efficiencyPercent = the consumed/elapsed pace ratio x100 (100 = exactly on
+    // the linear spend line, >100 ahead of budget, <100 behind), CAPPED at 200 for display so the
+    // centre can never blow up to the old 999. runwayHours = how many hours the remaining quota lasts
+    // at the average rate so far. durationKnown is false (caller shows "未计算") when the ratio exceeds
+    // 200 - too little elapsed time / burning far over budget for a duration projection to be
+    // meaningful. The window is assumed 7 days ending at the known reset; returns false (centre "--")
+    // when the reset is unknown or lies more than a window ahead.
+    private static bool TryComputeWeeklyBudget(
+        int remainingPercent, bool weeklyResetKnown, DateTime weeklyResetLocal, DateTime nowLocal,
+        out int efficiencyPercent, out bool durationKnown, out int runwayHours)
+    {
+        efficiencyPercent = 100;
+        durationKnown = false;
+        runwayHours = 0;
+        if (!weeklyResetKnown || weeklyResetLocal == DateTime.MinValue)
+        {
+            return false;
+        }
+
+        double daysToReset = (weeklyResetLocal - nowLocal).TotalDays;
+        if (daysToReset < 0.0 || daysToReset > WeeklyBudgetWindowDays + 0.5)
+        {
+            // Already past, or further than a whole window ahead: the 7-day model does not apply.
+            return false;
+        }
+
+        double elapsedFrac = 1.0 - daysToReset / WeeklyBudgetWindowDays;
+        if (elapsedFrac < 0.0)
+        {
+            elapsedFrac = 0.0;
+        }
+        else if (elapsedFrac > 1.0)
+        {
+            elapsedFrac = 1.0;
+        }
+
+        double consumedFrac = Math.Max(0.0, Math.Min(1.0, (100 - remainingPercent) / 100.0));
+        double remainingFrac = Math.Max(0.0, Math.Min(1.0, remainingPercent / 100.0));
+
+        double ratio;
+        if (elapsedFrac < 1e-6)
+        {
+            // No meaningful elapsed time: any consumption is "infinitely" ahead of the budget line.
+            ratio = consumedFrac > 0.0 ? 1000.0 : 0.0;
+        }
+        else
+        {
+            ratio = consumedFrac / elapsedFrac * 100.0;
+        }
+
+        efficiencyPercent = (int)Math.Round(Math.Max(0.0, Math.Min(200.0, ratio)));
+
+        double elapsedHours = elapsedFrac * WeeklyBudgetWindowDays * 24.0;
+        if (ratio > 200.0 || elapsedHours < 1e-6)
+        {
+            // Over ~2x budget or not enough elapsed time: a runway projection is not meaningful.
+            durationKnown = false;
+        }
+        else if (consumedFrac < 1e-6)
+        {
+            // Essentially no consumption: the quota outlasts the window; cap the displayed hours.
+            durationKnown = true;
+            runwayHours = 999;
+        }
+        else
+        {
+            double burnPerHour = consumedFrac / elapsedHours;
+            double hours = remainingFrac / burnPerHour;
+            runwayHours = (int)Math.Round(Math.Max(0.0, Math.Min(999.0, hours)));
+            durationKnown = true;
+        }
+
+        return true;
+    }
+
+    private static Color GetWeeklyBudgetPaceColor(int pacePercent)
+    {
+        if (pacePercent <= 100)
+        {
+            return DesignTokens.WithAlpha(DesignTokens.Colors.QuotaGood, 238);
+        }
+
+        if (pacePercent <= 120)
+        {
+            return DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 240);
+        }
+
+        return DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 242);
+    }
+
+    private static void RunWeeklyBudgetPaceSelfTest()
+    {
+        DateTime now = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Local);
+        int eff;
+        bool durationKnown;
+        int runway;
+
+        // Unknown reset, and a reset further than a window ahead, both decline.
+        if (TryComputeWeeklyBudget(50, false, DateTime.MinValue, now, out eff, out durationKnown, out runway) ||
+            TryComputeWeeklyBudget(50, true, now.AddDays(9.0), now, out eff, out durationKnown, out runway))
+        {
+            throw new InvalidOperationException("Weekly budget self-test failed: unknown/out-of-window reset should return false.");
+        }
+
+        // On budget: elapsed 50% (reset 3.5d), remaining 50% -> ratio 100; runway 84h (symmetric).
+        if (!TryComputeWeeklyBudget(50, true, now.AddDays(3.5), now, out eff, out durationKnown, out runway) ||
+            Math.Abs(eff - 100) > 1 || !durationKnown || Math.Abs(runway - 84) > 2)
+        {
+            throw new InvalidOperationException("Weekly budget self-test failed: on-budget expected eff~100 runway~84, got " + eff + "/" + runway + ".");
+        }
+
+        // Under budget: remaining 70% -> consumed 30%, ratio 60; runway ~196h.
+        if (!TryComputeWeeklyBudget(70, true, now.AddDays(3.5), now, out eff, out durationKnown, out runway) ||
+            Math.Abs(eff - 60) > 1 || !durationKnown || Math.Abs(runway - 196) > 2)
+        {
+            throw new InvalidOperationException("Weekly budget self-test failed: under-budget expected eff~60 runway~196, got " + eff + "/" + runway + ".");
+        }
+
+        // Over budget but still projectable (ratio <= 200): remaining 40%, reset 4d -> ratio ~140,
+        // runway ~48h.
+        if (!TryComputeWeeklyBudget(40, true, now.AddDays(4.0), now, out eff, out durationKnown, out runway) ||
+            Math.Abs(eff - 140) > 2 || !durationKnown || Math.Abs(runway - 48) > 2)
+        {
+            throw new InvalidOperationException("Weekly budget self-test failed: over-budget expected eff~140 runway~48, got " + eff + "/" + runway + ".");
+        }
+
+        // Ratio over 200 (elapsed tiny): remaining 30%, reset 6.5d -> ratio ~980 -> eff capped 200,
+        // duration NOT projectable ("未计算").
+        if (!TryComputeWeeklyBudget(30, true, now.AddDays(6.5), now, out eff, out durationKnown, out runway) ||
+            eff != 200 || durationKnown)
+        {
+            throw new InvalidOperationException("Weekly budget self-test failed: >200 expected eff=200 duration-unknown, got " + eff + "/" + durationKnown + ".");
+        }
+
+        // Window start (elapsed 0) with consumption: eff capped 200, duration unknown - the old
+        // blow-up regime now reads as 200 + 未计算, never 999.
+        if (!TryComputeWeeklyBudget(50, true, now.AddDays(WeeklyBudgetWindowDays), now, out eff, out durationKnown, out runway) ||
+            eff != 200 || durationKnown)
+        {
+            throw new InvalidOperationException("Weekly budget self-test failed: window-start expected eff=200 duration-unknown, got " + eff + "/" + durationKnown + ".");
+        }
+
+        // No consumption: eff 0, runway capped at 999 (quota lasts far beyond the window).
+        if (!TryComputeWeeklyBudget(100, true, now.AddDays(3.5), now, out eff, out durationKnown, out runway) ||
+            eff != 0 || !durationKnown || runway != 999)
+        {
+            throw new InvalidOperationException("Weekly budget self-test failed: zero consumption expected eff=0 runway=999, got " + eff + "/" + runway + ".");
+        }
+
+        if (GetWeeklyBudgetPaceColor(100) != DesignTokens.WithAlpha(DesignTokens.Colors.QuotaGood, 238) ||
+            GetWeeklyBudgetPaceColor(110) != DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 240) ||
+            GetWeeklyBudgetPaceColor(200) != DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 242))
+        {
+            throw new InvalidOperationException("Weekly budget self-test failed: efficiency color thresholds.");
         }
     }
 
@@ -4286,6 +4573,20 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         ResetRejectedIdentityPersistence(quotaState.FiveHourRejectedIdentity);
         ResetRejectedIdentityPersistence(quotaState.WeeklyRejectedIdentity);
         quotaState.WeeklyQuotaAtFiveHourWindowStartPercent = ClampPercent(snapshot.WeeklyPercent);
+
+        // A consuming baseline arms the idle-pool newborn suppression from the first sample, so a
+        // restart into the alternating-pool regime cannot re-adopt the phantom before the real
+        // pool's evidence accumulates.
+        DateTime baselineUtc = snapshot.SourceUpdatedKnown ? snapshot.SourceUpdatedUtc : DateTime.UtcNow;
+        if (quotaState.LastFiveHourReadPercent >= 0 && quotaState.LastFiveHourReadPercent <= 98)
+        {
+            quotaState.FiveHourLastConsumingAcceptUtc = baselineUtc;
+        }
+
+        if (quotaState.LastWeeklyReadPercent >= 0 && quotaState.LastWeeklyReadPercent <= 98)
+        {
+            quotaState.WeeklyLastConsumingAcceptUtc = baselineUtc;
+        }
     }
 
     private QuotaProtectionOptions GetQuotaProtectionOptions()
@@ -4382,7 +4683,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 quotaState.LastReadSourceUtc,
                 corroboratingResetEventUtc,
                 TimeSpan.FromHours(5.0),
-                quotaState.FiveHourRejectedIdentity);
+                quotaState.FiveHourRejectedIdentity,
+                quotaState.FiveHourLastConsumingAcceptUtc,
+                quotaState.FiveHourLastNewbornAcceptUtc);
             QuotaWindowIdentityDecision weeklyIdentity = EvaluateQuotaWindowIdentity(
                 quotaState.TrackedWeeklyResetLocal,
                 weeklyResetLocal,
@@ -4392,7 +4695,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 quotaState.LastReadSourceUtc,
                 corroboratingResetEventUtc,
                 TimeSpan.FromDays(7.0),
-                quotaState.WeeklyRejectedIdentity);
+                quotaState.WeeklyRejectedIdentity,
+                quotaState.WeeklyLastConsumingAcceptUtc,
+                quotaState.WeeklyLastNewbornAcceptUtc);
             decision.FiveHourAnchorAgeMinutes = fiveHourIdentity.AnchorAgeMinutes;
             decision.WeeklyAnchorAgeMinutes = weeklyIdentity.AnchorAgeMinutes;
             decision.FiveHourRejectedPersistenceCount = fiveHourIdentity.RejectedPersistenceCount;
@@ -4400,6 +4705,34 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             decision.WeeklyRejectedPersistenceCount = weeklyIdentity.RejectedPersistenceCount;
             decision.WeeklyRejectedPersistenceFirstSeenUtc = weeklyIdentity.RejectedPersistenceFirstSeenUtc;
             decision.IdentityDecisionReason = CombineQuotaIdentityReasons(fiveHourIdentity, weeklyIdentity);
+
+            // Evidence feeding the newborn suppressions: remember when the displayed pool was last
+            // seen actively consuming, and when a newborn re-anchor was last granted.
+            if (fiveHourIdentity.Accepted)
+            {
+                if (ClampPercent(fiveHourPercent) <= 98)
+                {
+                    quotaState.FiveHourLastConsumingAcceptUtc = sampleUtc;
+                }
+
+                if (string.Equals(fiveHourIdentity.Reason, "reset_confirmed_by_newborn", StringComparison.Ordinal))
+                {
+                    quotaState.FiveHourLastNewbornAcceptUtc = sampleUtc;
+                }
+            }
+
+            if (weeklyIdentity.Accepted)
+            {
+                if (ClampPercent(weeklyPercent) <= 98)
+                {
+                    quotaState.WeeklyLastConsumingAcceptUtc = sampleUtc;
+                }
+
+                if (string.Equals(weeklyIdentity.Reason, "reset_confirmed_by_newborn", StringComparison.Ordinal))
+                {
+                    quotaState.WeeklyLastNewbornAcceptUtc = sampleUtc;
+                }
+            }
 
             // A rejected provider identity must not reach the display snapshot. Replacing only
             // that ring preserves the independent accepted ring while eliminating visible
@@ -4491,6 +4824,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 fiveHourPercent > quotaState.LastFiveHourReadPercent &&
                 fiveHourResetLocal == DateTime.MinValue);
         bool weeklyWindowAdvanced = weeklyChanged && weeklyPercent > quotaState.LastWeeklyReadPercent;
+        UpdateWeeklyResetRainbowLatch(
+            quotaState,
+            weeklyWindowAdvanced,
+            quotaState.LastWeeklyReadPercent,
+            weeklyPercent);
         if (!fiveHourChanged && !weeklyChanged)
         {
             // A newer log can repeat the same rounded balance. Keep the previous visible
@@ -4584,7 +4922,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         DateTime lastAcceptedUtc,
         DateTime corroboratingResetEventUtc,
         TimeSpan windowLength,
-        RejectedIdentityPersistenceState rejectedPersistence = null)
+        RejectedIdentityPersistenceState rejectedPersistence = null,
+        DateTime lastConsumingAcceptUtc = default(DateTime),
+        DateTime lastNewbornAcceptUtc = default(DateTime))
     {
         QuotaWindowIdentityDecision decision = new QuotaWindowIdentityDecision
         {
@@ -4604,7 +4944,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         double identityDeltaMinutes = Math.Abs((incomingResetLocal - trackedResetLocal).TotalMinutes);
         if (identityDeltaMinutes <= QuotaIdentityToleranceMinutes)
         {
-            ResetRejectedIdentityPersistence(rejectedPersistence);
+            // Same-identity samples keep the display as-is but must NOT clear the rejected-identity
+            // tracker: with two alternating provider pools, every accepted phantom sample would wipe
+            // the real pool's rejection streak and the count>=3 repair could never fire.
             return decision;
         }
 
@@ -4623,14 +4965,32 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         // Provider reset anchors can be a few seconds beyond the nominal window length.
         // Reuse the two-minute identity tolerance as clock-skew allowance so the observed
         // +1s/+33s newborn samples remain immediate resets, while mid-window identities fail.
-        if (decision.AnchorAgeMinutes.Value >= -QuotaIdentityToleranceMinutes &&
+        bool newbornShaped =
+            decision.AnchorAgeMinutes.Value >= -QuotaIdentityToleranceMinutes &&
             decision.AnchorAgeMinutes.Value <= QuotaNewbornToleranceMinutes &&
-            ClampPercent(incomingBalancePercent) >= 99)
+            ClampPercent(incomingBalancePercent) >= 99;
+        if (newbornShaped)
         {
-            decision.Accepted = true;
-            decision.Reason = "reset_confirmed_by_newborn";
-            ResetRejectedIdentityPersistence(rejectedPersistence);
-            return decision;
+            // A genuinely born window can only appear when the tracked window is about to expire
+            // (clock skew around the boundary). An idle pool reproduces the newborn shape on every
+            // sample with a sliding anchor while the tracked window still has hours to run - that
+            // shape must never re-anchor the display, no matter which source carried it.
+            double trackedRemainingMinutes = (trackedResetLocal - sampleLocal).TotalMinutes;
+            bool nearExpiry = trackedRemainingMinutes <= QuotaIdentityToleranceMinutes;
+            DateTime normalizedSample = NormalizeStateUtc(sampleUtc == DateTime.MinValue ? DateTime.UtcNow : sampleUtc);
+            bool newbornSuppressed =
+                !nearExpiry ||
+                (lastConsumingAcceptUtc != DateTime.MinValue &&
+                 (normalizedSample - NormalizeStateUtc(lastConsumingAcceptUtc)).TotalMinutes <= QuotaNewbornSuppressAfterConsumptionMinutes) ||
+                (lastNewbornAcceptUtc != DateTime.MinValue &&
+                 normalizedSample - NormalizeStateUtc(lastNewbornAcceptUtc) < windowLength);
+            if (!newbornSuppressed)
+            {
+                decision.Accepted = true;
+                decision.Reason = "reset_confirmed_by_newborn";
+                ResetRejectedIdentityPersistence(rejectedPersistence);
+                return decision;
+            }
         }
 
         if (corroboratingResetEventUtc != DateTime.MinValue)
@@ -4645,7 +5005,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             }
         }
 
-        if (string.Equals(sourceKind, "session", StringComparison.OrdinalIgnoreCase))
+        // The session file and the long-gap rebaseline alternate between the same provider pools as
+        // the public source, so neither may accept a newborn-shaped identity change: at 19:59 the
+        // session path carried the idle pool (100, anchor=now+5h) while the real pool still had 4
+        // minutes to run, and pinned the ring at 100. Real early resets are covered by the reset
+        // event corroboration branch above.
+        if (!newbornShaped && string.Equals(sourceKind, "session", StringComparison.OrdinalIgnoreCase))
         {
             decision.Accepted = true;
             decision.Reason = "reset_confirmed_by_session";
@@ -4653,7 +5018,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return decision;
         }
 
-        if (lastAcceptedUtc != DateTime.MinValue &&
+        if (!newbornShaped &&
+            lastAcceptedUtc != DateTime.MinValue &&
             (sampleUtc - lastAcceptedUtc).TotalMinutes > QuotaGapRebaselineMinutes)
         {
             decision.Accepted = true;
@@ -4663,8 +5029,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         decision.Accepted = false;
-        decision.Reason = "interference_pool_sample_ignored";
-        if (TrackRejectedIdentityPersistence(rejectedPersistence, incomingResetLocal, sampleUtc, decision))
+        decision.Reason = newbornShaped ? "idle_pool_newborn_suppressed" : "interference_pool_sample_ignored";
+
+        // Newborn-shaped rejections stay out of the persistence tracker entirely: their anchor
+        // slides every sample so they can never be a legitimate adoption target, and letting them
+        // occupy the single tracker slot would keep resetting the real pool's rejection streak.
+        if (!newbornShaped &&
+            TrackRejectedIdentityPersistence(rejectedPersistence, incomingResetLocal, sampleUtc, decision))
         {
             decision.Accepted = true;
             decision.Reason = "reset_confirmed_by_rejected_persistence";
@@ -4687,7 +5058,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         DateTime normalizedSampleUtc = NormalizeStateUtc(sampleUtc == DateTime.MinValue ? DateTime.UtcNow : sampleUtc);
         bool sameRejectedIdentity = state.ResetLocal != DateTime.MinValue &&
             Math.Abs((incomingResetLocal - state.ResetLocal).TotalMinutes) <= QuotaIdentityToleranceMinutes;
-        if (!sameRejectedIdentity || state.FirstSeenUtc == DateTime.MinValue || normalizedSampleUtc < state.FirstSeenUtc)
+        // A long-dormant streak is a different episode: without this guard a stale count from hours
+        // ago could combine with one fresh rejection and adopt a pool on thin evidence.
+        bool staleStreak = state.LastSeenUtc != DateTime.MinValue &&
+            (normalizedSampleUtc - state.LastSeenUtc).TotalMinutes > QuotaRejectedPersistenceStaleGapMinutes;
+        if (!sameRejectedIdentity || staleStreak || state.FirstSeenUtc == DateTime.MinValue || normalizedSampleUtc < state.FirstSeenUtc)
         {
             state.Reset();
             state.ResetLocal = incomingResetLocal;
@@ -4699,6 +5074,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             state.Count++;
         }
 
+        state.LastSeenUtc = normalizedSampleUtc;
         decision.RejectedPersistenceCount = state.Count;
         decision.RejectedPersistenceFirstSeenUtc = state.FirstSeenUtc;
         return state.Count >= QuotaRejectedPersistenceMinSamples &&
@@ -4880,6 +5256,41 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         decision.NextTrackedWeeklyResetLocal = quotaState.TrackedWeeklyResetLocal;
         decision.NextSourceUpdatedUtc = quotaState.LastReadSourceUtc;
         return decision;
+    }
+
+    // Quota-reset rainbow hysteresis. Enter only on a CONFIRMED accepted weekly increase that
+    // crosses up into the reset band, hold through the band, exit below it. Anchoring on
+    // weeklyWindowAdvanced (an accepted increase of the post-interference-filter weekly balance)
+    // means phantom/interference reads - which are rejected upstream and never move the accepted
+    // weekly - cannot trigger the celebration. Requiring a real previous baseline (>=0) below the
+    // enter band prevents a startup/default 100 from firing.
+    private const int WeeklyResetRainbowEnterPercent = 95;
+    private const int WeeklyResetRainbowExitPercent = 90;
+
+    private static void UpdateWeeklyResetRainbowLatch(
+        QuotaRuntimeState quotaState,
+        bool weeklyWindowAdvanced,
+        int previousWeeklyPercent,
+        int weeklyPercent)
+    {
+        if (quotaState == null)
+        {
+            return;
+        }
+
+        if (weeklyPercent < WeeklyResetRainbowExitPercent)
+        {
+            quotaState.WeeklyResetRainbowActive = false;
+            return;
+        }
+
+        if (weeklyWindowAdvanced &&
+            previousWeeklyPercent >= 0 &&
+            previousWeeklyPercent < WeeklyResetRainbowEnterPercent &&
+            weeklyPercent >= WeeklyResetRainbowEnterPercent)
+        {
+            quotaState.WeeklyResetRainbowActive = true;
+        }
     }
 
     private static string GetQuotaRingDecisionReason(
@@ -6044,8 +6455,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             trigger,
             out task))
         {
+            // No fresh request ran (the shared consumer already joined one). Display last-good but do
+            // not report it as a successful refresh.
             ClaudeRadarSnapshot lastGood = ClaudeRadarSnapshotScheduler.GetLastGoodSnapshot(schedulerSettings);
-            snapshot = ConvertClaudeRadarSnapshotForSharedWindow(lastGood);
+            snapshot = ConvertClaudeRadarSnapshotForSharedWindow(lastGood, false);
             health = ConvertClaudeRadarServiceState(lastGood == null
                 ? ClaudeRadarServiceState.Unknown
                 : lastGood.DataState);
@@ -6054,6 +6467,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         ClaudeRadarSnapshot claudeSnapshot = null;
         ClaudeRadarServiceState claudeHealth = ClaudeRadarServiceState.Unknown;
+        bool requestSucceeded = false;
         try
         {
             task.Wait();
@@ -6062,6 +6476,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             {
                 claudeSnapshot = outcome.Snapshot;
                 claudeHealth = outcome.Health;
+                requestSucceeded = outcome.Success;
             }
         }
         catch (Exception ex)
@@ -6070,14 +6485,16 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             claudeHealth = ClaudeRadarServiceState.Unreachable;
         }
 
-        snapshot = ConvertClaudeRadarSnapshotForSharedWindow(claudeSnapshot);
+        snapshot = ConvertClaudeRadarSnapshotForSharedWindow(claudeSnapshot, requestSucceeded);
         health = ConvertClaudeRadarServiceState(claudeHealth == ClaudeRadarServiceState.Unknown && claudeSnapshot != null
             ? claudeSnapshot.DataState
             : claudeHealth);
         return IsSharedClaudeRadarSnapshotUsable(snapshot);
     }
 
-    private static CodexRadarSnapshot ConvertClaudeRadarSnapshotForSharedWindow(ClaudeRadarSnapshot claudeSnapshot)
+    private static CodexRadarSnapshot ConvertClaudeRadarSnapshotForSharedWindow(
+        ClaudeRadarSnapshot claudeSnapshot,
+        bool requestSucceeded)
     {
         CodexRadarSnapshot snapshot = CodexRadarSnapshot.CreateDefault();
         if (claudeSnapshot == null)
@@ -6085,8 +6502,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return snapshot;
         }
 
-        snapshot.CheckedAtLocal = claudeSnapshot.CheckedAtLocal;
-        snapshot.CheckedAtKnown = claudeSnapshot.CheckedAtLocal != DateTime.MinValue;
+        snapshot.CheckedAtLocal = ClaudeRadarReader.ResolveDataObtainedLocalTime(claudeSnapshot);
+        snapshot.CheckedAtKnown = snapshot.CheckedAtLocal != DateTime.MinValue;
 
         ClaudeRadarModelMetric metric = claudeSnapshot.SelectedModel ?? ClaudeRadarModelMetric.CreateDefault();
         if (claudeSnapshot.ModelMetrics != null)
@@ -6113,7 +6530,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (metric.Known)
         {
             snapshot.ModelIqKnown = true;
-            snapshot.ModelIqRefreshSucceeded = claudeSnapshot.DataState == ClaudeRadarServiceState.Normal;
+            // "Refresh succeeded" must describe THIS request, not the freshness of the data on screen.
+            // A failed/throttled fetch that falls back to a last-good snapshot still carries a Normal
+            // DataState, so deriving success from DataState marked stale displays as fresh successes.
+            snapshot.ModelIqRefreshSucceeded = requestSucceeded;
             snapshot.ModelIqPassRatePercent = Math.Max(0, Math.Min(MaxCodexModelIqScore, metric.IqScore));
             snapshot.ModelIqPassed = Math.Max(0, metric.Passed);
             snapshot.ModelIqValidTasks = NormalizeCodexModelIqValidTaskCount(metric.ValidTasks <= 0 ? 10 : metric.ValidTasks);
@@ -6376,6 +6796,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         target.ModelIqRefreshedAtKnown = true;
     }
 
+    // Signature that decides whether the small clock marker (first-seen time) may be preserved.
+    // It must contain ONLY the site-provided batch identity and its core result. Derived/presentation
+    // fields (efficiency percents, raw efficiency inputs, normal range, display-max) are excluded on
+    // purpose: JSON, HTML and history-merge paths normalize, round and back-fill those differently, so
+    // including them let the same 7.xx batch look "changed" and moved the marker to the request time.
     private static string BuildCodexModelIqContentSignature(CodexRadarSnapshot snapshot)
     {
         if (snapshot == null || !snapshot.ModelIqKnown)
@@ -6383,22 +6808,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return string.Empty;
         }
 
-        StringBuilder key = new StringBuilder(256);
+        StringBuilder key = new StringBuilder(128);
         key.Append(snapshot.ModelIqDataDateKnown ? snapshot.ModelIqDataDateLocal.Date.Ticks : 0L).Append('|');
         key.Append(snapshot.ModelIqDataWindowKnown ? snapshot.ModelIqDataWindowStartHourLocal : -1).Append('|');
         key.Append(snapshot.ModelIqDataLabelKnown ? (snapshot.ModelIqDataLabel ?? string.Empty).Trim() : string.Empty).Append('|');
         key.Append(snapshot.ModelIqPassedKnown ? snapshot.ModelIqPassed : -1).Append('|');
         key.Append(snapshot.ModelIqValidTasks).Append('|');
         key.Append(snapshot.ModelIqPassRatePercent).Append('|');
-        key.Append(snapshot.ModelIqStatus ?? string.Empty).Append('|');
-        key.Append(snapshot.ModelIqEfficiencyKnown ? snapshot.ModelIqTokenEfficiencyPercent : -1).Append('|');
-        key.Append(snapshot.ModelIqEfficiencyKnown ? snapshot.ModelIqTimeEfficiencyPercent : -1).Append('|');
-        key.Append(snapshot.ModelIqEfficiencyInputKnown ? snapshot.ModelIqEfficiencyPassed.ToString("R", CultureInfo.InvariantCulture) : string.Empty).Append('|');
-        key.Append(snapshot.ModelIqEfficiencyInputKnown ? snapshot.ModelIqEfficiencyTotalTokens.ToString("R", CultureInfo.InvariantCulture) : string.Empty).Append('|');
-        key.Append(snapshot.ModelIqEfficiencyInputKnown ? snapshot.ModelIqEfficiencySerialSeconds.ToString("R", CultureInfo.InvariantCulture) : string.Empty).Append('|');
-        key.Append(snapshot.ModelIqNormalRangeKnown ? snapshot.ModelIqNormalLowScore : -1).Append('|');
-        key.Append(snapshot.ModelIqNormalRangeKnown ? snapshot.ModelIqNormalHighScore : -1).Append('|');
-        key.Append(snapshot.ModelIqDisplayMaxScoreKnown ? snapshot.ModelIqDisplayMaxScore.ToString("R", CultureInfo.InvariantCulture) : string.Empty);
+        key.Append(snapshot.ModelIqStatus ?? string.Empty);
         return key.ToString();
     }
 
@@ -7669,6 +8086,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 discoveredModels,
                 IsCodexRadarCompleteCatalog(rootModelIq, discoveredModels));
             snapshot = CodexRadarSnapshot.CreateDefault();
+            CodexQuotaRadarSnapshot structuredQuotaRadar;
+            if (TryParseCodexRadarJsonQuotaRadar(rootModelIq, out structuredQuotaRadar))
+            {
+                snapshot.QuotaRadar = structuredQuotaRadar;
+            }
+
             DateTime checkedAt;
             if (TryGetQuotaDate(root, "checked_at", out checkedAt) ||
                 TryGetQuotaDate(root, "monitored_at", out checkedAt))
@@ -7701,6 +8124,87 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             snapshot = null;
             return false;
         }
+    }
+
+    private static bool TryParseCodexRadarJsonQuotaRadar(
+        Dictionary<string, object> rootModelIq,
+        out CodexQuotaRadarSnapshot quotaRadar)
+    {
+        quotaRadar = CodexQuotaRadarSnapshot.CreateDefault();
+        Dictionary<string, object> source = GetQuotaObject(rootModelIq, "quota_radar");
+        if (source == null)
+        {
+            return false;
+        }
+
+        DateTime updatedAt;
+        if (TryGetQuotaDate(source, "updated_at", out updatedAt))
+        {
+            quotaRadar.UpdatedAtLocal = updatedAt;
+            quotaRadar.UpdatedAtKnown = true;
+        }
+
+        string defaultSource = GetQuotaString(source, "source");
+        bool anyTier = false;
+        List<Dictionary<string, object>> rows = GetQuotaObjectsFromArray(source, "rows");
+        for (int i = 0; i < rows.Count; i++)
+        {
+            Dictionary<string, object> row = rows[i];
+            string key = NormalizeCodexQuotaRadarTierKey(GetQuotaString(row, "tier"));
+            double sevenDay;
+            if (key.Length == 0 || !TryGetQuotaNumber(row, "seven_d", out sevenDay))
+            {
+                continue;
+            }
+
+            double fiveHour;
+            if (!TryGetQuotaNumber(row, "five_h", out fiveHour))
+            {
+                fiveHour = 0.0;
+            }
+
+            string rowSource = GetQuotaString(row, "basis");
+            ApplyCodexQuotaRadarTierValues(
+                quotaRadar,
+                key,
+                fiveHour,
+                sevenDay,
+                sevenDay,
+                sevenDay,
+                rowSource.Length > 0 ? rowSource : defaultSource,
+                false,
+                false);
+            anyTier = true;
+        }
+
+        List<double> trend20x = new List<double>();
+        List<Dictionary<string, object>> trend = GetQuotaObjectsFromArray(source, "trend");
+        for (int i = 0; i < trend.Count; i++)
+        {
+            double value;
+            if (TryGetQuotaNumber(trend[i], "seven_d_20x", out value) && value > 0.0)
+            {
+                trend20x.Add(value);
+            }
+        }
+
+        if (!anyTier && trend20x.Count > 0)
+        {
+            double current20x = trend20x[trend20x.Count - 1];
+            ApplyCodexQuotaRadarTierValues(quotaRadar, QuotaRadarTierPro20x, current20x, current20x, current20x, defaultSource);
+            ApplyCodexQuotaRadarTierValues(quotaRadar, QuotaRadarTierPro5x, current20x / 4.0, current20x / 4.0, current20x / 4.0, defaultSource);
+            ApplyCodexQuotaRadarTierValues(quotaRadar, QuotaRadarTierPlus, current20x / 20.0, current20x / 20.0, current20x / 20.0, defaultSource);
+            anyTier = true;
+        }
+
+        if (!anyTier)
+        {
+            return false;
+        }
+
+        ApplyCodexQuotaRadarTrendValues(quotaRadar, trend20x, null);
+        quotaRadar.Known = true;
+        return true;
     }
 
     private static bool TryParseCodexRadarHtmlStatus(
@@ -7846,16 +8350,26 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         MatchCollection rows = Regex.Matches(
             section,
-            "<div\\s+class=\"[^\"]*quota-radar-row[^\"]*\"[^>]*>\\s*" +
-                "<strong[^>]*>(.*?)</strong>\\s*" +
-                "<span[^>]*>(.*?)</span>\\s*" +
-                "<span[^>]*>(.*?)</span>\\s*" +
-                "<em[^>]*>(.*?)</em>",
+            "<div\\s+class=\"[^\"]*quota-radar-row[^\"]*\"[^>]*>(.*?)</div>",
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
         bool anyTier = false;
         for (int i = 0; i < rows.Count; i++)
         {
-            string label = NormalizeCodexRadarHtmlText(rows[i].Groups[1].Value);
+            string row = rows[i].Groups[1].Value;
+            Match labelMatch = Regex.Match(
+                row,
+                "<strong[^>]*>(.*?)</strong>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            MatchCollection valueMatches = Regex.Matches(
+                row,
+                "<span[^>]*>(.*?)</span>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            if (!labelMatch.Success || valueMatches.Count == 0)
+            {
+                continue;
+            }
+
+            string label = NormalizeCodexRadarHtmlText(labelMatch.Groups[1].Value);
             string key = NormalizeCodexQuotaRadarTierKey(label);
             if (string.IsNullOrEmpty(key))
             {
@@ -7864,11 +8378,29 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
             double fiveHour;
             double sevenDay;
-            if (!TryParseCodexRadarUsd(rows[i].Groups[2].Value, out fiveHour) ||
-                !TryParseCodexRadarUsd(rows[i].Groups[3].Value, out sevenDay))
+            if (valueMatches.Count >= 2)
             {
-                continue;
+                if (!TryParseCodexRadarUsd(valueMatches[0].Groups[1].Value, out fiveHour) ||
+                    !TryParseCodexRadarUsd(valueMatches[1].Groups[1].Value, out sevenDay))
+                {
+                    continue;
+                }
             }
+            else
+            {
+                // The site can pause the 5-hour limit and omit that column entirely. Keep the
+                // absent value at zero instead of inventing a 5-hour estimate from the 7-day row.
+                fiveHour = 0.0;
+                if (!TryParseCodexRadarUsd(valueMatches[0].Groups[1].Value, out sevenDay))
+                {
+                    continue;
+                }
+            }
+
+            Match sourceMatch = Regex.Match(
+                row,
+                "<em[^>]*>(.*?)</em>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
             ApplyCodexQuotaRadarTierValues(
                 quotaRadar,
@@ -7877,7 +8409,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 sevenDay,
                 sevenDay,
                 sevenDay,
-                NormalizeCodexRadarHtmlText(rows[i].Groups[4].Value),
+                sourceMatch.Success ? NormalizeCodexRadarHtmlText(sourceMatch.Groups[1].Value) : string.Empty,
                 false,
                 false);
             anyTier = true;
@@ -7888,8 +8420,23 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return false;
         }
 
-        double current20x = GetCodexQuotaRadarTierSevenDay(quotaRadar, QuotaRadarTierPro20x);
         List<double> trend20x = ParseCodexQuotaRadarTrendValues(section);
+        ApplyCodexQuotaRadarTrendValues(quotaRadar, trend20x, section);
+        quotaRadar.Known = true;
+        return true;
+    }
+
+    private static void ApplyCodexQuotaRadarTrendValues(
+        CodexQuotaRadarSnapshot quotaRadar,
+        List<double> trend20x,
+        string htmlSection)
+    {
+        if (quotaRadar == null)
+        {
+            return;
+        }
+
+        double current20x = GetCodexQuotaRadarTierSevenDay(quotaRadar, QuotaRadarTierPro20x);
         double previous20x = current20x;
         double average20x = current20x;
         double min20x = current20x;
@@ -7903,7 +8450,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (trend20x.Count > 0)
         {
             average20x = AverageCodexQuotaRadarTrendValues(trend20x);
-            if (!TryParseCodexQuotaRadarAxisRange(section, out min20x, out max20x))
+            if (!TryParseCodexQuotaRadarAxisRange(htmlSection, out min20x, out max20x))
             {
                 GetCodexQuotaRadarTrendRange(trend20x, out min20x, out max20x);
             }
@@ -7971,9 +8518,6 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             averageKnown,
             trendRangeKnown,
             priorRangeKnown);
-
-        quotaRadar.Known = true;
-        return true;
     }
 
     private static void ApplyCodexRadarHtmlQuotaRadarUpdateTime(
@@ -12347,13 +12891,40 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return false;
     }
 
+    // Windows at or under this duration belong to the five-hour ring; anything longer is weekly.
+    // 24h leaves room for the provider re-shaping the short window without misrouting the 7d one.
+    private const double FiveHourWindowRouteMaxSeconds = 24.0 * 3600.0;
+
     private static bool TryBuildQuotaSnapshot(Dictionary<string, object> rateLimits, out CodexQuotaSnapshot snapshot)
     {
         snapshot = CodexQuotaSnapshot.CreateDefault();
         bool found = false;
         found = ApplyQuotaSlot(rateLimits, "primary", snapshot) || found;
         found = ApplyQuotaSlot(rateLimits, "secondary", snapshot) || found;
+        if (found)
+        {
+            ApplyFiveHourLimitAbsence(snapshot);
+        }
+
         return found;
+    }
+
+    // When a read carries a weekly window but no short (~5h) window at all, the provider has
+    // (temporarily) lifted the 5h limit: show the five-hour ring as a full unlimited state instead
+    // of leaving stale or misrouted values in it.
+    private static void ApplyFiveHourLimitAbsence(CodexQuotaSnapshot snapshot)
+    {
+        if (snapshot == null ||
+            !snapshot.WeeklyUsageDiagnosticKnown ||
+            snapshot.FiveHourUsageDiagnosticKnown)
+        {
+            return;
+        }
+
+        snapshot.FiveHourLimitAbsent = true;
+        snapshot.FiveHourPercent = 100;
+        snapshot.FiveHourResetLocal = DateTime.MinValue;
+        snapshot.FiveHourResetKnown = false;
     }
 
     private static bool ApplyQuotaSlot(Dictionary<string, object> rateLimits, string key, CodexQuotaSnapshot snapshot)
@@ -12384,7 +12955,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool isFiveHour = string.Equals(key, "primary", StringComparison.OrdinalIgnoreCase);
         if (hasWindowMinutes)
         {
-            isFiveHour = windowMinutes <= 300.0;
+            // Same duration routing threshold as the provider parser: while the 5h limit is lifted,
+            // the CLI can report the weekly window in "primary", which must land on the weekly ring.
+            isFiveHour = windowMinutes * 60.0 <= FiveHourWindowRouteMaxSeconds;
         }
 
         int remainingPercent = ClampPercent((int)Math.Round(100.0 - usedPercent));
@@ -12495,6 +13068,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                     found = true;
                     foundWeeklyPercent = true;
                 }
+                else if (string.Equals(key, "FiveHourLimitAbsent", StringComparison.OrdinalIgnoreCase))
+                {
+                    bool limitAbsent;
+                    if (bool.TryParse(value, out limitAbsent) && limitAbsent)
+                    {
+                        snapshot.FiveHourLimitAbsent = true;
+                        found = true;
+                    }
+                }
                 else if (string.Equals(key, "FiveHourReset", StringComparison.OrdinalIgnoreCase) && DateTime.TryParse(value, out dateTime))
                 {
                     snapshot.FiveHourResetLocal = dateTime;
@@ -12590,6 +13172,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             lines.Add("Version=1");
             lines.Add("FiveHourPercent=" + ClampPercent(snapshot.FiveHourPercent).ToString(CultureInfo.InvariantCulture));
             lines.Add("WeeklyPercent=" + ClampPercent(snapshot.WeeklyPercent).ToString(CultureInfo.InvariantCulture));
+            if (snapshot.FiveHourLimitAbsent)
+            {
+                lines.Add("FiveHourLimitAbsent=True");
+            }
+
             if (snapshot.FiveHourResetKnown)
             {
                 lines.Add("FiveHourReset=" + snapshot.FiveHourResetLocal.ToString("o", CultureInfo.InvariantCulture));
@@ -12948,6 +13535,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         RunClaudeSharedClockCandidateFilterSelfTest();
         RunClaudeSharedQuotaLineSelfTest();
         RunCodexResetCreditsSelfTest();
+        RunWeeklyBudgetPaceSelfTest();
         QuotaRingPresentation.RunSelfTest();
 
         int baseline = GetNextFiveHourConsumptionRingBaseline(-1, 67, 57);
@@ -13071,6 +13659,73 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Codex provider utilization parsing failed.");
         }
 
+        // 5h limit lifted: primary_window IS the weekly window (limit_window_seconds=604800) and
+        // secondary_window is null. Duration routing must land it on the weekly ring and flag the
+        // five-hour ring as an unlimited state instead of inheriting the weekly numbers.
+        CodexProviderUsageResult weeklyOnlyResult = ParseCodexProviderUsageResponse(
+            "{\"rate_limit\":{\"allowed\":true,\"limit_reached\":false," +
+            "\"primary_window\":{\"used_percent\":1,\"limit_window_seconds\":604800,\"reset_after_seconds\":603890,\"reset_at\":1784510243}," +
+            "\"secondary_window\":null}}",
+            true,
+            200);
+        if (weeklyOnlyResult == null ||
+            !weeklyOnlyResult.Success ||
+            weeklyOnlyResult.Snapshot == null ||
+            weeklyOnlyResult.Snapshot.WeeklyPercent != 99 ||
+            !weeklyOnlyResult.Snapshot.WeeklyUsageDiagnosticKnown ||
+            weeklyOnlyResult.Snapshot.FiveHourUsageDiagnosticKnown ||
+            !weeklyOnlyResult.Snapshot.FiveHourLimitAbsent ||
+            weeklyOnlyResult.Snapshot.FiveHourPercent != 100 ||
+            weeklyOnlyResult.Snapshot.FiveHourResetKnown)
+        {
+            throw new InvalidOperationException("Codex provider weekly-only payload routed into the five-hour ring instead of the unlimited state.");
+        }
+
+        // Both windows present but swapped across slots: duration must win over slot position.
+        CodexProviderUsageResult swappedResult = ParseCodexProviderUsageResponse(
+            "{\"rate_limit\":{" +
+            "\"primary_window\":{\"used_percent\":10,\"limit_window_seconds\":604800,\"reset_at\":1784510243}," +
+            "\"secondary_window\":{\"used_percent\":20,\"limit_window_seconds\":18000,\"reset_at\":1784000000}}}",
+            true,
+            200);
+        if (swappedResult == null ||
+            !swappedResult.Success ||
+            swappedResult.Snapshot == null ||
+            swappedResult.Snapshot.WeeklyPercent != 90 ||
+            swappedResult.Snapshot.FiveHourPercent != 80 ||
+            swappedResult.Snapshot.FiveHourLimitAbsent)
+        {
+            throw new InvalidOperationException("Codex provider duration routing failed for slot-swapped windows.");
+        }
+
+        // Session token_count shape while the 5h limit is lifted: only a weekly-length primary.
+        Dictionary<string, object> weeklyOnlySessionRateLimits = new JavaScriptSerializer().DeserializeObject(
+            "{\"primary\":{\"used_percent\":30,\"window_minutes\":10080,\"resets_at\":\"2026-07-19T16:00:00+09:00\"}}") as Dictionary<string, object>;
+        CodexQuotaSnapshot weeklyOnlySession;
+        if (!TryBuildQuotaSnapshot(weeklyOnlySessionRateLimits, out weeklyOnlySession) ||
+            weeklyOnlySession.WeeklyPercent != 70 ||
+            !weeklyOnlySession.WeeklyResetKnown ||
+            weeklyOnlySession.FiveHourUsageDiagnosticKnown ||
+            !weeklyOnlySession.FiveHourLimitAbsent ||
+            weeklyOnlySession.FiveHourPercent != 100)
+        {
+            throw new InvalidOperationException("Codex session weekly-only rate limits routed into the five-hour ring instead of the unlimited state.");
+        }
+
+        // Regression: a normal two-window session payload must still fill both rings and not raise
+        // the unlimited flag.
+        Dictionary<string, object> normalSessionRateLimits = new JavaScriptSerializer().DeserializeObject(
+            "{\"primary\":{\"used_percent\":40,\"window_minutes\":300,\"resets_at\":\"2026-07-13T16:00:00+09:00\"}," +
+            "\"secondary\":{\"used_percent\":15,\"window_minutes\":10080,\"resets_at\":\"2026-07-19T16:00:00+09:00\"}}") as Dictionary<string, object>;
+        CodexQuotaSnapshot normalSession;
+        if (!TryBuildQuotaSnapshot(normalSessionRateLimits, out normalSession) ||
+            normalSession.FiveHourPercent != 60 ||
+            normalSession.WeeklyPercent != 85 ||
+            normalSession.FiveHourLimitAbsent)
+        {
+            throw new InvalidOperationException("Codex session two-window rate limits regression: rings or unlimited flag changed.");
+        }
+
         DateTime resetBase = new DateTime(2026, 7, 7, 4, 0, 0);
         if (!IsSuspiciousProviderZeroDrop(100, 0, resetBase, resetBase.AddMinutes(2.0), TimeSpan.FromMinutes(30.0)) ||
             IsSuspiciousProviderZeroDrop(5, 0, resetBase, resetBase.AddMinutes(2.0), TimeSpan.FromMinutes(30.0)) ||
@@ -13153,6 +13808,46 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             codex56Snapshot.ModelIqValidTasks != 10)
         {
             throw new InvalidOperationException("Codex Radar GPT-5.6 comparison selection did not use Sol medium data.");
+        }
+
+        CodexRadarSnapshot currentQuotaJsonSnapshot;
+        CodexRadarModelCatalogUpdate currentQuotaJsonUpdate;
+        string currentQuotaJson =
+            "{\"monitored_at\":\"2026-07-13T22:08:07+08:00\",\"model_iq\":{" +
+            "\"latest\":{\"date\":\"2026-07-16-am\",\"score\":105.0,\"passed\":7,\"tasks\":10," +
+            "\"model\":\"gpt-5.6-sol\",\"reasoning_effort\":\"medium\"}," +
+            "\"quota_radar\":{\"updated_at\":\"2026-07-16T01:47:29Z\",\"source\":\"quota-v2\"," +
+            "\"rows\":[" +
+            "{\"tier\":\"20x Pro\",\"basis\":\"measured 7d\",\"five_h\":238.07,\"seven_d\":1428.41}," +
+            "{\"tier\":\"5x Pro\",\"basis\":\"model /4\",\"five_h\":59.52,\"seven_d\":357.10}," +
+            "{\"tier\":\"Plus\",\"basis\":\"model /20\",\"five_h\":11.90,\"seven_d\":71.42}]," +
+            "\"trend\":[{\"seven_d_20x\":1922.96},{\"seven_d_20x\":1428.41}]}}}";
+        if (!TryParseCodexRadarStatus(
+                currentQuotaJson,
+                CodexRadarModelCatalog.DefaultModelKey,
+                false,
+                out currentQuotaJsonSnapshot,
+                out currentQuotaJsonUpdate) ||
+            currentQuotaJsonSnapshot == null ||
+            !IsCodexQuotaRadarKnown(currentQuotaJsonSnapshot))
+        {
+            throw new InvalidOperationException("Codex Radar nested JSON quota_radar parsing failed.");
+        }
+
+        CodexQuotaRadarTier currentQuotaJson20x = FindCodexQuotaRadarTier(
+            currentQuotaJsonSnapshot.QuotaRadar,
+            QuotaRadarTierPro20x);
+        if (currentQuotaJson20x == null ||
+            Math.Abs(currentQuotaJson20x.SevenDayUsd - 1428.41) > 0.01 ||
+            !currentQuotaJson20x.PreviousKnown ||
+            Math.Abs(currentQuotaJson20x.PreviousSevenDayUsd - 1922.96) > 0.01 ||
+            !currentQuotaJson20x.TrendRangeKnown ||
+            Math.Abs(currentQuotaJson20x.TrendMinSevenDayUsd - 1428.41) > 0.01 ||
+            Math.Abs(currentQuotaJson20x.TrendMaxSevenDayUsd - 1922.96) > 0.01 ||
+            !currentQuotaJsonSnapshot.QuotaRadar.UpdatedAtKnown ||
+            currentQuotaJsonSnapshot.QuotaRadar.UpdatedAtLocal <= currentQuotaJsonSnapshot.CheckedAtLocal)
+        {
+            throw new InvalidOperationException("Codex Radar nested JSON quota values, trend, or independent timestamp failed.");
         }
 
         DateTime beijingNow = TimeZoneInfo.ConvertTime(DateTime.UtcNow, TimeZoneUtilities.GetBeijingTimeZone());
@@ -13284,6 +13979,26 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (htmlFailures.Count > 0)
         {
             throw new InvalidOperationException("Codex Radar HTML fallback parsing failed: " + string.Join(", ", htmlFailures.ToArray()));
+        }
+
+        string sevenDayOnlyQuotaHtml =
+            "<section class=\"quota-radar\"><h2>额度雷达 <span>7月16日09:47更新</span></h2>" +
+            "<div class=\"quota-radar-row\"><strong>20x Pro</strong><span>$1,428.41</span><em>7d实测</em></div>" +
+            "<div class=\"quota-radar-row\"><strong>5x Pro</strong><span>$357.10</span><em>推测</em></div>" +
+            "<div class=\"quota-radar-row\"><strong>Plus</strong><span>$71.42</span><em>推测</em></div>" +
+            "<svg><title>2026-07-15-pm 20x Pro 7d $1,922.96</title>" +
+            "<title>2026-07-16-am 20x Pro 7d $1,428.41</title></svg></section>";
+        CodexQuotaRadarSnapshot sevenDayOnlyQuota;
+        CodexQuotaRadarTier sevenDayOnly20x;
+        if (!TryParseCodexRadarHtmlQuotaRadar(sevenDayOnlyQuotaHtml, out sevenDayOnlyQuota) ||
+            !sevenDayOnlyQuota.Known ||
+            Math.Abs(GetCodexQuotaRadarTierSevenDay(sevenDayOnlyQuota, QuotaRadarTierPlus) - 71.42) > 0.01 ||
+            (sevenDayOnly20x = FindCodexQuotaRadarTier(sevenDayOnlyQuota, QuotaRadarTierPro20x)) == null ||
+            Math.Abs(sevenDayOnly20x.FiveHourUsd) > 0.001 ||
+            !sevenDayOnly20x.PreviousKnown ||
+            Math.Abs(sevenDayOnly20x.PreviousSevenDayUsd - 1922.96) > 0.01)
+        {
+            throw new InvalidOperationException("Codex Radar current 7-day-only HTML quota layout parsing failed.");
         }
 
         CodexRadarSnapshot staleSpeedWindow = CodexRadarSnapshot.CreateDefault();
@@ -13642,7 +14357,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             SourceMode = "site_chart"
         };
 
-        CodexRadarSnapshot shared = ConvertClaudeRadarSnapshotForSharedWindow(claude);
+        CodexRadarSnapshot shared = ConvertClaudeRadarSnapshotForSharedWindow(claude, true);
         if (!IsSharedClaudeRadarSnapshotUsable(shared) || !IsCodexQuotaRadarKnown(shared))
         {
             throw new InvalidOperationException("Claude shared quota line did not produce a usable quota radar snapshot.");
@@ -13798,6 +14513,23 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Changed Codex IQ content should keep the new refresh marker time.");
         }
 
+        // RDR-02: the same batch fetched through JSON vs HTML/history normalizes derived efficiency,
+        // normal range and display-max differently. Those must not move the first-seen marker.
+        CodexRadarSnapshot derivedOnlyDifference = BuildModelIqRefreshMarkerTestSnapshot(88, new DateTime(2026, 7, 7, 16, 10, 0));
+        derivedOnlyDifference.ModelIqTokenEfficiencyPercent = source.ModelIqTokenEfficiencyPercent + 7;
+        derivedOnlyDifference.ModelIqTimeEfficiencyPercent = source.ModelIqTimeEfficiencyPercent - 5;
+        derivedOnlyDifference.ModelIqEfficiencyTotalTokens = source.ModelIqEfficiencyTotalTokens + 1234567.0;
+        derivedOnlyDifference.ModelIqEfficiencySerialSeconds = source.ModelIqEfficiencySerialSeconds + 42.0;
+        derivedOnlyDifference.ModelIqNormalLowScore = source.ModelIqNormalLowScore - 3;
+        derivedOnlyDifference.ModelIqNormalHighScore = source.ModelIqNormalHighScore + 3;
+        derivedOnlyDifference.ModelIqNormalRangeKnown = true;
+        ApplyCodexModelIqDisplayMax(derivedOnlyDifference, 135.0);
+        PreserveCodexModelIqRefreshTimeIfContentUnchanged(derivedOnlyDifference, source);
+        if (derivedOnlyDifference.ModelIqRefreshedAtLocal != source.ModelIqRefreshedAtLocal)
+        {
+            throw new InvalidOperationException("Derived-only Codex IQ differences must not move the first-seen refresh marker.");
+        }
+
         CodexRadarSnapshot enrichedCached = source.Clone();
         enrichedCached.ModelIqCachedContentSignature = BuildCodexModelIqContentSignature(source);
         enrichedCached.ModelIqPassedKnown = false;
@@ -13892,11 +14624,33 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             phantomSnapshot.FiveHourPercent == 8 &&
             phantomSnapshot.WeeklyPercent == 60,
             "phantom sample full-state rejection");
+        AssertQuotaIdentity(!phantomState.WeeklyResetRainbowActive,
+            "a rejected phantom weekly spike must not arm the quota-reset rainbow");
 
+        // Quota-reset rainbow hysteresis truth table (enter >=95 on a confirmed upward crossing,
+        // hold >=90, exit <90).
+        QuotaRuntimeState rainbowState = new QuotaRuntimeState();
+        UpdateWeeklyResetRainbowLatch(rainbowState, true, 60, 100);
+        AssertQuotaIdentity(rainbowState.WeeklyResetRainbowActive, "rainbow arms on a confirmed weekly crossing to >=95");
+        UpdateWeeklyResetRainbowLatch(rainbowState, false, 100, 92);
+        AssertQuotaIdentity(rainbowState.WeeklyResetRainbowActive, "rainbow holds while weekly stays in [90,95)");
+        UpdateWeeklyResetRainbowLatch(rainbowState, false, 92, 88);
+        AssertQuotaIdentity(!rainbowState.WeeklyResetRainbowActive, "rainbow clears when weekly falls below 90");
+
+        QuotaRuntimeState rainbowNoFire = new QuotaRuntimeState();
+        UpdateWeeklyResetRainbowLatch(rainbowNoFire, false, 60, 100);
+        AssertQuotaIdentity(!rainbowNoFire.WeeklyResetRainbowActive, "rainbow must not arm without a confirmed weekly increase");
+        UpdateWeeklyResetRainbowLatch(rainbowNoFire, true, -1, 100);
+        AssertQuotaIdentity(!rainbowNoFire.WeeklyResetRainbowActive, "rainbow must not arm from an unknown previous baseline (startup)");
+        UpdateWeeklyResetRainbowLatch(rainbowNoFire, true, 96, 100);
+        AssertQuotaIdentity(!rainbowNoFire.WeeklyResetRainbowActive, "rainbow must not arm on increments already inside the reset band");
+
+        // Legitimate newborns only appear when the tracked window is about to expire; both cases
+        // model the observed +1s/+33s provider clock skew right at the boundary.
         DateTime resetLocal = new DateTime(2026, 7, 11, 8, 4, 30, DateTimeKind.Local);
         DateTime resetUtc = resetLocal.ToUniversalTime();
         QuotaWindowIdentityDecision newbornFive = EvaluateQuotaWindowIdentity(
-            resetLocal.AddHours(1),
+            resetLocal.AddMinutes(1),
             resetLocal.AddHours(5).AddSeconds(1),
             100,
             "provider",
@@ -13905,7 +14659,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             DateTime.MinValue,
             TimeSpan.FromHours(5));
         QuotaWindowIdentityDecision newbornWeek = EvaluateQuotaWindowIdentity(
-            resetLocal.AddDays(2),
+            resetLocal.AddMinutes(1),
             resetLocal.AddDays(7).AddSeconds(33),
             100,
             "provider",
@@ -13916,11 +14670,29 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         AssertQuotaIdentity(newbornFive.Accepted && newbornFive.Reason == "reset_confirmed_by_newborn" &&
             newbornWeek.Accepted && newbornWeek.Reason == "reset_confirmed_by_newborn", "newborn reset");
 
+        // A newborn-shaped sample while the tracked window still has hours to run is the idle pool,
+        // regardless of source; the session and gap paths must not re-anchor to it either.
+        QuotaWindowIdentityDecision farFromExpiry = EvaluateQuotaWindowIdentity(
+            tracked, sampleLocal.AddHours(5).AddSeconds(1), 100, "provider", sampleUtc,
+            sampleUtc.AddMinutes(-3), DateTime.MinValue, TimeSpan.FromHours(5));
+        QuotaWindowIdentityDecision sessionNewborn = EvaluateQuotaWindowIdentity(
+            tracked, sampleLocal.AddHours(5).AddSeconds(1), 100, "session", sampleUtc,
+            sampleUtc.AddMinutes(-3), DateTime.MinValue, TimeSpan.FromHours(5));
+        QuotaWindowIdentityDecision gapNewborn = EvaluateQuotaWindowIdentity(
+            tracked, sampleLocal.AddHours(5).AddSeconds(1), 100, "provider", sampleUtc,
+            sampleUtc.AddMinutes(-40), DateTime.MinValue, TimeSpan.FromHours(5));
+        AssertQuotaIdentity(
+            !farFromExpiry.Accepted && farFromExpiry.Reason == "idle_pool_newborn_suppressed" &&
+            !sessionNewborn.Accepted && sessionNewborn.Reason == "idle_pool_newborn_suppressed" &&
+            !gapNewborn.Accepted && gapNewborn.Reason == "idle_pool_newborn_suppressed",
+            "far-from-expiry newborn blocked on all sources");
+
+        DateTime nearDueTracked = sampleLocal.AddMinutes(1);
         QuotaWindowIdentityDecision boundarySeven = EvaluateQuotaWindowIdentity(
-            tracked, sampleLocal.AddHours(5).AddMinutes(-7), 100, "provider", sampleUtc,
+            nearDueTracked, sampleLocal.AddHours(5).AddMinutes(-7), 100, "provider", sampleUtc,
             sampleUtc.AddMinutes(-3), DateTime.MinValue, TimeSpan.FromHours(5));
         QuotaWindowIdentityDecision boundaryNine = EvaluateQuotaWindowIdentity(
-            tracked, sampleLocal.AddHours(5).AddMinutes(-9), 100, "provider", sampleUtc,
+            nearDueTracked, sampleLocal.AddHours(5).AddMinutes(-9), 100, "provider", sampleUtc,
             sampleUtc.AddMinutes(-3), DateTime.MinValue, TimeSpan.FromHours(5));
         AssertQuotaIdentity(boundarySeven.Accepted && !boundaryNine.Accepted, "newborn tolerance boundary");
 
@@ -13978,10 +14750,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         QuotaWindowIdentityDecision interruptedAgain = EvaluateQuotaWindowIdentity(
             wrongTracked, realReset, 99, "provider", sampleUtc.AddMinutes(10), sampleUtc.AddMinutes(7),
             DateTime.MinValue, TimeSpan.FromHours(5), interrupted);
+        // Same-identity accepts must PRESERVE the rejection streak: with two alternating provider
+        // pools the phantom's accepted samples used to wipe the real pool's count on every read,
+        // which is why the count>=3 repair never fired in production.
         AssertQuotaIdentity(
             !interruptedPhantom.Accepted && acceptedSame.Accepted && !interruptedAgain.Accepted &&
-            interruptedAgain.RejectedPersistenceCount == 1,
-            "accepted sample clears rejected persistence");
+            interruptedAgain.RejectedPersistenceCount == 2,
+            "identity-same accept preserves rejected persistence");
 
         RejectedIdentityPersistenceState alternating = new RejectedIdentityPersistenceState();
         DateTime alternateReset = realReset.AddMinutes(8.0);
@@ -14003,11 +14778,70 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             alternateGap.Accepted && alternateGap.Reason == "gap_rebaseline",
             "alternating rejected identities require gap rebaseline");
 
+        // Idle-pool suppression: a newborn-shaped sample minutes after the displayed pool was seen
+        // consuming is the sliding idle pool, not a real reset.
+        DateTime midWindowTracked = sampleLocal.AddHours(3);
+        QuotaWindowIdentityDecision idleAfterConsumption = EvaluateQuotaWindowIdentity(
+            midWindowTracked, sampleLocal.AddHours(5).AddSeconds(20), 100, "provider", sampleUtc,
+            sampleUtc.AddMinutes(-2), DateTime.MinValue, TimeSpan.FromHours(5), null,
+            sampleUtc.AddMinutes(-10), DateTime.MinValue);
+        QuotaWindowIdentityDecision idleReconfirm = EvaluateQuotaWindowIdentity(
+            midWindowTracked, sampleLocal.AddHours(5).AddSeconds(20), 100, "provider", sampleUtc,
+            sampleUtc.AddMinutes(-2), DateTime.MinValue, TimeSpan.FromHours(5), null,
+            DateTime.MinValue, sampleUtc.AddMinutes(-4));
+        // Even a full window after the last newborn accept, a mid-window tracked anchor still
+        // blocks the newborn shape: only near-expiry samples qualify (covered by "newborn reset").
+        QuotaWindowIdentityDecision newbornAfterFullWindow = EvaluateQuotaWindowIdentity(
+            midWindowTracked, sampleLocal.AddHours(5).AddSeconds(20), 100, "provider", sampleUtc,
+            sampleUtc.AddMinutes(-2), DateTime.MinValue, TimeSpan.FromHours(5), null,
+            DateTime.MinValue, sampleUtc.AddHours(-6));
+        AssertQuotaIdentity(
+            !idleAfterConsumption.Accepted && idleAfterConsumption.Reason == "idle_pool_newborn_suppressed" &&
+            !idleReconfirm.Accepted && idleReconfirm.Reason == "idle_pool_newborn_suppressed" &&
+            !newbornAfterFullWindow.Accepted && newbornAfterFullWindow.Reason == "idle_pool_newborn_suppressed",
+            "idle-pool newborn suppression");
+
+        // Newborn-shaped rejections must not clobber the real pool's persistence streak: the real
+        // mid-window pool has to reach count>=3 and be adopted even with idle samples interleaved.
+        RejectedIdentityPersistenceState mixed = new RejectedIdentityPersistenceState();
+        QuotaWindowIdentityDecision mixedRealFirst = EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 70, "provider", sampleUtc, sampleUtc.AddMinutes(-3),
+            DateTime.MinValue, TimeSpan.FromHours(5), mixed);
+        QuotaWindowIdentityDecision mixedIdle = EvaluateQuotaWindowIdentity(
+            wrongTracked, sampleLocal.AddMinutes(5).AddHours(5), 100, "provider", sampleUtc.AddMinutes(5), sampleUtc.AddMinutes(2),
+            DateTime.MinValue, TimeSpan.FromHours(5), mixed, sampleUtc, DateTime.MinValue);
+        QuotaWindowIdentityDecision mixedRealSecond = EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 69, "provider", sampleUtc.AddMinutes(7), sampleUtc.AddMinutes(5),
+            DateTime.MinValue, TimeSpan.FromHours(5), mixed);
+        QuotaWindowIdentityDecision mixedRealThird = EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 68, "provider", sampleUtc.AddMinutes(11), sampleUtc.AddMinutes(7),
+            DateTime.MinValue, TimeSpan.FromHours(5), mixed);
+        AssertQuotaIdentity(
+            !mixedRealFirst.Accepted && !mixedIdle.Accepted && !mixedRealSecond.Accepted &&
+            mixedRealSecond.RejectedPersistenceCount == 2 &&
+            mixedRealThird.Accepted &&
+            mixedRealThird.Reason == "reset_confirmed_by_rejected_persistence",
+            "idle newborn rejection preserves real pool persistence");
+
+        // A dormant rejection streak restarts instead of combining with hours-old evidence.
+        RejectedIdentityPersistenceState staleStreak = new RejectedIdentityPersistenceState();
+        EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 70, "provider", sampleUtc, sampleUtc.AddMinutes(-3),
+            DateTime.MinValue, TimeSpan.FromHours(5), staleStreak);
+        QuotaWindowIdentityDecision staleSecond = EvaluateQuotaWindowIdentity(
+            wrongTracked, realReset, 69, "provider", sampleUtc.AddMinutes(20), sampleUtc.AddMinutes(18),
+            DateTime.MinValue, TimeSpan.FromHours(5), staleStreak);
+        AssertQuotaIdentity(
+            !staleSecond.Accepted && staleSecond.RejectedPersistenceCount == 1,
+            "stale rejected persistence restarts");
+
         QuotaRuntimeState state = new QuotaRuntimeState();
         state.LastFiveHourReadPercent = 20;
         state.LastWeeklyReadPercent = 60;
         state.LastReadSourceUtc = sampleUtc.AddMinutes(-3);
-        state.TrackedFiveHourResetLocal = tracked;
+        // Near-due tracked anchor so the newborn five-hour ring is legitimately accepted while the
+        // unchanged weekly ring stays independent.
+        state.TrackedFiveHourResetLocal = sampleLocal.AddMinutes(1);
         state.TrackedWeeklyResetLocal = sampleLocal.AddDays(3);
         CodexQuotaSnapshot partial = CodexQuotaSnapshot.CreateDefault();
         partial.FiveHourPercent = 100;

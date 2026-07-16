@@ -1,6 +1,6 @@
 # Claude Radar Architecture
 
-适用版本：1.0.5.04
+适用版本：1.0.5.39
 
 This document records the current standalone Claude Radar window implementation. It is intentionally separate from the Codex Radar architecture because the two windows must not share cache files, model catalogs, or provider queues.
 
@@ -28,6 +28,8 @@ This document records the current standalone Claude Radar window implementation.
 | `https://status.openai.com/api/v2/summary.json` | `StatuspageMonitor` | OpenAI Statuspage state for the `O` service LED, matching the shared Codex Radar Claude-mode service column without reading Codex quota data | In-memory status snapshot |
 | Claude Code personal usage chain | `ClaudeCodeUsageScheduler` -> `ClaudeCodeUsageReader.Read` | With an explicit setup token, OAuth usage is authoritative; without one, the passive statusline bridge remains zero-API. | `claude-statusline-quota.ini` / `claude-code-oauth-token.bin` -> `claude-quota.ini` |
 | `https://api.deepseek.com/user/balance` | `DeepSeekBalanceMonitor.RefreshIfNeeded` | Public DeepSeek API status for `D`; optional bottom `DS:￥n` balance for Claude views | `deepseek-balance-history.jsonl`; key in `deepseek-api-key.bin` only for balance |
+
+`ClaudeRadarReader.TryFetchJson` 必须保留每个数据源声明的 URI：主数据只请求精确的 `/data/claude-code-radar.json`，不得追加 `?t=`、`?cb=`、`?v=` 等 cache-buster。站点目前会把带任意查询参数的该静态路径路由为 SPA HTML，而精确路径返回 JSON；新鲜度通过 `Cache-Control: no-store, no-cache` 与 `Pragma: no-cache` 请求头保证。模型评分地址自身声明的 `?history=14` 必须原样保留。`ClaudeRadarReader.RunSelfTest` 对这两个 URI 约束做回归断言。
 
 Public Claude Radar website data is not gated by local Codex/Claude process presence. Personal Claude Code usage is gated by the consumer window: standalone Claude Radar must be enabled, visible, not suspended, not in random test mode, and have the local Claude process present; Codex Radar Claude mode must pass the selected-provider gate. Both consumers join the same process-wide `ClaudeCodeUsageScheduler` request and receive the same result when they overlap.
 
@@ -69,7 +71,7 @@ Known lifecycle limits are intentional: Codex default-model seeds still require 
 
 `ClaudeRadarWidth` remains an independent saved setting for deliberate standalone-window tuning. Version 57 only fixes the historical default mismatch: the user-default snapshot now starts at the same width as the shared Codex Radar window, and existing configs still at the old untouched 580 px Claude default migrate once to the current `CodexRadarWidth`.
 
-The visual contract is intentionally shared where possible, but the Codex and Claude business data contracts stay isolated. The standalone Claude window paints `ClaudeRadarSnapshot` state produced by `ClaudeRadarSnapshotScheduler` / `ClaudeRadarReader` and `ClaudeCodeUsageScheduler`, plus shared light service probes from `StatuspageMonitor` and `DeepSeekBalanceMonitor`. It must not read Codex Radar snapshots, Codex quota caches, Codex public website results, Codex reset-card state, or Codex provider queues.
+The visual contract is intentionally shared where possible, but the Codex and Claude business data contracts stay isolated. The standalone Claude window paints `ClaudeRadarSnapshot` state produced by `ClaudeRadarSnapshotScheduler` / `ClaudeRadarReader` and `ClaudeCodeUsageScheduler`, plus shared light service probes from `StatuspageMonitor` and `DeepSeekBalanceMonitor`. Shared Codex Radar Claude mode converts that same snapshot through `ConvertClaudeRadarSnapshotForSharedWindow`: IQ、Token/时间效率、社区评分、额度线和数据时间必须与独立窗同源；数据时间统一调用 `ClaudeRadarReader.ResolveDataObtainedLocalTime`，优先选中模型稳定的 `latest_at`，仅在站点未提供时回退本机抓取时刻。转换自测同时断言这些字段。独立窗仍不得读取 Codex quota 缓存、Codex 公共网站结果、Codex reset-card 状态或 Codex provider 队列。
 
 Standalone positioning stays local to `ClaudeRadarForm.PositionClaudeRadarWindow`. The method computes the saved size/work-area based base location, then applies `BurnInProtection.ApplyRuntimeOffset` with `BurnInProtection.ClaudeRadarSalt = 31`; this keeps the Claude window on the shared 7 minute burn-in micro-shift schedule without sharing the Codex Radar salt or embedding a raw numeric salt in the window code.
 

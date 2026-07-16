@@ -8,6 +8,7 @@ using System.Windows.Forms;
 internal sealed class GlobalLayoutEditorForm : Form
 {
     private const int WindowConnectDistanceLimit = 500;
+    private const string SpecBoardModuleId = "SpecBoard";
     private static readonly Color TransparentKeyColor = Color.FromArgb(7, 3, 11);
 
     private readonly Action<WidgetSettings> previewAction;
@@ -235,6 +236,7 @@ internal sealed class GlobalLayoutEditorForm : Form
             this.workingSettings.ConnectionCheckWidth,
             this.workingSettings.ConnectionCheckHeight)));
         this.items.Add(new LayoutItem(WidgetSettings.ModuleOperation, "操作面板", GetOperationBounds()));
+        this.items.Add(new LayoutItem(SpecBoardModuleId, "Spec Board", GetSpecBoardBounds()));
     }
 
     private void PreviewDraggingSettings()
@@ -297,6 +299,14 @@ internal sealed class GlobalLayoutEditorForm : Form
         return new Rectangle(left, top, Math.Max(1, width), Math.Max(1, height));
     }
 
+    private Rectangle GetSpecBoardBounds()
+    {
+        Rectangle operation = GetOperationBounds();
+        int left = this.workingSettings.SpecBoardLeftX >= 0 ? this.workingSettings.SpecBoardLeftX : operation.Left;
+        int bottom = this.workingSettings.SpecBoardBottomY >= 0 ? this.workingSettings.SpecBoardBottomY : operation.Top - 10;
+        return GetPanelBounds(left, bottom, this.workingSettings.SpecBoardWidth, this.workingSettings.SpecBoardHeight);
+    }
+
     private void ApplyItemBoundsToSettings(LayoutItem item)
     {
         Screen screen = FindBestScreen(item.Bounds);
@@ -306,7 +316,8 @@ internal sealed class GlobalLayoutEditorForm : Form
         }
 
         SetModuleDisplayDeviceName(item.ModuleId, screen == null || screen.Primary ? string.Empty : screen.DeviceName);
-        Rectangle workArea = screen == null ? this.workingSettings.GetWorkAreaForModule(item.ModuleId) : screen.WorkingArea;
+        string workAreaModule = string.Equals(item.ModuleId, SpecBoardModuleId, StringComparison.Ordinal) ? WidgetSettings.ModuleOperation : item.ModuleId;
+        Rectangle workArea = screen == null ? this.workingSettings.GetWorkAreaForModule(workAreaModule) : screen.WorkingArea;
         if (workArea.Width <= 0 || workArea.Height <= 0)
         {
             workArea = this.workingSettings.GetWorkAreaForModule(item.ModuleId);
@@ -347,6 +358,11 @@ internal sealed class GlobalLayoutEditorForm : Form
         {
             this.workingSettings.OperationLeftOffset = item.Bounds.Left - workArea.Left;
             this.workingSettings.OperationBottomOffset = workArea.Bottom - item.Bounds.Bottom;
+        }
+        else if (string.Equals(item.ModuleId, SpecBoardModuleId, StringComparison.Ordinal))
+        {
+            this.workingSettings.SpecBoardLeftX = item.Bounds.Left;
+            this.workingSettings.SpecBoardBottomY = bottomY;
         }
 
         this.workingSettings.Normalize();

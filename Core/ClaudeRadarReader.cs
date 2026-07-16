@@ -17,7 +17,16 @@ internal static class ClaudeRadarReader
     private const string RatingsUrl = "https://claudecoderadar.com/api/model-ratings?history=14";
     private const string ClaudeStatusUrl = "https://status.claude.com/api/v2/summary.json";
     private const int RequestTimeoutMs = 10000;
-    private const int ModelDeleteMissingThreshold = 3;
+    // Absence is judged by elapsed time since LastSeenUtc, not consecutive misses: the site rotates
+    // which models carry fresh data between reads, so a live model can be absent from several
+    // consecutive complete reads. Only mark temporarily_missing after a full daily cycle passes
+    // unseen, and only disable/delete after sustained multi-day absence.
+    private const double ModelUnavailableGraceHours = 26.0;
+    private const double ModelDeleteGraceHours = 7.0 * 24.0;
+    // claude-radar-cache.ini is partitioned per model under a "Model.<key>." prefix, matching the
+    // Codex cache schema, so switching models no longer overwrites the previous model and a stale
+    // section is rejected once it is older than this retention window.
+    private const int ClaudeModelCacheRetentionDays = 7;
     private static readonly object MapLock = new object();
     private static readonly object CacheLock = new object();
     private static readonly object HistoryLock = new object();
@@ -411,7 +420,25 @@ internal static class ClaudeRadarReader
 
         try
         {
-            Dictionary<string, string> values = ReadIniValues(CachePath);
+            Dictionary<string, string> fileValues = ReadIniValues(CachePath);
+            Dictionary<string, string> values;
+            if (!TryGetClaudeRadarCacheModelSection(fileValues, selectedModelKey, out values))
+            {
+                // No fresh cached section for this model (never saved, different model, or expired).
+                // Account-level personal quota is stored separately, so fall back to it exactly like
+                // the no-file path instead of showing another model's stale data.
+                ClaudeRadarQuotaSnapshot quotaOnly;
+                if (TryReadClaudeCodeQuotaCache(out quotaOnly))
+                {
+                    ClaudeRadarSnapshot quotaSnapshot = ClaudeRadarSnapshot.CreateDefault();
+                    quotaSnapshot.Quota = quotaOnly;
+                    quotaSnapshot.ClaudeCodeState = ClaudeRadarServiceState.Normal;
+                    return quotaSnapshot;
+                }
+
+                return null;
+            }
+
             ClaudeRadarSnapshot snapshot = ClaudeRadarSnapshot.CreateDefault();
             snapshot.CheckedAtUtc = ReadDateValue(values, "CheckedAtUtc");
             snapshot.CheckedAtLocal = snapshot.CheckedAtUtc == DateTime.MinValue
@@ -542,8 +569,60 @@ internal static class ClaudeRadarReader
         }
     }
 
+    // The "data obtained" time shown next to the Claude clock must reflect when the SITE produced
+    // the data (the selected model's latest_at), which is stable across restarts. CheckedAtLocal is
+    // the client fetch time (re-stamped every fetch and ~= the restart time after a cold restart),
+    // so using it made the displayed data time jump to the restart time - the reported bug. Fall
+    // back to CheckedAtLocal only when the site provides no latest_at at all.
+    internal static DateTime ResolveDataObtainedLocalTime(ClaudeRadarSnapshot snapshot)
+    {
+        if (snapshot == null)
+        {
+            return DateTime.MinValue;
+        }
+
+        ClaudeRadarModelMetric metric = snapshot.SelectedModel;
+        if (metric != null && metric.LatestAtKnown && metric.LatestAtUtc != DateTime.MinValue)
+        {
+            return metric.LatestAtUtc.ToLocalTime();
+        }
+
+        return snapshot.CheckedAtLocal;
+    }
+
     internal static void RunSelfTest()
     {
+        Uri dataRequestUri = BuildJsonRequestUri(DataUrl);
+        Uri ratingsRequestUri = BuildJsonRequestUri(RatingsUrl);
+        if (!string.IsNullOrEmpty(dataRequestUri.Query) ||
+            !string.Equals(dataRequestUri.AbsolutePath, "/data/claude-code-radar.json", StringComparison.Ordinal) ||
+            !string.Equals(ratingsRequestUri.Query, "?history=14", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Claude Radar request URLs must preserve the site's exact endpoint paths without adding cache-buster queries.");
+        }
+
+        // Data-obtained time must prefer the site latest_at (stable) over the client CheckedAtLocal
+        // (which jumps to ~restart time on a cold restart).
+        ClaudeRadarSnapshot dataTimeSample = ClaudeRadarSnapshot.CreateDefault();
+        dataTimeSample.CheckedAtLocal = new DateTime(2026, 7, 13, 22, 55, 0, DateTimeKind.Local);
+        dataTimeSample.SelectedModel = new ClaudeRadarModelMetric
+        {
+            LatestAtUtc = new DateTime(2026, 7, 12, 8, 33, 51, DateTimeKind.Utc),
+            LatestAtKnown = true
+        };
+        if (ResolveDataObtainedLocalTime(dataTimeSample) != dataTimeSample.SelectedModel.LatestAtUtc.ToLocalTime())
+        {
+            throw new InvalidOperationException("Claude data-obtained time must use the stable site latest_at, not the client checked-at.");
+        }
+
+        ClaudeRadarSnapshot noLatestSample = ClaudeRadarSnapshot.CreateDefault();
+        noLatestSample.CheckedAtLocal = new DateTime(2026, 7, 13, 22, 55, 0, DateTimeKind.Local);
+        noLatestSample.SelectedModel = new ClaudeRadarModelMetric { LatestAtKnown = false, LatestAtUtc = DateTime.MinValue };
+        if (ResolveDataObtainedLocalTime(noLatestSample) != noLatestSample.CheckedAtLocal)
+        {
+            throw new InvalidOperationException("Claude data-obtained time must fall back to checked-at only when latest_at is unknown.");
+        }
+
         string sample =
             "{\"ok\":true,\"updated_at\":\"2026-07-04T12:40:00+09:00\",\"quota\":{\"updated_at\":\"2026-07-04T09:46:15+09:00\",\"base_d7\":2270.63,\"base_d7_trend\":[2200.0,2270.63],\"chart\":{\"key\":\"d7\",\"trend\":[2100.0,2200.0,2270.63]},\"cal\":{\"run_id\":\"sample\"},\"usage\":[{\"key\":\"h5\",\"used_pct\":41,\"reset_text_zh\":\"13:00 重置\"},{\"key\":\"d7\",\"used_pct\":60,\"reset_text_zh\":\"7月4日 16:00 重置\"}]},\"iq\":{\"models\":[{\"key\":\"m1\",\"name\":\"Opus 4.8 high\",\"score\":60,\"pass\":[null,4],\"valid\":[null,10],\"cost\":[null,31.08],\"time\":[null,1.8],\"latest_label\":\"7月4日 09:46\"}],\"table\":{\"rows\":[{\"name\":\"总tokens\",\"nums\":[27727109]}]}}}";
         Dictionary<string, object> root = new JavaScriptSerializer().DeserializeObject(sample) as Dictionary<string, object>;
@@ -730,6 +809,73 @@ internal static class ClaudeRadarReader
             throw new InvalidOperationException("Claude Radar model map self-test failed: complete catalog order did not lead retained rows.");
         }
 
+        // Absence grace: a model missing from complete reads must keep its status inside the daily
+        // grace window, turn temporarily_missing exactly once past it, and only get disabled after
+        // sustained multi-day absence. This is what stops the site's hourly fresh-data rotation from
+        // churning live models.
+        DateTime graceSeenUtc = new DateTime(2026, 7, 4, 5, 0, 0, DateTimeKind.Utc);
+        List<ClaudeRadarModelMetric> graceMetrics = new List<ClaudeRadarModelMetric>
+        {
+            new ClaudeRadarModelMetric { SourceKey = "m1", Name = "Model 1" }
+        };
+        List<ClaudeRadarModelEntry> graceEntries = new List<ClaudeRadarModelEntry>
+        {
+            new ClaudeRadarModelEntry { SourceKey = "m1", DisplayName = "Model 1", SourceDisplayName = "Model 1", Enabled = true, Status = "active", LastSeenUtc = graceSeenUtc },
+            new ClaudeRadarModelEntry { SourceKey = "m9", DisplayName = "Model 9", SourceDisplayName = "Model 9", RatingKey = "opus48_high", Enabled = true, Status = "active", LastSeenUtc = graceSeenUtc }
+        };
+        events.Clear();
+        ApplyModelMapUpdate(graceEntries, graceMetrics, ratingKeys, true, graceSeenUtc.AddHours(3.0), events, true);
+        ClaudeRadarModelEntry gracedEntry = FindMapEntry(graceEntries, "m9");
+        if (gracedEntry == null || !gracedEntry.Enabled ||
+            !string.Equals(gracedEntry.Status, "active", StringComparison.OrdinalIgnoreCase) ||
+            events.Count != 0)
+        {
+            throw new InvalidOperationException("Claude Radar model map self-test failed: an in-grace absence changed model status or raised events.");
+        }
+
+        events.Clear();
+        ApplyModelMapUpdate(graceEntries, graceMetrics, ratingKeys, true, graceSeenUtc.AddHours(27.0), events, true);
+        gracedEntry = FindMapEntry(graceEntries, "m9");
+        if (gracedEntry == null || !gracedEntry.Enabled ||
+            !string.Equals(gracedEntry.Status, "temporarily_missing", StringComparison.OrdinalIgnoreCase) ||
+            events.Count(delegate(ClaudeRadarModelCatalogEvent item) { return item.Kind == ClaudeRadarModelCatalogEventKind.TemporarilyMissing; }) != 1)
+        {
+            throw new InvalidOperationException("Claude Radar model map self-test failed: absence past the daily grace did not mark temporarily_missing once.");
+        }
+
+        events.Clear();
+        ApplyModelMapUpdate(graceEntries, graceMetrics, ratingKeys, true, graceSeenUtc.AddHours(28.0), events, true);
+        if (events.Count != 0)
+        {
+            throw new InvalidOperationException("Claude Radar model map self-test failed: repeated temporarily_missing absence raised duplicate events.");
+        }
+
+        events.Clear();
+        ApplyModelMapUpdate(graceEntries, graceMetrics, ratingKeys, true, graceSeenUtc.AddDays(8.0), events, true);
+        gracedEntry = FindMapEntry(graceEntries, "m9");
+        if (gracedEntry == null || gracedEntry.Enabled ||
+            !string.Equals(gracedEntry.Status, "deleted", StringComparison.OrdinalIgnoreCase) ||
+            events.Count(delegate(ClaudeRadarModelCatalogEvent item) { return item.Kind == ClaudeRadarModelCatalogEventKind.Deleted; }) != 1)
+        {
+            throw new InvalidOperationException("Claude Radar model map self-test failed: sustained absence did not disable the model exactly once.");
+        }
+
+        List<ClaudeRadarModelEntry> legacyGraceEntries = new List<ClaudeRadarModelEntry>
+        {
+            new ClaudeRadarModelEntry { SourceKey = "m1", DisplayName = "Model 1", SourceDisplayName = "Model 1", Enabled = true, Status = "active", LastSeenUtc = graceSeenUtc },
+            new ClaudeRadarModelEntry { SourceKey = "legacy", DisplayName = "Legacy", SourceDisplayName = "Legacy", Enabled = true, Status = "active", LastSeenUtc = DateTime.MinValue }
+        };
+        events.Clear();
+        ApplyModelMapUpdate(legacyGraceEntries, graceMetrics, ratingKeys, true, graceSeenUtc.AddDays(8.0), events, true);
+        ClaudeRadarModelEntry legacyGraceEntry = FindMapEntry(legacyGraceEntries, "legacy");
+        if (legacyGraceEntry == null || !legacyGraceEntry.Enabled ||
+            !string.Equals(legacyGraceEntry.Status, "active", StringComparison.OrdinalIgnoreCase) ||
+            legacyGraceEntry.LastSeenUtc != graceSeenUtc.AddDays(8.0) ||
+            events.Count != 0)
+        {
+            throw new InvalidOperationException("Claude Radar model map self-test failed: a legacy row without LastSeenUtc was not grace-baselined.");
+        }
+
         ClaudeRadarModelEntry parsedLegacyEntry;
         ClaudeRadarModelEntry parsedCurrentEntry;
         if (!TryParseModelMapLine("m1|Legacy|rating|2|True|False|active|2026-07-04T00:00:00Z|0|#112233", out parsedLegacyEntry) ||
@@ -827,6 +973,7 @@ internal static class ClaudeRadarReader
         }
 
         RunStorageIsolationSelfTest();
+        RunModelPartitionedCacheSelfTest();
         RunDataFailureFixtureSelfTest();
 
         string historyPath = Path.Combine(Path.GetTempPath(), "claude-radar-history-selftest-" + Guid.NewGuid().ToString("N") + ".jsonl");
@@ -982,6 +1129,118 @@ internal static class ClaudeRadarReader
         }
     }
 
+    private static void RunModelPartitionedCacheSelfTest()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), "claude-radar-partition-selftest-" + Guid.NewGuid().ToString("N"));
+        string previousOverride = storageDirectoryOverride;
+        storageDirectoryOverride = tempDir;
+        try
+        {
+            Directory.CreateDirectory(tempDir);
+
+            ClaudeRadarSnapshot a = BuildModelCacheTestSnapshot("model-a", 118, "Opus A");
+            ClaudeRadarSnapshot b = BuildModelCacheTestSnapshot("model-b", 92, "Sonnet B");
+            TrySaveCache(a);
+            TrySaveCache(b);
+
+            // Switching to B then back to A must still restore A's own section, not B's data and not
+            // null. The old single-section file could only remember the last-saved model.
+            ClaudeRadarSnapshot loadedA = LoadCache("model-a");
+            ClaudeRadarSnapshot loadedB = LoadCache("model-b");
+            if (loadedA == null ||
+                loadedB == null ||
+                loadedA.SelectedModel == null ||
+                loadedB.SelectedModel == null ||
+                !string.Equals(loadedA.SelectedModelKey, "model-a", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(loadedB.SelectedModelKey, "model-b", StringComparison.OrdinalIgnoreCase) ||
+                loadedA.SelectedModel.IqScore != 118 ||
+                loadedB.SelectedModel.IqScore != 92)
+            {
+                throw new InvalidOperationException("Claude Radar model-partition self-test: per-model sections did not both restore.");
+            }
+
+            // A section older than the retention window must be rejected while B stays valid.
+            ExpireClaudeCacheModelSavedUtc("model-a");
+            if (LoadCache("model-a") != null)
+            {
+                throw new InvalidOperationException("Claude Radar model-partition self-test: expired section was not rejected.");
+            }
+
+            if (LoadCache("model-b") == null)
+            {
+                throw new InvalidOperationException("Claude Radar model-partition self-test: valid section was dropped with the expired one.");
+            }
+
+            // A later successful save of B must prune the expired A section from disk.
+            TrySaveCache(b);
+            Dictionary<string, string> onDisk = ReadIniValues(CachePath);
+            foreach (string key in onDisk.Keys)
+            {
+                if (key.StartsWith("Model.model-a.", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("Claude Radar model-partition self-test: expired section survived a later save.");
+                }
+            }
+        }
+        finally
+        {
+            storageDirectoryOverride = previousOverride;
+            try
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, true);
+                }
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private static ClaudeRadarSnapshot BuildModelCacheTestSnapshot(string key, int iq, string name)
+    {
+        ClaudeRadarSnapshot snapshot = ClaudeRadarSnapshot.CreateDefault();
+        snapshot.TestMode = false;
+        snapshot.Known = true;
+        snapshot.DataState = ClaudeRadarServiceState.Normal;
+        snapshot.CheckedAtUtc = DateTime.UtcNow;
+        snapshot.SelectedModelKey = key;
+        snapshot.SelectedModelName = name;
+        snapshot.SelectedModel = ClaudeRadarModelMetric.CreateDefault();
+        snapshot.SelectedModel.Known = true;
+        snapshot.SelectedModel.SourceKey = key;
+        snapshot.SelectedModel.Name = name;
+        snapshot.SelectedModel.IqScore = iq;
+        snapshot.SelectedModel.Passed = 8;
+        snapshot.SelectedModel.ValidTasks = 10;
+        snapshot.SelectedModel.LatestAtUtc = DateTime.UtcNow.AddHours(-1.0);
+        snapshot.SelectedModel.LatestAtKnown = true;
+        return snapshot;
+    }
+
+    private static void ExpireClaudeCacheModelSavedUtc(string modelKey)
+    {
+        string prefix = GetClaudeRadarCacheModelPrefix(modelKey);
+        Dictionary<string, string> values = ReadIniValues(CachePath);
+        values[prefix + "SavedUtc"] =
+            DateTime.UtcNow.AddDays(-(ClaudeModelCacheRetentionDays + 1)).ToString("o", CultureInfo.InvariantCulture);
+        List<string> lines = new List<string>();
+        lines.Add("Version=2");
+        foreach (KeyValuePair<string, string> pair in values)
+        {
+            if (!string.Equals(pair.Key, "Version", StringComparison.OrdinalIgnoreCase))
+            {
+                lines.Add(pair.Key + "=" + (pair.Value ?? string.Empty));
+            }
+        }
+
+        File.WriteAllText(
+            CachePath,
+            string.Join(Environment.NewLine, lines.ToArray()) + Environment.NewLine,
+            SharedEncoding.Utf8NoBom);
+    }
+
     private static void RunDataFailureFixtureSelfTest()
     {
         ClaudeRadarSnapshot disabled = ClaudeRadarSnapshot.CreateDefault();
@@ -1082,7 +1341,12 @@ internal static class ClaudeRadarReader
         try
         {
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url + (url.IndexOf('?') >= 0 ? "&" : "?") + "t=" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture));
+            // Do NOT append a query-string cache-buster. claudecoderadar.com now serves the static
+            // /data/*.json only for the exact path; ANY query string (?t=, ?cb=, ?v=) routes to the
+            // SPA HTML instead, which broke JSON parsing ("脱钩"). Freshness is guaranteed by the
+            // no-store/no-cache request headers below, exactly as the site's own cache:"no-store"
+            // fetch does. Verified: the /api/model-ratings endpoint still returns JSON without it.
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(BuildJsonRequestUri(url));
             request.Method = "GET";
             request.Accept = "application/json,text/plain,*/*";
             request.UserAgent = ProductIdentity.UserAgent + "/" + ProductIdentity.Version;
@@ -1131,6 +1395,13 @@ internal static class ClaudeRadarReader
             Program.LogException(ex);
             return false;
         }
+    }
+
+    private static Uri BuildJsonRequestUri(string url)
+    {
+        // Keep every server-defined query exactly as declared (for example ratings history=14),
+        // while refusing to invent cache-buster parameters for static JSON resources.
+        return new Uri(url, UriKind.Absolute);
     }
 
     private static ClaudeRadarServiceState ReadClaudePublicStatusState()
@@ -2053,13 +2324,31 @@ internal static class ClaudeRadarReader
                 continue;
             }
 
+            // Absent from a COMPLETE read. Like codexradar, the Claude radar site can rotate which
+            // models carry fresh data between reads, so consecutive-miss counting flagged and then
+            // disabled live models within a few polls (the observed "模型消失/新增" churn). Judge
+            // absence by how long the model has actually been unseen (LastSeenUtc), keeping the
+            // status untouched inside the grace window.
             string previousStatus = entry.Status ?? string.Empty;
             entry.MissingSuccessCount++;
-            string nextStatus = entry.MissingSuccessCount >= ModelDeleteMissingThreshold
+            if (entry.LastSeenUtc == DateTime.MinValue)
+            {
+                // Legacy row without a baseline: start the grace clock now instead of treating an
+                // unknown age as infinitely old.
+                entry.LastSeenUtc = nowUtc;
+            }
+
+            double absentHours = (nowUtc - entry.LastSeenUtc).TotalHours;
+            if (absentHours < ModelUnavailableGraceHours)
+            {
+                continue;
+            }
+
+            string nextStatus = absentHours >= ModelDeleteGraceHours
                 ? "deleted"
                 : "temporarily_missing";
             entry.Status = nextStatus;
-            if (entry.MissingSuccessCount >= ModelDeleteMissingThreshold)
+            if (absentHours >= ModelDeleteGraceHours)
             {
                 entry.Enabled = false;
             }
@@ -2068,7 +2357,7 @@ internal static class ClaudeRadarReader
             {
                 AddModelMapEvent(
                     events,
-                    entry.MissingSuccessCount >= ModelDeleteMissingThreshold
+                    absentHours >= ModelDeleteGraceHours
                         ? ClaudeRadarModelCatalogEventKind.Deleted
                         : ClaudeRadarModelCatalogEventKind.TemporarilyMissing,
                     entry);
@@ -2267,6 +2556,153 @@ internal static class ClaudeRadarReader
         }
     }
 
+    private static string GetClaudeRadarCacheModelPrefix(string modelKey)
+    {
+        string key = NormalizeSourceKey(modelKey);
+        return "Model." + (key.Length == 0 ? "default" : key) + ".";
+    }
+
+    // Extracts one model's stripped section from the multi-model file and enforces the retention TTL.
+    // Falls back to the legacy single-section flat format (whole file) so pre-partition caches keep
+    // working, but only when their model matches and their CheckedAtUtc is still within retention.
+    private static bool TryGetClaudeRadarCacheModelSection(
+        Dictionary<string, string> fileValues,
+        string selectedModelKey,
+        out Dictionary<string, string> section)
+    {
+        section = null;
+        if (fileValues == null)
+        {
+            return false;
+        }
+
+        string prefix = GetClaudeRadarCacheModelPrefix(selectedModelKey);
+        Dictionary<string, string> extracted = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (KeyValuePair<string, string> pair in fileValues)
+        {
+            if (pair.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                extracted[pair.Key.Substring(prefix.Length)] = pair.Value;
+            }
+        }
+
+        if (extracted.Count > 0)
+        {
+            DateTime savedUtc = ReadDateValue(extracted, "SavedUtc");
+            if (savedUtc == DateTime.MinValue ||
+                DateTime.UtcNow - savedUtc > TimeSpan.FromDays(ClaudeModelCacheRetentionDays))
+            {
+                return false;
+            }
+
+            section = extracted;
+            return true;
+        }
+
+        if (!fileValues.ContainsKey("SelectedModelKey"))
+        {
+            return false;
+        }
+
+        string legacyKey = ReadIniValue(fileValues, "SelectedModelKey");
+        if (string.IsNullOrWhiteSpace(selectedModelKey) ||
+            !string.Equals(NormalizeSourceKey(legacyKey), NormalizeSourceKey(selectedModelKey), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        DateTime legacyChecked = ReadDateValue(fileValues, "CheckedAtUtc");
+        if (legacyChecked == DateTime.MinValue ||
+            DateTime.UtcNow - legacyChecked > TimeSpan.FromDays(ClaudeModelCacheRetentionDays))
+        {
+            return false;
+        }
+
+        section = fileValues;
+        return true;
+    }
+
+    private static void RemoveClaudeCacheKeysWithPrefix(Dictionary<string, string> values, string prefix)
+    {
+        if (values == null || string.IsNullOrEmpty(prefix))
+        {
+            return;
+        }
+
+        List<string> drop = new List<string>();
+        foreach (string key in values.Keys)
+        {
+            if (key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                drop.Add(key);
+            }
+        }
+
+        for (int i = 0; i < drop.Count; i++)
+        {
+            values.Remove(drop[i]);
+        }
+    }
+
+    // Legacy flat files stored every field at the top level; the partitioned format keeps only
+    // "Version" plus "Model.*" keys, so anything else is a stale flat key to be migrated out.
+    private static void RemoveLegacyFlatClaudeCacheKeys(Dictionary<string, string> values)
+    {
+        if (values == null)
+        {
+            return;
+        }
+
+        List<string> drop = new List<string>();
+        foreach (string key in values.Keys)
+        {
+            if (!key.StartsWith("Model.", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(key, "Version", StringComparison.OrdinalIgnoreCase))
+            {
+                drop.Add(key);
+            }
+        }
+
+        for (int i = 0; i < drop.Count; i++)
+        {
+            values.Remove(drop[i]);
+        }
+    }
+
+    private static void RemoveExpiredClaudeCacheModels(Dictionary<string, string> values)
+    {
+        if (values == null)
+        {
+            return;
+        }
+
+        // Each model section is anchored by a "Model.<key>.SavedUtc" marker; model keys can contain
+        // dots, so identify the section prefix from the marker instead of splitting on '.'.
+        const string savedSuffix = "SavedUtc";
+        List<string> expiredPrefixes = new List<string>();
+        foreach (KeyValuePair<string, string> pair in values)
+        {
+            if (!pair.Key.StartsWith("Model.", StringComparison.OrdinalIgnoreCase) ||
+                !pair.Key.EndsWith("." + savedSuffix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            DateTime savedUtc;
+            if (!TryParseDate(Unescape(pair.Value), out savedUtc) ||
+                savedUtc == DateTime.MinValue ||
+                DateTime.UtcNow - savedUtc > TimeSpan.FromDays(ClaudeModelCacheRetentionDays))
+            {
+                expiredPrefixes.Add(pair.Key.Substring(0, pair.Key.Length - savedSuffix.Length));
+            }
+        }
+
+        for (int i = 0; i < expiredPrefixes.Count; i++)
+        {
+            RemoveClaudeCacheKeysWithPrefix(values, expiredPrefixes[i]);
+        }
+    }
+
     private static void TrySaveCache(ClaudeRadarSnapshot snapshot)
     {
         if (snapshot == null)
@@ -2277,47 +2713,73 @@ internal static class ClaudeRadarReader
         try
         {
             Directory.CreateDirectory(GetStorageDirectoryPath());
-            List<string> lines = new List<string>();
-            lines.Add("Version=1");
-            lines.Add("Known=" + snapshot.Known.ToString(CultureInfo.InvariantCulture));
-            lines.Add("CheckedAtUtc=" + snapshot.CheckedAtUtc.ToString("o", CultureInfo.InvariantCulture));
-            lines.Add("SelectedModelKey=" + snapshot.SelectedModelKey);
-            lines.Add("SelectedModelName=" + Escape(snapshot.SelectedModelName));
+            string prefix = GetClaudeRadarCacheModelPrefix(snapshot.SelectedModelKey);
+
+            Dictionary<string, string> values;
+            lock (CacheLock)
+            {
+                values = File.Exists(CachePath)
+                    ? ReadIniValues(CachePath)
+                    : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            // Migrate away from the old single-section flat file, drop expired model sections, and
+            // replace only this model's section so other models survive a switch and a restart.
+            RemoveLegacyFlatClaudeCacheKeys(values);
+            RemoveExpiredClaudeCacheModels(values);
+            RemoveClaudeCacheKeysWithPrefix(values, prefix);
+
+            values[prefix + "SavedUtc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+            values[prefix + "Known"] = snapshot.Known.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "CheckedAtUtc"] = snapshot.CheckedAtUtc.ToString("o", CultureInfo.InvariantCulture);
+            values[prefix + "SelectedModelKey"] = snapshot.SelectedModelKey;
+            values[prefix + "SelectedModelName"] = Escape(snapshot.SelectedModelName);
             ClaudeRadarModelMetric metric = snapshot.SelectedModel ?? ClaudeRadarModelMetric.CreateDefault();
-            lines.Add("IqScore=" + metric.IqScore.ToString(CultureInfo.InvariantCulture));
-            lines.Add("Passed=" + metric.Passed.ToString(CultureInfo.InvariantCulture));
-            lines.Add("ValidTasks=" + metric.ValidTasks.ToString(CultureInfo.InvariantCulture));
-            lines.Add("TokenEfficiencyPercent=" + metric.TokenEfficiencyPercent.ToString(CultureInfo.InvariantCulture));
-            lines.Add("TimeEfficiencyPercent=" + metric.TimeEfficiencyPercent.ToString(CultureInfo.InvariantCulture));
-            lines.Add("LatestLabel=" + Escape(metric.LatestLabel));
-            lines.Add("LatestAtUtc=" + (metric.LatestAtKnown && metric.LatestAtUtc != DateTime.MinValue ? metric.LatestAtUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture) : string.Empty));
-            lines.Add("NormalLow=" + metric.NormalLow.ToString(CultureInfo.InvariantCulture));
-            lines.Add("NormalHigh=" + metric.NormalHigh.ToString(CultureInfo.InvariantCulture));
+            values[prefix + "IqScore"] = metric.IqScore.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "Passed"] = metric.Passed.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "ValidTasks"] = metric.ValidTasks.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "TokenEfficiencyPercent"] = metric.TokenEfficiencyPercent.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "TimeEfficiencyPercent"] = metric.TimeEfficiencyPercent.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "LatestLabel"] = Escape(metric.LatestLabel);
+            values[prefix + "LatestAtUtc"] = metric.LatestAtKnown && metric.LatestAtUtc != DateTime.MinValue ? metric.LatestAtUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture) : string.Empty;
+            values[prefix + "NormalLow"] = metric.NormalLow.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "NormalHigh"] = metric.NormalHigh.ToString(CultureInfo.InvariantCulture);
             ClaudeRadarCommunitySnapshot community = snapshot.Community ?? ClaudeRadarCommunitySnapshot.CreateDefault();
-            lines.Add("CommunityKnown=" + community.Known.ToString(CultureInfo.InvariantCulture));
-            lines.Add("CommunityRatingKey=" + Escape(community.RatingKey));
-            lines.Add("CommunityLabel=" + Escape(community.Label));
-            lines.Add("CommunityAverage=" + community.Average.ToString("R", CultureInfo.InvariantCulture));
-            lines.Add("CommunityCount=" + community.Count.ToString(CultureInfo.InvariantCulture));
-            lines.Add("CommunityUpdatedAtUtc=" + (community.UpdatedAtUtc == DateTime.MinValue ? string.Empty : community.UpdatedAtUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)));
-            lines.Add("CommunityRefreshSeconds=" + Math.Max(60, community.RefreshSeconds).ToString(CultureInfo.InvariantCulture));
+            values[prefix + "CommunityKnown"] = community.Known.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "CommunityRatingKey"] = Escape(community.RatingKey);
+            values[prefix + "CommunityLabel"] = Escape(community.Label);
+            values[prefix + "CommunityAverage"] = community.Average.ToString("R", CultureInfo.InvariantCulture);
+            values[prefix + "CommunityCount"] = community.Count.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "CommunityUpdatedAtUtc"] = community.UpdatedAtUtc == DateTime.MinValue ? string.Empty : community.UpdatedAtUtc.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+            values[prefix + "CommunityRefreshSeconds"] = Math.Max(60, community.RefreshSeconds).ToString(CultureInfo.InvariantCulture);
             ClaudeRadarQuotaSnapshot quota = snapshot.Quota ?? ClaudeRadarQuotaSnapshot.CreateDefault();
-            lines.Add("QuotaSource=site");
-            lines.Add("FiveHourPercent=" + quota.FiveHourPercent.ToString(CultureInfo.InvariantCulture));
-            lines.Add("WeeklyPercent=" + quota.WeeklyPercent.ToString(CultureInfo.InvariantCulture));
-            lines.Add("FiveHourResetText=" + Escape(quota.FiveHourResetText));
-            lines.Add("WeeklyResetText=" + Escape(quota.WeeklyResetText));
+            values[prefix + "QuotaSource"] = "site";
+            values[prefix + "FiveHourPercent"] = quota.FiveHourPercent.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "WeeklyPercent"] = quota.WeeklyPercent.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "FiveHourResetText"] = Escape(quota.FiveHourResetText);
+            values[prefix + "WeeklyResetText"] = Escape(quota.WeeklyResetText);
             ClaudeRadarQuotaLineSnapshot line = snapshot.QuotaLine ?? ClaudeRadarQuotaLineSnapshot.CreateDefault();
-            lines.Add("QuotaLineKnown=" + line.Known.ToString(CultureInfo.InvariantCulture));
-            lines.Add("QuotaLineCurrentValue=" + line.CurrentValue.ToString("R", CultureInfo.InvariantCulture));
-            lines.Add("QuotaLinePreviousKnown=" + line.PreviousKnown.ToString(CultureInfo.InvariantCulture));
-            lines.Add("QuotaLinePreviousValue=" + line.PreviousValue.ToString("R", CultureInfo.InvariantCulture));
-            lines.Add("QuotaLineMinValue=" + line.MinValue.ToString("R", CultureInfo.InvariantCulture));
-            lines.Add("QuotaLineMaxValue=" + line.MaxValue.ToString("R", CultureInfo.InvariantCulture));
-            lines.Add("QuotaLineAverageValue=" + line.AverageValue.ToString("R", CultureInfo.InvariantCulture));
-            lines.Add("QuotaLineAverageKnown=" + line.AverageKnown.ToString(CultureInfo.InvariantCulture));
-            lines.Add("QuotaLineMetric=" + Escape(line.Metric));
-            lines.Add("QuotaLineSourceMode=" + Escape(line.SourceMode));
+            values[prefix + "QuotaLineKnown"] = line.Known.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "QuotaLineCurrentValue"] = line.CurrentValue.ToString("R", CultureInfo.InvariantCulture);
+            values[prefix + "QuotaLinePreviousKnown"] = line.PreviousKnown.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "QuotaLinePreviousValue"] = line.PreviousValue.ToString("R", CultureInfo.InvariantCulture);
+            values[prefix + "QuotaLineMinValue"] = line.MinValue.ToString("R", CultureInfo.InvariantCulture);
+            values[prefix + "QuotaLineMaxValue"] = line.MaxValue.ToString("R", CultureInfo.InvariantCulture);
+            values[prefix + "QuotaLineAverageValue"] = line.AverageValue.ToString("R", CultureInfo.InvariantCulture);
+            values[prefix + "QuotaLineAverageKnown"] = line.AverageKnown.ToString(CultureInfo.InvariantCulture);
+            values[prefix + "QuotaLineMetric"] = Escape(line.Metric);
+            values[prefix + "QuotaLineSourceMode"] = Escape(line.SourceMode);
+
+            List<string> lines = new List<string>();
+            lines.Add("Version=2");
+            foreach (KeyValuePair<string, string> pair in values)
+            {
+                if (!string.Equals(pair.Key, "Version", StringComparison.OrdinalIgnoreCase))
+                {
+                    lines.Add(pair.Key + "=" + (pair.Value ?? string.Empty));
+                }
+            }
+
             TryWriteCacheLines(lines);
         }
         catch (Exception ex)

@@ -1,6 +1,6 @@
 # Codex 监测窗口技术说明
 
-适用版本：1.0.5.05
+适用版本：1.0.5.40
 
 ## 1. 范围
 
@@ -150,7 +150,7 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，默认会�
 - `Cache-Control: no-store, no-cache`
 - 查询参数时间戳，降低中间缓存返回旧 JSON 的概率
 
-`current.json` 现在可能只返回公开摘要，例如 `api_access.full_api_status=authorization_required`，而不包含 `model_iq`。读取顺序由设置页控制：公开 JSON 层启用时先读取 `current.json` 的窗口、RSS 和 API 可用性说明；JSON 缺失 `model_iq` 且首页 HTML 回退启用时，再请求首页并从 `codex-radar:summary`、模型对比表和 SVG 标题读取同一批模型数据；RSS 层启用时才读取 `feed.xml` 的重置提醒。公开 JSON 已含 `model_iq` 但缺少页面展示字段时，也会在 HTML 回退启用时读取首页，只合并网页数据标签和 IQ 常态区，不把这次展示字段补齐失败当作 JSON 层故障。这样把网站公开 API 收窄、路由变化和真实网络故障区分开，避免把可回退的数据源误报为 Rader 黄色叉。
+`current.json` 现在可能只返回公开摘要，例如 `api_access.full_api_status=authorization_required`，也可能在 `model_iq` 中同时提供模型数据和 `quota_radar`。读取顺序由设置页控制：公开 JSON 层启用时先读取窗口、RSS/API 说明、模型 IQ，以及 `model_iq.quota_radar.rows/trend/updated_at`；JSON 缺失 `model_iq` 或额度雷达且首页 HTML 回退启用时，再请求首页并从 `codex-radar:summary`、模型对比表、`quota-radar` 表格和 SVG 标题补齐。公开 JSON 已含所需业务数据但缺少页面展示字段时，首页只补网页数据标签和 IQ 常态区，不覆盖结构化 JSON 数值。RSS 层启用时才读取 `feed.xml` 的重置提醒。这样把网站公开 API 收窄、页面结构变化和真实网络故障区分开，避免把可回退的数据源误报为 Rader 黄色叉。
 
 速蹬窗口读取 `window.opened_at` 与 `window.closed_at`；首页回退兼容 `data-window-opened-at` / `data-window-closes-at`。显式窗口快照会同时覆盖两个时间的 known 状态，因此新响应把 `closed_at` 从时间改为 `null` 时会立即清除旧结束目标，不得沿用上次倒计时。
 
@@ -187,7 +187,7 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，默认会�
 3. 如果网站在该整点没有发布新 IQ 批次，也不再追加 10 分钟轮询，继续等待下一个整点。
 4. HTTP、解析、超时、不可达或所选模型字段失败时，每 10 分钟重试。
 
-网站 Model IQ 批次仍按站点业务字段解析：结构化 JSON 中的 `2026-06-16-am/pm` 会被解析成对应半日窗口，旧 date-only 数据按 0 点批次兼容。`Core/RadarClockDial.cs` 是共享窗和独立 Claude 窗普通 IQ 时钟的单一状态机、周期几何和绘制实现；`CodexRadarForm.DrawEvenRowBatchDial` 与 `ClaudeRadarForm.DrawClaudeEvenRowBatchDial` 只负责把各自快照、刷新时间、字体和 fitted-text 委托组装成输入。Codex 以系统 0 点/12 点作为 12 小时圆环边界，共享窗 Claude 模式与独立 Claude 窗以系统 0 点作为 24 小时圆环边界；两处自动模型切换同样调用 `RadarClockDial.GetCycleBoundaryLocal`。颜色只认模型 IQ 数据窗口或 Claude 模型 `latest_at`，不把本地请求时间当作已更新。状态按发布落后窗口数分档：本窗口和落后 1 个窗口均为绿色，落后 2 个窗口为黄色并从当前边界绘制等待弧，落后至少 3 个窗口时绘制低透明度红色满环并叠加当前窗口的高亮红色等待段；自动切换继续以 `batch < previousBoundary` 为门槛，与黄色档起点一致。当前时间白点从顶部边界顺时针前进；12 点钟方向固定绘制中性白色边界刻度；小绿点表示 `ModelIqRefreshedAtLocal` 或 Claude `latest_at` 对应的新内容记录位置，Codex 保留 12 小时，Claude 保留 24 小时，下一圈到达后消失。小绿点仍有效时，时钟圆弧从小绿点顺时针连接到当前白点。`pm2` 与 `n2`（含 `_2`、`-2`）都显示同窗口第二次发布徽标；徽标变化不改变状态档位。`RadarClockTimeDisplayMode` 控制圆盘中心下方时间，默认 `Utc`；其他值可显示本机当前时间、上次尝试刷新时间或上次实际 IQ 刷新时间。时间下方绘制同色短标签 `UTC`、`LAST`、`REF` 或 `NOW`，分别对应 UTC 时间、上次尝试获取时间、上次成功刷新时间和当前时间；该标签使用独立空白矩形，不改变既有日期与时间矩形的大小或位置。渲染场景缓存 key 包含当前分钟、该时间模式和上次尝试刷新时间，避免小绿点或中心时间因旧 bitmap 继续显示。
+网站 Model IQ 批次仍按站点业务字段解析：结构化 JSON 中的 `2026-06-16-am/pm` 会被解析成对应半日窗口，旧 date-only 数据按 0 点批次兼容。`Core/RadarClockDial.cs` 是共享窗和独立 Claude 窗普通 IQ 时钟的单一状态机、周期几何和绘制实现；`CodexRadarForm.DrawEvenRowBatchDial` 与 `ClaudeRadarForm.DrawClaudeEvenRowBatchDial` 只负责把各自快照、刷新时间、字体和 fitted-text 委托组装成输入。Codex 以系统 0 点/12 点作为 12 小时圆环边界，共享窗 Claude 模式与独立 Claude 窗以系统 0 点作为 24 小时圆环边界；两处自动模型切换同样调用 `RadarClockDial.GetCycleBoundaryLocal`。颜色只认模型 IQ 数据窗口或 Claude 模型 `latest_at`，不把本地请求时间当作已更新。状态按发布落后窗口数分档：本窗口和落后 1 个窗口均为绿色，落后 2 个窗口为黄色并从当前边界绘制等待弧，落后至少 3 个窗口时绘制低透明度红色满环并叠加当前窗口的高亮红色等待段；自动切换继续以 `batch < previousBoundary` 为门槛，与黄色档起点一致。当前时间白点从顶部边界顺时针前进；12 点钟方向固定绘制中性白色边界刻度；小绿点表示 `ModelIqRefreshedAtLocal` 或 Claude `latest_at` 对应的新内容记录位置，Codex 保留 12 小时，Claude 保留 24 小时，下一圈到达后消失。小绿点仍有效时，时钟圆弧从小绿点顺时针连接到当前白点。`pm2` 与 `n2`（含 `_2`、`-2`）都显示同窗口第二次发布徽标；徽标变化不改变状态档位。`RadarClockTimeDisplayMode` 控制圆盘中心下方时间，默认 `Utc`；其他值可显示本机当前时间、上次尝试刷新时间或上次实际 IQ 刷新时间。时间下方绘制同色短标签 `UTC`、`LAST`、`REF` 或 `NOW`，分别对应 UTC 时间、上次尝试获取时间、上次成功刷新时间和当前时间；该标签使用独立空白矩形，不改变既有日期与时间矩形的大小或位置。`LAST REF`（上次尝试）只表示本进程发出过的本地 IQ 请求时间，冷启动后在第一次真实请求之前保持未知，不再借用网站额度雷达的 `checked_at/monitored_at`（那是站点监测时间而非本地尝试）。渲染场景缓存 key 包含当前分钟、该时间模式和上次尝试刷新时间，避免小绿点或中心时间因旧 bitmap 继续显示。
 
 当 Codex 速蹬窗口 open、`closed_at` 明确且仍在未来、并且 `CodexRadarSpeedWindowCountdownEnabled=true` 时，右侧圆盘临时切换为结束倒计时：圆环以 12 点为起点，用 `DesignTokens.Colors.SpeedWindowCountdown` 天蓝色按剩余比例从满环消退；中心时间显示 `HHH:mm`，最高 `100:00`，下方状态固定为同色 `RST`。有合法 `opened_at` 时按完整 `opened_at → closed_at` 计算比例，超过 100 小时只显示最后 100 小时；缺少开始时间时使用固定 100 小时分母。关闭设置、`closed_at` 缺失/撤销、时间到期或窗口转为 closed 后立即恢复普通 IQ 时钟；该覆盖态复用现有分钟渲染 tick，不增加网络请求或独立定时器。
 
@@ -245,7 +245,7 @@ GLM5.2 暂不加入 `DrawCodexApiServiceSummary`：Z.AI/智谱公开文档目前
 | `Unreachable` | DNS、连接、TLS、超时等请求失败 | 白字和红色小叉 |
 | `Unknown` | 首次启动、网络恢复或等待结果 | 白字 |
 
-竖向额度雷达来自首页 HTML 的 `quota-radar` 区域。程序读取 Plus、5x Pro、20x Pro 的 5h/7d 表格值，并读取 `20x Pro 7d` 趋势 SVG 的坐标轴文字和标题点。显示时只使用一根代表性竖线，优先使用 20x Pro 7d：纵向顶部和底部分别对应网页 SVG 坐标轴最高值和最低值，例如当前网页为 `$1,967` 和 `$1,506`，而不是可读数据点的最高/最低；灰色为完整坐标轴范围基线；平均横杠取网页中可读到的全部 `20x Pro 7d` 日期点平均值。彩色段精确连接上一点和当前点，颜色规则只看当前蓝点位置：高于平均且靠近顶部半区为绿色，高于平均但靠近均线半区为淡绿色，低于平均但靠近均线半区为黄色，低于平均且靠近底部半区为橙色。当前点绘制一个直径等于线宽的蓝色小点。Plus 和 5x Pro 没有独立趋势点时按页面当前表格与 20x Pro 的比例推导上一点、平均点、坐标轴范围和此前历史范围。
+竖向额度雷达优先来自 `current.json.model_iq.quota_radar`：`rows` 提供 Plus、5x Pro、20x Pro 当前值，`trend[].seven_d_20x` 提供 20x Pro 7d 历史点，`updated_at` 单独记录额度批次时间，不复用顶层 reset-radar 的 `monitored_at`。JSON 无额度对象时才使用首页 HTML 的 `quota-radar` 区域；HTML 解析同时兼容旧的 5h/7d 双额度列和 5h 暂停后只剩 7d 的单额度列，缺失的 5h 不从 7d 虚构。显示仍只使用一根代表性竖线并优先使用 20x Pro 7d：JSON 路径用趋势点范围，HTML 路径优先使用 SVG 坐标轴范围；平均横杠取全部可读趋势点平均值，彩色段连接上一点和当前点，当前点绘制蓝色小点。Plus 和 5x Pro 没有独立趋势点时按当前值与 20x Pro 的比例推导趋势范围。
 
 `NetworkChange` 回调只设置服务健康、`StatuspageMonitor` OpenAI/Claude 状态和 DeepSeek API/余额失效标记，不在系统事件线程执行网络检查；真实请求只会在后续调度 tick 中按可见窗口门控启动。个人额度刷新只通过 `RequestSelectedQuotaUsageRefresh` 排队当前有效且正在运行的软件 provider，不再同时触碰 Codex provider 和 Claude Code usage 队列。下一次 UI 调度统一更新服务健康摘要；旧五阶段连接诊断已删除，网络变化不会再启动对应的网络/DNS/隧道/OpenAI/本地 Codex 探测。旧三行服务面板绘制路径已删除，不会恢复三行绘制。
 
@@ -323,6 +323,7 @@ Token 和时间分别有可配置低效阈值。
 CodexRadar 公开 JSON、首页 HTML、速蹬窗口状态、RSS 重置提醒与 Model IQ 使用同一个 `CodexRadarSnapshot`。
 
 - 请求成功且包含 `model_iq` 或首页 HTML 成功补齐所选模型：更新 IQ、效率、数据日期、刷新时间，并标记刷新成功；若 IQ 内容签名与旧快照一致，则保留旧刷新时间，让时钟小绿点继续指向首次记录到该内容的位置。
+- `model_iq.quota_radar` 可独立于顶层 reset-radar 时间更新；解析成功时直接替换额度雷达快照，解析缺失或失败时才允许首页 HTML 补齐，所有来源均失败则保留上一次成功额度数据。
 - 请求成功且包含速蹬窗口：更新窗口开启状态、事件 ID、开启/关闭时间；窗口开启事件按 ID/时间去重通知；若已知关闭时间早于当前本地时间，即使旧快照或某个回退层仍保留 open，也在快照合并、绘制和通知入口按 closed 处理。
 - RSS 层启用且出现新的重置记录：按 GUID/pubDate 去重，触发 Windows 通知，并把 5 小时和周额度进入金色 100 保护态。
 - 启用层请求成功但缺少 `model_iq`：服务状态为 `Incomplete`，保留旧 IQ/效率，刷新成功标记失败。
@@ -336,7 +337,9 @@ CodexRadar 公开 JSON、首页 HTML、速蹬窗口状态、RSS 重置提醒与 
 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-radar-cache.ini` 按动态模型 key 保存当前快照和历史样本：
 
 - 每次成功取得所选模型数据后，将网站历史与旧缓存按北京时间半日窗口合并，同窗口以新数据覆盖。
-- `RefreshedUtc` 记录当前 IQ 内容首次被本程序记录到的时间；每小时请求如果读到相同 IQ 内容，`PreserveCodexModelIqRefreshTimeIfContentUnchanged` 会保留旧值，只有内容签名变化才移动时钟小绿点。
+- `RefreshedUtc` 记录当前 IQ 内容首次被本程序看到（first-seen）的时间，不是网站发布时间——Codex 站点没有稳定的批次发布字段。每小时请求如果读到相同批次，`PreserveCodexModelIqRefreshTimeIfContentUnchanged` 会保留旧值，只有内容签名变化才移动时钟小绿点。
+- `BuildCodexModelIqContentSignature` 只纳入网站批次身份与核心结果（数据日期、半日窗口、数据标签、通过数、有效任务数、通过率、状态）。派生字段（token/时间效率、原始效率输入、常态区、显示上限）被排除在外，避免 JSON/HTML/历史合并三条路径对派生值的规范化差异把同一批次误判为新内容而移动绿点。
+- 从软件族切换恢复显示时，Radar 快照与额度分别判定：`TryRestoreCodexRadarDisplayModeCache` 只在内存 Radar 快照可用时报告 `RadarRestored`，额度已知（`Quota.SourceKnown`）不再替代 Radar 快照；只要 Radar 快照不可用就必然加载磁盘 IQ 缓存，避免切换后把既有批次记成 first-seen。
 - 每个模型最多保留 366 个半日窗口的 IQ、Token、耗时、缓存输入和有效任务数据，用于近 7 日、近 30 日和全记录基准。
 - 缓存保存时间超过 7 天后不再加载，并在后续成功写入时清理过期模型条目。
 - 程序启动和模型切换可先显示有效缓存，后台请求仍按原调度立即验证最新数据。

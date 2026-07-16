@@ -133,14 +133,34 @@ internal static class QuotaRingPresentation
             consumptionRingPen.StartCap = LineCap.Round;
             consumptionRingPen.EndCap = LineCap.Round;
             g.DrawArc(backgroundPen, arcRect, -90.0f, 360.0f);
-            if (visibleConsumptionRingPercent > arcPercent)
+            if (spec.RainbowRing)
             {
-                g.DrawArc(consumptionRingPen, arcRect, -90.0f, 360.0f * visibleConsumptionRingPercent / 100.0f);
+                // Sub-day reset credit: the full ring becomes a STATIC rainbow (red at 12 o'clock,
+                // hue advancing clockwise once around) regardless of percent, and the per-percent
+                // consumption overlay is suppressed so the rainbow reads cleanly.
+                DrawRainbowArc(g, arcRect, -90.0f, 360.0f, stroke);
             }
-
-            if (arcPercent > 0)
+            else if (spec.ResetDetectedRing)
             {
-                g.DrawArc(valuePen, arcRect, -90.0f, 360.0f * arcPercent / 100.0f);
+                // Quota reset just detected: full ring solid sky blue (no consumption overlay).
+                using (Pen skyBluePen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.QuotaResetSkyBlue, 245), stroke))
+                {
+                    skyBluePen.StartCap = LineCap.Round;
+                    skyBluePen.EndCap = LineCap.Round;
+                    g.DrawArc(skyBluePen, arcRect, -90.0f, 360.0f);
+                }
+            }
+            else
+            {
+                if (visibleConsumptionRingPercent > arcPercent)
+                {
+                    g.DrawArc(consumptionRingPen, arcRect, -90.0f, 360.0f * visibleConsumptionRingPercent / 100.0f);
+                }
+
+                if (arcPercent > 0)
+                {
+                    g.DrawArc(valuePen, arcRect, -90.0f, 360.0f * arcPercent / 100.0f);
+                }
             }
         }
 
@@ -155,7 +175,9 @@ internal static class QuotaRingPresentation
             : (spec.QuotaValueKnown ? percent.ToString(CultureInfo.InvariantCulture) : "-");
         Color numberColor = forceDanger
             ? DesignTokens.White(246)
-            : GetRingNumberColor(displayColor, spec.AnySupportedAppRunning, spec.QuotaValueKnown);
+            : ((spec.RainbowRing || spec.ResetDetectedRing)
+                ? DesignTokens.White(246)
+                : GetRingNumberColor(displayColor, spec.AnySupportedAppRunning, spec.QuotaValueKnown));
 
         using (SolidBrush numberBrush = new SolidBrush(numberColor))
         using (StringFormat center = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
@@ -176,6 +198,61 @@ internal static class QuotaRingPresentation
     private static int ClampPercent(int value)
     {
         return Math.Max(0, Math.Min(100, value));
+    }
+
+    // Paints an arc as a STATIC rainbow by drawing many short segments, each a hue step further
+    // around the color wheel: hue 0 (red) sits at the arc start (12 o'clock for a -90 start) and
+    // advances clockwise once around the full sweep. No animation.
+    private static void DrawRainbowArc(
+        Graphics g,
+        RectangleF arcRect,
+        float startAngle,
+        float sweepAngle,
+        float stroke)
+    {
+        if (Math.Abs(sweepAngle) < 0.5f)
+        {
+            return;
+        }
+
+        const int Segments = 36;
+        float segmentSweep = sweepAngle / Segments;
+        // Slight overlap keeps the round-capped segments from leaving seams between hues.
+        float overlap = Math.Abs(segmentSweep) * 0.35f;
+        for (int i = 0; i < Segments; i++)
+        {
+            float hue = (i * (360.0f / Segments)) % 360.0f;
+            using (Pen pen = new Pen(HueToColor(hue, 245), stroke))
+            {
+                pen.StartCap = LineCap.Round;
+                pen.EndCap = LineCap.Round;
+                g.DrawArc(pen, arcRect, startAngle + i * segmentSweep, segmentSweep + overlap);
+            }
+        }
+    }
+
+    // Full-saturation, full-value HSV -> RGB for a given hue in [0,360).
+    private static Color HueToColor(float hue, int alpha)
+    {
+        float h = ((hue % 360.0f) + 360.0f) % 360.0f / 60.0f;
+        int sector = (int)Math.Floor(h);
+        float f = h - sector;
+        int v = 255;
+        int p = 0;
+        int q = (int)Math.Round(255.0f * (1.0f - f));
+        int t = (int)Math.Round(255.0f * f);
+        int r, gg, b;
+        switch (sector)
+        {
+            case 0: r = v; gg = t; b = p; break;
+            case 1: r = q; gg = v; b = p; break;
+            case 2: r = p; gg = v; b = t; break;
+            case 3: r = p; gg = q; b = v; break;
+            case 4: r = t; gg = p; b = v; break;
+            default: r = v; gg = p; b = q; break;
+        }
+
+        return Color.FromArgb(Math.Max(0, Math.Min(255, alpha)), r, gg, b);
     }
 
     internal static void RunSelfTest()
@@ -200,6 +277,127 @@ internal static class QuotaRingPresentation
         }
 
         RunForceDangerFullRingRenderSelfTest();
+        RunRainbowRingRenderSelfTest();
+        RunResetDetectedRingRenderSelfTest();
+    }
+
+    // The ResetDetectedRing branch must paint a solid sky-blue full ring (not the percent-based
+    // green/yellow and not a multi-hue rainbow): sample the arc top and require a blue-dominant,
+    // low-hue-spread color.
+    private static void RunResetDetectedRingRenderSelfTest()
+    {
+        using (Bitmap bitmap = new Bitmap(64, 64))
+        using (Graphics g = Graphics.FromImage(bitmap))
+        using (Font font = new Font(FontFamily.GenericSansSerif, 8f))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            RectangleF ringRect = new RectangleF(2, 2, 60, 60);
+            QuotaRingDrawSpec spec = new QuotaRingDrawSpec
+            {
+                Percent = 100,
+                ConsumptionRingPercent = 0,
+                ResetDisplayText = string.Empty,
+                ResetDisplayColor = DesignTokens.White(220),
+                Running = true,
+                AnySupportedAppRunning = true,
+                QuotaValueKnown = true,
+                ResetDetectedRing = true,
+                NumberFont = font,
+                LabelFont = font
+            };
+            DrawQuotaRing(g, ringRect, new RectangleF(0, 0, 0, 0), spec);
+
+            float cx = ringRect.Left + ringRect.Width / 2.0f;
+            float cy = ringRect.Top + ringRect.Height / 2.0f;
+            float radius = (ringRect.Width - Math.Max(2.0f, ringRect.Width * 0.14f)) / 2.0f;
+            System.Collections.Generic.HashSet<int> hues = new System.Collections.Generic.HashSet<int>();
+            bool sawBlue = false;
+            for (int deg = 0; deg < 360; deg += 15)
+            {
+                double rad = (deg - 90) * Math.PI / 180.0;
+                int px = (int)Math.Round(cx + Math.Cos(rad) * radius);
+                int py = (int)Math.Round(cy + Math.Sin(rad) * radius);
+                if (px < 0 || py < 0 || px >= bitmap.Width || py >= bitmap.Height)
+                {
+                    continue;
+                }
+
+                Color c = bitmap.GetPixel(px, py);
+                if (c.A < 40)
+                {
+                    continue;
+                }
+
+                hues.Add(((int)Math.Round(c.GetHue() / 30.0f)) % 12);
+                if (c.B > c.R && c.B > 120 && c.G > c.R)
+                {
+                    sawBlue = true;
+                }
+            }
+
+            if (!sawBlue || hues.Count > 3)
+            {
+                throw new InvalidOperationException(
+                    "QuotaRingPresentation self-test failed: reset-detected ring is not a solid sky-blue ring (sawBlue=" +
+                    sawBlue + ", distinctHues=" + hues.Count + ").");
+            }
+        }
+    }
+
+    // The rainbow branch must paint several distinct hues around the ring (not a single solid
+    // color), so sample the arc path at several angles and require multiple different colors.
+    private static void RunRainbowRingRenderSelfTest()
+    {
+        using (Bitmap bitmap = new Bitmap(64, 64))
+        using (Graphics g = Graphics.FromImage(bitmap))
+        using (Font font = new Font(FontFamily.GenericSansSerif, 8f))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            RectangleF ringRect = new RectangleF(2, 2, 60, 60);
+            QuotaRingDrawSpec spec = new QuotaRingDrawSpec
+            {
+                Percent = 100,
+                ConsumptionRingPercent = 0,
+                ResetDisplayText = string.Empty,
+                ResetDisplayColor = DesignTokens.White(220),
+                Running = true,
+                AnySupportedAppRunning = true,
+                QuotaValueKnown = true,
+                RainbowRing = true,
+                NumberFont = font,
+                LabelFont = font
+            };
+            DrawQuotaRing(g, ringRect, new RectangleF(0, 0, 0, 0), spec);
+
+            float cx = ringRect.Left + ringRect.Width / 2.0f;
+            float cy = ringRect.Top + ringRect.Height / 2.0f;
+            float radius = (ringRect.Width - Math.Max(2.0f, ringRect.Width * 0.14f)) / 2.0f;
+            System.Collections.Generic.HashSet<int> hues = new System.Collections.Generic.HashSet<int>();
+            for (int deg = 0; deg < 360; deg += 15)
+            {
+                double rad = (deg - 90) * Math.PI / 180.0;
+                int px = (int)Math.Round(cx + Math.Cos(rad) * radius);
+                int py = (int)Math.Round(cy + Math.Sin(rad) * radius);
+                if (px < 0 || py < 0 || px >= bitmap.Width || py >= bitmap.Height)
+                {
+                    continue;
+                }
+
+                Color c = bitmap.GetPixel(px, py);
+                if (c.A < 40)
+                {
+                    continue;
+                }
+
+                hues.Add(((int)Math.Round(c.GetHue() / 30.0f)) % 12);
+            }
+
+            if (hues.Count < 4)
+            {
+                throw new InvalidOperationException(
+                    "QuotaRingPresentation self-test failed: rainbow ring painted too few distinct hues (" + hues.Count + ").");
+            }
+        }
     }
 
     // Renders the ring to an in-memory bitmap and samples a pixel on the arc path to prove the
@@ -357,6 +555,12 @@ internal sealed class QuotaRingDrawSpec
     public bool AnySupportedAppRunning;
     public bool QuotaValueKnown;
     public bool ForceDangerFullRing;
+    // Sub-day reset-credit indicator: paint the full ring as a STATIC rainbow (red at 12 o'clock,
+    // hue advancing clockwise once around). No animation. Takes priority over ResetDetectedRing.
+    public bool RainbowRing;
+    // Quota-reset detected: paint the full ring solid sky blue (this replaced the old celebratory
+    // rainbow, which is now the sub-day RainbowRing above).
+    public bool ResetDetectedRing;
     public Font NumberFont;
     public Font LabelFont;
     public Action<Graphics, string, Font, Brush, RectangleF> DrawFittedLabel;

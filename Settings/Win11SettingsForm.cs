@@ -462,7 +462,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddPageGrouped("\uE115", "系统", "开机启动、性能和窗口基础行为。", new string[][]
         {
             new string[] { "启动与性能", "StartupEnabled", "PerformanceMode" },
-            new string[] { "窗口行为", "VisibilityMode", "VisibilityOverlapIgnoresOperationPanelEnabled", "ClickThroughMode" },
+            new string[] { "窗口行为", "VisibilityMode", "CodexPetZOrderProtectionEnabled", "VisibilityOverlapIgnoresOperationPanelEnabled", "ClickThroughMode" },
             new string[] { "AI 请求阻断", "AiRequestProtectionAutoEnabled", "AiRequestProtectionManualBlockEnabled" },
             new string[] { "!Codex 额度计划", "CodexQuotaPlanEnabled", "CodexQuotaPlanWeeklyComparison", "CodexQuotaPlanWeeklyThresholdPercent",
                            "CodexQuotaPlanFiveHourComparison", "CodexQuotaPlanFiveHourThresholdPercent", "CodexQuotaPlanResumeConditionMode",
@@ -483,6 +483,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "!功耗温度位置", "PowerThermalWidth", "PowerThermalHeight", "PowerThermalLeftX", "PowerThermalBottomY" },
             new string[] { "!网络监控位置", "NetworkMonitorWidth", "NetworkMonitorHeight", "NetworkMonitorLeftX", "NetworkMonitorBottomY" },
             new string[] { "!连接检测位置", "ConnectionCheckWidth", "ConnectionCheckHeight", "ConnectionCheckLeftX", "ConnectionCheckBottomY" },
+            new string[] { "!Spec Board 位置", "SpecBoardWidth", "SpecBoardHeight", "SpecBoardLeftX", "SpecBoardBottomY" },
             new string[] { "!操作面板位置", "OperationLeftOffset", "OperationBottomOffset" }
         });
 
@@ -512,7 +513,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             // 对应 WidgetSettings 属性仍保留，Classic 布局若通过 settings.ini 设置仍生效；
             // 均布变体本就忽略这些设置。恢复入口时把下方分组加回，并同步 VerifySelfTest 必需绑定。
             new string[] { "共享小窗", "CodexRadarEnabled", "CodexRadarSoftwareMode", "CodexRadarTransparencyPercent" },
-            new string[] { "CODEX 模式数据", "CodexRadarModelKey", "CodexRadarSpeedWindowCountdownEnabled" },
+            new string[] { "CODEX 模式数据", "CodexRadarModelKey", "CodexRadarSpeedWindowCountdownEnabled", "CodexRadarQuotaResetRainbowEnabled" },
             new string[] { "!CodexRadar.com 读取链路", "CodexRadarPublicJsonEnabled", "CodexRadarHtmlFallbackEnabled", "CodexRadarRssFallbackEnabled", "CodexRadarServiceProbeToken" },
             new string[] { "!额度保护", "CodexQuotaDueResetProtectionEnabled", "CodexQuotaRssResetProtectionEnabled",
                            "CodexQuotaProviderZeroDropProtectionEnabled", "CodexQuotaDuplicateSameBalanceRingProtectionEnabled",
@@ -559,6 +560,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddPageGrouped("\uE700", "操作面板", "左下角操作面板的按钮、透明度和外观。", new string[][]
         {
             new string[] { "按钮与面板", "OperationButtonSize", "OperationPrimaryPanelMode", "OperationSettingsLogicExtensionEnabled", "OperationBackgroundTransparencyPercent" },
+            new string[] { "Spec Board", "SpecBoardAutoPopupEnabled", "SpecBoardAutoPopupSeconds", "SpecBoardAutoHideSeconds", "SpecBoardLedgerPath", "SpecBoardManagerWidth", "SpecBoardManagerHeight", "SpecBoardManagerDangerZoneRequiresTypedConfirm" },
             new string[] { "外观风格", "OperationRenderVariant" },
             new string[] { "!测试", "AlertTestEnabled" }
         });
@@ -1200,6 +1202,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             return BuildDisplayDeviceCombo();
         }
 
+        if (type == typeof(string) && string.Equals(property.Name, "SpecBoardLedgerPath", StringComparison.Ordinal))
+        {
+            return BuildSpecBoardLedgerPathPicker();
+        }
+
         if (type == typeof(int) || type == typeof(double))
         {
             if (string.Equals(property.Name, "ResolutionCompatibilityScalePercent", StringComparison.Ordinal))
@@ -1296,6 +1303,44 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         text.Font = GetUiFont(9.5f);
         text.TextChanged += delegate { OnSettingChanged(); };
         return text;
+    }
+
+    private Control BuildSpecBoardLedgerPathPicker()
+    {
+        Panel panel = new Panel();
+        panel.Width = 560;
+        panel.Height = 54;
+        panel.BackColor = Color.Transparent;
+        TextBox text = new TextBox();
+        text.Width = 430;
+        text.Height = 54;
+        text.BackColor = ControlBg;
+        text.ForeColor = TextSecondary;
+        text.BorderStyle = BorderStyle.FixedSingle;
+        text.Font = GetUiFont(9.5f);
+        text.TextChanged += delegate { OnSettingChanged(); };
+        Button browse = BuildCommandButton("浏览…", false);
+        browse.Width = 116;
+        browse.Height = 54;
+        browse.Location = new Point(442, 0);
+        browse.Click += delegate
+        {
+            using (OpenFileDialog dialog = new OpenFileDialog())
+            {
+                dialog.Title = "选择 Spec Board 账本";
+                dialog.Filter = "JSON Lines (*.jsonl)|*.jsonl|所有文件 (*.*)|*.*";
+                dialog.CheckFileExists = false;
+                dialog.FileName = string.IsNullOrWhiteSpace(text.Text) ? WidgetSettings.DefaultSpecBoardLedgerPath : text.Text.Trim().Trim('"');
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    text.Text = dialog.FileName;
+                }
+            }
+        };
+        panel.Tag = text;
+        panel.Controls.Add(text);
+        panel.Controls.Add(browse);
+        return panel;
     }
 
     private Control BuildVariantPicker(PropertyInfo property)
@@ -2112,6 +2157,16 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
     private void SetEditorValue(SettingEditor editor, object value)
     {
+        if (editor.Property != null && string.Equals(editor.Property.Name, "SpecBoardLedgerPath", StringComparison.Ordinal))
+        {
+            TextBox pathText = editor.Control.Tag as TextBox;
+            if (pathText != null)
+            {
+                pathText.Text = value as string ?? string.Empty;
+                return;
+            }
+        }
+
         ToggleSwitch toggle = editor.Control as ToggleSwitch;
         if (toggle != null)
         {
@@ -2298,6 +2353,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         Type type = editor.Property.PropertyType;
+        if (string.Equals(editor.Property.Name, "SpecBoardLedgerPath", StringComparison.Ordinal))
+        {
+            TextBox pathText = editor.Control.Tag as TextBox;
+            return pathText == null ? string.Empty : pathText.Text ?? string.Empty;
+        }
+
         ToggleSwitch toggle = editor.Control as ToggleSwitch;
         if (toggle != null)
         {
@@ -3317,12 +3378,24 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         string[] required = new string[]
         {
             "PerformanceMode",
+            "CodexPetZOrderProtectionEnabled",
             "HoverOpacityEnabled",
             "HoverOpacityRevealDelayEnabled",
             "OperationRadialCoreAutoHideKeepAliveEnabled",
             "OperationRadialIdleCollapseSeconds",
             "OperationRadialIdleResetOnInteractionEnabled",
             "OperationRadialKeepOpenAfterLeafClickEnabled",
+            "SpecBoardWidth",
+            "SpecBoardHeight",
+            "SpecBoardLeftX",
+            "SpecBoardBottomY",
+            "SpecBoardAutoHideSeconds",
+            "SpecBoardAutoPopupEnabled",
+            "SpecBoardAutoPopupSeconds",
+            "SpecBoardLedgerPath",
+            "SpecBoardManagerWidth",
+            "SpecBoardManagerHeight",
+            "SpecBoardManagerDangerZoneRequiresTypedConfirm",
             "FallbackDisconnectedDisplaysEnabled",
             "ResolutionCompatibilityModeEnabled",
             "ResolutionCompatibilityScalePercent",
@@ -3337,6 +3410,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "RadarClockAutoSwitchModelEnabled",
             "RadarClockTimeDisplayMode",
             "CodexRadarSpeedWindowCountdownEnabled",
+            "CodexRadarQuotaResetRainbowEnabled",
             "DisplayTimeZoneMode",
             "DisplayTimeZoneId",
             "CodexRadarPublicJsonEnabled",
@@ -3651,6 +3725,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "GfwProbeIntervalMinutes", new NumericRange(WidgetSettings.MinGfwProbeIntervalMinutes, WidgetSettings.MaxGfwProbeIntervalMinutes) },
         { "ConnectionCheckWidth", new NumericRange(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MaxConnectionCheckWidth) },
         { "ConnectionCheckHeight", new NumericRange(WidgetSettings.MinConnectionCheckHeight, WidgetSettings.MaxConnectionCheckHeight) },
+        { "SpecBoardWidth", new NumericRange(WidgetSettings.MinSpecBoardWidth, WidgetSettings.MaxSpecBoardWidth) },
+        { "SpecBoardHeight", new NumericRange(WidgetSettings.MinSpecBoardHeight, WidgetSettings.MaxSpecBoardHeight) },
+        { "SpecBoardLeftX", new NumericRange(-1, 1000000) },
+        { "SpecBoardBottomY", new NumericRange(-1, 1000000) },
+        { "SpecBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinSpecBoardAutoHideSeconds, WidgetSettings.MaxSpecBoardAutoHideSeconds) },
+        { "SpecBoardAutoPopupSeconds", new NumericRange(WidgetSettings.MinSpecBoardAutoPopupSeconds, WidgetSettings.MaxSpecBoardAutoPopupSeconds) },
+        { "SpecBoardManagerWidth", new NumericRange(WidgetSettings.MinSpecBoardManagerWidth, WidgetSettings.MaxSpecBoardManagerWidth) },
+        { "SpecBoardManagerHeight", new NumericRange(WidgetSettings.MinSpecBoardManagerHeight, WidgetSettings.MaxSpecBoardManagerHeight) },
         { "ConnectionCheckIntervalSeconds", new NumericRange(WidgetSettings.MinConnectionCheckIntervalSeconds, WidgetSettings.MaxConnectionCheckIntervalSeconds) },
         { "ConnectionCheckBorderTransparencyPercent", new NumericRange(WidgetSettings.MinBorderTransparency, WidgetSettings.MaxBorderTransparency) },
         { "OperationButtonSize", new NumericRange(WidgetSettings.MinOperationButtonSize, WidgetSettings.MaxOperationButtonSize) },
@@ -3677,6 +3759,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "StartupEnabled", "开机启动" },
         { "PerformanceMode", "性能模式" },
         { "VisibilityMode", "可见性" },
+        { "CodexPetZOrderProtectionEnabled", "小窗保持在 Codex 宠物下层" },
         { "VisibilityOverlapIgnoresOperationPanelEnabled", "遮挡忽略操作面板" },
         { "ClickThroughMode", "点击穿透" },
         { "ForceShowForegroundFpsEnabled", "强制显示 FPS" },
@@ -3725,6 +3808,17 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "NetworkMonitorLeftX", "网络监控距左边" },
         { "NetworkMonitorBottomY", "网络监控距下边" },
         { "ConnectionCheckWidth", "连接检测宽度" },
+        { "SpecBoardWidth", "Spec Board 宽度" },
+        { "SpecBoardHeight", "Spec Board 高度" },
+        { "SpecBoardLeftX", "Spec Board 左侧 X" },
+        { "SpecBoardBottomY", "Spec Board 底部 Y" },
+        { "SpecBoardAutoHideSeconds", "Spec Board 自动收回秒数" },
+        { "SpecBoardAutoPopupEnabled", "发现新 Spec 时自动弹出" },
+        { "SpecBoardAutoPopupSeconds", "新 Spec 弹窗停留秒数" },
+        { "SpecBoardLedgerPath", "Spec Board 账本路径" },
+        { "SpecBoardManagerWidth", "Spec 管理窗口宽度" },
+        { "SpecBoardManagerHeight", "Spec 管理窗口高度" },
+        { "SpecBoardManagerDangerZoneRequiresTypedConfirm", "删除源文件需要输入文件名确认" },
         { "ConnectionCheckHeight", "连接检测高度" },
         { "ConnectionCheckLeftX", "连接检测距左边" },
         { "ConnectionCheckBottomY", "连接检测距下边" },
@@ -3761,6 +3855,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "RadarClockAutoSwitchModelEnabled", "过期自动切换模型" },
         { "RadarClockTimeDisplayMode", "时钟时间显示" },
         { "CodexRadarSpeedWindowCountdownEnabled", "速蹬结束倒计时" },
+        { "CodexRadarQuotaResetRainbowEnabled", "额度重置天蓝提醒" },
         { "CodexRadarEnabled", "启用共享 Radar 小窗" },
         { "CodexRadarTransparencyPercent", "Codex Radar 透明度" },
         { "ClaudeRadarEnabled", "启用独立 Claude Radar" },
@@ -3881,6 +3976,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "StartupEnabled", "写入当前用户启动项。" },
         { "PerformanceMode", "控制采样、动画和后台刷新节奏。" },
         { "VisibilityMode", "五档：总是可见、全屏时不可见、最大化时不可见、遮挡时不可见、仅桌面可见；默认全屏时不可见。最大化档也包含全屏。" },
+        { "CodexPetZOrderProtectionEnabled", "开启后，非桌面模式的小窗口始终排在 Codex 桌面宠物和 SeelenUI 浮层下方；默认开启。" },
         { "VisibilityOverlapIgnoresOperationPanelEnabled", "仅在“遮挡时不可见”生效；开启后左下角操作面板及其展开区域不会因为被其他应用窗口覆盖而隐藏。" },
         { "ClickThroughMode", "允许鼠标事件穿透主窗口。" },
         { "ForceShowForegroundFpsEnabled", "调试用，强制显示前台 FPS 信息。" },
@@ -3919,6 +4015,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "RadarClockAutoSwitchModelEnabled", "Codex/Claude Radar 时钟跨过完整周期仍没有当前模型 IQ 更新时，自动切到同站点当天最近刷新 IQ 的模型。" },
         { "RadarClockTimeDisplayMode", "控制两个 Radar 时钟中心下方时间：UTC、当前本机时间、上次尝试刷新，或上次实际 IQ 刷新。" },
         { "CodexRadarSpeedWindowCountdownEnabled", "速蹬窗口有明确结束时间时，用天蓝色消退圆环、小时倒计时和 RST 取代右侧 IQ 时钟；关闭后仍保留左侧额度时间强制金色。" },
+        { "CodexRadarQuotaResetRainbowEnabled", "周额度经确认上涨回到 95% 及以上时，两个额度圆环变天蓝色以提醒额度已重置，直到周额度低于 90% 才恢复；仅对经干扰过滤后被接受的真实上涨生效，避免幻影样本误触发。关闭后圆环始终使用常规配色。（存在不满一天到期的重置卡时两环显示静态彩虹，不受本开关控制。）" },
         { "CodexRadarPublicJsonEnabled", "读取 codexradar.com/current.json 公开摘要层，包含窗口、预测和 API 可用性说明。" },
         { "CodexRadarHtmlFallbackEnabled", "公开 JSON 缺少展示字段时，从 codexradar.com 首页补齐 IQ、效率、额度线和模型目录展示数据。" },
         { "CodexRadarRssFallbackEnabled", "读取 CodexRadar feed.xml 的重置提醒；关闭后不会用 RSS 触发额度重置保护。" },
@@ -4024,6 +4121,17 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "NetworkMonitorLeftX", "逻辑像素，距目标显示器左边缘。" },
         { "NetworkMonitorBottomY", "逻辑像素，距目标显示器下边缘。" },
         { "ConnectionCheckWidth", "逻辑像素，连接检测窗口宽度。" },
+        { "SpecBoardWidth", "逻辑像素，范围 320-700。" },
+        { "SpecBoardHeight", "逻辑像素，范围 240-800。" },
+        { "SpecBoardLeftX", "-1 表示每次呼出时自动与操作面板左边缘对齐；在全局布局编辑器拖动后写入具体坐标。" },
+        { "SpecBoardBottomY", "-1 表示每次呼出时自动放在操作面板上方 10 像素；在全局布局编辑器拖动后写入具体坐标。把两项重新设为 -1 即恢复自动。" },
+        { "SpecBoardAutoHideSeconds", "范围 0-600 秒；0 表示不自动收回。鼠标停在看板内时暂停，移出后重新计时。" },
+        { "SpecBoardAutoPopupEnabled", "开启后监测新建的 Spec；发现新项时自动弹出小看板并高亮。" },
+        { "SpecBoardAutoPopupSeconds", "范围 1-120 秒；自动弹窗在鼠标未停留时的显示时长，鼠标移入会暂停并重置倒计时。" },
+        { "SpecBoardLedgerPath", "跨项目 SPEC_BOARD.jsonl 的只读路径；PROJECTS.json 固定从同目录读取。" },
+        { "SpecBoardManagerWidth", "管理窗口宽度，范围 560-1000。" },
+        { "SpecBoardManagerHeight", "管理窗口高度，范围 400-900。" },
+        { "SpecBoardManagerDangerZoneRequiresTypedConfirm", "推荐保持开启；删除账本条目并删除源文件前必须输入完全一致的文件名。" },
         { "ConnectionCheckHeight", "逻辑像素，连接检测窗口高度。" },
         { "ConnectionCheckLeftX", "逻辑像素，距目标显示器左边缘。" },
         { "ConnectionCheckBottomY", "逻辑像素，距目标显示器下边缘。" },

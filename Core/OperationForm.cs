@@ -59,6 +59,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly System.Windows.Forms.Timer foregroundFpsTimer;
     private readonly System.Windows.Forms.Timer restartSingleClickTimer;
     private readonly System.Windows.Forms.Timer appSettingsSingleClickTimer;
+    private readonly System.Windows.Forms.Timer specBoardEntrySingleClickTimer;
     private readonly ForegroundFpsReader foregroundFpsReader;
     private readonly ToolTip hoverToolTip;
     private readonly bool isAsusZenbookDevice;
@@ -130,6 +131,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             ControlStyles.AllPaintingInWmPaint |
             ControlStyles.OptimizedDoubleBuffer |
             ControlStyles.ResizeRedraw |
+            ControlStyles.StandardClick |
+            ControlStyles.StandardDoubleClick |
             ControlStyles.UserPaint,
             true);
 
@@ -160,6 +163,9 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.appSettingsSingleClickTimer = new System.Windows.Forms.Timer();
         this.appSettingsSingleClickTimer.Interval = Math.Max(1, SystemInformation.DoubleClickTime);
         this.appSettingsSingleClickTimer.Tick += OnAppSettingsSingleClickTimerTick;
+        this.specBoardEntrySingleClickTimer = new System.Windows.Forms.Timer();
+        this.specBoardEntrySingleClickTimer.Interval = Math.Max(1, SystemInformation.DoubleClickTime);
+        this.specBoardEntrySingleClickTimer.Tick += OnSpecBoardEntrySingleClickTimerTick;
 
         this.hoverToolTip = new ToolTip();
         this.hoverToolTip.ShowAlways = true;
@@ -192,7 +198,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.appSettingsSingleClickTimer.Stop();
         this.appSettingsSingleClickTimer.Tick -= OnAppSettingsSingleClickTimerTick;
         this.appSettingsSingleClickTimer.Dispose();
+        this.specBoardEntrySingleClickTimer.Stop();
+        this.specBoardEntrySingleClickTimer.Tick -= OnSpecBoardEntrySingleClickTimerTick;
+        this.specBoardEntrySingleClickTimer.Dispose();
+        DisposeSpecBoardForm();
         DisposeQuickGridForm();
+        DisposeLauncherTrioForm();
         if (Interlocked.CompareExchange(ref this.foregroundFpsReadRunning, 0, 0) == 0)
         {
             this.foregroundFpsReader.Dispose();
@@ -304,7 +315,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(shouldBeTopMost),
+            GetLayeredWidgetInsertAfter(shouldBeTopMost, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
             0,
             0,
             0,
@@ -322,11 +333,27 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.quickGridForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
+        if (this.CurrentSettings.SpecBoardAutoPopupEnabled)
+        {
+            SpecBoardForm autoPopupForm = EnsureSpecBoardForm();
+            autoPopupForm.StartAutoPopupMonitoring();
+        }
+        else if (this.specBoardForm != null && !this.specBoardForm.IsDisposed)
+        {
+            this.specBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
+        }
+
+        if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed)
+        {
+            this.launcherTrioForm.ApplyRuntimeSettings(this.CurrentSettings);
+        }
+
         RenderLayeredWindow();
     }
 
     public void ClearTransientInteractionState()
     {
+        CancelSpecBoardEntryClick();
         bool changed =
             this.hoveredButton != -1 ||
             this.pressedButton != -1 ||
@@ -357,6 +384,11 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     public void SetHiddenForFullscreen(bool hidden)
     {
+        if (this.specBoardForm != null && !this.specBoardForm.IsDisposed)
+        {
+            this.specBoardForm.SetHiddenForFullscreen(hidden);
+        }
+
         if (this.hiddenForFullscreen == hidden &&
             ((hidden && !this.Visible) || (!hidden && this.Visible)))
         {
@@ -390,6 +422,11 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     {
         this.displaySuspended = false;
         ResetDisplayRenderResources();
+        if (this.specBoardForm != null && !this.specBoardForm.IsDisposed)
+        {
+            this.specBoardForm.RecoverAfterDisplayResume();
+        }
+
         PositionOperationWindow();
         UpdateForegroundFpsTimer();
         RenderLayeredWindow();
@@ -400,6 +437,11 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.displaySuspended = true;
         this.animationTimer.Stop();
         this.foregroundFpsTimer.Stop();
+        if (this.specBoardForm != null && !this.specBoardForm.IsDisposed)
+        {
+            this.specBoardForm.PrepareForDisplaySuspend();
+        }
+
         ResetDisplayRenderResources();
     }
 
@@ -790,6 +832,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             return;
         }
 
+        if (button == StartButtonIndex && e.Button == MouseButtons.Left)
+        {
+            HandleSpecBoardEntryMouseUp(SpecBoardEntryClickTarget.StartButton);
+            return;
+        }
+
         ExecuteButton(button, e.Button);
     }
 
@@ -805,7 +853,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         {
             if (RadialHitTest(e.Location).Kind == RadialHitKind.Core)
             {
-                ToggleQuickGridWindow();
+                HandleSpecBoardEntryDoubleClick(SpecBoardEntryClickTarget.RadialCore);
             }
 
             return;
@@ -813,7 +861,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         if (HitTest(e.Location) == StartButtonIndex)
         {
-            ToggleQuickGridWindow();
+            HandleSpecBoardEntryDoubleClick(SpecBoardEntryClickTarget.StartButton);
         }
     }
 
@@ -2426,7 +2474,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode),
+            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
             left,
             top,
             this.Width,

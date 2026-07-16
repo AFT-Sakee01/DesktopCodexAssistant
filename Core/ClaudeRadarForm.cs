@@ -64,7 +64,10 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         this.CurrentSettings.Normalize();
         this.snapshot = ClaudeRadarReader.LoadCache(this.CurrentSettings.ClaudeRadarModelKey) ??
             ClaudeRadarSnapshot.CreateDefault();
-        this.lastRadarAttemptLocal = this.snapshot.CheckedAtLocal;
+        // Do NOT seed the attempt time from the cached CheckedAtLocal: that is the client fetch time
+        // and seeding it makes the clock's LAST-attempt display show a stale/restart time after a
+        // cold restart. It is set only by a real live attempt below (mirrors the Codex window).
+        this.lastRadarAttemptLocal = DateTime.MinValue;
         RefreshRuntimePresenceSnapshot(true);
         LoadNotificationState();
         ApplicationIcon.ApplyTo(this);
@@ -197,7 +200,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(shouldBeTopMost),
+            GetLayeredWidgetInsertAfter(shouldBeTopMost, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
             0,
             0,
             0,
@@ -1067,7 +1070,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode),
+            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
             shifted.X,
             shifted.Y,
             this.Width,
@@ -1726,11 +1729,10 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         bool batchKnown = batchTime != DateTime.MinValue;
         DateTime localTime = local != null ? local.CheckedAtLocal : DateTime.MinValue;
         bool localKnown = localTime != DateTime.MinValue;
+        // The LAST-attempt time is only a real local request attempt. No fallback to CheckedAtLocal
+        // (the client fetch time), which after a cold restart shows the restart time - matches the
+        // Codex window's TryGetEvenRowLastAttemptRefreshLocal fix.
         DateTime lastAttemptLocal = this.lastRadarAttemptLocal;
-        if (lastAttemptLocal == DateTime.MinValue && localKnown)
-        {
-            lastAttemptLocal = localTime;
-        }
 
         RadarClockTimeDisplayMode timeMode = this.CurrentSettings == null
             ? RadarClockTimeDisplayMode.Utc
@@ -1827,7 +1829,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             Color itemColor = i == 0 ? ClaudeOrange : bottomTextColor;
             using (SolidBrush brush = new SolidBrush(itemColor))
             {
-                DrawClaudeEvenRowStatusText(g, texts[i], itemFont, brush, itemRect);
+                RadarBottomInfoTextRenderer.DrawInkCenteredText(g, texts[i], itemFont, brush, itemRect);
             }
 
             x += width + gap;
@@ -2935,7 +2937,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
             g.DrawString(model ?? "--", body, text, new RectangleF(rect.Left, rect.Top + rect.Height * 0.24f, rect.Width, rect.Height * 0.25f), near);
             DrawServiceSquares(g, new RectangleF(rect.Left, rect.Top + rect.Height * 0.53f, rect.Width, rect.Height * 0.22f), local);
-            string footer = local.RequestRunning ? "刷新中" : FormatLocalTime(local.CheckedAtLocal);
+            string footer = local.RequestRunning ? "刷新中" : FormatLocalTime(ClaudeRadarReader.ResolveDataObtainedLocalTime(local));
             g.DrawString(footer, small, muted, new RectangleF(rect.Left, rect.Bottom - rect.Height * 0.22f, rect.Width, rect.Height * 0.22f), near);
         }
     }

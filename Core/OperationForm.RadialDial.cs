@@ -331,13 +331,13 @@ internal sealed partial class OperationForm
             this.DrawTogglesGlyph,
             () => ExecuteButton(WindowsQuickSettingsButtonIndex, MouseButtons.Left),
             () => "打开快速设置\r\n使用快捷键 Win+A"));
-        system.Children.Add(NewLeaf(
-            "system_tools_menu",
-            "系统工具菜单",
+        system.Children.Add(NewSettingToggle(
+            "SpecBoardAutoPopupEnabled",
+            "spec_board_auto_popup",
+            "自动 Spec 面板",
             RadialSystemColor,
-            (g, r) => DrawTileGridGlyph(g, r, 3),
-            ExecuteRadialSystemToolsMenu,
-            () => "Windows 系统工具菜单\r\n设备管理器、磁盘管理等"));
+            this.DrawAppWindowGlyph,
+            s => s.SpecBoardAutoPopupEnabled));
         system.Children.Add(NewLeaf(
             "refresh",
             "刷新",
@@ -1048,15 +1048,7 @@ internal sealed partial class OperationForm
 
         if (hit.Kind == RadialHitKind.Core && corePressed)
         {
-            if (this.radialMenuOpen)
-            {
-                CloseRadialMenu();
-            }
-            else
-            {
-                OpenRadialMenu();
-            }
-
+            HandleSpecBoardEntryMouseUp(SpecBoardEntryClickTarget.RadialCore);
             return;
         }
 
@@ -1110,6 +1102,18 @@ internal sealed partial class OperationForm
         CloseRadialMenu();
     }
 
+    private void ExecuteRadialCoreSingleClick()
+    {
+        if (this.radialMenuOpen)
+        {
+            CloseRadialMenu();
+        }
+        else
+        {
+            OpenRadialMenu();
+        }
+    }
+
     private bool ShouldKeepRadialMenuOpenAfterLeafClick()
     {
         return this.CurrentSettings == null ||
@@ -1118,6 +1122,7 @@ internal sealed partial class OperationForm
 
     private void OpenRadialMenu()
     {
+        PrepareForRadialOverlayShow();
         this.radialMenuOpen = true;
         this.radialSelectionPathIds = new List<string>();
         this.radialLastInteractionUtc = DateTime.UtcNow;
@@ -2509,6 +2514,7 @@ internal sealed partial class OperationForm
             "OperationRadialCoreAutoHideKeepAliveEnabled",
             "OperationRadialKeepOpenAfterLeafClickEnabled",
             "OperationSettingsLogicExtensionEnabled",
+            "SpecBoardAutoPopupEnabled",
             "BurnInHiddenModeColorProtectionEnabled",
             "HoverOpacityRevealDelayEnabled",
             "HoverOpacityCoverEnabled",

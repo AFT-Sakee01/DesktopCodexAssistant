@@ -106,7 +106,7 @@ internal static class Logger
                 Directory.CreateDirectory(DirectoryPath);
                 StringBuilder builder = new StringBuilder();
                 builder.AppendLine();
-                builder.Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture));
+                builder.Append(DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:sszzz", CultureInfo.InvariantCulture));
                 builder.Append(" ");
                 builder.Append(string.IsNullOrWhiteSpace(label) ? "网络检测" : label.Trim());
                 builder.Append(" 触发=");
@@ -161,6 +161,22 @@ internal static class Logger
 
     internal static void RunStoragePolicySelfTest()
     {
+        // Guard the forensic timestamp contract: local time with a real offset, never a fake "Z".
+        string formattedLine = FormatLine("INFO", "utc-offset-selftest");
+        string timestampText = formattedLine.Substring(0, formattedLine.IndexOf(" [", StringComparison.Ordinal));
+        DateTimeOffset parsedTimestamp;
+        if (timestampText.EndsWith("Z", StringComparison.OrdinalIgnoreCase) ||
+            !DateTimeOffset.TryParseExact(
+                timestampText,
+                "yyyy-MM-dd HH:mm:sszzz",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out parsedTimestamp) ||
+            parsedTimestamp.Offset != DateTimeOffset.Now.Offset)
+        {
+            throw new InvalidOperationException("Logger timestamp self-test failed: expected local time with explicit UTC offset, got '" + timestampText + "'.");
+        }
+
         string testDirectory = Path.Combine(
             Path.GetTempPath(),
             ProductIdentity.MachineName + "-LoggerTest-" + Guid.NewGuid().ToString("N"));
@@ -204,7 +220,10 @@ internal static class Logger
 
     private static string FormatLine(string level, string message)
     {
-        return DateTime.Now.ToString("u") + " [" + level + "] " + message + Environment.NewLine;
+        // Local time must carry its real UTC offset. The old "u" format stamped local time with a
+        // "Z" suffix, which made the text log unusable as UTC evidence during forensic timelines.
+        return DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:sszzz", CultureInfo.InvariantCulture) +
+            " [" + level + "] " + message + Environment.NewLine;
     }
 
     private static void FlushInfoBufferLocked()

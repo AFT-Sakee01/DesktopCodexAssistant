@@ -241,6 +241,21 @@ internal sealed class WidgetSettings
     public const int MaxConnectionCheckWidth = 1000;
     public const int MinConnectionCheckHeight = 56;
     public const int MaxConnectionCheckHeight = 320;
+    public const int MinSpecBoardWidth = 320;
+    public const int MaxSpecBoardWidth = 700;
+    public const int MinSpecBoardHeight = 240;
+    public const int MaxSpecBoardHeight = 800;
+    public const int MinSpecBoardAutoHideSeconds = 0;
+    public const int MaxSpecBoardAutoHideSeconds = 600;
+    public const int DefaultSpecBoardAutoHideSeconds = 20;
+    public const int MinSpecBoardAutoPopupSeconds = 1;
+    public const int MaxSpecBoardAutoPopupSeconds = 120;
+    public const int DefaultSpecBoardAutoPopupSeconds = 5;
+    public const string DefaultSpecBoardLedgerPath = @"D:\E_Drive_Files\Codexproject\_spec_board\SPEC_BOARD.jsonl";
+    public const int MinSpecBoardManagerWidth = 560;
+    public const int MaxSpecBoardManagerWidth = 1000;
+    public const int MinSpecBoardManagerHeight = 400;
+    public const int MaxSpecBoardManagerHeight = 900;
     public const int MinConnectionCheckIntervalSeconds = 15;
     public const int MaxConnectionCheckIntervalSeconds = 600;
     public const int DefaultConnectionCheckIntervalSeconds = 60;
@@ -294,7 +309,7 @@ internal sealed class WidgetSettings
     public const int MinResolutionCompatibilityScalePercent = 40;
     public const int MaxResolutionCompatibilityScalePercent = 200;
     public const int DefaultResolutionCompatibilityScalePercent = 100;
-    private const int CurrentSettingsVersion = 63;
+    private const int CurrentSettingsVersion = 69;
     private const int EffectivePerformanceModeCacheMs = 2000;
     private static readonly object EffectivePerformanceModeSync = new object();
     private static DateTime effectivePerformanceModeCacheUtc = DateTime.MinValue;
@@ -444,6 +459,17 @@ internal sealed class WidgetSettings
     public int ConnectionCheckBorderTransparencyPercent { get; set; }
     public int ConnectionCheckIntervalSeconds { get; set; }
     public int ConnectionCheckManualRefreshToken { get; set; }
+    public int SpecBoardWidth { get; set; }
+    public int SpecBoardHeight { get; set; }
+    public int SpecBoardLeftX { get; set; }
+    public int SpecBoardBottomY { get; set; }
+    public int SpecBoardAutoHideSeconds { get; set; }
+    public bool SpecBoardAutoPopupEnabled { get; set; }
+    public int SpecBoardAutoPopupSeconds { get; set; }
+    public string SpecBoardLedgerPath { get; set; }
+    public int SpecBoardManagerWidth { get; set; }
+    public int SpecBoardManagerHeight { get; set; }
+    public bool SpecBoardManagerDangerZoneRequiresTypedConfirm { get; set; }
     public int OperationButtonSize { get; set; }
     public int OperationLeftOffset { get; set; }
     public int OperationBottomOffset { get; set; }
@@ -454,6 +480,7 @@ internal sealed class WidgetSettings
     public bool ForceShowForegroundFpsEnabled { get; set; }
     public bool SeelenDockForegroundPulseEnabled { get; set; }
     public bool WinDRecoveryPulseEnabled { get; set; }
+    public bool CodexPetZOrderProtectionEnabled { get; set; }
     public bool PowerResumeRestartEnabled { get; set; }
     public bool FallbackDisconnectedDisplaysEnabled { get; set; }
     public string MainDisplayDeviceName { get; set; }
@@ -572,6 +599,7 @@ internal sealed class WidgetSettings
     public bool RadarClockAutoSwitchModelEnabled { get; set; }
     public RadarClockTimeDisplayMode RadarClockTimeDisplayMode { get; set; }
     public bool CodexRadarSpeedWindowCountdownEnabled { get; set; }
+    public bool CodexRadarQuotaResetRainbowEnabled { get; set; }
     public string ClaudeRadarModelKey { get; set; }
     public DisplayTimeZoneMode DisplayTimeZoneMode { get; set; }
     public string DisplayTimeZoneId { get; set; }
@@ -695,6 +723,17 @@ internal sealed class WidgetSettings
         this.ConnectionCheckBorderTransparencyPercent = defaults.ConnectionCheckBorderTransparencyPercent;
         this.ConnectionCheckIntervalSeconds = defaults.ConnectionCheckIntervalSeconds;
         this.ConnectionCheckManualRefreshToken = 0;
+        this.SpecBoardWidth = defaults.SpecBoardWidth;
+        this.SpecBoardHeight = defaults.SpecBoardHeight;
+        this.SpecBoardLeftX = defaults.SpecBoardLeftX;
+        this.SpecBoardBottomY = defaults.SpecBoardBottomY;
+        this.SpecBoardAutoHideSeconds = defaults.SpecBoardAutoHideSeconds;
+        this.SpecBoardAutoPopupEnabled = defaults.SpecBoardAutoPopupEnabled;
+        this.SpecBoardAutoPopupSeconds = defaults.SpecBoardAutoPopupSeconds;
+        this.SpecBoardLedgerPath = defaults.SpecBoardLedgerPath;
+        this.SpecBoardManagerWidth = defaults.SpecBoardManagerWidth;
+        this.SpecBoardManagerHeight = defaults.SpecBoardManagerHeight;
+        this.SpecBoardManagerDangerZoneRequiresTypedConfirm = defaults.SpecBoardManagerDangerZoneRequiresTypedConfirm;
         this.OperationButtonSize = defaults.OperationButtonSize;
         this.OperationLeftOffset = defaults.OperationLeftOffset;
         this.OperationBottomOffset = defaults.OperationBottomOffset;
@@ -705,6 +744,7 @@ internal sealed class WidgetSettings
         this.ForceShowForegroundFpsEnabled = defaults.ForceShowForegroundFpsEnabled;
         this.SeelenDockForegroundPulseEnabled = defaults.SeelenDockForegroundPulseEnabled;
         this.WinDRecoveryPulseEnabled = defaults.WinDRecoveryPulseEnabled;
+        this.CodexPetZOrderProtectionEnabled = defaults.CodexPetZOrderProtectionEnabled;
         this.PowerResumeRestartEnabled = defaults.PowerResumeRestartEnabled;
         this.FallbackDisconnectedDisplaysEnabled = defaults.FallbackDisconnectedDisplaysEnabled;
         this.MainDisplayDeviceName = defaults.MainDisplayDeviceName;
@@ -817,6 +857,7 @@ internal sealed class WidgetSettings
         this.RadarClockAutoSwitchModelEnabled = defaults.RadarClockAutoSwitchModelEnabled;
         this.RadarClockTimeDisplayMode = defaults.RadarClockTimeDisplayMode;
         this.CodexRadarSpeedWindowCountdownEnabled = defaults.CodexRadarSpeedWindowCountdownEnabled;
+        this.CodexRadarQuotaResetRainbowEnabled = defaults.CodexRadarQuotaResetRainbowEnabled;
         this.ClaudeRadarModelKey = defaults.ClaudeRadarModelKey;
         this.DisplayTimeZoneMode = defaults.DisplayTimeZoneMode;
         this.DisplayTimeZoneId = defaults.DisplayTimeZoneId;
@@ -904,6 +945,17 @@ internal sealed class WidgetSettings
         settings.ConnectionCheckBorderTransparencyPercent = 100;
         settings.ConnectionCheckIntervalSeconds = 600;
         settings.ConnectionCheckManualRefreshToken = 0;
+        settings.SpecBoardWidth = 648;
+        settings.SpecBoardHeight = 400;
+        settings.SpecBoardLeftX = -1;
+        settings.SpecBoardBottomY = -1;
+        settings.SpecBoardAutoHideSeconds = DefaultSpecBoardAutoHideSeconds;
+        settings.SpecBoardAutoPopupEnabled = true;
+        settings.SpecBoardAutoPopupSeconds = DefaultSpecBoardAutoPopupSeconds;
+        settings.SpecBoardLedgerPath = DefaultSpecBoardLedgerPath;
+        settings.SpecBoardManagerWidth = 720;
+        settings.SpecBoardManagerHeight = 520;
+        settings.SpecBoardManagerDangerZoneRequiresTypedConfirm = true;
         settings.OperationButtonSize = 86;
         settings.OperationLeftOffset = 0;
         settings.OperationBottomOffset = 0;
@@ -914,6 +966,7 @@ internal sealed class WidgetSettings
         settings.ForceShowForegroundFpsEnabled = false;
         settings.SeelenDockForegroundPulseEnabled = true;
         settings.WinDRecoveryPulseEnabled = true;
+        settings.CodexPetZOrderProtectionEnabled = true;
         settings.PowerResumeRestartEnabled = true;
         settings.FallbackDisconnectedDisplaysEnabled = true;
         settings.MainDisplayDeviceName = string.Empty;
@@ -1032,6 +1085,7 @@ internal sealed class WidgetSettings
         settings.RadarClockAutoSwitchModelEnabled = true;
         settings.RadarClockTimeDisplayMode = RadarClockTimeDisplayMode.Utc;
         settings.CodexRadarSpeedWindowCountdownEnabled = true;
+        settings.CodexRadarQuotaResetRainbowEnabled = true;
         settings.ClaudeRadarModelKey = string.Empty;
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
         settings.DisplayTimeZoneId = TimeZoneInfo.Local.Id;
@@ -1147,6 +1201,17 @@ internal sealed class WidgetSettings
         settings.ConnectionCheckTransparencyPercent = 20;
         settings.ConnectionCheckBorderTransparencyPercent = 100;
         settings.ConnectionCheckIntervalSeconds = 600;
+        settings.SpecBoardWidth = 648;
+        settings.SpecBoardHeight = 400;
+        settings.SpecBoardLeftX = -1;
+        settings.SpecBoardBottomY = -1;
+        settings.SpecBoardAutoHideSeconds = DefaultSpecBoardAutoHideSeconds;
+        settings.SpecBoardAutoPopupEnabled = true;
+        settings.SpecBoardAutoPopupSeconds = DefaultSpecBoardAutoPopupSeconds;
+        settings.SpecBoardLedgerPath = DefaultSpecBoardLedgerPath;
+        settings.SpecBoardManagerWidth = 720;
+        settings.SpecBoardManagerHeight = 520;
+        settings.SpecBoardManagerDangerZoneRequiresTypedConfirm = true;
         settings.OperationButtonSize = 86;
         settings.OperationLeftOffset = 0;
         settings.OperationBottomOffset = 0;
@@ -1157,6 +1222,7 @@ internal sealed class WidgetSettings
         settings.ForceShowForegroundFpsEnabled = false;
         settings.SeelenDockForegroundPulseEnabled = true;
         settings.WinDRecoveryPulseEnabled = true;
+        settings.CodexPetZOrderProtectionEnabled = true;
         settings.PowerResumeRestartEnabled = true;
         settings.FallbackDisconnectedDisplaysEnabled = true;
         settings.MainDisplayDeviceName = "";
@@ -1283,6 +1349,7 @@ internal sealed class WidgetSettings
         settings.RadarClockAutoSwitchModelEnabled = true;
         settings.RadarClockTimeDisplayMode = RadarClockTimeDisplayMode.Utc;
         settings.CodexRadarSpeedWindowCountdownEnabled = true;
+        settings.CodexRadarQuotaResetRainbowEnabled = true;
         settings.ClaudeRadarModelKey = "";
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
         settings.DisplayTimeZoneId = "Tokyo Standard Time";
@@ -1382,6 +1449,17 @@ internal sealed class WidgetSettings
             ConnectionCheckBorderTransparencyPercent = this.ConnectionCheckBorderTransparencyPercent,
             ConnectionCheckIntervalSeconds = this.ConnectionCheckIntervalSeconds,
             ConnectionCheckManualRefreshToken = this.ConnectionCheckManualRefreshToken,
+            SpecBoardWidth = this.SpecBoardWidth,
+            SpecBoardHeight = this.SpecBoardHeight,
+            SpecBoardLeftX = this.SpecBoardLeftX,
+            SpecBoardBottomY = this.SpecBoardBottomY,
+            SpecBoardAutoHideSeconds = this.SpecBoardAutoHideSeconds,
+            SpecBoardAutoPopupEnabled = this.SpecBoardAutoPopupEnabled,
+            SpecBoardAutoPopupSeconds = this.SpecBoardAutoPopupSeconds,
+            SpecBoardLedgerPath = this.SpecBoardLedgerPath,
+            SpecBoardManagerWidth = this.SpecBoardManagerWidth,
+            SpecBoardManagerHeight = this.SpecBoardManagerHeight,
+            SpecBoardManagerDangerZoneRequiresTypedConfirm = this.SpecBoardManagerDangerZoneRequiresTypedConfirm,
             OperationButtonSize = this.OperationButtonSize,
             OperationLeftOffset = this.OperationLeftOffset,
             OperationBottomOffset = this.OperationBottomOffset,
@@ -1392,6 +1470,7 @@ internal sealed class WidgetSettings
             ForceShowForegroundFpsEnabled = this.ForceShowForegroundFpsEnabled,
             SeelenDockForegroundPulseEnabled = this.SeelenDockForegroundPulseEnabled,
             WinDRecoveryPulseEnabled = this.WinDRecoveryPulseEnabled,
+            CodexPetZOrderProtectionEnabled = this.CodexPetZOrderProtectionEnabled,
             PowerResumeRestartEnabled = this.PowerResumeRestartEnabled,
             FallbackDisconnectedDisplaysEnabled = this.FallbackDisconnectedDisplaysEnabled,
             MainDisplayDeviceName = this.MainDisplayDeviceName,
@@ -1510,6 +1589,7 @@ internal sealed class WidgetSettings
             RadarClockAutoSwitchModelEnabled = this.RadarClockAutoSwitchModelEnabled,
             RadarClockTimeDisplayMode = this.RadarClockTimeDisplayMode,
             CodexRadarSpeedWindowCountdownEnabled = this.CodexRadarSpeedWindowCountdownEnabled,
+            CodexRadarQuotaResetRainbowEnabled = this.CodexRadarQuotaResetRainbowEnabled,
             ClaudeRadarModelKey = this.ClaudeRadarModelKey,
             DisplayTimeZoneMode = this.DisplayTimeZoneMode,
             DisplayTimeZoneId = this.DisplayTimeZoneId,
@@ -1597,6 +1677,15 @@ internal sealed class WidgetSettings
         this.ConnectionCheckTransparencyPercent = Clamp(this.ConnectionCheckTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
         this.ConnectionCheckBorderTransparencyPercent = Clamp(this.ConnectionCheckBorderTransparencyPercent, MinBorderTransparency, MaxBorderTransparency);
         this.ConnectionCheckIntervalSeconds = Clamp(this.ConnectionCheckIntervalSeconds, MinConnectionCheckIntervalSeconds, MaxConnectionCheckIntervalSeconds);
+        this.SpecBoardWidth = Clamp(this.SpecBoardWidth, MinSpecBoardWidth, MaxSpecBoardWidth);
+        this.SpecBoardHeight = Clamp(this.SpecBoardHeight, MinSpecBoardHeight, MaxSpecBoardHeight);
+        this.SpecBoardLeftX = NormalizeSpecBoardAnchor(this.SpecBoardLeftX);
+        this.SpecBoardBottomY = NormalizeSpecBoardAnchor(this.SpecBoardBottomY);
+        this.SpecBoardAutoHideSeconds = Clamp(this.SpecBoardAutoHideSeconds, MinSpecBoardAutoHideSeconds, MaxSpecBoardAutoHideSeconds);
+        this.SpecBoardAutoPopupSeconds = Clamp(this.SpecBoardAutoPopupSeconds, MinSpecBoardAutoPopupSeconds, MaxSpecBoardAutoPopupSeconds);
+        this.SpecBoardLedgerPath = NormalizeSpecBoardLedgerPath(this.SpecBoardLedgerPath);
+        this.SpecBoardManagerWidth = Clamp(this.SpecBoardManagerWidth, MinSpecBoardManagerWidth, MaxSpecBoardManagerWidth);
+        this.SpecBoardManagerHeight = Clamp(this.SpecBoardManagerHeight, MinSpecBoardManagerHeight, MaxSpecBoardManagerHeight);
         if (!Enum.IsDefined(typeof(PowerThermalAutoDirection), this.PowerThermalAutoDirection))
         {
             this.PowerThermalAutoDirection = PowerThermalAutoDirection.Left;
@@ -1987,6 +2076,60 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (settingsVersion > 0 && settingsVersion < 64)
+        {
+            settings.SpecBoardWidth = 432;
+            settings.SpecBoardHeight = 400;
+            settings.SpecBoardLeftX = -1;
+            settings.SpecBoardBottomY = -1;
+            settings.SpecBoardAutoHideSeconds = DefaultSpecBoardAutoHideSeconds;
+            settings.SpecBoardLedgerPath = DefaultSpecBoardLedgerPath;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 65)
+        {
+            // Version 65 widens the board horizontally while preserving its left anchor. Apply
+            // the factor once during migration so existing explicit widths expand with the UI.
+            settings.SpecBoardWidth = Math.Min(
+                MaxSpecBoardWidth,
+                (int)Math.Round(settings.SpecBoardWidth * 1.5, MidpointRounding.AwayFromZero));
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 66)
+        {
+            settings.SpecBoardManagerWidth = 720;
+            settings.SpecBoardManagerHeight = 520;
+            settings.SpecBoardManagerDangerZoneRequiresTypedConfirm = true;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 67)
+        {
+            // Existing installations opt in once so upgrading preserves the new product default.
+            // An explicit choice is then retained by the Version 67 persisted key.
+            settings.CodexPetZOrderProtectionEnabled = true;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 68)
+        {
+            // Quota-reset rainbow celebration defaults on for existing installs; an explicit choice
+            // is retained by the Version 68 persisted key.
+            settings.CodexRadarQuotaResetRainbowEnabled = true;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 69)
+        {
+            // Auto-popup of the Spec board on newly registered specs defaults on for existing
+            // installs; the 5-second dwell is retained by the Version 69 persisted keys.
+            settings.SpecBoardAutoPopupEnabled = true;
+            settings.SpecBoardAutoPopupSeconds = DefaultSpecBoardAutoPopupSeconds;
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2266,6 +2409,17 @@ internal sealed class WidgetSettings
             "ConnectionCheckTransparencyPercent=" + this.ConnectionCheckTransparencyPercent,
             "ConnectionCheckBorderTransparencyPercent=" + this.ConnectionCheckBorderTransparencyPercent,
             "ConnectionCheckIntervalSeconds=" + this.ConnectionCheckIntervalSeconds,
+            "SpecBoardWidth=" + this.SpecBoardWidth,
+            "SpecBoardHeight=" + this.SpecBoardHeight,
+            "SpecBoardLeftX=" + this.SpecBoardLeftX,
+            "SpecBoardBottomY=" + this.SpecBoardBottomY,
+            "SpecBoardAutoHideSeconds=" + this.SpecBoardAutoHideSeconds,
+            "SpecBoardAutoPopupEnabled=" + this.SpecBoardAutoPopupEnabled,
+            "SpecBoardAutoPopupSeconds=" + this.SpecBoardAutoPopupSeconds,
+            "SpecBoardLedgerPath=" + this.SpecBoardLedgerPath,
+            "SpecBoardManagerWidth=" + this.SpecBoardManagerWidth,
+            "SpecBoardManagerHeight=" + this.SpecBoardManagerHeight,
+            "SpecBoardManagerDangerZoneRequiresTypedConfirm=" + this.SpecBoardManagerDangerZoneRequiresTypedConfirm,
             "OperationButtonSize=" + this.OperationButtonSize,
             "OperationLeftOffset=" + this.OperationLeftOffset,
             "OperationBottomOffset=" + this.OperationBottomOffset,
@@ -2276,6 +2430,7 @@ internal sealed class WidgetSettings
             "ForceShowForegroundFpsEnabled=" + this.ForceShowForegroundFpsEnabled,
             "SeelenDockForegroundPulseEnabled=" + this.SeelenDockForegroundPulseEnabled,
             "WinDRecoveryPulseEnabled=" + this.WinDRecoveryPulseEnabled,
+            "CodexPetZOrderProtectionEnabled=" + this.CodexPetZOrderProtectionEnabled,
             "PowerResumeRestartEnabled=" + this.PowerResumeRestartEnabled,
             "FallbackDisconnectedDisplaysEnabled=" + this.FallbackDisconnectedDisplaysEnabled,
             "MainDisplayDeviceName=" + this.MainDisplayDeviceName,
@@ -2402,6 +2557,7 @@ internal sealed class WidgetSettings
             "RadarClockAutoSwitchModelEnabled=" + this.RadarClockAutoSwitchModelEnabled,
             "RadarClockTimeDisplayMode=" + this.RadarClockTimeDisplayMode,
             "CodexRadarSpeedWindowCountdownEnabled=" + this.CodexRadarSpeedWindowCountdownEnabled,
+            "CodexRadarQuotaResetRainbowEnabled=" + this.CodexRadarQuotaResetRainbowEnabled,
             "ClaudeRadarModelKey=" + this.ClaudeRadarModelKey,
             "DisplayTimeZoneMode=" + this.DisplayTimeZoneMode,
             "DisplayTimeZoneId=" + this.DisplayTimeZoneId,
@@ -2819,6 +2975,72 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "SpecBoardWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SpecBoardWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SpecBoardHeight = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardLeftX", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SpecBoardLeftX = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardBottomY", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SpecBoardBottomY = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardAutoHideSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SpecBoardAutoHideSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardAutoPopupEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.SpecBoardAutoPopupEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardAutoPopupSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SpecBoardAutoPopupSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardLedgerPath", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.SpecBoardLedgerPath = value;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardManagerWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SpecBoardManagerWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardManagerHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SpecBoardManagerHeight = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardManagerDangerZoneRequiresTypedConfirm", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.SpecBoardManagerDangerZoneRequiresTypedConfirm = boolValue;
+            return;
+        }
+
         if (string.Equals(key, "OperationButtonSize", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
         {
             settings.OperationButtonSize = intValue;
@@ -2943,6 +3165,13 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "OperationDisplayDeviceName", StringComparison.OrdinalIgnoreCase))
         {
             settings.OperationDisplayDeviceName = NormalizeDisplayDeviceName(value);
+            return;
+        }
+
+        if (string.Equals(key, "CodexPetZOrderProtectionEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.CodexPetZOrderProtectionEnabled = boolValue;
             return;
         }
 
@@ -3772,6 +4001,12 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "CodexRadarSpeedWindowCountdownEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.CodexRadarSpeedWindowCountdownEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexRadarQuotaResetRainbowEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.CodexRadarQuotaResetRainbowEnabled = boolValue;
             return;
         }
 
@@ -4956,12 +5191,19 @@ internal sealed class WidgetSettings
 
     internal static void RunCompatibilitySelfTest()
     {
+        RunSpecBoardSettingsSelfTest();
         WidgetSettings legacy = CreateDefaults();
         ApplyValue(legacy, "CtrlDRecoveryPulseEnabled", "False");
         AssertLayout(!legacy.WinDRecoveryPulseEnabled, "legacy Ctrl+D setting should migrate to Win+D");
 
         ApplyValue(legacy, "WinDRecoveryPulseEnabled", "True");
         AssertLayout(legacy.WinDRecoveryPulseEnabled, "Win+D setting should override the migrated value");
+
+        AssertLayout(legacy.CodexPetZOrderProtectionEnabled, "Codex pet z-order protection should default enabled");
+        ApplyValue(legacy, "CodexPetZOrderProtectionEnabled", "False");
+        AssertLayout(!legacy.CodexPetZOrderProtectionEnabled, "Codex pet z-order protection should parse false");
+        ApplyValue(legacy, "CodexPetZOrderProtectionEnabled", "True");
+        AssertLayout(legacy.CodexPetZOrderProtectionEnabled, "Codex pet z-order protection should parse true");
 
         ApplyValue(legacy, "CodexRadarSoftwareMode", "Claude");
         AssertLayout(legacy.CodexRadarSoftwareMode == CodexRadarSoftwareMode.Claude, "Codex Radar software mode should parse Claude");
@@ -4980,6 +5222,11 @@ internal sealed class WidgetSettings
         AssertLayout(!legacy.CodexRadarSpeedWindowCountdownEnabled, "speed-window countdown setting should parse false");
         ApplyValue(legacy, "CodexRadarSpeedWindowCountdownEnabled", "True");
         AssertLayout(legacy.CodexRadarSpeedWindowCountdownEnabled, "speed-window countdown setting should parse true");
+        AssertLayout(legacy.CodexRadarQuotaResetRainbowEnabled, "quota-reset rainbow should default enabled");
+        ApplyValue(legacy, "CodexRadarQuotaResetRainbowEnabled", "False");
+        AssertLayout(!legacy.CodexRadarQuotaResetRainbowEnabled, "quota-reset rainbow setting should parse false");
+        ApplyValue(legacy, "CodexRadarQuotaResetRainbowEnabled", "True");
+        AssertLayout(legacy.CodexRadarQuotaResetRainbowEnabled, "quota-reset rainbow setting should parse true");
         ApplyValue(legacy, "CodexRadarEnabled", "False");
         AssertLayout(!legacy.CodexRadarEnabled, "codex radar enabled setting should parse false");
         ApplyValue(legacy, "CodexRadarEnabled", "True");
@@ -5369,6 +5616,107 @@ internal sealed class WidgetSettings
         settings.OperationPrimaryPanelMode = OperationPrimaryPanelMode.Hidden;
         settings.ResolutionCompatibilityScalePercent = 125;
         settings.MetricOrder = new string[] { MetricNpu, MetricGpu, MetricNetwork, MetricDisk, MetricMemory, MetricCpu };
+    }
+
+    private static void RunSpecBoardSettingsSelfTest()
+    {
+        WidgetSettings defaults = CreateDefaults();
+        AssertLayout(
+            defaults.SpecBoardWidth == 648 && defaults.SpecBoardHeight == 400 &&
+            defaults.SpecBoardLeftX == -1 && defaults.SpecBoardBottomY == -1 &&
+            defaults.SpecBoardAutoHideSeconds == 20 &&
+            defaults.SpecBoardAutoPopupEnabled && defaults.SpecBoardAutoPopupSeconds == 5 &&
+            string.Equals(defaults.SpecBoardLedgerPath, DefaultSpecBoardLedgerPath, StringComparison.Ordinal) &&
+            defaults.SpecBoardManagerWidth == 720 && defaults.SpecBoardManagerHeight == 520 &&
+            defaults.SpecBoardManagerDangerZoneRequiresTypedConfirm,
+            "Spec Board defaults should cover board and manager settings");
+
+        WidgetSettings clone = defaults.Clone();
+        AssertLayout(
+            clone.SpecBoardWidth == defaults.SpecBoardWidth &&
+            clone.SpecBoardHeight == defaults.SpecBoardHeight &&
+            clone.SpecBoardLeftX == defaults.SpecBoardLeftX &&
+            clone.SpecBoardBottomY == defaults.SpecBoardBottomY &&
+            clone.SpecBoardAutoHideSeconds == defaults.SpecBoardAutoHideSeconds &&
+            clone.SpecBoardAutoPopupEnabled == defaults.SpecBoardAutoPopupEnabled &&
+            clone.SpecBoardAutoPopupSeconds == defaults.SpecBoardAutoPopupSeconds &&
+            string.Equals(clone.SpecBoardLedgerPath, defaults.SpecBoardLedgerPath, StringComparison.Ordinal) &&
+            clone.SpecBoardManagerWidth == defaults.SpecBoardManagerWidth &&
+            clone.SpecBoardManagerHeight == defaults.SpecBoardManagerHeight &&
+            clone.SpecBoardManagerDangerZoneRequiresTypedConfirm == defaults.SpecBoardManagerDangerZoneRequiresTypedConfirm,
+            "Spec Board clone should preserve board and manager settings");
+
+        WidgetSettings low = defaults.Clone();
+        low.SpecBoardAutoHideSeconds = -5;
+        low.SpecBoardAutoPopupSeconds = -5;
+        low.SpecBoardLeftX = -2;
+        low.SpecBoardLedgerPath = "  \"\"  ";
+        low.SpecBoardManagerWidth = -1;
+        low.SpecBoardManagerHeight = -1;
+        low.Normalize();
+        AssertLayout(low.SpecBoardAutoHideSeconds == 0 && low.SpecBoardAutoPopupSeconds == 1 && low.SpecBoardLeftX == -1 &&
+            low.SpecBoardManagerWidth == 560 && low.SpecBoardManagerHeight == 400 &&
+            string.Equals(low.SpecBoardLedgerPath, DefaultSpecBoardLedgerPath, StringComparison.Ordinal), "Spec Board low normalization");
+
+        WidgetSettings high = defaults.Clone();
+        high.SpecBoardWidth = 9999;
+        high.SpecBoardHeight = 9999;
+        high.SpecBoardAutoHideSeconds = 9999;
+        high.SpecBoardAutoPopupSeconds = 9999;
+        high.SpecBoardBottomY = int.MaxValue;
+        high.SpecBoardManagerWidth = 9999;
+        high.SpecBoardManagerHeight = 9999;
+        high.Normalize();
+        AssertLayout(high.SpecBoardWidth == 700 && high.SpecBoardHeight == 800 && high.SpecBoardAutoHideSeconds == 600 && high.SpecBoardAutoPopupSeconds == 120 && high.SpecBoardBottomY == -1 &&
+            high.SpecBoardManagerWidth == 1000 && high.SpecBoardManagerHeight == 900, "Spec Board high normalization");
+
+        string tempRoot = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-specboard-settings-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        try
+        {
+            string path = Path.Combine(tempRoot, "settings.ini");
+            defaults.SpecBoardWidth = 521;
+            defaults.SpecBoardHeight = 477;
+            defaults.SpecBoardLeftX = 111;
+            defaults.SpecBoardBottomY = 777;
+            defaults.SpecBoardAutoHideSeconds = 45;
+            defaults.SpecBoardAutoPopupEnabled = false;
+            defaults.SpecBoardAutoPopupSeconds = 17;
+            defaults.SpecBoardLedgerPath = Path.Combine(tempRoot, "ledger.jsonl");
+            defaults.SpecBoardManagerWidth = 811;
+            defaults.SpecBoardManagerHeight = 633;
+            defaults.SpecBoardManagerDangerZoneRequiresTypedConfirm = false;
+            defaults.SaveToPath(path, true);
+            WidgetSettings loaded = LoadFromPath(path, false);
+            AssertLayout(
+                loaded.SpecBoardWidth == defaults.SpecBoardWidth && loaded.SpecBoardHeight == defaults.SpecBoardHeight &&
+                loaded.SpecBoardLeftX == defaults.SpecBoardLeftX && loaded.SpecBoardBottomY == defaults.SpecBoardBottomY &&
+                loaded.SpecBoardAutoHideSeconds == defaults.SpecBoardAutoHideSeconds &&
+                loaded.SpecBoardAutoPopupEnabled == defaults.SpecBoardAutoPopupEnabled &&
+                loaded.SpecBoardAutoPopupSeconds == defaults.SpecBoardAutoPopupSeconds &&
+                string.Equals(loaded.SpecBoardLedgerPath, defaults.SpecBoardLedgerPath, StringComparison.Ordinal) &&
+                loaded.SpecBoardManagerWidth == defaults.SpecBoardManagerWidth &&
+                loaded.SpecBoardManagerHeight == defaults.SpecBoardManagerHeight &&
+                loaded.SpecBoardManagerDangerZoneRequiresTypedConfirm == defaults.SpecBoardManagerDangerZoneRequiresTypedConfirm,
+                "Spec Board save/load round-trip should preserve board and manager settings");
+
+            File.WriteAllLines(
+                path,
+                new string[] { "Version=64", "SpecBoardWidth=432", "SpecBoardHeight=400" },
+                SharedEncoding.Utf8NoBom);
+            WidgetSettings migrated = LoadFromPath(path, false);
+            AssertLayout(
+                migrated.SpecBoardWidth == 648 && migrated.SpecBoardHeight == 400 &&
+                migrated.SpecBoardManagerWidth == 720 && migrated.SpecBoardManagerHeight == 520 &&
+                migrated.SpecBoardManagerDangerZoneRequiresTypedConfirm,
+                "Spec Board Version 64 width and Version 65 manager settings migration failed");
+        }
+        finally
+        {
+            try { Directory.Delete(tempRoot, true); } catch { }
+        }
+
+        Console.WriteLine("SpecBoard settings: PASS board+manager keys default=648x400/720x520 migrate(v64 432->648,v65 manager defaults) clone save/load normalize");
     }
 
     private static void AssertFullRoundTripEqual(
@@ -5807,6 +6155,17 @@ internal sealed class WidgetSettings
         {
             return 1.0f;
         }
+    }
+
+    private static int NormalizeSpecBoardAnchor(int value)
+    {
+        return value == -1 || (value >= 0 && value <= 1000000) ? value : -1;
+    }
+
+    private static string NormalizeSpecBoardLedgerPath(string value)
+    {
+        string normalized = (value ?? string.Empty).Trim().Trim('"');
+        return normalized.Length == 0 ? DefaultSpecBoardLedgerPath : normalized;
     }
 
     private static int Clamp(int value, int min, int max)

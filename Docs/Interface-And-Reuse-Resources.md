@@ -1,6 +1,6 @@
 # 接口与复用资源汇总
 
-适用版本：1.0.5.03
+适用版本：1.0.5.39
 
 ## 1. 文档用途
 
@@ -65,6 +65,8 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `--test-settings-bindings` | 设置控件绑定测试 |
 | `--test-display-recovery` | 分层窗口显示恢复测试 |
 | `--test-operation-panel` | 操作面板命中遮罩、动画、单飞、FPS 间隔和 SeelenUI 结果映射测试 |
+| `--render-specboard sample/current --out DIR` | 输出 Spec Board 确定性 fixture 或真实只读账本画面 |
+| `--test-specboard-manager` | 验证五态解析、SeenState、管理窗布局/读写、冲突、备份、原子替换、批量、回收站和锁定文件回滚 |
 | `--diagnose-idle-cpu --diagnose-minutes N` | 一次性空闲 CPU/息屏发热归因诊断 |
 
 对应索引：`command.application.cli`
@@ -163,6 +165,8 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `resource_directory.docs` | `Docs` | 技术文档和接口索引 |
 | `resource_directory.legacy_executables` | `Artifacts/LegacyExecutables` | 历史归档，不参与运行 |
 | `resource_directory.build_outputs` | 根目录 EXE 与 `Release/` 正式产物 | ARM64 默认、x64 显式产物、GitHub 发布资产 |
+| `file_format.spec_board.ledger` | `D:\E_Drive_Files\Codexproject\_spec_board\SPEC_BOARD.jsonl` | 跨项目 spec 现状账本，只读；属于用户开发环境资产，不是程序运行态数据 |
+| `file_format.spec_board.projects` | 账本同目录 `PROJECTS.json` | 项目根目录、显示名和 `spec_glob` 注册表，只读 |
 
 ## 8. 窗口模块复用契约
 
@@ -173,6 +177,8 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 - `NetworkMonitorForm`
 - `ConnectionCheckForm`
 - `OperationForm`
+- `SpecBoardForm`（自动弹窗开启时由 `OperationForm` 启动即持有并在隐藏状态监测；关闭时仍可按需创建）
+- `SpecBoardManagerForm`（由 Spec Board footer 或双击两按钮启动器直接打开的独立原生管理工具窗）
 
 监控窗口按职责实现：
 

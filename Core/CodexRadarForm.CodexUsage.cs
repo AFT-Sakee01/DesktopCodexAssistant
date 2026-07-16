@@ -644,6 +644,23 @@ internal sealed partial class CodexRadarForm
         return BuildCodexResetCreditsDisplayText(GetCodexResetCreditsDisplaySnapshot(), DateTime.UtcNow);
     }
 
+    // True when the earliest active reset credit expires within the next 24h - the same "<n>h"
+    // sub-day condition shown in the RS label, used to turn the two quota rings rainbow. Cached
+    // snapshot only; never triggers a token read or network request from the paint path.
+    private bool HasSubDayActiveResetCredit(DateTime nowUtc)
+    {
+        CodexResetCreditsSnapshot snapshot = GetCodexResetCreditsDisplaySnapshot();
+        DateTime expirationUtc;
+        if (snapshot == null || !snapshot.Known ||
+            !snapshot.TryGetEarliestActiveExpirationUtc(nowUtc, out expirationUtc))
+        {
+            return false;
+        }
+
+        double hours = (expirationUtc - nowUtc).TotalHours;
+        return hours > 0.0 && hours <= 24.0;
+    }
+
     private static string BuildCodexResetCreditsDisplayText(CodexResetCreditsSnapshot snapshot, DateTime nowUtc)
     {
         if (snapshot == null || !snapshot.Known)
@@ -658,7 +675,7 @@ internal sealed partial class CodexRadarForm
             return "RS:" + Math.Max(0, count).ToString(CultureInfo.InvariantCulture);
         }
 
-        return "RS:" + count.ToString(CultureInfo.InvariantCulture) + " " +
+        return "RS:" + count.ToString(CultureInfo.InvariantCulture) + "-" +
             FormatCodexResetCreditRemaining(nowUtc, expirationUtc);
     }
 
@@ -667,12 +684,15 @@ internal sealed partial class CodexRadarForm
         double totalHours = Math.Max(0.0, (expirationUtc - nowUtc).TotalHours);
         if (totalHours <= 24.0)
         {
+            // Under a day the earliest reset is imminent: show whole hours as "<n>h" (this is also
+            // the sub-day condition that turns the two quota rings rainbow).
             int hours = Math.Max(0, (int)Math.Ceiling(totalHours));
-            return hours.ToString(CultureInfo.InvariantCulture) + "小时";
+            return hours.ToString(CultureInfo.InvariantCulture) + "h";
         }
 
+        // A day or more away: whole days as "<n>d" (ASCII unit, no CJK).
         int days = Math.Max(1, (int)Math.Ceiling(totalHours / 24.0));
-        return days.ToString(CultureInfo.InvariantCulture) + "天";
+        return days.ToString(CultureInfo.InvariantCulture) + "d";
     }
 
     private static CodexResetCreditsResult ReadCodexResetCredits(WidgetSettings settings)
@@ -1089,6 +1109,8 @@ internal sealed partial class CodexRadarForm
             return BuildCodexProviderUsageError(tokenConfigured, ServiceHealthState.Incomplete, "NO_USAGE", "数据不完整");
         }
 
+        ApplyFiveHourLimitAbsence(snapshot);
+
         snapshot.SourceUpdatedUtc = DateTime.UtcNow;
         snapshot.SourceUpdatedKnown = true;
         snapshot.ProviderRawResponseBody = content;
@@ -1125,6 +1147,45 @@ internal sealed partial class CodexRadarForm
         if (!TryGetProviderUsageUsedPercent(slot, out usedPercent, out usedFieldName, out rawUsedValue))
         {
             return false;
+        }
+
+        // Route by the window's actual duration when the payload declares one. Since the provider
+        // temporarily lifted the 5h limit, "primary_window" can BE the weekly window
+        // (limit_window_seconds=604800) with secondary_window null - positional mapping then poured
+        // the weekly quota into the five-hour ring. Slot position is only a fallback for payloads
+        // that do not carry a duration.
+        double windowSeconds;
+        bool windowKnown = TryGetQuotaNumber(slot, "limit_window_seconds", out windowSeconds) ||
+            TryGetQuotaNumber(slot, "window_seconds", out windowSeconds);
+        if (!windowKnown)
+        {
+            double windowMinutes;
+            if (TryGetQuotaNumber(slot, "window_minutes", out windowMinutes) ||
+                TryGetQuotaNumber(slot, "limit_window_minutes", out windowMinutes))
+            {
+                windowSeconds = windowMinutes * 60.0;
+                windowKnown = true;
+            }
+        }
+
+        if (windowKnown && windowSeconds > 0.0)
+        {
+            fiveHour = windowSeconds <= FiveHourWindowRouteMaxSeconds;
+        }
+
+        // For duration-less positional guesses only: do not overwrite an already-routed ring while
+        // the other ring is still empty. A slot whose declared duration routed it must stay on that
+        // ring - a second weekly-length window must never spill into the five-hour ring.
+        if (!windowKnown)
+        {
+            if (fiveHour && snapshot.FiveHourUsageDiagnosticKnown && !snapshot.WeeklyUsageDiagnosticKnown)
+            {
+                fiveHour = false;
+            }
+            else if (!fiveHour && snapshot.WeeklyUsageDiagnosticKnown && !snapshot.FiveHourUsageDiagnosticKnown)
+            {
+                fiveHour = true;
+            }
         }
 
         int remaining = ClampPercent((int)Math.Round(100.0 - usedPercent));
@@ -1360,13 +1421,13 @@ internal sealed partial class CodexRadarForm
             !result.Success ||
             result.Snapshot == null ||
             result.Snapshot.GetActiveCount(nowUtc) != 3 ||
-            !string.Equals(BuildCodexResetCreditsDisplayText(result.Snapshot, nowUtc), "RS:3 17小时", StringComparison.Ordinal))
+            !string.Equals(BuildCodexResetCreditsDisplayText(result.Snapshot, nowUtc), "RS:3-17h", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Codex reset credits self-test failed: hourly display.");
         }
 
         DateTime lateUtc = new DateTime(2026, 7, 8, 18, 0, 0, DateTimeKind.Utc);
-        if (!string.Equals(BuildCodexResetCreditsDisplayText(result.Snapshot, lateUtc), "RS:2 7小时", StringComparison.Ordinal))
+        if (!string.Equals(BuildCodexResetCreditsDisplayText(result.Snapshot, lateUtc), "RS:2-7h", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Codex reset credits self-test failed: expired-card filtering.");
         }
@@ -1376,7 +1437,7 @@ internal sealed partial class CodexRadarForm
         daySnapshot.ReportedCount = 1;
         daySnapshot.AllExpirationTimesKnown = true;
         daySnapshot.ExpirationTimesUtc.Add(nowUtc.AddHours(25.0));
-        if (!string.Equals(BuildCodexResetCreditsDisplayText(daySnapshot, nowUtc), "RS:1 2天", StringComparison.Ordinal))
+        if (!string.Equals(BuildCodexResetCreditsDisplayText(daySnapshot, nowUtc), "RS:1-2d", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Codex reset credits self-test failed: day display.");
         }

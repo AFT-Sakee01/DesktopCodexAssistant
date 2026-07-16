@@ -47,6 +47,14 @@ Operation panel self-test:
 .\DesktopCodexAssistant.exe --test-operation-panel
 ```
 
+Spec Board render samples:
+
+```powershell
+.\DesktopCodexAssistant.exe --render-specboard sample --out .\_build\specboard-sample
+.\DesktopCodexAssistant.exe --render-specboard current --out .\_build\specboard-current
+.\DesktopCodexAssistant.exe --test-specboard-manager
+```
+
 Radar runtime diagnosis:
 
 ```powershell
@@ -71,4 +79,5 @@ When the renamed application starts for the first time, it migrates existing set
 - [Machine-readable interface index](Docs/Interfaces/INTERFACE_INDEX.jsonl)
 - [Machine-readable feature index](Docs/Indexes/FEATURE_INDEX.jsonl)
 - [Operation panel interaction and performance execution spec](Docs/Technical/OperationPanel-Interaction-And-Performance-SPEC-v1.0.2.64-20260616-030809.md)
+- [Spec Board architecture](Docs/SpecBoard-Architecture.md)
 - [Settings UI design alternatives](Docs/Technical/Codex-Settings-UI-Design-Alternatives-v1.0.2.91-20260627.md)

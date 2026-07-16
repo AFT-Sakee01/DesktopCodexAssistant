@@ -64,6 +64,11 @@ internal sealed partial class CodexRadarForm
             this.FiveHourRejectedIdentity = new RejectedIdentityPersistenceState();
             this.WeeklyRejectedIdentity = new RejectedIdentityPersistenceState();
             this.WeeklyQuotaAtFiveHourWindowStartPercent = -1;
+            this.FiveHourLastConsumingAcceptUtc = DateTime.MinValue;
+            this.WeeklyLastConsumingAcceptUtc = DateTime.MinValue;
+            this.FiveHourLastNewbornAcceptUtc = DateTime.MinValue;
+            this.WeeklyLastNewbornAcceptUtc = DateTime.MinValue;
+            this.WeeklyResetRainbowActive = false;
             this.Protection = new QuotaProtectionState();
         }
 
@@ -80,6 +85,15 @@ internal sealed partial class CodexRadarForm
         public RejectedIdentityPersistenceState FiveHourRejectedIdentity { get; private set; }
         public RejectedIdentityPersistenceState WeeklyRejectedIdentity { get; private set; }
         public int WeeklyQuotaAtFiveHourWindowStartPercent { get; set; }
+        public DateTime FiveHourLastConsumingAcceptUtc { get; set; }
+        public DateTime WeeklyLastConsumingAcceptUtc { get; set; }
+        public DateTime FiveHourLastNewbornAcceptUtc { get; set; }
+        public DateTime WeeklyLastNewbornAcceptUtc { get; set; }
+        // Latched true when the accepted weekly balance crosses up into the reset band (>=95) and
+        // held until it falls below the exit band (<90). Drives the rainbow quota-reset celebration.
+        // In-memory only: it can only be set by a live accepted upward crossing, so it never
+        // false-fires on startup/cache load.
+        public bool WeeklyResetRainbowActive { get; set; }
         public QuotaProtectionState Protection { get; private set; }
     }
 
@@ -90,12 +104,14 @@ internal sealed partial class CodexRadarForm
     {
         public DateTime ResetLocal { get; set; }
         public DateTime FirstSeenUtc { get; set; }
+        public DateTime LastSeenUtc { get; set; }
         public int Count { get; set; }
 
         public void Reset()
         {
             this.ResetLocal = DateTime.MinValue;
             this.FirstSeenUtc = DateTime.MinValue;
+            this.LastSeenUtc = DateTime.MinValue;
             this.Count = 0;
         }
     }
@@ -244,6 +260,11 @@ internal sealed partial class CodexRadarForm
             GetActiveQuotaRuntimeState().WeeklyQuotaAtFiveHourWindowStartPercent = value;
             GetActiveRadarFamilyState().Touch();
         }
+    }
+
+    private bool weeklyResetRainbowActive
+    {
+        get { return GetActiveQuotaRuntimeState().WeeklyResetRainbowActive; }
     }
 
     private DateTime fiveHourQuotaProtectionUtc

@@ -148,7 +148,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         UpdateHoverAnimationTimer();
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(shouldBeTopMost),
+            GetLayeredWidgetInsertAfter(shouldBeTopMost, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
             0,
             0,
             0,
@@ -509,7 +509,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
         NativeMethods.SetWindowPos(
             this.Handle,
-            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode),
+            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
             left,
             top,
             this.Width,

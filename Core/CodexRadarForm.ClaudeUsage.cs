@@ -248,8 +248,12 @@ internal sealed partial class CodexRadarForm
     {
         CodexRadarSoftwareMode mode = GetEffectiveCodexRadarSoftwareMode();
         string modelKey = GetSelectedRadarModelKeyForSoftwareMode(mode);
-        bool restoredFromMemory = TryRestoreCodexRadarDisplayModeCache(mode, modelKey);
-        if (!restoredFromMemory)
+        RadarDisplayRestoreResult restored = TryRestoreCodexRadarDisplayModeCache(mode, modelKey);
+
+        // Radar and quota restore independently. A quota-known memory state must never stand in for
+        // a usable Radar snapshot, otherwise the disk IQ cache is skipped and the current batch is
+        // recorded as first-seen with the request time (false refresh marker on family switch).
+        if (!restored.RadarRestored)
         {
             CodexRadarSnapshot cachedSnapshot = LoadCodexRadarCache(mode, modelKey);
             if (cachedSnapshot != null)
@@ -259,7 +263,10 @@ internal sealed partial class CodexRadarForm
                     this.codexRadarSnapshot = cachedSnapshot;
                 }
             }
+        }
 
+        if (!restored.QuotaRestored)
+        {
             // During a software/model switch a missing target cache must not blank the UI for a
             // single frame. Keep the previous visible quota until the selected provider returns.
             LoadSelectedQuotaCacheIntoDisplay(true);
@@ -328,15 +335,35 @@ internal sealed partial class CodexRadarForm
         }
     }
 
-    private bool TryRestoreCodexRadarDisplayModeCache(CodexRadarSoftwareMode mode, string modelKey)
+    // Radar and quota restore are reported independently so a family switch that only carried quota
+    // into memory still loads the disk IQ snapshot. Conflating the two (the old "quota known ==
+    // radar restored" shortcut) produced false refresh markers on Claude->Codex switches.
+    private struct RadarDisplayRestoreResult
+    {
+        public bool RadarRestored;
+        public bool QuotaRestored;
+    }
+
+    private RadarDisplayRestoreResult TryRestoreCodexRadarDisplayModeCache(CodexRadarSoftwareMode mode, string modelKey)
     {
         mode = NormalizeEffectiveSoftwareMode(mode);
         modelKey = modelKey ?? string.Empty;
         RadarFamilyRuntimeState state = GetRadarFamilyState(mode);
-        if (string.Equals(state.ModelKey ?? string.Empty, modelKey, StringComparison.OrdinalIgnoreCase) &&
-            (IsRuntimeRadarSnapshotUsable(state.RadarSnapshot) || state.Quota.SourceKnown))
+
+        // Fast path: the family's live runtime snapshot already matches the requested model. Radar is
+        // "restored" only when the live snapshot is actually usable; quota-known is reported on its own
+        // channel and must not imply the Radar snapshot is present.
+        if (string.Equals(state.ModelKey ?? string.Empty, modelKey, StringComparison.OrdinalIgnoreCase))
         {
-            return true;
+            bool radarUsable = IsRuntimeRadarSnapshotUsable(state.RadarSnapshot);
+            if (radarUsable || state.Quota.SourceKnown)
+            {
+                return new RadarDisplayRestoreResult
+                {
+                    RadarRestored = radarUsable,
+                    QuotaRestored = state.Quota.SourceKnown
+                };
+            }
         }
 
         CodexRadarDisplayModeCache cached;
@@ -346,7 +373,7 @@ internal sealed partial class CodexRadarForm
                 cached == null ||
                 !string.Equals(cached.ModelKey ?? string.Empty, modelKey, StringComparison.OrdinalIgnoreCase))
             {
-                return false;
+                return default(RadarDisplayRestoreResult);
             }
 
             cached = new CodexRadarDisplayModeCache
@@ -360,18 +387,22 @@ internal sealed partial class CodexRadarForm
             };
         }
 
+        bool radarRestored = false;
         lock (this.codexRadarStatusLock)
         {
             if (cached.RadarSnapshot != null)
             {
                 this.codexRadarSnapshot = cached.RadarSnapshot;
+                radarRestored = IsRuntimeRadarSnapshotUsable(cached.RadarSnapshot);
             }
         }
 
+        bool quotaRestored = false;
         if (cached.QuotaSnapshot != null)
         {
             this.quotaSnapshot = NormalizeQuotaSnapshot(cached.QuotaSnapshot);
             this.quotaSourceKnown = cached.QuotaSourceKnown;
+            quotaRestored = cached.QuotaSourceKnown;
         }
 
         lock (this.serviceHealthLock)
@@ -381,7 +412,11 @@ internal sealed partial class CodexRadarForm
                 : ServiceHealthState.Offline;
         }
 
-        return cached.RadarSnapshot != null || cached.QuotaSnapshot != null;
+        return new RadarDisplayRestoreResult
+        {
+            RadarRestored = radarRestored,
+            QuotaRestored = quotaRestored
+        };
     }
 
     private static bool IsRuntimeRadarSnapshotUsable(CodexRadarSnapshot snapshot)
@@ -435,6 +470,8 @@ internal sealed partial class CodexRadarForm
             Known = true,
             SourceKey = "m1",
             Name = "Opus 4.8 high",
+            LatestAtKnown = true,
+            LatestAtUtc = new DateTime(2026, 7, 5, 4, 20, 0, DateTimeKind.Utc),
             IqScore = 119,
             Passed = 8,
             ValidTasks = 10,
@@ -451,10 +488,13 @@ internal sealed partial class CodexRadarForm
             Count = 42,
             UpdatedAtUtc = new DateTime(2026, 7, 5, 4, 0, 0, DateTimeKind.Utc)
         };
-        CodexRadarSnapshot sharedSnapshot = ConvertClaudeRadarSnapshotForSharedWindow(claudeSnapshot);
+        CodexRadarSnapshot sharedSnapshot = ConvertClaudeRadarSnapshotForSharedWindow(claudeSnapshot, true);
         if (sharedSnapshot == null ||
             !sharedSnapshot.ModelIqKnown ||
             sharedSnapshot.ModelIqPassRatePercent != 119 ||
+            sharedSnapshot.ModelIqTokenEfficiencyPercent != 123 ||
+            sharedSnapshot.ModelIqTimeEfficiencyPercent != 88 ||
+            sharedSnapshot.CheckedAtLocal != claudeSnapshot.SelectedModel.LatestAtUtc.ToLocalTime() ||
             !sharedSnapshot.CommunityRatingKnown ||
             !string.Equals(sharedSnapshot.CommunityRatingModelId, "opus48_high", StringComparison.OrdinalIgnoreCase))
         {

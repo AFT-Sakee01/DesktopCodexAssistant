@@ -99,6 +99,11 @@ internal static class Program
             return TestSettingsBindingPolicy();
         }
 
+        if (HasArg(args, "--test-specboard-manager"))
+        {
+            return TestSpecBoardManagerPolicy();
+        }
+
         if (HasArg(args, "--test-settings-open-close"))
         {
             return TestSettingsOpenClosePolicy(args);
@@ -152,6 +157,16 @@ internal static class Program
         if (HasArg(args, "--render-operation"))
         {
             return RenderOperationSamples(args);
+        }
+
+        if (HasArg(args, "--render-specboardmanager"))
+        {
+            return RenderSpecBoardManagerSamples(args);
+        }
+
+        if (HasArg(args, "--render-specboard"))
+        {
+            return RenderSpecBoardSamples(args);
         }
 
         if (HasArg(args, "--diagnose-idle-cpu"))
@@ -749,6 +764,7 @@ internal static class Program
             ClaudeRadarForm.RunRenderResourceSelfTest();
             ConnectionCheckForm.RunHiddenModeBadgeRenderingSelfTest();
             NetworkMonitorForm.RunNetworkMonitorDisplaySelfTest();
+            SpecBoardForm.RunSelfTest();
             Console.WriteLine("Layout scaling policy: PASS");
             return 0;
         }
@@ -774,6 +790,29 @@ internal static class Program
             IdleCpuDiagnostics.RunSelfTest();
             Win11SettingsForm.RunSettingsBindingSelfTest();
             Console.WriteLine("Settings binding policy: PASS");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int TestSpecBoardManagerPolicy()
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            SpecBoardLedgerStore.RunSelfTest();
+            SpecBoardLedgerStore.RunRecycleAcceptanceSelfTest();
+            SpecBoardSeenStateStore.RunSelfTest();
+            SpecBoardManagerForm.RunSelfTest();
+            Console.WriteLine("Spec Board manager policy: PASS atomic backup conflict recycle rollback batch settings layout");
             return 0;
         }
         catch (Exception ex)
@@ -991,6 +1030,74 @@ internal static class Program
             OperationForm.RenderVariantSamples(outputDir);
             OperationForm.RenderCurrentSample(outputDir);
             Console.WriteLine("Rendered operation panel variant samples to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RenderSpecBoardSamples(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir))
+            {
+                outputDir = ".";
+            }
+
+            string mode = GetStringArg(args, "--render-specboard");
+            bool sample = string.IsNullOrEmpty(mode) || string.Equals(mode, "sample", StringComparison.OrdinalIgnoreCase);
+            bool current = string.IsNullOrEmpty(mode) || string.Equals(mode, "current", StringComparison.OrdinalIgnoreCase);
+            if (!sample && !current)
+            {
+                throw new ArgumentException("--render-specboard mode must be sample or current.");
+            }
+
+            SpecBoardForm.RenderSamples(outputDir, sample, current);
+            Console.WriteLine("Rendered Spec Board samples to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RenderSpecBoardManagerSamples(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir))
+            {
+                outputDir = ".";
+            }
+
+            string mode = GetStringArg(args, "--render-specboardmanager");
+            bool sample = string.IsNullOrEmpty(mode) || string.Equals(mode, "sample", StringComparison.OrdinalIgnoreCase);
+            bool current = string.IsNullOrEmpty(mode) || string.Equals(mode, "current", StringComparison.OrdinalIgnoreCase);
+            if (!sample && !current)
+            {
+                throw new ArgumentException("--render-specboardmanager mode must be sample or current.");
+            }
+
+            SpecBoardManagerForm.RenderSamples(outputDir, sample, current);
+            Console.WriteLine("Rendered Spec Board manager samples to " + Path.GetFullPath(outputDir));
             return 0;
         }
         catch (Exception ex)

@@ -1,13 +1,13 @@
 # Fable5-Data-Sources-And-Caching-Technical — 数据源、Fallback 链与缓存位置详解
 
-适用版本：`1.0.5.06`。生成时间：2026-07-11。
+适用版本：`1.0.5.40`。核对时间：2026-07-16。
 本文回答三个问题：**每个模块从哪个网站/本地文件的哪个位置读什么、失败时按什么顺序 fallback、结果缓存在哪个文件里**。所有 URL、路径、常量均直接摘自源码并附出处；刷新频率与调度规则的权威文档是 `Docs/Component-Refresh-Rules.md`，本文只在必要处引用不重复。
 
 约定：`<DATA>` = `%LOCALAPPDATA%\DesktopCodexAssistant`（`Logger.DirectoryPath`）；`<HOME>` = `%USERPROFILE%`。
 
 ---
 
-## 1. Codex Radar 网站数据（模型 IQ / 通过率 / 效率 / 批次）
+## 1. Codex Radar 网站数据（模型 IQ / 通过率 / 效率 / 批次 / 额度雷达）
 
 源码：`Core/CodexRadarForm.cs`（常量在文件头 33–66 行附近）。
 
@@ -15,15 +15,16 @@
 
 | 优先级 | URL | 读取内容 | 门控设置 |
 |---|---|---|---|
-| 1 | `https://codexradar.com/current.json` | 当日批次模型数据：`score`、`passed`、`tasks`/`valid_tasks`、`total_tokens`/`n_input_tokens`+`n_output_tokens`、`serial_task_seconds`（用于 token/时间效率）、状态色、数据日期与上下午窗口；`model_iq` 全模型分数用于推导 IQ 环显示上限；`window.opened_at/closed_at` 用于可选速蹬结束倒计时 | `CodexRadarPublicJsonEnabled` |
+| 1 | `https://codexradar.com/current.json` | 当日批次模型数据：`score`、`passed`、`tasks`/`valid_tasks`、Token、耗时、状态、日期窗口；`model_iq` 全模型分数用于 IQ 环显示上限；`model_iq.quota_radar.rows/trend/updated_at` 是额度雷达主源；`window.opened_at/closed_at` 用于可选速蹬结束倒计时 | `CodexRadarPublicJsonEnabled` |
 | 1b | `https://codexradar.com/api/v1/current` | 授权完整 API（服务可用性探测按钮也会测它） | 同上 |
-| 2 | `https://codexradar.com/`（首页 HTML） | 两种用途：(a) **补齐**——JSON 成功但缺首页额度雷达、网页短数据标签、IQ 常态区或 IQ 图表显示上限时抓取补齐，补齐失败不覆盖 JSON 结果；(b) **回退**——JSON 失败时作为数据回退；兼容 `data-window-opened-at/closes-at` | `CodexRadarHtmlFallbackEnabled` |
+| 2 | `https://codexradar.com/`（首页 HTML） | 两种用途：(a) **补齐**——JSON 缺额度雷达、网页短数据标签、IQ 常态区或 IQ 图表显示上限时抓取补齐，补齐失败不覆盖 JSON 结果；额度表兼容旧 5h/7d 双列与当前仅 7d 单列；(b) **回退**——JSON 失败时作为数据回退；兼容 `data-window-opened-at/closes-at` | `CodexRadarHtmlFallbackEnabled` |
 | 3 | `https://codexradar.com/feed.xml`（RSS） | 最后一层回退（文件内 9576 行附近） | `CodexRadarRssFallbackEnabled` |
 | 附 | `https://codexradar.com/api/model-ratings?history=14` | 模型社区评分 14 天历史 | — |
 
 - 模型键：`CodexRadarModelCatalog.NormalizeModelKey` 将 `gpt-5.6-sol` + `medium` 与 `gpt_56_sol_medium` 归并为同一身份；目录加载同时折叠旧版遗留的 `gpt_5_6_*` 重复项。默认检测 `gpt_56_sol_medium`，各模型继续使用独立的 `Codex.Model.<key>.*` 缓存前缀，不能复用旧 `Gpt55.*` 前缀。
 - IQ 环：分数优先使用网站 `score`；显示上限从同次 `model_iq` 全模型分数或首页 `IQ指数` 历史值取最高值并缓存为 `DisplayMaxScore`。基准默认自动跟随网站 `valid_tasks` 和常态区推导 `n/N`，关闭自动后使用 `settings.ini` 的 `CodexModelIqBaselinePassed` / `CodexModelIqBaselineValidTasks`。
 - 效率计算：`模型效率 = (当前 passed/total_tokens) ÷ (基线 passed/total_tokens)`，时间效率同理用 `serial_task_seconds`；Token/时间效率基线存在 `settings.ini` 的 `CodexModel*EfficiencyBaseline*` 系列键。
+- 额度雷达：`TryParseCodexRadarJsonQuotaRadar` 优先解析结构化 `rows`、`trend[].seven_d_20x` 和独立 `updated_at`；`TryParseCodexRadarHtmlQuotaRadar` 只作缺失补齐或整层回退。顶层 `monitored_at` 属于 reset-radar 摘要，不作为额度批次时间。
 - 刷新节奏：启动/恢复/模型切换/数据源设置变化/手动刷新触发一次错峰请求；常规自动刷新在**北京时间每小时整点**一次（`TimeZoneUtilities.GetNextBeijingHourUtc`）；失败 10 min 重试。
 
 ### 1.2 缓存
@@ -98,11 +99,13 @@
 
 超时统一 10 s。右侧 `R/O/C/D` 点列 = Radar 数据源 / OpenAI 官方状态 / Claude 官方状态或 Claude Code usage / DeepSeek 官方 API 状态；底部为 `Claude / RC / DS / LLM`。公共网站读取由 `ClaudeRadarSnapshotScheduler` 按 `selectedModelKey/json/homepage/rating/localQuotaFallback` 组成请求 key 进行进程级 single-flight；同 key 的共享 Codex Radar Claude 模式和独立 Claude Radar 会 join 同一请求，不同 key 可并行。
 
+主数据 URL 是精确路径契约：`TryFetchJson` 不得为 `/data/claude-code-radar.json` 追加 `?t=`、`?cb=`、`?v=` 等 cache-buster。当前站点对精确路径返回 JSON，对带任意查询的同路径返回 SPA HTML；请求新鲜度只通过 `Cache-Control: no-store, no-cache`、`Pragma: no-cache` 保证。声明自带 `?history=14` 的评分接口保留原查询。独立窗与共享 Claude 模式从同一 `ClaudeRadarSnapshot` 映射 IQ、Token/时间效率、社区评分和额度线；两侧数据时间统一优先选中模型的 `latest_at`，仅在缺失时回退本机 `CheckedAtLocal`。
+
 ### 3.2 缓存
 
 | 文件 | 内容 |
 |---|---|
-| `<DATA>\claude-radar-cache.ini` | 网站快照 + `SelectedModelKey/Name` + 选中模型 `LatestAtUtc` + `CommunityKnown/RatingKey/Label/Average` + `QuotaLine*`（启动/失败合并时回显底部 RC/LLM，并让 IQ 时钟重启后仍按上次模型 `latest_at` 判断；24 小时小绿点和“刷新点到当前点”的连接弧也使用该字段；额度线启动后可继续显示上次站点趋势）。写入由 `ClaudeRadarReader.TrySaveCache` 加锁，内容未变时跳过，内容变化时写 temp 文件并用 `File.Replace`/`File.Move` 原子替换 |
+| `<DATA>\claude-radar-cache.ini` | 网站快照 + `SelectedModelKey/Name` + 选中模型 `LatestAtUtc` + `CommunityKnown/RatingKey/Label/Average` + `QuotaLine*`（启动/失败合并时回显底部 RC/LLM，并让 IQ 时钟重启后仍按上次模型 `latest_at` 判断；24 小时小绿点和“刷新点到当前点”的连接弧也使用该字段；额度线启动后可继续显示上次站点趋势）。写入由 `ClaudeRadarReader.TrySaveCache` 加锁，写 temp 文件并用 `File.Replace`/`File.Move` 原子替换。1.0.5.18 起按 `Model.<归一化模型key>.` 前缀分区（与 `codex-radar-cache.ini` 同 schema），每模型带 `SavedUtc` 并按 7 天 TTL 拒绝过期段：切换模型不再覆盖其他模型，重启后切回旧模型可回显，长期不刷新的段过期后不再加载并在下次成功保存时清理；旧单段扁平文件按模型匹配且 `CheckedAtUtc` 未过期时兼容读取 |
 | `<DATA>\claude-radar-model-map.ini` | 模型目录映射（source_key ↔ rating_key ↔ display_name/sort_order/enabled）；只有 `ok=true` 且目录完整的响应才推进 temporarily_missing/deleted 计数（连续缺失阈值 `ModelDeleteMissingThreshold = 3`）。**paint 路径禁止读此文件** |
 | `<DATA>\claude-radar-notification-state.ini` | 模型新增/暂缺/恢复/删除托盘通知去重状态 |
 | `<DATA>\claude-radar-quota-history.jsonl` | 额度历史，按 metric/update/run 全量去重，单行坏 JSON 跳过不阻断；当站点趋势不足两点时读取最近 7 天作为额度线 fallback |
@@ -221,7 +224,7 @@
 | `claude-statusline-quota.ini` | `~/.claude` 桥脚本（外部进程） | statusline 额度缓存 | 360 min 有效期 |
 | `claude-code-oauth-token.bin` | `SecretStore` / 用户旧 `.txt` 迁移 | setup-token DPAPI CurrentUser 密文 Base64 | 旧 `.txt` 首次读取后改名为 `.txt.migrated` |
 | `deepseek-api-key.bin` | 设置页 / `SecretStore` / 用户旧 `.txt` 迁移 | DeepSeek key DPAPI CurrentUser 密文 Base64 | 清除配置时同时清理 `.bin`、旧 `.txt` 和 `.txt.migrated*` |
-| `claude-radar-cache.ini` / `claude-radar-model-map.ini` / `claude-radar-notification-state.ini` / `claude-radar-quota-history.jsonl` | ClaudeRadarReader/Form | 见 §3.2；`claude-radar-cache.ini` 写入使用 lock + temp + replace/move，避免并发或中断留下半文件 | 持久 |
+| `claude-radar-cache.ini` / `claude-radar-model-map.ini` / `claude-radar-notification-state.ini` / `claude-radar-quota-history.jsonl` | ClaudeRadarReader/Form | 见 §3.2；`claude-radar-cache.ini` 写入使用 lock + temp + replace/move，避免并发或中断留下半文件 | `claude-radar-cache.ini` 按模型分区 7 天 TTL（1.0.5.18）；其余持久 |
 | `quota-reset-state.ini` | CodexRadarForm | reset 到期保护状态 | 持久 |
 | `codex-quota-plan-state.json` | CodexQuotaGoalPlanner | 额度计划状态 | 持久 |
 | `quota-decision-history.jsonl` | QuotaDecisionHistoryLogger | 额度判定历史；含 provider/session/cache 来源诊断 | ~48 h 滚动 |

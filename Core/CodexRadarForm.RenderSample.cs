@@ -90,6 +90,124 @@ internal sealed partial class CodexRadarForm
         RenderSpeedWindowCountdownSample(outputDir);
         RenderClaudeQuotaSourceSample(outputDir, "claude_site_public", "codexradar-claude-quota-site.png");
         RenderClaudeQuotaSourceSample(outputDir, "claude_personal", "codexradar-claude-quota-personal.png");
+        RenderCodexBottomRowSample(outputDir);
+        RenderCodexResetSkyBlueSample(outputDir);
+        RenderCodexWeeklyBudgetSample(outputDir);
+    }
+
+    // Codex software mode's bottom row shows the reset-credit auxiliary as "RS:<n>-<remaining>"
+    // ("<hours>h" when the earliest credit is under a day, else "<days>d"). A sub-day earliest also
+    // turns the two quota rings into a static rainbow, so this fixture exercises both at once.
+    private static void RenderCodexBottomRowSample(string outputDir)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.CodexRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
+        settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+        settings.Normalize();
+        using (CodexRadarForm form = new CodexRadarForm(settings, null))
+        {
+            form.SetLayerScale(2.0f);
+            form.MaximumSize = new Size(4000, 4000);
+            form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
+            form.effectiveCodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+            form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
+
+            CodexResetCreditsSnapshot credits = CodexResetCreditsSnapshot.CreateDefault();
+            credits.Known = true;
+            credits.ReportedCount = 3;
+            credits.AllExpirationTimesKnown = true;
+            // Earliest active expiration is <24h so the auxiliary renders "RS:<n>-<hours>h" and the
+            // sub-day condition turns the two quota rings into a static rainbow.
+            credits.ExpirationTimesUtc.Add(DateTime.UtcNow.AddHours(17.0));
+            credits.ExpirationTimesUtc.Add(DateTime.UtcNow.AddHours(40.0));
+            credits.ExpirationTimesUtc.Add(DateTime.UtcNow.AddHours(60.0));
+            credits.SourceUpdatedUtc = DateTime.UtcNow;
+            form.codexResetCreditsSnapshot = credits;
+
+            RenderSampleSupport.SaveComposited(
+                outputDir,
+                "codexradar-codex-bottomrow.png",
+                form.Width,
+                form.Height,
+                form.GetApplicationOpacityAlpha(),
+                form.DrawRenderSampleIsolatedLayers);
+            Console.WriteLine("CodexBottomRow -> codexradar-codex-bottomrow.png");
+        }
+    }
+
+    // Reset-detected state: weekly quota confirmed back at/above 95%, no sub-day reset credit, so the
+    // two quota rings render the solid sky-blue "reset detected" ring (which replaced the old rainbow).
+    private static void RenderCodexResetSkyBlueSample(string outputDir)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.CodexRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
+        settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+        settings.Normalize();
+        using (CodexRadarForm form = new CodexRadarForm(settings, null))
+        {
+            form.SetLayerScale(2.0f);
+            form.MaximumSize = new Size(4000, 4000);
+            form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
+            form.effectiveCodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+            form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
+
+            CodexQuotaSnapshot quota = CodexQuotaSnapshot.CreateDefault();
+            quota.FiveHourPercent = 100;
+            quota.WeeklyPercent = 98;
+            QuotaRuntimeState quotaState = form.GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex);
+            quotaState.Snapshot = quota;
+            quotaState.SourceKnown = true;
+            quotaState.WeeklyResetRainbowActive = true;
+            // No reset credits, so QuotaResetCreditSubDay stays false and the sky-blue ring wins.
+            form.codexResetCreditsSnapshot = CodexResetCreditsSnapshot.CreateDefault();
+
+            RenderSampleSupport.SaveComposited(
+                outputDir,
+                "codexradar-codex-reset-skyblue.png",
+                form.Width,
+                form.Height,
+                form.GetApplicationOpacityAlpha(),
+                form.DrawRenderSampleIsolatedLayers);
+            Console.WriteLine("CodexResetSkyBlue -> codexradar-codex-reset-skyblue.png");
+        }
+    }
+
+    // 5-hour limit removed (FiveHourLimitAbsent): the 5h cell becomes the weekly budget ring. Here
+    // weekly remaining is 40% with the reset 4 days out (~57% of the week elapsed) -> consumed 60% vs
+    // 43% elapsed -> efficiency ~140 (over budget, red), and the remaining 40% lasts ~48h at that rate
+    // -> centre "140" (no %), bottom "48H".
+    private static void RenderCodexWeeklyBudgetSample(string outputDir)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.CodexRadarRenderVariant = CodexRadarRenderVariant.EvenRow;
+        settings.CodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+        settings.Normalize();
+        using (CodexRadarForm form = new CodexRadarForm(settings, null))
+        {
+            form.SetLayerScale(2.0f);
+            form.MaximumSize = new Size(4000, 4000);
+            form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
+            form.effectiveCodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+            form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
+
+            CodexQuotaSnapshot quota = CodexQuotaSnapshot.CreateDefault();
+            quota.FiveHourLimitAbsent = true;
+            quota.WeeklyPercent = 40;
+            quota.WeeklyResetKnown = true;
+            quota.WeeklyResetLocal = DateTime.Now.AddDays(4.0);
+            QuotaRuntimeState quotaState = form.GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex);
+            quotaState.Snapshot = quota;
+            quotaState.SourceKnown = true;
+
+            RenderSampleSupport.SaveComposited(
+                outputDir,
+                "codexradar-codex-weekly-budget.png",
+                form.Width,
+                form.Height,
+                form.GetApplicationOpacityAlpha(),
+                form.DrawRenderSampleIsolatedLayers);
+            Console.WriteLine("CodexWeeklyBudget -> codexradar-codex-weekly-budget.png");
+        }
     }
 
     private static void RenderClaudeQuotaSourceSample(string outputDir, string sourceKind, string fileName)

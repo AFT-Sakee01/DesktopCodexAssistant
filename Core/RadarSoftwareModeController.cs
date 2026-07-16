@@ -256,6 +256,7 @@ internal sealed class RadarSoftwareModeController
         ClaudeRadarClockAutoSwitchSelector.RunSelfTest();
         RadarClockDial.RunSelfTest();
         CodexRadarModelCatalog.RunSelfTest();
+        RadarBottomInfoTextRenderer.RunSelfTest();
     }
 
     private static void AssertMode(CodexRadarSoftwareMode actual, CodexRadarSoftwareMode expected, string message)

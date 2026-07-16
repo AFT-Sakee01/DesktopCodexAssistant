@@ -4635,11 +4635,18 @@ internal static class NativeMethods
 
     public static IntPtr GetSeelenAwareTopMostInsertAfter()
     {
-        IntPtr seelenHandle;
-        return TryFindSeelenTopMostWindowForZOrder(out seelenHandle) ? seelenHandle : HWND_TOPMOST;
+        return GetSeelenAwareTopMostInsertAfter(false);
     }
 
-    private static bool TryFindSeelenTopMostWindowForZOrder(out IntPtr handle)
+    public static IntPtr GetSeelenAwareTopMostInsertAfter(bool keepBelowCodexPet)
+    {
+        IntPtr protectedHandle;
+        return TryFindProtectedTopMostWindowForZOrder(keepBelowCodexPet, out protectedHandle) ?
+            protectedHandle :
+            HWND_TOPMOST;
+    }
+
+    private static bool TryFindProtectedTopMostWindowForZOrder(bool keepBelowCodexPet, out IntPtr handle)
     {
         handle = IntPtr.Zero;
         IntPtr foundHandle = IntPtr.Zero;
@@ -4651,15 +4658,24 @@ internal static class NativeMethods
                 return true;
             }
 
-            string className = GetWindowClassName(windowHandle);
-            if (!string.Equals(className, "Tauri Window", StringComparison.OrdinalIgnoreCase))
+            uint processId;
+            GetWindowThreadProcessId(windowHandle, out processId);
+            if (processId == 0)
             {
                 return true;
             }
 
-            uint processId;
-            GetWindowThreadProcessId(windowHandle, out processId);
-            if (processId == 0 || !ContainsSeelen(TryGetProcessImagePath((int)processId)))
+            string className = GetWindowClassName(windowHandle);
+            string processPath = TryGetProcessImagePath((int)processId);
+            bool isSeelenLayer =
+                string.Equals(className, "Tauri Window", StringComparison.OrdinalIgnoreCase) &&
+                ContainsSeelen(processPath);
+            bool isCodexPetLayer =
+                keepBelowCodexPet &&
+                string.Equals(className, "Chrome_WidgetWin_1", StringComparison.OrdinalIgnoreCase) &&
+                (GetWindowLong(windowHandle, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) != 0 &&
+                IsCodexDesktopExecutablePath(processPath);
+            if (!isSeelenLayer && !isCodexPetLayer)
             {
                 return true;
             }
@@ -4672,8 +4688,8 @@ internal static class NativeMethods
                 return true;
             }
 
-            // EnumWindows walks top-level windows in z-order. Keep the last visible Seelen
-            // topmost window so our insert-after target sits below Seelen chrome and popups.
+            // EnumWindows walks top-level windows from front to back. Keeping the last protected
+            // layer makes our insert-after target sit below every matching Seelen/Codex surface.
             foundHandle = windowHandle;
             found = true;
             return true;
@@ -4681,6 +4697,13 @@ internal static class NativeMethods
 
         handle = foundHandle;
         return found;
+    }
+
+    private static bool IsCodexDesktopExecutablePath(string processPath)
+    {
+        return !string.IsNullOrEmpty(processPath) &&
+            processPath.IndexOf("OpenAI.Codex_", StringComparison.OrdinalIgnoreCase) >= 0 &&
+            processPath.EndsWith("\\ChatGPT.exe", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsTopMostWindow(IntPtr handle)

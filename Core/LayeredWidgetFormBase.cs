@@ -189,23 +189,23 @@ internal abstract class LayeredWidgetFormBase : Form
         this.layeredUpdateFailureLogged = false;
     }
 
-    protected static IntPtr GetLayeredWidgetInsertAfter(bool shouldBeTopMost)
+    protected static IntPtr GetLayeredWidgetInsertAfter(bool shouldBeTopMost, bool keepBelowCodexPet)
     {
-        return shouldBeTopMost ? GetLayeredWidgetTopMostInsertAfter() : NativeMethods.HWND_NOTOPMOST;
+        return shouldBeTopMost ? GetLayeredWidgetTopMostInsertAfter(keepBelowCodexPet) : NativeMethods.HWND_NOTOPMOST;
     }
 
-    protected static IntPtr GetLayeredWidgetInsertAfter(WidgetVisibilityMode visibilityMode)
+    protected static IntPtr GetLayeredWidgetInsertAfter(WidgetVisibilityMode visibilityMode, bool keepBelowCodexPet)
     {
         return visibilityMode == WidgetVisibilityMode.DesktopOnly ?
             NativeMethods.HWND_TOP :
-            GetLayeredWidgetTopMostInsertAfter();
+            GetLayeredWidgetTopMostInsertAfter(keepBelowCodexPet);
     }
 
-    private static IntPtr GetLayeredWidgetTopMostInsertAfter()
+    private static IntPtr GetLayeredWidgetTopMostInsertAfter(bool keepBelowCodexPet)
     {
-        // SeelenUI owns the shell chrome; use its real topmost HWND as the insert-after target
-        // so these widgets stay directly below it instead of racing above the dock/top bar.
-        return NativeMethods.GetSeelenAwareTopMostInsertAfter();
+        // Use real protected topmost HWNDs as the insert-after target so widgets stay below
+        // Seelen shell chrome and, when enabled, the Codex desktop pet without activation races.
+        return NativeMethods.GetSeelenAwareTopMostInsertAfter(keepBelowCodexPet);
     }
 
     protected int S(int value)

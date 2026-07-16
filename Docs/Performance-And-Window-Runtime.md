@@ -1,6 +1,6 @@
 # 性能模式、主窗口与指标运行机制
 
-适用版本：1.0.4.96
+适用版本：1.0.5.24
 
 ## 1. 文档范围
 
@@ -428,7 +428,7 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 
 各监测窗口使用 Windows layered window。界面先绘制到内存 `Bitmap`，再通过 `UpdateLayeredWindow` 一次提交带 Alpha 的画面。这样可以实现无边框、每像素透明度和桌面层显示。
 
-非桌面模式下的监测浮窗使用 SeelenUI 感知的 Z-order 策略：`LayeredWidgetFormBase.GetLayeredWidgetInsertAfter()` 先通过 `NativeMethods.GetSeelenAwareTopMostInsertAfter()` 查找 SeelenUI 进程下可见、TopMost、非零尺寸的 `Tauri Window` 顶层窗口，并选择 Seelen 顶层窗口栈里最靠下的一个作为 insert-after；找到时把本程序窗口插入到该 HWND 之后，确保低于 SeelenUI Dock、顶部栏和弹出层。找不到符合条件的 SeelenUI 窗口时回退 `HWND_TOPMOST`。桌面模式仍使用桌面宿主层或 `HWND_TOP`，不参与该策略。
+非桌面模式下的监测浮窗使用受保护浮层感知的 Z-order 策略：`LayeredWidgetFormBase.GetLayeredWidgetInsertAfter()` 通过 `NativeMethods.GetSeelenAwareTopMostInsertAfter(bool)` 查找可见、TopMost、非零尺寸的 SeelenUI `Tauri Window`；当 `CodexPetZOrderProtectionEnabled = true` 时，还会识别 OpenAI Codex 桌面包中使用 `Chrome_WidgetWin_1` 且带 `WS_EX_TOOLWINDOW` 的宠物浮层。枚举器选择整个受保护顶层窗口栈里最靠下的一个作为 insert-after，使本程序所有分层小窗同时低于 SeelenUI Dock/顶部栏/弹出层和 Codex 宠物；找不到符合条件的窗口时回退 `HWND_TOPMOST`。该设置默认开启并可在“系统 → 窗口行为”即时切换；桌面模式仍使用桌面宿主层或 `HWND_TOP`，不参与该策略。
 
 透明度分成两部分：
 
