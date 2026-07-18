@@ -44,8 +44,8 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MinConnectionCheckHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxConnectionCheckWidth, WidgetSettings.MaxConnectionCheckHeight));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MinConnectionCheckHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxConnectionCheckWidth, WidgetSettings.MaxConnectionCheckHeight));
         this.Size = GetDesiredSize();
 
         this.timer = new System.Windows.Forms.Timer();
@@ -114,8 +114,8 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MinConnectionCheckHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxConnectionCheckWidth, WidgetSettings.MaxConnectionCheckHeight));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MinConnectionCheckHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxConnectionCheckWidth, WidgetSettings.MaxConnectionCheckHeight));
         ApplyPerformanceTimerIntervals();
         this.snapshot = this.reader.GetSnapshot(this.CurrentSettings);
 
@@ -200,6 +200,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
 
     private void OnTimerTick(object sender, EventArgs e)
     {
+        RefreshNightScheduleAtExistingTick();
         try
         {
             // The reader decides when to perform I/O; the form redraws only changed display fields.
@@ -496,7 +497,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
 
     private Size GetDesiredSize()
     {
-        return this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(this.CurrentSettings.ConnectionCheckWidth, this.CurrentSettings.ConnectionCheckHeight));
+        return ScaleWindowSize(new Size(this.CurrentSettings.ConnectionCheckWidth, this.CurrentSettings.ConnectionCheckHeight));
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -1587,9 +1588,19 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
         return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
-    protected override byte GetApplicationOpacityAlpha()
+    protected override int WindowTransparencyOverridePercent
     {
-        return (byte)ApplyHoverTransparencyTarget(255);
+        get { return this.CurrentSettings.ConnectionCheckTransparencyOverridePercent; }
+    }
+
+    protected override int WindowScaleOverridePercent
+    {
+        get { return this.CurrentSettings.ConnectionCheckScaleOverridePercent; }
+    }
+
+    protected override int ApplyHoverAlpha(int alpha)
+    {
+        return ApplyHoverTransparencyTarget(alpha);
     }
 
     private int ApplyHoverTransparencyTarget(int alpha)

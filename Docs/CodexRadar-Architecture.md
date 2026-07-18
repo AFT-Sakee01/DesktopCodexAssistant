@@ -1,10 +1,10 @@
 # Codex 监测窗口技术说明
 
-适用版本：1.0.5.40
+适用版本：1.0.5.66
 
 ## 1. 范围
 
-本文以 `Core/CodexRadarForm.cs` 的当前实现为准，说明 Codex 监测窗口的数据来源、刷新调度、服务健康状态、额度读取、Model IQ/效率计算、测试模式和分层窗口渲染机制。
+本文以 `Core/CodexRadarForm.cs`、`Core/CodexTaskMonitorReader.cs` 的当前实现为准，说明 Codex 监测窗口的数据来源、刷新调度、任务状态后端、服务健康状态、额度读取、Model IQ/效率计算、测试模式和分层窗口渲染机制。
 
 已废弃并从当前运行路径删除的功能（历史实现见 git 历史与 CHANGELOG）：
 
@@ -18,7 +18,7 @@
 - 上环：时间效率
 - 下环：Token 效率
 - 底部元信息：当前 `EvenRow` 布局在左下方显示软件族品牌文本 `Codex` / `Claude`、`RC:xxx`、模式辅助项和 `LLM:...`；辅助项在 Codex 模式显示重置卡 `RS:n 剩余时间`，在 Claude 模式显示 DeepSeek 余额 `DS:￥n`。Codex 5.6 系列的 `LLM` 缩写按“版本 + 系列首字母 + 档位”生成，例如 Sol low 为 `5.6SL`、Luna high 为 `5.6LH`、Sol medium 为 `5.6SM`
-- 右侧状态：Model IQ 时钟圆盘和服务 LED 列。时钟圆盘显示网页数据标签和可配置时间；Codex 与 Claude 模式都显示 `R/O/C/D`，其中 `D` 始终表示 DeepSeek 官方 API 可达性，和余额 key 是否配置分离。
+- 右侧状态：Model IQ 时钟圆盘和服务 LED 列。时钟圆盘显示网页数据标签和可配置时间；Codex 模式下最外圈额外绘制 Codex 任务环（见 §5.2）；Codex 与 Claude 模式都显示 `R/O/C/D`，其中 `D` 始终表示 DeepSeek 官方 API 可达性，和余额 key 是否配置分离。
 
 右侧额度区：
 
@@ -34,6 +34,8 @@ flowchart LR
     ResetCredits["ChatGPT reset credits"] --> BottomInfo["EvenRow 底部 Codex RS"]
     DeepSeek["DeepSeek balance"] --> BottomInfoClaude["EvenRow 底部 Claude DS"]
     Local["~/.codex/sessions/*.jsonl"] --> Quota
+    Local --> TaskReader["CodexTaskMonitorReader 增量尾读"]
+    TaskReader --> TaskSnapshot["线程安全任务快照 / 提醒事件"]
     ClaudeUsage["Claude Code OAuth usage API"] --> ClaudeQuota["Claude Code 5h/7d 用量快照"]
     Radar["current.json / 首页 HTML 分层回退"] --> Model["模型 IQ / Token效率 / 时间效率 / 速蹬窗口"]
     ClaudeRadarSite["claudecoderadar.com data JSON"] --> ClaudeRadarLine["Claude 额度线 / IQ / RC"]
@@ -57,12 +59,13 @@ flowchart LR
 每次 tick 的顺序：
 
 1. 检查显示器、会话和电源挂起状态。
-2. 处理网络可用性失效标记。
-3. 判断本地额度是否到期。
-4. 判断北京时间日界线驱动的 Radar、进程级 Statuspage 健康检查、Claude Code 用量检查和 DeepSeek 官方 API/余额检查是否到期；旧五阶段连接诊断已删除，不参与调度。
-5. 根据设置计算窗口尺寸和防烧屏微位移。
-6. 仅在尺寸、位置或本地秒变化时执行常规重绘。
-7. 重新计算下一次 timer 间隔。
+2. 请求任务后端刷新状态；watcher 漏报时最多每 30 秒在后台复用共享目录枚举补偿一次。
+3. 处理网络可用性失效标记。
+4. 判断本地额度是否到期。
+5. 判断北京时间日界线驱动的 Radar、进程级 Statuspage 健康检查、Claude Code 用量检查和 DeepSeek 官方 API/余额检查是否到期；旧五阶段连接诊断已删除，不参与调度。
+6. 根据设置计算窗口尺寸和防烧屏微位移。
+7. 仅在尺寸、位置或本地秒变化时执行常规重绘。
+8. 重新计算下一次 timer 间隔。
 
 网站请求完成后会通过 `BeginInvoke` 立即提交一次绘制，不必等待下一秒。面板调度目标使用全局"普通面板调度"三档间隔（数值以 `Docs/Component-Refresh-Rules.md` §2 为唯一权威表）；网站业务周期不随 UI timer 缩短。
 
@@ -125,6 +128,53 @@ Provider 的 5 小时和周窗口分别按 reset anchor 做确定性身份判定
 本地 `resets_at` 到达时默认会把对应余额暂时固定为 100，并保存保护状态；该行为受复杂选项 `CodexQuotaDueResetProtectionEnabled` 控制且默认开启。只有新样本的 `SourceUpdatedUtc` 晚于保护建立时间且 reset 时间已经更新，保护才释放，避免旧日志再次覆盖为低余额。
 
 CODEX 成功从 provider 或 session 读取额度后会写回 `quota.ini`；CLAUDE 成功从共享 Claude Code usage 调度器读取后会写回 `claude-quota.ini`，同一轮 Codex Radar 与独立 Claude Radar 重叠请求只写一次。两者格式相同但文件分离，切换检测软件时先恢复目标软件族的内存 `RadarFamilyRuntimeState`，缺失时再加载对应磁盘缓存；消耗环跟踪、上次读取余额、source-known、刷新调度时间和 Radar 网站健康状态都按软件族保留，不会因为切换而重置另一个软件族的基线。内存中的最新 session 快照可以复用，但每 30 秒会重新确认是否存在更新的 `rollout-*.jsonl`；如果 watcher 漏掉新文件，也不会长期相信旧缓存。
+
+### 5.1 Codex 任务状态后端
+
+`CodexTaskMonitorReader` 是纯后端组件，不创建窗口、网络请求、timer 或 `FileSystemWatcher`。`CodexRadarForm` 在自身生命周期内唯一构造和释放它，并把现有 `quotaSessionWatcher` 的 Changed/Created/Deleted/Renamed 事件转发给 reader；递归发现只调用 `EnumerateCodexRolloutFiles`，额度 fallback、最新文件确认、任务后端和 `--dump-codex-tasks` 共用这一入口。
+
+官方会话标题来自只读 `%USERPROFILE%\.codex\session_index.jsonl`：reader 从 rollout 文件名末尾提取 `8-4-4-4-12` UUID，与 index 的 `id` 做大小写不敏感匹配，并把 `thread_name` 发布为 `CodexTaskSnapshot.Title`；空串表示无映射、未命名或格式降级。标题加入快照签名，因此命名晚于任务发现时仍会触发一次 `SnapshotChanged`。index 只在既有 `ProcessBatch` 内检查 mtime，未变化不重读；文件超过 1 MiB 时只读末尾 1 MiB 并丢弃首个残行，重复 id 以后出现者为准，坏行跳过。文件缺失会清空映射，临时 I/O/解码失败保留上次成功映射；该 Codex 内部格式的全部假设都封闭在 reader 内，不增加 watcher、timer 或线程。
+
+reader 为每个文件保存字节偏移。首次发现只读末尾最多 8 MiB，若从文件中间开始则丢弃第一条可能截断的行；后续只读新增字节。无换行尾记录若已经是完整 JSON 会立即消费，未完整或 UTF-8 字符被拆分时保留原始字节，等待下一次 append。单文件解析或 I/O 错误只进入该任务的短期 `Error` 状态，不抛到宿主进程，也不阻断其他任务。
+
+隐私边界固定为：只反序列化 `turn_context` 的 `model/cwd`、`event_msg` 的 `task_started/task_complete/turn_aborted`，以及 `token_count.info` 的数字用量和 `model_context_window`。`cwd` 只保留末级目录名；提示词、回复正文、完整路径和 `rate_limits` 不进入快照、事件、转储或日志。`task_complete.last_agent_message` 只判断是否为空，不保存内容；静默完成保留终态但不触发提醒。
+
+状态优先级为 `Paused`、终态保持期内的 `Completed/Aborted`、读取错误保持期内的 `Error`、无快照时 `Idle`，再按文件最后写入时间进入 `Active`、`Listening`、`Idle`。活动窗口默认 30 分钟、最多 64 个文件；窗口内无文件时保留最新一个，终态保持期内的已跟踪文件优先保留。任务编号在可见期间稳定，释放后默认冷却 120 秒并按 FIFO 去重复用。
+
+公开消费契约为 `GetSnapshot()`、`SnapshotChanged`、`AttentionRaised`、`SetPaused(bool)` 和 `IsPaused`。`CodexTaskSnapshot.Title` 是官方会话标题的只读后端契约，前端只能消费该字段，不得自行解析 index。快照返回不可变副本；内容没有实际变化时不发 `SnapshotChanged`；非静默完成、中止和新的读取错误各发一次注意事件。后端设置键保存在 `settings.ini`，当前不在设置窗口暴露：`CodexTaskMonitorEnabled`、`CodexTaskMonitorActiveWindowMinutes`、`CodexTaskMonitorActiveSeconds`、`CodexTaskMonitorIdleSeconds`、`CodexTaskMonitorTerminalHoldSeconds`、`CodexTaskMonitorErrorHoldSeconds`、`CodexTaskMonitorNumberCooldownSeconds`。
+
+验收入口：`--test-codex-task-monitor` 运行隔离 fixture；`--dump-codex-tasks` 向标准输出写当前隐私安全 JSON 快照，其中 `title` 为官方会话标题或空串。
+
+### 5.2 Codex 任务前端表现层
+
+`Core/CodexTaskPresentation.cs` 是后端与所有可视面之间的唯一映射层：把 `CodexTaskMonitorSnapshot` 转成颜色、环几何、徽标和行模型，不做文件、timer 或 UI 访问。快照来源通过静态 `SnapshotProvider` 注入——`CodexRadarForm` 构造 reader 后注册它、释放时清空，样张和自测用 `UseFixtureSnapshotForSample` / `CreateFixtureSnapshot` 覆盖，因此绘制代码不依赖谁拥有 reader。provider 未注册或抛错时一律退化为空快照，绝不打断绘制。
+
+七态配色固定为：`Active` 亮绿、`Listening` 琥珀、`Completed` 柔绿、`Aborted` 红（alpha 200）、`Error` 红（alpha 245）、`Idle` 灰（alpha 150）、`Paused` 灰（alpha 90）。紧急度 `Error > Aborted > Listening > Completed > Active > Idle > Paused` 决定单一颜色或单一行代表整组时取谁；`NeedsAttention` 只含 `Error/Aborted/Listening/Completed`——运行中不算待处理。
+
+任务环（方案 F）：`RadarClockDial` 的 `RadarClockDialInput.TaskRing` 为空时保持原尺寸表盘，因此 Claude 雷达和其他调用方不受影响；有值时最外圈按任务数等分，每段颜色为该任务状态，段序按稳定任务编号排列，超过 12 个任务只保留最紧急的 12 段。环带宽度从表盘直径中扣除而非向外扩张，因为 `Draw` 会 clip 到自身矩形。ring 只在 Codex 模式且 `CodexTaskMonitorEnabled` 时组装（`GetEvenRowCodexTaskRing`）；无任务时不画环，全闲置时画暗环。
+
+启动器任务节点与任务看板（方案 4 + 方案 1）：启动器第二个节点显示跟踪任务数，外光环取最紧急状态色，有待处理任务时数字也用状态色，无任务时整体压暗；tooltip 给出计数、最紧急状态和待处理个数。点击开 `OperationCodexTaskBoardForm`（`Core/OperationForm.CodexTasks.cs`），它加入既有浮层互斥（见 `Docs/Component-Refresh-Rules.md`）。
+
+任务看板与 Spec 看板共用同一套 app 设计语言 `DesignTokens.Colors.*`（外壳 `AppBackground`、边框/分隔线 `Border`、标题/正文 `Text`、次要文字 `GlyphMuted`、卡片填充 `Surface`、切换与关闭胶囊描边 `Accent`），不再使用独立的 `OledAmber`/`OledCard` 暖色主题；状态点、卡片注意态描边与上下文水位环继续走语义色。左缘停靠页签用青色 `Accent`，与 Spec 看板的紫色 `AccentAlt` 页签区分。
+
+看板尺寸由 `CodexTaskBoardWidth`/`CodexTaskBoardHeight`（默认 648×400，范围同 Spec 看板 240–700 / 240–800）决定，有两种视图：
+
+- **气泡卡片视图**（默认，`CodexTaskBoardView=Table` 枚举值语义即卡片视图）：一会话一张富信息卡，按板宽自动 1 或 2 列（`BubbleColumns`，逻辑宽 ≥ `BubbleCardMinimumLogicalWidth×2+间隙` 用双列，默认 648 = 双列，窄窗回落单列，不再有独立的紧凑代码路径）。单卡（`DrawBubbleCard`）：第一行状态点 + `#编号 工作区`；第二行官方会话标题（来自 `CodexTaskSnapshot.Title`，空标题显示 `—` 占位以保持卡高一致）；第三行状态（状态色）+ 距最后事件时长 + 模型（去掉恒定 `gpt-` 前缀）；底部 token 行——`入`（含 `缓X%` 缓存占比）、`出`、`思`（推理）在左，`轮`（本轮合计）`计`（任务累计）右对齐。右侧上下文水位环（`DrawWaterRing`，环心整数百分比）。注意态（`NeedsAttention` 且提醒可见）卡片描边换该任务状态色。可见卡数由窗口高度与列数实算（`MaximumVisibleRows` = 列 × 可容行），不超过后端跟踪上限 `CodexTaskBoardMaximumRows = 10`。
+- **时间线视图**（`CodexTaskBoardView=Timeline`）：每任务一条泳道，展示最近 `CodexTaskBoardTimelineMinutes`（默认 45，范围 15–180）分钟的活动段，段色即当时状态。
+
+**上下文水位（方案 E）**：`CodexTaskPresentation.GetContextBarColor` 是独立于状态色的水位色阶——`< 60%` 绿、`≥ 60%` 黄（`Colors.Warning`）、`≥ ContextCriticalPercent = 80%` 红，卡片水位环与环心百分比同步转红（`ContextCritical`）。它**刻意不跟随状态**：接近满的上下文窗口即使在闲置会话上也是问题。
+
+**官方会话标题**：`CodexTaskMonitorReader` 从 `%USERPROFILE%\.codex\session_index.jsonl`（`id`→`thread_name`）按 rollout 文件名尾部会话 uuid join 出官方标题，随快照 `Title` 字段发布；卡片第二行消费。文件按 `LastWriteTimeUtc` 变化才全量重读（复用既有刷新批次，不新增定时器），缺失/未命名时降级为空标题。
+
+**时间线数据来源**：后端只发布"当前为真"，因此泳道由前端自行累积——`CodexTaskPresentation.SampleTimeline` 每次 tick 要么延长该任务当前段、要么开新段（存状态转换而非原始采样，每任务几十个结构封顶 `MaximumTimelineSegmentsPerTask = 96`），超出窗口的段自动裁剪、任务消失后其历史老化即删除。采样由看板自己的 2 秒 tick 驱动，**在折叠/可见性判断之前执行**，所以停靠收起时仍在积累历史。停靠关闭且看板关闭时不积累，此时时间线只显示上次运行期间观察到的内容。
+
+看板是常驻窗（不用鼠标捕获）。卡片视图按内容签名去抖、变化才重绘；时间线视图每 tick 必重绘（时间轴本身在走）。高 DPI 下的任务文字使用整数物理像素字号与基线，并在 `LayerScale >= 1.25` 时使用 `SingleBitPerPixelGridFit`，避免分层 ARGB 表面的 ClearType 彩边和灰阶半像素柔边；低缩放继续使用高对比 `AntiAliasGridFit`；水位环在 `DrawWaterRing` 内临时开 `AntiAlias` 画弧后复原。footer 右侧为 `时间线`/`卡片` 切换胶囊与 `关闭` 胶囊；切换为**会话级**（存实例字段，看板常驻故折叠/展开不丢），`CodexTaskBoardView` 设置键决定启动默认值——持久化点击需要一条枚举写回通道，而现有设置管线只承载布尔。左键命中 footer 两个胶囊时保留原动作，点击其余非控件/空白区域收起任务看板。
+
+停靠展开时，`LeftDockOutsideClickCollapseEnabled`（默认 true）还会让桌面、其他窗口或另一块看板上的左键点击收回任务看板；自身与自己的梯形 tab 是排除区。该路径复用 `EdgeDockTabForm` 的 120 ms tick 和共享 `OutsideClickDismissalMonitor` 的按键边沿序号，不新增鼠标钩子、捕获或定时器；收回后的 800 ms 内且光标未离开 tab 时抑制悬停重开。板内空白关闭的既有逻辑保持不变。
+
+看板定位规则由纯函数 `OperationForm.ComputeCodexTaskBoardPlacement` 决定，禁止与 `GetLauncherObstructionScreenRect`（操作核心按钮 ∪ 启动器 8°–82° 右上弧线可达域）重叠：优先吸附在遮挡域上方且右缘对齐核心中心（保住弧线区），上方放不下退到遮挡域左侧、再放不下落到下方；最后钳制进工作区，钳制若重新引入重叠则再向左/上让位。该函数有独立自测（`RunCodexTaskBoardPlacementSelfTest`，随 `--test-operation-panel` 运行）。
+
+验收入口：`--test`（含 `CodexTaskPresentation.RunSelfTest`）、`--test-operation-panel`（含看板定位自测）、`--render-operation` 产出 `operation-launcher-trio.png` 与 `operation-codex-tasks.png`、`--render-codexradar` 的 Codex 模式样张含任务环。
 
 CodexRadar RSS 中出现新的“用量限制已重置”记录时，默认会同时保护 5 小时和周额度；该行为受复杂选项 `CodexQuotaRssResetProtectionEnabled` 控制且默认开启。两个环立即显示 100，右侧时间位置显示金色 `已重置`；额度环弧线仍按当前剩余额度使用原本颜色，不额外变金。额度环图层从下到上为灰色底环、与左侧效率环一致的淡绿色 `#8EF2B9` 消耗环、当前余额环。消耗环不是单独的差值短段，而是上次读取或窗口基线余额对应的完整弧层；当前余额环覆盖共同部分后，露出的尾段自然表示消耗。五小时环的消耗环基准是上上次真实检测到的余额，并与上次检测到的余额比较：如果上上次为 67、上次为 57，则先绘制 67 的消耗环完整弧，再绘制 57 的当前余额弧，视觉上只露出 10 的淡绿色尾段；如果连续两次日志或刷新读到相同的五小时余额，默认通过 `CodexQuotaDuplicateSameBalanceRingProtectionEnabled` 保留已有消耗环基线，不清空也不重建，直到余额再次上涨、下降或来源失效。周额度环不再显示自己的最近读取下降段，消耗环基准为上一次 5 小时窗口开始时的周额度；默认允许用五小时余额上涨识别手动重置卡，只有开启 `CodexQuotaStrictFiveHourResetBoundaryEnabled` 后才要求旧 5 小时 reset 到期并推进，或在没有 reset 边界时退回余额上涨识别。Provider 零值保护 `CodexQuotaProviderZeroDropProtectionEnabled` 默认开启：单次 provider 样本把高余额直接报为 0 且 reset 时间没有实质推进时拒绝整份样本。Provider 5 小时提前满额保护、周额度突增保护和周基线自动修复分别由 `CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled`、`CodexQuotaProviderWeeklySpikeProtectionEnabled`、`CodexQuotaWeeklyBaselineAutoRepairEnabled` 控制，默认关闭，避免把手动重置卡误判为抖动；开启后被拒绝样本不写 `quota.ini`，也不更新 5 小时或周额度消耗环基线。首次读取、无有效来源或保护态不显示可见消耗环尾段。环内数字不再按软件族着色：有已知数值且 Codex/Claude 任一受支持本地软件运行时为白色；两者都未运行或数值未知时为灰色。RSS 发布时间只用于判断事件新旧；保护建立时间使用本机检测到该 RSS 的时间，避免启动前已经存在的 quota 样本立刻释放 100 保护。保护释放条件仍与本地到期保护相同，必须等到新的 quota 样本证明已经进入下一窗口，避免旧 session 文件把显示再次覆盖成低额度。RSS 重置事件使用 GUID、发布时间和“已保护 GUID”写入 `quota-reset-state.ini` 去重；首次升级后如果最新重置发生在 36 小时内，也会触发一次，防止刚恢复的 RSS 提醒被当作旧基线忽略。
 
@@ -195,6 +245,8 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，默认会�
 
 当前版本已删除旧的竖向 `Rader`、`Claude`、`ChatGPT` 服务健康面板绘制路径和五阶段连接诊断路径；`ServiceHealthProbeEnabled = true` 仍保留 Rader/Claude/OpenAI/DeepSeek 服务状态刷新，因为当前 `EvenRow` 右侧 API 摘要和 LED 列会消费这些状态。Codex 模式的 Radar 健康写入 Codex `RadarFamilyRuntimeState.RadarSiteHealth`，Claude 模式的 Radar 健康写入 Claude `RadarFamilyRuntimeState.RadarSiteHealth`；API 摘要防抖签名、轮播相位和候选稳定状态同样随软件族分开保存。DeepSeek `D` 点三种 Radar 视图都显示，状态只由公开 DeepSeek API 可达性决定：无 key 时 401/402/422 视为 API 可达，DNS/TLS/超时/连接失败为不可达，5xx/429 为服务异常，余额不足或未配置 key 不作为服务故障。当前软件为 `CLAUDE` 时，Claude Code 用量接口的未登录、鉴权失败、限流、不可达或解析失败也加入同一 API 摘要候选；公开 Claude 状态页仍独立保留。API 摘要正常时显示绿色 `API无异常`，异常时按网络窗口云服务告警的模式在异常 API 名称和错误原因之间轮播，并按异常级别变色；LED 列使用同一组候选给对应服务点染色。`ApplyCodexApiServiceAlertDebounce` 通过 `ServiceAlertDebouncer` 对非检测中错误执行 10 秒防抖：同一个服务的新错误必须连续存在满 10 秒才进入 API 摘要和 LED 颜色；错误消失时立即恢复正常；`ResetCodexApiServiceAlertDebounceForDisplayContextSwitch` 在 Codex/Claude 软件族切换后只重置目标软件族的稳定错误和轮播签名，另一个软件族的 Radar/OpenAI/Claude 错误不会跨窗口第一帧直接显示。OpenAI 与 Claude 官方状态页由 `StatuspageMonitor` 统一读取 `summary.json`，同一 serviceKey 在进程内 single-flight，正常 15 分钟轮询、异常或失败 2 分钟重试，并由 monitor 写一次 request-level 网络历史。ChatGPT 首页 HTTPS 可达性探测（`chatgpt.com` 五阶段诊断的一部分）仍保持已删除状态，未随此次改动恢复。
 
+提醒呈现另受 `AlertQuotaEnabled`、`AlertResetProtectionEnabled`、`AlertServiceHealthEnabled`、`AlertCodexTaskEnabled`、`AlertDeepSeekBalanceEnabled` 与夜间勿扰共同控制。开关只作用于 `QuotaRingDrawSpec`、API 候选、任务环/看板强调和用户可见通知；对应 reader、保护状态机、防抖与历史缓存始终继续运行。关闭后不会清空状态，重新开启即可按当前快照恢复呈现。
+
 额度雷达线仍由 `DrawQuotaWidget` 单独绘制在 IQ 模块左侧，取代旧的灰色分割竖线。CodexRadar 网站主数据刷新不依赖隐藏面板，继续按网站刷新规则读取 `current.json`、首页 HTML 回退和 RSS 回退。
 
 `1.0.3.24` 起，设置页提供 Codex Radar 手动布局开关。开启后，`DrawCodexRadarModules`、`DrawCodexRadarWidget`、`GetCompactQuotaRowsWidth`、`GetCodexRadarQuotaSideTextFontSize` 和相关圆环绘制函数会读取 `CodexRadarManual*` 参数，实时调整左侧区域占比、模块间距、效率文字列宽、余额列宽、IQ 状态列宽、文字比例和圆环比例。该开关只改变本地 GDI+ 绘制几何，不触发网络、缓存或磁盘读取；设置窗口通过 75 ms 预览节流调用 `WidgetForm.PreviewSettings`，所以调整时无需重新编译或重启。默认关闭时继续使用自动平衡布局。
@@ -210,6 +262,8 @@ CodexRadar RSS 中出现新的“用量限制已重置”记录时，默认会�
 - `EvenRow`（`Core/CodexRadarForm.EvenRow.cs`）：全部七个元素单行七等分（五个环 + 额度雷达 + 一个右侧状态格）。前五个环和标签在原列距内缩小并保持顶部对齐，底部紧贴标签绘制灰色分隔线；右侧状态格显示 API 摘要、网页数据标签和 Model IQ 更新时间三行。左下底部元信息为 `软件族品牌/RC/辅助项/LLM` 四项：软件族由 `CodexRadarSoftwareMode` 的自动/强制选项决定，Codex 显示蓝色斜体 `Codex`，Claude 显示橙色粗体 `Claude`；`RC` 为社区体感最高模型；辅助项在 Codex 模式为重置卡 `RS:n 剩余时间`，在 Claude 模式为 DeepSeek 余额 `DS:￥n`；`LLM` 为当前检测模型（默认 `5.5XH`）。`DrawEvenRowBottomInfoPanel` 先按共享字号和宽度分配得到四个独立矩形，再由 `DrawEvenRowBottomInfoText` 统一绘制：该 helper 用原 `DrawEvenRowStatusText` 路径把每项文字画到小透明位图，扫描 alpha 像素边界后做有界平移，使可见文字盒在本项矩形内居中；绘制路径只消费内存快照，不发起网络、磁盘或 token 读取。旧 EvenRow 默认宽度配置通过 Version 39 从 620 收缩到 580；当前用户默认快照进一步使用 522 px，Version 57 会把仍停留在旧 580 px 默认值的独立 Claude 窗口宽度一次性对齐到当前 `CodexRadarWidth`，非默认手动宽度仍由 `ClaudeRadarWidth` 独立保留。
 
 `EvenRow` 的圆环视觉（底环、消耗环、余额环颜色，IQ 超额/不足弧色，效率环基础/低效/高效弧色）把环和标签统一装进等宽单元格；额度雷达线复用 `DrawCodexQuotaRadarVerticalLine`（含均线、彩色段、蓝点、趋势箭头）。`EvenRow` 右侧状态格使用 `GetCodexApiServiceAlertCandidates` 的 API 轮播文本，左侧下方使用 `DrawEvenRowBottomInfoPanel` 与 `DrawEvenRowBottomInfoText` 绘制 `软件族/RC/辅助项/LLM` 并按实际可见像素居中。共享的取数逻辑（`GatherQuotaDisplayState`）和无偏移版本的环/标签绘制方法（`DrawEvenLayoutQuotaCell`、`DrawEvenLayoutIqCell`、`DrawEvenLayoutEfficiencyCell`、`DrawEvenLayoutRadarCell`）放在 `Core/CodexRadarForm.cs` 供 `EvenRow` 使用。
+
+当已接受的 Codex 额度快照标记 `FiveHourLimitAbsent` 时，空出的 5 小时格由 `DrawEvenLayoutWeeklyBurnRateCell` 绘制本机实测速率环。`QuotaRuntimeState.WeeklyBurnSamples` 只保存在内存，`RecordWeeklyBurnSample` 只接收干扰过滤后的周额度读数；余额回升、周重置时间变化、Codex 重新进入活动态或采样时钟断档都会重建样本，禁止跨额度窗口和盲区外推。`UpdateWeeklyBurnObservationClock` 复用现有 Codex Radar tick，只在 Codex 进程运行且当前窗口实际刷新 Codex 额度时累计活动时长，关闭软件和 Claude 模式的时间不计入速率。最近 6 个活动小时至少观察 10 分钟且出现一个可确认的整数百分点下降后，`TryComputeWeeklyBurnRate` 才返回实测结果；否则中心显示 `--`、底部显示 `采样中`。可计算时，环弧仍按周剩余额度百分比填充，中心显示预计续航小时（如 `24H`），底部显示每活动小时消耗（如 `1.7/H`）；预计续航达到重置时间为绿色、达到 75% 为黄色、更短为红色。该算法不再假设“重置时间减 7 天”是窗口起点。
 
 ### 7.1 Codex 重置卡状态
 

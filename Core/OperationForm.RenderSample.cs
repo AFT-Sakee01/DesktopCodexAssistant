@@ -4,23 +4,14 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Windows.Forms;
 
-// Test-only render harness for --render-operation: paints one representative frame of each
-// OperationRenderVariant (Classic plus the four OLED-safe schemes added in 1.0.3.44) to a PNG for
-// visual review, mirroring the other windows' render harnesses.
+// Test-only render harness for --render-operation: paints the single retained RadialDial frame
+// plus the Operation companion windows.
 internal sealed partial class OperationForm
 {
     internal static void RenderVariantSamples(string outputDir)
     {
         Directory.CreateDirectory(outputDir);
-        OperationRenderVariant[] variants =
-        {
-            OperationRenderVariant.Classic,
-            OperationRenderVariant.Typographic,
-            OperationRenderVariant.AmberHud,
-            OperationRenderVariant.WarmCard,
-            OperationRenderVariant.Phosphor,
-            OperationRenderVariant.RadialDial
-        };
+        OperationRenderVariant[] variants = { OperationRenderVariant.RadialDial };
 
         foreach (OperationRenderVariant variant in variants)
         {
@@ -41,10 +32,7 @@ internal sealed partial class OperationForm
                 (enabled) => enabled,
                 (propertyName, enabled) => enabled))
             {
-                if (variant == OperationRenderVariant.RadialDial)
-                {
-                    form.SetRadialDialExpandedForSample(true);
-                }
+                form.SetRadialDialExpandedForSample(true);
 
                 form.SetLayerScale(2.0f);
                 form.MaximumSize = new Size(4000, 4000);
@@ -63,7 +51,25 @@ internal sealed partial class OperationForm
         }
 
         RenderQuickGridSample(outputDir);
-        RenderLauncherTrioSample(outputDir);
+
+        // The launcher task node and the task flyout read live Codex sessions, which a sample run
+        // must not depend on. Publish a fixture snapshot for both, then restore the real provider.
+        Func<CodexTaskMonitorSnapshot> savedProvider = CodexTaskPresentation.SnapshotProvider;
+        try
+        {
+            DateTime sampleNow = DateTime.Now;
+            CodexTaskPresentation.SnapshotProvider = delegate
+            {
+                return CodexTaskPresentation.CreateFixtureSnapshot(sampleNow);
+            };
+            RenderLauncherTrioSample(outputDir);
+            RenderCodexTaskBoardSample(outputDir);
+            RenderEdgeDockTabSample(outputDir);
+        }
+        finally
+        {
+            CodexTaskPresentation.SnapshotProvider = savedProvider;
+        }
     }
 
     // Current-mode sample: real settings.ini (button size/offsets/variant/transparency), drawn

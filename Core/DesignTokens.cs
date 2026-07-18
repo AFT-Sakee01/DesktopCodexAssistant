@@ -133,53 +133,8 @@ internal static class DesignTokens
         public static readonly Color ButtonPressed = Color.FromArgb(42, 42, 42);
     }
 
-    // OLED-safe restyle palettes: no blue-dominant hues (blue subpixels age fastest on OLED),
-    // peak brightness kept below pure white/saturated primaries, and every ramp pairs with the
-    // existing semi-transparent AppBackground rather than an opaque black panel.
-    public static class OledTypographic
-    {
-        public static readonly Color Primary = Color.FromArgb(216, 211, 200);
-        public static readonly Color Secondary = Color.FromArgb(181, 176, 166);
-        public static readonly Color Muted = Color.FromArgb(122, 117, 107);
-        public static readonly Color AccentGood = Color.FromArgb(201, 230, 184);
-        public static readonly Color AccentWarn = Color.FromArgb(227, 178, 106);
-        public static readonly Color AccentDanger = Color.FromArgb(224, 85, 72);
-        public static readonly Color Hairline = Color.FromArgb(26, 216, 211, 200);
-    }
-
-    public static class OledAmber
-    {
-        public static readonly Color Bright = Color.FromArgb(232, 163, 61);
-        public static readonly Color Base = Color.FromArgb(214, 154, 58);
-        public static readonly Color Dim = Color.FromArgb(168, 134, 47);
-        public static readonly Color Glow = Color.FromArgb(90, 214, 154, 58);
-        public static readonly Color Danger = Color.FromArgb(224, 85, 72);
-    }
-
-    public static class OledCard
-    {
-        public static readonly Color CardFill = Color.FromArgb(150, 40, 37, 33);
-        public static readonly Color Text = Color.FromArgb(207, 201, 189);
-        public static readonly Color Muted = Color.FromArgb(138, 133, 124);
-        public static readonly Color DotGood = Color.FromArgb(127, 200, 102);
-        public static readonly Color DotWarn = Color.FromArgb(214, 154, 58);
-        public static readonly Color DotDanger = Color.FromArgb(224, 85, 72);
-    }
-
-    public static class OledPhosphor
-    {
-        public static readonly Color Bright = Color.FromArgb(111, 207, 111);
-        public static readonly Color Base = Color.FromArgb(88, 182, 88);
-        public static readonly Color Dim = Color.FromArgb(74, 143, 74);
-        public static readonly Color Faint = Color.FromArgb(46, 92, 46);
-        public static readonly Color Warn = Color.FromArgb(214, 154, 58);
-        public static readonly Color Danger = Color.FromArgb(224, 85, 72);
-    }
-
-    // Settings-window theme: aligns the settings UI with the actual floating-window scheme every
-    // window in this product runs (Classic — the only variant in settings.ini across every window
-    // family; the four OLED restyle schemes, including WarmCard which this theme previously copied,
-    // are alternates nobody has selected). Classic is near-black (Colors.AppBackground) with
+    // Settings-window theme: aligns the settings UI with the actual floating-window scheme. The
+    // theme is near-black (Colors.AppBackground) with
     // red/yellow/green (Colors.Danger/Warning/Success) as the only accent hues — no blue, no amber.
     // Neutral fills/dividers are computed with the same white-alpha-over-background blend the
     // layered windows use for their own card fills (DesignTokens.White(alpha) over AppBackground),

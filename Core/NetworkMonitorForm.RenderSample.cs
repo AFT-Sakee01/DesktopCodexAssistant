@@ -68,6 +68,45 @@ internal sealed partial class NetworkMonitorForm
         }
     }
 
+    internal static string RenderScaleOverrideProof(string outputDir)
+    {
+        Directory.CreateDirectory(outputDir);
+        Size baseline = RenderScaleOverrideSample(outputDir, -1, "networkmonitor-scale-default.png");
+        Size scaled = RenderScaleOverrideSample(outputDir, 150, "networkmonitor-scale-150.png");
+        double widthRatio = baseline.Width <= 0 ? 0.0 : (double)scaled.Width / baseline.Width;
+        double heightRatio = baseline.Height <= 0 ? 0.0 : (double)scaled.Height / baseline.Height;
+        if (Math.Abs(widthRatio - 1.5) > 0.01 || Math.Abs(heightRatio - 1.5) > 0.01)
+        {
+            throw new InvalidOperationException(
+                "NetworkMonitor 150% scale proof did not enlarge both window dimensions proportionally.");
+        }
+
+        return "NetworkMonitor scale override: PASS default=" + baseline.Width + "x" + baseline.Height +
+            " scaled_150=" + scaled.Width + "x" + scaled.Height +
+            " width_ratio=" + widthRatio.ToString("0.000") +
+            " height_ratio=" + heightRatio.ToString("0.000");
+    }
+
+    private static Size RenderScaleOverrideSample(string outputDir, int overridePercent, string fileName)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.NetworkMonitorScaleOverridePercent = overridePercent;
+        settings.Normalize();
+        using (NetworkMonitorForm form = new NetworkMonitorForm(settings))
+        {
+            form.MaximumSize = new Size(4000, 4000);
+            form.snapshot = BuildSampleSnapshot();
+            RenderSampleSupport.SaveComposited(
+                outputDir,
+                fileName,
+                form.Width,
+                form.Height,
+                form.GetApplicationOpacityAlpha(),
+                form.DrawNetworkMonitorWindow);
+            return form.Size;
+        }
+    }
+
     private static NetworkMonitorSnapshot BuildSampleSnapshot()
     {
         NetworkMonitorSnapshot snapshot = new NetworkMonitorSnapshot();

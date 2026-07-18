@@ -29,6 +29,9 @@ internal sealed class RadarClockDialInput
     public DateTime LastAttemptLocal;
     public bool LastActualKnown;
     public DateTime LastActualLocal;
+    // Scheme F: optional Codex task ring drawn outside the dial. Null (the default) keeps the legacy
+    // full-size dial, so the Claude radar and every other caller are unaffected.
+    public CodexTaskRingModel TaskRing;
 }
 
 internal sealed class RadarClockDialState
@@ -45,6 +48,7 @@ internal sealed class RadarClockDialState
     public string DateText;
     public string TimeText;
     public string ModeLabel;
+    public CodexTaskRingModel TaskRing;
 }
 
 internal sealed class RadarClockDialDrawContext
@@ -176,7 +180,8 @@ internal static class RadarClockDial
             SecondRunBadge = HasSecondRunSuffix(labelSuffix),
             DateText = FormatDate(labelMain),
             TimeText = GetTimeText(input),
-            ModeLabel = GetModeLabel(input.TimeDisplayMode)
+            ModeLabel = GetModeLabel(input.TimeDisplayMode),
+            TaskRing = input.TaskRing != null && input.TaskRing.HasSegments ? input.TaskRing : null
         };
     }
 
@@ -262,13 +267,32 @@ internal static class RadarClockDial
             g.SetClip(rect, CombineMode.Intersect);
             g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
 
-        float dialDiameter = Math.Min(rect.Width, rect.Height) - Scale(1.0f, context.LayerScale);
-        dialDiameter = Math.Max(Scale(20.0f, context.LayerScale), dialDiameter);
-        RectangleF dial = new RectangleF(
+        float outerDiameter = Math.Min(rect.Width, rect.Height) - Scale(1.0f, context.LayerScale);
+        outerDiameter = Math.Max(Scale(20.0f, context.LayerScale), outerDiameter);
+        RectangleF outer = new RectangleF(
             rect.Left,
-            rect.Top + (rect.Height - dialDiameter) / 2.0f,
-            dialDiameter,
-            dialDiameter);
+            rect.Top + (rect.Height - outerDiameter) / 2.0f,
+            outerDiameter,
+            outerDiameter);
+
+        // Scheme F: the task ring owns the outermost band and the clock dial shrinks to fit inside
+        // it. The band is taken from the dial rather than added outside it because Draw clips to its
+        // ownership rectangle; growing past `rect` would silently truncate the ring.
+        float taskRingStroke = Math.Max(1.5f, Scale(1.6f, context.LayerScale));
+        float taskRingBand = taskRingStroke + Math.Max(1.0f, Scale(1.2f, context.LayerScale));
+        bool taskRingVisible = state.TaskRing != null &&
+            state.TaskRing.HasSegments &&
+            outerDiameter - 2.0f * taskRingBand >= Scale(20.0f, context.LayerScale);
+        if (taskRingVisible)
+        {
+            DrawTaskRing(g, RectangleF.Inflate(outer, -taskRingStroke / 2.0f, -taskRingStroke / 2.0f), state.TaskRing, taskRingStroke);
+        }
+        else
+        {
+            taskRingBand = 0.0f;
+        }
+
+        RectangleF dial = RectangleF.Inflate(outer, -taskRingBand, -taskRingBand);
         float stroke = Math.Max(2.0f, Scale(2.0f, context.LayerScale));
         RectangleF arcRect = new RectangleF(
             dial.Left + stroke / 2.0f,
@@ -372,6 +396,36 @@ internal static class RadarClockDial
         finally
         {
             g.Restore(savedState);
+        }
+    }
+
+    // One arc per tracked Codex task, ordered by stable task number and colored by task status.
+    // Segments are butt-capped so the gap between neighbours reads as a real divider.
+    internal static void DrawTaskRing(
+        Graphics g,
+        RectangleF ringRect,
+        CodexTaskRingModel ring,
+        float stroke)
+    {
+        if (g == null || ring == null || !ring.HasSegments || ringRect.Width <= 0.0f || ringRect.Height <= 0.0f)
+        {
+            return;
+        }
+
+        for (int i = 0; i < ring.Segments.Count; i++)
+        {
+            CodexTaskRingSegment segment = ring.Segments[i];
+            if (segment == null || segment.SweepDegrees <= 0.0f)
+            {
+                continue;
+            }
+
+            using (Pen pen = new Pen(segment.Color, stroke))
+            {
+                pen.StartCap = LineCap.Flat;
+                pen.EndCap = LineCap.Flat;
+                g.DrawArc(pen, ringRect, segment.StartAngle, segment.SweepDegrees);
+            }
         }
     }
 
@@ -569,6 +623,27 @@ internal static class RadarClockDial
             !string.Equals(FormatDate("7/6"), "7月6日", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Radar clock date formatting changed.");
+        }
+
+        // Scheme F pass-through: callers that supply no task ring (Claude radar, every legacy path)
+        // must keep the legacy full-size dial, and an empty ring must not reserve the outer band.
+        RadarClockDialInput ringInput = CreateTestInput(12.0, truthNow, truthNow, truthNow);
+        if (ComputeState(ringInput).TaskRing != null)
+        {
+            throw new InvalidOperationException("Radar clock without a task ring must not expose ring state.");
+        }
+
+        ringInput.TaskRing = new CodexTaskRingModel();
+        if (ComputeState(ringInput).TaskRing != null)
+        {
+            throw new InvalidOperationException("Radar clock must treat an empty task ring as absent.");
+        }
+
+        ringInput.TaskRing = CodexTaskPresentation.BuildRing(CodexTaskPresentation.CreateFixtureSnapshot(truthNow));
+        RadarClockDialState ringState = ComputeState(ringInput);
+        if (ringState.TaskRing == null || ringState.TaskRing.Segments.Count != 4)
+        {
+            throw new InvalidOperationException("Radar clock should pass a populated task ring through to draw state.");
         }
     }
 

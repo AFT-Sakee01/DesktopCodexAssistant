@@ -69,6 +69,9 @@ internal sealed partial class CodexRadarForm
             this.FiveHourLastNewbornAcceptUtc = DateTime.MinValue;
             this.WeeklyLastNewbornAcceptUtc = DateTime.MinValue;
             this.WeeklyResetRainbowActive = false;
+            this.WeeklyBurnSamples = new List<WeeklyBurnSample>();
+            this.WeeklyBurnTrackedResetLocal = DateTime.MinValue;
+            this.WeeklyBurnClockUtc = DateTime.MinValue;
             this.Protection = new QuotaProtectionState();
         }
 
@@ -94,7 +97,25 @@ internal sealed partial class CodexRadarForm
         // In-memory only: it can only be set by a live accepted upward crossing, so it never
         // false-fires on startup/cache load.
         public bool WeeklyResetRainbowActive { get; set; }
+        // Accepted (post-interference-filter) weekly remaining-% readings observed by THIS machine,
+        // oldest first, pruned to the burn-rate window. Feeds the measured-rate weekly budget ring;
+        // in-memory only, so a restart honestly re-accumulates before showing a rate.
+        public List<WeeklyBurnSample> WeeklyBurnSamples { get; private set; }
+        public DateTime WeeklyBurnTrackedResetLocal { get; set; }
+        // The sampling clock advances only while Codex is running. Keeping an active-time axis
+        // prevents overnight/closed-app gaps from making the measured burn rate look artificially low.
+        public double WeeklyBurnActiveHours { get; set; }
+        public DateTime WeeklyBurnClockUtc { get; set; }
+        public bool WeeklyBurnClockActive { get; set; }
         public QuotaProtectionState Protection { get; private set; }
+    }
+
+    // One accepted weekly-quota reading projected onto the active-time clock.
+    private sealed class WeeklyBurnSample
+    {
+        public DateTime Utc { get; set; }
+        public double ActiveHours { get; set; }
+        public int RemainingPercent { get; set; }
     }
 
     // A provider can temporarily project an additional quota pool into the top-level fields.

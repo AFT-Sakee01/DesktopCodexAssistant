@@ -54,8 +54,8 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MinNetworkMonitorHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorHeight));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MinNetworkMonitorHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorHeight));
         this.Size = GetDesiredSize();
 
         this.timer = new System.Windows.Forms.Timer();
@@ -127,8 +127,8 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MinNetworkMonitorHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorHeight));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MinNetworkMonitorHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorHeight));
         ApplyPerformanceTimerIntervals();
         this.snapshot = this.reader.GetSnapshot(this.CurrentSettings);
 
@@ -213,6 +213,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private void OnTimerTick(object sender, EventArgs e)
     {
+        RefreshNightScheduleAtExistingTick();
         try
         {
             // The reader owns I/O; this timer consumes snapshots and redraws only visible changes.
@@ -523,7 +524,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     private Size GetDesiredSize()
     {
         int width = GetEffectiveNetworkMonitorWidth();
-        return this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(width, this.CurrentSettings.NetworkMonitorHeight));
+        return ScaleWindowSize(new Size(width, this.CurrentSettings.NetworkMonitorHeight));
     }
 
     private int GetNetworkMonitorAnchorWidth()
@@ -3083,26 +3084,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return font;
     }
 
-    // Mono counterpart of GetCachedUiFont, needed by the AmberHud/Phosphor OLED-safe restyle
-    // schemes (added in 1.0.3.44). Shares the same cache dictionary; the style+size key does not
-    // collide with UI-font entries because callers never request the exact same normalized
-    // size+style pair for both families in practice, and correctness does not depend on that anyway
-    // since this uses its own "M:" prefix.
-    private Font GetCachedMonoFont(float size, FontStyle style)
-    {
-        float normalizedSize = Math.Max(1.0f, (float)Math.Round(size, 2));
-        string key = "M:" + ((int)style).ToString(CultureInfo.InvariantCulture) + ":" +
-            normalizedSize.ToString("0.00", CultureInfo.InvariantCulture);
-        Font font;
-        if (!this.fontCache.TryGetValue(key, out font))
-        {
-            font = DesignTokens.CreateMonoFont(normalizedSize, style, GraphicsUnit.Pixel);
-            this.fontCache[key] = font;
-        }
-
-        return font;
-    }
-
     private void DisposeFontCache()
     {
         foreach (Font font in this.fontCache.Values)
@@ -3123,9 +3104,19 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
-    protected override byte GetApplicationOpacityAlpha()
+    protected override int WindowTransparencyOverridePercent
     {
-        return (byte)ApplyHoverTransparencyTarget(255);
+        get { return this.CurrentSettings.NetworkMonitorTransparencyOverridePercent; }
+    }
+
+    protected override int WindowScaleOverridePercent
+    {
+        get { return this.CurrentSettings.NetworkMonitorScaleOverridePercent; }
+    }
+
+    protected override int ApplyHoverAlpha(int alpha)
+    {
+        return ApplyHoverTransparencyTarget(alpha);
     }
 
     private int ApplyHoverTransparencyTarget(int alpha)
@@ -3260,7 +3251,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Network monitor display self-test: duplicate DNS alert reasons must remain visually distinguishable.");
         }
 
-        using (NetworkMonitorForm form = new NetworkMonitorForm(new WidgetSettings()))
+        using (NetworkMonitorForm form = new NetworkMonitorForm(WidgetSettings.CreateDefaults()))
         {
             form.snapshot = new NetworkMonitorSnapshot
             {

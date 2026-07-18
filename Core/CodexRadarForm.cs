@@ -61,6 +61,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     // minutes after the displayed pool was seen actively consuming.
     private const double QuotaNewbornSuppressAfterConsumptionMinutes = 30.0;
     private const double QuotaRejectedPersistenceStaleGapMinutes = 15.0;
+    // The weekly-only burn-rate ring uses a short, in-memory active-time history. Six hours smooths
+    // integer-percent provider steps without making yesterday's usage dominate the current pace.
+    private const double WeeklyBurnRateWindowActiveHours = 6.0;
+    private const double WeeklyBurnRateMinimumActiveMinutes = 10.0;
+    private const double WeeklyBurnClockMaximumGapSeconds = 90.0;
+    private const double WeeklyBurnSampleMinimumSpacingSeconds = 60.0;
+    private const int WeeklyBurnSampleLimit = 256;
     private const string QuotaRadarTierPlus = "plus";
     private const string QuotaRadarTierPro5x = "pro5x";
     private const string QuotaRadarTierPro20x = "pro20x";
@@ -121,6 +128,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private FileSystemWatcher quotaSessionWatcher;
     private string quotaSessionsPath = string.Empty;
     private int quotaSessionFilesChanged = 1;
+    private CodexTaskMonitorReader codexTaskMonitorReader;
+    private int codexTaskMonitorReconcileRequested = 1;
+    private int codexTaskMonitorReconcileRunning;
+    private DateTime nextCodexTaskMonitorReconcileUtc = DateTime.MinValue;
+    private DateTime nextCodexTaskMonitorStatusRefreshUtc = DateTime.MinValue;
     private const int MaxCodexRadarSceneBitmapCacheEntries = 6;
     private readonly Dictionary<string, Bitmap> renderSceneBitmapCache = new Dictionary<string, Bitmap>();
     private readonly Queue<string> renderSceneBitmapCacheOrder = new Queue<string>();
@@ -766,6 +778,17 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         LoadCodexRadarNotificationState();
         LoadQuotaResetState();
         InitializeQuotaSessionWatcher();
+        this.codexTaskMonitorReader = new CodexTaskMonitorReader(this.CurrentSettings);
+        RequestCodexTaskMonitorReconcile();
+        // BACKEND SEAM: this window owns the reader, so it publishes the snapshot for every frontend
+        // surface (radar clock task ring, operation launcher badge and task flyout). Reads go through
+        // the provider on each paint; a push path (SnapshotChanged -> invalidate, AttentionRaised ->
+        // routing) can replace the pull without touching any drawing code.
+        CodexTaskPresentation.SnapshotProvider = delegate
+        {
+            CodexTaskMonitorReader reader = this.codexTaskMonitorReader;
+            return reader == null ? CodexTaskMonitorSnapshot.Empty : reader.GetSnapshot();
+        };
 
         this.SetStyle(
             ControlStyles.AllPaintingInWmPaint |
@@ -782,8 +805,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight + S(32)));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight + S(32)));
         this.Size = GetDesiredCodexRadarSize();
 
         this.timer = new System.Windows.Forms.Timer();
@@ -832,6 +855,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
         DisposeQuotaSessionWatcher();
+        if (this.codexTaskMonitorReader != null)
+        {
+            CodexTaskPresentation.SnapshotProvider = null;
+            this.codexTaskMonitorReader.Dispose();
+            this.codexTaskMonitorReader = null;
+        }
         this.timer.Stop();
         this.timer.Tick -= OnTimerTick;
         this.timer.Dispose();
@@ -845,6 +874,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void OnTimerTick(object sender, EventArgs e)
     {
+        RefreshNightScheduleAtExistingTick();
         try
         {
             this.renderTickCount++;
@@ -855,6 +885,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
             // This timer is only a lightweight scheduler. Each data source owns its business
             // interval and single-flight guard, so a faster UI mode does not multiply web traffic.
+            RefreshCodexTaskMonitorIfNeeded();
             UpdateEffectiveCodexRadarSoftwareModeIfNeeded();
             UpdateCodexRadarRandomTestIfNeeded();
             if (!this.CurrentSettings.CodexRadarRandomTestEnabled)
@@ -962,9 +993,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         CacheCodexRadarDisplayMode(oldEffectiveSoftwareMode);
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
+        if (this.codexTaskMonitorReader != null)
+        {
+            this.codexTaskMonitorReader.UpdateSettings(this.CurrentSettings);
+            RequestCodexTaskMonitorReconcile();
+        }
         ApplyLayerScaleFromSettings(this.CurrentSettings);
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight + S(32)));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight + S(32)));
         unchecked
         {
             this.renderSceneSettingsRevision++;
@@ -1798,7 +1834,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private Size GetDesiredCodexRadarSize()
     {
-        return this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(this.CurrentSettings.CodexRadarWidth, this.CurrentSettings.CodexRadarHeight));
+        return ScaleWindowSize(new Size(this.CurrentSettings.CodexRadarWidth, this.CurrentSettings.CodexRadarHeight));
     }
 
     private int GetThermalAlertExtraHeight()
@@ -2143,10 +2179,16 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         RectangleF textRect;
         GetEvenLayoutCellRects(cellRect, out ringRect, out textRect);
 
+        bool quotaAlertsVisible = AlertPresentationPolicy.ShouldPresent(
+            this.CurrentSettings,
+            AlertPresentationCategory.Quota);
+        bool resetAlertsVisible = AlertPresentationPolicy.ShouldPresent(
+            this.CurrentSettings,
+            AlertPresentationCategory.ResetProtection);
         string displayText;
         Color displayColor;
-        GetQuotaResetDisplayText(resetText, quotaProtected, radarSnapshot, out displayText, out displayColor);
-        bool forceResetDisplayColor = IsCodexRadarSpeedWindowCurrentlyOpen(radarSnapshot, DateTime.Now);
+        GetQuotaResetDisplayText(resetText, quotaProtected && resetAlertsVisible, radarSnapshot, out displayText, out displayColor);
+        bool forceResetDisplayColor = quotaAlertsVisible && IsCodexRadarSpeedWindowCurrentlyOpen(radarSnapshot, DateTime.Now);
         if (GetEffectiveCodexRadarSoftwareMode() == CodexRadarSoftwareMode.Claude)
         {
             bool forceClaudeSourceColor;
@@ -2169,9 +2211,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             AnySupportedAppRunning = anySupportedAppRunning,
             QuotaValueKnown = quotaValueKnown,
             ForceDangerFullRing = forceDangerFullRing,
+            SuppressQuotaAlerts = !quotaAlertsVisible,
             // Rainbow (sub-day reset credit) takes priority over the sky-blue reset-detected ring.
-            RainbowRing = quotaResetCreditSubDay && !forceDangerFullRing,
-            ResetDetectedRing = quotaResetDetected && !quotaResetCreditSubDay && !forceDangerFullRing,
+            RainbowRing = resetAlertsVisible && quotaResetCreditSubDay && !forceDangerFullRing,
+            ResetDetectedRing = resetAlertsVisible && quotaResetDetected && !quotaResetCreditSubDay && !forceDangerFullRing,
             NumberFont = this.fontCache.GetUi(Math.Max(7.0f, ringRect.Width * 0.342f), FontStyle.Bold),
             LabelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold),
             DrawFittedLabel = delegate(Graphics graphics, string text, Font font, Brush brush, RectangleF rect)
@@ -2259,17 +2302,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
     }
 
-    // When the 5-hour limit is absent (weekly-only accounts) the 5h ring cell has nothing to show,
-    // so it is repurposed as a weekly BUDGET ring: same shape as the other rings (arc + centre number
-    // + bottom label). The arc keeps the shared "remaining %" fill convention but is COLOURED by the
-    // efficiency (green on/under budget, amber slightly over, red well over). The centre shows the
-    // EFFICIENCY - the consumed/elapsed pace ratio (100 = exactly on the linear budget), no percent
-    // sign, capped at 200 for display so it can never blow up. The bottom shows the RUNWAY: how many
-    // hours the remaining quota lasts at the average rate so far ("70H"), or red "未计算" when the
-    // efficiency is over 200 (too little elapsed time / burning far over budget to project a duration).
-    private const double WeeklyBudgetWindowDays = 7.0;
-
-    private void DrawEvenLayoutWeeklyBudgetCell(Graphics g, RectangleF cellRect, QuotaDisplayState quotaState)
+    // Weekly-only accounts have no 5-hour quota to draw, so that cell becomes a measured burn-rate
+    // ring. It deliberately avoids reconstructing a synthetic seven-day window from resets_at: the
+    // provider's moving/reset-card timestamps made that model sit at 200/"未计算". The arc still means
+    // remaining quota; its color now answers whether the locally measured runway reaches the real
+    // reset timestamp. Centre = runway hours, bottom = measured percent burned per active hour.
+    private void DrawEvenLayoutWeeklyBurnRateCell(Graphics g, RectangleF cellRect, QuotaDisplayState quotaState)
     {
         if (cellRect.Width <= 0 || cellRect.Height <= 0)
         {
@@ -2283,16 +2321,25 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         CodexQuotaSnapshot snapshot = quotaState.Snapshot;
         bool valueKnown = quotaState.QuotaValueKnown;
         int remaining = ClampPercent(snapshot.WeeklyPercent);
-        int efficiencyPercent = 100;
-        bool durationKnown = false;
-        int runwayHours = 0;
-        bool known = valueKnown && TryComputeWeeklyBudget(
-            remaining, snapshot.WeeklyResetKnown, snapshot.WeeklyResetLocal, DateTime.Now,
-            out efficiencyPercent, out durationKnown, out runwayHours);
+        double burnPercentPerHour = 0.0;
+        double runwayHours = 0.0;
+        double hoursToReset = 0.0;
+        bool known = valueKnown && TryComputeWeeklyBurnRate(
+            GetActiveQuotaRuntimeState().WeeklyBurnSamples,
+            remaining,
+            snapshot.WeeklyResetKnown,
+            snapshot.WeeklyResetLocal,
+            DateTime.Now,
+            out burnPercentPerHour,
+            out runwayHours,
+            out hoursToReset);
+        bool depleted = valueKnown && remaining <= 0;
 
-        Color arcColor = known
-            ? GetWeeklyBudgetPaceColor(efficiencyPercent)
-            : DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
+        Color arcColor = depleted
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 242)
+            : known
+                ? GetWeeklyBurnCoverageColor(runwayHours, hoursToReset)
+                : DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 230);
 
         float stroke = Math.Max(2.0f, ringRect.Width * 0.14f);
         RectangleF arcRect = new RectangleF(
@@ -2314,20 +2361,25 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             }
         }
 
-        // Centre: efficiency number, no percent sign.
-        string centerText = known
-            ? efficiencyPercent.ToString(CultureInfo.InvariantCulture)
-            : "--";
-        Color numberColor = known
+        string centerText = depleted
+            ? "0H"
+            : known
+                ? FormatWeeklyBurnRunway(runwayHours)
+                : "--";
+        Color numberColor = known || depleted
             ? DesignTokens.TextStrong(238)
             : DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 235);
-        Font numberFont = this.fontCache.GetUi(Math.Max(7.0f, ringRect.Width * 0.34f), FontStyle.Bold);
+        Font numberFont = this.fontCache.GetUi(Math.Max(7.0f, ringRect.Width * 0.31f), FontStyle.Bold);
         using (SolidBrush numberBrush = new SolidBrush(numberColor))
         {
             DrawCodexRadarFittedText(g, centerText, numberFont, numberBrush, ringRect, StringAlignment.Center, 5.0f);
         }
 
-        // Bottom: runway hours "<n>H", red "未计算" when the duration is not projectable, else muted.
+        // Bottom = distance to the weekly reset, independent of whether a rate resolved yet: while
+        // the centre still reads "--" (sampling), the reset distance is already known and useful.
+        double labelHoursToReset = snapshot.WeeklyResetKnown && snapshot.WeeklyResetLocal != DateTime.MinValue
+            ? (snapshot.WeeklyResetLocal - DateTime.Now).TotalHours
+            : 0.0;
         string labelText;
         Color labelColor;
         if (!valueKnown)
@@ -2335,19 +2387,19 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             labelText = "N/A";
             labelColor = DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 235);
         }
-        else if (!known)
+        else if (depleted)
         {
-            labelText = "--";
-            labelColor = DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 235);
-        }
-        else if (!durationKnown)
-        {
-            labelText = "未计算";
+            labelText = "已耗尽";
             labelColor = DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245);
+        }
+        else if (labelHoursToReset > 0.0)
+        {
+            labelText = FormatWeeklyBurnTimeToReset(labelHoursToReset);
+            labelColor = DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 235);
         }
         else
         {
-            labelText = runwayHours.ToString(CultureInfo.InvariantCulture) + "H";
+            labelText = "--";
             labelColor = DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 235);
         }
 
@@ -2358,89 +2410,91 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
     }
 
-    // Weekly budget model. efficiencyPercent = the consumed/elapsed pace ratio x100 (100 = exactly on
-    // the linear spend line, >100 ahead of budget, <100 behind), CAPPED at 200 for display so the
-    // centre can never blow up to the old 999. runwayHours = how many hours the remaining quota lasts
-    // at the average rate so far. durationKnown is false (caller shows "未计算") when the ratio exceeds
-    // 200 - too little elapsed time / burning far over budget for a duration projection to be
-    // meaningful. The window is assumed 7 days ending at the known reset; returns false (centre "--")
-    // when the reset is unknown or lies more than a window ahead.
-    private static bool TryComputeWeeklyBudget(
-        int remainingPercent, bool weeklyResetKnown, DateTime weeklyResetLocal, DateTime nowLocal,
-        out int efficiencyPercent, out bool durationKnown, out int runwayHours)
+    private static bool TryComputeWeeklyBurnRate(
+        IList<WeeklyBurnSample> samples,
+        int remainingPercent,
+        bool weeklyResetKnown,
+        DateTime weeklyResetLocal,
+        DateTime nowLocal,
+        out double burnPercentPerHour,
+        out double runwayHours,
+        out double hoursToReset)
     {
-        efficiencyPercent = 100;
-        durationKnown = false;
-        runwayHours = 0;
-        if (!weeklyResetKnown || weeklyResetLocal == DateTime.MinValue)
+        burnPercentPerHour = 0.0;
+        runwayHours = 0.0;
+        // hoursToReset <= 0 means "reset distance unknown/expired": the runway still computes from
+        // local samples alone; only the coverage comparison falls back to absolute thresholds.
+        hoursToReset = 0.0;
+        if (samples == null || samples.Count < 2)
         {
             return false;
         }
 
-        double daysToReset = (weeklyResetLocal - nowLocal).TotalDays;
-        if (daysToReset < 0.0 || daysToReset > WeeklyBudgetWindowDays + 0.5)
+        if (weeklyResetKnown && weeklyResetLocal != DateTime.MinValue)
         {
-            // Already past, or further than a whole window ahead: the 7-day model does not apply.
+            hoursToReset = (weeklyResetLocal - nowLocal).TotalHours;
+        }
+
+        WeeklyBurnSample end = samples[samples.Count - 1];
+        double cutoffActiveHours = end.ActiveHours - WeeklyBurnRateWindowActiveHours;
+        int startIndex = 0;
+        while (startIndex < samples.Count - 1 && samples[startIndex + 1].ActiveHours <= cutoffActiveHours)
+        {
+            startIndex++;
+        }
+
+        WeeklyBurnSample start = samples[startIndex];
+        double observedActiveHours = end.ActiveHours - start.ActiveHours;
+        if (observedActiveHours * 60.0 < WeeklyBurnRateMinimumActiveMinutes)
+        {
             return false;
         }
 
-        double elapsedFrac = 1.0 - daysToReset / WeeklyBudgetWindowDays;
-        if (elapsedFrac < 0.0)
+        int consumedPercent = start.RemainingPercent - end.RemainingPercent;
+        if (consumedPercent <= 0)
         {
-            elapsedFrac = 0.0;
-        }
-        else if (elapsedFrac > 1.0)
-        {
-            elapsedFrac = 1.0;
+            // Integer-percent sources cannot prove a positive rate until at least one accepted drop.
+            // Showing "采样中" is more honest than treating a flat quantized reading as infinite life.
+            return false;
         }
 
-        double consumedFrac = Math.Max(0.0, Math.Min(1.0, (100 - remainingPercent) / 100.0));
-        double remainingFrac = Math.Max(0.0, Math.Min(1.0, remainingPercent / 100.0));
-
-        double ratio;
-        if (elapsedFrac < 1e-6)
+        burnPercentPerHour = consumedPercent / observedActiveHours;
+        if (double.IsNaN(burnPercentPerHour) || double.IsInfinity(burnPercentPerHour) || burnPercentPerHour <= 0.0)
         {
-            // No meaningful elapsed time: any consumption is "infinitely" ahead of the budget line.
-            ratio = consumedFrac > 0.0 ? 1000.0 : 0.0;
+            return false;
         }
-        else
-        {
-            ratio = consumedFrac / elapsedFrac * 100.0;
-        }
-
-        efficiencyPercent = (int)Math.Round(Math.Max(0.0, Math.Min(200.0, ratio)));
-
-        double elapsedHours = elapsedFrac * WeeklyBudgetWindowDays * 24.0;
-        if (ratio > 200.0 || elapsedHours < 1e-6)
-        {
-            // Over ~2x budget or not enough elapsed time: a runway projection is not meaningful.
-            durationKnown = false;
-        }
-        else if (consumedFrac < 1e-6)
-        {
-            // Essentially no consumption: the quota outlasts the window; cap the displayed hours.
-            durationKnown = true;
-            runwayHours = 999;
-        }
-        else
-        {
-            double burnPerHour = consumedFrac / elapsedHours;
-            double hours = remainingFrac / burnPerHour;
-            runwayHours = (int)Math.Round(Math.Max(0.0, Math.Min(999.0, hours)));
-            durationKnown = true;
-        }
-
-        return true;
+        runwayHours = ClampPercent(remainingPercent) / burnPercentPerHour;
+        return !double.IsNaN(runwayHours) && !double.IsInfinity(runwayHours) && runwayHours >= 0.0;
     }
 
-    private static Color GetWeeklyBudgetPaceColor(int pacePercent)
+    private static Color GetWeeklyBurnCoverageColor(double runwayHours, double hoursToReset)
     {
-        if (pacePercent <= 100)
+        if (hoursToReset <= 0.0)
+        {
+            // Reset distance unknown (or expired): fall back to absolute runway thresholds so the
+            // ring keeps answering "how long will this last" instead of going gray.
+            if (runwayHours >= 72.0)
+            {
+                return DesignTokens.WithAlpha(DesignTokens.Colors.QuotaGood, 238);
+            }
+
+            if (runwayHours >= 24.0)
+            {
+                return DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 240);
+            }
+
+            return DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 242);
+        }
+
+        // Green requires a 25% margin beyond the reset distance; exactly reaching it is amber, and
+        // falling short is red. Runway is measured in ACTIVE hours against a wall-clock reset
+        // distance, which is already conservative, but "barely makes it" still deserves caution.
+        if (runwayHours >= hoursToReset * 1.25)
         {
             return DesignTokens.WithAlpha(DesignTokens.Colors.QuotaGood, 238);
         }
 
-        if (pacePercent <= 120)
+        if (runwayHours >= hoursToReset)
         {
             return DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 240);
         }
@@ -2448,70 +2502,274 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 242);
     }
 
-    private static void RunWeeklyBudgetPaceSelfTest()
+    private static string FormatWeeklyBurnRunway(double runwayHours)
     {
-        DateTime now = new DateTime(2026, 7, 14, 12, 0, 0, DateTimeKind.Local);
-        int eff;
-        bool durationKnown;
-        int runway;
+        int rounded = (int)Math.Round(Math.Max(0.0, Math.Min(999.0, runwayHours)));
+        return rounded.ToString(CultureInfo.InvariantCulture) + "H";
+    }
 
-        // Unknown reset, and a reset further than a window ahead, both decline.
-        if (TryComputeWeeklyBudget(50, false, DateTime.MinValue, now, out eff, out durationKnown, out runway) ||
-            TryComputeWeeklyBudget(50, true, now.AddDays(9.0), now, out eff, out durationKnown, out runway))
+    // Bottom label: distance to the weekly reset. Under a day shows whole hours ("18h"), a day or
+    // more shows days with one decimal ("4.2d", integer days from 10 up). Lowercase units keep it
+    // visually distinct from the uppercase runway hours in the ring centre.
+    private static string FormatWeeklyBurnTimeToReset(double hoursToReset)
+    {
+        if (hoursToReset < 24.0)
         {
-            throw new InvalidOperationException("Weekly budget self-test failed: unknown/out-of-window reset should return false.");
+            int hours = Math.Max(1, (int)Math.Ceiling(hoursToReset));
+            return hours.ToString(CultureInfo.InvariantCulture) + "h";
         }
 
-        // On budget: elapsed 50% (reset 3.5d), remaining 50% -> ratio 100; runway 84h (symmetric).
-        if (!TryComputeWeeklyBudget(50, true, now.AddDays(3.5), now, out eff, out durationKnown, out runway) ||
-            Math.Abs(eff - 100) > 1 || !durationKnown || Math.Abs(runway - 84) > 2)
+        double days = hoursToReset / 24.0;
+        if (days >= 10.0)
         {
-            throw new InvalidOperationException("Weekly budget self-test failed: on-budget expected eff~100 runway~84, got " + eff + "/" + runway + ".");
+            return Math.Min(99.0, Math.Round(days)).ToString("0", CultureInfo.InvariantCulture) + "d";
         }
 
-        // Under budget: remaining 70% -> consumed 30%, ratio 60; runway ~196h.
-        if (!TryComputeWeeklyBudget(70, true, now.AddDays(3.5), now, out eff, out durationKnown, out runway) ||
-            Math.Abs(eff - 60) > 1 || !durationKnown || Math.Abs(runway - 196) > 2)
+        return days.ToString("0.0", CultureInfo.InvariantCulture) + "d";
+    }
+
+    private static void UpdateWeeklyBurnObservationClock(QuotaRuntimeState quotaState, bool active, DateTime nowUtc)
+    {
+        if (quotaState == null)
         {
-            throw new InvalidOperationException("Weekly budget self-test failed: under-budget expected eff~60 runway~196, got " + eff + "/" + runway + ".");
+            return;
         }
 
-        // Over budget but still projectable (ratio <= 200): remaining 40%, reset 4d -> ratio ~140,
-        // runway ~48h.
-        if (!TryComputeWeeklyBudget(40, true, now.AddDays(4.0), now, out eff, out durationKnown, out runway) ||
-            Math.Abs(eff - 140) > 2 || !durationKnown || Math.Abs(runway - 48) > 2)
+        DateTime normalizedUtc = nowUtc.Kind == DateTimeKind.Utc ? nowUtc : nowUtc.ToUniversalTime();
+        DateTime previousUtc = quotaState.WeeklyBurnClockUtc;
+        bool wasActive = quotaState.WeeklyBurnClockActive;
+        if (previousUtc != DateTime.MinValue && normalizedUtc > previousUtc)
         {
-            throw new InvalidOperationException("Weekly budget self-test failed: over-budget expected eff~140 runway~48, got " + eff + "/" + runway + ".");
+            double elapsedSeconds = (normalizedUtc - previousUtc).TotalSeconds;
+            if (wasActive && elapsedSeconds <= WeeklyBurnClockMaximumGapSeconds)
+            {
+                quotaState.WeeklyBurnActiveHours += elapsedSeconds / 3600.0;
+            }
+            else if (wasActive && elapsedSeconds > WeeklyBurnClockMaximumGapSeconds)
+            {
+                // A suspend, software-mode detour or stalled UI tick provides no evidence that Codex
+                // was active throughout the gap. Restart the estimate instead of diluting it.
+                quotaState.WeeklyBurnSamples.Clear();
+            }
+
+            if (!wasActive && active)
+            {
+                // A new active session gets a fresh baseline. This also prevents usage performed on
+                // another device while Codex was closed from being charged to local active time.
+                quotaState.WeeklyBurnSamples.Clear();
+            }
         }
 
-        // Ratio over 200 (elapsed tiny): remaining 30%, reset 6.5d -> ratio ~980 -> eff capped 200,
-        // duration NOT projectable ("未计算").
-        if (!TryComputeWeeklyBudget(30, true, now.AddDays(6.5), now, out eff, out durationKnown, out runway) ||
-            eff != 200 || durationKnown)
+        quotaState.WeeklyBurnClockUtc = normalizedUtc;
+        quotaState.WeeklyBurnClockActive = active;
+    }
+
+    private static void RecordWeeklyBurnSample(
+        QuotaRuntimeState quotaState,
+        CodexQuotaSnapshot snapshot,
+        DateTime nowUtc)
+    {
+        if (quotaState == null || snapshot == null)
         {
-            throw new InvalidOperationException("Weekly budget self-test failed: >200 expected eff=200 duration-unknown, got " + eff + "/" + durationKnown + ".");
+            return;
         }
 
-        // Window start (elapsed 0) with consumption: eff capped 200, duration unknown - the old
-        // blow-up regime now reads as 200 + 未计算, never 999.
-        if (!TryComputeWeeklyBudget(50, true, now.AddDays(WeeklyBudgetWindowDays), now, out eff, out durationKnown, out runway) ||
-            eff != 200 || durationKnown)
+        if (!snapshot.FiveHourLimitAbsent)
         {
-            throw new InvalidOperationException("Weekly budget self-test failed: window-start expected eff=200 duration-unknown, got " + eff + "/" + durationKnown + ".");
+            quotaState.WeeklyBurnSamples.Clear();
+            quotaState.WeeklyBurnTrackedResetLocal = DateTime.MinValue;
+            return;
         }
 
-        // No consumption: eff 0, runway capped at 999 (quota lasts far beyond the window).
-        if (!TryComputeWeeklyBudget(100, true, now.AddDays(3.5), now, out eff, out durationKnown, out runway) ||
-            eff != 0 || !durationKnown || runway != 999)
+        // A read that temporarily lacks the reset timestamp must NOT wipe the locally accumulated
+        // rate history - the provider intermittently omitting resets_at would otherwise force a
+        // fresh sampling period every time. Keep sampling on the balance axis; the reset-identity
+        // check simply pauses until a timestamp is present again, and the balance-increase guard
+        // below still catches a real reset that happened while the timestamp was missing.
+        if (snapshot.WeeklyResetKnown && snapshot.WeeklyResetLocal != DateTime.MinValue)
         {
-            throw new InvalidOperationException("Weekly budget self-test failed: zero consumption expected eff=0 runway=999, got " + eff + "/" + runway + ".");
+            bool resetChanged = quotaState.WeeklyBurnTrackedResetLocal != DateTime.MinValue &&
+                Math.Abs((snapshot.WeeklyResetLocal - quotaState.WeeklyBurnTrackedResetLocal).TotalMinutes) > QuotaIdentityToleranceMinutes;
+            if (resetChanged)
+            {
+                quotaState.WeeklyBurnSamples.Clear();
+            }
+            quotaState.WeeklyBurnTrackedResetLocal = snapshot.WeeklyResetLocal;
         }
 
-        if (GetWeeklyBudgetPaceColor(100) != DesignTokens.WithAlpha(DesignTokens.Colors.QuotaGood, 238) ||
-            GetWeeklyBudgetPaceColor(110) != DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 240) ||
-            GetWeeklyBudgetPaceColor(200) != DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 242))
+        // Inactive reads may update the displayed quota, but they must not add a point to the local
+        // burn-rate axis. The next active transition starts a new baseline in the clock helper.
+        if (!quotaState.WeeklyBurnClockActive)
         {
-            throw new InvalidOperationException("Weekly budget self-test failed: efficiency color thresholds.");
+            return;
+        }
+
+        int remaining = ClampPercent(snapshot.WeeklyPercent);
+        List<WeeklyBurnSample> samples = quotaState.WeeklyBurnSamples;
+        if (samples.Count > 0 && remaining > samples[samples.Count - 1].RemainingPercent)
+        {
+            // A balance increase means a reset/card/new pool. Never project one quota window through
+            // another, even if the provider happened to reuse the same reset timestamp.
+            samples.Clear();
+        }
+
+        DateTime normalizedUtc = nowUtc.Kind == DateTimeKind.Utc ? nowUtc : nowUtc.ToUniversalTime();
+        WeeklyBurnSample next = new WeeklyBurnSample
+        {
+            Utc = normalizedUtc,
+            ActiveHours = quotaState.WeeklyBurnActiveHours,
+            RemainingPercent = remaining
+        };
+
+        if (samples.Count == 0)
+        {
+            samples.Add(next);
+        }
+        else
+        {
+            WeeklyBurnSample last = samples[samples.Count - 1];
+            if (remaining == last.RemainingPercent)
+            {
+                if ((normalizedUtc - last.Utc).TotalSeconds < WeeklyBurnSampleMinimumSpacingSeconds)
+                {
+                    return;
+                }
+
+                // Retain the first point at this value and move only the plateau endpoint. That keeps
+                // quantized 1%-step sources useful without accumulating one point every refresh tick.
+                if (samples.Count >= 2 && samples[samples.Count - 2].RemainingPercent == remaining)
+                {
+                    samples[samples.Count - 1] = next;
+                }
+                else
+                {
+                    samples.Add(next);
+                }
+            }
+            else
+            {
+                samples.Add(next);
+            }
+        }
+
+        double cutoff = quotaState.WeeklyBurnActiveHours - WeeklyBurnRateWindowActiveHours;
+        while (samples.Count > 2 && samples[1].ActiveHours < cutoff)
+        {
+            samples.RemoveAt(0);
+        }
+        while (samples.Count > WeeklyBurnSampleLimit)
+        {
+            samples.RemoveAt(0);
+        }
+    }
+
+    private static void RunWeeklyBurnRateSelfTest()
+    {
+        DateTime nowLocal = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Local);
+        DateTime nowUtc = nowLocal.ToUniversalTime();
+        List<WeeklyBurnSample> measured = new List<WeeklyBurnSample>
+        {
+            new WeeklyBurnSample { Utc = nowUtc.AddHours(-2.0), ActiveHours = 0.0, RemainingPercent = 50 },
+            new WeeklyBurnSample { Utc = nowUtc, ActiveHours = 2.0, RemainingPercent = 40 }
+        };
+        double burn;
+        double runway;
+        double resetHours;
+        if (!TryComputeWeeklyBurnRate(measured, 40, true, nowLocal.AddHours(10.0), nowLocal, out burn, out runway, out resetHours) ||
+            Math.Abs(burn - 5.0) > 0.001 || Math.Abs(runway - 8.0) > 0.001 || Math.Abs(resetHours - 10.0) > 0.001)
+        {
+            throw new InvalidOperationException("Weekly burn-rate self-test failed: measured rate/runway.");
+        }
+
+        // Reset distance unknown: the runway must STILL resolve from local samples; only the
+        // coverage comparison loses its reference (hoursToReset stays 0).
+        if (!TryComputeWeeklyBurnRate(measured, 40, false, DateTime.MinValue, nowLocal, out burn, out runway, out resetHours) ||
+            Math.Abs(runway - 8.0) > 0.001 || resetHours > 0.0)
+        {
+            throw new InvalidOperationException("Weekly burn-rate self-test failed: unknown reset must still yield a measured runway.");
+        }
+
+        List<WeeklyBurnSample> insufficient = new List<WeeklyBurnSample>
+        {
+            new WeeklyBurnSample { Utc = nowUtc.AddMinutes(-6.0), ActiveHours = 0.0, RemainingPercent = 50 },
+            new WeeklyBurnSample { Utc = nowUtc, ActiveHours = 0.1, RemainingPercent = 49 }
+        };
+        List<WeeklyBurnSample> flat = new List<WeeklyBurnSample>
+        {
+            new WeeklyBurnSample { Utc = nowUtc.AddHours(-1.0), ActiveHours = 0.0, RemainingPercent = 50 },
+            new WeeklyBurnSample { Utc = nowUtc, ActiveHours = 1.0, RemainingPercent = 50 }
+        };
+        if (TryComputeWeeklyBurnRate(insufficient, 49, true, nowLocal.AddHours(10.0), nowLocal, out burn, out runway, out resetHours) ||
+            TryComputeWeeklyBurnRate(flat, 50, true, nowLocal.AddHours(10.0), nowLocal, out burn, out runway, out resetHours))
+        {
+            throw new InvalidOperationException("Weekly burn-rate self-test failed: insufficient/flat samples must stay in sampling state.");
+        }
+
+        // Coverage colors: green needs a 25% margin beyond the reset distance, exactly reaching it
+        // is amber, falling short is red; with no reset reference the absolute 72h/24h bands apply.
+        if (GetWeeklyBurnCoverageColor(12.5, 10.0).ToArgb() != DesignTokens.WithAlpha(DesignTokens.Colors.QuotaGood, 238).ToArgb() ||
+            GetWeeklyBurnCoverageColor(10.0, 10.0).ToArgb() != DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 240).ToArgb() ||
+            GetWeeklyBurnCoverageColor(9.0, 10.0).ToArgb() != DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 242).ToArgb() ||
+            GetWeeklyBurnCoverageColor(80.0, 0.0).ToArgb() != DesignTokens.WithAlpha(DesignTokens.Colors.QuotaGood, 238).ToArgb() ||
+            GetWeeklyBurnCoverageColor(30.0, 0.0).ToArgb() != DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 240).ToArgb() ||
+            GetWeeklyBurnCoverageColor(10.0, 0.0).ToArgb() != DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 242).ToArgb() ||
+            FormatWeeklyBurnRunway(8.0) != "8H" ||
+            FormatWeeklyBurnTimeToReset(18.0) != "18h" ||
+            FormatWeeklyBurnTimeToReset(96.0) != "4.0d" ||
+            FormatWeeklyBurnTimeToReset(26.0 * 24.0) != "26d")
+        {
+            throw new InvalidOperationException("Weekly burn-rate self-test failed: presentation thresholds/formatting.");
+        }
+
+        QuotaRuntimeState clockState = new QuotaRuntimeState();
+        UpdateWeeklyBurnObservationClock(clockState, true, nowUtc);
+        UpdateWeeklyBurnObservationClock(clockState, true, nowUtc.AddSeconds(30.0));
+        UpdateWeeklyBurnObservationClock(clockState, false, nowUtc.AddSeconds(60.0));
+        UpdateWeeklyBurnObservationClock(clockState, false, nowUtc.AddSeconds(90.0));
+        UpdateWeeklyBurnObservationClock(clockState, true, nowUtc.AddSeconds(120.0));
+        UpdateWeeklyBurnObservationClock(clockState, true, nowUtc.AddSeconds(150.0));
+        if (Math.Abs(clockState.WeeklyBurnActiveHours - (90.0 / 3600.0)) > 0.0001)
+        {
+            throw new InvalidOperationException("Weekly burn-rate self-test failed: inactive time leaked into active clock.");
+        }
+        clockState.WeeklyBurnSamples.Add(new WeeklyBurnSample());
+        UpdateWeeklyBurnObservationClock(clockState, true, nowUtc.AddMinutes(8.0));
+        if (clockState.WeeklyBurnSamples.Count != 0)
+        {
+            throw new InvalidOperationException("Weekly burn-rate self-test failed: long clock gap did not reset samples.");
+        }
+
+        QuotaRuntimeState recordState = new QuotaRuntimeState();
+        recordState.WeeklyBurnClockActive = true;
+        CodexQuotaSnapshot snapshot = CodexQuotaSnapshot.CreateDefault();
+        snapshot.FiveHourLimitAbsent = true;
+        snapshot.WeeklyResetKnown = true;
+        snapshot.WeeklyResetLocal = nowLocal.AddDays(7.0);
+        snapshot.WeeklyPercent = 80;
+        RecordWeeklyBurnSample(recordState, snapshot, nowUtc);
+        recordState.WeeklyBurnActiveHours = 0.5;
+        snapshot.WeeklyPercent = 78;
+        RecordWeeklyBurnSample(recordState, snapshot, nowUtc.AddMinutes(30.0));
+
+        // A read that momentarily lacks the reset timestamp must keep the history and keep sampling.
+        snapshot.WeeklyResetKnown = false;
+        snapshot.WeeklyResetLocal = DateTime.MinValue;
+        snapshot.WeeklyPercent = 77;
+        recordState.WeeklyBurnActiveHours = 0.55;
+        RecordWeeklyBurnSample(recordState, snapshot, nowUtc.AddMinutes(33.0));
+        if (recordState.WeeklyBurnSamples.Count != 3)
+        {
+            throw new InvalidOperationException("Weekly burn-rate self-test failed: unknown reset timestamp wiped the sample history.");
+        }
+
+        snapshot.WeeklyResetKnown = true;
+        snapshot.WeeklyResetLocal = nowLocal.AddDays(14.0);
+        snapshot.WeeklyPercent = 100;
+        recordState.WeeklyBurnActiveHours = 0.6;
+        RecordWeeklyBurnSample(recordState, snapshot, nowUtc.AddMinutes(36.0));
+        if (recordState.WeeklyBurnSamples.Count != 1 || recordState.WeeklyBurnSamples[0].RemainingPercent != 100)
+        {
+            throw new InvalidOperationException("Weekly burn-rate self-test failed: reset did not rebuild the sample window.");
         }
     }
 
@@ -3379,13 +3637,40 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             this.CurrentSettings.ServiceHealthTestMode != ServiceHealthTestMode.Off;
         lock (this.codexApiServiceAlertDebounceLock)
         {
-            return ApplyCodexApiServiceAlertDebounce(
+            CodexConnectionAlertCandidate[] debounced = ApplyCodexApiServiceAlertDebounce(
                 this.codexApiServiceAlertDebounceStates,
                 candidates,
                 DateTime.UtcNow,
                 TimeSpan.FromSeconds(CodexApiServiceAlertDebounceSeconds),
                 bypass);
+            return FilterCodexApiServiceAlertPresentation(debounced);
         }
+    }
+
+    private CodexConnectionAlertCandidate[] FilterCodexApiServiceAlertPresentation(
+        CodexConnectionAlertCandidate[] candidates)
+    {
+        List<CodexConnectionAlertCandidate> visible = new List<CodexConnectionAlertCandidate>();
+        bool serviceHealthVisible = AlertPresentationPolicy.ShouldPresent(
+            this.CurrentSettings,
+            AlertPresentationCategory.ServiceHealth);
+        bool deepSeekVisible = AlertPresentationPolicy.ShouldPresent(
+            this.CurrentSettings,
+            AlertPresentationCategory.DeepSeekBalance);
+        for (int i = 0; candidates != null && i < candidates.Length; i++)
+        {
+            CodexConnectionAlertCandidate candidate = candidates[i];
+            bool deepSeek = string.Equals(
+                GetCodexConnectionAlertServiceKey(candidate == null ? string.Empty : candidate.Key),
+                "deepseek",
+                StringComparison.OrdinalIgnoreCase);
+            if (candidate != null && (deepSeek ? deepSeekVisible : serviceHealthVisible))
+            {
+                visible.Add(candidate);
+            }
+        }
+
+        return visible.ToArray();
     }
 
     private void ResetCodexApiServiceAlertDebounceForDisplayContextSwitch()
@@ -4441,6 +4726,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         DateTime nowLocal = DateTime.Now;
         bool codexProcessChanged;
         bool codexRunning = UpdateCodexProcessRunningStatus(nowUtc, out codexProcessChanged);
+        UpdateWeeklyBurnObservationClock(GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex), codexRunning, nowUtc);
         bool resetDue = IsQuotaResetDue(this.quotaSnapshot, nowLocal);
         // Active Codex sessions need prompt quota updates; inactive sessions use a much slower
         // schedule unless a reset boundary or process transition requires an immediate read.
@@ -4536,6 +4822,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             : NormalizeQuotaSnapshot(nextSnapshot);
         quotaState.Snapshot = displaySnapshot;
         quotaState.SourceKnown = quotaKnown;
+        if (family == CodexRadarSoftwareMode.Codex && quotaKnown && displaySnapshot != null)
+        {
+            RecordWeeklyBurnSample(quotaState, displaySnapshot, detectedUtc);
+        }
         GetRadarFamilyState(family).Touch();
         if (logDecision)
         {
@@ -11068,7 +11358,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             SaveQuotaResetState();
         }
 
-        if (isNewOpen)
+        if (isNewOpen && AlertPresentationPolicy.ShouldPresent(
+            this.CurrentSettings,
+            AlertPresentationCategory.Quota))
         {
             ShowCodexNotification(
                 "Codex 速蹬窗口开启",
@@ -11165,10 +11457,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 SaveQuotaResetState();
             }
 
-            ShowCodexNotification(
-                "Codex 额外重置",
-                "检测到新的 Codex 重置记录，余额已恢复至 100。",
-                ToolTipIcon.Warning);
+            if (AlertPresentationPolicy.ShouldPresent(
+                this.CurrentSettings,
+                AlertPresentationCategory.ResetProtection))
+            {
+                ShowCodexNotification(
+                    "Codex 额外重置",
+                    "检测到新的 Codex 重置记录，余额已恢复至 100。",
+                    ToolTipIcon.Warning);
+            }
             this.codexRuntimeState.Quota.LastRefreshUtc = DateTime.MinValue;
             this.codexRuntimeState.Quota.NextInactiveRefreshUtc = DateTime.MinValue;
             this.codexRuntimeState.Touch();
@@ -12555,17 +12852,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         try
         {
-            foreach (string file in Directory.EnumerateFiles(
-                sessionsPath,
-                "rollout-*.jsonl",
-                SearchOption.AllDirectories))
+            List<string> rolloutFiles = EnumerateCodexRolloutFiles(sessionsPath);
+            if (rolloutFiles.Count > 0)
             {
-                DateTime writeUtc = SafeGetLastWriteTimeUtc(file);
-                if (writeUtc > newestWriteUtc)
-                {
-                    newestPath = file;
-                    newestWriteUtc = writeUtc;
-                }
+                newestPath = rolloutFiles[0];
+                newestWriteUtc = SafeGetLastWriteTimeUtc(newestPath);
             }
         }
         catch (Exception ex)
@@ -12612,17 +12903,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             }
         }
 
-        List<string> rolloutFiles = new List<string>();
+        List<string> rolloutFiles;
         try
         {
-            foreach (string file in Directory.EnumerateFiles(sessionsPath, "*.jsonl", SearchOption.AllDirectories))
-            {
-                string name = Path.GetFileName(file);
-                if (name != null && name.StartsWith("rollout-", StringComparison.OrdinalIgnoreCase))
-                {
-                    rolloutFiles.Add(file);
-                }
-            }
+            rolloutFiles = EnumerateCodexRolloutFiles(sessionsPath);
         }
         catch (Exception ex)
         {
@@ -12635,11 +12919,6 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         {
             return false;
         }
-
-        rolloutFiles.Sort(delegate(string left, string right)
-        {
-            return SafeGetLastWriteTimeUtc(right).CompareTo(SafeGetLastWriteTimeUtc(left));
-        });
 
         string newestPath = rolloutFiles[0];
         DateTime newestWriteUtc = SafeGetLastWriteTimeUtc(newestPath);
@@ -12705,6 +12984,94 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return snapshot != null;
     }
 
+    internal static List<string> EnumerateCodexRolloutFiles(string sessionsPath)
+    {
+        List<string> rolloutFiles = new List<string>();
+        if (string.IsNullOrWhiteSpace(sessionsPath) || !Directory.Exists(sessionsPath))
+        {
+            return rolloutFiles;
+        }
+
+        // Creation-date folders do not move when an old conversation resumes, so every caller
+        // shares this one recursive discovery rule instead of creating a second watcher or scan.
+        foreach (string file in Directory.EnumerateFiles(
+            sessionsPath,
+            "rollout-*.jsonl",
+            SearchOption.AllDirectories))
+        {
+            rolloutFiles.Add(file);
+        }
+
+        rolloutFiles.Sort(delegate(string left, string right)
+        {
+            return SafeGetLastWriteTimeUtc(right).CompareTo(SafeGetLastWriteTimeUtc(left));
+        });
+        return rolloutFiles;
+    }
+
+    internal CodexTaskMonitorReader CodexTaskMonitor
+    {
+        get { return this.codexTaskMonitorReader; }
+    }
+
+    private void RequestCodexTaskMonitorReconcile()
+    {
+        Interlocked.Exchange(ref this.codexTaskMonitorReconcileRequested, 1);
+        this.nextCodexTaskMonitorReconcileUtc = DateTime.MinValue;
+    }
+
+    private void RefreshCodexTaskMonitorIfNeeded()
+    {
+        CodexTaskMonitorReader reader = this.codexTaskMonitorReader;
+        if (reader == null)
+        {
+            return;
+        }
+
+        DateTime nowUtc = DateTime.UtcNow;
+        if (nowUtc >= this.nextCodexTaskMonitorStatusRefreshUtc)
+        {
+            this.nextCodexTaskMonitorStatusRefreshUtc = nowUtc.AddSeconds(1.0);
+            reader.RequestStatusRefresh();
+        }
+        if (!this.CurrentSettings.CodexTaskMonitorEnabled)
+        {
+            return;
+        }
+
+        bool requested = Interlocked.Exchange(ref this.codexTaskMonitorReconcileRequested, 0) != 0;
+        if (!requested && nowUtc < this.nextCodexTaskMonitorReconcileUtc)
+        {
+            return;
+        }
+
+        this.nextCodexTaskMonitorReconcileUtc = nowUtc.AddSeconds(30.0);
+        if (Interlocked.CompareExchange(ref this.codexTaskMonitorReconcileRunning, 1, 0) != 0)
+        {
+            Interlocked.Exchange(ref this.codexTaskMonitorReconcileRequested, 1);
+            return;
+        }
+
+        // The existing WinForms tick supplies fallback timing, while traversal and parsing stay
+        // off the UI thread. No independent timer family is introduced for this backend reader.
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            try
+            {
+                reader.RequestReconcile(EnumerateCodexRolloutFiles(this.quotaSessionsPath));
+            }
+            catch (Exception ex)
+            {
+                Interlocked.Exchange(ref this.codexTaskMonitorReconcileRequested, 1);
+                Program.LogException(ex);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref this.codexTaskMonitorReconcileRunning, 0);
+            }
+        });
+    }
+
     private void InitializeQuotaSessionWatcher()
     {
         string profilePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -12747,18 +13114,35 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     {
         Interlocked.Exchange(ref this.quotaSessionFilesChanged, 1);
         codexQuotaSnapshotNewestVerifyUtc = DateTime.MinValue;
+        if (e.ChangeType == WatcherChangeTypes.Created)
+        {
+            Interlocked.Exchange(ref this.codexTaskMonitorReconcileRequested, 1);
+        }
+        CodexTaskMonitorReader reader = this.codexTaskMonitorReader;
+        if (reader != null)
+        {
+            reader.NotifyFileChanged(e.FullPath, e.ChangeType);
+        }
     }
 
     private void OnQuotaSessionFileRenamed(object sender, RenamedEventArgs e)
     {
         Interlocked.Exchange(ref this.quotaSessionFilesChanged, 1);
         codexQuotaSnapshotNewestVerifyUtc = DateTime.MinValue;
+        Interlocked.Exchange(ref this.codexTaskMonitorReconcileRequested, 1);
+        CodexTaskMonitorReader reader = this.codexTaskMonitorReader;
+        if (reader != null)
+        {
+            reader.NotifyFileChanged(e.OldFullPath, WatcherChangeTypes.Deleted);
+            reader.NotifyFileChanged(e.FullPath, WatcherChangeTypes.Renamed);
+        }
     }
 
     private void OnQuotaSessionWatcherError(object sender, ErrorEventArgs e)
     {
         Interlocked.Exchange(ref this.quotaSessionFilesChanged, 1);
         codexQuotaSnapshotNewestVerifyUtc = DateTime.MinValue;
+        RequestCodexTaskMonitorReconcile();
     }
 
     private void DisposeQuotaSessionWatcher()
@@ -13535,7 +13919,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         RunClaudeSharedClockCandidateFilterSelfTest();
         RunClaudeSharedQuotaLineSelfTest();
         RunCodexResetCreditsSelfTest();
-        RunWeeklyBudgetPaceSelfTest();
+        RunWeeklyBurnRateSelfTest();
         QuotaRingPresentation.RunSelfTest();
 
         int baseline = GetNextFiveHourConsumptionRingBaseline(-1, 67, 57);
@@ -15770,9 +16154,19 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
-    protected override byte GetApplicationOpacityAlpha()
+    protected override int WindowTransparencyOverridePercent
     {
-        return (byte)ApplyHoverTransparencyTarget(255);
+        get { return this.CurrentSettings.CodexRadarTransparencyOverridePercent; }
+    }
+
+    protected override int WindowScaleOverridePercent
+    {
+        get { return this.CurrentSettings.CodexRadarScaleOverridePercent; }
+    }
+
+    protected override int ApplyHoverAlpha(int alpha)
+    {
+        return ApplyHoverTransparencyTarget(alpha);
     }
 
     private int ApplyHoverTransparencyTarget(int alpha)

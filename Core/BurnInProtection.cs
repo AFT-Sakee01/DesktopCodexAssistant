@@ -14,6 +14,10 @@ internal static class BurnInProtection
     public const int NetworkMonitorSalt = 19;
     public const int ConnectionCheckSalt = 23;
     public const int OperationPanelSalt = 29;
+    public const int SpecBoardSalt = 73;
+    public const int SpecBoardDockTabSalt = 37;
+    public const int CodexTaskBoardSalt = 41;
+    public const int CodexTaskBoardDockTabSalt = 43;
 
     private const int ShiftIntervalMinutes = 7;
     private const int GrayscaleTolerance = 18;
@@ -193,6 +197,47 @@ internal static class BurnInProtection
                     pixels[index] = Premultiply(255 - blue, alpha);
                     pixels[index + 1] = Premultiply(255 - green, alpha);
                     pixels[index + 2] = Premultiply(255 - red, alpha);
+                }
+            }
+
+            Marshal.Copy(pixels, 0, data.Scan0, byteCount);
+        }
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
+    }
+
+    public static void ApplyLuminance(Bitmap bitmap, int luminancePercent)
+    {
+        if (bitmap == null || bitmap.Width <= 0 || bitmap.Height <= 0)
+        {
+            return;
+        }
+
+        int percent = Clamp(luminancePercent, 0, 100);
+        if (percent >= 100)
+        {
+            return;
+        }
+
+        Rectangle bounds = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
+        BitmapData data = bitmap.LockBits(bounds, ImageLockMode.ReadWrite, PixelFormat.Format32bppPArgb);
+        try
+        {
+            int stride = Math.Abs(data.Stride);
+            int byteCount = stride * data.Height;
+            byte[] pixels = new byte[byteCount];
+            Marshal.Copy(data.Scan0, pixels, 0, byteCount);
+            for (int y = 0; y < data.Height; y++)
+            {
+                int row = y * stride;
+                for (int x = 0; x < data.Width; x++)
+                {
+                    int index = row + x * 4;
+                    pixels[index] = (byte)Clamp((int)Math.Round(pixels[index] * percent / 100.0), 0, 255);
+                    pixels[index + 1] = (byte)Clamp((int)Math.Round(pixels[index + 1] * percent / 100.0), 0, 255);
+                    pixels[index + 2] = (byte)Clamp((int)Math.Round(pixels[index + 2] * percent / 100.0), 0, 255);
                 }
             }
 

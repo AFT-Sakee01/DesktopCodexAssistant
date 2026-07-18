@@ -115,8 +115,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
         this.Size = GetDesiredSize();
 
         this.timer = new System.Windows.Forms.Timer();
@@ -384,8 +384,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
         if (oldThermalTestMode != this.CurrentSettings.ThermalTestMode)
         {
             this.thermalCriticalSinceUtc.Clear();
@@ -488,6 +488,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     private void OnTimerTick(object sender, EventArgs e)
     {
+        RefreshNightScheduleAtExistingTick();
         try
         {
             if (!IsSamplingAllowed())
@@ -1024,7 +1025,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         width = Math.Max(WidgetSettings.MinPowerThermalWidth, Math.Min(WidgetSettings.MaxPowerThermalWidth, width));
         int maxHeight = IsPowerThermalAutoDown() ? WidgetSettings.MaxPowerThermalAutoHeight : WidgetSettings.MaxPowerThermalHeight;
         height = Math.Max(WidgetSettings.MinPowerThermalHeight, Math.Min(maxHeight, height));
-        return this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(width, height));
+        return ScaleWindowSize(new Size(width, height));
     }
 
     private bool IsPowerThermalAutoLeft()
@@ -1286,6 +1287,12 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             return;
         }
 
+        if (!IsPowerThermalAutoLeft() && this.Width >= S(150))
+        {
+            DrawWideBarContent(g, thermalAlerts, contentTop, contentHeight);
+            return;
+        }
+
         float powerWidth;
         float powerRight;
         if (IsPowerThermalAutoLeft())
@@ -1361,6 +1368,155 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             Math.Max(1.0f, this.Width - S(20)),
             Math.Max(1.0f, this.Height - thermalTop - S(7)));
         DrawThermalAlertsVertical(g, thermalRect, thermalAlerts);
+    }
+
+    // Fixed-size wide-bar layout: the window stays at the configured size (sized to align with the
+    // radar window height and the main widget width), with the power watts module on the left, the
+    // battery module against the right edge, and thermal alert chips wrapping between them. Narrow
+    // fixed windows and both auto-size modes keep their previous layouts.
+    private void DrawWideBarContent(Graphics g, List<ThermalReading> thermalAlerts, float contentTop, float contentHeight)
+    {
+        float pad = S(10);
+        RectangleF contentRect = new RectangleF(pad, contentTop, Math.Max(10.0f, this.Width - pad * 2.0f), contentHeight);
+        float powerWidth = Math.Min(S(60), Math.Max(S(44), contentRect.Width * 0.30f));
+        float batteryWidth = Math.Min(S(60), Math.Max(S(46), contentRect.Width * 0.30f));
+        RectangleF powerRect = new RectangleF(contentRect.Left, contentRect.Top, powerWidth, contentRect.Height);
+        RectangleF batteryRect = new RectangleF(contentRect.Right - batteryWidth, contentRect.Top, batteryWidth, contentRect.Height);
+        DrawPowerModule(g, powerRect);
+        DrawBatteryModule(g, batteryRect);
+
+        if (thermalAlerts.Count <= 0)
+        {
+            return;
+        }
+
+        float chipsLeft = powerRect.Right + S(6);
+        float chipsRight = batteryRect.Left - S(8);
+        if (chipsRight - chipsLeft < S(30))
+        {
+            return;
+        }
+
+        RectangleF chipsRect = new RectangleF(chipsLeft, contentRect.Top, chipsRight - chipsLeft, contentRect.Height);
+        DrawThermalAlertsWrapped(g, chipsRect, thermalAlerts);
+    }
+
+    // Right-aligned chip flow that wraps into as many rows as the bounds height allows (two rows at
+    // the standard wide-bar height). Hidden alerts collapse into a trailing "+N" chip, evicting
+    // placed chips when needed so the "+N" chip always fits.
+    private void DrawThermalAlertsWrapped(Graphics g, RectangleF bounds, List<ThermalReading> alerts)
+    {
+        if (alerts == null || alerts.Count == 0 || bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            return;
+        }
+
+        int total = alerts.Count;
+        int maxVisible = Math.Min(GetMaxVisibleThermalAlerts(), total);
+        float gap = S(4);
+        float chipHeight = Math.Min(GetThermalVerticalChipHeight(), bounds.Height);
+        int maxRows = Math.Max(1, (int)Math.Floor((bounds.Height + gap) / (chipHeight + gap)));
+
+        using (Font chipFont = CreateThermalChipFont())
+        {
+            List<float> chipLefts = new List<float>();
+            List<float> chipWidths = new List<float>();
+            List<int> chipRows = new List<int>();
+            List<int> prevRows = new List<int>();
+            List<float> prevRights = new List<float>();
+            int row = 0;
+            float nextRight = bounds.Right;
+            int placed = 0;
+            while (placed < maxVisible && row < maxRows)
+            {
+                string text = FormatThermalSensorName(alerts[placed].Name);
+                float width = Math.Min(bounds.Width, MeasureThermalChipWidth(text, alerts[placed].CriticalActive, chipFont));
+                if (nextRight - width < bounds.Left && nextRight < bounds.Right)
+                {
+                    row++;
+                    nextRight = bounds.Right;
+                    continue;
+                }
+
+                prevRows.Add(row);
+                prevRights.Add(nextRight);
+                chipLefts.Add(nextRight - width);
+                chipWidths.Add(width);
+                chipRows.Add(row);
+                nextRight -= width + gap;
+                placed++;
+            }
+
+            bool hasMore = total > placed;
+            float moreLeft = 0.0f;
+            float moreWidth = 0.0f;
+            int moreRow = 0;
+            if (hasMore)
+            {
+                while (true)
+                {
+                    string moreText = "+" + (total - placed).ToString(CultureInfo.InvariantCulture);
+                    moreWidth = Math.Min(bounds.Width, MeasureThermalChipWidth(moreText, false, chipFont));
+                    if (row < maxRows && nextRight - moreWidth < bounds.Left && nextRight < bounds.Right)
+                    {
+                        row++;
+                        nextRight = bounds.Right;
+                    }
+
+                    if (row < maxRows && nextRight - moreWidth >= bounds.Left)
+                    {
+                        moreLeft = nextRight - moreWidth;
+                        moreRow = row;
+                        break;
+                    }
+
+                    if (placed <= 0)
+                    {
+                        moreLeft = bounds.Left;
+                        moreRow = 0;
+                        break;
+                    }
+
+                    placed--;
+                    row = prevRows[placed];
+                    nextRight = prevRights[placed];
+                    chipLefts.RemoveAt(placed);
+                    chipWidths.RemoveAt(placed);
+                    chipRows.RemoveAt(placed);
+                }
+            }
+
+            int rowsUsed = hasMore ? moreRow + 1 : 1;
+            for (int i = 0; i < placed; i++)
+            {
+                rowsUsed = Math.Max(rowsUsed, chipRows[i] + 1);
+            }
+
+            float usedHeight = chipHeight * rowsUsed + gap * Math.Max(0, rowsUsed - 1);
+            float top = bounds.Top + Math.Max(0.0f, (bounds.Height - usedHeight) / 2.0f);
+            for (int i = 0; i < placed; i++)
+            {
+                RectangleF chipRect = new RectangleF(
+                    chipLefts[i],
+                    top + chipRows[i] * (chipHeight + gap),
+                    chipWidths[i],
+                    chipHeight);
+                DrawThermalChip(g, chipRect, FormatThermalSensorName(alerts[i].Name), alerts[i].Celsius, alerts[i].CriticalActive, chipFont);
+            }
+
+            if (hasMore)
+            {
+                double hiddenMaxTemp = 0.0;
+                for (int i = placed; i < total; i++)
+                {
+                    hiddenMaxTemp = Math.Max(hiddenMaxTemp, alerts[i].Celsius);
+                }
+
+                string finalMoreText = "+" + (total - placed).ToString(CultureInfo.InvariantCulture);
+                RectangleF moreRect = new RectangleF(moreLeft, top + moreRow * (chipHeight + gap), moreWidth, chipHeight);
+                DrawThermalChip(g, moreRect, finalMoreText, hiddenMaxTemp, false, chipFont);
+            }
+        }
     }
 
     private void DrawPowerModule(Graphics g, RectangleF bounds)
@@ -2749,9 +2905,19 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
-    protected override byte GetApplicationOpacityAlpha()
+    protected override int WindowTransparencyOverridePercent
     {
-        return (byte)ApplyHoverTransparencyTarget(255);
+        get { return this.CurrentSettings.PowerThermalTransparencyOverridePercent; }
+    }
+
+    protected override int WindowScaleOverridePercent
+    {
+        get { return this.CurrentSettings.PowerThermalScaleOverridePercent; }
+    }
+
+    protected override int ApplyHoverAlpha(int alpha)
+    {
+        return ApplyHoverTransparencyTarget(alpha);
     }
 
     private int ApplyHoverTransparencyTarget(int alpha)

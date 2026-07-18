@@ -1,6 +1,6 @@
 # 接口与复用资源汇总
 
-适用版本：1.0.5.39
+适用版本：1.0.5.56
 
 ## 1. 文档用途
 
@@ -63,6 +63,8 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `--test-logger` | 日志存储策略测试 |
 | `--test-layout` | 分辨率布局换算测试 |
 | `--test-settings-bindings` | 设置控件绑定测试 |
+| `--test-codex-task-monitor` | Codex 任务后端隔离 fixture 自测 |
+| `--dump-codex-tasks` | 只读输出当前任务快照 JSON；只含工作区末级名，不含正文和完整路径 |
 | `--test-display-recovery` | 分层窗口显示恢复测试 |
 | `--test-operation-panel` | 操作面板命中遮罩、动画、单飞、FPS 间隔和 SeelenUI 结果映射测试 |
 | `--render-specboard sample/current --out DIR` | 输出 Spec Board 确定性 fixture 或真实只读账本画面 |
@@ -106,7 +108,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `event.network.change` | 网络地址与可用性变化 | 网络 readers |
 | `event.keyboard.ctrl_d` | 全局 Win+D（保留旧稳定 ID） | `GlobalWinDWatcher` |
 | `event.settings.file_watcher` | 外部设置热加载 | `WidgetForm` |
-| `event.codex.sessions_watcher` | Codex rollout JSONL 更新 | `CodexRadarForm` |
+| `event.codex.sessions_watcher` | Codex rollout JSONL 更新；额度失效和任务增量读取共用唯一 watcher | `CodexRadarForm` |
 | `resource.windows_icon_fonts` | Segoe Fluent Icons / Segoe MDL2 系统图标字体 | `Win11SettingsForm`、`SettingsFluentResources` |
 
 新增 P/Invoke、COM、WinRT 或 Shell 调用优先放入 `Interop/NativeMethods.cs`。
@@ -116,6 +118,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | 索引 ID | 组件 | 复用规则 |
 | --- | --- | --- |
 | `internal_api.widget_settings` | 设置、迁移、布局与性能策略 | 新设置完整接入读写和自测链 |
+| `internal_api.codex_task_monitor_reader` | 任务状态增量读取、不可变快照和注意事件 | 由 `CodexRadarForm` 唯一构造/释放；消费现有 watcher 转发，不自行遍历目录或创建 timer |
 | `internal_api.software_runtime_presence` | Codex/Claude 运行态与软件身份分类 | 复用包路径、进程名、产品元数据和受限标题回退；常规查询走缓存快照，未知进程名只允许使用 60 s 漏判发现，不在绘制路径枚举进程 |
 | `internal_api.logger` | 缓冲日志、错误日志和 GFW 日志 | 高频事件聚合或只记录状态变化；目录大小扫描默认 10 分钟节流，活动日志轮转时强制执行 |
 | `internal_api.timing_stats` | 12 小时滚动耗时统计 | 新增性能计时点复用内存滚动窗口和 15 分钟摘要日志 |
@@ -161,7 +164,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `file_format.claude_quota` | `claude-quota.ini` | Claude Code 用量缓存；格式与 `quota.ini` 相同但文件隔离 |
 | `file_format.quota_reset_state` | `quota-reset-state.ini` | 本地 reset 保护、RSS 重置和速蹬开启去重 |
 | `file_format.install_log` | `install.log` | 安装和卸载记录 |
-| `resource_directory.codex_sessions` | `%USERPROFILE%\.codex\sessions` | 只读 Codex rollout 数据源 |
+| `resource_directory.codex_sessions` | `%USERPROFILE%\.codex\sessions` | 只读 Codex rollout 数据源；额度 fallback 与任务状态后端共用递归枚举，禁止写入会话文件 |
 | `resource_directory.docs` | `Docs` | 技术文档和接口索引 |
 | `resource_directory.legacy_executables` | `Artifacts/LegacyExecutables` | 历史归档，不参与运行 |
 | `resource_directory.build_outputs` | 根目录 EXE 与 `Release/` 正式产物 | ARM64 默认、x64 显式产物、GitHub 发布资产 |

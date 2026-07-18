@@ -513,12 +513,16 @@ internal sealed partial class CodexRadarForm
         if (!presence.AnySupportedAppRunning)
         {
             this.quotaCodexProcessRunning = false;
+            UpdateWeeklyBurnObservationClock(GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex), false, DateTime.UtcNow);
             return;
         }
 
         if (GetEffectiveCodexRadarSoftwareMode() == CodexRadarSoftwareMode.Claude)
         {
             this.quotaCodexProcessRunning = presence.CodexRunning;
+            // Codex quota reads are paused while the shared window presents Claude. Break the local
+            // burn-rate segment as well, otherwise the next Codex sample would absorb this blind gap.
+            UpdateWeeklyBurnObservationClock(GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex), false, DateTime.UtcNow);
             if (!presence.ClaudeRunning)
             {
                 return;
@@ -531,6 +535,7 @@ internal sealed partial class CodexRadarForm
         if (!presence.CodexRunning)
         {
             this.quotaCodexProcessRunning = false;
+            UpdateWeeklyBurnObservationClock(GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex), false, DateTime.UtcNow);
             return;
         }
 

@@ -59,7 +59,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly System.Windows.Forms.Timer foregroundFpsTimer;
     private readonly System.Windows.Forms.Timer restartSingleClickTimer;
     private readonly System.Windows.Forms.Timer appSettingsSingleClickTimer;
-    private readonly System.Windows.Forms.Timer specBoardEntrySingleClickTimer;
     private readonly ForegroundFpsReader foregroundFpsReader;
     private readonly ToolTip hoverToolTip;
     private readonly bool isAsusZenbookDevice;
@@ -144,7 +143,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = Color.Black;
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinOperationButtonSize, WidgetSettings.MinOperationButtonSize));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinOperationButtonSize, WidgetSettings.MinOperationButtonSize));
         this.MaximumSize = new Size(4000, 4000);
         this.Size = GetDesiredSize();
         this.Cursor = Cursors.Hand;
@@ -163,9 +162,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.appSettingsSingleClickTimer = new System.Windows.Forms.Timer();
         this.appSettingsSingleClickTimer.Interval = Math.Max(1, SystemInformation.DoubleClickTime);
         this.appSettingsSingleClickTimer.Tick += OnAppSettingsSingleClickTimerTick;
-        this.specBoardEntrySingleClickTimer = new System.Windows.Forms.Timer();
-        this.specBoardEntrySingleClickTimer.Interval = Math.Max(1, SystemInformation.DoubleClickTime);
-        this.specBoardEntrySingleClickTimer.Tick += OnSpecBoardEntrySingleClickTimerTick;
 
         this.hoverToolTip = new ToolTip();
         this.hoverToolTip.ShowAlways = true;
@@ -198,12 +194,10 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.appSettingsSingleClickTimer.Stop();
         this.appSettingsSingleClickTimer.Tick -= OnAppSettingsSingleClickTimerTick;
         this.appSettingsSingleClickTimer.Dispose();
-        this.specBoardEntrySingleClickTimer.Stop();
-        this.specBoardEntrySingleClickTimer.Tick -= OnSpecBoardEntrySingleClickTimerTick;
-        this.specBoardEntrySingleClickTimer.Dispose();
         DisposeSpecBoardForm();
         DisposeQuickGridForm();
         DisposeLauncherTrioForm();
+        DisposeCodexTaskBoardForm();
         if (Interlocked.CompareExchange(ref this.foregroundFpsReadRunning, 0, 0) == 0)
         {
             this.foregroundFpsReader.Dispose();
@@ -254,7 +248,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinOperationButtonSize, WidgetSettings.MinOperationButtonSize));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinOperationButtonSize, WidgetSettings.MinOperationButtonSize));
         this.MaximumSize = new Size(4000, 4000);
         if (this.CurrentSettings.ForceHoverOpacityActive &&
             this.CurrentSettings.ManualHoverOpacityActive &&
@@ -333,19 +327,37 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.quickGridForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
-        if (this.CurrentSettings.SpecBoardAutoPopupEnabled)
+        // A left-docked board must exist from startup even while collapsed: its dock tab is the only
+        // always-visible surface, so the (hidden) board has to be constructed to own it.
+        if (this.CurrentSettings.SpecBoardAutoPopupEnabled || this.CurrentSettings.SpecBoardLeftDockEnabled)
         {
             SpecBoardForm autoPopupForm = EnsureSpecBoardForm();
-            autoPopupForm.StartAutoPopupMonitoring();
+            if (this.CurrentSettings.SpecBoardAutoPopupEnabled)
+            {
+                autoPopupForm.StartAutoPopupMonitoring();
+            }
         }
         else if (this.specBoardForm != null && !this.specBoardForm.IsDisposed)
         {
             this.specBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
+        if (this.CurrentSettings.CodexTaskBoardLeftDockEnabled)
+        {
+            EnsureCodexTaskBoardForm();
+        }
+        else if (this.codexTaskBoardForm != null && !this.codexTaskBoardForm.IsDisposed)
+        {
+            this.codexTaskBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
+        }
+
         if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed)
         {
             this.launcherTrioForm.ApplyRuntimeSettings(this.CurrentSettings);
+            if (!this.CurrentSettings.OperationDoubleClickSpecialMenuEnabled && this.launcherTrioForm.Visible)
+            {
+                this.launcherTrioForm.HideTrio();
+            }
         }
 
         RenderLayeredWindow();
@@ -389,6 +401,11 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.specBoardForm.SetHiddenForFullscreen(hidden);
         }
 
+        if (this.codexTaskBoardForm != null && !this.codexTaskBoardForm.IsDisposed)
+        {
+            this.codexTaskBoardForm.SetDockTabHiddenForFullscreen(hidden);
+        }
+
         if (this.hiddenForFullscreen == hidden &&
             ((hidden && !this.Visible) || (!hidden && this.Visible)))
         {
@@ -427,6 +444,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.specBoardForm.RecoverAfterDisplayResume();
         }
 
+        if (this.codexTaskBoardForm != null && !this.codexTaskBoardForm.IsDisposed)
+        {
+            this.codexTaskBoardForm.SetDockTabDisplaySuspended(false);
+            this.codexTaskBoardForm.SyncLeftDockTab();
+        }
+
         PositionOperationWindow();
         UpdateForegroundFpsTimer();
         RenderLayeredWindow();
@@ -440,6 +463,11 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         if (this.specBoardForm != null && !this.specBoardForm.IsDisposed)
         {
             this.specBoardForm.PrepareForDisplaySuspend();
+        }
+
+        if (this.codexTaskBoardForm != null && !this.codexTaskBoardForm.IsDisposed)
+        {
+            this.codexTaskBoardForm.SetDockTabDisplaySuspended(true);
         }
 
         ResetDisplayRenderResources();
@@ -692,7 +720,10 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         if (button == StartButtonIndex)
         {
-            return "左键：Windows 开始菜单\r\n右键：Windows 系统工具菜单\r\n设备管理器、磁盘管理等";
+            string doubleClickAction = this.CurrentSettings.OperationDoubleClickSpecialMenuEnabled
+                ? "双击：特殊菜单"
+                : "双击：开关隐藏模式";
+            return "左键：Windows 开始菜单\r\n右键：Windows 系统工具菜单\r\n" + doubleClickAction + "\r\n设备管理器、磁盘管理等";
         }
 
         if (button == WindowsSettingsButtonIndex)
@@ -2577,30 +2608,22 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         }
     }
 
-    // Render-variant dispatch (mirrors CodexRadarForm). Only Classic exists today; add a case and a
-    // sibling partial file (OperationForm.<Name>.cs) to introduce an alternate layout.
+    // Operation has one interaction model. Keep this wrapper as the shared render/test entry point.
     private void DrawOperationWindow(Graphics g)
     {
-        switch (this.CurrentSettings.OperationRenderVariant)
+        DrawOperationWindowRadialDial(g);
+    }
+
+    public void RefreshNightScheduleFromOwnerTick()
+    {
+        RefreshNightScheduleAtExistingTick();
+        if (this.quickGridForm != null && !this.quickGridForm.IsDisposed)
         {
-            case OperationRenderVariant.Typographic:
-                DrawOperationWindowTypographic(g);
-                return;
-            case OperationRenderVariant.AmberHud:
-                DrawOperationWindowAmberHud(g);
-                return;
-            case OperationRenderVariant.WarmCard:
-                DrawOperationWindowWarmCard(g);
-                return;
-            case OperationRenderVariant.Phosphor:
-                DrawOperationWindowPhosphor(g);
-                return;
-            case OperationRenderVariant.RadialDial:
-                DrawOperationWindowRadialDial(g);
-                return;
-            default:
-                DrawOperationWindowClassic(g);
-                return;
+            this.quickGridForm.RefreshNightScheduleFromOwnerTick();
+        }
+        if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed)
+        {
+            this.launcherTrioForm.RefreshNightScheduleFromOwnerTick();
         }
     }
 
@@ -2609,9 +2632,19 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         DrawOperationWindow(g);
     }
 
-    protected override byte GetApplicationOpacityAlpha()
+    protected override int WindowTransparencyOverridePercent
     {
-        return GetLayeredWindowOpacityAlpha();
+        get { return this.CurrentSettings.OperationTransparencyOverridePercent; }
+    }
+
+    protected override int WindowScaleOverridePercent
+    {
+        get { return this.CurrentSettings.OperationScaleOverridePercent; }
+    }
+
+    protected override int ApplyHoverAlpha(int alpha)
+    {
+        return DesignTokens.ClampByte((int)Math.Round(alpha * GetLayeredWindowOpacityAlpha() / 255.0));
     }
 
     protected override bool IsLayeredBurnInColorProtectionActive()
@@ -2633,393 +2666,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     protected override void DisposeAdditionalRenderBuffers()
     {
         DisposeInteractionHitMask();
-    }
-
-    private void DrawOperationWindowClassic(Graphics g)
-    {
-        ConfigureGraphics(g);
-        RectangleF[] rects = GetButtonRects();
-        if (ShouldDrawStartFallbackPanel())
-        {
-            DrawStartFallbackPanel(g, rects[StartButtonIndex]);
-        }
-        else
-        {
-            DrawButton(g, rects[StartButtonIndex], StartButtonIndex, true, false, false, true);
-        }
-
-        DrawButton(g, rects[WindowsSettingsButtonIndex], WindowsSettingsButtonIndex, false, false, false, false);
-        DrawButton(g, rects[HoverOpacityToggleButtonIndex], HoverOpacityToggleButtonIndex, false, false, false, false);
-        DrawButton(g, rects[AppSettingsButtonIndex], AppSettingsButtonIndex, false, false, false, false);
-        DrawButton(g, rects[RestartButtonIndex], RestartButtonIndex, false, false, false, false);
-        if (ShouldShowBatteryCareButtons())
-        {
-            DrawButton(g, rects[BatteryCarePauseButtonIndex], BatteryCarePauseButtonIndex, false, false, false, false);
-            DrawButton(g, rects[BatteryLimitRestoreButtonIndex], BatteryLimitRestoreButtonIndex, false, true, false, false);
-        }
-        else if (ShouldDrawFpsPanel())
-        {
-            DrawFpsPanel(g, GetBatteryCareFallbackRect(rects));
-        }
-
-        DrawButton(g, rects[WindowsPowerMenuButtonIndex], WindowsPowerMenuButtonIndex, false, false, false, false);
-        DrawButton(g, rects[RefreshButtonIndex], RefreshButtonIndex, false, false, false, false);
-        DrawButton(g, rects[TaskManagerButtonIndex], TaskManagerButtonIndex, false, false, false, false);
-        DrawButton(g, rects[WindowsQuickSettingsButtonIndex], WindowsQuickSettingsButtonIndex, false, false, false, false);
-        DrawButton(g, rects[LiveCaptionsButtonIndex], LiveCaptionsButtonIndex, false, false, false, false);
-        DrawButton(g, rects[WindowsAiStudioButtonIndex], WindowsAiStudioButtonIndex, false, false, true, false);
-    }
-
-    private static RectangleF GetBatteryCareFallbackRect(RectangleF[] rects)
-    {
-        RectangleF left = rects[BatteryCarePauseButtonIndex];
-        RectangleF right = rects[BatteryLimitRestoreButtonIndex];
-        return RectangleF.FromLTRB(left.Left, left.Top, right.Right, left.Bottom);
-    }
-
-    private void DrawStartFallbackPanel(Graphics g, RectangleF rect)
-    {
-        DrawStartFallbackPanel(g, rect, DesignTokens.Colors.Accent);
-    }
-
-    // pieForegroundColor lets the four OLED-safe restyle schemes (added in 1.0.3.44) swap the memory
-    // pie's foreground-app slice away from its classic blue - the 2-arg overload keeps Classic's color.
-    private void DrawStartFallbackPanel(Graphics g, RectangleF rect, Color pieForegroundColor)
-    {
-        if (rect.Width <= 0.0f || rect.Height <= 0.0f)
-        {
-            return;
-        }
-
-        int backgroundAlpha = GetBackgroundOpacityAlpha();
-        float radius = Math.Max(S(5), rect.Height * 0.24f);
-        using (GraphicsPath path = RoundedSegment(rect, radius, true, false, false))
-        using (SolidBrush fillBrush = new SolidBrush(DesignTokens.White(ScaleAlpha(58, backgroundAlpha))))
-        using (Pen borderPen = new Pen(DesignTokens.White(ScaleAlpha(44, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
-        {
-            g.FillPath(fillBrush, path);
-            g.DrawPath(borderPen, path);
-        }
-
-        if (this.CurrentSettings.OperationMemoryPieEnabled)
-        {
-            DrawMemoryPie(g, rect, pieForegroundColor);
-        }
-    }
-
-    private void DrawMemoryPie(Graphics g, RectangleF rect)
-    {
-        DrawMemoryPie(g, rect, DesignTokens.Colors.Accent);
-    }
-
-    // foregroundColor lets the four OLED-safe restyle schemes (added in 1.0.3.44) swap the
-    // foreground-app slice away from its classic blue - the 2-arg overload keeps Classic's color.
-    private void DrawMemoryPie(Graphics g, RectangleF rect, Color foregroundColor)
-    {
-        MemoryPieSnapshot snapshot = this.memoryPieSnapshot;
-        float inset = Math.Max(S(8), Math.Min(rect.Width, rect.Height) * 0.13f);
-        RectangleF bounds = RectangleF.Inflate(rect, -inset, -inset);
-        float diameter = Math.Max(1.0f, Math.Min(bounds.Width, bounds.Height));
-        RectangleF circle = new RectangleF(
-            bounds.Left + (bounds.Width - diameter) / 2.0f,
-            bounds.Top + (bounds.Height - diameter) / 2.0f,
-            diameter,
-            diameter);
-        int backgroundAlpha = GetBackgroundOpacityAlpha();
-        using (SolidBrush baseBrush = new SolidBrush(DesignTokens.White(ScaleAlpha(30, backgroundAlpha))))
-        using (Pen borderPen = new Pen(DesignTokens.White(ScaleAlpha(80, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
-        {
-            g.FillEllipse(baseBrush, circle);
-            if (snapshot.IsValid)
-            {
-                float startAngle = -90.0f;
-                float physicalSweep = GetPieSweep(snapshot.PhysicalUsedBytes, snapshot.TotalBytes);
-                float virtualSweep = GetPieSweep(snapshot.VirtualUsedBytes, snapshot.TotalBytes);
-                DrawPieSlice(g, circle, startAngle, physicalSweep, DesignTokens.WithAlpha(DesignTokens.Colors.SuccessSoft, ScaleAlpha(222, backgroundAlpha)));
-                DrawPieSlice(g, circle, startAngle + physicalSweep, virtualSweep, DesignTokens.WithAlpha(DesignTokens.Colors.Warning, ScaleAlpha(218, backgroundAlpha)));
-                DrawPieSlice(g, circle, startAngle, GetPieSweep(snapshot.ForegroundBytes, snapshot.TotalBytes), DesignTokens.WithAlpha(foregroundColor, ScaleAlpha(236, backgroundAlpha)));
-            }
-
-            g.DrawEllipse(borderPen, circle);
-        }
-
-        if (!snapshot.IsValid)
-        {
-            RectangleF icon = RectangleF.Inflate(circle, -circle.Width * 0.26f, -circle.Height * 0.26f);
-            using (Pen pen = new Pen(DesignTokens.White(ScaleAlpha(150, backgroundAlpha)), Math.Max(1.0f, 1.4f * this.LayerScale)))
-            {
-                pen.StartCap = LineCap.Round;
-                pen.EndCap = LineCap.Round;
-                g.DrawLine(pen, icon.Left, icon.Top, icon.Right, icon.Bottom);
-                g.DrawLine(pen, icon.Right, icon.Top, icon.Left, icon.Bottom);
-            }
-        }
-    }
-
-    private static void DrawPieSlice(Graphics g, RectangleF circle, float startAngle, float sweepAngle, Color color)
-    {
-        if (sweepAngle <= 0.1f || color.A <= 0)
-        {
-            return;
-        }
-
-        using (SolidBrush brush = new SolidBrush(color))
-        {
-            g.FillPie(brush, circle.Left, circle.Top, circle.Width, circle.Height, startAngle, Math.Min(360.0f, sweepAngle));
-        }
-    }
-
-    private static float GetPieSweep(ulong value, ulong total)
-    {
-        if (value == 0UL || total == 0UL)
-        {
-            return 0.0f;
-        }
-
-        double ratio = Math.Max(0.0, Math.Min(1.0, (double)value / (double)total));
-        return (float)(ratio * 360.0);
-    }
-
-    private void DrawFpsPanel(Graphics g, RectangleF rect)
-    {
-        DrawFpsPanel(g, rect, DesignTokens.Colors.AccentSoft, DesignTokens.Colors.AccentBorder, DesignTokens.Colors.Accent);
-    }
-
-    // accentFill/accentBorder/accentRing let the four OLED-safe restyle schemes (added in 1.0.3.44)
-    // swap this panel's forced-FPS highlight away from its classic blue - the 3-arg overload keeps
-    // Classic's exact colors for existing callers.
-    private void DrawFpsPanel(Graphics g, RectangleF rect, Color accentFill, Color accentBorder, Color accentRing)
-    {
-        if (rect.Width <= 0.0f || rect.Height <= 0.0f)
-        {
-            return;
-        }
-
-        int backgroundAlpha = GetBackgroundOpacityAlpha();
-        float radius = Math.Max(S(5), rect.Height * 0.24f);
-        bool forcedFps = this.CurrentSettings.ForceShowForegroundFpsEnabled;
-        using (GraphicsPath path = RoundedSegment(rect, radius, false, true, false))
-        using (SolidBrush fillBrush = new SolidBrush(forcedFps
-            ? DesignTokens.WithAlpha(accentFill, ScaleAlpha(72, backgroundAlpha))
-            : DesignTokens.White(ScaleAlpha(46, backgroundAlpha))))
-        using (Pen borderPen = new Pen(forcedFps
-            ? DesignTokens.WithAlpha(accentBorder, ScaleAlpha(132, backgroundAlpha))
-            : DesignTokens.White(ScaleAlpha(52, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
-        {
-            g.FillPath(fillBrush, path);
-            g.DrawPath(borderPen, path);
-        }
-
-        if (forcedFps)
-        {
-            RectangleF ringRect = RectangleF.Inflate(rect, -Math.Max(1.0f, this.LayerScale), -Math.Max(1.0f, this.LayerScale));
-            using (GraphicsPath ringPath = RoundedSegment(ringRect, Math.Max(S(4), ringRect.Height * 0.22f), false, true, false))
-            using (Pen ringPen = new Pen(DesignTokens.WithAlpha(accentRing, ScaleAlpha(150, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
-            {
-                g.DrawPath(ringPen, ringPath);
-            }
-        }
-
-        string text = this.foregroundFrameRate.HasValue
-            ? "FPS=" + this.foregroundFrameRate.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            : "FPS=-";
-        RectangleF textRect = RectangleF.Inflate(rect, -Math.Max(S(3), rect.Height * 0.12f), -Math.Max(1.0f, rect.Height * 0.10f));
-        Font font = this.fontCache.GetMono(
-            Math.Max(7.0f, Math.Min(rect.Height * 0.42f, rect.Width * 0.17f)),
-            FontStyle.Bold);
-        using (SolidBrush textBrush = new SolidBrush(forcedFps
-            ? DesignTokens.TextStrong(238)
-            : DesignTokens.White(226)))
-        {
-            DrawCenteredFittedText(g, text, font, textBrush, textRect);
-        }
-    }
-
-    private void DrawCenteredFittedText(Graphics g, string text, Font baseFont, Brush brush, RectangleF rect)
-    {
-        if (string.IsNullOrEmpty(text) || rect.Width <= 0.0f || rect.Height <= 0.0f)
-        {
-            return;
-        }
-
-        using (StringFormat format = new StringFormat())
-        {
-            format.Alignment = StringAlignment.Center;
-            format.LineAlignment = StringAlignment.Center;
-            format.Trimming = StringTrimming.EllipsisCharacter;
-            format.FormatFlags = StringFormatFlags.NoWrap;
-
-            Font drawFont = baseFont;
-            float size = baseFont.Size;
-            while (size > 6.0f * this.LayerScale && g.MeasureString(text, drawFont).Width > rect.Width)
-            {
-                size -= 0.5f * this.LayerScale;
-                drawFont = this.fontCache.GetMono(size, baseFont.Style);
-            }
-
-            g.DrawString(text, drawFont, brush, rect, format);
-        }
-    }
-
-    private void DrawButton(Graphics g, RectangleF rect, int button, bool leftSegment, bool topRight, bool bottomRight, bool startButton)
-    {
-        if (!IsButtonVisible(button) || rect.Width <= 0.0f || rect.Height <= 0.0f)
-        {
-            return;
-        }
-
-        double hover = this.hoverProgress[button];
-        double press = button == this.pressedButton ? 1.0 : GetPressProgress(button);
-        bool unavailable = IsButtonUnavailable(button);
-        bool active = !unavailable && IsStateButtonActive(button);
-        if (unavailable)
-        {
-            hover = 0.0;
-            press = 0.0;
-        }
-
-        int backgroundAlpha = GetBackgroundOpacityAlpha();
-        int fillAlpha = ScaleAlpha(ClampByte((int)Math.Round(58 + hover * 54 + press * 36)), backgroundAlpha);
-        int outlineAlpha = ScaleAlpha(ClampByte((int)Math.Round(44 + hover * 70 + press * 40)), backgroundAlpha);
-        Color fill;
-        if (unavailable)
-        {
-            fill = DesignTokens.WithAlpha(
-                DesignTokens.Colors.Control,
-                ScaleAlpha(ClampByte((int)Math.Round(34 + press * 16)), backgroundAlpha));
-            outlineAlpha = ScaleAlpha(44, backgroundAlpha);
-        }
-        else if (button == BatteryCarePauseButtonIndex)
-        {
-            fill = this.batteryCarePauseRunning
-                ? DesignTokens.WithAlpha(DesignTokens.Colors.Warning, ClampByte(fillAlpha + ScaleAlpha(22, backgroundAlpha)))
-                : DesignTokens.WithAlpha(DesignTokens.Colors.SuccessSoft, ScaleAlpha(ClampByte((int)Math.Round(42 + hover * 58 + press * 40)), backgroundAlpha));
-        }
-        else if (button == BatteryLimitRestoreButtonIndex)
-        {
-            fill = this.batteryLimitRestoreRunning
-                ? DesignTokens.WithAlpha(DesignTokens.Colors.DangerDeep, ClampByte(fillAlpha + ScaleAlpha(28, backgroundAlpha)))
-                : DesignTokens.WithAlpha(DesignTokens.Colors.Danger, ScaleAlpha(ClampByte((int)Math.Round(68 + hover * 64 + press * 44)), backgroundAlpha));
-        }
-        else if (button == StartButtonIndex)
-        {
-            fill = DesignTokens.Accent(ClampByte(fillAlpha + 6));
-        }
-        else if (active)
-        {
-            fill = DesignTokens.WithAlpha(
-                Color.FromArgb(178, 225, 255),
-                ScaleAlpha(ClampByte((int)Math.Round(92 + hover * 66 + press * 42)), backgroundAlpha));
-        }
-        else if (button == LiveCaptionsButtonIndex || button == WindowsAiStudioButtonIndex)
-        {
-            fill = DesignTokens.WithAlpha(
-                Color.FromArgb(255, 236, 170),
-                ScaleAlpha(ClampByte((int)Math.Round(74 + hover * 66 + press * 40)), backgroundAlpha));
-        }
-        else
-        {
-            fill = DesignTokens.White(fillAlpha);
-        }
-
-        Color border = active
-            ? DesignTokens.WithAlpha(DesignTokens.Colors.AccentBorder, ClampByte(outlineAlpha + ScaleAlpha(72, backgroundAlpha)))
-            : DesignTokens.White(outlineAlpha);
-        float radius = Math.Max(S(5), rect.Height * 0.24f);
-        using (GraphicsPath path = RoundedSegment(rect, radius, leftSegment, topRight, bottomRight))
-        {
-            using (SolidBrush brush = new SolidBrush(fill))
-            {
-                g.FillPath(brush, path);
-            }
-
-            using (Pen pen = new Pen(border, Math.Max(1.0f, this.LayerScale)))
-            {
-                g.DrawPath(pen, path);
-            }
-
-            if (active)
-            {
-                RectangleF ringRect = RectangleF.Inflate(rect, -Math.Max(1.0f, this.LayerScale), -Math.Max(1.0f, this.LayerScale));
-                using (GraphicsPath ringPath = RoundedSegment(ringRect, Math.Max(S(4), ringRect.Height * 0.22f), leftSegment, topRight, bottomRight))
-                using (Pen ringPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, ScaleAlpha(154, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
-                {
-                    g.DrawPath(ringPen, ringPath);
-                }
-            }
-        }
-
-        RectangleF iconRect = GetIconRect(rect);
-        if (startButton)
-        {
-            DrawStartGlyph(g, iconRect);
-        }
-        else if (button == WindowsSettingsButtonIndex)
-        {
-            DrawSettingsGlyph(g, iconRect);
-        }
-        else if (button == WindowsPowerMenuButtonIndex)
-        {
-            DrawPowerGlyph(g, iconRect);
-        }
-        else if (button == AppSettingsButtonIndex)
-        {
-            DrawAppSettingsGlyph(g, iconRect);
-        }
-        else if (button == RefreshButtonIndex)
-        {
-            DrawRefreshGlyph(g, iconRect);
-        }
-        else if (button == RestartButtonIndex)
-        {
-            DrawRestartGlyph(g, iconRect);
-        }
-        else if (button == BatteryCarePauseButtonIndex)
-        {
-            DrawBatteryCareGlyph(g, iconRect);
-        }
-        else if (button == BatteryLimitRestoreButtonIndex)
-        {
-            DrawBatteryLimitRestoreGlyph(g, iconRect);
-        }
-        else if (button == TaskManagerButtonIndex)
-        {
-            DrawTaskManagerGlyph(g, iconRect);
-        }
-        else if (button == WindowsAiStudioButtonIndex)
-        {
-            DrawWindowsAiStudioGlyph(g, iconRect);
-        }
-        else if (button == WindowsQuickSettingsButtonIndex)
-        {
-            DrawQuickSettingsGlyph(g, iconRect);
-        }
-        else if (button == LiveCaptionsButtonIndex)
-        {
-            DrawLiveCaptionsGlyph(g, iconRect);
-        }
-        else if (button == HoverOpacityToggleButtonIndex)
-        {
-            DrawHoverOpacityGlyph(g, iconRect);
-        }
-
-        if (unavailable)
-        {
-            DrawUnavailableButtonOverlay(g, rect, leftSegment, topRight, bottomRight);
-        }
-    }
-
-    private void DrawUnavailableButtonOverlay(Graphics g, RectangleF rect, bool leftSegment, bool topRight, bool bottomRight)
-    {
-        int backgroundAlpha = GetBackgroundOpacityAlpha();
-        float radius = Math.Max(S(5), rect.Height * 0.24f);
-        using (GraphicsPath path = RoundedSegment(rect, radius, leftSegment, topRight, bottomRight))
-        using (SolidBrush veilBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, ScaleAlpha(116, backgroundAlpha))))
-        using (Pen mutedPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, ScaleAlpha(118, backgroundAlpha)), Math.Max(1.0f, this.LayerScale)))
-        {
-            g.FillPath(veilBrush, path);
-            g.DrawPath(mutedPen, path);
-        }
     }
 
     private RectangleF GetIconRect(RectangleF tileRect)
@@ -3891,9 +3537,13 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         RunFpsIntervalSelfTest();
         RunSeelenPowerMenuResultSelfTest();
         RunMouseButtonAcceptanceSelfTest();
+        RunOperationDoubleClickRoutingSelfTest();
         RunRadialDialSelfTest();
         RunQuickGridSelfTest();
         AiQuickMenuForm.RunSelfTest();
+        RunCodexTaskBoardPlacementSelfTest();
+        EdgeDockTabForm.RunSelfTest();
+        OutsideClickDismissalMonitor.RunSelfTest();
     }
 
     private static void RunInteractionHitMaskSelfTest()

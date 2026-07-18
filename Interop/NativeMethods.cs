@@ -42,6 +42,7 @@ internal static class NativeMethods
     public const int APPCOMMAND_MEDIA_PLAY_PAUSE = 14;
     public const int WM_APP = 0x8000;
     public const int WM_POWERBROADCAST = 0x0218;
+    public const int WM_HOTKEY = 0x0312;
     public const int PBT_APMSUSPEND = 0x0004;
     public const int PBT_APMRESUMECRITICAL = 0x0006;
     public const int PBT_APMRESUMESUSPEND = 0x0007;
@@ -298,6 +299,37 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UnregisterPowerSettingNotification(IntPtr handle);
+
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "RegisterHotKey")]
+    private static extern bool RegisterHotKeyNative(IntPtr windowHandle, int id, uint modifiers, uint virtualKey);
+
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "UnregisterHotKey")]
+    private static extern bool UnregisterHotKeyNative(IntPtr windowHandle, int id);
+
+    private static long globalHotkeyRegistrationAttemptCount;
+
+    public static long GlobalHotkeyRegistrationAttemptCount
+    {
+        get { return Interlocked.Read(ref globalHotkeyRegistrationAttemptCount); }
+    }
+
+    public static bool TryRegisterGlobalHotkey(
+        IntPtr windowHandle,
+        int id,
+        uint modifiers,
+        uint virtualKey,
+        out int win32Error)
+    {
+        Interlocked.Increment(ref globalHotkeyRegistrationAttemptCount);
+        bool registered = RegisterHotKeyNative(windowHandle, id, modifiers, virtualKey);
+        win32Error = registered ? 0 : Marshal.GetLastWin32Error();
+        return registered;
+    }
+
+    public static bool UnregisterGlobalHotkey(IntPtr windowHandle, int id)
+    {
+        return windowHandle == IntPtr.Zero || UnregisterHotKeyNative(windowHandle, id);
+    }
 
     [DllImport("powrprof.dll", SetLastError = true)]
     private static extern uint PowerRegisterForEffectivePowerModeNotifications(
@@ -4640,17 +4672,35 @@ internal static class NativeMethods
 
     public static IntPtr GetSeelenAwareTopMostInsertAfter(bool keepBelowCodexPet)
     {
-        IntPtr protectedHandle;
-        return TryFindProtectedTopMostWindowForZOrder(keepBelowCodexPet, out protectedHandle) ?
-            protectedHandle :
+        List<IntPtr> protectedHandles = FindProtectedTopMostWindowsForZOrder(keepBelowCodexPet);
+        return protectedHandles.Count > 0 ?
+            protectedHandles[protectedHandles.Count - 1] :
             HWND_TOPMOST;
     }
 
-    private static bool TryFindProtectedTopMostWindowForZOrder(bool keepBelowCodexPet, out IntPtr handle)
+    public static IntPtr PrepareSeelenAwareTopMostInsertAfter(bool keepBelowCodexPet)
     {
-        handle = IntPtr.Zero;
-        IntPtr foundHandle = IntPtr.Zero;
-        bool found = false;
+        List<IntPtr> protectedHandles = FindProtectedTopMostWindowsForZOrder(keepBelowCodexPet);
+        RestackTopMostWindows(protectedHandles);
+        return protectedHandles.Count > 0 ?
+            protectedHandles[protectedHandles.Count - 1] :
+            HWND_TOPMOST;
+    }
+
+    public static void RestoreCurrentProcessTopMostWindows(bool keepBelowCodexPet)
+    {
+        List<IntPtr> protectedHandles = FindProtectedTopMostWindowsForZOrder(keepBelowCodexPet);
+        List<IntPtr> processHandles = FindCurrentProcessTopMostWindowsForZOrder();
+
+        // First move this process above unrelated TopMost windows, then restore the protected
+        // Seelen/Codex stack above it. Reverse-order pulses preserve each group's existing order.
+        RestackTopMostWindows(processHandles);
+        RestackTopMostWindows(protectedHandles);
+    }
+
+    private static List<IntPtr> FindProtectedTopMostWindowsForZOrder(bool keepBelowCodexPet)
+    {
+        List<IntPtr> handles = new List<IntPtr>();
         EnumWindows(delegate(IntPtr windowHandle, IntPtr lParam)
         {
             if (!IsWindowVisible(windowHandle) || !IsTopMostWindow(windowHandle))
@@ -4689,14 +4739,61 @@ internal static class NativeMethods
             }
 
             // EnumWindows walks top-level windows from front to back. Keeping the last protected
-            // layer makes our insert-after target sit below every matching Seelen/Codex surface.
-            foundHandle = windowHandle;
-            found = true;
+            // layer as insert-after keeps widgets below every matching Seelen/Codex surface.
+            handles.Add(windowHandle);
             return true;
         }, IntPtr.Zero);
 
-        handle = foundHandle;
-        return found;
+        return handles;
+    }
+
+    private static List<IntPtr> FindCurrentProcessTopMostWindowsForZOrder()
+    {
+        List<IntPtr> handles = new List<IntPtr>();
+        uint currentProcessId = (uint)Process.GetCurrentProcess().Id;
+        EnumWindows(delegate(IntPtr windowHandle, IntPtr lParam)
+        {
+            if (!IsWindowVisible(windowHandle) || !IsTopMostWindow(windowHandle))
+            {
+                return true;
+            }
+
+            uint processId;
+            GetWindowThreadProcessId(windowHandle, out processId);
+            if (processId != currentProcessId)
+            {
+                return true;
+            }
+
+            RECT rect;
+            if (GetWindowRect(windowHandle, out rect) &&
+                rect.Right > rect.Left &&
+                rect.Bottom > rect.Top)
+            {
+                handles.Add(windowHandle);
+            }
+
+            return true;
+        }, IntPtr.Zero);
+
+        return handles;
+    }
+
+    private static void RestackTopMostWindows(List<IntPtr> handles)
+    {
+        for (int i = handles.Count - 1; i >= 0; i--)
+        {
+            SetWindowPos(
+                handles[i],
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOACTIVATE |
+                SWP_NOMOVE |
+                SWP_NOSIZE);
+        }
     }
 
     private static bool IsCodexDesktopExecutablePath(string processPath)
@@ -4917,17 +5014,22 @@ internal static class NativeMethods
 
     public static bool IsLeftMouseButtonDown()
     {
-        return (GetAsyncKeyState(VK_LBUTTON) & unchecked((short)0x8000)) != 0;
+        return OutsideClickDismissalMonitor.IsLeftButtonDown();
     }
 
     public static bool IsAnyMouseButtonDown()
     {
         return
-            (GetAsyncKeyState(VK_LBUTTON) & unchecked((short)0x8000)) != 0 ||
+            OutsideClickDismissalMonitor.IsLeftButtonDown() ||
             (GetAsyncKeyState(VK_RBUTTON) & unchecked((short)0x8000)) != 0 ||
             (GetAsyncKeyState(VK_MBUTTON) & unchecked((short)0x8000)) != 0 ||
             (GetAsyncKeyState(VK_XBUTTON1) & unchecked((short)0x8000)) != 0 ||
             (GetAsyncKeyState(VK_XBUTTON2) & unchecked((short)0x8000)) != 0;
+    }
+
+    internal static short ReadLeftMouseButtonAsyncState()
+    {
+        return GetAsyncKeyState(VK_LBUTTON);
     }
 
     public static bool IsClickThroughModifierDown()

@@ -1281,7 +1281,11 @@ internal sealed partial class OperationForm
     {
         if (hit.Kind == RadialHitKind.Core)
         {
-            return this.radialMenuOpen ? "收起操作面板" : "展开操作面板";
+            string primary = this.radialMenuOpen ? "收起操作面板" : "展开操作面板";
+            string doubleClickAction = this.CurrentSettings.OperationDoubleClickSpecialMenuEnabled
+                ? "双击：特殊菜单"
+                : "双击：开关隐藏模式";
+            return primary + "\r\n" + doubleClickAction;
         }
 
         if (hit.Kind != RadialHitKind.Item || hit.Node == null)

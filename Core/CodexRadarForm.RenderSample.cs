@@ -13,6 +13,27 @@ internal sealed partial class CodexRadarForm
 {
     internal static void RenderVariantSamples(string outputDir)
     {
+        // The clock's task ring reads live Codex sessions through CodexTaskPresentation. A sample run
+        // must not depend on what happens to be running, so publish a fixture for the whole sweep and
+        // restore the real provider afterwards. Claude-mode samples stay ringless by their own gate.
+        Func<CodexTaskMonitorSnapshot> savedProvider = CodexTaskPresentation.SnapshotProvider;
+        try
+        {
+            DateTime sampleNow = DateTime.Now;
+            CodexTaskPresentation.SnapshotProvider = delegate
+            {
+                return CodexTaskPresentation.CreateFixtureSnapshot(sampleNow);
+            };
+            RenderVariantSamplesCore(outputDir);
+        }
+        finally
+        {
+            CodexTaskPresentation.SnapshotProvider = savedProvider;
+        }
+    }
+
+    private static void RenderVariantSamplesCore(string outputDir)
+    {
         Directory.CreateDirectory(outputDir);
         CodexRadarRenderVariant[] variants =
         {
@@ -110,6 +131,7 @@ internal sealed partial class CodexRadarForm
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
             form.effectiveCodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+            CodexTaskPresentation.UseFixtureSnapshotForSample(DateTime.Now);
             form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
 
             CodexResetCreditsSnapshot credits = CodexResetCreditsSnapshot.CreateDefault();
@@ -149,6 +171,7 @@ internal sealed partial class CodexRadarForm
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
             form.effectiveCodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+            CodexTaskPresentation.UseFixtureSnapshotForSample(DateTime.Now);
             form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
 
             CodexQuotaSnapshot quota = CodexQuotaSnapshot.CreateDefault();
@@ -172,10 +195,9 @@ internal sealed partial class CodexRadarForm
         }
     }
 
-    // 5-hour limit removed (FiveHourLimitAbsent): the 5h cell becomes the weekly budget ring. Here
-    // weekly remaining is 40% with the reset 4 days out (~57% of the week elapsed) -> consumed 60% vs
-    // 43% elapsed -> efficiency ~140 (over budget, red), and the remaining 40% lasts ~48h at that rate
-    // -> centre "140" (no %), bottom "48H".
+    // 5-hour limit removed (FiveHourLimitAbsent): the 5h cell becomes the measured burn-rate ring.
+    // Ten points burned over six active hours projects the remaining 40% to 24h, shorter than the
+    // real 96h reset distance: red remaining arc, centre "24H", bottom "4.0d" (time to reset).
     private static void RenderCodexWeeklyBudgetSample(string outputDir)
     {
         WidgetSettings settings = WidgetSettings.CreateDefaults();
@@ -188,16 +210,33 @@ internal sealed partial class CodexRadarForm
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
             form.effectiveCodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+            CodexTaskPresentation.UseFixtureSnapshotForSample(DateTime.Now);
             form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
 
+            DateTime now = DateTime.Now;
             CodexQuotaSnapshot quota = CodexQuotaSnapshot.CreateDefault();
             quota.FiveHourLimitAbsent = true;
             quota.WeeklyPercent = 40;
             quota.WeeklyResetKnown = true;
-            quota.WeeklyResetLocal = DateTime.Now.AddDays(4.0);
+            quota.WeeklyResetLocal = now.AddDays(4.0);
             QuotaRuntimeState quotaState = form.GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex);
             quotaState.Snapshot = quota;
             quotaState.SourceKnown = true;
+            quotaState.WeeklyBurnClockActive = true;
+            quotaState.WeeklyBurnActiveHours = 6.0;
+            quotaState.WeeklyBurnTrackedResetLocal = quota.WeeklyResetLocal;
+            quotaState.WeeklyBurnSamples.Add(new WeeklyBurnSample
+            {
+                Utc = now.ToUniversalTime().AddHours(-6.0),
+                ActiveHours = 0.0,
+                RemainingPercent = 50
+            });
+            quotaState.WeeklyBurnSamples.Add(new WeeklyBurnSample
+            {
+                Utc = now.ToUniversalTime(),
+                ActiveHours = 6.0,
+                RemainingPercent = 40
+            });
 
             RenderSampleSupport.SaveComposited(
                 outputDir,
@@ -267,6 +306,7 @@ internal sealed partial class CodexRadarForm
             form.MaximumSize = new Size(4000, 4000);
             form.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
             form.effectiveCodexRadarSoftwareMode = CodexRadarSoftwareMode.Codex;
+            CodexTaskPresentation.UseFixtureSnapshotForSample(DateTime.Now);
             form.codexRadarSnapshot = form.BuildTestCodexRadarSnapshot(CodexRadarTestMode.Open);
             DateTime now = DateTime.Now;
             form.codexRadarSnapshot.SpeedWindowKnown = true;

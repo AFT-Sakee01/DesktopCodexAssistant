@@ -1,10 +1,9 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
-using System.Drawing.Text;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -19,6 +18,10 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private const int ReconcileIntervalMinutes = 5;
     private const int ReconcileTimeoutMs = 3000;
     private const int CopySuccessNoticeSeconds = 2;
+    // Below this logical SpecBoardWidth the board drops the project rail and renders a single
+    // full-width action column (compact mode). 360 keeps the wide layout's cards no narrower than
+    // the compact layout would be.
+    internal const int CompactRailMinimumLogicalWidth = 360;
     private readonly OperationForm owner;
     private readonly UiFontCache fontCache = new UiFontCache();
     private readonly System.Windows.Forms.Timer maintenanceTimer;
@@ -58,6 +61,10 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private Rectangle managerButtonBounds = Rectangle.Empty;
     private Rectangle closeButtonBounds = Rectangle.Empty;
     private SpecBoardManagerForm managerForm;
+    private EdgeDockTabForm dockTab;
+    private DateTime dockPointerLeftUtc = DateTime.MinValue;
+    private long outsideClickSequence;
+    private DateTime outsideClickCollapseUtc = DateTime.MinValue;
 
     public SpecBoardForm(OperationForm owner, WidgetSettings settings)
     {
@@ -91,6 +98,16 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         get { return "SpecBoard"; }
     }
 
+    protected override int WindowTransparencyOverridePercent
+    {
+        get { return this.CurrentSettings.SpecBoardTransparencyOverridePercent; }
+    }
+
+    protected override int WindowScaleOverridePercent
+    {
+        get { return this.CurrentSettings.SpecBoardScaleOverridePercent; }
+    }
+
     protected override bool CanRenderLayeredWindow()
     {
         return !this.displaySuspended;
@@ -122,7 +139,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
         if (this.Visible)
         {
-            PositionNearOperationPanel();
+            PositionForDisplay();
             ResetAutoHideClock();
             RenderLayeredWindow();
         }
@@ -131,10 +148,176 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             InvalidateLayeredRenderBuffer();
         }
 
+        SyncLeftDockTab();
+
         UpdateMonitoringState();
         if (ShouldMonitorWork() && (ledgerPathChanged || !oldAutoPopupEnabled && this.CurrentSettings.SpecBoardAutoPopupEnabled))
         {
             RequestRefresh(true);
+        }
+    }
+
+    // The dock tab is the board's only always-visible surface, so it is created as soon as the
+    // owner builds the (hidden) board at startup and torn down when the setting is turned off.
+    internal void SyncLeftDockTab()
+    {
+        if (this.IsDisposed)
+        {
+            return;
+        }
+
+        if (!this.IsLeftDocked)
+        {
+            DisposeDockTab();
+            return;
+        }
+
+        if (this.dockTab == null || this.dockTab.IsDisposed)
+        {
+            this.dockTab = new EdgeDockTabForm(
+                this.CurrentSettings,
+                DesignTokens.Colors.AccentAlt,
+                BurnInProtection.SpecBoardDockTabSalt,
+                "SpecBoardDockTab",
+                false);
+            this.dockTab.HoverEntered += OnDockTabHoverEntered;
+            this.dockTab.HoverExited += OnDockTabHoverExited;
+            this.dockTab.PollTick += OnDockTabPollTick;
+        }
+        else
+        {
+            this.dockTab.ApplyRuntimeSettings(this.CurrentSettings, DesignTokens.Colors.AccentAlt);
+        }
+
+        this.dockTab.SetDisplaySuspended(this.displaySuspended || this.hiddenForFullscreen);
+        this.dockTab.ShowTab(ResolveDockTabCenterY());
+        this.maintenanceTimer.Start();
+    }
+
+    private void OnDockTabHoverEntered(object sender, EventArgs e)
+    {
+        if (this.IsDisposed || !this.IsLeftDocked || this.Visible)
+        {
+            return;
+        }
+
+        if (OutsideClickDismissalMonitor.ShouldSuppressTabReopen(this.outsideClickCollapseUtc, DateTime.UtcNow))
+        {
+            return;
+        }
+
+        this.outsideClickCollapseUtc = DateTime.MinValue;
+        this.dockPointerLeftUtc = DateTime.MinValue;
+        ShowBoard();
+    }
+
+    private void OnDockTabHoverExited(object sender, EventArgs e)
+    {
+        this.outsideClickCollapseUtc = DateTime.MinValue;
+    }
+
+    private void OnDockTabPollTick(object sender, EventArgs e)
+    {
+        UpdateOutsideClickDismissal(DateTime.UtcNow);
+    }
+
+    private bool UpdateOutsideClickDismissal(DateTime nowUtc)
+    {
+        bool enabled = this.Visible &&
+            this.CurrentSettings != null &&
+            this.CurrentSettings.LeftDockOutsideClickCollapseEnabled &&
+            (this.IsLeftDocked || this.autoPopupActive);
+        if (!enabled)
+        {
+            return false;
+        }
+
+        Point clickPosition;
+        DateTime clickUtc;
+        if (!OutsideClickDismissalMonitor.TryGetClickAfter(ref this.outsideClickSequence, out clickPosition, out clickUtc))
+        {
+            return false;
+        }
+
+        Rectangle tabBounds = this.dockTab != null && !this.dockTab.IsDisposed && this.dockTab.Visible
+            ? this.dockTab.Bounds
+            : Rectangle.Empty;
+        Rectangle managerBounds = this.managerForm != null && !this.managerForm.IsDisposed && this.managerForm.Visible
+            ? this.managerForm.Bounds
+            : Rectangle.Empty;
+        if (!OutsideClickDismissalMonitor.ShouldDismissOutsideClick(
+            true,
+            clickPosition,
+            this.Bounds,
+            tabBounds,
+            managerBounds))
+        {
+            return false;
+        }
+
+        this.outsideClickCollapseUtc = clickUtc == DateTime.MinValue ? nowUtc : clickUtc;
+        Program.LogInfo("SpecBoard outside click collapsed transient board.");
+        HideBoard();
+        return true;
+    }
+
+    // Docked boards collapse on their own once the pointer leaves both the board and its tab. This
+    // is deliberately separate from SpecBoardAutoHideSeconds: a peek panel needs a ~1s exit, while
+    // the manually opened board keeps its much longer idle timeout.
+    private bool UpdateDockCollapse(DateTime nowUtc)
+    {
+        if (!this.IsLeftDocked || !this.Visible || this.autoPopupActive)
+        {
+            this.dockPointerLeftUtc = DateTime.MinValue;
+            return false;
+        }
+
+        Point cursor = this.cursorPositionProvider();
+        bool overBoard = this.Bounds.Contains(cursor);
+        bool overTab = this.dockTab != null && !this.dockTab.IsDisposed && this.dockTab.Visible && this.dockTab.Bounds.Contains(cursor);
+        if (overBoard || overTab)
+        {
+            this.dockPointerLeftUtc = DateTime.MinValue;
+            return false;
+        }
+
+        if (this.dockPointerLeftUtc == DateTime.MinValue)
+        {
+            this.dockPointerLeftUtc = nowUtc;
+            return false;
+        }
+
+        if (nowUtc < this.dockPointerLeftUtc.AddSeconds(this.CurrentSettings.LeftDockCollapseSeconds))
+        {
+            return false;
+        }
+
+        this.dockPointerLeftUtc = DateTime.MinValue;
+        HideBoard();
+        return true;
+    }
+
+    private void DisposeDockTab()
+    {
+        if (this.dockTab == null)
+        {
+            return;
+        }
+
+        try
+        {
+            this.dockTab.HoverEntered -= OnDockTabHoverEntered;
+            this.dockTab.HoverExited -= OnDockTabHoverExited;
+            this.dockTab.PollTick -= OnDockTabPollTick;
+            this.dockTab.Close();
+            this.dockTab.Dispose();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            this.dockTab = null;
         }
     }
 
@@ -168,6 +351,8 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         }
 
         this.autoPopupActive = automaticPopup;
+        this.outsideClickCollapseUtc = DateTime.MinValue;
+        this.outsideClickSequence = OutsideClickDismissalMonitor.ArmConsumer();
         if (automaticPopup)
         {
             this.autoPopupHideUtc = DateTime.UtcNow.AddSeconds(this.CurrentSettings.SpecBoardAutoPopupSeconds);
@@ -179,7 +364,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
         this.selectedProject = string.Empty;
         ApplyRuntimeSettings(this.CurrentSettings);
-        PositionNearOperationPanel();
+        PositionForDisplay();
         if (!this.Visible)
         {
             if (this.owner == null)
@@ -225,6 +410,20 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         }
 
         this.hiddenForFullscreen = hidden;
+        // A fullscreen app must not keep a dock tab painted over it, and the tab has to come back
+        // when the app exits fullscreen.
+        if (this.dockTab != null && !this.dockTab.IsDisposed)
+        {
+            if (hidden)
+            {
+                this.dockTab.HideTab();
+            }
+            else if (this.IsLeftDocked)
+            {
+                this.dockTab.ShowTab(ResolveDockTabCenterY());
+            }
+        }
+
         if (hidden)
         {
             this.restoreAfterFullscreen = this.Visible;
@@ -247,6 +446,11 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     public void PrepareForDisplaySuspend()
     {
         this.displaySuspended = true;
+        if (this.dockTab != null && !this.dockTab.IsDisposed)
+        {
+            this.dockTab.SetDisplaySuspended(true);
+        }
+
         SuspendVisibleWork();
         ResetDisplayRenderResources();
     }
@@ -255,12 +459,18 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     {
         this.displaySuspended = false;
         ResetDisplayRenderResources();
+        if (this.dockTab != null && !this.dockTab.IsDisposed)
+        {
+            this.dockTab.SetDisplaySuspended(false);
+        }
+
         if (ShouldMonitorWork())
         {
             ResumeVisibleWork();
+            SyncLeftDockTab();
             if (this.Visible)
             {
-                PositionNearOperationPanel();
+                PositionForDisplay();
                 RequestRefresh(true);
                 RenderLayeredWindow();
             }
@@ -371,6 +581,38 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                 return;
             }
         }
+
+        if (ShouldDismissForBlankClick(e.Location))
+        {
+            HideBoard();
+        }
+    }
+
+    internal bool ShouldDismissForBlankClick(Point location)
+    {
+        if ((!this.closeButtonBounds.IsEmpty && this.closeButtonBounds.Contains(location)) ||
+            (!this.managerButtonBounds.IsEmpty && this.managerButtonBounds.Contains(location)))
+        {
+            return false;
+        }
+
+        for (int i = 0; i < this.projectHitTargets.Count; i++)
+        {
+            if (this.projectHitTargets[i].Bounds.Contains(location))
+            {
+                return false;
+            }
+        }
+
+        for (int i = 0; i < this.cardHitTargets.Count; i++)
+        {
+            if (this.cardHitTargets[i].Bounds.Contains(location))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     protected override void OnMouseDoubleClick(MouseEventArgs e)
@@ -403,15 +645,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         this.managerButtonBounds = Rectangle.Empty;
         this.closeButtonBounds = Rectangle.Empty;
 
-        OperationRenderVariant variant = this.CurrentSettings == null ? OperationRenderVariant.Classic : this.CurrentSettings.OperationRenderVariant;
-        if (IsOledVariant(variant))
-        {
-            // ClearType encodes blue/red subpixel fringes into layered bitmaps. OLED variants
-            // use grayscale antialiasing so their no-blue palette remains true pixel-for-pixel.
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-        }
-
-        SpecBoardPalette palette = GetPalette(variant);
+        SpecBoardPalette palette = GetPalette();
         using (SolidBrush background = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 238)))
         {
             g.FillRectangle(background, 0, 0, this.Width, this.Height);
@@ -470,11 +704,28 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         Rectangle header = new Rectangle(content.Left, content.Top, content.Width, headerHeight);
         int columnsTop = header.Bottom + S(5);
         int columnsHeight = Math.Max(1, content.Bottom - columnsTop);
+
+        DrawHeader(g, header, headerFont, countFont, palette);
+
+        // Compact single-column mode: below this logical width the 37% project rail would leave the
+        // cards narrower than a readable title, so the rail is dropped and the action flow takes the
+        // full width. The card subtitle already names each row's project, so no information is lost;
+        // per-project filtering and freshness dots stay exclusive to the wide layout.
+        if (this.CurrentSettings != null && this.CurrentSettings.SpecBoardWidth < CompactRailMinimumLogicalWidth)
+        {
+            this.selectedProject = string.Empty;
+            Rectangle full = new Rectangle(content.Left, columnsTop, content.Width, columnsHeight);
+            Rectangle compactFooter = new Rectangle(full.Left, Math.Max(full.Top, full.Bottom - footerHeight), full.Width, footerHeight);
+            Rectangle flow = new Rectangle(full.Left, full.Top, full.Width, Math.Max(1, compactFooter.Top - S(3) - full.Top));
+            DrawActionFlow(g, flow, segmentHeight, cardHeight, cardGap, bodyBold, smallFont, smallBold, palette, recordHitTargets);
+            DrawBoardFooter(g, compactFooter, smallFont, palette, recordHitTargets);
+            return;
+        }
+
         int leftWidth = Math.Max(S(112), (int)Math.Round(content.Width * 0.37));
         Rectangle left = new Rectangle(content.Left, columnsTop, leftWidth, columnsHeight);
         Rectangle right = new Rectangle(left.Right + S(7), columnsTop, Math.Max(1, content.Right - left.Right - S(7)), columnsHeight);
 
-        DrawHeader(g, header, headerFont, countFont, palette);
         using (Pen divider = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Border, 112), Math.Max(1.0f, this.LayerScale)))
         {
             g.DrawLine(divider, left.Right + S(3), left.Top, left.Right + S(3), left.Bottom);
@@ -593,6 +844,14 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             }
         }
 
+        DrawBoardFooter(g, footer, smallFont, palette, recordHitTargets);
+    }
+
+    // Footer (管理/关闭 pills and the done/abandoned/warning stats) is shared by both layouts: the
+    // wide board hosts it at the bottom of the project rail, the compact single-column board at the
+    // bottom of the full-width action flow. It must stay reachable in every mode.
+    private void DrawBoardFooter(Graphics g, Rectangle footer, Font smallFont, SpecBoardPalette palette, bool recordHitTargets)
+    {
         string footerText = "✓" + this.snapshot.Count(string.Empty, SpecBoardStatus.Done).ToString(CultureInfo.InvariantCulture) + " · ×" + this.snapshot.Count(string.Empty, SpecBoardStatus.Abandoned).ToString(CultureInfo.InvariantCulture);
         int warnings = this.snapshot.MalformedLines + (this.snapshot.ProjectRegistryAvailable ? 0 : 1) + (this.snapshot.ReconciliationTimedOut ? 1 : 0);
         if (warnings > 0)
@@ -869,6 +1128,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
     private void OnMaintenanceTick(object sender, EventArgs e)
     {
+        RefreshNightScheduleAtExistingTick();
         if (!ShouldMonitorWork())
         {
             SuspendVisibleWork();
@@ -882,6 +1142,16 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             this.autoPopupHighlightUntilUtc = DateTime.MinValue;
             this.autoPopupHighlightedRows.Clear();
             renderNeeded = true;
+        }
+
+        if (this.dockTab != null && !this.dockTab.IsDisposed && this.dockTab.Visible)
+        {
+            this.dockTab.RefreshBurnInPosition();
+        }
+
+        if (UpdateOutsideClickDismissal(now) || UpdateDockCollapse(now))
+        {
+            return;
         }
 
         if (this.Visible)
@@ -954,7 +1224,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
         if (this.Visible && ShouldRefreshBurnInPosition())
         {
-            PositionNearOperationPanel();
+            PositionForDisplay();
         }
     }
 
@@ -1167,8 +1437,11 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
     private bool ShouldMonitorWork()
     {
+        // A left-docked board must keep its maintenance tick even while collapsed: the tick is what
+        // drives the tab's burn-in drift and the collapse countdown after a hover expand.
         return !this.displaySuspended && !this.hiddenForFullscreen &&
-            (this.Visible || this.CurrentSettings != null && this.CurrentSettings.SpecBoardAutoPopupEnabled);
+            (this.Visible || this.IsLeftDocked ||
+                this.CurrentSettings != null && this.CurrentSettings.SpecBoardAutoPopupEnabled);
     }
 
     private void SuspendVisibleWork()
@@ -1411,6 +1684,53 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         this.projectWatcherSignature = string.Empty;
     }
 
+    private bool IsLeftDocked
+    {
+        get { return this.CurrentSettings != null && this.CurrentSettings.SpecBoardLeftDockEnabled && this.owner != null; }
+    }
+
+    // Resolved screen Y of this board's dock tab center. The auto sentinel puts the Spec tab just
+    // above the work area's vertical middle; the Codex task board takes the slot just below, so the
+    // two 30px tabs sit adjacent without overlapping.
+    private int ResolveDockTabCenterY()
+    {
+        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
+        if (this.CurrentSettings.SpecBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY)
+        {
+            return this.CurrentSettings.SpecBoardLeftDockTabCenterY;
+        }
+
+        return workArea.Top + workArea.Height / 2 - S(WidgetSettings.LeftDockTabAutoOffsetY);
+    }
+
+    private void PositionForDisplay()
+    {
+        if (this.IsLeftDocked)
+        {
+            PositionAtLeftDock();
+            return;
+        }
+
+        PositionNearOperationPanel();
+    }
+
+    // Docked: flush against the left edge but offset by the tab width so the tab stays visible and
+    // the pointer can travel tab -> board without crossing a gap (which would collapse the board).
+    private void PositionAtLeftDock()
+    {
+        if (this.CurrentSettings == null)
+        {
+            return;
+        }
+
+        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
+        int left = workArea.Left + S(EdgeDockTabForm.LogicalWidth);
+        int top = ResolveDockTabCenterY() - this.Height / 2;
+        left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
+        top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
+        this.Location = BurnInProtection.ApplyRuntimeOffset(new Point(left, top), this.Size, workArea, BurnInProtection.SpecBoardSalt);
+    }
+
     private void PositionNearOperationPanel()
     {
         if (this.owner == null || this.CurrentSettings == null)
@@ -1425,7 +1745,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
         top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
         Point baseLocation = new Point(left, top);
-        this.Location = BurnInProtection.ApplyRuntimeOffset(baseLocation, this.Size, workArea, 73);
+        this.Location = BurnInProtection.ApplyRuntimeOffset(baseLocation, this.Size, workArea, BurnInProtection.SpecBoardSalt);
     }
 
     private void OpenRow(SpecBoardRow row)
@@ -1569,6 +1889,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         if (disposing)
         {
             SuspendVisibleWork();
+            DisposeDockTab();
             this.maintenanceTimer.Tick -= OnMaintenanceTick;
             this.maintenanceTimer.Dispose();
             this.cardSingleClickTimer.Stop();
@@ -1661,37 +1982,9 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         return label + " " + (row.EventTimeUtc.HasValue ? row.EventTimeUtc.Value.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) : "--");
     }
 
-    private static SpecBoardPalette GetPalette(OperationRenderVariant variant)
+    private static SpecBoardPalette GetPalette()
     {
-        if (variant == OperationRenderVariant.Typographic)
-        {
-            return new SpecBoardPalette(DesignTokens.OledTypographic.Primary, DesignTokens.OledTypographic.Muted, DesignTokens.OledTypographic.AccentDanger, DesignTokens.OledTypographic.AccentWarn, DesignTokens.OledTypographic.AccentGood, DesignTokens.OledTypographic.AccentWarn, Color.FromArgb(232, 126, 220));
-        }
-
-        if (variant == OperationRenderVariant.AmberHud)
-        {
-            return new SpecBoardPalette(DesignTokens.OledAmber.Bright, DesignTokens.OledAmber.Dim, DesignTokens.OledAmber.Danger, DesignTokens.OledAmber.Base, DesignTokens.OledAmber.Bright, DesignTokens.OledAmber.Base, Color.FromArgb(255, 160, 96));
-        }
-
-        if (variant == OperationRenderVariant.WarmCard)
-        {
-            return new SpecBoardPalette(DesignTokens.OledCard.Text, DesignTokens.OledCard.Muted, DesignTokens.OledCard.DotDanger, DesignTokens.OledCard.DotWarn, DesignTokens.OledCard.DotGood, DesignTokens.OledCard.DotWarn, Color.FromArgb(230, 140, 210));
-        }
-
-        if (variant == OperationRenderVariant.Phosphor)
-        {
-            return new SpecBoardPalette(DesignTokens.OledPhosphor.Bright, DesignTokens.OledPhosphor.Dim, DesignTokens.OledPhosphor.Danger, DesignTokens.OledPhosphor.Warn, DesignTokens.OledPhosphor.Base, DesignTokens.OledPhosphor.Warn, Color.FromArgb(210, 150, 200));
-        }
-
         return new SpecBoardPalette(DesignTokens.Colors.TextStrong, DesignTokens.Colors.GlyphMuted, DesignTokens.Colors.Danger, DesignTokens.Colors.Warning, DesignTokens.Colors.Success, DesignTokens.Colors.WarningDeep, DesignTokens.Colors.AccentAlt);
-    }
-
-    private static bool IsOledVariant(OperationRenderVariant variant)
-    {
-        return variant == OperationRenderVariant.Typographic ||
-            variant == OperationRenderVariant.AmberHud ||
-            variant == OperationRenderVariant.WarmCard ||
-            variant == OperationRenderVariant.Phosphor;
     }
 
     internal static void RenderSamples(string outputDir, bool sample, bool current)
@@ -1699,32 +1992,48 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         Directory.CreateDirectory(outputDir);
         if (sample)
         {
-            OperationRenderVariant[] variants = { OperationRenderVariant.Classic, OperationRenderVariant.Typographic, OperationRenderVariant.AmberHud, OperationRenderVariant.WarmCard, OperationRenderVariant.Phosphor };
-            for (int i = 0; i < variants.Length; i++)
+            WidgetSettings settings = WidgetSettings.CreateDefaults();
+            using (SpecBoardForm form = new SpecBoardForm(null, settings))
             {
-                WidgetSettings settings = WidgetSettings.CreateDefaults();
-                settings.OperationRenderVariant = variants[i];
-                using (SpecBoardForm form = new SpecBoardForm(null, settings))
+                form.snapshot = CreateSampleSnapshot();
+                SpecBoardRow highlightedSample = form.snapshot.Rows.FirstOrDefault(row => row.Id == "u1");
+                if (highlightedSample != null)
                 {
-                    form.snapshot = CreateSampleSnapshot();
-                    SpecBoardRow highlightedSample = form.snapshot.Rows.FirstOrDefault(row => row.Id == "u1");
-                    if (highlightedSample != null)
-                    {
-                        form.autoPopupHighlightedRows.Add(GetAutoPopupRowKey(highlightedSample));
-                        form.autoPopupHighlightUntilUtc = DateTime.UtcNow.AddMinutes(1);
-                    }
-                    form.SetLayerScale(2.0f);
-                    // Mirror GetDesiredSize: the physical canvas grows by the same factor as the content.
-                    form.Size = new Size(settings.SpecBoardWidth * 2, settings.SpecBoardHeight * 2);
-                    using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
-                    using (Graphics g = Graphics.FromImage(bitmap))
-                    {
-                        g.Clear(DesignTokens.Colors.AppBackground);
-                        form.DrawWindowContent(g);
-                        string path = Path.Combine(outputDir, "specboard-" + variants[i].ToString().ToLowerInvariant() + ".png");
-                        bitmap.Save(path, ImageFormat.Png);
-                        Console.WriteLine(variants[i] + " -> " + path + " (" + form.Width + "x" + form.Height + ")");
-                    }
+                    form.autoPopupHighlightedRows.Add(GetAutoPopupRowKey(highlightedSample));
+                    form.autoPopupHighlightUntilUtc = DateTime.UtcNow.AddMinutes(1);
+                }
+                form.SetLayerScale(2.0f);
+                // Keep the stable baseline filename even though the board no longer has variants.
+                form.Size = new Size(settings.SpecBoardWidth * 2, settings.SpecBoardHeight * 2);
+                using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
+                using (Graphics g = Graphics.FromImage(bitmap))
+                {
+                    g.Clear(DesignTokens.Colors.AppBackground);
+                    form.DrawWindowContent(g);
+                    string path = Path.Combine(outputDir, "specboard-classic.png");
+                    bitmap.Save(path, ImageFormat.Png);
+                    Console.WriteLine("Default -> " + path + " (" + form.Width + "x" + form.Height + ")");
+                }
+            }
+
+            // Compact single-column sample: rail hidden, cards full width, shared footer intact.
+            WidgetSettings compactSettings = WidgetSettings.CreateDefaults();
+            compactSettings.SpecBoardWidth = 240;
+            compactSettings.SpecBoardHeight = 320;
+            compactSettings.Normalize();
+            using (SpecBoardForm form = new SpecBoardForm(null, compactSettings))
+            {
+                form.snapshot = CreateSampleSnapshot();
+                form.SetLayerScale(2.0f);
+                form.Size = new Size(compactSettings.SpecBoardWidth * 2, compactSettings.SpecBoardHeight * 2);
+                using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
+                using (Graphics g = Graphics.FromImage(bitmap))
+                {
+                    g.Clear(DesignTokens.Colors.AppBackground);
+                    form.DrawWindowContent(g);
+                    string path = Path.Combine(outputDir, "specboard-compact.png");
+                    bitmap.Save(path, ImageFormat.Png);
+                    Console.WriteLine("Compact -> " + path + " (" + form.Width + "x" + form.Height + ")");
                 }
             }
         }
@@ -1793,6 +2102,36 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                 }
             }
 
+            Point firstCardPoint = new Point(
+                form.cardHitTargets[0].Bounds.Left + form.cardHitTargets[0].Bounds.Width / 2,
+                form.cardHitTargets[0].Bounds.Top + form.cardHitTargets[0].Bounds.Height / 2);
+            Point managerPoint = new Point(
+                managerButtonBounds.Left + managerButtonBounds.Width / 2,
+                managerButtonBounds.Top + managerButtonBounds.Height / 2);
+            if (form.ShouldDismissForBlankClick(firstCardPoint) ||
+                form.ShouldDismissForBlankClick(managerPoint))
+            {
+                throw new InvalidOperationException("Spec Board interactive targets must not trigger blank-area dismissal.");
+            }
+
+            bool foundBlankDismissPoint = false;
+            for (int y = 0; y < bitmap.Height && !foundBlankDismissPoint; y += 4)
+            {
+                for (int x = 0; x < bitmap.Width; x += 4)
+                {
+                    if (form.ShouldDismissForBlankClick(new Point(x, y)))
+                    {
+                        foundBlankDismissPoint = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!foundBlankDismissPoint)
+            {
+                throw new InvalidOperationException("Spec Board exposed no blank-area dismissal surface.");
+            }
+
             if (form.cardHitTargets.Count >= form.snapshot.Rows.Count(row => row.Status == "unregistered" || row.Status == "pending" || row.Status == SpecBoardStatus.NeedsRevision || row.Status == "awaiting_verify"))
             {
                 throw new InvalidOperationException("Spec Board overflow fixture did not hide any cards.");
@@ -1835,10 +2174,79 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Spec Board relative age boundaries failed.");
         }
 
+        RunCompactLayoutSelfTest();
         RunAutoHideSelfTest();
         RunAutoPopupSelfTest();
         RunManagerLifecycleSelfTest();
         RunManagerWatcherWriteSelfTest();
+    }
+
+    // Compact single-column mode: below CompactRailMinimumLogicalWidth the project rail must
+    // disappear, the cards must take (nearly) the full width, the shared footer must survive with
+    // both pills reachable, and any sticky project filter must reset so no rows silently vanish.
+    private static void RunCompactLayoutSelfTest()
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.SpecBoardWidth = 240;
+        settings.SpecBoardHeight = 320;
+        settings.Normalize();
+        if (settings.SpecBoardWidth != 240)
+        {
+            throw new InvalidOperationException("Spec Board width floor should allow 240 after normalization.");
+        }
+
+        using (SpecBoardForm form = new SpecBoardForm(null, settings))
+        using (Bitmap bitmap = new Bitmap(settings.SpecBoardWidth, settings.SpecBoardHeight, PixelFormat.Format32bppPArgb))
+        using (Graphics g = Graphics.FromImage(bitmap))
+        {
+            form.snapshot = CreateSampleSnapshot();
+            form.selectedProject = "DesktopCodexAssistant";
+            form.SetLayerScale(1.0f);
+            form.Size = bitmap.Size;
+            form.DrawWindowContent(g);
+
+            if (form.projectHitTargets.Count != 0)
+            {
+                throw new InvalidOperationException("Spec Board compact mode must not expose project rail hit targets.");
+            }
+
+            if (form.selectedProject.Length != 0)
+            {
+                throw new InvalidOperationException("Spec Board compact mode must reset the sticky project filter.");
+            }
+
+            Rectangle managerBounds = form.managerButtonBounds;
+            Rectangle closeBounds = form.closeButtonBounds;
+            if (managerBounds.IsEmpty || closeBounds.IsEmpty ||
+                closeBounds.Right > bitmap.Width || managerBounds.Bottom > bitmap.Height)
+            {
+                throw new InvalidOperationException("Spec Board compact mode lost the manager/close footer pills.");
+            }
+
+            if (form.cardHitTargets.Count == 0)
+            {
+                throw new InvalidOperationException("Spec Board compact mode rendered no cards.");
+            }
+
+            for (int i = 0; i < form.cardHitTargets.Count; i++)
+            {
+                Rectangle card = form.cardHitTargets[i].Bounds;
+                if (card.Left < 0 || card.Top < 0 || card.Right > bitmap.Width || card.Bottom > bitmap.Height)
+                {
+                    throw new InvalidOperationException("Spec Board compact card escaped content bounds.");
+                }
+
+                if (card.Width < (int)(bitmap.Width * 0.8))
+                {
+                    throw new InvalidOperationException("Spec Board compact card should span nearly the full width.");
+                }
+
+                if (card.Bottom > managerBounds.Top)
+                {
+                    throw new InvalidOperationException("Spec Board compact card overlaps the footer.");
+                }
+            }
+        }
     }
 
     private static void RunManagerWatcherWriteSelfTest()

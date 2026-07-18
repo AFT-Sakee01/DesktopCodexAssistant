@@ -11,7 +11,6 @@ internal sealed partial class OperationForm
     }
 
     private SpecBoardForm specBoardForm;
-    private SpecBoardEntryClickTarget pendingSpecBoardEntryClick;
     private SpecBoardEntryClickTarget suppressedSpecBoardEntryMouseUp;
 
     private void HandleSpecBoardEntryMouseUp(SpecBoardEntryClickTarget target)
@@ -25,28 +24,80 @@ internal sealed partial class OperationForm
         }
 
         this.suppressedSpecBoardEntryMouseUp = SpecBoardEntryClickTarget.None;
-
-        this.pendingSpecBoardEntryClick = target;
-        this.specBoardEntrySingleClickTimer.Stop();
-        this.specBoardEntrySingleClickTimer.Interval = Math.Max(1, SystemInformation.DoubleClickTime);
-        this.specBoardEntrySingleClickTimer.Start();
+        ExecuteSpecBoardEntrySingleClick(target);
     }
 
     private void HandleSpecBoardEntryDoubleClick(SpecBoardEntryClickTarget target)
     {
-        this.specBoardEntrySingleClickTimer.Stop();
-        this.pendingSpecBoardEntryClick = SpecBoardEntryClickTarget.None;
         this.suppressedSpecBoardEntryMouseUp = target;
-        // Double-click opens the compact launcher (Spec manager / sleep guard).
-        ToggleLauncherTrioWindow();
+        if (target == SpecBoardEntryClickTarget.RadialCore && this.radialMenuOpen)
+        {
+            // The first click is intentionally immediate. When a second click resolves the gesture
+            // as a double-click, retract that first-click menu before running the double action.
+            CloseRadialMenu();
+        }
+
+        if (ShouldOpenOperationDoubleClickSpecialMenu(this.CurrentSettings))
+        {
+            ToggleLauncherTrioWindow();
+            return;
+        }
+
+        if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed && this.launcherTrioForm.Visible)
+        {
+            this.launcherTrioForm.HideTrio();
+        }
+
+        ToggleHiddenModeFromOperationDoubleClick();
     }
 
-    private void OnSpecBoardEntrySingleClickTimerTick(object sender, EventArgs e)
+    private static bool ShouldOpenOperationDoubleClickSpecialMenu(WidgetSettings settings)
     {
-        this.specBoardEntrySingleClickTimer.Stop();
-        SpecBoardEntryClickTarget target = this.pendingSpecBoardEntryClick;
-        this.pendingSpecBoardEntryClick = SpecBoardEntryClickTarget.None;
+        return settings != null && settings.OperationDoubleClickSpecialMenuEnabled;
+    }
 
+    private void ToggleHiddenModeFromOperationDoubleClick()
+    {
+        if (this.toggleHoverOpacityAction == null)
+        {
+            return;
+        }
+
+        try
+        {
+            bool active = this.toggleHoverOpacityAction();
+            Program.LogInfo("Operation core double-click toggled hidden mode. Active=" + active.ToString());
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            ShowOperationNotification("隐藏模式", "切换隐藏模式失败。", ToolTipIcon.Warning);
+        }
+    }
+
+    private static void RunOperationDoubleClickRoutingSelfTest()
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        AssertSelfTest(
+            !ShouldOpenOperationDoubleClickSpecialMenu(settings),
+            "operation core double-click defaults to hidden-mode toggle");
+        settings.OperationDoubleClickSpecialMenuEnabled = true;
+        AssertSelfTest(
+            ShouldOpenOperationDoubleClickSpecialMenu(settings),
+            "operation core double-click special menu opt-in");
+
+        using (OperationForm form = CreateRadialDialSelfTestForm())
+        {
+            AssertSelfTest(!form.radialMenuOpen, "radial menu starts closed for immediate-click test");
+            form.HandleSpecBoardEntryMouseUp(SpecBoardEntryClickTarget.RadialCore);
+            AssertSelfTest(form.radialMenuOpen, "radial core single click opens immediately");
+            form.HandleSpecBoardEntryDoubleClick(SpecBoardEntryClickTarget.RadialCore);
+            AssertSelfTest(!form.radialMenuOpen, "radial core double click retracts immediate single-click menu");
+        }
+    }
+
+    private void ExecuteSpecBoardEntrySingleClick(SpecBoardEntryClickTarget target)
+    {
         if (target == SpecBoardEntryClickTarget.StartButton && !IsRadialDialActive())
         {
             ExecuteButton(StartButtonIndex, MouseButtons.Left);
@@ -59,8 +110,6 @@ internal sealed partial class OperationForm
 
     private void CancelSpecBoardEntryClick()
     {
-        this.specBoardEntrySingleClickTimer.Stop();
-        this.pendingSpecBoardEntryClick = SpecBoardEntryClickTarget.None;
         this.suppressedSpecBoardEntryMouseUp = SpecBoardEntryClickTarget.None;
     }
 
@@ -92,6 +141,8 @@ internal sealed partial class OperationForm
         {
             this.launcherTrioForm.HideTrio();
         }
+
+        HideCodexTaskBoardIfVisible();
     }
 
     private void PrepareForRadialOverlayShow()
@@ -105,6 +156,8 @@ internal sealed partial class OperationForm
         {
             this.specBoardForm.HideBoard();
         }
+
+        HideCodexTaskBoardIfVisible();
     }
 
     private void PrepareForLauncherOverlayShow()
@@ -118,6 +171,8 @@ internal sealed partial class OperationForm
         {
             this.specBoardForm.HideBoard();
         }
+
+        HideCodexTaskBoardIfVisible();
     }
 
     private SpecBoardForm EnsureSpecBoardForm()

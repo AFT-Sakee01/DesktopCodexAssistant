@@ -111,8 +111,12 @@ internal static class QuotaRingPresentation
 
         int percent = ClampPercent(spec.Percent);
         int consumptionRingPercent = ClampPercent(spec.ConsumptionRingPercent);
-        bool forceDanger = spec.ForceDangerFullRing;
-        Color ringColor = forceDanger ? DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245) : GetRingColor(percent);
+        bool forceDanger = spec.ForceDangerFullRing && !spec.SuppressQuotaAlerts;
+        Color ringColor = forceDanger
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 245)
+            : (spec.SuppressQuotaAlerts
+                ? DesignTokens.WithAlpha(DesignTokens.Colors.QuotaGood, 235)
+                : GetRingColor(percent));
         int arcPercent = forceDanger ? 100 : percent;
         int visibleConsumptionRingPercent = forceDanger ? 0 : Math.Max(percent, consumptionRingPercent);
 
@@ -555,6 +559,9 @@ internal sealed class QuotaRingDrawSpec
     public bool AnySupportedAppRunning;
     public bool QuotaValueKnown;
     public bool ForceDangerFullRing;
+    // Category/quiet-hours suppression neutralizes warning thresholds without hiding the quota
+    // value itself. Collection and quota state remain untouched.
+    public bool SuppressQuotaAlerts;
     // Sub-day reset-credit indicator: paint the full ring as a STATIC rainbow (red at 12 o'clock,
     // hue advancing clockwise once around). No animation. Takes priority over ResetDetectedRing.
     public bool RainbowRing;

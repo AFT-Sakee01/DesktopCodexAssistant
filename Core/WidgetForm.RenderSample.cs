@@ -54,6 +54,44 @@ internal sealed partial class WidgetForm
         }
     }
 
+    internal static void RenderAlertPolicySamples(string outputDir)
+    {
+        Directory.CreateDirectory(outputDir);
+        using (PdhSampler sampler = new PdhSampler())
+        using (EventWaitHandle stopEvent = new EventWaitHandle(false, EventResetMode.ManualReset))
+        {
+            bool[] enabledStates = { true, false };
+            for (int i = 0; i < enabledStates.Length; i++)
+            {
+                WidgetSettings settings = WidgetSettings.CreateDefaults();
+                settings.ShowDisk = false;
+                settings.ShowNetwork = false;
+                settings.AlertTestEnabled = true;
+                settings.AlertQuotaEnabled = enabledStates[i];
+                settings.Normalize();
+                using (WidgetForm form = new WidgetForm(sampler, stopEvent, settings, false))
+                {
+                    form.SetLayerScale(2.0f);
+                    form.MaximumSize = new Size(4000, 4000);
+                    form.Size = new Size(220 * 2, 120 * 2);
+                    form.snapshot = BuildSampleSnapshot();
+                    form.cpuHistory.AddRange(new double[] { 20, 35, 42, 55, 48, 61, 58 });
+                    form.memoryHistory.AddRange(new double[] { 40, 42, 45, 44, 47, 46, 48 });
+                    using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
+                    using (Graphics g = Graphics.FromImage(bitmap))
+                    {
+                        g.Clear(DesignTokens.Colors.AppBackground);
+                        form.DrawWidgetContent(g);
+                        string suffix = enabledStates[i] ? "on" : "off";
+                        string path = Path.Combine(outputDir, "widget-alert-quota-" + suffix + ".png");
+                        bitmap.Save(path, ImageFormat.Png);
+                        Console.WriteLine("Quota alert " + suffix + " -> " + path);
+                    }
+                }
+            }
+        }
+    }
+
     // Current-mode sample: real settings.ini (size/variant/transparency/enabled rows) with one
     // live PDH sample so the frame shows genuine hardware numbers, drawn through the real
     // DrawWidget pipeline and composited like the on-screen layered window.

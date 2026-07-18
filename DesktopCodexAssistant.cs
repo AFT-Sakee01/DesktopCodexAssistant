@@ -79,9 +79,24 @@ internal static class Program
             return 0;
         }
 
+        if (HasArg(args, "--night-proof"))
+        {
+            RenderSampleSupport.ProofLuminancePercent = WidgetSettings.DefaultNightDimLuminancePercent;
+        }
+
         if (HasArg(args, "--test"))
         {
             return TestProbe();
+        }
+
+        if (HasArg(args, "--test-codex-task-monitor"))
+        {
+            return TestCodexTaskMonitor();
+        }
+
+        if (HasArg(args, "--dump-codex-tasks"))
+        {
+            return DumpCodexTasks();
         }
 
         if (HasArg(args, "--test-logger"))
@@ -723,6 +738,56 @@ internal static class Program
             CodexRadarForm.RunSoftwareModeGateSelfTest();
             CodexQuotaGoalPlanner.RunSelfTest();
             RadarRuntimeDiagnostics.RunSelfTest();
+            CodexTaskMonitorReader.RunSelfTest();
+            CodexTaskPresentation.RunSelfTest();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int TestCodexTaskMonitor()
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            CodexTaskMonitorReader.RunSelfTest();
+            CodexTaskPresentation.RunSelfTest();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int DumpCodexTasks()
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            WidgetSettings settings = WidgetSettings.Load();
+            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            string sessionsPath = string.IsNullOrWhiteSpace(profile)
+                ? string.Empty
+                : Path.Combine(Path.Combine(profile, ".codex"), "sessions");
+            List<string> files = CodexRadarForm.EnumerateCodexRolloutFiles(sessionsPath);
+            using (CodexTaskMonitorReader reader = new CodexTaskMonitorReader(settings))
+            {
+                reader.RequestReconcile(files);
+                if (!reader.WaitForIdle(30000))
+                {
+                    throw new TimeoutException("Codex task snapshot did not finish within 30 seconds.");
+                }
+
+                Console.WriteLine(CodexTaskMonitorReader.SerializeSnapshot(reader.GetSnapshot()));
+            }
             return 0;
         }
         catch (Exception ex)
@@ -759,6 +824,10 @@ internal static class Program
         try
         {
             WidgetSettings.RunLayoutScalingSelfTest();
+            LayeredWidgetFormBase.RunOpacityPolicySelfTest();
+            LayeredWidgetFormBase.RunScalePolicySelfTest();
+            NightScheduleController.RunSelfTest();
+            AlertPresentationPolicy.RunSelfTest();
             ApplicationWindowStateTracker.RunSelfTest();
             CodexRadarForm.RunStatusAndQuotaSelfTest();
             ClaudeRadarForm.RunRenderResourceSelfTest();
@@ -838,6 +907,19 @@ internal static class Program
             }
 
             string summary = Win11SettingsForm.RunOpenCloseStressSelfTest(iterations);
+            string outputPath = GetStringArg(args, "--out");
+            if (!string.IsNullOrWhiteSpace(outputPath))
+            {
+                string fullOutputPath = Path.GetFullPath(outputPath);
+                string outputDirectory = Path.GetDirectoryName(fullOutputPath);
+                if (!string.IsNullOrEmpty(outputDirectory))
+                {
+                    Directory.CreateDirectory(outputDirectory);
+                }
+
+                File.WriteAllText(fullOutputPath, summary + Environment.NewLine, SharedEncoding.Utf8NoBom);
+            }
+
             Console.WriteLine(summary);
             return 0;
         }
@@ -948,6 +1030,15 @@ internal static class Program
 
             NetworkMonitorForm.RenderVariantSamples(outputDir);
             NetworkMonitorForm.RenderCurrentSample(outputDir);
+            if (HasArg(args, "--scale-proof"))
+            {
+                string summary = NetworkMonitorForm.RenderScaleOverrideProof(outputDir);
+                File.WriteAllText(
+                    Path.Combine(outputDir, "scale-proof.txt"),
+                    summary + Environment.NewLine,
+                    SharedEncoding.Utf8NoBom);
+                Console.WriteLine(summary);
+            }
             Console.WriteLine("Rendered NetworkMonitor variant samples to " + Path.GetFullPath(outputDir));
             return 0;
         }
@@ -971,6 +1062,13 @@ internal static class Program
             if (string.IsNullOrEmpty(outputDir))
             {
                 outputDir = ".";
+            }
+
+            if (HasArg(args, "--wide-options"))
+            {
+                PowerThermalForm.RenderWideBarOptionSamples(outputDir);
+                Console.WriteLine("Rendered PowerThermal wide-bar option samples to " + Path.GetFullPath(outputDir));
+                return 0;
             }
 
             PowerThermalForm.RenderVariantSamples(outputDir);
@@ -1000,8 +1098,15 @@ internal static class Program
                 outputDir = ".";
             }
 
-            WidgetForm.RenderVariantSamples(outputDir);
-            WidgetForm.RenderCurrentSample(outputDir);
+            if (HasArg(args, "--alert-proof"))
+            {
+                WidgetForm.RenderAlertPolicySamples(outputDir);
+            }
+            else
+            {
+                WidgetForm.RenderVariantSamples(outputDir);
+                WidgetForm.RenderCurrentSample(outputDir);
+            }
             Console.WriteLine("Rendered main widget variant samples to " + Path.GetFullPath(outputDir));
             return 0;
         }

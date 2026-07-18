@@ -73,15 +73,6 @@ internal enum CodexRadarRenderVariant
     EvenRow
 }
 
-// Per-window render-variant switches, mirroring CodexRadarRenderVariant. Each window has its own
-// enum so a variant added to one window never appears in another window's dropdown. Classic is the
-// original layout; add a member plus a sibling partial file (e.g. WidgetForm.<Name>.cs) and a case in
-// that window's Draw*Content dispatcher to introduce an alternate layout. Paint-only switch.
-//
-// Typographic/AmberHud/WarmCard/Phosphor are the four OLED-safe restyle schemes added in 1.0.3.44:
-// no blue-dominant hues, no peak-white/saturated fills, background stays the existing semi-transparent
-// AppBackground. Burn-in mitigation for all four relies on the existing BurnInProtection.ApplyRuntimeOffset
-// periodic whole-window position shift (uniform screen wear), not on any per-scheme trick.
 // MainWidget's render path is hard-coded to Classic; the four OLED-safe restyle schemes were
 // deleted. Kept single-member so the persisted settings property/settings.ini key stay valid.
 internal enum MainWidgetRenderVariant { Classic }
@@ -99,11 +90,9 @@ internal enum PowerThermalRenderVariant { Classic }
 // deleted. Kept single-member so the persisted settings property/settings.ini key stay valid.
 internal enum ConnectionCheckRenderVariant { Classic }
 
-// RadialDial (added 1.0.4.57) is not a paint-only skin like the other four members: it replaces the
-// flat button grid with an expandable fan menu and therefore also changes hit-testing and window
-// sizing (see Core/OperationForm.RadialDial.cs). Keep it last so existing settings.ini values for
-// the paint-only variants are unaffected.
-internal enum OperationRenderVariant { Classic, Typographic, AmberHud, WarmCard, Phosphor, RadialDial }
+// Operation is permanently the RadialDial interaction model. Keep the persisted key and a
+// single-member enum so old settings files remain schema-compatible without restoring dead skins.
+internal enum OperationRenderVariant { RadialDial }
 
 internal enum CodexQuotaPlanComparison
 {
@@ -200,6 +189,14 @@ internal enum RadarClockTimeDisplayMode
     LastActualRefresh
 }
 
+// Codex task board display modes. Table answers "who is waiting on me right now"; Timeline answers
+// "what happened over the last N minutes". Both share one window and the same snapshot.
+internal enum CodexTaskBoardView
+{
+    Table,
+    Timeline
+}
+
 internal enum OperationPrimaryPanelMode
 {
     Auto,
@@ -241,13 +238,31 @@ internal sealed class WidgetSettings
     public const int MaxConnectionCheckWidth = 1000;
     public const int MinConnectionCheckHeight = 56;
     public const int MaxConnectionCheckHeight = 320;
-    public const int MinSpecBoardWidth = 320;
+    public const int MinSpecBoardWidth = 240;
     public const int MaxSpecBoardWidth = 700;
     public const int MinSpecBoardHeight = 240;
     public const int MaxSpecBoardHeight = 800;
     public const int MinSpecBoardAutoHideSeconds = 0;
     public const int MaxSpecBoardAutoHideSeconds = 600;
     public const int DefaultSpecBoardAutoHideSeconds = 20;
+    // Left-edge dock: -1 tab centers mean "auto", resolved at show time to two adjacent slots around
+    // the work area's vertical middle so the two tabs never overlap out of the box.
+    public const int AutoLeftDockTabCenterY = -1;
+    public const int LeftDockTabAutoOffsetY = 20;
+    public const int MinLeftDockCollapseSeconds = 0;
+    public const int MaxLeftDockCollapseSeconds = 30;
+    public const int DefaultLeftDockCollapseSeconds = 1;
+    // The task board now shares the Spec board's space budget. Below the compact threshold it falls
+    // back to the narrow card list instead of squeezing the table into unreadable columns.
+    public const int MinCodexTaskBoardWidth = 240;
+    public const int MaxCodexTaskBoardWidth = 700;
+    public const int DefaultCodexTaskBoardWidth = 648;
+    public const int MinCodexTaskBoardHeight = 240;
+    public const int MaxCodexTaskBoardHeight = 800;
+    public const int DefaultCodexTaskBoardHeight = 400;
+    public const int MinCodexTaskBoardTimelineMinutes = 15;
+    public const int MaxCodexTaskBoardTimelineMinutes = 180;
+    public const int DefaultCodexTaskBoardTimelineMinutes = 45;
     public const int MinSpecBoardAutoPopupSeconds = 1;
     public const int MaxSpecBoardAutoPopupSeconds = 120;
     public const int DefaultSpecBoardAutoPopupSeconds = 5;
@@ -256,6 +271,18 @@ internal sealed class WidgetSettings
     public const int MaxSpecBoardManagerWidth = 1000;
     public const int MinSpecBoardManagerHeight = 400;
     public const int MaxSpecBoardManagerHeight = 900;
+    public const int MinCodexTaskMonitorActiveWindowMinutes = 5;
+    public const int MaxCodexTaskMonitorActiveWindowMinutes = 60;
+    public const int MinCodexTaskMonitorActiveSeconds = 3;
+    public const int MaxCodexTaskMonitorActiveSeconds = 60;
+    public const int MinCodexTaskMonitorIdleSeconds = 30;
+    public const int MaxCodexTaskMonitorIdleSeconds = 600;
+    public const int MinCodexTaskMonitorTerminalHoldSeconds = 0;
+    public const int MaxCodexTaskMonitorTerminalHoldSeconds = 1800;
+    public const int MinCodexTaskMonitorErrorHoldSeconds = 5;
+    public const int MaxCodexTaskMonitorErrorHoldSeconds = 300;
+    public const int MinCodexTaskMonitorNumberCooldownSeconds = 0;
+    public const int MaxCodexTaskMonitorNumberCooldownSeconds = 3600;
     public const int MinConnectionCheckIntervalSeconds = 15;
     public const int MaxConnectionCheckIntervalSeconds = 600;
     public const int DefaultConnectionCheckIntervalSeconds = 60;
@@ -309,7 +336,18 @@ internal sealed class WidgetSettings
     public const int MinResolutionCompatibilityScalePercent = 40;
     public const int MaxResolutionCompatibilityScalePercent = 200;
     public const int DefaultResolutionCompatibilityScalePercent = 100;
-    private const int CurrentSettingsVersion = 69;
+    public const int MinWindowTransparencyOverridePercent = -1;
+    public const int MaxWindowTransparencyOverridePercent = 90;
+    public const int MinNightScheduleMinutes = 0;
+    public const int MaxNightScheduleMinutes = 1439;
+    public const int MinNightDimLuminancePercent = 10;
+    public const int MaxNightDimLuminancePercent = 100;
+    public const int DefaultNightScheduleStartMinutes = 1380;
+    public const int DefaultNightScheduleEndMinutes = 420;
+    public const int DefaultNightDimLuminancePercent = 60;
+    public const int MinWindowScaleOverridePercent = -1;
+    public const int MaxWindowScaleOverridePercent = 200;
+    private const int CurrentSettingsVersion = 77;
     private const int EffectivePerformanceModeCacheMs = 2000;
     private static readonly object EffectivePerformanceModeSync = new object();
     private static DateTime effectivePerformanceModeCacheUtc = DateTime.MinValue;
@@ -382,6 +420,37 @@ internal sealed class WidgetSettings
     public int BottomY { get; set; }
     public int BackgroundTransparencyPercent { get; set; }
     public int ApplicationTransparencyPercent { get; set; }
+    public int MainWidgetTransparencyOverridePercent { get; set; }
+    public int CodexRadarTransparencyOverridePercent { get; set; }
+    public int ClaudeRadarTransparencyOverridePercent { get; set; }
+    public int PowerThermalTransparencyOverridePercent { get; set; }
+    public int NetworkMonitorTransparencyOverridePercent { get; set; }
+    public int ConnectionCheckTransparencyOverridePercent { get; set; }
+    public int OperationTransparencyOverridePercent { get; set; }
+    public int SpecBoardTransparencyOverridePercent { get; set; }
+    public int CodexTaskBoardTransparencyOverridePercent { get; set; }
+    public bool NightScheduleEnabled { get; set; }
+    public int NightScheduleStartMinutes { get; set; }
+    public int NightScheduleEndMinutes { get; set; }
+    public int NightDimLuminancePercent { get; set; }
+    public bool NightQuietHoursEnabled { get; set; }
+    public bool AlertQuotaEnabled { get; set; }
+    public bool AlertResetProtectionEnabled { get; set; }
+    public bool AlertServiceHealthEnabled { get; set; }
+    public bool AlertCodexTaskEnabled { get; set; }
+    public bool AlertDeepSeekBalanceEnabled { get; set; }
+    public string HotkeyToggleAllWindows { get; set; }
+    public string HotkeyToggleHoverOpacity { get; set; }
+    public string HotkeyOpenSettings { get; set; }
+    public int MainWidgetScaleOverridePercent { get; set; }
+    public int CodexRadarScaleOverridePercent { get; set; }
+    public int ClaudeRadarScaleOverridePercent { get; set; }
+    public int PowerThermalScaleOverridePercent { get; set; }
+    public int NetworkMonitorScaleOverridePercent { get; set; }
+    public int ConnectionCheckScaleOverridePercent { get; set; }
+    public int OperationScaleOverridePercent { get; set; }
+    public int SpecBoardScaleOverridePercent { get; set; }
+    public int CodexTaskBoardScaleOverridePercent { get; set; }
     public int CodexRadarWidth { get; set; }
     public int CodexRadarHeight { get; set; }
     public int CodexRadarLeftX { get; set; }
@@ -470,6 +539,23 @@ internal sealed class WidgetSettings
     public int SpecBoardManagerWidth { get; set; }
     public int SpecBoardManagerHeight { get; set; }
     public bool SpecBoardManagerDangerZoneRequiresTypedConfirm { get; set; }
+    public bool SpecBoardLeftDockEnabled { get; set; }
+    public int SpecBoardLeftDockTabCenterY { get; set; }
+    public bool CodexTaskBoardLeftDockEnabled { get; set; }
+    public int CodexTaskBoardLeftDockTabCenterY { get; set; }
+    public int LeftDockCollapseSeconds { get; set; }
+    public bool LeftDockOutsideClickCollapseEnabled { get; set; }
+    public int CodexTaskBoardWidth { get; set; }
+    public int CodexTaskBoardHeight { get; set; }
+    public CodexTaskBoardView CodexTaskBoardView { get; set; }
+    public int CodexTaskBoardTimelineMinutes { get; set; }
+    public bool CodexTaskMonitorEnabled { get; set; }
+    public int CodexTaskMonitorActiveWindowMinutes { get; set; }
+    public int CodexTaskMonitorActiveSeconds { get; set; }
+    public int CodexTaskMonitorIdleSeconds { get; set; }
+    public int CodexTaskMonitorTerminalHoldSeconds { get; set; }
+    public int CodexTaskMonitorErrorHoldSeconds { get; set; }
+    public int CodexTaskMonitorNumberCooldownSeconds { get; set; }
     public int OperationButtonSize { get; set; }
     public int OperationLeftOffset { get; set; }
     public int OperationBottomOffset { get; set; }
@@ -628,6 +714,7 @@ internal sealed class WidgetSettings
     public int OperationRadialIdleCollapseSeconds { get; set; }
     public bool OperationRadialIdleResetOnInteractionEnabled { get; set; }
     public bool OperationRadialKeepOpenAfterLeafClickEnabled { get; set; }
+    public bool OperationDoubleClickSpecialMenuEnabled { get; set; }
     public bool OperationSettingsLogicExtensionEnabled { get; set; }
     public bool BurnInHiddenModeColorProtectionEnabled { get; set; }
     public string[] MetricOrder { get; set; }
@@ -646,6 +733,37 @@ internal sealed class WidgetSettings
         this.BottomY = defaults.BottomY;
         this.BackgroundTransparencyPercent = defaults.BackgroundTransparencyPercent;
         this.ApplicationTransparencyPercent = defaults.ApplicationTransparencyPercent;
+        this.MainWidgetTransparencyOverridePercent = defaults.MainWidgetTransparencyOverridePercent;
+        this.CodexRadarTransparencyOverridePercent = defaults.CodexRadarTransparencyOverridePercent;
+        this.ClaudeRadarTransparencyOverridePercent = defaults.ClaudeRadarTransparencyOverridePercent;
+        this.PowerThermalTransparencyOverridePercent = defaults.PowerThermalTransparencyOverridePercent;
+        this.NetworkMonitorTransparencyOverridePercent = defaults.NetworkMonitorTransparencyOverridePercent;
+        this.ConnectionCheckTransparencyOverridePercent = defaults.ConnectionCheckTransparencyOverridePercent;
+        this.OperationTransparencyOverridePercent = defaults.OperationTransparencyOverridePercent;
+        this.SpecBoardTransparencyOverridePercent = defaults.SpecBoardTransparencyOverridePercent;
+        this.CodexTaskBoardTransparencyOverridePercent = defaults.CodexTaskBoardTransparencyOverridePercent;
+        this.NightScheduleEnabled = defaults.NightScheduleEnabled;
+        this.NightScheduleStartMinutes = defaults.NightScheduleStartMinutes;
+        this.NightScheduleEndMinutes = defaults.NightScheduleEndMinutes;
+        this.NightDimLuminancePercent = defaults.NightDimLuminancePercent;
+        this.NightQuietHoursEnabled = defaults.NightQuietHoursEnabled;
+        this.AlertQuotaEnabled = defaults.AlertQuotaEnabled;
+        this.AlertResetProtectionEnabled = defaults.AlertResetProtectionEnabled;
+        this.AlertServiceHealthEnabled = defaults.AlertServiceHealthEnabled;
+        this.AlertCodexTaskEnabled = defaults.AlertCodexTaskEnabled;
+        this.AlertDeepSeekBalanceEnabled = defaults.AlertDeepSeekBalanceEnabled;
+        this.HotkeyToggleAllWindows = defaults.HotkeyToggleAllWindows;
+        this.HotkeyToggleHoverOpacity = defaults.HotkeyToggleHoverOpacity;
+        this.HotkeyOpenSettings = defaults.HotkeyOpenSettings;
+        this.MainWidgetScaleOverridePercent = defaults.MainWidgetScaleOverridePercent;
+        this.CodexRadarScaleOverridePercent = defaults.CodexRadarScaleOverridePercent;
+        this.ClaudeRadarScaleOverridePercent = defaults.ClaudeRadarScaleOverridePercent;
+        this.PowerThermalScaleOverridePercent = defaults.PowerThermalScaleOverridePercent;
+        this.NetworkMonitorScaleOverridePercent = defaults.NetworkMonitorScaleOverridePercent;
+        this.ConnectionCheckScaleOverridePercent = defaults.ConnectionCheckScaleOverridePercent;
+        this.OperationScaleOverridePercent = defaults.OperationScaleOverridePercent;
+        this.SpecBoardScaleOverridePercent = defaults.SpecBoardScaleOverridePercent;
+        this.CodexTaskBoardScaleOverridePercent = defaults.CodexTaskBoardScaleOverridePercent;
         this.CodexRadarWidth = defaults.CodexRadarWidth;
         this.CodexRadarHeight = defaults.CodexRadarHeight;
         this.CodexRadarLeftX = defaults.CodexRadarLeftX;
@@ -734,6 +852,23 @@ internal sealed class WidgetSettings
         this.SpecBoardManagerWidth = defaults.SpecBoardManagerWidth;
         this.SpecBoardManagerHeight = defaults.SpecBoardManagerHeight;
         this.SpecBoardManagerDangerZoneRequiresTypedConfirm = defaults.SpecBoardManagerDangerZoneRequiresTypedConfirm;
+        this.SpecBoardLeftDockEnabled = defaults.SpecBoardLeftDockEnabled;
+        this.SpecBoardLeftDockTabCenterY = defaults.SpecBoardLeftDockTabCenterY;
+        this.CodexTaskBoardLeftDockEnabled = defaults.CodexTaskBoardLeftDockEnabled;
+        this.CodexTaskBoardLeftDockTabCenterY = defaults.CodexTaskBoardLeftDockTabCenterY;
+        this.LeftDockCollapseSeconds = defaults.LeftDockCollapseSeconds;
+        this.LeftDockOutsideClickCollapseEnabled = defaults.LeftDockOutsideClickCollapseEnabled;
+        this.CodexTaskBoardWidth = defaults.CodexTaskBoardWidth;
+        this.CodexTaskBoardHeight = defaults.CodexTaskBoardHeight;
+        this.CodexTaskBoardView = defaults.CodexTaskBoardView;
+        this.CodexTaskBoardTimelineMinutes = defaults.CodexTaskBoardTimelineMinutes;
+        this.CodexTaskMonitorEnabled = defaults.CodexTaskMonitorEnabled;
+        this.CodexTaskMonitorActiveWindowMinutes = defaults.CodexTaskMonitorActiveWindowMinutes;
+        this.CodexTaskMonitorActiveSeconds = defaults.CodexTaskMonitorActiveSeconds;
+        this.CodexTaskMonitorIdleSeconds = defaults.CodexTaskMonitorIdleSeconds;
+        this.CodexTaskMonitorTerminalHoldSeconds = defaults.CodexTaskMonitorTerminalHoldSeconds;
+        this.CodexTaskMonitorErrorHoldSeconds = defaults.CodexTaskMonitorErrorHoldSeconds;
+        this.CodexTaskMonitorNumberCooldownSeconds = defaults.CodexTaskMonitorNumberCooldownSeconds;
         this.OperationButtonSize = defaults.OperationButtonSize;
         this.OperationLeftOffset = defaults.OperationLeftOffset;
         this.OperationBottomOffset = defaults.OperationBottomOffset;
@@ -878,6 +1013,7 @@ internal sealed class WidgetSettings
         this.OperationRadialCoreAutoHideKeepAliveEnabled = defaults.OperationRadialCoreAutoHideKeepAliveEnabled;
         this.OperationRadialIdleCollapseSeconds = defaults.OperationRadialIdleCollapseSeconds;
         this.OperationRadialIdleResetOnInteractionEnabled = defaults.OperationRadialIdleResetOnInteractionEnabled;
+        this.OperationDoubleClickSpecialMenuEnabled = defaults.OperationDoubleClickSpecialMenuEnabled;
         this.OperationSettingsLogicExtensionEnabled = defaults.OperationSettingsLogicExtensionEnabled;
         this.BurnInHiddenModeColorProtectionEnabled = defaults.BurnInHiddenModeColorProtectionEnabled;
         this.MetricOrder = CloneMetricOrder(defaults.MetricOrder);
@@ -896,6 +1032,37 @@ internal sealed class WidgetSettings
         settings.BottomY = 1557;
         settings.BackgroundTransparencyPercent = 40;
         settings.ApplicationTransparencyPercent = 0;
+        settings.MainWidgetTransparencyOverridePercent = -1;
+        settings.CodexRadarTransparencyOverridePercent = -1;
+        settings.ClaudeRadarTransparencyOverridePercent = -1;
+        settings.PowerThermalTransparencyOverridePercent = -1;
+        settings.NetworkMonitorTransparencyOverridePercent = -1;
+        settings.ConnectionCheckTransparencyOverridePercent = -1;
+        settings.OperationTransparencyOverridePercent = -1;
+        settings.SpecBoardTransparencyOverridePercent = -1;
+        settings.CodexTaskBoardTransparencyOverridePercent = -1;
+        settings.NightScheduleEnabled = false;
+        settings.NightScheduleStartMinutes = DefaultNightScheduleStartMinutes;
+        settings.NightScheduleEndMinutes = DefaultNightScheduleEndMinutes;
+        settings.NightDimLuminancePercent = DefaultNightDimLuminancePercent;
+        settings.NightQuietHoursEnabled = true;
+        settings.AlertQuotaEnabled = true;
+        settings.AlertResetProtectionEnabled = true;
+        settings.AlertServiceHealthEnabled = true;
+        settings.AlertCodexTaskEnabled = true;
+        settings.AlertDeepSeekBalanceEnabled = true;
+        settings.HotkeyToggleAllWindows = string.Empty;
+        settings.HotkeyToggleHoverOpacity = string.Empty;
+        settings.HotkeyOpenSettings = string.Empty;
+        settings.MainWidgetScaleOverridePercent = -1;
+        settings.CodexRadarScaleOverridePercent = -1;
+        settings.ClaudeRadarScaleOverridePercent = -1;
+        settings.PowerThermalScaleOverridePercent = -1;
+        settings.NetworkMonitorScaleOverridePercent = -1;
+        settings.ConnectionCheckScaleOverridePercent = -1;
+        settings.OperationScaleOverridePercent = -1;
+        settings.SpecBoardScaleOverridePercent = -1;
+        settings.CodexTaskBoardScaleOverridePercent = -1;
         settings.CodexRadarWidth = DefaultCodexRadarWidth;
         settings.CodexRadarHeight = 116;
         settings.CodexRadarLeftX = 2252;
@@ -956,6 +1123,23 @@ internal sealed class WidgetSettings
         settings.SpecBoardManagerWidth = 720;
         settings.SpecBoardManagerHeight = 520;
         settings.SpecBoardManagerDangerZoneRequiresTypedConfirm = true;
+        settings.SpecBoardLeftDockEnabled = true;
+        settings.SpecBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.CodexTaskBoardLeftDockEnabled = true;
+        settings.CodexTaskBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.LeftDockCollapseSeconds = DefaultLeftDockCollapseSeconds;
+        settings.LeftDockOutsideClickCollapseEnabled = true;
+        settings.CodexTaskBoardWidth = DefaultCodexTaskBoardWidth;
+        settings.CodexTaskBoardHeight = DefaultCodexTaskBoardHeight;
+        settings.CodexTaskBoardView = CodexTaskBoardView.Table;
+        settings.CodexTaskBoardTimelineMinutes = DefaultCodexTaskBoardTimelineMinutes;
+        settings.CodexTaskMonitorEnabled = true;
+        settings.CodexTaskMonitorActiveWindowMinutes = 30;
+        settings.CodexTaskMonitorActiveSeconds = 12;
+        settings.CodexTaskMonitorIdleSeconds = 90;
+        settings.CodexTaskMonitorTerminalHoldSeconds = 120;
+        settings.CodexTaskMonitorErrorHoldSeconds = 30;
+        settings.CodexTaskMonitorNumberCooldownSeconds = 120;
         settings.OperationButtonSize = 86;
         settings.OperationLeftOffset = 0;
         settings.OperationBottomOffset = 0;
@@ -1028,7 +1212,7 @@ internal sealed class WidgetSettings
         settings.NetworkMonitorRenderVariant = NetworkMonitorRenderVariant.Classic;
         settings.PowerThermalRenderVariant = PowerThermalRenderVariant.Classic;
         settings.ConnectionCheckRenderVariant = ConnectionCheckRenderVariant.Classic;
-        settings.OperationRenderVariant = OperationRenderVariant.Classic;
+        settings.OperationRenderVariant = OperationRenderVariant.RadialDial;
         settings.CodexRadarPublicJsonEnabled = true;
         settings.CodexRadarHtmlFallbackEnabled = true;
         settings.CodexRadarRssFallbackEnabled = true;
@@ -1107,6 +1291,7 @@ internal sealed class WidgetSettings
         settings.OperationRadialIdleCollapseSeconds = DefaultOperationRadialIdleCollapseSeconds;
         settings.OperationRadialIdleResetOnInteractionEnabled = true;
         settings.OperationRadialKeepOpenAfterLeafClickEnabled = true;
+        settings.OperationDoubleClickSpecialMenuEnabled = false;
         settings.OperationSettingsLogicExtensionEnabled = false;
         settings.BurnInHiddenModeColorProtectionEnabled = false;
         settings.MetricOrder = CloneMetricOrder(DefaultMetricOrder);
@@ -1126,6 +1311,37 @@ internal sealed class WidgetSettings
         settings.BottomY = 1549;
         settings.BackgroundTransparencyPercent = 40;
         settings.ApplicationTransparencyPercent = 0;
+        settings.MainWidgetTransparencyOverridePercent = -1;
+        settings.CodexRadarTransparencyOverridePercent = -1;
+        settings.ClaudeRadarTransparencyOverridePercent = -1;
+        settings.PowerThermalTransparencyOverridePercent = -1;
+        settings.NetworkMonitorTransparencyOverridePercent = -1;
+        settings.ConnectionCheckTransparencyOverridePercent = -1;
+        settings.OperationTransparencyOverridePercent = -1;
+        settings.SpecBoardTransparencyOverridePercent = -1;
+        settings.CodexTaskBoardTransparencyOverridePercent = -1;
+        settings.NightScheduleEnabled = false;
+        settings.NightScheduleStartMinutes = DefaultNightScheduleStartMinutes;
+        settings.NightScheduleEndMinutes = DefaultNightScheduleEndMinutes;
+        settings.NightDimLuminancePercent = DefaultNightDimLuminancePercent;
+        settings.NightQuietHoursEnabled = true;
+        settings.AlertQuotaEnabled = true;
+        settings.AlertResetProtectionEnabled = true;
+        settings.AlertServiceHealthEnabled = true;
+        settings.AlertCodexTaskEnabled = true;
+        settings.AlertDeepSeekBalanceEnabled = true;
+        settings.HotkeyToggleAllWindows = string.Empty;
+        settings.HotkeyToggleHoverOpacity = string.Empty;
+        settings.HotkeyOpenSettings = string.Empty;
+        settings.MainWidgetScaleOverridePercent = -1;
+        settings.CodexRadarScaleOverridePercent = -1;
+        settings.ClaudeRadarScaleOverridePercent = -1;
+        settings.PowerThermalScaleOverridePercent = -1;
+        settings.NetworkMonitorScaleOverridePercent = -1;
+        settings.ConnectionCheckScaleOverridePercent = -1;
+        settings.OperationScaleOverridePercent = -1;
+        settings.SpecBoardScaleOverridePercent = -1;
+        settings.CodexTaskBoardScaleOverridePercent = -1;
         settings.CodexRadarWidth = 522;
         settings.CodexRadarHeight = 120;
         settings.CodexRadarLeftX = 2358;
@@ -1212,6 +1428,23 @@ internal sealed class WidgetSettings
         settings.SpecBoardManagerWidth = 720;
         settings.SpecBoardManagerHeight = 520;
         settings.SpecBoardManagerDangerZoneRequiresTypedConfirm = true;
+        settings.SpecBoardLeftDockEnabled = true;
+        settings.SpecBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.CodexTaskBoardLeftDockEnabled = true;
+        settings.CodexTaskBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.LeftDockCollapseSeconds = DefaultLeftDockCollapseSeconds;
+        settings.LeftDockOutsideClickCollapseEnabled = true;
+        settings.CodexTaskBoardWidth = DefaultCodexTaskBoardWidth;
+        settings.CodexTaskBoardHeight = DefaultCodexTaskBoardHeight;
+        settings.CodexTaskBoardView = CodexTaskBoardView.Table;
+        settings.CodexTaskBoardTimelineMinutes = DefaultCodexTaskBoardTimelineMinutes;
+        settings.CodexTaskMonitorEnabled = true;
+        settings.CodexTaskMonitorActiveWindowMinutes = 30;
+        settings.CodexTaskMonitorActiveSeconds = 12;
+        settings.CodexTaskMonitorIdleSeconds = 90;
+        settings.CodexTaskMonitorTerminalHoldSeconds = 120;
+        settings.CodexTaskMonitorErrorHoldSeconds = 30;
+        settings.CodexTaskMonitorNumberCooldownSeconds = 120;
         settings.OperationButtonSize = 86;
         settings.OperationLeftOffset = 0;
         settings.OperationBottomOffset = 0;
@@ -1278,6 +1511,7 @@ internal sealed class WidgetSettings
         settings.OperationRadialIdleCollapseSeconds = DefaultOperationRadialIdleCollapseSeconds;
         settings.OperationRadialIdleResetOnInteractionEnabled = true;
         settings.OperationRadialKeepOpenAfterLeafClickEnabled = true;
+        settings.OperationDoubleClickSpecialMenuEnabled = false;
         settings.OperationSettingsLogicExtensionEnabled = false;
         settings.ShowCpu = true;
         settings.ShowMemory = true;
@@ -1296,7 +1530,7 @@ internal sealed class WidgetSettings
         settings.NetworkMonitorRenderVariant = NetworkMonitorRenderVariant.Classic;
         settings.PowerThermalRenderVariant = PowerThermalRenderVariant.Classic;
         settings.ConnectionCheckRenderVariant = ConnectionCheckRenderVariant.Classic;
-        settings.OperationRenderVariant = OperationRenderVariant.Classic;
+        settings.OperationRenderVariant = OperationRenderVariant.RadialDial;
         settings.CodexRadarPublicJsonEnabled = true;
         settings.CodexRadarHtmlFallbackEnabled = true;
         settings.CodexRadarRssFallbackEnabled = true;
@@ -1372,6 +1606,37 @@ internal sealed class WidgetSettings
             BottomY = this.BottomY,
             BackgroundTransparencyPercent = this.BackgroundTransparencyPercent,
             ApplicationTransparencyPercent = this.ApplicationTransparencyPercent,
+            MainWidgetTransparencyOverridePercent = this.MainWidgetTransparencyOverridePercent,
+            CodexRadarTransparencyOverridePercent = this.CodexRadarTransparencyOverridePercent,
+            ClaudeRadarTransparencyOverridePercent = this.ClaudeRadarTransparencyOverridePercent,
+            PowerThermalTransparencyOverridePercent = this.PowerThermalTransparencyOverridePercent,
+            NetworkMonitorTransparencyOverridePercent = this.NetworkMonitorTransparencyOverridePercent,
+            ConnectionCheckTransparencyOverridePercent = this.ConnectionCheckTransparencyOverridePercent,
+            OperationTransparencyOverridePercent = this.OperationTransparencyOverridePercent,
+            SpecBoardTransparencyOverridePercent = this.SpecBoardTransparencyOverridePercent,
+            CodexTaskBoardTransparencyOverridePercent = this.CodexTaskBoardTransparencyOverridePercent,
+            NightScheduleEnabled = this.NightScheduleEnabled,
+            NightScheduleStartMinutes = this.NightScheduleStartMinutes,
+            NightScheduleEndMinutes = this.NightScheduleEndMinutes,
+            NightDimLuminancePercent = this.NightDimLuminancePercent,
+            NightQuietHoursEnabled = this.NightQuietHoursEnabled,
+            AlertQuotaEnabled = this.AlertQuotaEnabled,
+            AlertResetProtectionEnabled = this.AlertResetProtectionEnabled,
+            AlertServiceHealthEnabled = this.AlertServiceHealthEnabled,
+            AlertCodexTaskEnabled = this.AlertCodexTaskEnabled,
+            AlertDeepSeekBalanceEnabled = this.AlertDeepSeekBalanceEnabled,
+            HotkeyToggleAllWindows = this.HotkeyToggleAllWindows,
+            HotkeyToggleHoverOpacity = this.HotkeyToggleHoverOpacity,
+            HotkeyOpenSettings = this.HotkeyOpenSettings,
+            MainWidgetScaleOverridePercent = this.MainWidgetScaleOverridePercent,
+            CodexRadarScaleOverridePercent = this.CodexRadarScaleOverridePercent,
+            ClaudeRadarScaleOverridePercent = this.ClaudeRadarScaleOverridePercent,
+            PowerThermalScaleOverridePercent = this.PowerThermalScaleOverridePercent,
+            NetworkMonitorScaleOverridePercent = this.NetworkMonitorScaleOverridePercent,
+            ConnectionCheckScaleOverridePercent = this.ConnectionCheckScaleOverridePercent,
+            OperationScaleOverridePercent = this.OperationScaleOverridePercent,
+            SpecBoardScaleOverridePercent = this.SpecBoardScaleOverridePercent,
+            CodexTaskBoardScaleOverridePercent = this.CodexTaskBoardScaleOverridePercent,
             CodexRadarWidth = this.CodexRadarWidth,
             CodexRadarHeight = this.CodexRadarHeight,
             CodexRadarLeftX = this.CodexRadarLeftX,
@@ -1460,6 +1725,23 @@ internal sealed class WidgetSettings
             SpecBoardManagerWidth = this.SpecBoardManagerWidth,
             SpecBoardManagerHeight = this.SpecBoardManagerHeight,
             SpecBoardManagerDangerZoneRequiresTypedConfirm = this.SpecBoardManagerDangerZoneRequiresTypedConfirm,
+            SpecBoardLeftDockEnabled = this.SpecBoardLeftDockEnabled,
+            SpecBoardLeftDockTabCenterY = this.SpecBoardLeftDockTabCenterY,
+            CodexTaskBoardLeftDockEnabled = this.CodexTaskBoardLeftDockEnabled,
+            CodexTaskBoardLeftDockTabCenterY = this.CodexTaskBoardLeftDockTabCenterY,
+            LeftDockCollapseSeconds = this.LeftDockCollapseSeconds,
+            LeftDockOutsideClickCollapseEnabled = this.LeftDockOutsideClickCollapseEnabled,
+            CodexTaskBoardWidth = this.CodexTaskBoardWidth,
+            CodexTaskBoardHeight = this.CodexTaskBoardHeight,
+            CodexTaskBoardView = this.CodexTaskBoardView,
+            CodexTaskBoardTimelineMinutes = this.CodexTaskBoardTimelineMinutes,
+            CodexTaskMonitorEnabled = this.CodexTaskMonitorEnabled,
+            CodexTaskMonitorActiveWindowMinutes = this.CodexTaskMonitorActiveWindowMinutes,
+            CodexTaskMonitorActiveSeconds = this.CodexTaskMonitorActiveSeconds,
+            CodexTaskMonitorIdleSeconds = this.CodexTaskMonitorIdleSeconds,
+            CodexTaskMonitorTerminalHoldSeconds = this.CodexTaskMonitorTerminalHoldSeconds,
+            CodexTaskMonitorErrorHoldSeconds = this.CodexTaskMonitorErrorHoldSeconds,
+            CodexTaskMonitorNumberCooldownSeconds = this.CodexTaskMonitorNumberCooldownSeconds,
             OperationButtonSize = this.OperationButtonSize,
             OperationLeftOffset = this.OperationLeftOffset,
             OperationBottomOffset = this.OperationBottomOffset,
@@ -1612,6 +1894,7 @@ internal sealed class WidgetSettings
             OperationRadialIdleCollapseSeconds = this.OperationRadialIdleCollapseSeconds,
             OperationRadialIdleResetOnInteractionEnabled = this.OperationRadialIdleResetOnInteractionEnabled,
             OperationRadialKeepOpenAfterLeafClickEnabled = this.OperationRadialKeepOpenAfterLeafClickEnabled,
+            OperationDoubleClickSpecialMenuEnabled = this.OperationDoubleClickSpecialMenuEnabled,
             OperationSettingsLogicExtensionEnabled = this.OperationSettingsLogicExtensionEnabled,
             BurnInHiddenModeColorProtectionEnabled = this.BurnInHiddenModeColorProtectionEnabled,
             MetricOrder = CloneMetricOrder(this.MetricOrder)
@@ -1624,6 +1907,30 @@ internal sealed class WidgetSettings
         this.Height = Clamp(this.Height, MinHeight, MaxHeight);
         this.BackgroundTransparencyPercent = Clamp(this.BackgroundTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
         this.ApplicationTransparencyPercent = Clamp(this.ApplicationTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
+        this.MainWidgetTransparencyOverridePercent = Clamp(this.MainWidgetTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
+        this.CodexRadarTransparencyOverridePercent = Clamp(this.CodexRadarTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
+        this.ClaudeRadarTransparencyOverridePercent = Clamp(this.ClaudeRadarTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
+        this.PowerThermalTransparencyOverridePercent = Clamp(this.PowerThermalTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
+        this.NetworkMonitorTransparencyOverridePercent = Clamp(this.NetworkMonitorTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
+        this.ConnectionCheckTransparencyOverridePercent = Clamp(this.ConnectionCheckTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
+        this.OperationTransparencyOverridePercent = Clamp(this.OperationTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
+        this.SpecBoardTransparencyOverridePercent = Clamp(this.SpecBoardTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
+        this.CodexTaskBoardTransparencyOverridePercent = Clamp(this.CodexTaskBoardTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
+        this.NightScheduleStartMinutes = Clamp(this.NightScheduleStartMinutes, MinNightScheduleMinutes, MaxNightScheduleMinutes);
+        this.NightScheduleEndMinutes = Clamp(this.NightScheduleEndMinutes, MinNightScheduleMinutes, MaxNightScheduleMinutes);
+        this.NightDimLuminancePercent = Clamp(this.NightDimLuminancePercent, MinNightDimLuminancePercent, MaxNightDimLuminancePercent);
+        this.HotkeyToggleAllWindows = GlobalHotkeyParser.Normalize(this.HotkeyToggleAllWindows);
+        this.HotkeyToggleHoverOpacity = GlobalHotkeyParser.Normalize(this.HotkeyToggleHoverOpacity);
+        this.HotkeyOpenSettings = GlobalHotkeyParser.Normalize(this.HotkeyOpenSettings);
+        this.MainWidgetScaleOverridePercent = NormalizeWindowScaleOverride(this.MainWidgetScaleOverridePercent);
+        this.CodexRadarScaleOverridePercent = NormalizeWindowScaleOverride(this.CodexRadarScaleOverridePercent);
+        this.ClaudeRadarScaleOverridePercent = NormalizeWindowScaleOverride(this.ClaudeRadarScaleOverridePercent);
+        this.PowerThermalScaleOverridePercent = NormalizeWindowScaleOverride(this.PowerThermalScaleOverridePercent);
+        this.NetworkMonitorScaleOverridePercent = NormalizeWindowScaleOverride(this.NetworkMonitorScaleOverridePercent);
+        this.ConnectionCheckScaleOverridePercent = NormalizeWindowScaleOverride(this.ConnectionCheckScaleOverridePercent);
+        this.OperationScaleOverridePercent = NormalizeWindowScaleOverride(this.OperationScaleOverridePercent);
+        this.SpecBoardScaleOverridePercent = NormalizeWindowScaleOverride(this.SpecBoardScaleOverridePercent);
+        this.CodexTaskBoardScaleOverridePercent = NormalizeWindowScaleOverride(this.CodexTaskBoardScaleOverridePercent);
         this.CodexRadarWidth = Clamp(this.CodexRadarWidth, MinCodexRadarWidth, MaxCodexRadarWidth);
         this.CodexRadarHeight = Clamp(this.CodexRadarHeight, MinCodexRadarHeight, MaxCodexRadarHeight);
         this.CodexRadarTransparencyPercent = Clamp(this.CodexRadarTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
@@ -1686,6 +1993,24 @@ internal sealed class WidgetSettings
         this.SpecBoardLedgerPath = NormalizeSpecBoardLedgerPath(this.SpecBoardLedgerPath);
         this.SpecBoardManagerWidth = Clamp(this.SpecBoardManagerWidth, MinSpecBoardManagerWidth, MaxSpecBoardManagerWidth);
         this.SpecBoardManagerHeight = Clamp(this.SpecBoardManagerHeight, MinSpecBoardManagerHeight, MaxSpecBoardManagerHeight);
+        // Dock tab centers are screen coordinates; anything below zero other than the auto sentinel
+        // is meaningless, and the windows clamp the resolved value into the work area anyway.
+        this.SpecBoardLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.SpecBoardLeftDockTabCenterY);
+        this.CodexTaskBoardLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.CodexTaskBoardLeftDockTabCenterY);
+        this.LeftDockCollapseSeconds = Clamp(this.LeftDockCollapseSeconds, MinLeftDockCollapseSeconds, MaxLeftDockCollapseSeconds);
+        this.CodexTaskBoardWidth = Clamp(this.CodexTaskBoardWidth, MinCodexTaskBoardWidth, MaxCodexTaskBoardWidth);
+        this.CodexTaskBoardHeight = Clamp(this.CodexTaskBoardHeight, MinCodexTaskBoardHeight, MaxCodexTaskBoardHeight);
+        this.CodexTaskBoardTimelineMinutes = Clamp(this.CodexTaskBoardTimelineMinutes, MinCodexTaskBoardTimelineMinutes, MaxCodexTaskBoardTimelineMinutes);
+        if (!Enum.IsDefined(typeof(CodexTaskBoardView), this.CodexTaskBoardView))
+        {
+            this.CodexTaskBoardView = CodexTaskBoardView.Table;
+        }
+        this.CodexTaskMonitorActiveWindowMinutes = Clamp(this.CodexTaskMonitorActiveWindowMinutes, MinCodexTaskMonitorActiveWindowMinutes, MaxCodexTaskMonitorActiveWindowMinutes);
+        this.CodexTaskMonitorActiveSeconds = Clamp(this.CodexTaskMonitorActiveSeconds, MinCodexTaskMonitorActiveSeconds, MaxCodexTaskMonitorActiveSeconds);
+        this.CodexTaskMonitorIdleSeconds = Clamp(this.CodexTaskMonitorIdleSeconds, MinCodexTaskMonitorIdleSeconds, MaxCodexTaskMonitorIdleSeconds);
+        this.CodexTaskMonitorTerminalHoldSeconds = Clamp(this.CodexTaskMonitorTerminalHoldSeconds, MinCodexTaskMonitorTerminalHoldSeconds, MaxCodexTaskMonitorTerminalHoldSeconds);
+        this.CodexTaskMonitorErrorHoldSeconds = Clamp(this.CodexTaskMonitorErrorHoldSeconds, MinCodexTaskMonitorErrorHoldSeconds, MaxCodexTaskMonitorErrorHoldSeconds);
+        this.CodexTaskMonitorNumberCooldownSeconds = Clamp(this.CodexTaskMonitorNumberCooldownSeconds, MinCodexTaskMonitorNumberCooldownSeconds, MaxCodexTaskMonitorNumberCooldownSeconds);
         if (!Enum.IsDefined(typeof(PowerThermalAutoDirection), this.PowerThermalAutoDirection))
         {
             this.PowerThermalAutoDirection = PowerThermalAutoDirection.Left;
@@ -1700,6 +2025,10 @@ internal sealed class WidgetSettings
         if (!Enum.IsDefined(typeof(OperationPrimaryPanelMode), this.OperationPrimaryPanelMode))
         {
             this.OperationPrimaryPanelMode = OperationPrimaryPanelMode.Auto;
+        }
+        if (!Enum.IsDefined(typeof(OperationRenderVariant), this.OperationRenderVariant))
+        {
+            this.OperationRenderVariant = OperationRenderVariant.RadialDial;
         }
 
         this.SensitiveMouseRangePixels = Clamp(
@@ -2130,6 +2459,94 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (settingsVersion > 0 && settingsVersion < 70)
+        {
+            // Version 70 introduces the backend-only Codex task monitor. Existing installs
+            // receive the documented defaults once; later explicit values remain untouched.
+            settings.CodexTaskMonitorEnabled = true;
+            settings.CodexTaskMonitorActiveWindowMinutes = 30;
+            settings.CodexTaskMonitorActiveSeconds = 12;
+            settings.CodexTaskMonitorIdleSeconds = 90;
+            settings.CodexTaskMonitorTerminalHoldSeconds = 120;
+            settings.CodexTaskMonitorErrorHoldSeconds = 30;
+            settings.CodexTaskMonitorNumberCooldownSeconds = 120;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 71)
+        {
+            // Version 71 adds opt-in per-window transparency overrides. Existing installs follow
+            // the global value until the user explicitly sets an override.
+            settings.MainWidgetTransparencyOverridePercent = -1;
+            settings.CodexRadarTransparencyOverridePercent = -1;
+            settings.ClaudeRadarTransparencyOverridePercent = -1;
+            settings.PowerThermalTransparencyOverridePercent = -1;
+            settings.NetworkMonitorTransparencyOverridePercent = -1;
+            settings.ConnectionCheckTransparencyOverridePercent = -1;
+            settings.OperationTransparencyOverridePercent = -1;
+            settings.SpecBoardTransparencyOverridePercent = -1;
+            settings.CodexTaskBoardTransparencyOverridePercent = -1;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 72)
+        {
+            settings.NightScheduleEnabled = false;
+            settings.NightScheduleStartMinutes = DefaultNightScheduleStartMinutes;
+            settings.NightScheduleEndMinutes = DefaultNightScheduleEndMinutes;
+            settings.NightDimLuminancePercent = DefaultNightDimLuminancePercent;
+            settings.NightQuietHoursEnabled = true;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 73)
+        {
+            settings.MainWidgetScaleOverridePercent = -1;
+            settings.CodexRadarScaleOverridePercent = -1;
+            settings.ClaudeRadarScaleOverridePercent = -1;
+            settings.PowerThermalScaleOverridePercent = -1;
+            settings.NetworkMonitorScaleOverridePercent = -1;
+            settings.ConnectionCheckScaleOverridePercent = -1;
+            settings.OperationScaleOverridePercent = -1;
+            settings.SpecBoardScaleOverridePercent = -1;
+            settings.CodexTaskBoardScaleOverridePercent = -1;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 74)
+        {
+            // Upgrades retain every existing alert until the user opts out. These switches are
+            // presentation policy only and never disable collection, debounce, or protection state.
+            settings.AlertQuotaEnabled = true;
+            settings.AlertResetProtectionEnabled = true;
+            settings.AlertServiceHealthEnabled = true;
+            settings.AlertCodexTaskEnabled = true;
+            settings.AlertDeepSeekBalanceEnabled = true;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 75)
+        {
+            settings.HotkeyToggleAllWindows = string.Empty;
+            settings.HotkeyToggleHoverOpacity = string.Empty;
+            settings.HotkeyOpenSettings = string.Empty;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 76)
+        {
+            settings.LeftDockOutsideClickCollapseEnabled = true;
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 77)
+        {
+            // The launcher remains available as an explicit opt-in, but upgrades switch the core
+            // double-click to the faster hidden-mode toggle requested for the default workflow.
+            settings.OperationDoubleClickSpecialMenuEnabled = false;
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2334,6 +2751,37 @@ internal sealed class WidgetSettings
             "BackgroundTransparencyPercent=" + this.BackgroundTransparencyPercent,
             "ContentTransparencyPercent=" + this.ApplicationTransparencyPercent,
             "ApplicationTransparencyPercent=" + this.ApplicationTransparencyPercent,
+            "MainWidgetTransparencyOverridePercent=" + this.MainWidgetTransparencyOverridePercent,
+            "CodexRadarTransparencyOverridePercent=" + this.CodexRadarTransparencyOverridePercent,
+            "ClaudeRadarTransparencyOverridePercent=" + this.ClaudeRadarTransparencyOverridePercent,
+            "PowerThermalTransparencyOverridePercent=" + this.PowerThermalTransparencyOverridePercent,
+            "NetworkMonitorTransparencyOverridePercent=" + this.NetworkMonitorTransparencyOverridePercent,
+            "ConnectionCheckTransparencyOverridePercent=" + this.ConnectionCheckTransparencyOverridePercent,
+            "OperationTransparencyOverridePercent=" + this.OperationTransparencyOverridePercent,
+            "SpecBoardTransparencyOverridePercent=" + this.SpecBoardTransparencyOverridePercent,
+            "CodexTaskBoardTransparencyOverridePercent=" + this.CodexTaskBoardTransparencyOverridePercent,
+            "NightScheduleEnabled=" + this.NightScheduleEnabled,
+            "NightScheduleStartMinutes=" + this.NightScheduleStartMinutes,
+            "NightScheduleEndMinutes=" + this.NightScheduleEndMinutes,
+            "NightDimLuminancePercent=" + this.NightDimLuminancePercent,
+            "NightQuietHoursEnabled=" + this.NightQuietHoursEnabled,
+            "AlertQuotaEnabled=" + this.AlertQuotaEnabled,
+            "AlertResetProtectionEnabled=" + this.AlertResetProtectionEnabled,
+            "AlertServiceHealthEnabled=" + this.AlertServiceHealthEnabled,
+            "AlertCodexTaskEnabled=" + this.AlertCodexTaskEnabled,
+            "AlertDeepSeekBalanceEnabled=" + this.AlertDeepSeekBalanceEnabled,
+            "HotkeyToggleAllWindows=" + this.HotkeyToggleAllWindows,
+            "HotkeyToggleHoverOpacity=" + this.HotkeyToggleHoverOpacity,
+            "HotkeyOpenSettings=" + this.HotkeyOpenSettings,
+            "MainWidgetScaleOverridePercent=" + this.MainWidgetScaleOverridePercent,
+            "CodexRadarScaleOverridePercent=" + this.CodexRadarScaleOverridePercent,
+            "ClaudeRadarScaleOverridePercent=" + this.ClaudeRadarScaleOverridePercent,
+            "PowerThermalScaleOverridePercent=" + this.PowerThermalScaleOverridePercent,
+            "NetworkMonitorScaleOverridePercent=" + this.NetworkMonitorScaleOverridePercent,
+            "ConnectionCheckScaleOverridePercent=" + this.ConnectionCheckScaleOverridePercent,
+            "OperationScaleOverridePercent=" + this.OperationScaleOverridePercent,
+            "SpecBoardScaleOverridePercent=" + this.SpecBoardScaleOverridePercent,
+            "CodexTaskBoardScaleOverridePercent=" + this.CodexTaskBoardScaleOverridePercent,
             "CodexRadarWidth=" + this.CodexRadarWidth,
             "CodexRadarHeight=" + this.CodexRadarHeight,
             "CodexRadarLeftX=" + this.CodexRadarLeftX,
@@ -2420,6 +2868,23 @@ internal sealed class WidgetSettings
             "SpecBoardManagerWidth=" + this.SpecBoardManagerWidth,
             "SpecBoardManagerHeight=" + this.SpecBoardManagerHeight,
             "SpecBoardManagerDangerZoneRequiresTypedConfirm=" + this.SpecBoardManagerDangerZoneRequiresTypedConfirm,
+            "SpecBoardLeftDockEnabled=" + this.SpecBoardLeftDockEnabled,
+            "SpecBoardLeftDockTabCenterY=" + this.SpecBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
+            "CodexTaskBoardLeftDockEnabled=" + this.CodexTaskBoardLeftDockEnabled,
+            "CodexTaskBoardLeftDockTabCenterY=" + this.CodexTaskBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
+            "LeftDockCollapseSeconds=" + this.LeftDockCollapseSeconds.ToString(CultureInfo.InvariantCulture),
+            "LeftDockOutsideClickCollapseEnabled=" + this.LeftDockOutsideClickCollapseEnabled,
+            "CodexTaskBoardWidth=" + this.CodexTaskBoardWidth.ToString(CultureInfo.InvariantCulture),
+            "CodexTaskBoardHeight=" + this.CodexTaskBoardHeight.ToString(CultureInfo.InvariantCulture),
+            "CodexTaskBoardView=" + this.CodexTaskBoardView,
+            "CodexTaskBoardTimelineMinutes=" + this.CodexTaskBoardTimelineMinutes.ToString(CultureInfo.InvariantCulture),
+            "CodexTaskMonitorEnabled=" + this.CodexTaskMonitorEnabled,
+            "CodexTaskMonitorActiveWindowMinutes=" + this.CodexTaskMonitorActiveWindowMinutes,
+            "CodexTaskMonitorActiveSeconds=" + this.CodexTaskMonitorActiveSeconds,
+            "CodexTaskMonitorIdleSeconds=" + this.CodexTaskMonitorIdleSeconds,
+            "CodexTaskMonitorTerminalHoldSeconds=" + this.CodexTaskMonitorTerminalHoldSeconds,
+            "CodexTaskMonitorErrorHoldSeconds=" + this.CodexTaskMonitorErrorHoldSeconds,
+            "CodexTaskMonitorNumberCooldownSeconds=" + this.CodexTaskMonitorNumberCooldownSeconds,
             "OperationButtonSize=" + this.OperationButtonSize,
             "OperationLeftOffset=" + this.OperationLeftOffset,
             "OperationBottomOffset=" + this.OperationBottomOffset,
@@ -2571,6 +3036,7 @@ internal sealed class WidgetSettings
             "OperationRadialIdleCollapseSeconds=" + this.OperationRadialIdleCollapseSeconds,
             "OperationRadialIdleResetOnInteractionEnabled=" + this.OperationRadialIdleResetOnInteractionEnabled,
             "OperationRadialKeepOpenAfterLeafClickEnabled=" + this.OperationRadialKeepOpenAfterLeafClickEnabled,
+            "OperationDoubleClickSpecialMenuEnabled=" + this.OperationDoubleClickSpecialMenuEnabled,
             "OperationSettingsLogicExtensionEnabled=" + this.OperationSettingsLogicExtensionEnabled,
             "BurnInHiddenModeColorProtectionEnabled=" + this.BurnInHiddenModeColorProtectionEnabled,
             "MetricOrder=" + string.Join(",", NormalizeMetricOrder(this.MetricOrder))
@@ -2621,6 +3087,162 @@ internal sealed class WidgetSettings
             int.TryParse(value, out intValue))
         {
             settings.ApplicationTransparencyPercent = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "MainWidgetTransparencyOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.MainWidgetTransparencyOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "CodexRadarTransparencyOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarTransparencyOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "ClaudeRadarTransparencyOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarTransparencyOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "PowerThermalTransparencyOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.PowerThermalTransparencyOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "NetworkMonitorTransparencyOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.NetworkMonitorTransparencyOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "ConnectionCheckTransparencyOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ConnectionCheckTransparencyOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "OperationTransparencyOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.OperationTransparencyOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "SpecBoardTransparencyOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SpecBoardTransparencyOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "CodexTaskBoardTransparencyOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexTaskBoardTransparencyOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "NightScheduleEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.NightScheduleEnabled = boolValue;
+            return;
+        }
+        if (string.Equals(key, "NightScheduleStartMinutes", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.NightScheduleStartMinutes = intValue;
+            return;
+        }
+        if (string.Equals(key, "NightScheduleEndMinutes", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.NightScheduleEndMinutes = intValue;
+            return;
+        }
+        if (string.Equals(key, "NightDimLuminancePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.NightDimLuminancePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "NightQuietHoursEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.NightQuietHoursEnabled = boolValue;
+            return;
+        }
+        if (string.Equals(key, "AlertQuotaEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.AlertQuotaEnabled = boolValue;
+            return;
+        }
+        if (string.Equals(key, "AlertResetProtectionEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.AlertResetProtectionEnabled = boolValue;
+            return;
+        }
+        if (string.Equals(key, "AlertServiceHealthEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.AlertServiceHealthEnabled = boolValue;
+            return;
+        }
+        if (string.Equals(key, "AlertCodexTaskEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.AlertCodexTaskEnabled = boolValue;
+            return;
+        }
+        if (string.Equals(key, "AlertDeepSeekBalanceEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.AlertDeepSeekBalanceEnabled = boolValue;
+            return;
+        }
+        if (string.Equals(key, "HotkeyToggleAllWindows", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.HotkeyToggleAllWindows = value;
+            return;
+        }
+        if (string.Equals(key, "HotkeyToggleHoverOpacity", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.HotkeyToggleHoverOpacity = value;
+            return;
+        }
+        if (string.Equals(key, "HotkeyOpenSettings", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.HotkeyOpenSettings = value;
+            return;
+        }
+        if (string.Equals(key, "MainWidgetScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.MainWidgetScaleOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "CodexRadarScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexRadarScaleOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "ClaudeRadarScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ClaudeRadarScaleOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "PowerThermalScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.PowerThermalScaleOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "NetworkMonitorScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.NetworkMonitorScaleOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "ConnectionCheckScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ConnectionCheckScaleOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "OperationScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.OperationScaleOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "SpecBoardScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SpecBoardScaleOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "CodexTaskBoardScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexTaskBoardScaleOverridePercent = intValue;
             return;
         }
 
@@ -3038,6 +3660,116 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "SpecBoardManagerDangerZoneRequiresTypedConfirm", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.SpecBoardManagerDangerZoneRequiresTypedConfirm = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardLeftDockEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.SpecBoardLeftDockEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "SpecBoardLeftDockTabCenterY", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.SpecBoardLeftDockTabCenterY = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskBoardLeftDockEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.CodexTaskBoardLeftDockEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskBoardLeftDockTabCenterY", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CodexTaskBoardLeftDockTabCenterY = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "LeftDockCollapseSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.LeftDockCollapseSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "LeftDockOutsideClickCollapseEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.LeftDockOutsideClickCollapseEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskBoardWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CodexTaskBoardWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskBoardHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CodexTaskBoardHeight = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskBoardTimelineMinutes", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CodexTaskBoardTimelineMinutes = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskBoardView", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                settings.CodexTaskBoardView = (CodexTaskBoardView)Enum.Parse(typeof(CodexTaskBoardView), value, true);
+            }
+            catch
+            {
+                settings.CodexTaskBoardView = CodexTaskBoardView.Table;
+            }
+
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskMonitorEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.CodexTaskMonitorEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskMonitorActiveWindowMinutes", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexTaskMonitorActiveWindowMinutes = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskMonitorActiveSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexTaskMonitorActiveSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskMonitorIdleSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexTaskMonitorIdleSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskMonitorTerminalHoldSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexTaskMonitorTerminalHoldSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskMonitorErrorHoldSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexTaskMonitorErrorHoldSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexTaskMonitorNumberCooldownSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CodexTaskMonitorNumberCooldownSeconds = intValue;
             return;
         }
 
@@ -3546,8 +4278,9 @@ internal sealed class WidgetSettings
 
         if (string.Equals(key, "OperationRenderVariant", StringComparison.OrdinalIgnoreCase))
         {
-            try { settings.OperationRenderVariant = (OperationRenderVariant)Enum.Parse(typeof(OperationRenderVariant), value, true); }
-            catch { settings.OperationRenderVariant = OperationRenderVariant.Classic; }
+            // Classic and the four historical OLED names intentionally fold to the only retained
+            // interaction model. Unknown/numeric legacy values follow the same compatibility path.
+            settings.OperationRenderVariant = OperationRenderVariant.RadialDial;
             return;
         }
 
@@ -4120,6 +4853,12 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "OperationDoubleClickSpecialMenuEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.OperationDoubleClickSpecialMenuEnabled = boolValue;
+            return;
+        }
+
         if (string.Equals(key, "OperationSettingsLogicExtensionEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.OperationSettingsLogicExtensionEnabled = boolValue;
@@ -4390,7 +5129,12 @@ internal sealed class WidgetSettings
             return logicalLeftX;
         }
 
-        return targetWorkArea.Left + RoundScaled(logicalLeftX, GetResolutionCompatibilityScaleFactor());
+        // Saved coordinates are absolute in the frame of the module's captured reference work
+        // area (the same base ScalePanelLayout re-bases from). Subtract the reference origin
+        // before projecting so a left/top taskbar or a non-zero-origin target display does not
+        // get counted twice.
+        Rectangle reference = GetModuleLayoutWorkArea(moduleId);
+        return targetWorkArea.Left + RoundScaled(logicalLeftX - reference.Left, GetResolutionCompatibilityScaleFactor());
     }
 
     public int MapResolutionCompatibilityBottom(string moduleId, Rectangle targetWorkArea, int logicalBottomY)
@@ -4400,7 +5144,8 @@ internal sealed class WidgetSettings
             return logicalBottomY;
         }
 
-        return targetWorkArea.Top + RoundScaled(logicalBottomY, GetResolutionCompatibilityScaleFactor());
+        Rectangle reference = GetModuleLayoutWorkArea(moduleId);
+        return targetWorkArea.Top + RoundScaled(logicalBottomY - reference.Top, GetResolutionCompatibilityScaleFactor());
     }
 
     private bool AdaptMainToWorkArea(Rectangle currentWorkArea)
@@ -5191,8 +5936,54 @@ internal sealed class WidgetSettings
 
     internal static void RunCompatibilitySelfTest()
     {
+        RunCodexTaskMonitorSettingsSelfTest();
         RunSpecBoardSettingsSelfTest();
+        RunWindowTransparencyOverrideSelfTest();
+        RunWindowScaleOverrideSelfTest();
+        GlobalHotkeyParser.RunSelfTest();
         WidgetSettings legacy = CreateDefaults();
+        AssertLayout(!legacy.OperationDoubleClickSpecialMenuEnabled, "operation double-click special menu should default off");
+        ApplyValue(legacy, "OperationDoubleClickSpecialMenuEnabled", "True");
+        AssertLayout(legacy.OperationDoubleClickSpecialMenuEnabled, "operation double-click special menu should parse true");
+        ApplyValue(legacy, "OperationDoubleClickSpecialMenuEnabled", "False");
+        AssertLayout(!legacy.OperationDoubleClickSpecialMenuEnabled, "operation double-click special menu should parse false");
+        string[] legacyOperationVariants = { "Classic", "Typographic", "AmberHud", "WarmCard", "Phosphor", "UnknownStyle", "999" };
+        for (int i = 0; i < legacyOperationVariants.Length; i++)
+        {
+            ApplyValue(legacy, "OperationRenderVariant", legacyOperationVariants[i]);
+            AssertLayout(
+                legacy.OperationRenderVariant == OperationRenderVariant.RadialDial,
+                "legacy Operation render variant should fold to RadialDial: " + legacyOperationVariants[i]);
+        }
+
+        string legacyOperationRoot = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-operation-variant-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(legacyOperationRoot);
+        try
+        {
+            string inputPath = Path.Combine(legacyOperationRoot, "settings.ini");
+            string savedPath = Path.Combine(legacyOperationRoot, "saved.ini");
+            File.WriteAllLines(inputPath, new string[]
+            {
+                "Version=" + CurrentSettingsVersion.ToString(CultureInfo.InvariantCulture),
+                "OperationRenderVariant=Classic"
+            });
+            WidgetSettings loadedLegacyOperation = LoadFromPath(inputPath, false);
+            AssertLayout(
+                loadedLegacyOperation.OperationRenderVariant == OperationRenderVariant.RadialDial,
+                "legacy Operation Classic settings file should load as RadialDial");
+            loadedLegacyOperation.SaveToPath(savedPath, false);
+            AssertLayout(
+                Array.Exists(
+                    File.ReadAllLines(savedPath),
+                    line => string.Equals(line, "OperationRenderVariant=RadialDial", StringComparison.Ordinal)),
+                "legacy Operation Classic settings file should save back as RadialDial");
+        }
+        finally
+        {
+            try { Directory.Delete(legacyOperationRoot, true); }
+            catch { }
+        }
+
         ApplyValue(legacy, "CtrlDRecoveryPulseEnabled", "False");
         AssertLayout(!legacy.WinDRecoveryPulseEnabled, "legacy Ctrl+D setting should migrate to Win+D");
 
@@ -5379,6 +6170,15 @@ internal sealed class WidgetSettings
             legacy.MapResolutionCompatibilityLeft(ModuleMain, targetWorkArea, 400) == 300 &&
             legacy.MapResolutionCompatibilityBottom(ModuleMain, targetWorkArea, 800) == 450,
             "resolution compatibility runtime projection should scale from the 2880x1800 reference origin");
+
+        legacy.LayoutWorkAreaLeft = 48;
+        legacy.LayoutWorkAreaTop = 20;
+        legacy.LayoutWorkAreaWidth = 2832;
+        legacy.LayoutWorkAreaHeight = 1780;
+        AssertLayout(
+            legacy.MapResolutionCompatibilityLeft(ModuleMain, targetWorkArea, 448) == 300 &&
+            legacy.MapResolutionCompatibilityBottom(ModuleMain, targetWorkArea, 820) == 450,
+            "resolution compatibility projection should re-base absolute coordinates on a non-zero reference origin");
 
         WidgetSettings compactRadar = CreateDefaults();
         compactRadar.CodexRadarWidth = 628;
@@ -5618,6 +6418,154 @@ internal sealed class WidgetSettings
         settings.MetricOrder = new string[] { MetricNpu, MetricGpu, MetricNetwork, MetricDisk, MetricMemory, MetricCpu };
     }
 
+    private static void RunWindowTransparencyOverrideSelfTest()
+    {
+        WidgetSettings defaults = CreateDefaults();
+        int[] values =
+        {
+            defaults.MainWidgetTransparencyOverridePercent,
+            defaults.CodexRadarTransparencyOverridePercent,
+            defaults.ClaudeRadarTransparencyOverridePercent,
+            defaults.PowerThermalTransparencyOverridePercent,
+            defaults.NetworkMonitorTransparencyOverridePercent,
+            defaults.ConnectionCheckTransparencyOverridePercent,
+            defaults.OperationTransparencyOverridePercent,
+            defaults.SpecBoardTransparencyOverridePercent,
+            defaults.CodexTaskBoardTransparencyOverridePercent
+        };
+        AssertLayout(Array.TrueForAll(values, value => value == -1), "window transparency overrides should default to global follow mode");
+
+        WidgetSettings clamped = defaults.Clone();
+        clamped.MainWidgetTransparencyOverridePercent = int.MinValue;
+        clamped.CodexRadarTransparencyOverridePercent = int.MaxValue;
+        clamped.Normalize();
+        AssertLayout(
+            clamped.MainWidgetTransparencyOverridePercent == MinWindowTransparencyOverridePercent &&
+            clamped.CodexRadarTransparencyOverridePercent == MaxWindowTransparencyOverridePercent,
+            "window transparency overrides should clamp to -1..90");
+
+        Console.WriteLine("Window transparency overrides: PASS defaults=-1 clamp=-1..90");
+    }
+
+    private static void RunWindowScaleOverrideSelfTest()
+    {
+        WidgetSettings defaults = CreateDefaults();
+        int[] values =
+        {
+            defaults.MainWidgetScaleOverridePercent,
+            defaults.CodexRadarScaleOverridePercent,
+            defaults.ClaudeRadarScaleOverridePercent,
+            defaults.PowerThermalScaleOverridePercent,
+            defaults.NetworkMonitorScaleOverridePercent,
+            defaults.ConnectionCheckScaleOverridePercent,
+            defaults.OperationScaleOverridePercent,
+            defaults.SpecBoardScaleOverridePercent,
+            defaults.CodexTaskBoardScaleOverridePercent
+        };
+        AssertLayout(Array.TrueForAll(values, value => value == -1), "window scale overrides should default to global follow mode");
+
+        WidgetSettings clamped = defaults.Clone();
+        clamped.MainWidgetScaleOverridePercent = int.MinValue;
+        clamped.CodexRadarScaleOverridePercent = 0;
+        clamped.ClaudeRadarScaleOverridePercent = int.MaxValue;
+        clamped.Normalize();
+        AssertLayout(
+            clamped.MainWidgetScaleOverridePercent == MinWindowScaleOverridePercent &&
+            clamped.CodexRadarScaleOverridePercent == MinResolutionCompatibilityScalePercent &&
+            clamped.ClaudeRadarScaleOverridePercent == MaxWindowScaleOverridePercent,
+            "window scale overrides should preserve -1 and clamp explicit values to 40..200");
+
+        Console.WriteLine("Window scale overrides: PASS defaults=-1 clamp=40..200");
+    }
+
+    private static void RunCodexTaskMonitorSettingsSelfTest()
+    {
+        WidgetSettings defaults = CreateDefaults();
+        AssertLayout(
+            defaults.CodexTaskMonitorEnabled &&
+            defaults.CodexTaskMonitorActiveWindowMinutes == 30 &&
+            defaults.CodexTaskMonitorActiveSeconds == 12 &&
+            defaults.CodexTaskMonitorIdleSeconds == 90 &&
+            defaults.CodexTaskMonitorTerminalHoldSeconds == 120 &&
+            defaults.CodexTaskMonitorErrorHoldSeconds == 30 &&
+            defaults.CodexTaskMonitorNumberCooldownSeconds == 120,
+            "Codex task monitor defaults");
+
+        WidgetSettings low = defaults.Clone();
+        low.CodexTaskMonitorActiveWindowMinutes = -1;
+        low.CodexTaskMonitorActiveSeconds = -1;
+        low.CodexTaskMonitorIdleSeconds = -1;
+        low.CodexTaskMonitorTerminalHoldSeconds = -1;
+        low.CodexTaskMonitorErrorHoldSeconds = -1;
+        low.CodexTaskMonitorNumberCooldownSeconds = -1;
+        low.Normalize();
+        AssertLayout(
+            low.CodexTaskMonitorActiveWindowMinutes == 5 &&
+            low.CodexTaskMonitorActiveSeconds == 3 &&
+            low.CodexTaskMonitorIdleSeconds == 30 &&
+            low.CodexTaskMonitorTerminalHoldSeconds == 0 &&
+            low.CodexTaskMonitorErrorHoldSeconds == 5 &&
+            low.CodexTaskMonitorNumberCooldownSeconds == 0,
+            "Codex task monitor low clamps");
+
+        WidgetSettings high = defaults.Clone();
+        high.CodexTaskMonitorActiveWindowMinutes = int.MaxValue;
+        high.CodexTaskMonitorActiveSeconds = int.MaxValue;
+        high.CodexTaskMonitorIdleSeconds = int.MaxValue;
+        high.CodexTaskMonitorTerminalHoldSeconds = int.MaxValue;
+        high.CodexTaskMonitorErrorHoldSeconds = int.MaxValue;
+        high.CodexTaskMonitorNumberCooldownSeconds = int.MaxValue;
+        high.Normalize();
+        AssertLayout(
+            high.CodexTaskMonitorActiveWindowMinutes == 60 &&
+            high.CodexTaskMonitorActiveSeconds == 60 &&
+            high.CodexTaskMonitorIdleSeconds == 600 &&
+            high.CodexTaskMonitorTerminalHoldSeconds == 1800 &&
+            high.CodexTaskMonitorErrorHoldSeconds == 300 &&
+            high.CodexTaskMonitorNumberCooldownSeconds == 3600,
+            "Codex task monitor high clamps");
+
+        string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-task-monitor-settings-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string path = Path.Combine(root, "settings.ini");
+            WidgetSettings saved = defaults.Clone();
+            saved.CodexTaskMonitorEnabled = false;
+            saved.CodexTaskMonitorActiveWindowMinutes = 45;
+            saved.CodexTaskMonitorActiveSeconds = 24;
+            saved.CodexTaskMonitorIdleSeconds = 240;
+            saved.CodexTaskMonitorTerminalHoldSeconds = 600;
+            saved.CodexTaskMonitorErrorHoldSeconds = 75;
+            saved.CodexTaskMonitorNumberCooldownSeconds = 900;
+            saved.SaveToPath(path, true);
+            WidgetSettings loaded = LoadFromPath(path, false);
+            AssertLayout(
+                !loaded.CodexTaskMonitorEnabled &&
+                loaded.CodexTaskMonitorActiveWindowMinutes == 45 &&
+                loaded.CodexTaskMonitorActiveSeconds == 24 &&
+                loaded.CodexTaskMonitorIdleSeconds == 240 &&
+                loaded.CodexTaskMonitorTerminalHoldSeconds == 600 &&
+                loaded.CodexTaskMonitorErrorHoldSeconds == 75 &&
+                loaded.CodexTaskMonitorNumberCooldownSeconds == 900,
+                "Codex task monitor save/load round-trip");
+
+            File.WriteAllLines(path, new string[] { "Version=69" }, SharedEncoding.Utf8NoBom);
+            WidgetSettings migrated = LoadFromPath(path, false);
+            AssertLayout(
+                migrated.CodexTaskMonitorEnabled &&
+                migrated.CodexTaskMonitorActiveWindowMinutes == 30 &&
+                migrated.CodexTaskMonitorNumberCooldownSeconds == 120,
+                "Codex task monitor Version 69 migration");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+
+        Console.WriteLine("Codex task monitor settings: PASS defaults clone normalize save/load migrate(v69->v70)");
+    }
+
     private static void RunSpecBoardSettingsSelfTest()
     {
         WidgetSettings defaults = CreateDefaults();
@@ -5625,6 +6573,7 @@ internal sealed class WidgetSettings
             defaults.SpecBoardWidth == 648 && defaults.SpecBoardHeight == 400 &&
             defaults.SpecBoardLeftX == -1 && defaults.SpecBoardBottomY == -1 &&
             defaults.SpecBoardAutoHideSeconds == 20 &&
+            defaults.LeftDockOutsideClickCollapseEnabled &&
             defaults.SpecBoardAutoPopupEnabled && defaults.SpecBoardAutoPopupSeconds == 5 &&
             string.Equals(defaults.SpecBoardLedgerPath, DefaultSpecBoardLedgerPath, StringComparison.Ordinal) &&
             defaults.SpecBoardManagerWidth == 720 && defaults.SpecBoardManagerHeight == 520 &&
@@ -5638,6 +6587,7 @@ internal sealed class WidgetSettings
             clone.SpecBoardLeftX == defaults.SpecBoardLeftX &&
             clone.SpecBoardBottomY == defaults.SpecBoardBottomY &&
             clone.SpecBoardAutoHideSeconds == defaults.SpecBoardAutoHideSeconds &&
+            clone.LeftDockOutsideClickCollapseEnabled == defaults.LeftDockOutsideClickCollapseEnabled &&
             clone.SpecBoardAutoPopupEnabled == defaults.SpecBoardAutoPopupEnabled &&
             clone.SpecBoardAutoPopupSeconds == defaults.SpecBoardAutoPopupSeconds &&
             string.Equals(clone.SpecBoardLedgerPath, defaults.SpecBoardLedgerPath, StringComparison.Ordinal) &&
@@ -5680,6 +6630,7 @@ internal sealed class WidgetSettings
             defaults.SpecBoardLeftX = 111;
             defaults.SpecBoardBottomY = 777;
             defaults.SpecBoardAutoHideSeconds = 45;
+            defaults.LeftDockOutsideClickCollapseEnabled = false;
             defaults.SpecBoardAutoPopupEnabled = false;
             defaults.SpecBoardAutoPopupSeconds = 17;
             defaults.SpecBoardLedgerPath = Path.Combine(tempRoot, "ledger.jsonl");
@@ -5692,6 +6643,7 @@ internal sealed class WidgetSettings
                 loaded.SpecBoardWidth == defaults.SpecBoardWidth && loaded.SpecBoardHeight == defaults.SpecBoardHeight &&
                 loaded.SpecBoardLeftX == defaults.SpecBoardLeftX && loaded.SpecBoardBottomY == defaults.SpecBoardBottomY &&
                 loaded.SpecBoardAutoHideSeconds == defaults.SpecBoardAutoHideSeconds &&
+                loaded.LeftDockOutsideClickCollapseEnabled == defaults.LeftDockOutsideClickCollapseEnabled &&
                 loaded.SpecBoardAutoPopupEnabled == defaults.SpecBoardAutoPopupEnabled &&
                 loaded.SpecBoardAutoPopupSeconds == defaults.SpecBoardAutoPopupSeconds &&
                 string.Equals(loaded.SpecBoardLedgerPath, defaults.SpecBoardLedgerPath, StringComparison.Ordinal) &&
@@ -5710,13 +6662,19 @@ internal sealed class WidgetSettings
                 migrated.SpecBoardManagerWidth == 720 && migrated.SpecBoardManagerHeight == 520 &&
                 migrated.SpecBoardManagerDangerZoneRequiresTypedConfirm,
                 "Spec Board Version 64 width and Version 65 manager settings migration failed");
+
+            File.WriteAllLines(path, new string[] { "Version=75" }, SharedEncoding.Utf8NoBom);
+            WidgetSettings outsideClickMigrated = LoadFromPath(path, false);
+            AssertLayout(
+                outsideClickMigrated.LeftDockOutsideClickCollapseEnabled,
+                "Spec Board Version 75 outside-click migration failed");
         }
         finally
         {
             try { Directory.Delete(tempRoot, true); } catch { }
         }
 
-        Console.WriteLine("SpecBoard settings: PASS board+manager keys default=648x400/720x520 migrate(v64 432->648,v65 manager defaults) clone save/load normalize");
+        Console.WriteLine("SpecBoard settings: PASS board+manager+outside-click keys migrate(v64/v65/v75->v76) clone save/load normalize");
     }
 
     private static void AssertFullRoundTripEqual(
@@ -6162,10 +7120,24 @@ internal sealed class WidgetSettings
         return value == -1 || (value >= 0 && value <= 1000000) ? value : -1;
     }
 
+    private static int NormalizeLeftDockTabCenterY(int value)
+    {
+        return value == AutoLeftDockTabCenterY || (value >= 0 && value <= 1000000) ? value : AutoLeftDockTabCenterY;
+    }
+
     private static string NormalizeSpecBoardLedgerPath(string value)
     {
         string normalized = (value ?? string.Empty).Trim().Trim('"');
         return normalized.Length == 0 ? DefaultSpecBoardLedgerPath : normalized;
+    }
+
+    private static int NormalizeWindowScaleOverride(int value)
+    {
+        // Every negative value means "follow global" so malformed legacy input cannot
+        // accidentally shrink a single window; explicit overrides use the supported scale floor.
+        return value < 0
+            ? MinWindowScaleOverridePercent
+            : Clamp(value, MinResolutionCompatibilityScalePercent, MaxWindowScaleOverridePercent);
     }
 
     private static int Clamp(int value, int min, int max)

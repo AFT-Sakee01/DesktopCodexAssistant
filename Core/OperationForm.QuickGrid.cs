@@ -354,6 +354,7 @@ internal sealed partial class OperationForm
         {
             this.owner = owner;
             this.items = owner.BuildQuickGridItems();
+            this.CurrentSettings = owner.CurrentSettings;
             ApplicationIcon.ApplyTo(this);
             InitializeLayerScaleFromCurrentDpi();
             ApplyLayerScaleFromSettings(owner.CurrentSettings);
@@ -375,6 +376,7 @@ internal sealed partial class OperationForm
 
         public void ApplyRuntimeSettings(WidgetSettings settings)
         {
+            this.CurrentSettings = settings;
             ApplyLayerScaleFromSettings(settings);
             Size desired = GetDesiredQuickGridSize();
             if (this.Size != desired)
@@ -391,6 +393,21 @@ internal sealed partial class OperationForm
             {
                 InvalidateLayeredRenderBuffer();
             }
+        }
+
+        protected override int WindowTransparencyOverridePercent
+        {
+            get { return this.CurrentSettings.OperationTransparencyOverridePercent; }
+        }
+
+        protected override int WindowScaleOverridePercent
+        {
+            get { return this.CurrentSettings.OperationScaleOverridePercent; }
+        }
+
+        public void RefreshNightScheduleFromOwnerTick()
+        {
+            RefreshNightScheduleAtExistingTick();
         }
 
         public void ShowQuickGrid()

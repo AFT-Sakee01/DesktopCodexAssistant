@@ -1665,6 +1665,7 @@ internal sealed class SpecBoardManagerForm : Form
                 form.DrawToBitmap(bitmap, new Rectangle(0, 0, bounds.Width, bounds.Height));
             }
 
+            RenderSampleSupport.ApplyProofLuminance(bitmap);
             bitmap.Save(path, ImageFormat.Png);
             Console.WriteLine(path + " (" + bounds.Width + "x" + bounds.Height + (onScreen ? ", screen" : ", wm_print") + ")");
         }

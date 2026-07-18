@@ -1,6 +1,6 @@
 # 性能模式、主窗口与指标运行机制
 
-适用版本：1.0.5.24
+适用版本：1.0.5.65
 
 ## 1. 文档范围
 
@@ -418,7 +418,7 @@ RadialDial 仍被 `PositionOperationWindow` 固定在左下角并只向右上 90
 
 RadialDial 展开后的自动收回由 `OperationRadialIdleCollapseSeconds` 控制，默认 10 秒；设置为 0 时永不自动收回，设置页限制 1-60 秒。`OperationRadialIdleResetOnInteractionEnabled` 默认开启，开启时鼠标移动、按下或展开分支都会刷新 `radialLastInteractionUtc`；关闭时倒计时从打开菜单时持续计算，用户交互不延长本轮展开时间。`OperationRadialKeepOpenAfterLeafClickEnabled` 默认开启，点击末端叶子按钮后保持当前菜单展开并重置收回计时；关闭时恢复叶子执行后自动收起。
 
-RadialDial 核心圆圈双击会调用 `OperationForm.ToggleQuickGridWindow()`，在操作主按钮右上角显示 `OperationQuickGridForm`。该窗口复用分层窗口渲染和 `OperationForm.ExecuteQuickGridButton()`，背景板透明度复用操作面板的背景透明度计算；初始内容由 `BuildQuickGridItems()` 生成，按备份版 12 个小按钮顺序排列为纵向 3 格、横向 4 格：Windows 设置、电源菜单、悬停透明度、刷新、程序设置、任务管理器、重启、快速设置、电池暂停、实时字幕、电池恢复、AI Studio。网格基准常量仍为 `QuickGridCellPixels = 100`、`QuickGridGapPixels = 10`、`QuickGridPaddingPixels = 10`，`QuickGridColumns = 4`，实际显示再乘以 `QuickGridVisualScale = 1/3`；当前 12 项在 1x 样本中输出 147x111，未来新增项只需追加 `QuickGridItem`，窗口会继续按 4 列自动增加行数。显示期间点击网格空白或窗口外部会关闭；点击任意网格按钮时先关闭窗口再执行既有动作。`--render-operation` 会额外输出 `operation-quick-grid.png` 用于检查该窗口。
+RadialDial 核心圆圈与非 Radial 模式的左侧主操作按钮共用 `OperationForm.HandleSpecBoardEntryMouseUp()` 和 `OperationForm.HandleSpecBoardEntryDoubleClick()`。第一次 MouseUp 立即执行单击动作，不等待系统双击间隔；若第二次点击构成双击，则先收起第一次单击打开的 Radial 菜单，再执行双击动作并吞掉第二次 MouseUp。`OperationDoubleClickSpecialMenuEnabled` 默认关闭；双击时通过宿主已有的 `WidgetForm.ToggleForcedHoverOpacity()` 回调直接开关隐藏模式。用户在“操作面板 → 按钮与面板”手动开启“双击打开特殊菜单”后，双击才显示 `OperationLauncherTrioForm`，提供 Spec 管理、Codex 任务和睡眠防护三个入口。关闭该设置会立即收起已显示的特殊菜单。该路径不再使用专用单击定时器。
 
 FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞读取性能计数器。性能、均衡、省电模式的刷新间隔分别为 1、2、5 秒；值未变化时不重绘。
 
@@ -428,7 +428,7 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 
 各监测窗口使用 Windows layered window。界面先绘制到内存 `Bitmap`，再通过 `UpdateLayeredWindow` 一次提交带 Alpha 的画面。这样可以实现无边框、每像素透明度和桌面层显示。
 
-非桌面模式下的监测浮窗使用受保护浮层感知的 Z-order 策略：`LayeredWidgetFormBase.GetLayeredWidgetInsertAfter()` 通过 `NativeMethods.GetSeelenAwareTopMostInsertAfter(bool)` 查找可见、TopMost、非零尺寸的 SeelenUI `Tauri Window`；当 `CodexPetZOrderProtectionEnabled = true` 时，还会识别 OpenAI Codex 桌面包中使用 `Chrome_WidgetWin_1` 且带 `WS_EX_TOOLWINDOW` 的宠物浮层。枚举器选择整个受保护顶层窗口栈里最靠下的一个作为 insert-after，使本程序所有分层小窗同时低于 SeelenUI Dock/顶部栏/弹出层和 Codex 宠物；找不到符合条件的窗口时回退 `HWND_TOPMOST`。该设置默认开启并可在“系统 → 窗口行为”即时切换；桌面模式仍使用桌面宿主层或 `HWND_TOP`，不参与该策略。
+非桌面模式下的监测浮窗使用受保护浮层感知的 Z-order 策略：`LayeredWidgetFormBase.GetLayeredWidgetInsertAfter()` 通过 `NativeMethods.PrepareSeelenAwareTopMostInsertAfter(bool)` 查找可见、TopMost、非零尺寸的 SeelenUI `Tauri Window`；当 `CodexPetZOrderProtectionEnabled = true` 时，还会识别 OpenAI Codex 桌面包中使用 `Chrome_WidgetWin_1` 且带 `WS_EX_TOOLWINDOW` 的宠物浮层。每次应用窗口层级前先保持原相对顺序地把受保护窗口组归到 TopMost 栈最前方，再把本程序窗口插到受保护组最下方，因此本程序仍低于 SeelenUI Dock/顶部栏/弹出层和可选 Codex 宠物，但高于其他普通及后来出现的 TopMost 应用。`AlwaysVisible` 模式还复用 `ApplicationWindowStateTracker` 的前台 WinEvent 调用 `NativeMethods.RestoreCurrentProcessTopMostWindows(bool)`：它枚举当前进程全部可见 TopMost 窗口，包含独立看板、左缘 tab 和后续新增浮层，不依赖固定窗体字段列表，也不新增轮询计时器。该设置默认开启并可在“系统 → 窗口行为”即时切换；关闭宠物保护时只保留 SeelenUI 在本程序上方；桌面模式仍使用桌面宿主层或 `HWND_TOP`，不参与该策略。
 
 透明度分成两部分：
 
@@ -462,7 +462,13 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 
 目标显示器留空时使用当前主显示器。指定显示器断开时，`FallbackDisconnectedDisplaysEnabled` 默认让对应模块回退到当前主显示器；关闭后保留该模块上次记录的显示器工作区，不强制挤回已有显示器。因此用户在当前分辨率和显示器组合下调整好的屏占比，会在切换分辨率、外接显示器模式变化或息屏唤醒后尽量保持一致。
 
-`ResolutionCompatibilityModeEnabled` 默认关闭。开启后，`WidgetSettings` 把保存的 `2880x1800` 参考布局视为逻辑画布，并通过 `ResolutionCompatibilityScalePercent` 在运行时投影主窗口、Codex Radar、Claude Radar、功耗温度、网络监控、连接检测和操作面板的位置与尺寸。`LayeredWidgetFormBase.ApplyLayerScaleFromSettings` 同步调整 `LayerScale`，让文字、线宽、圆角和图标跟随窗口缩放；低于 `100%` 用于压缩预览，超过 `100%` 用于放大预览。该模式不改写保存的真实布局坐标，全局编辑模式会临时关闭兼容投影，避免把预览坐标保存回正常布局。
+`ResolutionCompatibilityModeEnabled` 默认关闭。开启后，`WidgetSettings` 把保存的 `2880x1800` 参考布局视为逻辑画布，并通过 `ResolutionCompatibilityScalePercent` 在运行时投影主窗口、Codex Radar、Claude Radar、功耗温度、网络监控、连接检测和操作面板的位置与尺寸。`LayeredWidgetFormBase.ApplyLayerScaleFromSettings` 同步调整 `LayerScale`，让文字、线宽、圆角和图标跟随窗口缩放；低于 `100%` 用于压缩预览，超过 `100%` 用于放大预览。该模式不改写保存的真实布局坐标，全局编辑模式会临时关闭兼容投影，避免把预览坐标保存回正常布局。投影坐标与 `ScalePanelLayout` 使用同一重定基语义：`MapResolutionCompatibilityLeft` / `MapResolutionCompatibilityBottom` 先减去模块参考工作区（`GetModuleLayoutWorkArea`）的原点，再加上目标工作区原点，因此任务栏在左/上或目标显示器原点非零时不会被重复计入。
+
+1.0.5.54 起，9 个窗口对象分别提供 `*ScaleOverridePercent`，取值 `-1` 或 `40..200`。`-1` 继续完全跟随上述全局兼容缩放；显式值同时替换 `LayerScale` 与窗口物理边界缩放，防止只放大内容而裁切画布。Operation 的 QuickGrid/启动器子窗跟随 Operation 覆盖，Spec Board/Codex 任务看板的左缘 tab 跟随各自宿主。Codex Radar 的 Ring/Text 手动缩放仍是元素级微调，叠加在窗口缩放之上。
+
+1.0.5.53 起，夜间时段不增加独立计时器：各窗口在既有 tick 调用 `RefreshNightScheduleAtExistingTick`，边界变化时失效分层位图；`BurnInProtection.ApplyLuminance` 只缩放 RGB 并保留 alpha。1.0.5.55 起，提醒展示统一经 `AlertPresentationPolicy` 与夜间勿扰做 AND 判定；关闭分类或进入勿扰只中和颜色、图标、文本与系统通知，不停止额度、重置保护、服务健康、Codex 任务或 DeepSeek 余额采集。
+
+1.0.5.56 起，用户可配置的三个全局热键只由 `WidgetForm` 注册。全窗隐藏复用统一可见性来源，悬停透明度复用 QuickGrid 动作，打开设置复用 `OpenSettings`；设置热加载按规范化签名重注册，句柄销毁统一注销。
 
 设置页“全局编辑”使用 `GlobalLayoutEditorForm` 打开全屏编辑层。底层遮罩为 50% 黑色，顶层透明交互层显示模块边框、顶部提示和拖拽辅助线。进入编辑模式后，`WidgetForm` 使用临时运行态设置禁用所有隐藏/悬停透明规则，并通过窗口层级刷新回调把所有模块保持在遮罩之上；拖拽过程中每次鼠标移动都会实时调用预览并刷新窗口层级。拖拽时，活动窗口四边中点会连接到当前屏幕四边并标注像素距离；与其他模块在水平或垂直方向可直线连接且间距小于 `500 px` 时，每个其他模块最多绘制一根连接线。Enter 保存并退出，Esc 放弃并还原进入编辑前的预览设置。
 

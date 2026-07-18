@@ -72,8 +72,8 @@ internal sealed partial class CodexRadarForm
         cellRect = GetEvenRowCompactRingCellRect(new RectangleF(x, bounds.Top, ringCellWidth, bounds.Height), compactCellHeight);
         if (quotaState.Snapshot.FiveHourLimitAbsent)
         {
-            // 5-hour limit removed: repurpose this cell as the weekly budget/pace ring.
-            DrawEvenLayoutWeeklyBudgetCell(g, cellRect, quotaState);
+            // 5-hour limit removed: repurpose this cell as the measured weekly burn-rate ring.
+            DrawEvenLayoutWeeklyBurnRateCell(g, cellRect, quotaState);
         }
         else
         {
@@ -297,6 +297,30 @@ internal sealed partial class CodexRadarForm
         }
     }
 
+    // The task ring belongs to Codex sessions, so it is assembled here rather than inside the shared
+    // dial: the Claude radar draws the same dial and must not inherit Codex task state.
+    private CodexTaskRingModel GetEvenRowCodexTaskRing()
+    {
+        if (this.CurrentSettings == null || !this.CurrentSettings.CodexTaskMonitorEnabled)
+        {
+            return null;
+        }
+
+        if (GetEffectiveCodexRadarSoftwareMode() != CodexRadarSoftwareMode.Codex)
+        {
+            return null;
+        }
+
+        if (!AlertPresentationPolicy.ShouldPresent(
+            this.CurrentSettings,
+            AlertPresentationCategory.CodexTask))
+        {
+            return null;
+        }
+
+        return CodexTaskPresentation.BuildRing(CodexTaskPresentation.GetSnapshot());
+    }
+
     // Snapshot access remains window-owned; shared state/geometry/drawing lives in RadarClockDial.
     private void DrawEvenRowBatchDial(Graphics g, RectangleF rect, CodexRadarSnapshot radarSnapshot)
     {
@@ -342,7 +366,8 @@ internal sealed partial class CodexRadarForm
             LastAttemptKnown = lastAttemptKnown,
             LastAttemptLocal = lastAttemptLocal,
             LastActualKnown = localKnown,
-            LastActualLocal = localTime
+            LastActualLocal = localTime,
+            TaskRing = GetEvenRowCodexTaskRing()
         });
 
         Font dayFont = this.fontCache.GetUi(Math.Max(9.0f, 11.5f * this.LayerScale), FontStyle.Bold);

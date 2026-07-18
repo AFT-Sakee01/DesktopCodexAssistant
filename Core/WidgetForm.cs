@@ -26,6 +26,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private const int SeelenDockPulseFallbackIntervalMs = 30 * 60 * 1000;
     private const int WinDRecoveryDelayMs = 2000;
     private const int PowerResumeRestartGuardSeconds = 30;
+    private const int HotkeyToggleAllWindowsId = 0x51A1;
+    private const int HotkeyToggleHoverOpacityId = 0x51A2;
+    private const int HotkeyOpenSettingsId = 0x51A3;
     private static readonly string[] HardwareVendorPrefixes = new string[]
     {
         "Western Digital",
@@ -99,6 +102,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool desktopAttached;
     private bool hiddenForFullscreen;
     private bool globalLayoutEditActive;
+    private bool manualAllWindowsHidden;
     private bool childWindowLifecycleStarted;
     private CodexRadarForm codexRadarForm;
     private ClaudeRadarForm claudeRadarForm;
@@ -146,6 +150,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool seelenUiWasRunningBeforePowerSuspend;
     private string seelenUiExecutablePathBeforePowerSuspend = string.Empty;
     private DateTime lastPowerResumeRestartUtc;
+    private readonly Dictionary<int, string> registeredGlobalHotkeys = new Dictionary<int, string>();
+    private readonly Dictionary<string, string> globalHotkeyRegistrationFailures =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+    private string globalHotkeyConfigurationSignature = string.Empty;
+    private bool globalHotkeyConfigurationApplied;
 
     public WidgetForm(PdhSampler sampler, EventWaitHandle stopEvent, WidgetSettings settings, bool useDesktopParent)
     {
@@ -203,9 +212,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
         this.Opacity = 1.0;
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
-        this.Size = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(this.CurrentSettings.Width, this.CurrentSettings.Height));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
+        this.Size = ScaleWindowSize(new Size(this.CurrentSettings.Width, this.CurrentSettings.Height));
         ApplicationIcon.ApplyTo(this);
         this.ContextMenuStrip = BuildContextMenu();
         BuildNotifyIcon();
@@ -322,6 +331,14 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         this.applicationWindowStateTracker.ProcessWindowEvent(eventId, windowHandle);
         UpdateVisibilityForMode();
+        if (eventId == NativeMethods.EVENT_SYSTEM_FOREGROUND &&
+            !this.globalLayoutEditActive &&
+            this.CurrentSettings != null &&
+            this.CurrentSettings.VisibilityMode == WidgetVisibilityMode.AlwaysVisible)
+        {
+            RestoreApplicationTopMostPriority();
+        }
+
         if (this.CurrentSettings != null && this.CurrentSettings.AutoHoverOpacityMaximizedEnabled)
         {
             UpdateAutomaticHoverOpacityTriggers();
@@ -473,10 +490,16 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 this.effectivePowerModeCallback,
                 out this.effectivePowerModeNotificationHandle);
         }
+
+        ApplyGlobalHotkeyConfiguration();
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        UnregisterAllGlobalHotkeys();
+        this.globalHotkeyConfigurationApplied = false;
+        this.globalHotkeyConfigurationSignature = string.Empty;
+
         if (this.displayPowerNotificationHandle != IntPtr.Zero)
         {
             NativeMethods.UnregisterPowerNotification(this.displayPowerNotificationHandle);
@@ -615,6 +638,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     {
         const int WM_DISPLAYCHANGE = 0x007E;
         const int WM_SETTINGCHANGE = 0x001A;
+
+        if (m.Msg == NativeMethods.WM_HOTKEY)
+        {
+            HandleGlobalHotkey(m.WParam.ToInt32());
+            m.Result = IntPtr.Zero;
+            return;
+        }
 
         base.WndProc(ref m);
 
@@ -1155,34 +1185,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        IntPtr insertAfter = GetLayeredWidgetInsertAfter(true, this.CurrentSettings.CodexPetZOrderProtectionEnabled);
-        PulseFormToTopMost(this, insertAfter);
-        PulseFormToTopMost(this.codexRadarForm, insertAfter);
-        PulseFormToTopMost(this.claudeRadarForm, insertAfter);
-        PulseFormToTopMost(this.powerThermalForm, insertAfter);
-        PulseFormToTopMost(this.networkMonitorForm, insertAfter);
-        PulseFormToTopMost(this.connectionCheckForm, insertAfter);
-        PulseFormToTopMost(this.operationForm, insertAfter);
-    }
-
-    private static void PulseFormToTopMost(Form form, IntPtr insertAfter)
-    {
-        if (form == null || form.IsDisposed || !form.IsHandleCreated || !form.Visible)
-        {
-            return;
-        }
-
-        NativeMethods.SetWindowPos(
-            form.Handle,
-            insertAfter,
-            0,
-            0,
-            0,
-            0,
-            NativeMethods.SWP_NOACTIVATE |
-            NativeMethods.SWP_NOMOVE |
-            NativeMethods.SWP_NOSIZE |
-            NativeMethods.SWP_SHOWWINDOW);
+        // Enumerating the process covers independently owned overlays such as dock tabs and task
+        // boards, which a fixed Form field list cannot keep complete as new surfaces are added.
+        NativeMethods.RestoreCurrentProcessTopMostWindows(
+            this.CurrentSettings.CodexPetZOrderProtectionEnabled);
     }
 
     private bool ApplyDisplayLayoutForCurrentWorkArea()
@@ -1240,6 +1246,12 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void OnTimerTick(object sender, EventArgs e)
     {
+        RefreshNightScheduleAtExistingTick();
+        if (this.operationForm != null && !this.operationForm.IsDisposed)
+        {
+            this.operationForm.RefreshNightScheduleFromOwnerTick();
+        }
+
         long tickStart = TimingStats.StartTimestamp();
         UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:start");
         if (this.stopEvent.WaitOne(0))
@@ -1274,7 +1286,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             if (this.codexQuotaGoalPlanner != null)
             {
                 UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:codex_quota_goal_plan");
-                this.codexQuotaGoalPlanner.ProcessMaintenanceTick(this.CurrentSettings, ShowWindowsNotification);
+                Action<string, string, ToolTipIcon> quotaNotification =
+                    AlertPresentationPolicy.ShouldPresent(this.CurrentSettings, AlertPresentationCategory.Quota)
+                        ? (Action<string, string, ToolTipIcon>)ShowWindowsNotification
+                        : null;
+                this.codexQuotaGoalPlanner.ProcessMaintenanceTick(this.CurrentSettings, quotaNotification);
             }
 
             if (this.hiddenForFullscreen &&
@@ -1679,10 +1695,132 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     {
         this.manualForceHoverOpacityActive = !this.manualForceHoverOpacityActive;
         Program.LogInfo(
-            "Forced hover opacity toggled from operation panel. ManualActive=" +
+            "Forced hover opacity toggled from shared action. ManualActive=" +
             this.manualForceHoverOpacityActive.ToString());
         ApplyCombinedHoverOpacityState("operation panel toggle");
         return this.CurrentSettings.ForceHoverOpacityActive;
+    }
+
+    internal bool TryGetGlobalHotkeyRegistrationFailure(string settingName, out string failure)
+    {
+        return this.globalHotkeyRegistrationFailures.TryGetValue(settingName ?? string.Empty, out failure);
+    }
+
+    private void ApplyGlobalHotkeyConfiguration()
+    {
+        if (!this.IsHandleCreated || this.CurrentSettings == null)
+        {
+            return;
+        }
+
+        string signature = string.Join(
+            "\n",
+            this.CurrentSettings.HotkeyToggleAllWindows ?? string.Empty,
+            this.CurrentSettings.HotkeyToggleHoverOpacity ?? string.Empty,
+            this.CurrentSettings.HotkeyOpenSettings ?? string.Empty);
+        if (this.globalHotkeyConfigurationApplied &&
+            string.Equals(signature, this.globalHotkeyConfigurationSignature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        // Registration is replaced atomically per normalized settings snapshot. Remembering the
+        // signature prevents preview ticks and settings-window reopen cycles from retrying a
+        // conflicting binding without an actual setting change.
+        UnregisterAllGlobalHotkeys();
+        this.globalHotkeyRegistrationFailures.Clear();
+        RegisterGlobalHotkey(
+            HotkeyToggleAllWindowsId,
+            "HotkeyToggleAllWindows",
+            this.CurrentSettings.HotkeyToggleAllWindows);
+        RegisterGlobalHotkey(
+            HotkeyToggleHoverOpacityId,
+            "HotkeyToggleHoverOpacity",
+            this.CurrentSettings.HotkeyToggleHoverOpacity);
+        RegisterGlobalHotkey(
+            HotkeyOpenSettingsId,
+            "HotkeyOpenSettings",
+            this.CurrentSettings.HotkeyOpenSettings);
+        this.globalHotkeyConfigurationSignature = signature;
+        this.globalHotkeyConfigurationApplied = true;
+    }
+
+    private void RegisterGlobalHotkey(int id, string settingName, string text)
+    {
+        GlobalHotkeyBinding binding;
+        if (!GlobalHotkeyParser.TryParse(text, out binding))
+        {
+            return;
+        }
+
+        int win32Error;
+        if (NativeMethods.TryRegisterGlobalHotkey(
+            this.Handle,
+            id,
+            binding.Modifiers,
+            binding.VirtualKey,
+            out win32Error))
+        {
+            this.registeredGlobalHotkeys[id] = settingName;
+            Program.LogInfo(
+                "Global hotkey registered. Setting=" + settingName +
+                " Binding=" + binding.NormalizedText);
+            return;
+        }
+
+        string failure = "注册失败（Win32 " + win32Error.ToString(CultureInfo.InvariantCulture) + "）";
+        this.globalHotkeyRegistrationFailures[settingName] = failure;
+        Program.LogInfo(
+            "Global hotkey registration failed. Setting=" + settingName +
+            " Binding=" + binding.NormalizedText +
+            " Win32Error=" + win32Error.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private void UnregisterAllGlobalHotkeys()
+    {
+        if (!this.IsHandleCreated)
+        {
+            this.registeredGlobalHotkeys.Clear();
+            return;
+        }
+
+        foreach (int id in this.registeredGlobalHotkeys.Keys)
+        {
+            NativeMethods.UnregisterGlobalHotkey(this.Handle, id);
+        }
+
+        this.registeredGlobalHotkeys.Clear();
+    }
+
+    private void HandleGlobalHotkey(int id)
+    {
+        if (!this.registeredGlobalHotkeys.ContainsKey(id))
+        {
+            return;
+        }
+
+        if (id == HotkeyToggleAllWindowsId)
+        {
+            this.manualAllWindowsHidden = !this.manualAllWindowsHidden;
+            Program.LogInfo(
+                "Global hotkey action. Action=toggle_all_windows Hidden=" +
+                this.manualAllWindowsHidden.ToString());
+            UpdateVisibilityForMode();
+            return;
+        }
+
+        if (id == HotkeyToggleHoverOpacityId)
+        {
+            Program.LogInfo("Global hotkey action. Action=toggle_hover_opacity");
+            ToggleForcedHoverOpacity();
+            return;
+        }
+
+        if (id == HotkeyOpenSettingsId)
+        {
+            Program.LogInfo("Global hotkey action. Action=open_settings");
+            OpenSettings();
+        }
     }
 
     internal bool PromptToggleAiRequestBlockingFromOperationPanel()
@@ -2011,16 +2149,17 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         nextSettings.ForceHoverOpacityActive = IsCombinedHoverOpacityActive();
         nextSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.CurrentSettings = nextSettings;
+        ApplyGlobalHotkeyConfiguration();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
         Program.ApplyPerformanceMode(this.CurrentSettings.PerformanceMode);
         UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:timers");
         ApplyPerformanceTimerIntervals();
         UpdateSeelenDockPulseTimer();
         UpdateWinDRecoveryWatcher();
 
-        Size desiredSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(this.CurrentSettings.Width, this.CurrentSettings.Height));
+        Size desiredSize = ScaleWindowSize(new Size(this.CurrentSettings.Width, this.CurrentSettings.Height));
         if (this.Size != desiredSize)
         {
             this.Size = desiredSize;
@@ -2730,11 +2869,20 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private bool ShouldHideFormForVisibilityMode(Form form)
     {
-        if (this.CurrentSettings == null ||
-            this.globalLayoutEditActive ||
-            this.applicationWindowStateTracker == null ||
-            form == null ||
+        if (this.CurrentSettings == null || form == null ||
             form.IsDisposed)
+        {
+            return false;
+        }
+
+        // Manual hide is an independent visibility source. Keeping it in the shared visibility
+        // decision preserves fullscreen/overlap state so un-hiding restores the correct policy.
+        if (this.manualAllWindowsHidden && !this.globalLayoutEditActive)
+        {
+            return true;
+        }
+
+        if (this.globalLayoutEditActive || this.applicationWindowStateTracker == null)
         {
             return false;
         }
@@ -3221,7 +3369,20 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         float graphW = Math.Min(S(86), Math.Max(S(58), area.Width * 0.34f));
         float graphH = Math.Max(S(32), area.Height - S(8));
         RectangleF graphRect = new RectangleF(area.X, area.Y + Math.Max(0, (area.Height - graphH) / 2), graphW, graphH);
-        DrawGraph(g, graphRect, panel.Colors, panel.Histories, panel.GraphMax, panel.AutoScale, panel.IsNetworkDisconnected, panel.CoreValues, panel.AlertPercent, panel.AlertIconVisible);
+        bool quotaAlertsVisible = AlertPresentationPolicy.ShouldPresent(
+            this.CurrentSettings,
+            AlertPresentationCategory.Quota);
+        DrawGraph(
+            g,
+            graphRect,
+            panel.Colors,
+            panel.Histories,
+            panel.GraphMax,
+            panel.AutoScale,
+            panel.IsNetworkDisconnected,
+            panel.CoreValues,
+            quotaAlertsVisible ? panel.AlertPercent : 0.0,
+            quotaAlertsVisible && panel.AlertIconVisible);
 
         if (panel.IsNetworkDisconnected)
         {
@@ -3336,9 +3497,19 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
-    protected override byte GetApplicationOpacityAlpha()
+    protected override int WindowTransparencyOverridePercent
     {
-        return (byte)ApplyHoverTransparencyTarget(255);
+        get { return this.CurrentSettings.MainWidgetTransparencyOverridePercent; }
+    }
+
+    protected override int WindowScaleOverridePercent
+    {
+        get { return this.CurrentSettings.MainWidgetScaleOverridePercent; }
+    }
+
+    protected override int ApplyHoverAlpha(int alpha)
+    {
+        return ApplyHoverTransparencyTarget(alpha);
     }
 
     private int ApplyHoverTransparencyTarget(int alpha)
@@ -3486,23 +3657,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         if (!this.fontCache.TryGetValue(key, out font))
         {
             font = DesignTokens.CreateUIFont(normalizedSize, style, GraphicsUnit.Pixel);
-            this.fontCache[key] = font;
-        }
-
-        return font;
-    }
-
-    // Mono counterpart of GetCachedFont, needed by the AmberHud/Phosphor OLED-safe restyle schemes
-    // (added in 1.0.3.44). Shares the same cache dictionary via an "M:" key prefix so it cannot
-    // collide with the UI-font entries GetCachedFont writes.
-    private Font GetCachedMonoFont(float size, FontStyle style)
-    {
-        float normalizedSize = (float)Math.Round(Math.Max(1.0f, size), 2);
-        string key = "M:" + normalizedSize.ToString("0.00", CultureInfo.InvariantCulture) + "|" + ((int)style).ToString(CultureInfo.InvariantCulture);
-        Font font;
-        if (!this.fontCache.TryGetValue(key, out font))
-        {
-            font = DesignTokens.CreateMonoFont(normalizedSize, style, GraphicsUnit.Pixel);
             this.fontCache[key] = font;
         }
 

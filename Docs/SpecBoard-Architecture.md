@@ -1,6 +1,6 @@
 # Spec Board 架构
 
-适用版本：1.0.5.39
+适用版本：1.0.5.59
 
 本文负责跨项目 spec 账本读取、对账、看板窗口、交互和只读边界。
 
@@ -14,9 +14,11 @@
 
 ## 窗口与交互
 
-`SpecBoardForm` 继承 `LayeredWidgetFormBase`，复用 `NativeMethods.LayeredBitmapSurface`、`UiFontCache`、`DesignTokens` 和 `BurnInProtection`。窗口无任务栏按钮、无激活显示。`SpecBoardWidth/Height`（默认 648×400）是 96-DPI 逻辑尺寸：`GetDesiredSize` 按 `LayerScale`（DPI × 分辨率兼容系数）放大成物理窗口尺寸——内容和画布必须走同一缩放系数，否则高 DPI 屏上内容按 DPI 放大而窗口不放大，所有元素双倍拥挤互相遮挡（1.0.5.25 修复）。标题、项目行、段头、卡片和 footer 高度均来自当前字体实测；卡片副行的项目名按实测可用宽度显示全名，放不下才从尾部截断（保住右侧事件时间，`FitProjectLabel`）。
+`SpecBoardForm` 继承 `LayeredWidgetFormBase`，复用 `NativeMethods.LayeredBitmapSurface`、`UiFontCache`、`DesignTokens` 和 `BurnInProtection`。窗口无任务栏按钮、无激活显示。`SpecBoardWidth/Height`（默认 648×400）是 96-DPI 逻辑尺寸：`GetDesiredSize` 按 `LayerScale`（DPI × 生效窗口缩放）放大成物理窗口尺寸；`SpecBoardScaleOverridePercent=-1` 时生效值来自全局分辨率兼容缩放，显式 `40..200` 时覆盖全局并由左缘 tab 共同跟随。内容和画布必须走同一缩放系数，否则高 DPI/独立缩放下内容会拥挤或裁切。标题、项目行、段头、卡片和 footer 高度均来自当前字体实测；卡片副行的项目名按实测可用宽度显示全名，放不下才从尾部截断（保住右侧事件时间，`FitProjectLabel`）。
 
-左栏按项目过滤，右栏依次显示未登记、需要执行、需要修改、等待验证。四段同时非空时按右栏实测高度压缩段头、卡片和间距，每段仍至少保留一张完整卡片；不足处在段头或段尾显示 `+N`。卡片单击等待 `SystemInformation.DoubleClickTime` 后把 spec 绝对路径写入系统剪贴板；复制成功后，窗口右下角显示约 2 秒的绿色“已复制 Spec 绝对路径”提示，并复用维护 tick 清除。双击取消待复制动作并通过系统默认程序打开 spec，丢失或异常路径回退到项目目录。双击后的第二次 MouseUp 会被吞掉，保证不会在打开文件后再次覆盖剪贴板。主看板本身不提供状态写入控件。
+`SpecBoardWidth` 允许 240–700：逻辑宽小于 `SpecBoardForm.CompactRailMinimumLogicalWidth = 360` 时进入**紧凑单列模式**——项目栏、项目过滤与新鲜度点隐藏（卡片副行本就带项目名，信息不丢；粘滞的项目过滤自动复位为"全部"），行动流占满全宽，footer（管理/关闭/统计）由两种布局共享的 `DrawBoardFooter` 绘制、始终保留。紧凑模式有独立自测（`RunCompactLayoutSelfTest`：栏隐藏、过滤复位、卡片近全宽不越界不压 footer），`--render-specboard sample` 额外产出 `specboard-compact.png`。
+
+宽布局下左栏按项目过滤，右栏依次显示未登记、需要执行、需要修改、等待验证。四段同时非空时按右栏实测高度压缩段头、卡片和间距，每段仍至少保留一张完整卡片；不足处在段头或段尾显示 `+N`。卡片单击等待 `SystemInformation.DoubleClickTime` 后把 spec 绝对路径写入系统剪贴板；复制成功后，窗口右下角显示约 2 秒的绿色“已复制 Spec 绝对路径”提示，并复用维护 tick 清除。双击取消待复制动作并通过系统默认程序打开 spec，丢失或异常路径回退到项目目录。双击后的第二次 MouseUp 会被吞掉，保证不会在打开文件后再次覆盖剪贴板。项目行、卡片和 footer 的管理/关闭命中区保留原动作；左键点击其余非控件/空白区域直接收起小看板。主看板本身不提供状态写入控件。
 
 ## 新鲜度
 
@@ -42,9 +44,23 @@
 
 RadialDial 核心圆圈或经典 Start 按钮双击调用 `ToggleLauncherTrioWindow`；这两个入口的单击动作等待 `SystemInformation.DoubleClickTime` 后才提交，双击到达会取消待执行单击并吞掉第二次 MouseUp，避免一次双击同时开关 Radial 菜单或 Windows 开始菜单。Radial 单击菜单、双击启动器和 Spec 小看板三者互斥：每个入口在显示前关闭另外两个，后打开者覆盖先打开者；管理窗不参与互斥。默认位置与操作面板左对齐，底边位于操作面板顶边上方 10 px；`SpecBoardLeftX`、`SpecBoardBottomY` 为 `-1` 时每次呼出重新自动锚定，具体坐标则由全局布局编辑器维护。
 
+## 左缘停靠（EdgeDockTab）
+
+`SpecBoardLeftDockEnabled` 与 `CodexTaskBoardLeftDockEnabled` 默认开启：Spec 小看板与 Codex 任务看板常驻屏幕左缘，平时收起，只留一枚 `EdgeDockTabForm`（`Core/EdgeDockTabForm.cs`）——10×30 逻辑尺寸、左边全高向右收窄的梯形，贴在工作区左缘。鼠标移上 tab 即展开对应看板；指针离开看板与 tab 后经 `LeftDockCollapseSeconds`（默认 1 s，范围 0–30）自动收起。**一个看板一枚 tab**，互不影响。
+
+tab 自身用 120 ms 计时器轮询 `Cursor.Position` 判定 hover（不依赖分层窗 alpha 命中测试，整个 10×30 矩形都是可命中区，10 px 目标更易点中）。边框和任务栏仍隐藏，但 `Text`/`AccessibleName` 分别使用 `SpecBoardDockTab` 与 `CodexTaskBoardDockTab`，让辅助功能和 UI 验收工具能区分两枚微型窗口。展开时看板左缘落在 `工作区左缘 + tab 宽`，tab 保持可见，指针可以从 tab 连续滑入看板而不触发收起倒计时。tab 是**永久可见**元素，因此必须走防烧屏微位移：`SpecBoardDockTabSalt=37`、`CodexTaskBoardDockTabSalt=43`（看板自身为 `SpecBoardSalt=73`、`CodexTaskBoardSalt=41`）；`EdgeDockTabForm.PositionAtLeftEdge` 先取得 `ApplyRuntimeOffset`，再由 `PinToLeftEdge` 丢弃水平分量并固定到 `workArea.Left`，只有 Y 会漂移几像素，鼠标贴住主屏或负坐标副屏的绝对最左像素时仍能命中。
+
+`LeftDockOutsideClickCollapseEnabled` 默认开启。停靠展开的 Spec/Codex Task 看板，以及 Spec 的自动弹窗态，在用户点击看板外部（桌面、其他窗口或另一块看板）时收回；自身窗口、自己的 tab 与 Spec 管理窗属于排除区，手动打开且未停靠的常驻 Spec 看板不受影响。板内空白区域原有的 `HideBoard()` 语义继续保留，两条关闭路径互补。
+
+外部点击由共享 `OutsideClickDismissalMonitor` 处理，不使用失焦事件、长期鼠标捕获或全局鼠标钩子，也不新增计时器。`EdgeDockTabForm` 的既有 120 ms hover tick 读取 `GetAsyncKeyState(VK_LBUTTON)` 的当前按下位与“上次查询后按过”位，并把单调递增的点击序号分别交给两块看板消费；Spec 的 500 ms 维护 tick 为无 tab 的自动弹窗补兜底。进程内所有左键异步状态读取必须经该监测器，避免某个调用方提前消耗低位。外部点击收回后，tab 在 800 ms 内且光标尚未离开 tab 区时禁止重新展开，避免左缘点击造成“收回后秒开”；一旦离开 tab 即解除抑制。
+
+tab 中心 Y 由 `SpecBoardLeftDockTabCenterY` / `CodexTaskBoardLeftDockTabCenterY` 指定，`-1`（`AutoLeftDockTabCenterY`）表示自动：Spec 取工作区垂直中点上方 `LeftDockTabAutoOffsetY=20`，Codex 取下方 20，两枚 30 px 高的 tab 因此相邻而不重叠。停靠开启时看板必须在启动时就构造（即使收起）——tab 是它唯一的常驻表面，由 `OperationForm.ApplyRuntimeSettings` 负责建立。收起状态下看板的维护 tick 继续运行（`ShouldMonitorWork` 把 `IsLeftDocked` 视为需要工作），它驱动 tab 的防烧屏漂移与收起倒计时；全屏隐藏与显示挂起会一并停掉 tab。
+
+几何、自动槽位与边缘命中有独立自测（`EdgeDockTabForm.RunSelfTest`：梯形四点、左边高于右边即"向右"、两枚自动 tab 不重叠且在工作区内、主屏 `x=0` 与负坐标副屏左缘保持可命中）；外部点击的边沿、双消费者、命中排除与回弹抑制由 `OutsideClickDismissalMonitor.RunSelfTest` 覆盖。两者都随 `--test-operation-panel` 运行；`--render-operation` 产出 `operation-dock-tab-spec.png` 与 `operation-dock-tab-codex.png`（8× 放大，10×30 原尺寸无法评审）。
+
 ## 操作面板双击启动器（LauncherTrio）
 
-双击操作核心弹出 `OperationLauncherTrioForm`（保留历史类名，`Core/OperationForm.LauncherTrio.cs`）：两个圆形按钮沿星座面板同款弧线排布在第二层级位置。按钮直径为主 Start 按钮的 0.80×；弧半径复用 RadialDial 的 8°–82° 稀疏弧与第二层半径公式。美术继续使用低透明度暗调圆盘、分类色外光环、极淡白内环、柔和字形和细灰连接线。自上而下：① Spec 管理（`OpenSpecBoardManagerWindow`，直接显示管理窗）② 睡眠防护（`LaunchSleepGuard`，优先运行 E: 的 `Start-CodexSleepGuard.cmd`，再回退 D: 镜像）。旧版 QuickGrid/12 格入口已从此启动器删除；QuickGrid 实现保留为兼容代码，但不再由双击菜单暴露。窗体继承 `LayeredWidgetFormBase`，点按钮外或选完即隐藏；`--render-operation` 产出 `operation-launcher-trio.png` 供美术验收。
+双击操作核心弹出 `OperationLauncherTrioForm`（`Core/OperationForm.LauncherTrio.cs`）：三个圆形按钮沿星座面板同款弧线排布在第二层级位置。按钮直径为主 Start 按钮的 0.80×；弧半径复用 RadialDial 的 8°–82° 稀疏弧与第二层半径公式。美术继续使用低透明度暗调圆盘、分类色外光环、极淡白内环、柔和字形和细灰连接线。自上而下：① Spec 管理（`OpenSpecBoardManagerWindow`，直接显示管理窗）② Codex 任务（`ToggleCodexTaskBoard`，见 `Docs/CodexRadar-Architecture.md` §5.2）③ 睡眠防护（`LaunchSleepGuard`，优先运行 E: 的 `Start-CodexSleepGuard.cmd`，再回退 D: 镜像）。`LauncherTrioAction`、`TrioLabels`、`TrioTints` 三者的下标顺序必须一致，索引 0 位于弧顶。旧版 QuickGrid/12 格入口已从此启动器删除；QuickGrid 实现保留为兼容代码，但不再由双击菜单暴露。窗体继承 `LayeredWidgetFormBase`，点按钮外或选完即隐藏；`--render-operation` 产出 `operation-launcher-trio.png` 供美术验收。
 
 OLED Typographic、AmberHud、WarmCard、Phosphor 变体复用现有语义色，且使用灰度文字抗锯齿，避免 ClearType 在分层位图中生成蓝色子像素。
 

@@ -87,8 +87,8 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight));
         this.Size = GetDesiredSize();
 
         this.timer = new System.Windows.Forms.Timer();
@@ -164,8 +164,8 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
         this.CurrentSettings = next;
         ApplyLayerScaleFromSettings(this.CurrentSettings);
-        this.MinimumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
-        this.MaximumSize = this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight));
+        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MinCodexRadarHeight));
+        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxCodexRadarWidth, WidgetSettings.MaxCodexRadarHeight));
         this.timer.Interval = GetTimerIntervalMs();
         if (RefreshRuntimePresenceSnapshot(false))
         {
@@ -301,6 +301,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
     private void OnTimerTick(object sender, EventArgs e)
     {
+        RefreshNightScheduleAtExistingTick();
         this.renderTickCount++;
         if (this.CurrentSettings == null ||
             !this.CurrentSettings.ClaudeRadarEnabled ||
@@ -1083,7 +1084,7 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
 
     private Size GetDesiredSize()
     {
-        return this.CurrentSettings.ScaleResolutionCompatibilitySize(new Size(this.CurrentSettings.ClaudeRadarWidth, this.CurrentSettings.ClaudeRadarHeight));
+        return ScaleWindowSize(new Size(this.CurrentSettings.ClaudeRadarWidth, this.CurrentSettings.ClaudeRadarHeight));
     }
 
     private int GetTimerIntervalMs()
@@ -1527,6 +1528,9 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
             AnySupportedAppRunning = anySupportedAppRunning,
             QuotaValueKnown = quotaValueKnown,
             ForceDangerFullRing = forceDangerFullRing,
+            SuppressQuotaAlerts = !AlertPresentationPolicy.ShouldPresent(
+                this.CurrentSettings,
+                AlertPresentationCategory.Quota),
             NumberFont = this.fontCache.GetUi(Math.Max(7.0f, ringRect.Width * 0.342f), FontStyle.Bold),
             LabelFont = this.fontCache.GetUi(Math.Max(7.0f, 10.5f * this.LayerScale), FontStyle.Bold),
             DrawFittedLabel = delegate(Graphics graphics, string text, Font font, Brush brush, RectangleF rect)
@@ -1954,17 +1958,43 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
                 this.claudeApiServiceAlertDebounceStates.Clear();
             }
 
-            return CloneClaudeServiceAlertCandidates(candidates);
+            return FilterClaudeServiceAlertPresentation(CloneClaudeServiceAlertCandidates(candidates));
         }
 
         lock (this.claudeApiServiceAlertDebounceLock)
         {
-            return ApplyClaudeServiceAlertDebounce(
+            return FilterClaudeServiceAlertPresentation(ApplyClaudeServiceAlertDebounce(
                 this.claudeApiServiceAlertDebounceStates,
                 candidates,
                 DateTime.UtcNow,
-                TimeSpan.FromSeconds(ClaudeApiServiceAlertDebounceSeconds));
+                TimeSpan.FromSeconds(ClaudeApiServiceAlertDebounceSeconds)));
         }
+    }
+
+    private List<ClaudeServiceAlertCandidate> FilterClaudeServiceAlertPresentation(
+        List<ClaudeServiceAlertCandidate> candidates)
+    {
+        List<ClaudeServiceAlertCandidate> visible = new List<ClaudeServiceAlertCandidate>();
+        bool serviceHealthVisible = AlertPresentationPolicy.ShouldPresent(
+            this.CurrentSettings,
+            AlertPresentationCategory.ServiceHealth);
+        bool deepSeekVisible = AlertPresentationPolicy.ShouldPresent(
+            this.CurrentSettings,
+            AlertPresentationCategory.DeepSeekBalance);
+        for (int i = 0; candidates != null && i < candidates.Count; i++)
+        {
+            ClaudeServiceAlertCandidate candidate = candidates[i];
+            bool deepSeek = string.Equals(
+                GetClaudeServiceAlertKey(candidate == null ? string.Empty : candidate.Key),
+                "deepseek",
+                StringComparison.OrdinalIgnoreCase);
+            if (candidate != null && (deepSeek ? deepSeekVisible : serviceHealthVisible))
+            {
+                visible.Add(candidate);
+            }
+        }
+
+        return visible;
     }
 
     private static List<ClaudeServiceAlertCandidate> ApplyClaudeServiceAlertDebounce(
@@ -3518,9 +3548,14 @@ internal sealed class ClaudeRadarForm : LayeredWidgetFormBase
         return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
-    protected override byte GetApplicationOpacityAlpha()
+    protected override int WindowTransparencyOverridePercent
     {
-        return 255;
+        get { return this.CurrentSettings.ClaudeRadarTransparencyOverridePercent; }
+    }
+
+    protected override int WindowScaleOverridePercent
+    {
+        get { return this.CurrentSettings.ClaudeRadarScaleOverridePercent; }
     }
 
     private void ConfigureGraphics(Graphics g)

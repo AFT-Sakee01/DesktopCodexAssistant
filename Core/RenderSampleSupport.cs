@@ -16,6 +16,15 @@ internal static class RenderSampleSupport
     // Solid dark stand-in for the wallpaper. Real wallpapers vary; a stable dark tone keeps
     // current-mode PNGs comparable across runs while still exercising the translucent background.
     public static readonly Color DesktopBackdrop = Color.FromArgb(255, 30, 30, 34);
+    internal static int ProofLuminancePercent { get; set; } = 100;
+
+    internal static void ApplyProofLuminance(Bitmap bitmap)
+    {
+        if (bitmap != null && ProofLuminancePercent < 100)
+        {
+            BurnInProtection.ApplyLuminance(bitmap, ProofLuminancePercent);
+        }
+    }
 
     public static void SaveComposited(
         string outputDir,
@@ -33,6 +42,10 @@ internal static class RenderSampleSupport
                 g.Clear(Color.Transparent);
                 drawFullWindow(g);
             }
+
+            // Render-only acceptance hook: it uses the exact runtime bitmap transform while the
+            // separate NightScheduleController self-test supplies simulated boundary times.
+            ApplyProofLuminance(layer);
 
             using (Bitmap composed = new Bitmap(width, height, PixelFormat.Format32bppPArgb))
             {

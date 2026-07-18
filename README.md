@@ -47,6 +47,15 @@ Operation panel self-test:
 .\DesktopCodexAssistant.exe --test-operation-panel
 ```
 
+Codex task monitor backend diagnostics:
+
+```powershell
+.\DesktopCodexAssistant.exe --test-codex-task-monitor
+.\DesktopCodexAssistant.exe --dump-codex-tasks
+```
+
+The dump is read-only and emits task status, model, numeric token usage, the workspace leaf name, and the official Codex session title when available. It does not emit prompts, responses, or full session paths.
+
 Spec Board render samples:
 
 ```powershell

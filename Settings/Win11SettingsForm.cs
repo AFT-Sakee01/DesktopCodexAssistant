@@ -29,11 +29,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private const int CompactNavWidth = 220;
     private const int NavItemHeight = 60;
     private const int ClaudeRadarModelGridColumns = 5;
-    private const int ClaudeRadarModelButtonWidth = 144;
+    private const int ClaudeRadarModelButtonWidth = 216;
     private const int ClaudeRadarModelButtonMinimumWidth = 88;
     private const int ClaudeRadarModelButtonHeight = 38;
     private const int ClaudeRadarModelButtonGap = 8;
-    private const int ClaudeRadarModelButtonMaxTextChars = 14;
+    private const int ClaudeRadarModelButtonMaxTextChars = 21;
     private const string ClaudeRadarModelGridName = "ClaudeRadarModelGrid";
     private const string GlobalLayoutEditCommandName = "GlobalLayoutEditCommand";
     private const string ClaudeSetupTokenCommandName = "ClaudeSetupTokenCommand";
@@ -463,6 +463,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             new string[] { "启动与性能", "StartupEnabled", "PerformanceMode" },
             new string[] { "窗口行为", "VisibilityMode", "CodexPetZOrderProtectionEnabled", "VisibilityOverlapIgnoresOperationPanelEnabled", "ClickThroughMode" },
+            new string[] { "全局快捷键", "HotkeyToggleAllWindows", "HotkeyToggleHoverOpacity", "HotkeyOpenSettings" },
             new string[] { "AI 请求阻断", "AiRequestProtectionAutoEnabled", "AiRequestProtectionManualBlockEnabled" },
             new string[] { "!Codex 额度计划", "CodexQuotaPlanEnabled", "CodexQuotaPlanWeeklyComparison", "CodexQuotaPlanWeeklyThresholdPercent",
                            "CodexQuotaPlanFiveHourComparison", "CodexQuotaPlanFiveHourThresholdPercent", "CodexQuotaPlanResumeConditionMode",
@@ -475,6 +476,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             new string[] { "可视化编辑", GlobalLayoutEditCommandName },
             new string[] { "分辨率兼容", "ResolutionCompatibilityModeEnabled", "ResolutionCompatibilityScalePercent" },
+            new string[] { "每窗口缩放", "MainWidgetScaleOverridePercent", "CodexRadarScaleOverridePercent", "ClaudeRadarScaleOverridePercent", "PowerThermalScaleOverridePercent", "NetworkMonitorScaleOverridePercent", "ConnectionCheckScaleOverridePercent", "OperationScaleOverridePercent", "SpecBoardScaleOverridePercent", "CodexTaskBoardScaleOverridePercent" },
             new string[] { "显示器分配", "FallbackDisconnectedDisplaysEnabled", "MainDisplayDeviceName", "CodexRadarDisplayDeviceName",
                            "ClaudeRadarDisplayDeviceName", "PowerThermalDisplayDeviceName", "NetworkMonitorDisplayDeviceName", "ConnectionCheckDisplayDeviceName", "OperationDisplayDeviceName" },
             new string[] { "!主窗口位置", "Width", "Height", "LeftX", "BottomY" },
@@ -489,6 +491,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         AddPageGrouped("\uE7B3", "隐藏与防烧屏", "鼠标靠近时隐藏、空闲自动隐藏和 OLED 防烧屏。", new string[][]
         {
+            new string[] { "夜间时段", "NightScheduleEnabled", "NightScheduleStartMinutes", "NightScheduleEndMinutes", "NightDimLuminancePercent", "NightQuietHoursEnabled" },
+            new string[] { "提醒分类", "AlertQuotaEnabled", "AlertResetProtectionEnabled", "AlertServiceHealthEnabled", "AlertCodexTaskEnabled", "AlertDeepSeekBalanceEnabled" },
             new string[] { "鼠标靠近时隐藏", "HoverOpacityEnabled", "SensitiveMouseModeEnabled", "SensitiveMouseRangePixels" },
             new string[] { "自动隐藏", "AutoHoverOpacityIdleEnabled", "AutoHoverOpacityIdleSeconds", "AutoHoverOpacityMaximizedEnabled", "OperationRadialCoreAutoHideKeepAliveEnabled", "OperationRadialIdleCollapseSeconds", "OperationRadialIdleResetOnInteractionEnabled", "OperationRadialKeepOpenAfterLeafClickEnabled", "BurnInHiddenModeColorProtectionEnabled" },
             new string[] { "!延迟显现", "HoverOpacityRevealDelayEnabled", "HoverOpacityRevealDelaySeconds", "HoverOpacityRevealResetSeconds" },
@@ -498,7 +502,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddPageGrouped("\uE737", "主窗口", "主监控窗口显示哪些指标、透明度和外观。", new string[][]
         {
             new string[] { "显示哪些指标", "ShowCpu", "ShowMemory", "ShowDisk", "ShowNetwork", "ShowGpu", "ShowNpu" },
-            new string[] { "透明度", "BackgroundTransparencyPercent", "ApplicationTransparencyPercent" }
+            new string[] { "透明度", "BackgroundTransparencyPercent", "ApplicationTransparencyPercent", "MainWidgetTransparencyOverridePercent" }
         });
 
         AddPageGrouped("\uE121", "Radar 通用", "Codex / Claude Radar 共用的时钟显示和时区。", new string[][]
@@ -512,7 +516,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             // 手动布局与元素偏移分组已从设置界面隐藏（改用渲染变体切换布局）。
             // 对应 WidgetSettings 属性仍保留，Classic 布局若通过 settings.ini 设置仍生效；
             // 均布变体本就忽略这些设置。恢复入口时把下方分组加回，并同步 VerifySelfTest 必需绑定。
-            new string[] { "共享小窗", "CodexRadarEnabled", "CodexRadarSoftwareMode", "CodexRadarTransparencyPercent" },
+            new string[] { "共享小窗", "CodexRadarEnabled", "CodexRadarSoftwareMode", "CodexRadarTransparencyPercent", "CodexRadarTransparencyOverridePercent" },
             new string[] { "CODEX 模式数据", "CodexRadarModelKey", "CodexRadarSpeedWindowCountdownEnabled", "CodexRadarQuotaResetRainbowEnabled" },
             new string[] { "!CodexRadar.com 读取链路", "CodexRadarPublicJsonEnabled", "CodexRadarHtmlFallbackEnabled", "CodexRadarRssFallbackEnabled", "CodexRadarServiceProbeToken" },
             new string[] { "!额度保护", "CodexQuotaDueResetProtectionEnabled", "CodexQuotaRssResetProtectionEnabled",
@@ -530,7 +534,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         AddPageGrouped("\uE8D4", "Claude Radar", "Claude 相关数据：独立 Claude 小窗，以及共享 Radar 小窗的 CLAUDE 模式辅助状态。", new string[][]
         {
-            new string[] { "独立小窗", "ClaudeRadarEnabled", "ClaudeRadarTransparencyPercent" },
+            new string[] { "独立小窗", "ClaudeRadarEnabled", "ClaudeRadarTransparencyPercent", "ClaudeRadarTransparencyOverridePercent" },
             new string[] { "Claude 模型", "ClaudeRadarModelKey" },
             new string[] { "Claude 数据链路", "ClaudeRadarJsonEnabled", "ClaudeRadarCommunityRatingsEnabled", "ClaudeRadarLocalQuotaFallbackEnabled" },
             new string[] { "Claude Code 用量令牌", ClaudeSetupTokenCommandName },
@@ -543,15 +547,15 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             new string[] { "自动布局与告警", "PowerThermalAutoSizeEnabled", "PowerThermalAutoDirection", "PowerThermalVisibleAlertCount" },
             new string[] { "电池与节能", "PowerThermalManualEnergySaverThresholdPercent" },
-            new string[] { "透明度", "PowerThermalTransparencyPercent" },
+            new string[] { "透明度", "PowerThermalTransparencyPercent", "PowerThermalTransparencyOverridePercent" },
             new string[] { "!测试", "ThermalTestMode" }
         });
 
         AddPageGrouped("\uE774", "网络", "网络监控、GFW 检测、云服务和出口身份。", new string[][]
         {
-            new string[] { "网络监控", "NetworkMonitorAdapterId", "NetworkMonitorTransparencyPercent" },
+            new string[] { "网络监控", "NetworkMonitorAdapterId", "NetworkMonitorTransparencyPercent", "NetworkMonitorTransparencyOverridePercent" },
             new string[] { "GFW 检测", "GfwProbeEnabled", "GfwProbeIntervalMinutes" },
-            new string[] { "连接检测", "ConnectionCheckIntervalSeconds", "ConnectionCheckTransparencyPercent", "ConnectionCheckBorderTransparencyPercent" },
+            new string[] { "连接检测", "ConnectionCheckIntervalSeconds", "ConnectionCheckTransparencyPercent", "ConnectionCheckBorderTransparencyPercent", "ConnectionCheckTransparencyOverridePercent" },
             new string[] { "!手动刷新", "GfwProbeManualRefreshToken", "ConnectionCheckManualRefreshToken" },
             new string[] { "!云服务端点", "CloudEndpointTestSeed", "CloudStatusRegionMask" },
             new string[] { "!测试", "CleanIpBadgeTestMode", "NetworkStatusTestMode" }
@@ -559,9 +563,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         AddPageGrouped("\uE700", "操作面板", "左下角操作面板的按钮、透明度和外观。", new string[][]
         {
-            new string[] { "按钮与面板", "OperationButtonSize", "OperationPrimaryPanelMode", "OperationSettingsLogicExtensionEnabled", "OperationBackgroundTransparencyPercent" },
-            new string[] { "Spec Board", "SpecBoardAutoPopupEnabled", "SpecBoardAutoPopupSeconds", "SpecBoardAutoHideSeconds", "SpecBoardLedgerPath", "SpecBoardManagerWidth", "SpecBoardManagerHeight", "SpecBoardManagerDangerZoneRequiresTypedConfirm" },
-            new string[] { "外观风格", "OperationRenderVariant" },
+            new string[] { "按钮与面板", "OperationButtonSize", "OperationPrimaryPanelMode", "OperationDoubleClickSpecialMenuEnabled", "OperationSettingsLogicExtensionEnabled", "OperationBackgroundTransparencyPercent", "OperationTransparencyOverridePercent" },
+            new string[] { "Spec Board", "SpecBoardTransparencyOverridePercent", "CodexTaskBoardTransparencyOverridePercent", "LeftDockOutsideClickCollapseEnabled", "SpecBoardAutoPopupEnabled", "SpecBoardAutoPopupSeconds", "SpecBoardAutoHideSeconds", "SpecBoardLedgerPath", "SpecBoardManagerWidth", "SpecBoardManagerHeight", "SpecBoardManagerDangerZoneRequiresTypedConfirm" },
             new string[] { "!测试", "AlertTestEnabled" }
         });
     }
@@ -2048,16 +2051,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
     private static string GetVariantSamplePrefix(string propertyName)
     {
-        if (string.Equals(propertyName, "OperationRenderVariant", StringComparison.Ordinal)) return "operation";
         return string.Empty;
     }
 
     private static void RenderVariantSamplesForProperty(string propertyName, string directory)
     {
-        if (string.Equals(propertyName, "OperationRenderVariant", StringComparison.Ordinal))
-        {
-            OperationForm.RenderVariantSamples(directory);
-        }
     }
 
     private void LayoutPage(CategoryPage page)
@@ -2107,6 +2105,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             this.initializing = false;
         }
 
+        RefreshGlobalHotkeyRegistrationState();
         SetDirtyState(false);
     }
 
@@ -2143,6 +2142,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
             this.baseline = settings.Clone();
             this.baseline.Normalize();
+            RefreshNormalizedGlobalHotkeyEditors();
+            RefreshGlobalHotkeyRegistrationState();
             this.saved = true;
             SetDirtyState(false);
             return true;
@@ -2457,6 +2458,63 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         if (!this.IsDisposed && !this.OwnerFormClosing && this.owner != null)
         {
             this.owner.PreviewSettings(ReadSettings());
+            RefreshGlobalHotkeyRegistrationState();
+        }
+    }
+
+    private void RefreshNormalizedGlobalHotkeyEditors()
+    {
+        string[] names =
+        {
+            "HotkeyToggleAllWindows",
+            "HotkeyToggleHoverOpacity",
+            "HotkeyOpenSettings"
+        };
+        this.initializing = true;
+        try
+        {
+            for (int i = 0; i < names.Length; i++)
+            {
+                SettingEditor editor;
+                if (this.editors.TryGetValue(names[i], out editor))
+                {
+                    SetEditorValue(editor, editor.Property.GetValue(this.baseline, null));
+                }
+            }
+        }
+        finally
+        {
+            this.initializing = false;
+        }
+    }
+
+    private void RefreshGlobalHotkeyRegistrationState()
+    {
+        string[] names =
+        {
+            "HotkeyToggleAllWindows",
+            "HotkeyToggleHoverOpacity",
+            "HotkeyOpenSettings"
+        };
+        for (int i = 0; i < names.Length; i++)
+        {
+            SettingEditor editor;
+            if (!this.editors.TryGetValue(names[i], out editor))
+            {
+                continue;
+            }
+
+            string failure = string.Empty;
+            bool failed = this.owner != null &&
+                this.owner.TryGetGlobalHotkeyRegistrationFailure(names[i], out failure);
+            editor.Card.HintLabel.Text = GetSettingHint(names[i]) +
+                (failed ? Environment.NewLine + failure : string.Empty);
+            editor.Card.HintLabel.ForeColor = failed ? ErrorClr : TextTertiary;
+            SettingGroupCard group = editor.Card.Parent as SettingGroupCard;
+            if (group != null)
+            {
+                group.LayoutRows();
+            }
         }
     }
 
@@ -3212,6 +3270,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         ForceResourceCleanup();
+        long hotkeyRegisterFirst = NativeMethods.GlobalHotkeyRegistrationAttemptCount;
         RadarRuntimeDiagnostics.ResourceCounters before = RadarRuntimeDiagnostics.CaptureCurrentProcessResources();
         for (int i = 0; i < loopCount; i++)
         {
@@ -3236,6 +3295,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         int handleDelta = after.HandleCount - before.HandleCount;
         int gdiDelta = after.GdiObjects - before.GdiObjects;
         int userDelta = after.UserObjects - before.UserObjects;
+        long hotkeyRegisterFinal = NativeMethods.GlobalHotkeyRegistrationAttemptCount;
         if (handleDelta > 80 || gdiDelta > 8 || userDelta > 16)
         {
             throw new InvalidOperationException(
@@ -3249,6 +3309,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 userDelta.ToString(CultureInfo.InvariantCulture));
         }
 
+        if (hotkeyRegisterFinal != hotkeyRegisterFirst)
+        {
+            throw new InvalidOperationException(
+                "Settings open/close unexpectedly registered global hotkeys. First=" +
+                hotkeyRegisterFirst.ToString(CultureInfo.InvariantCulture) +
+                " Final=" + hotkeyRegisterFinal.ToString(CultureInfo.InvariantCulture));
+        }
+
         return "Settings open/close policy: PASS iterations=" +
             loopCount.ToString(CultureInfo.InvariantCulture) +
             " handles_delta=" +
@@ -3256,7 +3324,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             " gdi_delta=" +
             gdiDelta.ToString(CultureInfo.InvariantCulture) +
             " user_delta=" +
-            userDelta.ToString(CultureInfo.InvariantCulture);
+            userDelta.ToString(CultureInfo.InvariantCulture) +
+            " hotkey_register_first=" +
+            hotkeyRegisterFirst.ToString(CultureInfo.InvariantCulture) +
+            " hotkey_register_final=" +
+            hotkeyRegisterFinal.ToString(CultureInfo.InvariantCulture);
     }
 
     internal static void RunSettingsBindingSelfTest()
@@ -3379,6 +3451,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             "PerformanceMode",
             "CodexPetZOrderProtectionEnabled",
+            "HotkeyToggleAllWindows",
+            "HotkeyToggleHoverOpacity",
+            "HotkeyOpenSettings",
             "HoverOpacityEnabled",
             "HoverOpacityRevealDelayEnabled",
             "OperationRadialCoreAutoHideKeepAliveEnabled",
@@ -3390,6 +3465,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "SpecBoardLeftX",
             "SpecBoardBottomY",
             "SpecBoardAutoHideSeconds",
+            "LeftDockOutsideClickCollapseEnabled",
             "SpecBoardAutoPopupEnabled",
             "SpecBoardAutoPopupSeconds",
             "SpecBoardLedgerPath",
@@ -3444,12 +3520,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexQuotaPlanAutoResumePausedGoals",
             "CodexQuotaPlanPauseGoalIds",
             "CodexQuotaPlanResumeGoalIds",
-            "OperationRenderVariant",
             "PowerThermalAutoSizeEnabled",
             "PowerThermalManualEnergySaverThresholdPercent",
             "GfwProbeIntervalMinutes",
             "OperationButtonSize",
             "OperationPrimaryPanelMode",
+            "OperationDoubleClickSpecialMenuEnabled",
             "OperationSettingsLogicExtensionEnabled"
         };
 
@@ -3467,7 +3543,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         VerifyClaudeRadarModelGridPolicy();
-        VerifyVariantPickerPolicy();
         VerifyDynamicResolutionSizingPolicy();
         VerifyNoVisibleControlClipping();
 
@@ -3486,6 +3561,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
     private void VerifyClaudeRadarModelGridPolicy()
     {
+        if (ClaudeRadarModelButtonWidth != 216 || ClaudeRadarModelButtonMaxTextChars != 21)
+        {
+            throw new InvalidOperationException("Claude Radar model grid cells must retain the requested 50% width and text-capacity increase.");
+        }
+
         SettingEditor editor;
         if (!this.editors.TryGetValue("ClaudeRadarModelKey", out editor))
         {
@@ -3527,8 +3607,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         string commonLongLabel = GetClaudeRadarModelButtonText(
-            new ClaudeModelOption("m1", "Opus 4.8 high", true, false));
-        if (!string.Equals(commonLongLabel, "Opus 4.8 high", StringComparison.Ordinal))
+            new ClaudeModelOption("m9", "Opus 4.8 medium", true, false));
+        if (!string.Equals(commonLongLabel, "Opus 4.8 medium", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Claude Radar model grid truncates common model labels.");
         }
@@ -3574,28 +3654,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         if (!sawAuto)
         {
             throw new InvalidOperationException("Claude Radar model grid missing automatic slot.");
-        }
-    }
-
-    private void VerifyVariantPickerPolicy()
-    {
-        string[] pickerNames = new string[]
-        {
-            "OperationRenderVariant"
-        };
-
-        for (int i = 0; i < pickerNames.Length; i++)
-        {
-            SettingEditor editor;
-            if (!this.editors.TryGetValue(pickerNames[i], out editor))
-            {
-                throw new InvalidOperationException("Render variant picker binding missing: " + pickerNames[i]);
-            }
-
-            if (!(editor.Control is VariantPicker))
-            {
-                throw new InvalidOperationException("Render variant must use VariantPicker: " + pickerNames[i]);
-            }
         }
     }
 
@@ -3739,6 +3797,27 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationLeftOffset", new NumericRange(WidgetSettings.MinOperationOffset, WidgetSettings.MaxOperationOffset) },
         { "OperationBottomOffset", new NumericRange(WidgetSettings.MinOperationOffset, WidgetSettings.MaxOperationOffset) },
         { "ResolutionCompatibilityScalePercent", new NumericRange(WidgetSettings.MinResolutionCompatibilityScalePercent, WidgetSettings.MaxResolutionCompatibilityScalePercent) },
+        { "MainWidgetScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "CodexRadarScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "ClaudeRadarScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "PowerThermalScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "NetworkMonitorScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "ConnectionCheckScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "OperationScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "SpecBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "CodexTaskBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "MainWidgetTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "CodexRadarTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "ClaudeRadarTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "PowerThermalTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "NetworkMonitorTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "ConnectionCheckTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "OperationTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "SpecBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "CodexTaskBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "NightScheduleStartMinutes", new NumericRange(WidgetSettings.MinNightScheduleMinutes, WidgetSettings.MaxNightScheduleMinutes) },
+        { "NightScheduleEndMinutes", new NumericRange(WidgetSettings.MinNightScheduleMinutes, WidgetSettings.MaxNightScheduleMinutes) },
+        { "NightDimLuminancePercent", new NumericRange(WidgetSettings.MinNightDimLuminancePercent, WidgetSettings.MaxNightDimLuminancePercent) },
         { "SensitiveMouseRangePixels", new NumericRange(WidgetSettings.MinSensitiveMouseRangePixels, WidgetSettings.MaxSensitiveMouseRangePixels) },
         { "HoverOpacityRevealDelaySeconds", new NumericRange((decimal)WidgetSettings.MinHoverOpacityRevealDelaySeconds, (decimal)WidgetSettings.MaxHoverOpacityRevealDelaySeconds) },
         { "HoverOpacityRevealResetSeconds", new NumericRange((decimal)WidgetSettings.MinHoverOpacityRevealResetSeconds, (decimal)WidgetSettings.MaxHoverOpacityRevealResetSeconds) },
@@ -3813,6 +3892,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "SpecBoardLeftX", "Spec Board 左侧 X" },
         { "SpecBoardBottomY", "Spec Board 底部 Y" },
         { "SpecBoardAutoHideSeconds", "Spec Board 自动收回秒数" },
+        { "LeftDockOutsideClickCollapseEnabled", "点击看板外部时收回" },
         { "SpecBoardAutoPopupEnabled", "发现新 Spec 时自动弹出" },
         { "SpecBoardAutoPopupSeconds", "新 Spec 弹窗停留秒数" },
         { "SpecBoardLedgerPath", "Spec Board 账本路径" },
@@ -3825,7 +3905,38 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationLeftOffset", "操作面板距左边" },
         { "OperationBottomOffset", "操作面板距下边" },
         { "BackgroundTransparencyPercent", "主窗口背景透明度" },
-        { "ApplicationTransparencyPercent", "主窗口整体透明度" },
+        { "ApplicationTransparencyPercent", "全局整体透明度" },
+        { "MainWidgetTransparencyOverridePercent", "主窗口整体透明度覆盖" },
+        { "MainWidgetScaleOverridePercent", "主窗口缩放覆盖" },
+        { "CodexRadarScaleOverridePercent", "Codex Radar 缩放覆盖" },
+        { "ClaudeRadarScaleOverridePercent", "Claude Radar 缩放覆盖" },
+        { "PowerThermalScaleOverridePercent", "功耗温度缩放覆盖" },
+        { "NetworkMonitorScaleOverridePercent", "网络监控缩放覆盖" },
+        { "ConnectionCheckScaleOverridePercent", "连接检测缩放覆盖" },
+        { "OperationScaleOverridePercent", "操作面板缩放覆盖" },
+        { "SpecBoardScaleOverridePercent", "Spec Board 缩放覆盖" },
+        { "CodexTaskBoardScaleOverridePercent", "Codex 任务看板缩放覆盖" },
+        { "CodexRadarTransparencyOverridePercent", "Codex Radar 整体透明度覆盖" },
+        { "ClaudeRadarTransparencyOverridePercent", "Claude Radar 整体透明度覆盖" },
+        { "PowerThermalTransparencyOverridePercent", "功耗温度整体透明度覆盖" },
+        { "NetworkMonitorTransparencyOverridePercent", "网络监控整体透明度覆盖" },
+        { "ConnectionCheckTransparencyOverridePercent", "连接检测整体透明度覆盖" },
+        { "OperationTransparencyOverridePercent", "操作面板整体透明度覆盖" },
+        { "SpecBoardTransparencyOverridePercent", "Spec Board 整体透明度覆盖" },
+        { "CodexTaskBoardTransparencyOverridePercent", "Codex 任务看板整体透明度覆盖" },
+        { "NightScheduleEnabled", "启用夜间时段" },
+        { "NightScheduleStartMinutes", "夜间开始（自午夜分钟）" },
+        { "NightScheduleEndMinutes", "夜间结束（自午夜分钟）" },
+        { "NightDimLuminancePercent", "夜间亮度" },
+        { "NightQuietHoursEnabled", "夜间勿扰" },
+        { "AlertQuotaEnabled", "额度与阈值提醒" },
+        { "AlertResetProtectionEnabled", "重置保护提醒" },
+        { "AlertServiceHealthEnabled", "服务健康提醒" },
+        { "AlertCodexTaskEnabled", "Codex 任务提醒" },
+        { "AlertDeepSeekBalanceEnabled", "DeepSeek 余额提醒" },
+        { "HotkeyToggleAllWindows", "隐藏/显示全部挂件" },
+        { "HotkeyToggleHoverOpacity", "切换悬停透明度" },
+        { "HotkeyOpenSettings", "打开设置" },
         { "ShowCpu", "显示 CPU" },
         { "ShowMemory", "显示内存" },
         { "ShowDisk", "显示磁盘" },
@@ -3877,8 +3988,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarRandomTestEnabled", "随机测试" },
         { "CodexRadarRandomTestAutoRefresh", "随机测试自动刷新" },
         { "CodexRadarRandomTestRefreshToken", "立即刷新随机测试" },
-        { "OperationRenderVariant", "外观风格" },
         { "OperationSettingsLogicExtensionEnabled", "设置扩展到操作逻辑" },
+        { "OperationDoubleClickSpecialMenuEnabled", "双击打开特殊菜单" },
         { "CodexRadarManualLayoutEnabled", "启用手动布局" },
         { "CodexRadarManualLeftPercent", "左侧区域占比" },
         { "CodexRadarManualGapPixels", "模块间距" },
@@ -4008,6 +4119,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationRadialIdleResetOnInteractionEnabled", "开启后鼠标移动、按下或展开新分支会重新开始扇形速控盘自动收回计时。" },
         { "OperationRadialKeepOpenAfterLeafClickEnabled", "开启后点击扇形速控盘末端按钮不会自动收起菜单；关闭后恢复点击末端按钮即收起。" },
         { "OperationSettingsLogicExtensionEnabled", "开启后在扇形速控盘“设置”分支中增加常用逻辑和全部开关目录；关闭时保持原来的 3 项设置菜单。" },
+        { "OperationDoubleClickSpecialMenuEnabled", "开启后双击左下角主操作按钮会打开 Spec 管理、Codex 任务和睡眠防护特殊菜单；关闭时双击直接开关隐藏模式。" },
         { "BurnInHiddenModeColorProtectionEnabled", "隐藏时执行颜色反相和白灰透明化。" },
         { "CodexRadarSoftwareMode", "只影响 Codex Radar 这个共享小窗：自动按前台和运行态选择，或固定显示 CODEX/CLAUDE 数据。独立 Claude Radar 不受这里影响。" },
         { "CodexRadarModelKey", "共享小窗处于 CODEX 模式时使用的 CodexRadar 模型；CLAUDE 模式使用 Claude 模型映射。" },
@@ -4062,7 +4174,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ClaudeRadarRandomTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
         { "ClaudeRadarRandomTestAutoRefresh", "仅用于测试显示效果，日常保持关闭。" },
         { "ClaudeRadarRandomTestRefreshToken", "点击后让随机测试数据立刻换一组。" },
-        { "OperationRenderVariant", "切换后立即预览，可随时切回。" },
         { "DeepSeekApiKeyRevision", "配置共享 Radar 小窗 CLAUDE 模式和独立 Claude Radar 底部 DS 余额使用的 DeepSeek API Key；密钥只写入本地 DPAPI 文件，修订号只用于触发即时刷新。" },
         { "CodexRadarManualLayoutEnabled", "开启后下方布局参数实时影响 Codex Radar 内部模块，不需要重启。" },
         { "CodexRadarManualLeftPercent", "调整效率/IQ/连接流程区与余额区的左右分配。" },
@@ -4126,6 +4237,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "SpecBoardLeftX", "-1 表示每次呼出时自动与操作面板左边缘对齐；在全局布局编辑器拖动后写入具体坐标。" },
         { "SpecBoardBottomY", "-1 表示每次呼出时自动放在操作面板上方 10 像素；在全局布局编辑器拖动后写入具体坐标。把两项重新设为 -1 即恢复自动。" },
         { "SpecBoardAutoHideSeconds", "范围 0-600 秒；0 表示不自动收回。鼠标停在看板内时暂停，移出后重新计时。" },
+        { "LeftDockOutsideClickCollapseEnabled", "开启后，停靠展开的 Spec Board 或 Codex Task 在点击桌面、其他窗口或另一块看板时收回；点击自身、停靠梯形或 Spec 管理窗口不会误收回。" },
         { "SpecBoardAutoPopupEnabled", "开启后监测新建的 Spec；发现新项时自动弹出小看板并高亮。" },
         { "SpecBoardAutoPopupSeconds", "范围 1-120 秒；自动弹窗在鼠标未停留时的显示时长，鼠标移入会暂停并重置倒计时。" },
         { "SpecBoardLedgerPath", "跨项目 SPEC_BOARD.jsonl 的只读路径；PROJECTS.json 固定从同目录读取。" },
@@ -4138,7 +4250,38 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationLeftOffset", "逻辑像素，距目标显示器左边缘。" },
         { "OperationBottomOffset", "逻辑像素，距目标显示器下边缘。" },
         { "BackgroundTransparencyPercent", "只影响主窗口背景底色，数值越高越透明。" },
-        { "ApplicationTransparencyPercent", "影响主窗口整体透明度，数值越高越透明。" },
+        { "ApplicationTransparencyPercent", "全部挂件窗口的默认整体透明度；设置了每窗口覆盖时以覆盖值为准。" },
+        { "MainWidgetTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖主窗口。" },
+        { "MainWidgetScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖主窗口。" },
+        { "CodexRadarScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖共享 Radar，内部文字环形手动缩放仍继续叠加。" },
+        { "ClaudeRadarScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖独立 Claude Radar。" },
+        { "PowerThermalScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖功耗温度窗口。" },
+        { "NetworkMonitorScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖网络监控。" },
+        { "ConnectionCheckScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖连接检测。" },
+        { "OperationScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖操作面板及其 QuickGrid/启动器子窗。" },
+        { "SpecBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖 Spec 看板及其停靠标签。" },
+        { "CodexTaskBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖 Codex 任务看板及其停靠标签。" },
+        { "CodexRadarTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖共享 Radar。" },
+        { "ClaudeRadarTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖独立 Claude Radar。" },
+        { "PowerThermalTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖功耗温度窗口。" },
+        { "NetworkMonitorTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖网络监控。" },
+        { "ConnectionCheckTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖连接检测。" },
+        { "OperationTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖操作面板及其 QuickGrid/启动器子窗。" },
+        { "SpecBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖 Spec 看板及其停靠标签。" },
+        { "CodexTaskBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖 Codex 任务看板及其停靠标签。" },
+        { "NightScheduleEnabled", "按本地时间在固定时段降低全部挂件亮度。" },
+        { "NightScheduleStartMinutes", "0–1439；例如 1380 = 23:00，可与结束时间组成跨午夜时段。" },
+        { "NightScheduleEndMinutes", "0–1439；例如 420 = 07:00，结束分钟本身不属于夜间。" },
+        { "NightDimLuminancePercent", "10–100；60 表示夜间保留 60% 亮度，100 不降亮。" },
+        { "NightQuietHoursEnabled", "夜间只静默用户可见提醒，数据采集和状态机继续运行，退出后不补发。" },
+        { "AlertQuotaEnabled", "控制额度、额度计划及 AlertPercent 阈值的颜色、图标、文本和系统通知；不停止采集。" },
+        { "AlertResetProtectionEnabled", "控制 RSS/到期重置保护的提示和强调；保护状态机仍继续工作。" },
+        { "AlertServiceHealthEnabled", "控制 Radar、OpenAI、Claude 等 Statuspage 服务健康提示；探测仍继续。" },
+        { "AlertCodexTaskEnabled", "控制 Codex 任务待处理数量、强调色和提醒文本；任务监控仍继续。" },
+        { "AlertDeepSeekBalanceEnabled", "控制 DeepSeek 余额低与余额服务异常提示；余额读取仍继续。" },
+        { "HotkeyToggleAllWindows", "格式如 Ctrl+Alt+H；至少包含一个修饰键，留空表示不绑定。" },
+        { "HotkeyToggleHoverOpacity", "等价于 QuickGrid 的“悬停透明度”动作；格式如 Ctrl+Shift+O。" },
+        { "HotkeyOpenSettings", "从任意应用打开设置窗口；格式如 Ctrl+Alt+S。" },
         { "CodexRadarTransparencyPercent", "影响 Codex Radar 背景透明度。" },
         { "ClaudeRadarTransparencyPercent", "影响 Claude Radar 背景透明度。" },
         { "PowerThermalTransparencyPercent", "影响功耗温度窗口背景透明度。" },
@@ -5563,35 +5706,22 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 return "周额度与 5 小时额度";
             }
 
-            // All six per-window render-variant enums share member names for the common variants
-            // (Classic plus the four OLED-safe restyle schemes); CodexRadarRenderVariant additionally
-            // carries EvenGrid/EvenRow. Label by member name once instead of duplicating per enum type.
             if (this.Value is NetworkMonitorRenderVariant)
             {
                 string networkVariantName = Convert.ToString(this.Value, CultureInfo.InvariantCulture);
                 if (networkVariantName == "Classic") return "扁平信息条";
                 if (networkVariantName == "GroupedCards") return "分组卡片";
-                if (networkVariantName == "Typographic") return "排版流（OLED 安全）";
-                if (networkVariantName == "AmberHud") return "暗琥珀仪表（OLED 安全）";
-                if (networkVariantName == "WarmCard") return "暖灰暗卡片（OLED 安全）";
-                if (networkVariantName == "Phosphor") return "磷光绿终端（OLED 安全）";
             }
 
             if (this.Value is CodexRadarRenderVariant ||
                 this.Value is MainWidgetRenderVariant ||
                 this.Value is PowerThermalRenderVariant ||
-                this.Value is ConnectionCheckRenderVariant ||
-                this.Value is OperationRenderVariant)
+                this.Value is ConnectionCheckRenderVariant)
             {
                 string variantName = Convert.ToString(this.Value, CultureInfo.InvariantCulture);
                 if (variantName == "Classic") return "经典布局";
                 if (variantName == "EvenGrid") return "均布六格";
                 if (variantName == "EvenRow") return "均布单行";
-                if (variantName == "Typographic") return "排版流（OLED 安全）";
-                if (variantName == "AmberHud") return "暗琥珀仪表（OLED 安全）";
-                if (variantName == "WarmCard") return "暖灰暗卡片（OLED 安全）";
-                if (variantName == "Phosphor") return "磷光绿终端（OLED 安全）";
-                if (variantName == "RadialDial") return "扇形速控盘（新）";
             }
 
             return Convert.ToString(this.Value, CultureInfo.InvariantCulture);

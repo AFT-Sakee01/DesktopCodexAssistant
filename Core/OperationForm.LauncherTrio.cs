@@ -2,11 +2,12 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.IO;
 using System.Windows.Forms;
 
-// Double-clicking the operation core opens this compact launcher. The legacy QuickGrid entry was
-// intentionally removed; the remaining buttons open the Spec manager and CodexSleepGuard.
+// The compact launcher remains available behind OperationDoubleClickSpecialMenuEnabled. The
+// default double-click toggles hidden mode; opting in restores the Spec/Codex task/sleep shortcuts.
 internal sealed partial class OperationForm
 {
     // The user keeps the live tree on E:; D:\E_Drive_Files is a synced mirror. Try the requested
@@ -95,19 +96,22 @@ internal sealed partial class OperationForm
         ShowOperationNotification("睡眠防护", "未找到 Start-CodexSleepGuard.cmd（已尝试 E: 与 D:\\E_Drive_Files）。", ToolTipIcon.Warning);
     }
 
+    // Index order must match TrioLabels, TrioTints and the arc layout: 0 sits at the top of the arc.
     private enum LauncherTrioAction
     {
         SpecBoard,
+        CodexTasks,
         SleepGuard
     }
 
     private sealed class OperationLauncherTrioForm : LayeredWidgetFormBase
     {
-        private const int TrioCount = 2;
-        private static readonly string[] TrioLabels = { "Spec 管理", "睡眠防护" };
+        private const int TrioCount = 3;
+        private static readonly string[] TrioLabels = { "Spec 管理", "Codex 任务", "睡眠防护" };
 
         private readonly OperationForm owner;
         private readonly ToolTip toolTip;
+        private readonly UiFontCache fontCache = new UiFontCache();
         private int hoveredIndex = -1;
         private int pressedIndex = -1;
         private int toolTipIndex = -1;
@@ -115,6 +119,7 @@ internal sealed partial class OperationForm
         public OperationLauncherTrioForm(OperationForm owner)
         {
             this.owner = owner;
+            this.CurrentSettings = owner.CurrentSettings;
             ApplicationIcon.ApplyTo(this);
             InitializeLayerScaleFromCurrentDpi();
             ApplyLayerScaleFromSettings(owner.CurrentSettings);
@@ -136,6 +141,7 @@ internal sealed partial class OperationForm
 
         public void ApplyRuntimeSettings(WidgetSettings settings)
         {
+            this.CurrentSettings = settings;
             ApplyLayerScaleFromSettings(settings);
             Size desired = GetDesiredSize();
             if (this.Size != desired)
@@ -152,6 +158,21 @@ internal sealed partial class OperationForm
             {
                 InvalidateLayeredRenderBuffer();
             }
+        }
+
+        protected override int WindowTransparencyOverridePercent
+        {
+            get { return this.CurrentSettings.OperationTransparencyOverridePercent; }
+        }
+
+        protected override int WindowScaleOverridePercent
+        {
+            get { return this.CurrentSettings.OperationScaleOverridePercent; }
+        }
+
+        public void RefreshNightScheduleFromOwnerTick()
+        {
+            RefreshNightScheduleAtExistingTick();
         }
 
         public void ShowTrio()
@@ -396,6 +417,9 @@ internal sealed partial class OperationForm
                 case LauncherTrioAction.SpecBoard:
                     this.owner.OpenSpecBoardManagerWindow();
                     break;
+                case LauncherTrioAction.CodexTasks:
+                    this.owner.ToggleCodexTaskBoard();
+                    break;
                 case LauncherTrioAction.SleepGuard:
                     this.owner.LaunchSleepGuard();
                     break;
@@ -445,6 +469,7 @@ internal sealed partial class OperationForm
         private static readonly Color[] TrioTints =
         {
             Color.FromArgb(120, 178, 255), // Spec 看板 — blue
+            Color.FromArgb(232, 176, 96),  // Codex 任务 — amber (overridden live by task status)
             Color.FromArgb(150, 165, 225)  // 睡眠防护 — periwinkle indigo
         };
 
@@ -456,6 +481,18 @@ internal sealed partial class OperationForm
             bool hovered = index == this.hoveredIndex;
             bool pressed = index == this.pressedIndex;
             Color tint = TrioTints[index];
+            CodexTaskBadgeModel badge = null;
+            if ((LauncherTrioAction)index == LauncherTrioAction.CodexTasks)
+            {
+                // The task node borrows the constellation's category-ring slot to carry live status:
+                // the halo takes the most urgent task color instead of a fixed category tint.
+                badge = CodexTaskPresentation.BuildBadge(CodexTaskPresentation.GetSnapshot());
+                if (badge.HasTasks)
+                {
+                    tint = badge.StatusColor;
+                }
+            }
+
             int fillAlpha = ScaleAlpha(ClampByte(74 + (hovered ? 40 : 0) + (pressed ? 26 : 0)), backgroundAlpha);
             int ringAlpha = ScaleAlpha(ClampByte(58 + (hovered ? 60 : 0) + (pressed ? 34 : 0)), backgroundAlpha);
             int haloAlpha = ScaleAlpha(ClampByte(150 + (hovered ? 46 : 0)), backgroundAlpha);
@@ -483,9 +520,40 @@ internal sealed partial class OperationForm
                 case LauncherTrioAction.SpecBoard:
                     DrawSpecGlyph(g, iconRect, ink);
                     break;
+                case LauncherTrioAction.CodexTasks:
+                    DrawCodexTaskGlyph(g, rect, badge, backgroundAlpha);
+                    break;
                 case LauncherTrioAction.SleepGuard:
                     DrawMoonGlyph(g, iconRect, ink);
                     break;
+            }
+        }
+
+        // The tracked task count, sized to the node like the radial dial's own numeric leaves. An
+        // idle-only or empty set stays muted so a quiet desktop shows no bright pixels.
+        private void DrawCodexTaskGlyph(Graphics g, RectangleF rect, CodexTaskBadgeModel badge, int backgroundAlpha)
+        {
+            if (badge == null)
+            {
+                badge = new CodexTaskBadgeModel();
+            }
+
+            string text = badge.TaskCount.ToString(CultureInfo.InvariantCulture);
+            Font font = this.fontCache.GetUi(
+                Math.Max(7.0f, rect.Width * 0.42f),
+                FontStyle.Bold);
+            Color ink = badge.AttentionCount > 0
+                ? DesignTokens.WithAlpha(badge.StatusColor, ScaleAlpha(245, backgroundAlpha))
+                : DesignTokens.Glyph(ScaleAlpha(badge.HasTasks ? 214 : 120, backgroundAlpha));
+            using (SolidBrush brush = new SolidBrush(ink))
+            using (StringFormat format = new StringFormat
+            {
+                Alignment = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center,
+                FormatFlags = StringFormatFlags.NoWrap
+            })
+            {
+                g.DrawString(text, font, brush, rect, format);
             }
         }
 
@@ -556,7 +624,28 @@ internal sealed partial class OperationForm
             }
 
             this.toolTipIndex = index;
-            this.toolTip.Show(TrioLabels[index], this, location.X + 12, location.Y + 18, 4000);
+            this.toolTip.Show(GetToolTipText(index), this, location.X + 12, location.Y + 18, 4000);
+        }
+
+        private static string GetToolTipText(int index)
+        {
+            if ((LauncherTrioAction)index != LauncherTrioAction.CodexTasks)
+            {
+                return TrioLabels[index];
+            }
+
+            CodexTaskBadgeModel badge = CodexTaskPresentation.BuildBadge(CodexTaskPresentation.GetSnapshot());
+            if (!badge.HasTasks)
+            {
+                return TrioLabels[index] + "：无活跃会话";
+            }
+
+            string summary = TrioLabels[index] + "：" +
+                badge.TaskCount.ToString(CultureInfo.InvariantCulture) + " 个 · " +
+                CodexTaskPresentation.GetStatusText(badge.MostUrgentStatus);
+            return badge.AttentionCount > 0
+                ? summary + "（" + badge.AttentionCount.ToString(CultureInfo.InvariantCulture) + " 个待处理）"
+                : summary;
         }
 
         private void HideToolTip()
@@ -586,6 +675,7 @@ internal sealed partial class OperationForm
             {
                 this.toolTip.Hide(this);
                 this.toolTip.Dispose();
+                this.fontCache.Dispose();
             }
 
             base.Dispose(disposing);

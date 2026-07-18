@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：1.0.5.39
+适用版本：1.0.5.64
 
 本文集中记录 Desktop Codex Assistant 各组件的刷新、轮询、手动刷新、网络事件、单飞任务和暂停恢复规则。修改定时器、刷新 token、网络事件、后台任务节流、测试模式或显示恢复逻辑时，应同步更新本文。
 
@@ -70,7 +70,7 @@ DNS 检测：
 | 覆盖开启 | 自动隐藏已经激活时，普通鼠标移动不再释放隐藏；只有鼠标进入任一程序窗口的敏感命中范围后才重置空闲计时并恢复。 |
 | 左下角圆圈保持显示 | `OperationRadialCoreAutoHideKeepAliveEnabled` 默认开启。`WidgetForm.UpdateOperationRadialCoreAutoHideKeepAlive` 在共享交互 tick 中查询 `OperationForm.IsRadialCoreAutoHideKeepAliveActive()`；鼠标停在 RadialDial 核心圆圈上时重置空闲计时、清除自动隐藏来源，并让各隐藏透明度窗口的延迟显现状态复位。该逻辑不新增定时器，也不覆盖手动隐藏来源。圆圈自身复用 `OperationForm.ProcessSharedInteractionTick` 记录悬停时长，达到 `AutoHoverOpacityIdleSeconds` 后只重绘一次低亮度加绿色环状态。 |
 | 反向隐藏 | 操作面板手动隐藏时，鼠标进入某个程序窗口的敏感命中范围会临时恢复该窗口，移开后按 1-30 s 延迟重新隐藏。 |
-| 防烧屏位移 | `LayeredWidgetFormBase.ShouldRefreshBurnInPosition` 为每个分层窗口实例维护 7 min 刷新 slot；主窗口和子窗口在各自位置维护入口调用 `BurnInProtection.ApplyRuntimeOffset` 微位移。salt 必须使用命名常量：`MainWidgetSalt=1`、`CodexRadarSalt=7`、`ClaudeRadarSalt=31`、`PowerThermalSalt=13`、`NetworkMonitorSalt=19`、`ConnectionCheckSalt=23`、`OperationPanelSalt=29`。新增分层窗口时先在 `BurnInProtection` 增加命名 salt，再在窗口定位方法中引用，不写裸数字。 |
+| 防烧屏位移 | `LayeredWidgetFormBase.ShouldRefreshBurnInPosition` 为每个分层窗口实例维护 7 min 刷新 slot；主窗口和子窗口在各自位置维护入口调用 `BurnInProtection.ApplyRuntimeOffset` 微位移。salt 必须使用命名常量：`MainWidgetSalt=1`、`CodexRadarSalt=7`、`ClaudeRadarSalt=31`、`PowerThermalSalt=13`、`NetworkMonitorSalt=19`、`ConnectionCheckSalt=23`、`OperationPanelSalt=29`、`SpecBoardSalt=73`、`SpecBoardDockTabSalt=37`、`CodexTaskBoardSalt=41`、`CodexTaskBoardDockTabSalt=43`。新增分层窗口时先在 `BurnInProtection` 增加命名 salt，再在窗口定位方法中引用，不写裸数字。左缘停靠 tab 是永久可见元素，必须参与位移；`EdgeDockTabForm.PinToLeftEdge` 丢弃 `ApplyRuntimeOffset` 的水平分量并固定到 `workArea.Left`，只允许 Y 漂移，保证鼠标贴住屏幕绝对左缘仍可触发。 |
 | 操作面板刷新 | `ForceRefreshAllModules()` 触发主采样、磁盘用量刷新、Codex、功耗、网络和 CleanIP 刷新。 |
 | 诊断日志 | 主采样诊断最多每 15 min 写一次；`TimingStats12h` 耗时摘要也最多每 15 min 写一次，具体样本只保存在内存滚动窗口中。UI 无响应看门狗由后台线程每 2 s 检查 UI 心跳，超过 10 s 写入 `ui-hang-watchdog.jsonl`，持续无响应每 30 s 重复记录，5 min 以上挂起空洞不报。 |
 
@@ -84,7 +84,7 @@ DNS 检测：
 | 随机整窗测试 | 测试开启时暂停真实网站、Claude 和额度轮询；手动 token 立即重建，自动刷新最多 1 s 一次。旧五阶段连接流程已删除，不参与真实轮询。 |
 | 检测软件 Auto | `CodexRadarSoftwareMode=Auto` 先读取共享 `SoftwareRuntimePresence` 快照；固定 Codex/Claude、两者都未运行或只有一者运行时不查询前台窗口。只有 Codex 与 Claude 都运行时，才通过共享身份分类器识别前台软件；分类器优先使用包路径、专用进程名和可执行文件产品元数据，最后才允许非浏览器窗口标题回退。新版 Codex 的 `ChatGPT.exe` 由 `OpenAI.Codex_*` 包路径识别，`OpenAI.ChatGPT-Desktop_*` 明确不归入 Codex。识别不到或命中本程序时保持上一次有效软件。切换决策由纯逻辑 `RadarSoftwareModeController` 统一产生；实际 family 变化只写一次诊断日志。有效软件或模型切换后优先恢复目标软件族同模型的 `RadarFamilyRuntimeState`，其次读对应磁盘缓存，仍缺失时保留目标软件族自己的上一帧内容，直到新网站/额度数据成功返回，避免切换瞬间出现空态或错误态闪烁。Radar 快照、额度快照、额度来源、消耗环基线、quota 刷新调度时间、Radar 服务健康和 API 防抖状态均按 Codex/Claude family 分开保存；软件族切换只重置目标 family 的 API 稳定错误和轮播签名，另一个 family 的 Rader/OpenAI/Claude 旧错误不会跨窗口显示，目标 family 错误必须重新连续存在 10 s 才能显示。`--test` 通过 `RunSoftwareModeGateSelfTest` 和 `RunRadarFamilyRuntimeIsolationSelfTest` 覆盖新版 Codex/ChatGPT 同名进程区分、浏览器标题排除、固定模式、无进程、单进程、双进程前台检测失败、selected-provider 额度刷新门控以及运行态隔离。 |
 | 运行态快照 | `SoftwareRuntimePresence` 的常规 3/5/10 s 路径只查询明确可执行名、`ChatGPT.exe` 包身份和已学习别名；绘制路径只读最近快照。已知名称漏判任一软件时，低频发现最多每 60 s 扫描一次带主窗口的进程，通过包路径或缓存后的 `ProductName/FileDescription` 确认身份并记住新进程名；不在每次 tick 或 paint 路径全进程扫描。产品元数据缓存上限为 64 个路径，新安装包版本因路径变化会重新读取。 |
-| 额度进程检查 | Codex 额度路径复用共享运行态快照。两者都未运行时跳过个人额度 provider 和本地 session 额度读取，保留最近快照；启动、恢复、网络变化、手动刷新、软件切换或测试模式恢复只通过统一 selected-provider gate 排队当前有效且正在运行的软件，不再同时 prime Codex provider 与 Claude Code usage。 |
+| 额度进程检查 | Codex 额度路径复用共享运行态快照。两者都未运行时跳过个人额度 provider 和本地 session 额度读取，保留最近快照；启动、恢复、网络变化、手动刷新、软件切换或测试模式恢复只通过统一 selected-provider gate 排队当前有效且正在运行的软件，不再同时 prime Codex provider 与 Claude Code usage。`FiveHourLimitAbsent` 的周实测速率环复用同一 UI tick 维护纯内存活动时钟：只在 Codex 模式且 Codex 进程运行时累计，软件关闭、Claude 模式、挂起或超过 90 秒的调度断档会切断样本段，不创建独立 timer，也不改变额度网络刷新间隔。 |
 | Claude Radar 运行态 | 独立 Claude Radar 窗口只在构造、设置应用、手动刷新和性能模式定时器中刷新共享运行态快照；额度数字绘制只读本地缓存快照，已知数值在 Codex/Claude 任一程序运行时为白色，无数值或两者都未运行时才灰显。公共 Claude Radar 网站数据不按本地进程状态门控。 |
 | Claude Radar 场景缓存 | 独立 Claude Radar 窗口最多缓存 6 张预渲染 scene bitmap，key 包含窗口尺寸、渲染变体、透明度、防烧屏、运行态、请求状态、动画/状态轮换相位、模型、模型 `latest_at`、底部 `RC` rating key/label、`DS` API/余额签名、OpenAI 状态、余额、IQ、效率、服务状态和额度线签名；尺寸变化、显示挂起和关闭时释放。底部栏绘制只消费 `ClaudeRadarSnapshot` 已解析字段和 `DeepSeekBalanceMonitor` 内存快照，禁止在 paint 路径读取 `claude-radar-model-map.ini`、DeepSeek key 文件或其它磁盘文件。Claude 家族底部简称使用前两位家族前缀和 Codex 同类档位规则，例如 `Opus 4.8 high` -> `Op4.8H`、`Fable 5 max` -> `Fa5MAX`、`Sonnet 5 ultra` -> `So5Ult`。`--test-layout` 会验证状态矩阵渲染非空、scene cache 超限裁剪、释放清空，以及 120 次高频切换中 6 个 warmed scenes 后续全部命中缓存；`--test-radar-display-lifecycle` 会在禁用远程源的情况下反复运行 Codex/Claude Radar display suspend/resume 并检查 handle/GDI/USER 增量；`--render-clauderadar` 会输出 normal、missing-data、warning、error、offline、test-randomized 及对应 2880x1800 桌面图。 |
 | Claude Radar 额度线 | 独立窗口额度线读取 `data/claude-code-radar.json` 的 `quota.chart.trend`，兼容 `d7` / `total_7d` 等 7d 图表 key；无图表时退回 `quota.base_d7_trend`，再退回 `claude-radar-quota-history.jsonl` 最近 7 天，最后才用单点当前值。`quota.base_d7` 缺失时从 `quota.metrics` 的 d7/total_7d 行取当前值并按 metric/update/run 签名写历史。`claude-radar-cache.ini` 保存 `QuotaLineKnown/Current/Previous/Min/Max/Average/Metric/SourceMode`，启动和失败合并不清空额度线；paint 路径只消费已解析快照。Codex Radar Claude 模式读取同一 `ClaudeRadarReader` 快照，并把 `QuotaLine` 映射为共享窗口的 `CodexQuotaRadarSnapshot`，所以 IQ 左侧额度线不依赖独立 Claude 窗口是否启用。`--test` 覆盖当前站点 `quota.metrics + chart.key=total_7d` 形状、缓存 round-trip 和共享窗口 `QuotaLine -> QuotaRadar` 映射。 |
@@ -98,7 +98,7 @@ DNS 检测：
 | 活跃额度 fallback | Codex 正在运行且 provider 无新鲜快照时，10/15/30 s 刷新本地 session 额度。 |
 | 非活跃额度 fallback | 旧的 Codex 不运行低频 session 读取只作为回滚边界保留；当前活动调度在 Codex 未运行、Claude 运行但未选中 Codex、或两者都停时不读取本地 session 额度。reset 到期显示依赖已缓存快照和保护逻辑，不启动额外 session 扫描。 |
 | Claude Code 用量 | Codex Radar 共享过渡窗口只由 selected-provider gate 在当前检测软件为 `CLAUDE` 且 Claude 本地程序运行时加入刷新；独立 Claude Radar 作为固定 Claude family 窗口，在启用、可见、未挂起、非随机测试且 Claude 本地程序运行时加入刷新。两者共用进程级 `ClaudeCodeUsageScheduler`：任意时刻只允许一个 Claude Code usage 请求，正常 5 min、普通失败 10 min、HTTP 429 15 min 退避；两个窗口消费同一结果，成功只写一次 `claude-quota.ini`。显式 setup token 存在时先读 OAuth usage；401/403 返回 `TOKEN_INVALID` 且禁止 Messages 头兜底，其他失败才允许 Messages 头并继续回落新鲜 statusline。无 token 时只走零 API 的 statusline 缓存/桥安装路径，仍不可用则返回 `NO_SETUP_TOKEN`；已有自定义 statusline 时不覆盖。调度器只记录 host/source/结果摘要，不记录 token 或响应正文。独立窗口绘制前会把 reset 文本压缩为共享窗口同款 `HH:mm` / `MM/dd` 标签。 |
-| 会话文件 | `%USERPROFILE%\.codex\sessions` watcher 只置失效标记，真实读取仍走额度刷新路径。 |
+| 会话文件 | `%USERPROFILE%\.codex\sessions` 只维护一套递归 `quotaSessionWatcher`。额度 fallback 继续把事件作为失效标记；任务状态后端同时接收精确文件事件并做逐文件增量尾读。两者共用 `EnumerateCodexRolloutFiles`，不得新增第二个 watcher 或 reader 内递归遍历。任务状态随 Codex Radar 现有 timer 请求轻量状态刷新，watcher 漏报时每 30 s 在后台完整对账一次；reader 不创建独立 timer。 |
 | 余额判定日志 | 跟随真实额度读取完成后写一条 `quota-decision-history.jsonl`，记录 `software_family`、余额、消耗尾段、来源、原始/跟踪 reset anchor、anchor age 和身份判定原因；拒绝的干扰池使用 `interference_pool_sample_ignored`。不在绘制、动画或随机测试路径写入；15 s/32 KiB 批量落盘，约 48 h 保留。 |
 | CodexRadar/ClaudeRadar 网站 | 启动、恢复、模型切换、数据源设置变化和手动刷新仍触发一次错峰请求；常规自动刷新在北京时间每小时整点执行一次，网站未出新批次不再加密轮询；失败、超时或不可用 10 min 重试。请求启动时捕获当前软件族和模型 key，完成后只写回对应 `RadarFamilyRuntimeState`；若完成时用户已切到另一软件族或模型，后台 state 会保留结果但不覆盖当前可见 active state。Codex 读取链路按设置在公开 `current.json`、首页 HTML 回退和 RSS 回退之间分层执行；公开 JSON 成功但缺少首页额度雷达、网页短数据标签、IQ 常态区或 IQ 图表显示上限时，也会读取首页 HTML 补齐展示字段，补齐失败不覆盖已成功的 JSON 数据。Claude Radar 公共数据由进程级 `ClaudeRadarSnapshotScheduler` 包装 `ClaudeRadarReader.ReadSnapshot`：同一 `selectedModelKey/json/homepage/rating/localQuotaFallback` 请求 key 的共享窗口 Claude 模式和独立 Claude 窗口会 join 同一请求，不同 key 可并行；失败时返回 last-good display snapshot 供窗口保留显示，同时按失败间隔重试；request-level 历史由 scheduler 写一次。IQ 显示上限从同一次 `model_iq` 全模型分数或首页 `IQ指数` 历史值提取，不建立额外轮询。 |
 | Model IQ 时钟 | EvenRow 时钟只用模型 IQ 数据窗口或 Claude 模型 `latest_at` 判断新鲜度，不用本地抓取时间冒充数据更新。变黄边界按本机系统时间计算，不按北京时间：Codex 为 12 h 一圈，系统 0:00 和 12:00 边界开始等待当前半日批次；Claude 为 24 h 一圈，系统每天 0:00 开始等待当天模型 IQ。当前时间白点从顶部边界顺时针前进；12 点钟方向固定绘制绿色竖线；小绿点表示上次记录到新 IQ 内容的位置，Codex 保留 12 h、Claude 保留 24 h，当前指针下一圈到达该位置后不再显示。小绿点仍有效时，圆弧从小绿点顺时针连接到当前白点；小绿点过期后不再用旧刷新点绘制连接弧，但当前周期还没有新数据且上一周期数据仍在容忍范围内时，从本周期边界顺时针绘制黄色等待弧到当前白点。Codex 抓到同一批旧 IQ 内容时保留旧 `RefreshedUtc`，避免每小时同内容请求移动绿点。时钟中心下方时间由 `RadarClockTimeDisplayMode` 控制，默认 UTC，可切到当前本机时间、上次尝试刷新时间或上次实际 IQ 刷新时间；时间下方同色显示 `UTC`、`NOW`、`LAST` 或 `REF` 短标签，不改变既有日期/时间位置；渲染缓存包含当前分钟签名，避免绿点到期后继续使用旧 bitmap。当前周期数据到达后变绿；只有上一个完整周期仍无数据时才在黄色满环上叠红色。`RadarClockAutoSwitchModelEnabled` 默认开启：过期且当前模型未达上一个周期边界时，Codex 从 7 天模型缓存里找最近达到边界的模型；Claude 通过 `ClaudeRadarClockAutoSwitchSelector` 在包含当前模型的完整 `iq.models` 候选集中选择全局最新项，当前模型已是最新时不写设置，时间并列时优先保持当前模型。独立 Claude Radar 启用时它是 `ClaudeRadarModelKey` 的唯一自动写入者；独立窗口关闭后共享窗口 Claude 模式才接管。没有候选时只变红，不重复写设置。 |
@@ -215,7 +215,7 @@ DNS 告警：
 | FPS counter 发现 | 首次或候选缺失时发现；前台进程变化后的重新发现冷却 30 s；完整发现间隔 60 s。 |
 | 防烧屏维护 | 位置位移检查复用主窗口共享维护 tick，不建立额外高频定时器。 |
 | 设置窗口恢复 | 设置窗口关闭、异常销毁或被宿主清理后，`WidgetForm` 调用 `OperationForm.ClearTransientInteractionState()` 清除 hover、pressed、tooltip 和鼠标捕获状态，避免操作面板停在半交互状态。 |
-| 窗口层级 | 非桌面模式监测浮窗在设置应用、定位和 Win+D/Seelen 恢复拉前时复用 SeelenUI 感知 insert-after；有可见 TopMost Seelen `Tauri Window` 时选择 Seelen 顶层窗口栈里最靠下的一个并插入到其下方，否则回退普通 `HWND_TOPMOST`。不新增常驻定时器。 |
+| 窗口层级 | 非桌面模式监测浮窗在设置应用、定位和 Win+D/Seelen 恢复拉前时复用 SeelenUI/Codex 宠物感知策略：先保持组内顺序地归拢受保护窗口，再把本程序全部可见 TopMost 窗口放在受保护组下方、其他 TopMost 应用上方；`AlwaysVisible` 在既有前台 WinEvent 到达时立即重申该层级，自动覆盖独立看板和左缘 tab，不维护固定窗体清单，也不新增常驻定时器。 |
 
 ## 8.1 Spec Board
 
@@ -224,7 +224,7 @@ DNS 告警：
 | 触发 | 规则 |
 | --- | --- |
 | 呼出 | `OperationForm.ToggleSpecBoardWindow` 手动显示小看板后立即后台读取账本；自动模式由 `StartAutoPopupMonitoring` 在隐藏状态建立基线和 watcher。刷新使用单飞，运行中触发合并到下一轮。双击启动器的 Spec 按钮只调用 `ShowManagerWindow`，不显示小看板。 |
-| 单击/双击仲裁与互斥 | 只有经典 Start 按钮与 RadialDial 核心圆需要等待 `SystemInformation.DoubleClickTime` 后提交单击；双击先取消待执行单击，再吞掉第二次 MouseUp。Radial 单击菜单、双击两按钮启动器、Spec 小看板显示前必须关闭另外两个，后打开者覆盖先打开者；独立管理窗不参与互斥。窗口销毁或清理瞬态交互时必须取消待执行动作。 |
+| 单击/双击仲裁与互斥 | 经典 Start 按钮与 RadialDial 核心圆的第一次 MouseUp 立即执行单击动作，不再等待 `SystemInformation.DoubleClickTime`，也不创建专用单击定时器；若第二次点击被 WinForms 识别为双击，则先收起第一次单击打开的 Radial 菜单，执行隐藏模式或特殊菜单动作，再吞掉第二次 MouseUp。Radial 单击菜单、双击三按钮启动器、Spec 小看板、Codex 任务看板显示前必须关闭另外三个，后打开者覆盖先打开者；独立管理窗不参与互斥。窗口销毁或清理瞬态交互时只需清除第二次 MouseUp 抑制状态。 |
 | Spec 卡片交互 | 卡片单击等待 `SystemInformation.DoubleClickTime` 后复制 `SpecBoardRow.AbsolutePath`；双击取消待复制动作、吞掉第二次 MouseUp，再复用 `OpenRow` 打开文件。隐藏、挂起或销毁窗口时必须停止卡片单击计时器并清空待处理行，禁止隐藏后修改剪贴板。 |
 | 复制成功提示 | `Clipboard.SetText` 成功后在窗口右下角显示绿色提示 2 s，并重置自动收回时钟；现有 500 ms 维护 tick 到期后清空提示并重绘，不新增独立定时器。隐藏、挂起或销毁时立即清除提示。 |
 | 新鲜度已读 | 首次完整快照加载/损坏恢复时播种 `SpecBoardSeenState.json`；之后只在用户单击具体项目行时以当前 `ScanTimeUtc` 更新该项目并原子保存。“全部”行不清除项目状态，不增加轮询。 |
@@ -233,6 +233,7 @@ DNS 告警：
 | 新 Spec 自动弹窗 | 首次完整快照只播种进程内 `project + spec_path` 基线；之后第一次出现且状态为未登记/待执行/需要修改/待验证的非丢失文件才弹出并高亮，已见项不因状态切换或重复 watcher 事件再次提示。`SpecBoardAutoPopupEnabled` 默认 true；`SpecBoardAutoPopupSeconds` 默认 5 s、范围 1-120。 |
 | 对账 | 显示/隐藏监测期间每 5 min、每次呼出、以及 watcher 信号时扫描注册项目的 `spec_glob`；扫描任务 3 s 未完成则放弃该轮结果并显示警告，不阻塞 UI。 |
 | 自动收回 | 手动小看板使用 `SpecBoardAutoHideSeconds`（默认 20 s、范围 0-600，0 关闭）；自动弹窗使用独立的 `SpecBoardAutoPopupSeconds`。两者在鼠标位于窗口内时暂停，移出后从完整时长重新计时。footer 的“关闭”只隐藏小看板。 |
+| 看板外部点击收回 | `LeftDockOutsideClickCollapseEnabled` 默认 true；停靠展开的 Spec/Codex Task 与 Spec 自动弹窗在点击自身、自己的 tab、Spec 管理窗以外的位置时收回，未停靠的手动常驻 Spec 不参与。`OutsideClickDismissalMonitor` 只在 `EdgeDockTabForm` 既有 120 ms hover tick 采样，Spec 的既有 500 ms 维护 tick 为无 tab 自动弹窗兜底；两板用独立序号消费同一点击，不新增 timer、鼠标 hook 或 capture。收回后 800 ms 且光标未离开 tab 时禁止悬停重开，离开 tab 立即解除。进程内 `VK_LBUTTON` 异步状态读取必须统一经过该监测器，避免低位被提前清除。 |
 | 隐藏/挂起 | 普通隐藏且自动弹窗开启时保留 500 ms 维护计时器与 watcher；关闭自动弹窗且小看板不可见、进入全屏隐藏、显示挂起或销毁时停止全部 watcher/计时器。显示恢复后重建 layered 资源、重新定位并按当前设置恢复监测。 |
 | 网络与 AI 请求 | 纯本地只读功能，不发网络请求，不参与 AI 请求保护。 |
 
@@ -256,7 +257,10 @@ DNS 告警：
 | 视觉资源 | 当前设置界面、控制中心模块卡片和特殊设置窗共用 `DesignTokens` 的颜色、圆角、按钮尺寸和间距；设置窗口本体使用 `DesignTokens.SettingsWarmTheme`，该主题自 1.0.4.50 起对齐所有窗口实际运行的 Classic 配色（近黑背景 + 红/黄/绿三色，无蓝无金），不再是仿 WarmCard OLED 变体的暖灰/琥珀色板（settings.ini 里从未有任何窗口选用 WarmCard/AmberHud 等 OLED 变体），也不使用 NeonGeek 蓝紫色板；跨窗口设置风格控件放在 `Settings/SettingsFluentResources.cs`，命令按钮默认 `AutoSize=false` 并由行布局或调用方设定宽高，避免长文案在最小窗口客户区内自动扩宽越界；WinForms 控件字体必须通过窗口级 `UiFontCache.GetUiPoint` 复用，不能把 Point 字号接到悬浮窗 Pixel 字体路径；现行源码的导航图标使用 Segoe Fluent Icons / MDL2 字体字形。若恢复此前的 Phosphor PNG 设计要求，需要同时恢复资源加载器和 `--test-settings-bindings` 图标存在性断言。 |
 | 布局边界 | 设置窗口首选尺寸按 2880x1740 参考工作区比例动态缩放，并受当前工作区上限保护；低分辨率下最小尺寸必须收敛到屏幕内，左侧导航从 409 px 收缩到 300/220 px，内容依靠滚动承载。设置页卡片、页脚按钮和输入控件必须随内容区宽度重排；中文标题和说明高度按字体实际测量，不使用固定 24/34 px 行高；导航行、控制中心面板和设置行需要保留明显垂直间距，避免图标、标题、说明和按钮互相压叠；设置页不得暴露“记录窗口排版日志”这类内部诊断按钮；`--test-settings-bindings` 覆盖动态分辨率尺寸、最小窗口下的控件越界检查。 |
 | 页面结构 | 设置窗口包含独立「布局与位置」页；所有窗口宽高、左边距、底边距和操作面板偏移都收在该页「复杂选项」下。`Radar 通用` 页只放 Codex/Claude Radar 共用的时钟时间和显示时区；`Codex Radar` 页描述可按前台自动切换 CODEX/CLAUDE 的共享小窗及 CodexRadar.com 数据；`Claude Radar` 页描述独立 Claude 小窗、Claude Radar/Claude Code 数据链路，以及两种 Claude 视图共用的 DeepSeek 余额配置。分组名前缀 `!` 表示默认折叠到每页「复杂选项」区；搜索时高级项直接参与匹配，当前页无匹配行时跳到第一个匹配页。 |
-| 外观选择 | 当前设置页只在「操作面板」保留 `OperationRenderVariant` 可切换外观；主窗口、Codex Radar、Claude Radar、网络监控、功耗温度和连接检测的历史 RenderVariant 设置仍可从旧 `settings.ini` 读取/归一化，但不再在设置页暴露下拉或缩略图卡片。 |
+| 外观选择 | 全部挂件已收敛为各自唯一现用绘制路径；操作面板固定为 `RadialDial`，其它窗口固定为各自的 Classic/EvenRow。历史 RenderVariant 键仍可读取，但都会归一化到唯一成员；设置页不再暴露外观下拉或缩略图卡片。 |
+| 夜间策略 | `NightScheduleController` 在各窗口既有 UI tick 上检查本地时段，不新增 timer；进入/退出边界只失效并重建分层位图。`NightQuietHoursEnabled` 只抑制用户可见提醒，采集、去抖和状态机继续运行且退出后不补发。 |
+| 每窗口缩放与透明度 | 9 个 `*ScaleOverridePercent` 与 9 个 `*TransparencyOverridePercent` 均由 `LayeredWidgetFormBase` 的虚钩子统一选择“窗口覆盖优先、否则全局”；Operation 的子窗与两个 EdgeDock tab 跟随宿主看板策略。缩放同时作用绘制内容和窗口边界。 |
+| 全局热键 | 仅 `WidgetForm` 在句柄创建后注册 `RegisterHotKey`，设置热加载时按规范化后的三键签名先注销再注册；相同签名不重试。句柄销毁时统一注销，`WM_HOTKEY` 分发到既有全窗可见性、QuickGrid 悬停透明度和设置窗口动作。注册冲突只写一条 INFO 并在对应设置行显示失败态，不弹窗。 |
 | 实时预览 | 设置变更后 75 ms debounce 应用预览，避免每个控件事件立即写入运行窗口。 |
 | 任务切换 | 设置窗口必须 `ShowInTaskbar=true`，作为普通应用窗口出现在任务栏和 Alt+Tab；用户切到浏览器复制内容后应能直接通过 Alt+Tab 切回设置窗。 |
 | AI 阻断设置 | 系统页“AI 阻断”分组包含 `AiRequestProtectionAutoEnabled` 和 `AiRequestProtectionManualBlockEnabled`。自动模式默认开启，只复用网络监控已有 GFW 明确阻断结论，不新增网络探测、代理或系统防火墙规则。 |

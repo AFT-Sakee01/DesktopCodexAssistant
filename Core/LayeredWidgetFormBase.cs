@@ -12,6 +12,7 @@ internal abstract class LayeredWidgetFormBase : Form
     private bool lastRenderedBurnInColorProtectionActive;
     private bool layeredUpdateFailureLogged;
     private long burnInShiftSlot = long.MinValue;
+    private int lastNightLuminancePercent = -1;
 
     protected float LayerScale { get; private set; } = 1.0f;
 
@@ -64,8 +65,37 @@ internal abstract class LayeredWidgetFormBase : Form
 
     protected void ApplyLayerScaleFromSettings(WidgetSettings settings)
     {
-        float compatibilityScale = settings == null ? 1.0f : settings.GetResolutionCompatibilityScaleFactor();
+        float compatibilityScale = ResolveWindowScaleFactor(settings, this.WindowScaleOverridePercent);
         SetLayerScale(GetCurrentDpiLayerScale() * compatibilityScale);
+    }
+
+    protected Size ScaleWindowSize(Size logicalSize)
+    {
+        return ScaleWindowSize(logicalSize, this.CurrentSettings, this.WindowScaleOverridePercent);
+    }
+
+    private static Size ScaleWindowSize(Size logicalSize, WidgetSettings settings, int windowOverridePercent)
+    {
+        float scale = ResolveWindowScaleFactor(settings, windowOverridePercent);
+        return new Size(
+            Math.Max(1, (int)Math.Round(logicalSize.Width * scale, MidpointRounding.AwayFromZero)),
+            Math.Max(1, (int)Math.Round(logicalSize.Height * scale, MidpointRounding.AwayFromZero)));
+    }
+
+    protected virtual int WindowScaleOverridePercent
+    {
+        get { return WidgetSettings.MinWindowScaleOverridePercent; }
+    }
+
+    private static float ResolveWindowScaleFactor(WidgetSettings settings, int windowOverridePercent)
+    {
+        if (windowOverridePercent >= WidgetSettings.MinResolutionCompatibilityScalePercent)
+        {
+            int normalized = Math.Min(WidgetSettings.MaxWindowScaleOverridePercent, windowOverridePercent);
+            return normalized / 100.0f;
+        }
+
+        return settings == null ? 1.0f : settings.GetResolutionCompatibilityScaleFactor();
     }
 
     protected void SetLayerScale(float scale)
@@ -101,10 +131,12 @@ internal abstract class LayeredWidgetFormBase : Form
         {
             EnsureRenderBuffer();
             bool burnInColorProtectionActive = IsLayeredBurnInColorProtectionActive();
+            int nightLuminancePercent = NightScheduleController.GetActiveLuminancePercent(this.CurrentSettings, DateTime.Now);
             bool refreshNativeBitmap =
                 redrawContent ||
                 !this.renderBufferValid ||
-                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive;
+                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive ||
+                nightLuminancePercent != this.lastNightLuminancePercent;
             if (refreshNativeBitmap)
             {
                 this.renderGraphics.Clear(Color.Transparent);
@@ -120,7 +152,13 @@ internal abstract class LayeredWidgetFormBase : Form
                     OnLayeredBitmapPrepared(this.renderBitmap, burnInColorProtectionActive);
                 }
 
+                if (nightLuminancePercent < 100)
+                {
+                    BurnInProtection.ApplyLuminance(this.renderBitmap, nightLuminancePercent);
+                }
+
                 this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
+                this.lastNightLuminancePercent = nightLuminancePercent;
                 OnLayeredNativeBitmapRefreshed(burnInColorProtectionActive);
                 this.renderBufferValid = true;
             }
@@ -203,9 +241,9 @@ internal abstract class LayeredWidgetFormBase : Form
 
     private static IntPtr GetLayeredWidgetTopMostInsertAfter(bool keepBelowCodexPet)
     {
-        // Use real protected topmost HWNDs as the insert-after target so widgets stay below
-        // Seelen shell chrome and, when enabled, the Codex desktop pet without activation races.
-        return NativeMethods.GetSeelenAwareTopMostInsertAfter(keepBelowCodexPet);
+        // Normalize the protected stack before choosing its lowest HWND. Otherwise an unrelated
+        // TopMost app created later can remain above both the protected surfaces and our widgets.
+        return NativeMethods.PrepareSeelenAwareTopMostInsertAfter(keepBelowCodexPet);
     }
 
     protected int S(int value)
@@ -242,14 +280,87 @@ internal abstract class LayeredWidgetFormBase : Form
         return BurnInProtection.ShouldRefreshPosition(ref this.burnInShiftSlot);
     }
 
+    protected void RefreshNightScheduleAtExistingTick()
+    {
+        if (!this.Visible)
+        {
+            return;
+        }
+
+        int next = NightScheduleController.GetActiveLuminancePercent(this.CurrentSettings, DateTime.Now);
+        if (next == this.lastNightLuminancePercent)
+        {
+            return;
+        }
+
+        InvalidateLayeredRenderBuffer();
+        RenderLayeredWindow();
+    }
+
     protected static int ComputeOpacityAlpha(int transparencyPercent)
     {
         return 255 - DesignTokens.ClampByte(transparencyPercent * 255 / 100);
     }
 
-    protected virtual byte GetApplicationOpacityAlpha()
+    protected virtual int WindowTransparencyOverridePercent
     {
-        return 255;
+        get { return -1; }
+    }
+
+    protected virtual int ApplyHoverAlpha(int alpha)
+    {
+        return alpha;
+    }
+
+    protected byte GetApplicationOpacityAlpha()
+    {
+        int windowOverride = this.WindowTransparencyOverridePercent;
+        int transparencyPercent = windowOverride >= 0
+            ? windowOverride
+            : (this.CurrentSettings == null ? 0 : this.CurrentSettings.ApplicationTransparencyPercent);
+        transparencyPercent = Math.Max(0, Math.Min(WidgetSettings.MaxWindowTransparencyOverridePercent, transparencyPercent));
+        return (byte)DesignTokens.ClampByte(ApplyHoverAlpha(ComputeOpacityAlpha(transparencyPercent)));
+    }
+
+    internal static void RunOpacityPolicySelfTest()
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.ApplicationTransparencyPercent = 50;
+        using (OpacityPolicyProbeForm followGlobal = new OpacityPolicyProbeForm(settings, -1, false))
+        using (OpacityPolicyProbeForm windowOverride = new OpacityPolicyProbeForm(settings, 60, false))
+        using (OpacityPolicyProbeForm hoverComposed = new OpacityPolicyProbeForm(settings, 60, true))
+        {
+            if (followGlobal.ReadApplicationAlpha() != ComputeOpacityAlpha(50) ||
+                windowOverride.ReadApplicationAlpha() != ComputeOpacityAlpha(60) ||
+                hoverComposed.ReadApplicationAlpha() != ComputeOpacityAlpha(60) / 2)
+            {
+                throw new InvalidOperationException("Layered window opacity policy did not apply global, override, and hover composition in order.");
+            }
+        }
+
+        Console.WriteLine("Layered window opacity policy: PASS global=50 override=60 hover-composed");
+    }
+
+    internal static void RunScalePolicySelfTest()
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.ResolutionCompatibilityModeEnabled = true;
+        settings.ResolutionCompatibilityScalePercent = 80;
+        float followsGlobal = ResolveWindowScaleFactor(settings, WidgetSettings.MinWindowScaleOverridePercent);
+        float windowOverride = ResolveWindowScaleFactor(settings, 125);
+        float windowClamp = ResolveWindowScaleFactor(settings, int.MaxValue);
+        Size followsGlobalSize = ScaleWindowSize(new Size(200, 100), settings, WidgetSettings.MinWindowScaleOverridePercent);
+        Size overrideSize = ScaleWindowSize(new Size(200, 100), settings, 150);
+        if (Math.Abs(followsGlobal - 0.80f) > 0.001f ||
+            Math.Abs(windowOverride - 1.25f) > 0.001f ||
+            Math.Abs(windowClamp - 2.0f) > 0.001f ||
+            followsGlobalSize != new Size(160, 80) ||
+            overrideSize != new Size(300, 150))
+        {
+            throw new InvalidOperationException("Layered window scale policy did not apply global compatibility and per-window override to content and bounds.");
+        }
+
+        Console.WriteLine("Layered window scale policy: PASS global=80 override=125 clamp=200 bounds=150%");
     }
 
     protected virtual bool IsLayeredBurnInColorProtectionActive()
@@ -320,6 +431,38 @@ internal abstract class LayeredWidgetFormBase : Form
         catch
         {
             return 1.0f;
+        }
+    }
+
+    private sealed class OpacityPolicyProbeForm : LayeredWidgetFormBase
+    {
+        private readonly int transparencyOverride;
+        private readonly bool halveForHover;
+
+        public OpacityPolicyProbeForm(WidgetSettings settings, int transparencyOverride, bool halveForHover)
+        {
+            this.CurrentSettings = settings;
+            this.transparencyOverride = transparencyOverride;
+            this.halveForHover = halveForHover;
+        }
+
+        protected override int WindowTransparencyOverridePercent
+        {
+            get { return this.transparencyOverride; }
+        }
+
+        protected override int ApplyHoverAlpha(int alpha)
+        {
+            return this.halveForHover ? alpha / 2 : alpha;
+        }
+
+        internal byte ReadApplicationAlpha()
+        {
+            return GetApplicationOpacityAlpha();
+        }
+
+        protected override void DrawWindowContent(Graphics g)
+        {
         }
     }
 }
