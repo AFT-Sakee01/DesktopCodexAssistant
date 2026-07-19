@@ -58,15 +58,8 @@ internal sealed partial class OperationForm
             CloseRadialMenu();
         }
 
-        if (this.specBoardForm != null && !this.specBoardForm.IsDisposed && this.specBoardForm.Visible)
-        {
-            this.specBoardForm.HideBoard();
-        }
-
-        if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed && this.launcherTrioForm.Visible)
-        {
-            this.launcherTrioForm.HideTrio();
-        }
+        HideLauncherTrioIfVisible();
+        CollapseLeftDockBoardsExcept(LeftDockBoardKind.CodexTask);
     }
 
     private void DisposeCodexTaskBoardForm()
@@ -165,6 +158,40 @@ internal sealed partial class OperationForm
             (viewToggle.IsEmpty || !viewToggle.Contains(location));
     }
 
+    private struct CodexTaskFooterLayout
+    {
+        public RectangleF ViewAction;
+        public RectangleF CloseAction;
+        public RectangleF Summary;
+    }
+
+    private static CodexTaskFooterLayout ComputeCodexTaskFooterLayout(
+        RectangleF footer,
+        float viewTextWidth,
+        float closeTextWidth,
+        float minimumActionWidth,
+        float actionTextPadding,
+        float actionGap,
+        float summaryGap)
+    {
+        // This deliberately mirrors SpecBoardForm.DrawBoardFooter: actions start at the left edge,
+        // use content-measured widths with the same minimum, and the quiet summary follows them.
+        // Keeping the geometry pure makes the wide and compact boards share one footer contract.
+        float viewWidth = Math.Min(footer.Width, Math.Max(minimumActionWidth, viewTextWidth + actionTextPadding));
+        RectangleF view = new RectangleF(footer.Left, footer.Top, viewWidth, footer.Height);
+        float closeLeft = Math.Min(footer.Right, view.Right + actionGap);
+        float closeWidth = Math.Min(Math.Max(0.0f, footer.Right - closeLeft), Math.Max(minimumActionWidth, closeTextWidth + actionTextPadding));
+        RectangleF close = new RectangleF(closeLeft, footer.Top, closeWidth, footer.Height);
+        float summaryLeft = Math.Min(footer.Right, close.Right + summaryGap);
+        RectangleF summary = new RectangleF(summaryLeft, footer.Top, Math.Max(0.0f, footer.Right - summaryLeft), footer.Height);
+        return new CodexTaskFooterLayout
+        {
+            ViewAction = view,
+            CloseAction = close,
+            Summary = summary
+        };
+    }
+
     private static void RunCodexTaskBoardPlacementSelfTest()
     {
         Rectangle workArea = new Rectangle(0, 0, 1440, 900);
@@ -217,19 +244,59 @@ internal sealed partial class OperationForm
         {
             throw new InvalidOperationException("Codex task board blank-area dismissal hit policy failed.");
         }
+
+        RectangleF footer = new RectangleF(9.0f, 374.0f, 630.0f, 17.0f);
+        CodexTaskFooterLayout footerLayout = ComputeCodexTaskFooterLayout(
+            footer,
+            24.0f,
+            18.0f,
+            42.0f,
+            14.0f,
+            4.0f,
+            5.0f);
+        if (footerLayout.ViewAction.Left != footer.Left ||
+            footerLayout.ViewAction.Width != 42.0f ||
+            footerLayout.CloseAction.Left != footerLayout.ViewAction.Right + 4.0f ||
+            footerLayout.CloseAction.Width != 42.0f ||
+            footerLayout.Summary.Left != footerLayout.CloseAction.Right + 5.0f ||
+            footerLayout.Summary.Right != footer.Right ||
+            ShouldDismissCodexTaskBoardClick(
+                footerLayout.CloseAction,
+                footerLayout.ViewAction,
+                Point.Round(new PointF(footerLayout.ViewAction.Left + 2.0f, footerLayout.ViewAction.Top + 2.0f))) ||
+            ShouldDismissCodexTaskBoardClick(
+                footerLayout.CloseAction,
+                footerLayout.ViewAction,
+                Point.Round(new PointF(footerLayout.CloseAction.Left + 2.0f, footerLayout.CloseAction.Top + 2.0f))))
+        {
+            throw new InvalidOperationException("Codex task board footer must align with the Spec Board action rail.");
+        }
     }
 
-    // Both dock tabs at 8x zoom so the trapezoid shape is reviewable; a real 10x30 PNG is too small
-    // to judge. Idle and hovered states side by side.
+    // All four dock tabs at 8x zoom so the 5x30 trapezoid and centre arrow are reviewable. Each
+    // strip is normal idle/hover, hidden idle, protected collapsed, expanded and expanded-hover.
     private static void RenderEdgeDockTabSample(string outputDir)
     {
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.Normalize();
-        Color[] accents = { DesignTokens.Colors.AccentAlt, DesignTokens.Colors.Accent };
-        string[] names = { "spec", "codex" };
+        Color[] accents =
+        {
+            EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Network),
+            EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SpecBoard),
+            EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexTask),
+            EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Guard)
+        };
+        int[] salts =
+        {
+            BurnInProtection.NetworkMonitorDockTabSalt,
+            BurnInProtection.SpecBoardDockTabSalt,
+            BurnInProtection.CodexTaskBoardDockTabSalt,
+            BurnInProtection.GuardBoardDockTabSalt
+        };
+        string[] names = { "network", "spec", "codex", "guard" };
         for (int i = 0; i < accents.Length; i++)
         {
-            using (EdgeDockTabForm tab = new EdgeDockTabForm(settings, accents[i], BurnInProtection.SpecBoardDockTabSalt, "SampleDockTab", i == 1))
+            using (EdgeDockTabForm tab = new EdgeDockTabForm(settings, accents[i], salts[i], "SampleDockTab", i == 2))
             {
                 string path = System.IO.Path.Combine(outputDir, "operation-dock-tab-" + names[i] + ".png");
                 tab.SaveSample(path, 8.0f);
@@ -364,8 +431,6 @@ internal sealed partial class OperationForm
         private string lastContentSignature = string.Empty;
         private RectangleF closeButtonRect = RectangleF.Empty;
         private RectangleF viewToggleRect = RectangleF.Empty;
-        private bool closeHovered;
-        private bool viewToggleHovered;
         private CodexTaskBoardView viewMode;
         private bool viewModeUserChosen;
 
@@ -463,7 +528,7 @@ internal sealed partial class OperationForm
             {
                 this.dockTab = new EdgeDockTabForm(
                     this.CurrentSettings,
-                    DesignTokens.Colors.Accent,
+                    EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexTask),
                     BurnInProtection.CodexTaskBoardDockTabSalt,
                     "CodexTaskBoardDockTab",
                     true);
@@ -473,9 +538,12 @@ internal sealed partial class OperationForm
             }
             else
             {
-                this.dockTab.ApplyRuntimeSettings(this.CurrentSettings, DesignTokens.Colors.Accent);
+                this.dockTab.ApplyRuntimeSettings(
+                    this.CurrentSettings,
+                    EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexTask));
             }
 
+            this.dockTab.SetBoardExpanded(this.Visible);
             this.dockTab.ShowTab(ResolveDockTabCenterY());
             // Docked and collapsed still needs the tick: it drives the tab's burn-in drift and the
             // collapse countdown once a hover expand happens.
@@ -650,7 +718,7 @@ internal sealed partial class OperationForm
             int top = ResolveDockTabCenterY() - this.Height / 2;
             left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
             top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
-            this.Location = BurnInProtection.ApplyRuntimeOffset(new Point(left, top), this.Size, workArea, BurnInProtection.CodexTaskBoardSalt);
+            this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(new Point(left, top), this.Size, workArea, BurnInProtection.CodexTaskBoardSalt);
         }
 
         public void ShowBoard()
@@ -677,13 +745,22 @@ internal sealed partial class OperationForm
                 NativeMethods.SWP_NOOWNERZORDER |
                 NativeMethods.SWP_FRAMECHANGED |
                 NativeMethods.SWP_SHOWWINDOW);
+            if (this.dockTab != null && !this.dockTab.IsDisposed)
+            {
+                this.dockTab.SetBoardExpanded(true);
+            }
+
             this.refreshTimer.Start();
             RenderLayeredWindow();
         }
 
         public void HideBoard()
         {
-            this.closeHovered = false;
+            if (this.dockTab != null && !this.dockTab.IsDisposed)
+            {
+                this.dockTab.SetBoardExpanded(false);
+            }
+
             this.dockPointerLeftUtc = DateTime.MinValue;
             if (this.Visible)
             {
@@ -879,36 +956,6 @@ internal sealed partial class OperationForm
             RenderLayeredWindow();
         }
 
-        protected override void OnMouseMove(MouseEventArgs e)
-        {
-            base.OnMouseMove(e);
-            bool close = this.closeButtonRect.Contains(e.Location);
-            bool toggle = !this.viewToggleRect.IsEmpty && this.viewToggleRect.Contains(e.Location);
-            if (close == this.closeHovered && toggle == this.viewToggleHovered)
-            {
-                return;
-            }
-
-            this.closeHovered = close;
-            this.viewToggleHovered = toggle;
-            this.Cursor = close || toggle ? Cursors.Hand : Cursors.Default;
-            RenderLayeredWindow();
-        }
-
-        protected override void OnMouseLeave(EventArgs e)
-        {
-            base.OnMouseLeave(e);
-            if (!this.closeHovered && !this.viewToggleHovered)
-            {
-                return;
-            }
-
-            this.closeHovered = false;
-            this.viewToggleHovered = false;
-            this.Cursor = Cursors.Default;
-            RenderLayeredWindow();
-        }
-
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
@@ -967,7 +1014,6 @@ internal sealed partial class OperationForm
                 return;
             }
 
-            this.closeHovered = false;
             // Keep ticking while docked-collapsed: the tick still services the tab.
             if (!this.IsLeftDocked)
             {
@@ -1011,7 +1057,9 @@ internal sealed partial class OperationForm
             Font titleFont = GetCrispUiFont(9.0f, 8.0f, FontStyle.Bold);
             Font rowFont = GetCrispUiFont(8.4f, 7.5f, FontStyle.Bold);
             Font subFont = GetCrispUiFont(7.0f, 6.5f, FontStyle.Regular);
-            Font footFont = GetCrispUiFont(7.2f, 6.5f, FontStyle.Regular);
+            // Match the Spec Board footer's small-text role; these sibling boards should not use
+            // different button typography for the same view/close actions.
+            Font footFont = GetCrispUiFont(7.8f, 6.5f, FontStyle.Regular);
 
             bool timeline = this.ActiveView == CodexTaskBoardView.Timeline;
             using (SolidBrush titleBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Text, ScaleAlpha(240, backgroundAlpha))))
@@ -1069,6 +1117,7 @@ internal sealed partial class OperationForm
             }
 
             DrawFooter(g, badge, rows.Count, padding, footFont, backgroundAlpha);
+            EdgeDockTabForm.DrawBoardAccentBorder(g, this.Size, EdgeDockTabRole.CodexTask, this.LayerScale);
         }
 
         private Font GetCrispUiFont(float logicalSize, float minimumPhysicalSize, FontStyle style)
@@ -1404,52 +1453,81 @@ internal sealed partial class OperationForm
             int backgroundAlpha)
         {
             float footerTop = this.Height - padding - FooterHeight();
+            RectangleF footer = new RectangleF(
+                padding,
+                footerTop,
+                Math.Max(1.0f, this.Width - padding * 2.0f),
+                FooterHeight());
             string summary = badge.HasTasks
                 ? "共 " + badge.TaskCount.ToString(CultureInfo.InvariantCulture) +
                     (badge.TaskCount > visibleRows
                         ? " · 显示前 " + visibleRows.ToString(CultureInfo.InvariantCulture)
                         : string.Empty)
                 : string.Empty;
-            using (SolidBrush summaryBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, ScaleAlpha(180, backgroundAlpha))))
-            using (StringFormat noWrap = new StringFormat { FormatFlags = StringFormatFlags.NoWrap })
-            {
-                g.DrawString(summary, footFont, summaryBrush, new PointF(padding, footerTop + S(2)), noWrap);
-            }
-
-            float pillHeight = FooterHeight() - S(1);
-            float closeWidth = S(38);
-            this.closeButtonRect = new RectangleF(
-                this.Width - padding - closeWidth,
-                footerTop,
-                closeWidth,
-                pillHeight);
-            DrawFooterPill(g, this.closeButtonRect, "关闭", this.closeHovered, false, footFont, backgroundAlpha);
-
-            float toggleWidth = S(52);
-            this.viewToggleRect = new RectangleF(
-                this.closeButtonRect.Left - S(6) - toggleWidth,
-                footerTop,
-                toggleWidth,
-                pillHeight);
             bool timeline = this.ActiveView == CodexTaskBoardView.Timeline;
-            DrawFooterPill(g, this.viewToggleRect, timeline ? "卡片" : "时间线", this.viewToggleHovered, timeline, footFont, backgroundAlpha);
+            string viewText = timeline ? "卡片" : "时间线";
+            CodexTaskFooterLayout layout = ComputeCodexTaskFooterLayout(
+                footer,
+                g.MeasureString(viewText, footFont).Width,
+                g.MeasureString("关闭", footFont).Width,
+                S(42),
+                S(14),
+                S(4),
+                S(5));
+            this.viewToggleRect = layout.ViewAction;
+            this.closeButtonRect = layout.CloseAction;
+
+            DrawFooterAction(
+                g,
+                this.viewToggleRect,
+                viewText,
+                DesignTokens.Colors.Success,
+                footFont,
+                backgroundAlpha);
+            DrawFooterAction(
+                g,
+                this.closeButtonRect,
+                "关闭",
+                DesignTokens.Colors.Danger,
+                footFont,
+                backgroundAlpha);
+
+            using (SolidBrush summaryBrush = new SolidBrush(DesignTokens.WithAlpha(
+                DesignTokens.Colors.GlyphMuted,
+                ScaleAlpha(180, backgroundAlpha))))
+            using (StringFormat summaryFormat = new StringFormat
+            {
+                Alignment = StringAlignment.Near,
+                LineAlignment = StringAlignment.Center,
+                Trimming = StringTrimming.EllipsisCharacter,
+                FormatFlags = StringFormatFlags.NoWrap
+            })
+            {
+                g.DrawString(summary, footFont, summaryBrush, layout.Summary, summaryFormat);
+            }
         }
 
-        private void DrawFooterPill(
+        private void DrawFooterAction(
             Graphics g,
             RectangleF rect,
             string text,
-            bool hovered,
-            bool active,
+            Color semanticColor,
             Font footFont,
             int backgroundAlpha)
         {
-            using (GraphicsPath pill = RoundedRectangle(rect, rect.Height / 2.0f))
-            using (Pen pillPen = new Pen(
-                DesignTokens.WithAlpha(DesignTokens.Colors.Accent, ScaleAlpha(hovered || active ? 220 : 130, backgroundAlpha)),
+            // Exact SpecBoard action language: restrained 4px corners, opaque Control fill,
+            // semantic outline, and neutral text. The label states the action; no persistent active
+            // glow or blue capsule competes with task status colours.
+            using (GraphicsPath action = RoundedRectangle(RectangleF.Inflate(rect, -1.0f, -1.0f), S(4)))
+            using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(
+                DesignTokens.Colors.Control,
+                ScaleAlpha(220, backgroundAlpha))))
+            using (Pen border = new Pen(
+                DesignTokens.WithAlpha(semanticColor, ScaleAlpha(170, backgroundAlpha)),
                 Math.Max(1.0f, this.LayerScale)))
-            using (SolidBrush pillText = new SolidBrush(
-                DesignTokens.WithAlpha(DesignTokens.Colors.Accent, ScaleAlpha(hovered || active ? 245 : 200, backgroundAlpha))))
+            using (SolidBrush actionText = new SolidBrush(DesignTokens.WithAlpha(
+                DesignTokens.Colors.Text,
+                ScaleAlpha(240, backgroundAlpha))))
             using (StringFormat center = new StringFormat
             {
                 Alignment = StringAlignment.Center,
@@ -1457,16 +1535,9 @@ internal sealed partial class OperationForm
                 FormatFlags = StringFormatFlags.NoWrap
             })
             {
-                if (hovered || active)
-                {
-                    using (SolidBrush hoverFill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Control, ScaleAlpha(active && !hovered ? 180 : 255, backgroundAlpha))))
-                    {
-                        g.FillPath(hoverFill, pill);
-                    }
-                }
-
-                g.DrawPath(pillPen, pill);
-                g.DrawString(text, footFont, pillText, rect, center);
+                g.FillPath(fill, action);
+                g.DrawPath(border, action);
+                g.DrawString(text, footFont, actionText, rect, center);
             }
         }
 

@@ -55,6 +55,11 @@ internal sealed class NetworkMonitorReader : IDisposable
     private readonly object sync = new object();
     private readonly GfwProbeReader gfwProbeReader = new GfwProbeReader();
     private readonly CloudEndpointProbeReader cloudEndpointProbeReader = new CloudEndpointProbeReader();
+    private readonly PathPingProbeReader pathPingProbeReader = new PathPingProbeReader();
+    private readonly FixedPingProbeReader fixedPingProbeReader = new FixedPingProbeReader();
+    // Per-hop probing only runs while a surface that shows the hop table is actually visible.
+    // A collapsed dock tab therefore costs nothing beyond the pre-existing end-to-end probes.
+    private bool pathPingSamplingActive;
     private NetworkMonitorSnapshot snapshot = new NetworkMonitorSnapshot();
     private DateTime lastLocalRefreshUtc;
     private DateTime lastPublicIpRefreshUtc;
@@ -96,6 +101,15 @@ internal sealed class NetworkMonitorReader : IDisposable
         return GetSnapshot(null);
     }
 
+    // The owning form reports whether its hop table is on screen; see pathPingSamplingActive.
+    public void SetPathPingSamplingActive(bool active)
+    {
+        lock (this.sync)
+        {
+            this.pathPingSamplingActive = active;
+        }
+    }
+
     public void RequestRefresh()
     {
         lock (this.sync)
@@ -124,6 +138,8 @@ internal sealed class NetworkMonitorReader : IDisposable
 
         this.gfwProbeReader.RequestRefresh("手动刷新");
         this.cloudEndpointProbeReader.RequestRefresh("云服务手动刷新");
+        this.pathPingProbeReader.RequestRediscover();
+        this.fixedPingProbeReader.RequestRefresh();
     }
 
     public NetworkMonitorSnapshot GetSnapshot(WidgetSettings settings)
@@ -230,6 +246,8 @@ internal sealed class NetworkMonitorReader : IDisposable
 
         WriteRollingPingHistory(rollingHistory);
         StartRollingPingRefresh(now, mode, accessState, insideWall);
+        RefreshPathPing(settings);
+        RefreshFixedPing(settings);
 
         lock (this.sync)
         {
@@ -237,6 +255,84 @@ internal sealed class NetworkMonitorReader : IDisposable
             ApplyNetworkStatusTestMode(clone, settings);
             ApplyCloudEndpointTestMode(clone, settings);
             return clone;
+        }
+    }
+
+    // Per-hop path quality. The probe self-throttles; this only forwards the identity it needs to
+    // decide whether the cached route is still the route, plus the ICMP verdict the rolling ping
+    // already computed (re-deriving it here would double the probe traffic for no new information).
+    private void RefreshPathPing(WidgetSettings settings)
+    {
+        string target;
+        string gateway;
+        long generation;
+        string interfaceId;
+        bool icmpBlocked;
+        bool connected;
+        bool samplingActive;
+        lock (this.sync)
+        {
+            target = ResolvePathPingTarget(this.snapshot);
+            gateway = this.snapshot.DefaultGatewayAddress;
+            generation = this.networkGeneration;
+            interfaceId = this.snapshot.InterfaceId;
+            icmpBlocked = this.snapshot.PingRolling != null && this.snapshot.PingRolling.IcmpBlocked;
+            connected = this.snapshot.Connected;
+            samplingActive = this.pathPingSamplingActive;
+        }
+
+        PathPingSnapshot pathPing = this.pathPingProbeReader.Poll(
+            settings,
+            target,
+            gateway,
+            generation,
+            interfaceId,
+            samplingActive,
+            icmpBlocked,
+            connected);
+
+        lock (this.sync)
+        {
+            this.snapshot.PathPing = pathPing;
+        }
+    }
+
+    private static string ResolvePathPingTarget(NetworkMonitorSnapshot source)
+    {
+        string candidate = source == null || string.IsNullOrWhiteSpace(source.ConnectivityTarget)
+            ? string.Empty
+            : source.ConnectivityTarget.Trim();
+        string displayProfile = source == null || source.PingRolling == null
+            ? string.Empty
+            : (source.PingRolling.ActiveProfile ?? string.Empty).Trim();
+
+        // ActiveProfile is a presentation label (PUB/BAIDU), not a resolvable probe endpoint. A
+        // previous rolling-ping update accidentally copied that label into ConnectivityTarget,
+        // leaving PathPing in an endless discovery loop. Keep this boundary defensive so an old
+        // in-memory snapshot or future display refactor cannot feed the label back into traceroute.
+        if (candidate.Length == 0 ||
+            (displayProfile.Length > 0 && string.Equals(candidate, displayProfile, StringComparison.OrdinalIgnoreCase)))
+        {
+            return ConnectivityTarget;
+        }
+
+        return candidate;
+    }
+
+    private void RefreshFixedPing(WidgetSettings settings)
+    {
+        bool connected;
+        bool samplingActive;
+        lock (this.sync)
+        {
+            connected = this.snapshot.Connected;
+            samplingActive = this.pathPingSamplingActive;
+        }
+
+        FixedPingSnapshot fixedPing = this.fixedPingProbeReader.Poll(settings, samplingActive, connected);
+        lock (this.sync)
+        {
+            this.snapshot.FixedPing = fixedPing;
         }
     }
 
@@ -1091,7 +1187,6 @@ internal sealed class NetworkMonitorReader : IDisposable
 
         PingRollingSnapshot rolling = BuildRollingPingSnapshot(accessState, insideWall, gateway, active);
         this.snapshot.PingRolling = rolling;
-        this.snapshot.ConnectivityTarget = rolling.ActiveProfile;
         if (rolling.StatsReady && !rolling.IcmpBlocked)
         {
             this.snapshot.LatencyMs = rolling.LatencyMs;
@@ -2939,6 +3034,9 @@ internal sealed class NetworkMonitorReader : IDisposable
             this.networkGeneration++;
         }
 
+        this.pathPingProbeReader.Dispose();
+        this.fixedPingProbeReader.Dispose();
+
         // NetworkChange events are static and would otherwise keep the reader/window alive.
         NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
         NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
@@ -3071,6 +3169,40 @@ internal sealed class NetworkMonitorReader : IDisposable
         if (string.Equals(clone.ActiveProfile, cloneCopy.ActiveProfile, StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Rolling ping self-test: clone isolation failed.");
+        }
+
+        NetworkMonitorSnapshot mislabeledTarget = new NetworkMonitorSnapshot
+        {
+            ConnectivityTarget = "PUB",
+            PingRolling = new PingRollingSnapshot { ActiveProfile = "PUB" }
+        };
+        if (!string.Equals(ResolvePathPingTarget(mislabeledTarget), ConnectivityTarget, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("PathPing target self-test: presentation labels must fall back to the concrete connectivity endpoint.");
+        }
+
+        mislabeledTarget.ConnectivityTarget = "9.9.9.9";
+        if (!string.Equals(ResolvePathPingTarget(mislabeledTarget), "9.9.9.9", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("PathPing target self-test: concrete endpoints must be preserved.");
+        }
+
+        NetworkMonitorReader targetOwner = new NetworkMonitorReader();
+        try
+        {
+            lock (targetOwner.sync)
+            {
+                targetOwner.snapshot.ConnectivityTarget = ConnectivityTarget;
+                targetOwner.ApplyRollingPingSnapshotLocked(NetworkAccessState.Online, false, "self-test");
+                if (!string.Equals(targetOwner.snapshot.ConnectivityTarget, ConnectivityTarget, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("Rolling ping self-test: applying a display profile must not overwrite the concrete connectivity target.");
+                }
+            }
+        }
+        finally
+        {
+            targetOwner.Dispose();
         }
     }
 

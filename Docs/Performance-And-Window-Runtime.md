@@ -1,6 +1,6 @@
 # 性能模式、主窗口与指标运行机制
 
-适用版本：1.0.5.65
+适用版本：1.0.6.03
 
 ## 1. 文档范围
 
@@ -11,7 +11,7 @@
 - Claude 监测窗口 `ClaudeRadarForm`
 - 功耗与温度窗口 `PowerThermalForm`
 - 网络监控窗口 `NetworkMonitorForm`
-- 连接检测窗口 `ConnectionCheckForm`
+- Clean IP 连接检测绘制器 `ConnectionCheckForm`（独立运行时窗口已隐藏）
 - 操作窗口 `OperationForm`
 
 网络监控窗口的源文件备份位于：
@@ -375,7 +375,7 @@ DeepSeek 余额行使用官方余额接口实时读取 `CNY total_balance`。由
 
 温度升高时会自动提高采样频率。严重温度告警的 1 秒采样不受省电模式限制。
 
-### 5.6 连接检测窗口
+### 5.6 Clean IP 出口画像
 
 CleanIP 检测触发条件：
 
@@ -388,7 +388,7 @@ CleanIP 检测触发条件：
 
 检测结果会一直保留到下一次检测覆盖。网络事件只使网络状态缓存失效，不会伪装成手动或操作面板触发。
 
-连接检测窗口的 UI 被限制为三枚状态框：分数、原生状态和 IP 类型。等待、检测中和失败状态也只在这三框中显示，不再绘制顶部状态、延迟、IP/地区详情、时间、触发来源或独立错误面板。
+1.0.5.74 起主窗口不再实例化右下角独立 `ConnectionCheckForm`，出口画像由网络停靠面板统一展示。`CleanIpConnectionReader.Shared` 仍是进程级单例，检测计划、网络恢复、错误重试和设置 token 行为不变；网络面板的 `ForceRefresh()` 同时请求网络与 Clean IP 刷新。`ConnectionCheckForm` 的三状态框绘制与样张入口继续保留作自动回归和可控回滚，但不属于正常运行时窗口集合。
 
 Codex Radar 整窗随机测试启用后会暂停真实网站、额度、Claude 和连接流程轮询。随机快照会缓存；手动刷新通过 refresh token 立即重建，自动刷新开启时最多每秒重建一次，不会在普通 UI tick 上重复随机。测试关闭后恢复真实调度并立即请求关键状态。
 
@@ -437,7 +437,20 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 
 两项设置同时应用于主性能窗口和功耗/时间窗口。只改变整体 Alpha 时不会重新绘制全部内容，而是复用渲染缓冲并重新提交窗口。
 
-防烧屏微位移由 `Core/BurnInProtection.cs` 和 `LayeredWidgetFormBase.ShouldRefreshBurnInPosition` 统一提供。基类为每个窗口实例保存 7 分钟刷新 slot；各窗口在自己的 `Position*Window` 或等价维护入口中调用 `BurnInProtection.ApplyRuntimeOffset`，先按设置和目标工作区算出基准位置，再按命名 salt 得到不越界的微位移位置。现有 salt 为 `MainWidgetSalt = 1`、`CodexRadarSalt = 7`、`ClaudeRadarSalt = 31`、`PowerThermalSalt = 13`、`NetworkMonitorSalt = 19`、`ConnectionCheckSalt = 23`、`OperationPanelSalt = 29`。这些值是窗口之间错开微迁移相位的运行时契约；维护时必须引用命名常量，不能在窗口代码里写裸数字。
+防烧屏微位移由 `Core/BurnInProtection.cs` 和 `LayeredWidgetFormBase.ShouldRefreshBurnInPosition` 统一提供。基类为每个窗口实例保存 7 分钟刷新 slot；各窗口在自己的 `Position*Window` 或等价维护入口中调用 `BurnInProtection.ApplyRuntimeOffset`，先按设置和目标工作区算出基准位置，再按命名 salt 得到不越界的微位移位置。四块左缘停靠看板是水平锚点例外：Network、Spec、Codex Task、GUARD 的 `PositionAtLeftDock` 统一调用 `ApplyRuntimeOffsetWithPinnedX`，把 X 固定为 `工作区左缘 + tab 宽度`，只保留各自 salt 的 Y 轴微位移；非停靠窗口继续使用完整的 X/Y 位移。现有 salt 为 `MainWidgetSalt = 1`、`CodexRadarSalt = 7`、`ClaudeRadarSalt = 31`、`PowerThermalSalt = 13`、`NetworkMonitorSalt = 19`、`ConnectionCheckSalt = 23`、`OperationPanelSalt = 29`、`SpecBoardSalt = 73`、`SpecBoardDockTabSalt = 37`、`CodexTaskBoardSalt = 41`、`CodexTaskBoardDockTabSalt = 43`、`NetworkMonitorDockTabSalt = 47`、`GuardBoardSalt = 53`、`GuardBoardDockTabSalt = 59`。这些值是窗口之间错开微迁移相位的运行时契约；维护时必须引用命名常量，不能在窗口代码里写裸数字。
+
+四枚左缘开关（Network、Spec、Codex Task、GUARD）共用 `EdgeDockTabForm` 的状态绘制，不由四个看板各自实现。开关固定为 `5×30` 逻辑像素，从上到下的角色识别色依次是蓝、橙、绿、紫；每枚梯形中央绘制一个同角色色、较低不透明度的向右三角箭头。梯形和箭头画入同一张分层位图，窗口级防烧屏位移会同时移动两者。`ForceHoverOpacityActive` 采用主窗口下发的手动、空闲或最大化隐藏组合态；状态变化在既有 `ApplyRuntimeSettings` 链路立即重绘，不新增计时器。视觉与交互契约如下：
+
+| 防烧屏配色保护 | 看板状态 | 梯形 | 箭头 |
+| --- | --- | --- | --- |
+| 关闭 | 收起 | 角色识别色；隐藏模式只降低 Alpha | 同角色色且比梯形更淡 |
+| 关闭 | 展开 | 角色识别色 | 同角色色且比梯形更淡 |
+| 开启 | 收起 | 低亮 `GlyphMuted` 灰色，不因悬停提前上色 | 始终保留对应的蓝/橙/绿/紫识别色 |
+| 开启 | 展开 | 恢复对应的蓝/橙/绿/紫识别色 | 同角色色且比梯形更淡 |
+
+`SetBoardExpanded` 是梯形着色的唯一展开状态输入：各看板在真正显示后置 `true`，收起前置 `false`；单纯悬停不会绕过防烧屏灰态。左缘开关不经过通用 `ApplyHiddenModeColorProtection` 位图反色：该组件几乎只含带抗锯齿边缘的梯形与箭头，后处理会产生反色或清空灰边。它改为在绘制前直接选择低能量配色；7 分钟 Y 轴微位移照常生效，且梯形、箭头共享同一窗口位移。X 轴仍固定工作区绝对左缘，以保留边缘命中；任何视觉态都不得隐藏或穿透完整 `5×30` 逻辑命中矩形，鼠标在屏幕最左像素时仍能触达四枚开关。
+
+四块展开看板沿用同一角色识别色，在最终分层位图最上层绘制 `3` 逻辑像素圆角内描边：Network 蓝、Spec 橙、Codex Task 绿、GUARD 紫。入口统一为 `EdgeDockTabForm.DrawBoardAccentBorder`；线宽随 `LayerScale` 缩放，路径按半线宽内缩，不能扩大窗口边界，也不能让四个看板各自复制 Radar 风格的边框几何。该边框参考 `CodexRadarForm.DrawCodexRadarSoftwareInnerBorder`，但不参与左缘 tab 的收起灰态——看板可见时始终显示其角色色边框。
 
 ### 6.2 可见性与桌面层
 
@@ -490,6 +503,8 @@ FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞�
 左下角 RadialDial 核心圆圈可以作为自动隐藏 keep-alive 区域。默认开启时，鼠标静止停在该圆圈上也会持续重置自动隐藏计时器，并且清空普通悬停隐藏的延迟显现状态；该逻辑复用 `WidgetForm` 的共享交互 tick，不增加额外高频轮询。圆圈自身在悬停持续达到 `AutoHoverOpacityIdleSeconds` 后进入确认视觉态：`DrawRadialCoreAutoHideThresholdVisual` 使用 `CompositingMode.SourceCopy` 改写最终 layered-window 像素 alpha，而不是在已有圆圈上做 SourceOver 叠色；核心内部黑色遮罩按 95% 透明度写入，对应 `RadialCoreAutoHideThresholdDimAlpha = 13`；外层 3 px 绿色环状边框按 70% 透明度写入，对应 `RadialCoreAutoHideThresholdRingAlpha = 77`；该视觉反馈随 `OperationRadialCoreAutoHideKeepAliveEnabled` 自动启停，不单独暴露设置。
 
 反向隐藏默认开启，仅作用于操作面板手动激活的隐藏模式。鼠标进入某个程序窗口的敏感命中范围时，该窗口临时恢复正常透明度，并且不会再被“鼠标移上去隐藏”规则立即压回隐藏；鼠标移开后按设置延迟 `1-30 s` 重新隐藏。
+
+主性能窗口的时间趋势水印在普通状态使用 `DenseWatermarkFillAlpha = 16`；隐藏反色状态改用 `DenseWatermarkBurnInFillAlpha = 128` 后再由 `BurnInProtection.ApplyHiddenModeColorProtection` 反色。该差异用于补偿半透明蓝色与深色卡片先做 SourceOver 合成造成的色度损失，最终窗口仍由 95% 隐藏透明度压低亮度；CPU、GPU、NPU 的填色不会再被合成为近白色。
 
 操作面板自身有一个额外边界：刚从左下角按钮开启手动隐藏后，鼠标通常仍在操作面板上。为避免操作面板立刻被反向隐藏恢复而看起来“按钮无效”，它会先保持隐藏，直到鼠标离开操作面板判定范围；之后再移回操作面板时，反向隐藏恢复照常生效。
 

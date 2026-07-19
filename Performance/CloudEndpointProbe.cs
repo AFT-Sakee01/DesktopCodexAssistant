@@ -5,6 +5,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,24 +26,30 @@ internal static class CloudEndpointProbe
     private static readonly HttpClient Client = CreateHttpClient();
     private static readonly Dictionary<string, CloudEndpointCacheEntry> EndpointCache = new Dictionary<string, CloudEndpointCacheEntry>(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, HttpTextCacheEntry> TextCache = new Dictionary<string, HttpTextCacheEntry>(StringComparer.OrdinalIgnoreCase);
-    private static readonly CloudTarget[] Targets = new CloudTarget[]
+    private static readonly CloudTarget[] DefaultTargets = new CloudTarget[]
     {
-        CloudTarget.Statuspage("cloudflare", "https://www.cloudflarestatus.com/api/v2/summary.json"),
-        CloudTarget.Statuspage("akamai", "https://www.akamaistatus.com/api/v2/summary.json"),
-        CloudTarget.Statuspage("github", "https://www.githubstatus.com/api/v2/summary.json"),
-        CloudTarget.Http("aws", "aws.amazon.com"),
-        CloudTarget.AzureStatusRss("azure", "https://azure.status.microsoft/en-us/status/feed/"),
-        CloudTarget.GoogleServiceHealth("google", "https://status.cloud.google.com/incidents.json")
+        CloudTarget.Statuspage("cloudflare", "Cf", "Cloudflare", "https://www.cloudflarestatus.com/api/v2/summary.json"),
+        CloudTarget.Statuspage("akamai", "Ak", "Akamai", "https://www.akamaistatus.com/api/v2/summary.json"),
+        CloudTarget.Statuspage("github", "Gi", "GitHub", "https://www.githubstatus.com/api/v2/summary.json"),
+        CloudTarget.Http("aws", "Aw", "AWS", "aws.amazon.com"),
+        CloudTarget.AzureStatusRss("azure", "Az", "Azure", "https://azure.status.microsoft/en-us/status/feed/"),
+        CloudTarget.GoogleServiceHealth("google", "Go", "Google", "https://status.cloud.google.com/incidents.json")
     };
 
     public static CloudEndpointSnapshot[] CreateCheckingSnapshots()
     {
-        return CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Checking);
+        return CreateSnapshots(DefaultTargets, CloudEndpointStatus.Checking);
     }
 
     public static CloudEndpointSnapshot[] CreateCheckingSnapshots(CloudEndpointSnapshot[] previous)
     {
-        CloudEndpointSnapshot[] result = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Checking);
+        return CreateCheckingSnapshots(previous, NetworkProbeTargetSettings.DefaultCloudEndpointTargets);
+    }
+
+    public static CloudEndpointSnapshot[] CreateCheckingSnapshots(CloudEndpointSnapshot[] previous, string[] configuredTargets)
+    {
+        CloudTarget[] targets = BuildTargets(configuredTargets);
+        CloudEndpointSnapshot[] result = CreateSnapshots(targets, CloudEndpointStatus.Checking);
         if (previous == null || previous.Length == 0)
         {
             return result;
@@ -73,14 +81,14 @@ internal static class CloudEndpointProbe
         bool forceRefresh,
         bool regionChanged)
     {
-        return RunAsync(logLines, regionMask, previous, forceRefresh, regionChanged, false, string.Empty, CancellationToken.None)
+        return RunAsync(logLines, regionMask, previous, forceRefresh, regionChanged, false, string.Empty, NetworkProbeTargetSettings.DefaultCloudEndpointTargets, CancellationToken.None)
             .GetAwaiter()
             .GetResult();
     }
 
     public static void RunSelfTest()
     {
-        CloudEndpointSnapshot[] defaults = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Normal);
+        CloudEndpointSnapshot[] defaults = CreateSnapshots(DefaultTargets, CloudEndpointStatus.Normal);
         string order = string.Empty;
         for (int i = 0; i < defaults.Length; i++)
         {
@@ -100,6 +108,25 @@ internal static class CloudEndpointProbe
         if (!string.Equals(order, "Cf Ak Gi Aw Az Go", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Cloud endpoint self-test: tile order mismatch.");
+        }
+
+        string[] configured = NetworkProbeTargetSettings.NormalizeCloudTargets(new string[]
+        {
+            "builtin|cloudflare|0",
+            "builtin|akamai|1",
+            "builtin|github|0",
+            "builtin|aws|0",
+            "builtin|azure|0",
+            "builtin|google|0",
+            "custom|自定义云|9.9.9.9|1"
+        });
+        CloudTarget[] configuredTargets = BuildTargets(configured);
+        if (configuredTargets.Length != 2 ||
+            !string.Equals(configuredTargets[0].Key, "akamai", StringComparison.Ordinal) ||
+            configuredTargets[1].Kind != CloudTargetKind.Ping ||
+            !string.Equals(configuredTargets[1].DisplayName, "自定义云", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Cloud endpoint self-test: enabled/custom target selection failed.");
         }
 
         string azureOutage =
@@ -148,29 +175,31 @@ internal static class CloudEndpointProbe
         bool regionChanged,
         bool localNetworkDegraded,
         string localNetworkDegradedReason,
+        string[] configuredTargets,
         CancellationToken cancellationToken)
     {
         regionMask = NormalizeRegionMask(regionMask);
         DateTime nowUtc = DateTime.UtcNow;
-        CloudEndpointSnapshot[] snapshots = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Unknown);
+        CloudTarget[] targets = BuildTargets(configuredTargets);
+        CloudEndpointSnapshot[] snapshots = CreateSnapshots(targets, CloudEndpointStatus.Unknown);
         List<int> refreshIndices = new List<int>();
-        List<CloudEndpointSample>[] samples = new List<CloudEndpointSample>[Targets.Length];
-        for (int i = 0; i < Targets.Length; i++)
+        List<CloudEndpointSample>[] samples = new List<CloudEndpointSample>[targets.Length];
+        for (int i = 0; i < targets.Length; i++)
         {
             samples[i] = new List<CloudEndpointSample>();
             CloudEndpointSnapshot cached;
             string cacheReason;
-            if (TryGetCachedSnapshot(Targets[i], nowUtc, regionMask, forceRefresh, regionChanged, out cached, out cacheReason))
+            if (TryGetCachedSnapshot(targets[i], nowUtc, regionMask, forceRefresh, regionChanged, out cached, out cacheReason))
             {
                 snapshots[i] = cached;
                 if (logLines != null)
                 {
-                    logLines.Add("  缓存 " + Targets[i].Key + "=" + FormatSnapshot(cached) + " " + cacheReason);
+                    logLines.Add("  缓存 " + targets[i].Key + "=" + FormatSnapshot(cached) + " " + cacheReason);
                 }
             }
             else
             {
-                CloudEndpointSnapshot previousSnapshot = FindSnapshot(previous, Targets[i].Key);
+                CloudEndpointSnapshot previousSnapshot = FindSnapshot(previous, targets[i].Key);
                 if (previousSnapshot != null)
                 {
                     snapshots[i] = previousSnapshot.Clone();
@@ -178,12 +207,14 @@ internal static class CloudEndpointProbe
 
                 refreshIndices.Add(i);
             }
+
+            ApplyTargetMetadata(snapshots[i], targets[i]);
         }
 
         if (logLines != null)
         {
             logLines.Add("云服务轻量采样: 刷新=" + refreshIndices.Count.ToString(CultureInfo.InvariantCulture) +
-                "/" + Targets.Length.ToString(CultureInfo.InvariantCulture) +
+                "/" + targets.Length.ToString(CultureInfo.InvariantCulture) +
                 " 并发上限=" + MaxConcurrentRequests.ToString(CultureInfo.InvariantCulture));
             if (localNetworkDegraded)
             {
@@ -193,18 +224,18 @@ internal static class CloudEndpointProbe
 
         if (refreshIndices.Count > 0)
         {
-            await RunSampleRoundAsync(refreshIndices, samples, regionMask, 1, logLines, cancellationToken).ConfigureAwait(false);
+            await RunSampleRoundAsync(refreshIndices, samples, targets, regionMask, 1, logLines, cancellationToken).ConfigureAwait(false);
             List<int> confirmationIndices = BuildConfirmationIndices(refreshIndices, samples);
             for (int round = 2; round <= SampleCount && confirmationIndices.Count > 0; round++)
             {
                 if (logLines != null)
                 {
                     logLines.Add("  第" + round.ToString(CultureInfo.InvariantCulture) + "次确认: " +
-                        FormatTargetList(confirmationIndices));
+                        FormatTargetList(confirmationIndices, targets));
                 }
 
                 await Task.Delay(SampleIntervalMs, cancellationToken).ConfigureAwait(false);
-                await RunSampleRoundAsync(confirmationIndices, samples, regionMask, round, logLines, cancellationToken).ConfigureAwait(false);
+                await RunSampleRoundAsync(confirmationIndices, samples, targets, regionMask, round, logLines, cancellationToken).ConfigureAwait(false);
             }
 
             for (int i = 0; i < refreshIndices.Count; i++)
@@ -215,12 +246,12 @@ internal static class CloudEndpointProbe
                     samples[targetIndex].ToArray(),
                     localNetworkDegraded,
                     localNetworkDegradedReason);
-                StoreCachedSnapshot(Targets[targetIndex], snapshots[targetIndex], regionMask, nowUtc);
+                StoreCachedSnapshot(targets[targetIndex], snapshots[targetIndex], regionMask, nowUtc);
                 if (logLines != null)
                 {
                     logLines.Add("  结果 " + snapshots[targetIndex].DisplayName + "=" +
                         FormatStatus(snapshots[targetIndex].Status) + " " + snapshots[targetIndex].Reason +
-                        " TTL=" + FormatDuration(GetCacheDuration(Targets[targetIndex], snapshots[targetIndex])));
+                        " TTL=" + FormatDuration(GetCacheDuration(targets[targetIndex], snapshots[targetIndex])));
                 }
             }
         }
@@ -230,6 +261,11 @@ internal static class CloudEndpointProbe
 
     private static Task<CloudEndpointSample> ProbeOnceAsync(CloudTarget target, int regionMask, CancellationToken cancellationToken)
     {
+        if (target.Kind == CloudTargetKind.Ping)
+        {
+            return ProbePingTargetAsync(target, cancellationToken);
+        }
+
         if (target.Kind == CloudTargetKind.Statuspage)
         {
             return ProbeStatuspageAsync(target, regionMask, cancellationToken);
@@ -248,9 +284,48 @@ internal static class CloudEndpointProbe
         return ProbeHttpHostAsync(target.Key, "https://" + target.Host + "/", target.Key, cancellationToken);
     }
 
+    private static Task<CloudEndpointSample> ProbePingTargetAsync(CloudTarget target, CancellationToken cancellationToken)
+    {
+        return Task.Run(delegate
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                using (Ping ping = new Ping())
+                {
+                    PingReply reply = ping.Send(target.Host, RequestTimeoutMs);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (reply != null && reply.Status == IPStatus.Success)
+                    {
+                        return CloudEndpointSample.CreateNormal(
+                            target.Key,
+                            ClampLatency(reply.RoundtripTime),
+                            "CustomPing",
+                            "ICMP正常");
+                    }
+
+                    return CloudEndpointSample.CreateDown(
+                        target.Key,
+                        "无法连接",
+                        reply == null ? "NoReply" : reply.Status.ToString(),
+                        "自定义 ICMP");
+                }
+            }
+            catch (PingException ex)
+            {
+                return CloudEndpointSample.CreateDown(target.Key, "Ping失败", FormatException(ex), "自定义 ICMP");
+            }
+            catch (SocketException ex)
+            {
+                return CloudEndpointSample.CreateDown(target.Key, "网络错误", FormatException(ex), "自定义 ICMP");
+            }
+        }, cancellationToken);
+    }
+
     private static async Task RunSampleRoundAsync(
         List<int> targetIndices,
         List<CloudEndpointSample>[] samples,
+        CloudTarget[] targets,
         int regionMask,
         int round,
         List<string> logLines,
@@ -267,7 +342,7 @@ internal static class CloudEndpointProbe
             for (int i = 0; i < targetIndices.Count; i++)
             {
                 int targetIndex = targetIndices[i];
-                CloudTarget target = Targets[targetIndex];
+                CloudTarget target = targets[targetIndex];
                 tasks[i] = ProbeWithSemaphoreAsync(targetIndex, target, regionMask, semaphore, cancellationToken);
             }
 
@@ -288,12 +363,12 @@ internal static class CloudEndpointProbe
                 int targetIndex = targetIndices[i];
                 CloudEndpointSample sample = tasks[i].Status == TaskStatus.RanToCompletion
                     ? tasks[i].Result.Sample
-                    : CloudEndpointSample.CreateDown(Targets[targetIndex].Key, "任务失败", "TaskFault", "探测任务异常");
+                    : CloudEndpointSample.CreateDown(targets[targetIndex].Key, "任务失败", "TaskFault", "探测任务异常");
                 samples[targetIndex].Add(sample);
                 if (logLines != null)
                 {
                     logLines.Add("  第" + round.ToString(CultureInfo.InvariantCulture) + "次 " +
-                        Targets[targetIndex].Key + "=" + FormatSample(sample));
+                        targets[targetIndex].Key + "=" + FormatSample(sample));
                 }
             }
         }
@@ -1479,7 +1554,7 @@ internal static class CloudEndpointProbe
         return ((int)Math.Round(duration.TotalSeconds)).ToString(CultureInfo.InvariantCulture) + "s";
     }
 
-    private static string FormatTargetList(List<int> targetIndices)
+    private static string FormatTargetList(List<int> targetIndices, CloudTarget[] targets)
     {
         if (targetIndices == null || targetIndices.Count == 0)
         {
@@ -1495,7 +1570,7 @@ internal static class CloudEndpointProbe
             }
 
             int index = targetIndices[i];
-            builder.Append(index >= 0 && index < Targets.Length ? Targets[index].Key : "?");
+            builder.Append(targets != null && index >= 0 && index < targets.Length ? targets[index].Key : "?");
         }
 
         return builder.ToString();
@@ -2001,9 +2076,92 @@ internal static class CloudEndpointProbe
         return ex.GetType().Name + ":" + message;
     }
 
+    private static CloudTarget[] BuildTargets(string[] configuredTargets)
+    {
+        List<NetworkProbeTargetDefinition> definitions = NetworkProbeTargetSettings.ParseCloudTargets(configuredTargets);
+        List<CloudTarget> result = new List<CloudTarget>();
+        for (int i = 0; i < definitions.Count; i++)
+        {
+            NetworkProbeTargetDefinition definition = definitions[i];
+            if (!definition.Enabled)
+            {
+                continue;
+            }
+
+            if (definition.BuiltIn)
+            {
+                CloudTarget builtIn = FindDefaultTarget(definition.Key);
+                if (builtIn != null)
+                {
+                    result.Add(builtIn);
+                }
+
+                continue;
+            }
+
+            result.Add(CloudTarget.Ping(
+                definition.Key,
+                BuildShortLabel(definition.DisplayName),
+                definition.DisplayName,
+                definition.Target));
+        }
+
+        return result.ToArray();
+    }
+
+    private static CloudTarget FindDefaultTarget(string key)
+    {
+        for (int i = 0; i < DefaultTargets.Length; i++)
+        {
+            if (string.Equals(DefaultTargets[i].Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                return DefaultTargets[i];
+            }
+        }
+
+        return null;
+    }
+
+    private static CloudEndpointSnapshot[] CreateSnapshots(CloudTarget[] targets, CloudEndpointStatus status)
+    {
+        if (targets == null || targets.Length == 0)
+        {
+            return new CloudEndpointSnapshot[0];
+        }
+
+        CloudEndpointSnapshot[] snapshots = new CloudEndpointSnapshot[targets.Length];
+        for (int i = 0; i < targets.Length; i++)
+        {
+            snapshots[i] = new CloudEndpointSnapshot { Status = status };
+            ApplyTargetMetadata(snapshots[i], targets[i]);
+        }
+
+        return snapshots;
+    }
+
+    private static void ApplyTargetMetadata(CloudEndpointSnapshot snapshot, CloudTarget target)
+    {
+        if (snapshot == null || target == null)
+        {
+            return;
+        }
+
+        snapshot.Key = target.Key;
+        snapshot.ShortLabel = target.ShortLabel;
+        snapshot.DisplayName = target.DisplayName;
+        snapshot.Domestic = false;
+    }
+
+    private static string BuildShortLabel(string displayName)
+    {
+        string text = string.IsNullOrWhiteSpace(displayName) ? "?" : displayName.Trim();
+        return text.Length <= 2 ? text : text.Substring(0, 2);
+    }
+
     private enum CloudTargetKind
     {
         Http,
+        Ping,
         Statuspage,
         GoogleServiceHealth,
         AzureStatusRss
@@ -2011,15 +2169,19 @@ internal static class CloudEndpointProbe
 
     private sealed class CloudTarget
     {
-        private CloudTarget(string key, string host, string apiUrl, CloudTargetKind kind)
+        private CloudTarget(string key, string shortLabel, string displayName, string host, string apiUrl, CloudTargetKind kind)
         {
             this.Key = key;
+            this.ShortLabel = shortLabel;
+            this.DisplayName = displayName;
             this.Host = host;
             this.ApiUrl = apiUrl;
             this.Kind = kind;
         }
 
         public string Key;
+        public string ShortLabel;
+        public string DisplayName;
         public string Host;
         public string ApiUrl;
         public CloudTargetKind Kind;
@@ -2039,24 +2201,29 @@ internal static class CloudEndpointProbe
             }
         }
 
-        public static CloudTarget Http(string key, string host)
+        public static CloudTarget Http(string key, string shortLabel, string displayName, string host)
         {
-            return new CloudTarget(key, host, string.Empty, CloudTargetKind.Http);
+            return new CloudTarget(key, shortLabel, displayName, host, string.Empty, CloudTargetKind.Http);
         }
 
-        public static CloudTarget Statuspage(string key, string apiUrl)
+        public static CloudTarget Ping(string key, string shortLabel, string displayName, string target)
         {
-            return new CloudTarget(key, string.Empty, apiUrl, CloudTargetKind.Statuspage);
+            return new CloudTarget(key, shortLabel, displayName, target, string.Empty, CloudTargetKind.Ping);
         }
 
-        public static CloudTarget GoogleServiceHealth(string key, string apiUrl)
+        public static CloudTarget Statuspage(string key, string shortLabel, string displayName, string apiUrl)
         {
-            return new CloudTarget(key, string.Empty, apiUrl, CloudTargetKind.GoogleServiceHealth);
+            return new CloudTarget(key, shortLabel, displayName, string.Empty, apiUrl, CloudTargetKind.Statuspage);
         }
 
-        public static CloudTarget AzureStatusRss(string key, string apiUrl)
+        public static CloudTarget GoogleServiceHealth(string key, string shortLabel, string displayName, string apiUrl)
         {
-            return new CloudTarget(key, string.Empty, apiUrl, CloudTargetKind.AzureStatusRss);
+            return new CloudTarget(key, shortLabel, displayName, string.Empty, apiUrl, CloudTargetKind.GoogleServiceHealth);
+        }
+
+        public static CloudTarget AzureStatusRss(string key, string shortLabel, string displayName, string apiUrl)
+        {
+            return new CloudTarget(key, shortLabel, displayName, string.Empty, apiUrl, CloudTargetKind.AzureStatusRss);
         }
 
     }

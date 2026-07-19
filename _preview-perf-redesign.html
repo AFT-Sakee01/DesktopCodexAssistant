@@ -1,0 +1,548 @@
+<meta charset="utf-8">
+<title>性能窗口重设计 · 右缘方块列</title>
+<style>
+:root{
+  --bg:#eef1f4; --ink:#20262e; --muted:#5d6875; --hair:#d7dde4; --accent:#0f7fae;
+  --card:#ffffff; --code:#e6ebef;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#0f1217; --ink:#d9dee6; --muted:#8a95a4; --hair:#242b36; --accent:#4dbbe6; --card:#151a21; --code:#1a2029; }
+}
+:root[data-theme="dark"]{ --bg:#0f1217; --ink:#d9dee6; --muted:#8a95a4; --hair:#242b36; --accent:#4dbbe6; --card:#151a21; --code:#1a2029; }
+:root[data-theme="light"]{ --bg:#eef1f4; --ink:#20262e; --muted:#5d6875; --hair:#d7dde4; --accent:#0f7fae; --card:#ffffff; --code:#e6ebef; }
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","PingFang SC",sans-serif;
+  font-size:15px; line-height:1.75;
+}
+main{max-width:920px; margin:0 auto; padding:48px 24px 80px}
+h1{font-size:30px; font-weight:650; letter-spacing:.01em; margin:6px 0 4px; text-wrap:balance}
+h2{font-size:19px; font-weight:650; margin:0}
+p{margin:.5em 0}
+.eyebrow{font-size:11px; letter-spacing:.22em; text-transform:uppercase; color:var(--accent); font-weight:600}
+.sub{color:var(--muted); margin-top:2px}
+.num{font-variant-numeric:tabular-nums}
+section{margin-top:50px}
+.rule{border:0; border-top:1px solid var(--hair); margin:40px 0 0}
+
+.stage{
+  margin-top:14px; border-radius:14px; padding:30px 28px;
+  background:radial-gradient(130% 150% at 25% -10%, #1a1f2a 0%, #0d1016 55%, #0a0c11 100%);
+  display:flex; justify-content:center; align-items:flex-start; gap:44px; flex-wrap:wrap;
+  overflow-x:auto; position:relative;
+}
+.stage figcaption{color:#77808f; font-size:12px; text-align:center; margin-top:12px; letter-spacing:.05em}
+.edgehint{position:absolute; top:0; bottom:0; right:0; width:3px; background:linear-gradient(180deg,#2b3342,#1a202b); border-radius:0 14px 14px 0}
+
+/* ---------- 方块共通（固定深色：OLED 桌面浮层） ---------- */
+.tilecol{display:flex; flex-direction:column; align-items:center}
+.tiles{display:flex; flex-direction:column}
+.tile{
+  --w-card:#12161e; --w-ink:#e8ecf2; --w-dim:#8792a2;
+  position:relative; background:var(--w-card); border:1px solid #1e2431;
+  color:var(--w-ink); font-variant-numeric:tabular-nums;
+  display:flex; flex-direction:column; align-items:center;
+  box-shadow:0 8px 24px rgba(0,0,0,.45);
+}
+/* 2x 放大版 */
+.x2 .tile{width:120px; height:120px; border-radius:20px; padding-top:9px}
+.x2 .tile + .tile{margin-top:16px}
+.x2 .tname{font-size:14px; letter-spacing:.16em; font-weight:700; color:var(--c); line-height:1.2}
+.x2 .ringbox{position:relative; width:92px; height:92px; margin-top:1px}
+.x2 .cnum{font-size:25px; font-weight:650}
+.x2 .cnum small{font-size:13px}
+/* 1:1 真实尺寸版 */
+.x1 .tile{width:60px; height:60px; border-radius:10px; padding-top:4px}
+.x1 .tile + .tile{margin-top:8px}
+.x1 .tname{font-size:7.5px; letter-spacing:.14em; font-weight:700; color:var(--c); line-height:1.2}
+.x1 .ringbox{position:relative; width:46px; height:46px}
+.x1 .cnum{font-size:13px; font-weight:650}
+.x1 .cnum small{font-size:7.5px}
+
+.ringbox svg{position:absolute; inset:0; width:100%; height:100%}
+.rr .bg{stroke:#1d232e; fill:none}
+.rr .fg{stroke:var(--c); fill:none; stroke-linecap:round}
+.rr .fg2{stroke:var(--c2,var(--c)); fill:none; stroke-linecap:round; opacity:.55}
+.cnum{position:absolute; inset:0; display:flex; align-items:center; justify-content:center}
+.cnum small{color:#8792a2; margin-left:1px}
+
+/* 守护方块的 2×2 状态点 */
+.gpad{display:grid; grid-template-columns:1fr 1fr; place-items:center; position:absolute; inset:0}
+.x2 .gpad{gap:2px; padding:16px}
+.x1 .gpad{gap:1px; padding:8px}
+.gpad i{border-radius:50%; background:var(--dc,#2a303c)}
+.x2 .gpad i{width:16px; height:16px}
+.x1 .gpad i{width:8px; height:8px}
+.gpad i.on{box-shadow:0 0 8px color-mix(in srgb, var(--dc) 55%, transparent)}
+
+/* 悬停高亮态 */
+.tile.hot{border-color:var(--c); box-shadow:0 0 0 1px var(--c), 0 8px 28px rgba(0,0,0,.55)}
+
+/* ---------- 展开窗（8 模块通用，--mc = 模块色） ---------- */
+.expand{
+  --w-ink:#e8ecf2; --w-dim:#8792a2; --w-faint:#5b6575; --mc:#5bc8f5;
+  width:580px; height:200px; background:#0b0d12; border:1px solid #1e2431; border-radius:12px;
+  box-shadow:0 20px 54px rgba(0,0,0,.6); color:var(--w-ink); font-variant-numeric:tabular-nums;
+  padding:13px 16px 12px; display:flex; flex-direction:column; position:relative; flex-shrink:0;
+}
+.exhead{display:flex; align-items:baseline; gap:10px}
+.exlbl{font-size:13px; font-weight:700; letter-spacing:.16em; color:var(--mc)}
+.exname{font-size:11px; color:var(--w-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.exval{margin-left:auto; font-size:33px; font-weight:650; line-height:.9; white-space:nowrap}
+.exval small{font-size:15px; color:var(--w-dim)}
+.exval .mid{font-size:17px; color:var(--w-dim); font-weight:600}
+.exsub{font-size:11px; color:var(--w-dim); margin-top:2px}
+.cores{display:flex; align-items:flex-end; gap:4px; height:62px; margin-top:9px}
+.cores i{flex:1; border-radius:2px 2px 0 0; background:var(--mc)}
+.exspark{position:relative; flex:1; margin-top:9px; min-height:0}
+.exspark svg{position:absolute; inset:0; width:100%; height:100%}
+.exspark .a{fill:var(--mc); opacity:.14}
+.exspark .l{fill:none; stroke:var(--mc); stroke-width:1.5}
+.exspark .l2{fill:none; stroke:var(--mc); stroke-width:1.1; opacity:.42}
+.exspark .d{fill:var(--mc)}
+.exspark .tag{position:absolute; right:2px; top:-1px; font-size:9.5px; color:var(--w-faint)}
+/* 分段占用条 + 图例 */
+.exbar{position:relative; height:22px; border-radius:5px; background:#1a202b; overflow:hidden; margin-top:10px; display:flex}
+.exbar i{height:100%}
+.exbar .tick{position:absolute; top:0; bottom:0; width:2px; background:#e8c66b}
+.exlegend{display:flex; gap:16px; font-size:10px; color:var(--w-dim); margin-top:6px; flex-wrap:wrap}
+.exlegend b{display:inline-block; width:7px; height:7px; border-radius:2px; margin-right:5px}
+/* 镜像网络图 */
+.exspark .adl{fill:var(--mc); opacity:.18}
+.exspark .ldl{fill:none; stroke:var(--mc); stroke-width:1.5}
+.exspark .aul{fill:var(--mc); opacity:.07}
+.exspark .lul{fill:none; stroke:var(--mc); stroke-width:1; opacity:.55}
+.exspark .base{stroke:#242b38; stroke-width:1}
+/* 电源三格 + 温度传感区 */
+.pwrcols{display:flex; gap:10px; margin-top:10px}
+.pwrcol{flex:1; background:#11151d; border-radius:8px; padding:9px 12px 8px}
+.pwrcol .pl{font-size:9.5px; letter-spacing:.16em; color:var(--w-faint); font-weight:700}
+.pwrcol .pv{font-size:22px; font-weight:650; margin-top:2px}
+.pwrcol .pv small{font-size:11px; color:var(--w-dim)}
+.pwrcol .ps{font-size:10px; color:var(--w-dim); margin-top:2px}
+.batbar{height:5px; border-radius:3px; background:#1a202b; margin-top:6px; overflow:hidden}
+.batbar i{display:block; height:100%; width:79%; background:#7fd08a; border-radius:3px}
+.zones{display:flex; gap:3px; margin-top:10px; flex:1; min-height:0}
+.zones i{flex:1; border-radius:3px}
+.zonecap{font-size:9.5px; color:var(--w-faint); margin-top:5px; display:flex; justify-content:space-between}
+/* 守护四行 */
+.grows{display:flex; flex-direction:column; flex:1; margin-top:6px}
+.grow{flex:1; display:flex; align-items:center; gap:10px; border-top:1px solid #151a23; font-size:12px}
+.grow:first-child{border-top:none}
+.grow .gi{width:9px; height:9px; border-radius:50%; background:var(--gc,#2a303c); flex-shrink:0}
+.grow.on .gi{box-shadow:0 0 8px color-mix(in srgb, var(--gc) 55%, transparent)}
+.grow .gn{font-weight:650; width:66px}
+.grow .gdesc{color:var(--w-dim); font-size:11px}
+.grow .gt{margin-left:auto; color:var(--w-faint); font-size:11.5px}
+.grow.on .gt{color:var(--w-ink)}
+
+/* ---------- 表格与说明 ---------- */
+.tblwrap{overflow-x:auto; margin-top:14px}
+table{border-collapse:collapse; width:100%; font-size:13.5px}
+th,td{text-align:left; padding:8px 14px 8px 0; border-bottom:1px solid var(--hair); vertical-align:top}
+th{font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); font-weight:650}
+td:first-child{font-weight:650; white-space:nowrap}
+.rec{background:var(--card); border:1px solid var(--hair); border-radius:12px; padding:18px 24px; margin-top:16px}
+.rec p{margin:.4em 0}
+.rec ul{margin:.3em 0 .2em; padding-left:1.2em}
+.rec li{margin:.25em 0}
+</style>
+
+<main>
+<p class="eyebrow">Desktop Codex Assistant · 设计提案 · 第 3 轮</p>
+<h1>右缘方块列 · 8 块 60×60 + 悬停展开</h1>
+<p class="sub">新方向：性能窗口拆成 8 个方块贴屏幕右缘竖排。初始 60×60 圆角方格（名称 + 圆环 + 中心数字），鼠标悬停原位展开为 Codex Radar 模块尺寸（默认 580 宽、最高 240 高）的详情窗。方向已确认，本页含 <b>8 方块列</b>与<b>全部 8 个展开态</b>预览。</p>
+
+<section>
+  <h2>预览 1 · 8 方块列（初始态）</h2>
+  <figure class="stage" style="margin-bottom:0">
+    <div class="edgehint"></div>
+    <div class="tilecol x2">
+      <div class="tiles">
+        <div class="tile" style="--c:#5bc8f5; --c2:#3a7d9c">
+          <span class="tname">CPU</span>
+          <div class="ringbox"><svg class="rr" data-p1="32" data-p2="93" viewBox="0 0 92 92"><g transform="rotate(-90 46 46)"><circle class="bg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="fg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="bg" cx="46" cy="46" r="29" stroke-width="5"/><circle class="fg2" cx="46" cy="46" r="29" stroke-width="5"/></g></svg><span class="cnum num">32</span></div>
+        </div>
+        <div class="tile" style="--c:#d879e0; --c2:#8d4f93">
+          <span class="tname">MEM</span>
+          <div class="ringbox"><svg class="rr" data-p1="63" data-p2="4.2" viewBox="0 0 92 92"><g transform="rotate(-90 46 46)"><circle class="bg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="fg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="bg" cx="46" cy="46" r="29" stroke-width="5"/><circle class="fg2" cx="46" cy="46" r="29" stroke-width="5"/></g></svg><span class="cnum num">63</span></div>
+        </div>
+        <div class="tile" style="--c:#e8c66b; --c2:#96803f">
+          <span class="tname">DISK</span>
+          <div class="ringbox"><svg class="rr" data-p1="30" data-p2="29.7" viewBox="0 0 92 92"><g transform="rotate(-90 46 46)"><circle class="bg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="fg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="bg" cx="46" cy="46" r="29" stroke-width="5"/><circle class="fg2" cx="46" cy="46" r="29" stroke-width="5"/></g></svg><span class="cnum num">30</span></div>
+        </div>
+        <div class="tile" style="--c:#8fd98a; --c2:#578a54">
+          <span class="tname">NET</span>
+          <div class="ringbox"><svg class="rr" data-p1="64" data-p2="19" viewBox="0 0 92 92"><g transform="rotate(-90 46 46)"><circle class="bg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="fg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="bg" cx="46" cy="46" r="29" stroke-width="5"/><circle class="fg2" cx="46" cy="46" r="29" stroke-width="5"/></g></svg><span class="cnum num" style="font-size:19px">58<small>K</small></span></div>
+        </div>
+        <div class="tile" style="--c:#6ba6f5; --c2:#42679a">
+          <span class="tname">GPU</span>
+          <div class="ringbox"><svg class="rr" data-p1="11" data-p2="2.7" viewBox="0 0 92 92"><g transform="rotate(-90 46 46)"><circle class="bg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="fg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="bg" cx="46" cy="46" r="29" stroke-width="5"/><circle class="fg2" cx="46" cy="46" r="29" stroke-width="5"/></g></svg><span class="cnum num">11</span></div>
+        </div>
+        <div class="tile" style="--c:#9aa7bc; --c2:#5d6779">
+          <span class="tname">NPU</span>
+          <div class="ringbox"><svg class="rr" data-p1="0.8" data-p2="1.5" viewBox="0 0 92 92"><g transform="rotate(-90 46 46)"><circle class="bg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="fg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="bg" cx="46" cy="46" r="29" stroke-width="5"/><circle class="fg2" cx="46" cy="46" r="29" stroke-width="5"/></g></svg><span class="cnum num">0</span></div>
+        </div>
+        <div class="tile" style="--c:#7fd08a; --c2:#c98a4a">
+          <span class="tname">PWR</span>
+          <div class="ringbox"><svg class="rr" data-p1="79" data-p2="33" viewBox="0 0 92 92"><g transform="rotate(-90 46 46)"><circle class="bg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="fg" cx="46" cy="46" r="39" stroke-width="6.5"/><circle class="bg" cx="46" cy="46" r="29" stroke-width="5"/><circle class="fg2" cx="46" cy="46" r="29" stroke-width="5"/></g></svg><span class="cnum num">79</span></div>
+        </div>
+        <div class="tile" style="--c:#b8a7e0">
+          <span class="tname">守护</span>
+          <div class="ringbox">
+            <div class="gpad">
+              <i class="on" style="--dc:#38b2f0"></i>
+              <i class="on" style="--dc:#e8a552"></i>
+              <i></i>
+              <i class="on" style="--dc:#62c46a"></i>
+            </div>
+          </div>
+        </div>
+      </div>
+      <figcaption>2 倍放大展示</figcaption>
+    </div>
+    <div class="tilecol x1" style="align-self:center">
+      <div class="tiles">
+        <div class="tile" style="--c:#5bc8f5; --c2:#3a7d9c">
+          <span class="tname">CPU</span>
+          <div class="ringbox"><svg class="rr" data-p1="32" data-p2="93" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">32</span></div>
+        </div>
+        <div class="tile" style="--c:#d879e0; --c2:#8d4f93">
+          <span class="tname">MEM</span>
+          <div class="ringbox"><svg class="rr" data-p1="63" data-p2="4.2" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">63</span></div>
+        </div>
+        <div class="tile" style="--c:#e8c66b; --c2:#96803f">
+          <span class="tname">DISK</span>
+          <div class="ringbox"><svg class="rr" data-p1="30" data-p2="29.7" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">30</span></div>
+        </div>
+        <div class="tile" style="--c:#8fd98a; --c2:#578a54">
+          <span class="tname">NET</span>
+          <div class="ringbox"><svg class="rr" data-p1="64" data-p2="19" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num" style="font-size:9.5px">58<small>K</small></span></div>
+        </div>
+        <div class="tile" style="--c:#6ba6f5; --c2:#42679a">
+          <span class="tname">GPU</span>
+          <div class="ringbox"><svg class="rr" data-p1="11" data-p2="2.7" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">11</span></div>
+        </div>
+        <div class="tile" style="--c:#9aa7bc; --c2:#5d6779">
+          <span class="tname">NPU</span>
+          <div class="ringbox"><svg class="rr" data-p1="0.8" data-p2="1.5" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">0</span></div>
+        </div>
+        <div class="tile" style="--c:#7fd08a; --c2:#c98a4a">
+          <span class="tname">PWR</span>
+          <div class="ringbox"><svg class="rr" data-p1="79" data-p2="33" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">79</span></div>
+        </div>
+        <div class="tile" style="--c:#b8a7e0">
+          <span class="tname">守护</span>
+          <div class="ringbox">
+            <div class="gpad">
+              <i class="on" style="--dc:#38b2f0"></i>
+              <i class="on" style="--dc:#e8a552"></i>
+              <i></i>
+              <i class="on" style="--dc:#62c46a"></i>
+            </div>
+          </div>
+        </div>
+      </div>
+      <figcaption>1:1 实际大小</figcaption>
+    </div>
+  </figure>
+  <figcaption style="color:var(--muted); font-size:13px; margin-top:10px">右侧渐变竖线示意屏幕右缘；列贴边竖排，方块间距 8px。「最高 2 圈」按<b>两个同心圆环</b>理解：外圈 = 主占用，内圈 = 该模块的次要维度（见下表），不需要的方块只画一圈。</figcaption>
+
+  <div class="tblwrap">
+  <table>
+    <tr><th>方块</th><th>外圈</th><th>内圈</th><th>中心数字</th></tr>
+    <tr><td>CPU</td><td>总占用 32%</td><td>当前/基准频率 93%</td><td class="num">32</td></tr>
+    <tr><td>MEM</td><td>内存占用 63%</td><td>GPU+NPU 占内存 4.2%</td><td class="num">63</td></tr>
+    <tr><td>DISK</td><td>读写忙碌 30%</td><td>容量已用 29.7%</td><td class="num">30</td></tr>
+    <tr><td>NET</td><td>下行（近期峰值定标）</td><td>上行（同定标）</td><td class="num">58K</td></tr>
+    <tr><td>GPU</td><td>占用 11%</td><td>VRAM 2.7%</td><td class="num">11</td></tr>
+    <tr><td>NPU</td><td>占用 0%</td><td>专用内存 1.5%</td><td class="num">0</td></tr>
+    <tr><td>PWR</td><td>电池 79%（绿）</td><td>最高温 33°（暖色）</td><td class="num">79</td></tr>
+    <tr><td>守护</td><td colspan="2">无环；2×2 状态点 = 防睡眠 / 防息屏 / 养护暂停 / 在线（亮 = 激活）</td><td>无</td></tr>
+  </table>
+  </div>
+</section>
+
+<hr class="rule">
+
+<section>
+  <h2>预览 2 · CPU 悬停展开（1:1）</h2>
+  <figure class="stage" style="margin-bottom:0; align-items:flex-start; gap:0; padding-right:34px">
+    <div class="edgehint"></div>
+    <div class="expand">
+      <div class="exhead">
+        <span class="exlbl">CPU</span>
+        <span class="exname">Snapdragon X2 Elite Extreme · 18 核</span>
+        <span class="exval num">32<small>%</small></span>
+      </div>
+      <div class="exsub num">4.15 / 4.45 GHz · 睿频 93% · 60 秒峰值 61%</div>
+      <div class="cores" data-vals="[34,12,88,21,45,9,62,17,28,71,15,39,8,52,24,11,96,19]"></div>
+      <div class="exspark">
+        <svg viewBox="0 0 548 40" preserveAspectRatio="none" class="spark" data-pts="[18,24,46,38,52,61,44,33,29,41,55,48,36,30,44,58,51,39,33,32]"><path class="a"/><path class="l"/><circle class="d" r="2.2"/></svg>
+        <span class="tag">60 秒</span>
+      </div>
+    </div>
+    <div class="tilecol x1" style="margin-left:30px">
+      <div class="tiles">
+        <div class="tile hot" style="--c:#5bc8f5; --c2:#3a7d9c">
+          <span class="tname">CPU</span>
+          <div class="ringbox"><svg class="rr" data-p1="32" data-p2="93" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">32</span></div>
+        </div>
+        <div class="tile" style="--c:#d879e0; --c2:#8d4f93">
+          <span class="tname">MEM</span>
+          <div class="ringbox"><svg class="rr" data-p1="63" data-p2="4.2" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">63</span></div>
+        </div>
+        <div class="tile" style="--c:#e8c66b; --c2:#96803f">
+          <span class="tname">DISK</span>
+          <div class="ringbox"><svg class="rr" data-p1="30" data-p2="29.7" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">30</span></div>
+        </div>
+        <div class="tile" style="--c:#8fd98a; --c2:#578a54">
+          <span class="tname">NET</span>
+          <div class="ringbox"><svg class="rr" data-p1="64" data-p2="19" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num" style="font-size:9.5px">58<small>K</small></span></div>
+        </div>
+        <div class="tile" style="--c:#6ba6f5; --c2:#42679a">
+          <span class="tname">GPU</span>
+          <div class="ringbox"><svg class="rr" data-p1="11" data-p2="2.7" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">11</span></div>
+        </div>
+        <div class="tile" style="--c:#9aa7bc; --c2:#5d6779">
+          <span class="tname">NPU</span>
+          <div class="ringbox"><svg class="rr" data-p1="0.8" data-p2="1.5" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">0</span></div>
+        </div>
+        <div class="tile" style="--c:#7fd08a; --c2:#c98a4a">
+          <span class="tname">PWR</span>
+          <div class="ringbox"><svg class="rr" data-p1="79" data-p2="33" viewBox="0 0 46 46"><g transform="rotate(-90 23 23)"><circle class="bg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="fg" cx="23" cy="23" r="19.5" stroke-width="3.4"/><circle class="bg" cx="23" cy="23" r="14.5" stroke-width="2.6"/><circle class="fg2" cx="23" cy="23" r="14.5" stroke-width="2.6"/></g></svg><span class="cnum num">79</span></div>
+        </div>
+        <div class="tile" style="--c:#b8a7e0">
+          <span class="tname">守护</span>
+          <div class="ringbox">
+            <div class="gpad">
+              <i class="on" style="--dc:#38b2f0"></i>
+              <i class="on" style="--dc:#e8a552"></i>
+              <i></i>
+              <i class="on" style="--dc:#62c46a"></i>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </figure>
+  <figcaption style="color:var(--muted); font-size:13px; margin-top:10px">CPU 方块悬停点亮描边，展开窗（580×200，Codex Radar 同款观感）从方块向左弹出、顶边与方块对齐。内容为现有 CPU 模块的完整展开：型号与核心数、频率/睿频/峰值、18 核柱状图、60 秒历史曲线。</figcaption>
+</section>
+
+<hr class="rule">
+
+<section>
+  <h2>预览 3 · 其余 7 个展开态（1:1）</h2>
+  <p class="sub">展开机制与 CPU 相同（悬停点亮方块、向左弹出、顶边对齐），图中省略右侧方块列，只画 580×200 展开窗本体。</p>
+
+  <figure class="stage">
+    <div>
+    <div class="expand" style="--mc:#d879e0">
+      <div class="exhead"><span class="exlbl">MEM</span><span class="exname">SAMSUNG · 9523 MT/s</span><span class="exval num">63<small>%</small></span></div>
+      <div class="exsub num">已用 30.2 / 47.6 GB · HW 保留 1.7 GB (3.6%) · 页面文件 0.09 / 3.0 GB</div>
+      <div class="exbar">
+        <i style="width:63.4%; background:var(--mc); opacity:.82"></i>
+        <i style="width:3.6%; background:var(--mc); opacity:.32"></i>
+        <span class="tick" style="left:4.2%"></span>
+      </div>
+      <div class="exlegend num">
+        <span><b style="background:var(--mc)"></b>已用 30.2 GB</span>
+        <span><b style="background:var(--mc); opacity:.32"></b>HW 保留 1.7 GB</span>
+        <span><b style="background:#232a37"></b>可用 15.7 GB</span>
+        <span><b style="background:#e8c66b"></b>GPU+NPU 2.0 GB</span>
+      </div>
+      <div class="exspark">
+        <svg viewBox="0 0 548 34" preserveAspectRatio="none" class="spark" data-pts="[58,59,61,60,62,63,63,62,64,63,63,63,62,63,64,63,63,62,63,63]"><path class="a"/><path class="l"/><circle class="d" r="2.2"/></svg>
+        <span class="tag">60 秒</span>
+      </div>
+    </div>
+    <figcaption>MEM · 分段占用条（HW 段半透明，黄标 = GPU+NPU 占用位置）+ 60 秒历史</figcaption>
+    </div>
+  </figure>
+
+  <figure class="stage">
+    <div>
+    <div class="expand" style="--mc:#e8c66b">
+      <div class="exhead"><span class="exlbl">DISK</span><span class="exname">物理盘 · 卷 C / D</span><span class="exval num">30<small>%</small></span></div>
+      <div class="exsub num">忙碌 30%（读写较小值）· W 5.0 Mbps · R 1.0 Kbps</div>
+      <div class="exbar">
+        <i style="width:29.7%; background:var(--mc); opacity:.82"></i>
+      </div>
+      <div class="exlegend num">
+        <span><b style="background:var(--mc)"></b>已用 283 GB</span>
+        <span><b style="background:#232a37"></b>可用 671 GB</span>
+        <span>总 954 GB</span>
+      </div>
+      <div class="exspark">
+        <svg viewBox="0 0 548 34" preserveAspectRatio="none" class="spark" data-pts="[2,44,12,5,61,88,23,9,4,31,17,7,26,12,9,33,21,8,11,14]" data-pts2="[0.5,1,0.5,0.5,2,3,1,0.5,0.5,1,0.5,0.5,1,0.5,0.5,1,0.5,0.5,0.5,0.5]"><path class="a"/><path class="l"/><path class="l2"/><circle class="d" r="2.2"/></svg>
+        <span class="tag">60 秒 · 亮=写 淡=读</span>
+      </div>
+    </div>
+    <figcaption>DISK · 容量条 + 写/读双曲线</figcaption>
+    </div>
+  </figure>
+
+  <figure class="stage">
+    <div>
+    <div class="expand" style="--mc:#8fd98a">
+      <div class="exhead"><span class="exlbl">NET</span><span class="exname">Wi-Fi SSID-9A9449 · RSSI -39 dBm</span><span class="exval num">↓58<small>K</small> <span class="mid">↑17K</span></span></div>
+      <div class="exsub num">下行 58 Kbps · 上行 17 Kbps · 连接正常（Online）</div>
+      <div class="exspark" style="margin-top:10px">
+        <svg viewBox="0 0 548 118" preserveAspectRatio="none" class="mirrorx"
+          data-dl="[12,38,91,64,22,15,47,83,55,28,19,36,42,58,49,61,44,37,52,58]"
+          data-ul="[4,8,22,15,6,3,11,25,14,7,5,9,12,17,13,19,11,8,14,17]">
+          <path class="adl"/><path class="ldl"/><path class="aul"/><path class="lul"/><line class="base"/>
+        </svg>
+        <span class="tag">60 秒 · 下行朝上 · 上行朝下</span>
+      </div>
+    </div>
+    <figcaption>NET · 镜像流量图，一条基线同时读上下行</figcaption>
+    </div>
+  </figure>
+
+  <figure class="stage">
+    <div>
+    <div class="expand" style="--mc:#6ba6f5">
+      <div class="exhead"><span class="exlbl">GPU</span><span class="exname">Qualcomm Adreno X2-90</span><span class="exval num">11<small>%</small></span></div>
+      <div class="exsub num">VRAM 1.3 / 47.6 GB (2.7%) · 共享内存</div>
+      <div class="exspark" style="margin-top:10px">
+        <svg viewBox="0 0 548 118" preserveAspectRatio="none" class="spark" data-pts="[6,9,14,11,22,18,13,9,7,16,12,11,10,13,12,15,11,9,12,11]" data-pts2="[2.7,2.7,2.8,2.7,2.9,2.8,2.7,2.7,2.6,2.8,2.7,2.7,2.7,2.8,2.7,2.7,2.7,2.6,2.7,2.7]"><path class="a"/><path class="l"/><path class="l2"/><circle class="d" r="2.2"/></svg>
+        <span class="tag">60 秒 · 亮=占用 淡=显存</span>
+      </div>
+    </div>
+    <figcaption>GPU · 占用 + 显存双曲线</figcaption>
+    </div>
+  </figure>
+
+  <figure class="stage">
+    <div>
+    <div class="expand" style="--mc:#9aa7bc">
+      <div class="exhead"><span class="exlbl">NPU</span><span class="exname">Snapdragon X2 Elite Extreme NPU</span><span class="exval num">0<small>%</small></span></div>
+      <div class="exsub num">专用内存 0.7 / 47.6 GB (1.5%) · 当前空闲</div>
+      <div class="exspark" style="margin-top:10px">
+        <svg viewBox="0 0 548 118" preserveAspectRatio="none" class="spark" data-pts="[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]" data-pts2="[1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5,1.5]"><path class="a"/><path class="l"/><path class="l2"/><circle class="d" r="2.2"/></svg>
+        <span class="tag">60 秒 · 亮=占用 淡=内存</span>
+      </div>
+    </div>
+    <figcaption>NPU · 与 GPU 同构；空闲时占用线贴底</figcaption>
+    </div>
+  </figure>
+
+  <figure class="stage">
+    <div>
+    <div class="expand" style="--mc:#7fd08a">
+      <div class="exhead"><span class="exlbl">PWR</span><span class="exname">功耗 · 电池 · 温度</span><span class="exval num">12.4<small> W</small></span></div>
+      <div class="pwrcols">
+        <div class="pwrcol"><div class="pl">功耗</div><div class="pv num">12.4<small> W</small></div><div class="ps">模式 · 平衡</div></div>
+        <div class="pwrcol"><div class="pl">电池</div><div class="pv num">79<small>%</small></div><div class="batbar"><i></i></div><div class="ps num">3h42 剩余</div></div>
+        <div class="pwrcol"><div class="pl">温度</div><div class="pv num">33<small>°C</small></div><div class="ps num">均 32° · 14 传感区</div></div>
+      </div>
+      <div class="zones">
+        <i style="background:rgba(232,147,92,.50)"></i>
+        <i style="background:rgba(232,147,92,.66)"></i>
+        <i style="background:rgba(232,147,92,.34)"></i>
+        <i style="background:rgba(232,147,92,.85)"></i>
+        <i style="background:rgba(232,147,92,.66)"></i>
+        <i style="background:rgba(232,147,92,.50)"></i>
+        <i style="background:rgba(232,147,92,.18)"></i>
+        <i style="background:rgba(232,147,92,.66)"></i>
+        <i style="background:rgba(232,147,92,.85)"></i>
+        <i style="background:rgba(232,147,92,.50)"></i>
+        <i style="background:rgba(232,147,92,.34)"></i>
+        <i style="background:rgba(232,147,92,.66)"></i>
+        <i style="background:rgba(232,147,92,.50)"></i>
+        <i style="background:rgba(232,147,92,.66)"></i>
+      </div>
+      <div class="zonecap num"><span>传感区 1–14</span><span>峰值 33°（区 4、9）</span></div>
+    </div>
+    <figcaption>电源 · 功耗/电池/温度三格 + 14 传感区热力条（越亮越热）</figcaption>
+    </div>
+  </figure>
+
+  <figure class="stage">
+    <div>
+    <div class="expand" style="--mc:#b8a7e0">
+      <div class="exhead"><span class="exlbl">守护</span><span class="exname">睡眠 · 息屏 · 养护 · 在线</span><span class="exval num">2<small>/4 激活</small></span></div>
+      <div class="grows">
+        <div class="grow on" style="--gc:#38b2f0"><span class="gi"></span><span class="gn">防睡眠</span><span class="gdesc">阻止系统进入睡眠</span><span class="gt num">已持续 2h14</span></div>
+        <div class="grow on" style="--gc:#e8a552"><span class="gi"></span><span class="gn">防息屏</span><span class="gdesc">阻止显示器关闭</span><span class="gt num">已持续 4h59</span></div>
+        <div class="grow"><span class="gi"></span><span class="gn">养护暂停</span><span class="gdesc">电池养护充电暂停</span><span class="gt">未启用</span></div>
+        <div class="grow on" style="--gc:#62c46a"><span class="gi"></span><span class="gn">在线</span><span class="gdesc">网络与服务在线</span><span class="gt">正常</span></div>
+      </div>
+    </div>
+    <figcaption>守护 · 四项状态行，与方块上的 2×2 状态点一一对应</figcaption>
+    </div>
+  </figure>
+</section>
+
+<hr class="rule">
+
+<section>
+  <h2>交互与实现约定（可改）</h2>
+  <div class="rec">
+    <ul>
+      <li><b>尺寸</b>：方块 60×60、圆角 10、间距 8，列右缘贴边（保留 7 分钟防烧屏 Y 微位移，X 保持贴边命中）。</li>
+      <li><b>展开</b>：悬停 ~150ms 展开、移开 ~300ms 收回；展开窗向左弹出不遮列，顶边对齐所在方块，靠近屏底时自动上移防出界。</li>
+      <li><b>展开窗尺寸</b>：统一 580×200（在 Codex Radar 的 44–240 高度约束内）；各模块内容 = 现有模块的展开版。</li>
+      <li><b>复用</b>：PdhSampler 快照、34 点历史、告警状态机、功耗采样、守护状态全部沿用；新窗体走 LayeredWidgetFormBase + EdgeDockTabForm 同类贴边模式。</li>
+      <li><b>告警</b>：方块级告警 = 外圈变红 + 中心数字变红（不再需要红色背景整卡）。</li>
+    </ul>
+    <p class="sub">8 个展开态预览已齐。细节确认后我出 SPEC、登记看板并开始实现。</p>
+  </div>
+</section>
+</main>
+
+<script>
+document.querySelectorAll('svg.rr').forEach(function(el){
+  var fgs=el.querySelectorAll('.fg, .fg2');
+  var p1=parseFloat(el.dataset.p1), p2=parseFloat(el.dataset.p2);
+  [p1,p2].forEach(function(p,idx){
+    var c=fgs[idx]; if(!c || isNaN(p)){return;}
+    var R=parseFloat(c.getAttribute('r')), C=2*Math.PI*R;
+    c.setAttribute('stroke-dasharray',(C*Math.min(p,100)/100).toFixed(1)+' '+C.toFixed(1));
+  });
+});
+document.querySelectorAll('svg.spark').forEach(function(el){
+  var d=JSON.parse(el.dataset.pts);
+  var d2=el.dataset.pts2?JSON.parse(el.dataset.pts2):null;
+  var w=el.viewBox.baseVal.width, h=el.viewBox.baseVal.height;
+  var all=d2?d.concat(d2):d;
+  var max=Math.max.apply(null,all)*1.15; if(!max){max=1;}
+  function mk(arr){
+    var step=w/(arr.length-1);
+    return arr.map(function(v,i){return [i*step, h-2-(v/max)*(h-8)];});
+  }
+  function lineOf(pts){return pts.map(function(p,i){return (i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1);}).join(' ');}
+  var pts=mk(d), line=lineOf(pts);
+  el.querySelector('.a').setAttribute('d',line+' L'+w+' '+h+' L0 '+h+' Z');
+  el.querySelector('.l').setAttribute('d',line);
+  var l2=el.querySelector('.l2');
+  if(l2 && d2){l2.setAttribute('d',lineOf(mk(d2)));}
+  var dot=el.querySelector('.d'), last=pts[pts.length-1];
+  if(dot){dot.setAttribute('cx',last[0].toFixed(1)); dot.setAttribute('cy',last[1].toFixed(1));}
+});
+document.querySelectorAll('svg.mirrorx').forEach(function(el){
+  var dl=JSON.parse(el.dataset.dl), ul=JSON.parse(el.dataset.ul);
+  var w=el.viewBox.baseVal.width, h=el.viewBox.baseVal.height;
+  var base=h*0.6, max=Math.max.apply(null,dl.concat(ul))*1.1;
+  var step=w/(dl.length-1);
+  function mk(arr,dir,amp){return arr.map(function(v,i){return [i*step, base-dir*(v/max)*amp];});}
+  function lineOf(pts){return pts.map(function(p,i){return (i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1);}).join(' ');}
+  var up=lineOf(mk(dl,1,base-4)), dn=lineOf(mk(ul,-1,h-base-3));
+  el.querySelector('.ldl').setAttribute('d',up);
+  el.querySelector('.adl').setAttribute('d',up+' L'+w+' '+base+' L0 '+base+' Z');
+  el.querySelector('.lul').setAttribute('d',dn);
+  el.querySelector('.aul').setAttribute('d',dn+' L'+w+' '+base+' L0 '+base+' Z');
+  var b=el.querySelector('.base'); b.setAttribute('x1',0); b.setAttribute('x2',w); b.setAttribute('y1',base); b.setAttribute('y2',base);
+});
+document.querySelectorAll('.cores').forEach(function(el){
+  JSON.parse(el.dataset.vals).forEach(function(v){
+    var i=document.createElement('i');
+    i.style.height=Math.max(6,v).toFixed(0)+'%';
+    i.style.opacity=(0.35+0.6*v/100).toFixed(2);
+    el.appendChild(i);
+  });
+});
+</script>

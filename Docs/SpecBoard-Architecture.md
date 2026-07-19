@@ -1,6 +1,6 @@
 # Spec Board 架构
 
-适用版本：1.0.5.59
+适用版本：1.0.6.03
 
 本文负责跨项目 spec 账本读取、对账、看板窗口、交互和只读边界。
 
@@ -46,17 +46,17 @@ RadialDial 核心圆圈或经典 Start 按钮双击调用 `ToggleLauncherTrioWin
 
 ## 左缘停靠（EdgeDockTab）
 
-`SpecBoardLeftDockEnabled` 与 `CodexTaskBoardLeftDockEnabled` 默认开启：Spec 小看板与 Codex 任务看板常驻屏幕左缘，平时收起，只留一枚 `EdgeDockTabForm`（`Core/EdgeDockTabForm.cs`）——10×30 逻辑尺寸、左边全高向右收窄的梯形，贴在工作区左缘。鼠标移上 tab 即展开对应看板；指针离开看板与 tab 后经 `LeftDockCollapseSeconds`（默认 1 s，范围 0–30）自动收起。**一个看板一枚 tab**，互不影响。
+Spec、Codex Task、Network 与 GUARD 四个停靠看板共用 `EdgeDockTabForm`（`Core/EdgeDockTabForm.cs`）——`5×30` 逻辑尺寸、左边全高向右收窄的梯形，中央有同角色色、较低不透明度的向右三角箭头，整体贴在工作区左缘。队列从上到下固定为 Network 蓝、Spec 橙、Codex Task 绿、GUARD 紫；展开看板也继承对应角色色的共享圆角内描边，精确线宽与绘制契约见 `Docs/Performance-And-Window-Runtime.md` §6.1。鼠标移上 tab 即展开对应看板；指针离开看板与 tab 后经 `LeftDockCollapseSeconds`（默认 1 s，范围 0–30）自动收起。**一个看板一枚 tab**，互不影响。
 
-tab 自身用 120 ms 计时器轮询 `Cursor.Position` 判定 hover（不依赖分层窗 alpha 命中测试，整个 10×30 矩形都是可命中区，10 px 目标更易点中）。边框和任务栏仍隐藏，但 `Text`/`AccessibleName` 分别使用 `SpecBoardDockTab` 与 `CodexTaskBoardDockTab`，让辅助功能和 UI 验收工具能区分两枚微型窗口。展开时看板左缘落在 `工作区左缘 + tab 宽`，tab 保持可见，指针可以从 tab 连续滑入看板而不触发收起倒计时。tab 是**永久可见**元素，因此必须走防烧屏微位移：`SpecBoardDockTabSalt=37`、`CodexTaskBoardDockTabSalt=43`（看板自身为 `SpecBoardSalt=73`、`CodexTaskBoardSalt=41`）；`EdgeDockTabForm.PositionAtLeftEdge` 先取得 `ApplyRuntimeOffset`，再由 `PinToLeftEdge` 丢弃水平分量并固定到 `workArea.Left`，只有 Y 会漂移几像素，鼠标贴住主屏或负坐标副屏的绝对最左像素时仍能命中。
+tab 自身用 120 ms 计时器轮询 `Cursor.Position` 判定 hover（不依赖分层窗 alpha 命中测试，整个 `5×30` 矩形都是可命中区）。边框和任务栏仍隐藏，`Text`/`AccessibleName` 使用各自稳定名称，让辅助功能和 UI 验收工具能区分四枚微型窗口。展开时看板左缘落在 `工作区左缘 + tab 宽`，tab 保持可见，指针可以从 tab 连续滑入看板而不触发收起倒计时。tab 是**永久可见**元素，因此四枚都使用独立防烧屏 salt；梯形与箭头绘制在同一分层位图内，`EdgeDockTabForm.PositionAtLeftEdge` 先取得 `ApplyRuntimeOffset`，再由 `PinToLeftEdge` 丢弃水平分量并固定到 `workArea.Left`，所以两者共同承受 Y 轴微位移，鼠标贴住主屏或负坐标副屏的绝对最左像素时仍能命中。四块展开看板同样固定水平锚点：各自 `PositionAtLeftDock` 调用 `ApplyRuntimeOffsetWithPinnedX`，统一停在 `工作区左缘 + tab 宽度`，仅保留独立 salt 的 Y 轴微位移。隐藏模式与防烧屏配色保护的共享视觉契约以 `Docs/Performance-And-Window-Runtime.md` §6.1 为单一事实源。
 
 `LeftDockOutsideClickCollapseEnabled` 默认开启。停靠展开的 Spec/Codex Task 看板，以及 Spec 的自动弹窗态，在用户点击看板外部（桌面、其他窗口或另一块看板）时收回；自身窗口、自己的 tab 与 Spec 管理窗属于排除区，手动打开且未停靠的常驻 Spec 看板不受影响。板内空白区域原有的 `HideBoard()` 语义继续保留，两条关闭路径互补。
 
 外部点击由共享 `OutsideClickDismissalMonitor` 处理，不使用失焦事件、长期鼠标捕获或全局鼠标钩子，也不新增计时器。`EdgeDockTabForm` 的既有 120 ms hover tick 读取 `GetAsyncKeyState(VK_LBUTTON)` 的当前按下位与“上次查询后按过”位，并把单调递增的点击序号分别交给两块看板消费；Spec 的 500 ms 维护 tick 为无 tab 的自动弹窗补兜底。进程内所有左键异步状态读取必须经该监测器，避免某个调用方提前消耗低位。外部点击收回后，tab 在 800 ms 内且光标尚未离开 tab 区时禁止重新展开，避免左缘点击造成“收回后秒开”；一旦离开 tab 即解除抑制。
 
-tab 中心 Y 由 `SpecBoardLeftDockTabCenterY` / `CodexTaskBoardLeftDockTabCenterY` 指定，`-1`（`AutoLeftDockTabCenterY`）表示自动：Spec 取工作区垂直中点上方 `LeftDockTabAutoOffsetY=20`，Codex 取下方 20，两枚 30 px 高的 tab 因此相邻而不重叠。停靠开启时看板必须在启动时就构造（即使收起）——tab 是它唯一的常驻表面，由 `OperationForm.ApplyRuntimeSettings` 负责建立。收起状态下看板的维护 tick 继续运行（`ShouldMonitorWork` 把 `IsLeftDocked` 视为需要工作），它驱动 tab 的防烧屏漂移与收起倒计时；全屏隐藏与显示挂起会一并停掉 tab。
+tab 中心 Y 由各自 `*LeftDockTabCenterY` 指定，`-1`（`AutoLeftDockTabCenterY`）表示自动：从上到下为 Network `-3`、Spec `-1`、Codex `+1`、GUARD `+3` 个 `LeftDockTabAutoOffsetY=20`，四枚 30 px 高的 tab 相邻而不重叠。停靠开启时看板必须在启动时就构造（即使收起）——tab 是它唯一的常驻表面，由所属宿主的运行时设置链路负责建立。收起状态下看板维护继续驱动 tab 的防烧屏漂移与收起倒计时；全屏隐藏与显示挂起会一并停掉 tab。
 
-几何、自动槽位与边缘命中有独立自测（`EdgeDockTabForm.RunSelfTest`：梯形四点、左边高于右边即"向右"、两枚自动 tab 不重叠且在工作区内、主屏 `x=0` 与负坐标副屏左缘保持可命中）；外部点击的边沿、双消费者、命中排除与回弹抑制由 `OutsideClickDismissalMonitor.RunSelfTest` 覆盖。两者都随 `--test-operation-panel` 运行；`--render-operation` 产出 `operation-dock-tab-spec.png` 与 `operation-dock-tab-codex.png`（8× 放大，10×30 原尺寸无法评审）。
+几何、自动槽位、边缘命中和隐藏/保护态视觉层级有独立自测（`EdgeDockTabForm.RunSelfTest`：`5×30` 梯形方向、中央右箭头、蓝橙绿紫角色映射、四枚自动 tab 不重叠、主屏与负坐标副屏左缘可命中、收起保护态灰色、展开态恢复角色色）；外部点击的边沿、双消费者、命中排除与回弹抑制由 `OutsideClickDismissalMonitor.RunSelfTest` 覆盖。两者都随 `--test-operation-panel` 运行；`--render-operation` 为 Network、Spec、Codex、GUARD 各产出一张 8× 状态条，顺序为普通静止/悬停、隐藏静止、保护收起、保护展开/展开悬停。
 
 ## 操作面板双击启动器（LauncherTrio）
 

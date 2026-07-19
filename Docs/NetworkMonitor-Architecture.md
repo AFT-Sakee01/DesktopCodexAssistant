@@ -1,6 +1,6 @@
 # 网络监控窗口技术说明
 
-适用版本：1.0.4.52
+适用版本：1.0.6.03
 
 ## 1. 文档范围
 
@@ -11,13 +11,18 @@
 | 文件 | 职责 |
 | --- | --- |
 | `Core/NetworkMonitorForm.cs` | 网络窗口生命周期、布局、状态文字、红叉和分层窗口绘制 |
+| `Core/NetworkMonitorForm.Dock.cs` | 左侧梯形停靠：Tab 生命周期、悬停展开/收起、Tab 状态变色、停靠定位 |
+| `Core/NetworkMonitorForm.DockedLayout.cs` | 停靠形态的四区绘制与窄宽度单列降级 |
+| `Performance/PathPingProbe.cs` | 逐跳路径发现、每跳滚动采样、节点限速与链路丢包归因 |
+| `Performance/FixedPingProbe.cs` | 固定站点 ICMP 单飞采样，默认 Google、百度、Yahoo |
+| `Performance/NetworkProbeTargets.cs` | 云服务与固定 Ping 目标的规范化、启用边界和设置序列化 |
 | `Performance/NetworkMonitorReader.cs` | 本地网卡、公网 IP、连通性、延迟、抖动和门户认证检测 |
 | `Performance/GfwProbeReader.cs` | GFW 多阶段探测、结果驻留和独立日志 |
 | `Performance/CloudEndpointProbe.cs` | 云服务公网可用性轻量采样、异常确认和缓存 |
 | `Performance/CloudEndpointProbeReader.cs` | 云服务独立单飞调度、手动冷却和网络状态门控 |
-| `Performance/PdhModels.cs` | 网络、Wi-Fi、GFW 和云服务快照模型 |
+| `Performance/PdhModels.cs` | 网络、Wi-Fi、GFW、云服务、PathPing 和固定 Ping 快照模型 |
 | `Settings/WidgetSettings.cs` | 三档性能策略和网络窗口设置 |
-| `Settings/Win11SettingsForm.cs` | 网络窗口参数、GFW 参数和网络状态测试入口 |
+| `Settings/Win11SettingsForm.cs`、`Settings/NetworkProbeTargetEditorForm.cs` | 网络参数、云服务/固定 Ping 目标编辑和网络状态测试入口 |
 | `Interop/NativeMethods.cs` | WLAN、分层窗口和原生窗口接口 |
 
 性能模式的通用说明见：
@@ -52,11 +57,13 @@ flowchart LR
     Reader --> PublicIP["公网 IP"]
     Reader --> GFW["GfwProbeReader"]
     Reader --> Cloud["CloudEndpointProbeReader"]
+    Reader --> FixedPing["FixedPingProbeReader"]
     Local --> Snapshot["NetworkMonitorSnapshot"]
     Connectivity --> Snapshot
     PublicIP --> Snapshot
     GFW --> Snapshot
     Cloud --> Snapshot
+    FixedPing --> Snapshot
     Snapshot --> Compare{"显示字段变化?"}
     Compare -- "否" --> Keep["复用当前分层位图"]
     Compare -- "是" --> Draw["重新绘制缓存位图"]
@@ -75,7 +82,7 @@ flowchart LR
 | 本地接口 | `InterfaceId`、名称、类型、速率、IPv4/IPv6、DNS |
 | Wi-Fi | SSID、认证、加密、PHY、信号、收发协商速率 |
 | 公网连通性 | `AccessState`、延迟、抖动、丢包、公网 IP、本地链路劣化标记 |
-| GFW 与云服务 | `GfwProbeSnapshot`、`CloudEndpointSnapshot[]` |
+| GFW、云服务与质量 | `GfwProbeSnapshot`、`CloudEndpointSnapshot[]`、`PathPingSnapshot`、`FixedPingSnapshot` |
 
 线程规则：
 
@@ -269,6 +276,7 @@ GFW 和云服务不直接跟随 `NetworkChange` 事件刷新。事件后的本�
 - `connectivityRequestRunning`
 - `GfwProbeReader.requestRunning`
 - `CloudEndpointProbeReader.requestRunning`
+- `FixedPingProbeReader.requestRunning`
 
 调度时间记录的是任务开始时间。任务仍在运行时，即使新的 UI tick 判断已经到期，也不会创建第二个同类任务。
 
@@ -291,11 +299,11 @@ GFW 和云服务不直接跟随 `NetworkChange` 事件刷新。事件后的本�
 
 候选站点异常需要同一异常层至少命中两个候选站点才会输出明确疑似阻断。单个候选站点异常或分散在不同层的少量异常只显示黄色 `不可判定`，理由为 `候选站点少量异常 x/y`。这避免夜间高丢包或个别站点短时故障把标题误报为 `全球互联网不可用`。
 
-云服务检测由 `CloudEndpointProbeReader` 独立调度，结果仍挂在 `GfwProbeSnapshot.CloudEndpoints` 供现有 UI 绘制。开始刷新时 6 个方块进入 `Checking`，并随 UI 刷新在绿色和黄色之间切换，完成后结果驻留到下一轮覆盖。手动刷新接受后有 45 秒冷却，冷却期内重复点击只复用现有结果。真实网络不是 `Online` 时云服务不启动新探测，会取消当前请求并返回无告警的 `Unknown` 方块；标题右侧云服务告警区域也完全隐藏，避免离线、需验证或 Unknown 状态下显示旧的红/橙/黄告警。
+云服务检测由 `CloudEndpointProbeReader` 独立调度，结果仍挂在 `GfwProbeSnapshot.CloudEndpoints` 供现有 UI 绘制。`CloudEndpointTargets` 保存全部内置项的勾选状态及最多 8 个自定义项；取消勾选的目标在任务创建前剔除，不发送网络请求。开始刷新时仅启用的目标进入 `Checking`，完成后结果驻留到下一轮覆盖；全部取消时数组保持为空，不回退成默认六项。手动刷新接受后有 45 秒冷却，冷却期内重复点击只复用现有结果。真实网络不是 `Online` 时云服务不启动新探测，会取消当前请求并返回无告警的 `Unknown` 项；标题右侧云服务告警区域也完全隐藏，避免离线、需验证或 Unknown 状态下显示旧的红/橙/黄告警。
 
 云服务目标：
 
-| 显示 | 服务 | 检测方式 |
+| 默认显示 | 服务 | 检测方式 |
 | --- | --- | --- |
 | `Cf` | Cloudflare | Statuspage JSON `summary.json` |
 | `Ak` | Akamai | Statuspage v2 JSON `https://www.akamaistatus.com/api/v2/summary.json` |
@@ -303,6 +311,8 @@ GFW 和云服务不直接跟随 `NetworkChange` 事件刷新。事件后的本�
 | `Aw` | AWS | `https://aws.amazon.com/` HTTP 状态码 |
 | `Az` | Azure | Azure Status RSS `https://azure.status.microsoft/en-us/status/feed/` |
 | `Go` | Google | Google Cloud Service Health `incidents.json` 降级源 |
+
+设置页“云服务检测”可逐项关闭上述内置目标，也可输入显示名称和 IP/主机新增自定义 ICMP 目标。自定义项复用同一单飞、三次异常确认、状态滞后与缓存链，不创建额外 timer；列表签名变化会取消旧配置的在途任务并立即按新列表重测。`CurrentSettingsVersion = 78` 负责把旧设置迁移到六项全启用的默认列表。
 
 每轮云服务刷新先对需要刷新的目标各采样 1 次，并发上限为 3。只有首轮结果异常、无法连接或延迟达到 1000 ms 的目标才追加 2 次确认，相邻确认间隔 10 秒；首轮正常的目标不再跟随全量三次采样。公开状态 API 可用的服务优先使用 API；AWS 仍按 HTTPS 状态码分类：`2xx/3xx` 正常，`401/403` 拒绝访问，`429` 访问限流，`451` 地区受限，`404/410` 入口异常，`5xx` 服务异常，DNS/TCP/TLS/超时类失败显示为无法连接。HTTP `HEAD` 返回 `403/405/501` 时会用轻量 `GET` 复查，避免单纯拒绝 `HEAD` 的站点误报。
 
@@ -314,14 +324,14 @@ Cloudflare、Akamai、Azure 和 Google 的官方状态源会按设置页“官�
 
 如果本地链路已被标记为劣化，且云服务无法连接的代表原因属于 DNS、TCP、TLS、超时、连接中断、请求失败或状态 API 失败，并且不是 3 次采样全部失败，则红色无法连接会降为黄色 `本地丢包影响`。官方状态 API 明确返回的官方故障或官方降级不受此降级规则影响。
 
-标题栏最右侧显示 6 个云服务方块，方块组右对齐；标题栏状态文字和告警槽只使用方块左侧剩余空间，避免与方块互相挤占。`IP4` 行右侧显示公网短显，`IP4` 地址文本会预留公网字段宽度避免重叠。颜色规则：
+标题栏最右侧按当前启用列表显示云服务方块，方块组右对齐；标题栏状态文字和告警槽只使用方块左侧剩余空间，避免与方块互相挤占。`IP4` 行右侧显示公网短显，`IP4` 地址文本会预留公网字段宽度避免重叠。停靠面板的逐行文字与经典方块共用以下语义颜色：
 
 - 网络不是 `Online`：全部灰色。
 - 正在刷新：黄色。
-- 正常：六个云服务全部使用同一个绿色。
+- 正常：全部使用同一个绿色。
 - 延迟过高：黄色；无法连接：红色；状态异常：橙色。
 
-云服务方块在 `Classic` 扁平信息条中固定在底部 `PING/GFW` 行最右侧右对齐。正常状态使用深绿背景和浅绿文字，检测中在深绿/黄色之间随刷新闪烁；异常状态仍按各自状态着色。服务名映射为 Cloudflare、Akamai、Github、AWS、Azure、Google。
+云服务方块在 `Classic` 扁平信息条中固定在底部 `PING/GFW` 行最右侧右对齐。正常状态使用深绿背景和浅绿文字，检测中在深绿/黄色之间随刷新闪烁；异常状态仍按各自状态着色。内置服务名映射为 Cloudflare、Akamai、Github、AWS、Azure、Google，自定义项使用设置中的显示名称。
 
 `Classic` 扁平信息条不绘制 DNS 覆盖层：DNS 服务器按网卡优先级在 `DNS` 行左侧分色显示，首个异常 DNS 的具体原因在同一行右侧显示，例如 `DNS返回SERVFAIL`。DNS 显示只消费已有 DNS 快照，错误只改变颜色、不把报错项提前，也不发起额外 DNS 探测。GFW 原始长原因和丢包/抖动细节不会直接塞进固定宽度的小字段，避免与其它内容相交。
 
@@ -379,7 +389,9 @@ Classic 第一布局的中性文字（标题、链路摘要、`IP4/IP6/DNS` 标�
 - 接口、地址、DNS 地址与 DNS 状态、Wi-Fi
 - 状态、公网 IP、延迟、抖动、丢包
 - GFW 状态、理由和时间
-- 云服务方块标签、国内外标记和显示状态
+- 云服务标签、延迟、原因和显示状态
+- PathPing 发现进度、逐跳数据和归因
+- 固定 Ping 目标、延迟、原因和状态
 
 内部更新时间或不显示的数据不会触发重绘。延迟和抖动差异小于 0.5 ms 时视为相同。
 
@@ -398,7 +410,7 @@ Classic 第一布局的中性文字（标题、链路摘要、`IP4/IP6/DNS` 标�
 - `RenderLayeredWindow(true)`：重新绘制背景和内容
 - `RenderLayeredWindow(false)`：复用已有位图，只提交新的整体 Alpha
 
-悬停透明度动画使用第二种路径，不重复构建文字、路径和笔刷。
+未停靠的经典浮窗在悬停透明度动画中使用第二种路径，不重复构建文字、路径和笔刷；左侧停靠看板不参与悬停透明度动画。
 
 当内容透明度为 100% 可见时直接绘制到主缓冲区；只有半透明内容才使用独立内容位图合成。
 
@@ -439,7 +451,53 @@ Classic 第一布局的中性文字（标题、链路摘要、`IP4/IP6/DNS` 标�
 
 退出测试模式后，下一次 UI tick 直接恢复真实状态。
 
-## 15. 维护规则
+## 15. 左侧停靠形态
+
+`NetworkMonitorLeftDockEnabled`（默认开启）时，网络窗口位于左侧梯形队列最上方，与 Spec Board、Codex 任务板、GUARD 并列，行为由 `Core/NetworkMonitorForm.Dock.cs` 承担：
+
+- **Tab 槽位**：`NetworkMonitorLeftDockTabCenterY` 为 `AutoLeftDockTabCenterY` 时取工作区中线 `- S(LeftDockTabAutoOffsetY * 3)`，位于队列最上方；Spec 在 `-1`、Codex 在 `+1`、GUARD 在 `+3` 档。四个 30px Tab 互不重叠由 `EdgeDockTabForm.RunSelfTest` 断言。
+- **Tab 固定配色**：队列第一枚固定使用蓝色 `AccentAction`，中央向右箭头为同色低透明度；展开看板的共享圆角内描边沿用同一蓝色。网络离线、链路退化和 PathPing 责任状态只在展开看板内显示，不再改变常驻 Tab 或外框，避免与四槽的蓝/橙/绿/紫角色编码冲突。
+- **展开与收起**：`HoverEntered` 触发 `ShowDockedPanel`，`LeftDockCollapseSeconds` 倒计时与 `OutsideClickDismissalMonitor` 触发 `HideDockedPanel`。`PositionAtLeftDock` 通过 `BurnInProtection.ApplyRuntimeOffsetWithPinnedX` 把展开 X 固定为工作区左缘加 tab 宽度，只允许独立 salt 改变 Y，保证四块停靠看板水平对齐。
+- **尺寸**：展开时为 `SpecBoardWidth × SpecBoardHeight`（默认 648×400），三块停靠板共用同一 footprint。`ApplyDockedSizeBounds` 在停靠态必须把 `MinimumSize` / `MaximumSize` 清为 `Size.Empty`，由 `GetDockedSize` 的 `SpecBoardWidth/Height × LayerScale` 单独决定物理尺寸；不得用 `ScaleWindowSize` 生成停靠边界，因为它只含兼容缩放、不含 DPI 分量，在 200% DPI 与 50% 兼容缩放组合下会把 648×400 静默钳成 350×400。退出停靠态后再恢复网络浮动窗口自己的尺寸边界。
+- **看板交互边界**：停靠态与 Spec Board、Codex 任务板一样接收正常鼠标输入并进入受保护的 TopMost 组；`NetworkMonitorForm` 必须停止并清空经典浮窗的 hover 动画状态，退出共享 hover/click-through 轮询，使 `WS_EX_TRANSPARENT` 保持关闭，并让 `IsBurnInColorProtectionActive` 固定为 false。`HoverOpacityEnabled`、`ClickThroughMode`、`ReverseHoverOpacityRevealEnabled` 和 `BurnInHiddenModeColorProtectionEnabled` 只作用于未停靠的经典浮窗，不能让停靠看板淡出、反色或悬停失效。
+- **Tab 隐藏/防烧屏**：看板本体继续隔离经典浮窗隐藏规则；常驻 Tab 由共享 `EdgeDockTabForm` 处理。防烧屏配色保护开启时，收起态梯形为低亮灰色、箭头保持蓝色；只有 `ShowDockedPanel` 让窗口真正展开并上报 `SetBoardExpanded(true)` 后梯形才恢复蓝色，收起立即回灰。完整视觉和命中契约见 `Docs/Performance-And-Window-Runtime.md` §6.1。
+
+停靠布局（`Core/NetworkMonitorForm.DockedLayout.cs`，坐标按 648×400 归一化）自上而下为四区：
+
+| 区域 | 参考高度 | 内容 |
+| --- | --- | --- |
+| 头部条 | 32 | `NETWORK` + 接入状态 + 链路摘要 + 更新时间 |
+| 出口画像带 | 48 | 三枚 62×40 徽章（纯净度评分 / 原生判定 / IP 类型）+ 出口 IP·归属地·组织 + ASN·判定理由·检测时间 |
+| 双栏主体 | 266 | 左栏身份地址 / DNS，每个 DNS 一行；灰线后进入出境 GFW，再以独立灰线和“云服务检测”标题分隔云端点；右栏 PathPing 进度/跳表，下方固定 Ping |
+| 底部条 | 26 | 左侧绿色 `刷新`、红色 `关闭` 操作键 + 紧邻其右的最近错误 + 右对齐轮次与路径发现时间 |
+
+`SpecBoardWidth` 低于 `DockedSingleColumnMinWidth = 460` 时双栏合并为单列纵栈，PathPing 和固定 Ping 都按可用高度收窄：跳表降低上限，固定 Ping 保留首项并显示剩余数量。行高由 `MeasureDockLineHeight` 按实际字体测量，新增行必须先为底部判定和固定 Ping 预留高度，不能依赖手写 Y 坐标。
+
+出口画像带的数据来自 `CleanIpConnectionReader.Shared`。1.0.5.74 起 `WidgetForm.OnShown` 不再创建右下角独立 `ConnectionCheckForm`，网络停靠面板成为出口画像的唯一运行时展示入口；独立窗口的绘制器和样张测试保留作回归与回滚。共享 reader 仍按进程生命周期持有并沿用同一套节流，因此隐藏旧窗口不会中断检测，也不会增加 cleanip.io 查询次数。新增任何需要出口画像的窗口都必须复用该单例。
+
+底部操作区与 Spec Board / Codex Task 共用 4px 圆角、`Control` 实底和语义色描边：`刷新` 为绿色，调用既有 `ForceRefresh()`，同时请求网络 reader 与共享 Clean IP reader；`关闭` 为红色，只调用 `HideDockedPanel()` 收起面板、暂停 PathPing，左缘 Tab 与 reader 均保留。最近错误从关闭按钮右侧 5 个逻辑像素开始，路径轮次保持右对齐；窄宽度下按钮、错误和轮次槽各自裁切而不重叠。两项操作均由 `NetworkMonitorForm.OnMouseUp` 命中 `DrawDockedFooter` 保存的区域，不新增 hover 反色、timer 或并发网络路径。
+
+## 16. 逐跳质量（PathPing）
+
+`Performance/PathPingProbe.cs` 提供停靠面板右栏的逐跳数据，分两阶段：
+
+1. **路径发现**：`PingOptions.Ttl = 1..MaxHops(30)` 递增，取 `TtlExpired` 回包地址；命中目标即止。每完成一个 TTL 就更新 `DiscoveryCurrentHop/DiscoveryMaxHops`，停靠面板以百分比和细进度条显示，避免长链路表现为一直加载。重新发现的触发条件是网络代际或接口变化、目标地址变化、连续 `PathFailureRediscoverRounds = 3` 轮目标失败、或距上次发现满 `PathRediscoverIntervalMinutes = 10`。发现期间旧路径保留并置 `Stale`，UI 同时保留旧数据和刷新进度。
+2. **逐跳采样**：对每个响应跳直接发 echo，每跳一个独立滚动窗口（`HopSampleMinCount = 5`、`HopSampleMaxCount = 20`、TTL 15 分钟），跳与跳之间插入 `HopSpacingMs = 60` 错峰。
+
+`NetworkMonitorReader.ResolvePathPingTarget` 只向路径发现传递具体的 `ConnectivityTarget`（现为 `1.1.1.1`）。`PingRollingSnapshot.ActiveProfile` 的 `PUB` / `BAIDU` 仅为显示标签，不能写回 `ConnectivityTarget` 或作为 DNS 主机名；若读到与显示标签相同的旧内存值，必须回退到具体连通性目标。`ApplyRollingPingSnapshotLocked` 更新滚动统计时保持 `ConnectivityTarget` 不变。
+
+归因规则（`ClassifyHops`，纯函数，由 `RunSelfTest` 覆盖）是本模块的正确性核心：
+
+- 某跳丢包但目标干净 → `RateLimited`（琥珀），判定 `PathPingBlame.NodeRateLimit`。中间路由器对直连 ICMP 限速极常见，把它报成链路故障是 traceroute 类工具最典型的误诊。
+- 丢包自某跳起持续传导到目标 → 该跳及下游 `Loss`（红），判定 `LinkLoss` 并给出 `BlameHopNumber` 与「丢包始于第 N 跳」文案。
+- 目标不响应 → `Unreachable`；`PingRollingSnapshot.IcmpBlocked` 为真 → `IcmpUnavailable`，跳表清空，右栏降级为既有三级定点诊断。
+- 连续不响应跳由 `MergeSilentHops` 合并成一行并记 `MergedHopCount`。
+
+`PingRollingSnapshot` 保留不动：端到端指标与 GFW 抑制逻辑仍依赖它，pathping 是加层而非替换。
+
+PathPing 下方的固定 Ping 由 `FixedPingProbeReader` 提供。`FixedPingTargets` 默认 Google `8.8.8.8`、百度 `180.101.50.188`、Yahoo `98.137.11.163`，设置页可新增、删除或取消勾选，最多 8 项。它不创建 timer，复用网络窗口既有 tick 和 PathPing 的均衡/省电间隔，只在停靠面板展开、网卡连接且目标启用时并发执行单次 ICMP；正常为绿、慢为黄、失败为红、等待为灰。`ForceRefresh()` 会把下一轮固定 Ping deadline 置为立即到期。
+
+## 17. 维护规则
 
 修改网络窗口时应遵守：
 
@@ -454,7 +512,7 @@ Classic 第一布局的中性文字（标题、链路摘要、`IP4/IP6/DNS` 标�
 9. GFW 探测周期由用户设置控制，性能模式不修改其业务周期。
 10. 门户认证判定优先于 Ping 成功，避免认证网络误报 Online。
 
-## 16. 构建与验证
+## 18. 构建与验证
 
 构建：
 

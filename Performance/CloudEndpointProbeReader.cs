@@ -19,6 +19,7 @@ internal sealed class CloudEndpointProbeReader
     private DateTime pendingStateFirstSeenUtc = DateTime.MinValue;
     private int lastManualRefreshToken;
     private int lastCloudStatusRegionMask = -1;
+    private string lastTargetConfigurationSignature = string.Empty;
     private string pendingStateSignature = string.Empty;
     private string pendingForcedTrigger = string.Empty;
     private CancellationTokenSource requestCancellation;
@@ -52,9 +53,12 @@ internal sealed class CloudEndpointProbeReader
         bool localNetworkDegraded,
         string localNetworkDegradedReason)
     {
+        string[] targetConfiguration = NetworkProbeTargetSettings.NormalizeCloudTargets(
+            settings == null ? NetworkProbeTargetSettings.DefaultCloudEndpointTargets : settings.CloudEndpointTargets);
+        string targetSignature = NetworkProbeTargetSettings.BuildSignature(targetConfiguration);
         if (networkState != NetworkAccessState.Online)
         {
-            CloudEndpointSnapshot[] unavailable = CreateUnavailableSnapshots(GetUnavailableNetworkReason(networkState));
+            CloudEndpointSnapshot[] unavailable = CreateUnavailableSnapshots(GetUnavailableNetworkReason(networkState), targetConfiguration);
             CancellationTokenSource cancellation;
             lock (this.sync)
             {
@@ -78,14 +82,25 @@ internal sealed class CloudEndpointProbeReader
         bool manualRefresh;
         bool manualAccepted = false;
         bool regionChanged;
+        bool targetsChanged;
         bool due;
         string trigger = string.Empty;
         bool shouldStart = false;
+        CancellationTokenSource configurationCancellation = null;
 
         lock (this.sync)
         {
             manualRefresh = manualToken != this.lastManualRefreshToken;
             regionChanged = regionMask != this.lastCloudStatusRegionMask;
+            targetsChanged = !string.Equals(targetSignature, this.lastTargetConfigurationSignature, StringComparison.Ordinal);
+            if (targetsChanged)
+            {
+                this.lastTargetConfigurationSignature = targetSignature;
+                this.lastProbeStartedUtc = DateTime.MinValue;
+                this.nextProbeDueUtc = DateTime.MinValue;
+                this.pendingForcedTrigger = "云服务检测列表变化";
+                configurationCancellation = this.requestCancellation;
+            }
             DateTime dueUtc = this.nextProbeDueUtc == DateTime.MinValue && this.lastProbeStartedUtc != DateTime.MinValue
                 ? this.lastProbeStartedUtc.AddMinutes(intervalMinutes)
                 : this.nextProbeDueUtc;
@@ -103,19 +118,23 @@ internal sealed class CloudEndpointProbeReader
                     manualAccepted = true;
                 }
             }
-            if (manualAccepted || regionChanged || due)
+            if (manualAccepted || regionChanged || targetsChanged || due)
             {
                 shouldStart = true;
                 trigger = manualAccepted
                     ? "云服务手动刷新"
-                    : (regionChanged ? "云服务地区设置变化" : SelectAutomaticTrigger(this.pendingForcedTrigger));
+                    : (regionChanged
+                        ? "云服务地区设置变化"
+                        : (targetsChanged ? "云服务检测列表变化" : SelectAutomaticTrigger(this.pendingForcedTrigger)));
                 this.pendingForcedTrigger = string.Empty;
             }
         }
 
+        CancelRequest(configurationCancellation);
+
         if (shouldStart)
         {
-            StartProbe(now, trigger, regionMask, intervalMinutes, manualAccepted, regionChanged, localNetworkDegraded, localNetworkDegradedReason);
+            StartProbe(now, trigger, regionMask, intervalMinutes, manualAccepted || targetsChanged, regionChanged, localNetworkDegraded, localNetworkDegradedReason, targetConfiguration);
         }
 
         lock (this.sync)
@@ -132,7 +151,8 @@ internal sealed class CloudEndpointProbeReader
         bool forceRefresh,
         bool regionChanged,
         bool localNetworkDegraded,
-        string localNetworkDegradedReason)
+        string localNetworkDegradedReason,
+        string[] targetConfiguration)
     {
         CloudEndpointSnapshot[] previous;
         CancellationTokenSource cancellation = new CancellationTokenSource();
@@ -150,7 +170,7 @@ internal sealed class CloudEndpointProbeReader
             this.lastCloudStatusRegionMask = regionMask;
             this.requestCancellation = cancellation;
             previous = CloneSnapshots(this.snapshots);
-            this.snapshots = CloudEndpointProbe.CreateCheckingSnapshots(previous);
+            this.snapshots = CloudEndpointProbe.CreateCheckingSnapshots(previous, targetConfiguration);
         }
 
         Task.Run(async delegate
@@ -168,6 +188,7 @@ internal sealed class CloudEndpointProbeReader
                         regionChanged,
                         localNetworkDegraded,
                         localNetworkDegradedReason,
+                        targetConfiguration,
                         cancellation.Token)
                     .ConfigureAwait(false);
             }
@@ -180,7 +201,7 @@ internal sealed class CloudEndpointProbeReader
             catch (Exception ex)
             {
                 logLines.Add("云服务探测异常: " + ex.GetType().Name + " " + ex.Message);
-                result = CreateFailureSnapshots(ex);
+                result = CreateFailureSnapshots(ex, targetConfiguration);
             }
 
             bool shouldWriteDetailedLog = false;
@@ -368,11 +389,12 @@ internal sealed class CloudEndpointProbeReader
         }
     }
 
-    private static CloudEndpointSnapshot[] CreateUnavailableSnapshots(string reason)
+    private static CloudEndpointSnapshot[] CreateUnavailableSnapshots(string reason, string[] targetConfiguration)
     {
-        CloudEndpointSnapshot[] result = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Unknown);
+        CloudEndpointSnapshot[] result = CloudEndpointProbe.CreateCheckingSnapshots(null, targetConfiguration);
         for (int i = 0; i < result.Length; i++)
         {
+            result[i].Status = CloudEndpointStatus.Unknown;
             result[i].Reason = reason;
             result[i].AlertReason = reason;
         }
@@ -380,13 +402,14 @@ internal sealed class CloudEndpointProbeReader
         return result;
     }
 
-    private static CloudEndpointSnapshot[] CreateFailureSnapshots(Exception ex)
+    private static CloudEndpointSnapshot[] CreateFailureSnapshots(Exception ex, string[] targetConfiguration)
     {
-        CloudEndpointSnapshot[] result = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Abnormal);
+        CloudEndpointSnapshot[] result = CloudEndpointProbe.CreateCheckingSnapshots(null, targetConfiguration);
         string reason = "云服务检测异常 " + (ex == null ? "Unknown" : ex.GetType().Name);
         DateTime checkedAt = DateTime.Now;
         for (int i = 0; i < result.Length; i++)
         {
+            result[i].Status = CloudEndpointStatus.Abnormal;
             result[i].CheckedAtLocal = checkedAt;
             result[i].CheckedAtKnown = true;
             result[i].Reason = reason;
@@ -534,9 +557,14 @@ internal sealed class CloudEndpointProbeReader
 
     private static CloudEndpointSnapshot[] CloneSnapshots(CloudEndpointSnapshot[] source)
     {
-        if (source == null || source.Length == 0)
+        if (source == null)
         {
             return CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Unknown);
+        }
+
+        if (source.Length == 0)
+        {
+            return new CloudEndpointSnapshot[0];
         }
 
         CloudEndpointSnapshot[] result = new CloudEndpointSnapshot[source.Length];

@@ -29,6 +29,7 @@ internal sealed class PdhSampler : IDisposable
     private readonly PdhCounter diskReadCounter;
     private readonly PdhCounter diskWritePercentCounter;
     private readonly PdhCounter diskReadPercentCounter;
+    private readonly PdhCounter pageFileUsageCounter;
     private readonly List<PdhCounter> networkSentCounters;
     private readonly List<PdhCounter> networkReceivedCounters;
     private readonly List<PdhCounter> gpuEngineCounters;
@@ -132,6 +133,13 @@ internal sealed class PdhSampler : IDisposable
             @"\PhysicalDisk(_Total)\% Disk Read Time"
         });
 
+        // Percent of the current page-file allocation in use; multiplied by the page-file size at
+        // sample time it yields the bytes really resident on disk.
+        this.pageFileUsageCounter = AddFirstAvailable(new string[]
+        {
+            @"\Paging File(_Total)\% Usage"
+        });
+
         this.networkSentCounters = AddCountersFromWildcard(@"\Network Interface(*)\Bytes Sent/sec", ShouldUseNetworkPath);
         this.networkReceivedCounters = AddCountersFromWildcard(@"\Network Interface(*)\Bytes Received/sec", ShouldUseNetworkPath);
         string[] gpuEnginePaths = ExpandWildcard(@"\GPU Engine(*)\Utilization Percentage");
@@ -190,9 +198,10 @@ internal sealed class PdhSampler : IDisposable
             this.npuSharedMemoryCounters.Count,
             JoinSet(this.npuLuidTokens)));
         Program.LogInfo(string.Format(
-            "Memory hardware initialized. Manufacturer={0}, Speed={1}MT/s",
+            "Memory hardware initialized. Manufacturer={0}, Speed={1}MT/s, PageFileCounter={2}",
             this.memoryInfo.Manufacturer,
-            this.memoryInfo.SpeedMtps));
+            this.memoryInfo.SpeedMtps,
+            this.pageFileUsageCounter == null ? "none" : this.pageFileUsageCounter.Path));
     }
 
     public PerfSnapshot Sample()
@@ -282,6 +291,19 @@ internal sealed class PdhSampler : IDisposable
             snapshot.MemoryTotalGb = totalBytes / 1073741824.0;
             snapshot.MemoryUsedGb = usedBytes / 1073741824.0;
             snapshot.MemoryPercent = Clamp(memory.dwMemoryLoad, 0.0, 100.0);
+
+            // Page file really written to disk. ullTotalPageFile is the commit limit
+            // (physical + page file), so subtracting physical leaves the page-file allocation;
+            // scaling it by the PDH usage percentage gives the resident bytes. Commit charge is
+            // deliberately not surfaced: it counts promised-but-untouched pages and reads far above
+            // physical usage, which only invites "virtual memory is eating 35 GB" misreadings.
+            double pageFileTotalBytes = Math.Max(0.0, memory.ullTotalPageFile - totalBytes);
+            if (pageFileTotalBytes > 0.0)
+            {
+                double usagePercent = Clamp(ReadCounter(this.pageFileUsageCounter), 0.0, 100.0);
+                snapshot.PageFileTotalGb = pageFileTotalBytes / 1073741824.0;
+                snapshot.PageFileUsedGb = pageFileTotalBytes * usagePercent / 100.0 / 1073741824.0;
+            }
         }
 
         snapshot.MemoryHardwareReservedGb =

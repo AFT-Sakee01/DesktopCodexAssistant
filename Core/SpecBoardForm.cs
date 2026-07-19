@@ -176,7 +176,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         {
             this.dockTab = new EdgeDockTabForm(
                 this.CurrentSettings,
-                DesignTokens.Colors.AccentAlt,
+                EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SpecBoard),
                 BurnInProtection.SpecBoardDockTabSalt,
                 "SpecBoardDockTab",
                 false);
@@ -186,10 +186,13 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         }
         else
         {
-            this.dockTab.ApplyRuntimeSettings(this.CurrentSettings, DesignTokens.Colors.AccentAlt);
+            this.dockTab.ApplyRuntimeSettings(
+                this.CurrentSettings,
+                EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SpecBoard));
         }
 
         this.dockTab.SetDisplaySuspended(this.displaySuspended || this.hiddenForFullscreen);
+        this.dockTab.SetBoardExpanded(this.Visible);
         this.dockTab.ShowTab(ResolveDockTabCenterY());
         this.maintenanceTimer.Start();
     }
@@ -385,6 +388,11 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             this.Width,
             this.Height,
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_FRAMECHANGED | NativeMethods.SWP_SHOWWINDOW);
+        if (this.dockTab != null && !this.dockTab.IsDisposed)
+        {
+            this.dockTab.SetBoardExpanded(true);
+        }
+
         ResetAutoHideClock();
         RequestRefresh(true);
         RenderLayeredWindow();
@@ -392,6 +400,11 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
     public void HideBoard()
     {
+        if (this.dockTab != null && !this.dockTab.IsDisposed)
+        {
+            this.dockTab.SetBoardExpanded(false);
+        }
+
         this.autoPopupActive = false;
         this.autoPopupHideUtc = DateTime.MinValue;
         this.autoPopupHighlightedRows.Clear();
@@ -653,6 +666,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
         DrawBoard(g, palette, true);
         DrawCopySuccessNotice(g, palette);
+        EdgeDockTabForm.DrawBoardAccentBorder(g, this.Size, EdgeDockTabRole.SpecBoard, this.LayerScale);
     }
 
     private void DrawCopySuccessNotice(Graphics g, SpecBoardPalette palette)
@@ -1728,7 +1742,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         int top = ResolveDockTabCenterY() - this.Height / 2;
         left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
         top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
-        this.Location = BurnInProtection.ApplyRuntimeOffset(new Point(left, top), this.Size, workArea, BurnInProtection.SpecBoardSalt);
+        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(new Point(left, top), this.Size, workArea, BurnInProtection.SpecBoardSalt);
     }
 
     private void PositionNearOperationPanel()

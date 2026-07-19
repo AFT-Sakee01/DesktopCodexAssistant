@@ -18,6 +18,9 @@ internal static class BurnInProtection
     public const int SpecBoardDockTabSalt = 37;
     public const int CodexTaskBoardSalt = 41;
     public const int CodexTaskBoardDockTabSalt = 43;
+    public const int NetworkMonitorDockTabSalt = 47;
+    public const int GuardBoardSalt = 53;
+    public const int GuardBoardDockTabSalt = 59;
 
     private const int ShiftIntervalMinutes = 7;
     private const int GrayscaleTolerance = 18;
@@ -27,6 +30,11 @@ internal static class BurnInProtection
     private const int TextFringeMinChannel = 54;
     private const int TextFringeMaxChroma = 104;
     private const int TextFringeMaxSaturationPercent = 42;
+    // Pixels at or below this luminance are already dark enough to pose no burn-in risk; they are
+    // forced to black instead of inverted, so dark areas can never come out bright.
+    private const int DarkPixelKeepBlackLuminance = 110;
+    // Ceiling applied to an inverted colour so the result stays dim while keeping its hue.
+    private const int InvertedMaxLuminance = 150;
     private static readonly Point[] RuntimeOffsets = new Point[]
     {
         new Point(1, 0),
@@ -78,6 +86,16 @@ internal static class BurnInProtection
         int left = Clamp(baseLocation.X + offset.X, workArea.Left, Math.Max(workArea.Left, workArea.Right - windowSize.Width));
         int top = Clamp(baseLocation.Y + offset.Y, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - windowSize.Height));
         return new Point(left, top);
+    }
+
+    public static Point ApplyRuntimeOffsetWithPinnedX(Point baseLocation, Size windowSize, Rectangle workArea, int salt)
+    {
+        Point runtimeLocation = ApplyRuntimeOffset(baseLocation, windowSize, workArea, salt);
+        int maximumLeft = Math.Max(workArea.Left, workArea.Right - windowSize.Width);
+        int pinnedLeft = Clamp(baseLocation.X, workArea.Left, maximumLeft);
+        // Left-docked boards deliberately keep their shared horizontal anchor. Independent salts may
+        // still move them vertically, but X drift would make the four expanded surfaces visibly split.
+        return new Point(pinnedLeft, runtimeLocation.Y);
     }
 
     public static bool ShouldApplyHiddenModeColorProtection(WidgetSettings settings, bool hiddenOpacityActive)
@@ -185,18 +203,37 @@ internal static class BurnInProtection
                     int red = Unpremultiply(pixels[index + 2], alpha);
                     int green = Unpremultiply(pixels[index + 1], alpha);
                     int blue = Unpremultiply(pixels[index], alpha);
-                    if (transparentMask[y * data.Width + x])
+                    // Anything already dark stays dark. Inversion only exists to stop bright pixels
+                    // from burning in, so applying it to a dark pixel does the opposite of the goal:
+                    // it makes the pixel bright. Greys (background, cards, white text, gauge tracks)
+                    // and dark chromatic pixels (the faint trend watermark) therefore go to black,
+                    // and only genuinely bright colours are inverted.
+                    bool isGrey = transparentMask[y * data.Width + x];
+                    if (isGrey || GetLuminance(red, green, blue) <= DarkPixelKeepBlackLuminance)
                     {
                         pixels[index] = 0;
                         pixels[index + 1] = 0;
                         pixels[index + 2] = 0;
-                        pixels[index + 3] = 0;
                         continue;
                     }
 
-                    pixels[index] = Premultiply(255 - blue, alpha);
-                    pixels[index + 1] = Premultiply(255 - green, alpha);
-                    pixels[index + 2] = Premultiply(255 - red, alpha);
+                    // Bright colour: invert, then floor the result so a mid-tone cannot come back as
+                    // near-white. The hue survives; the emission does not.
+                    int invertedRed = 255 - red;
+                    int invertedGreen = 255 - green;
+                    int invertedBlue = 255 - blue;
+                    int invertedLuminance = GetLuminance(invertedRed, invertedGreen, invertedBlue);
+                    if (invertedLuminance > InvertedMaxLuminance)
+                    {
+                        int scale = InvertedMaxLuminance * 255 / Math.Max(1, invertedLuminance);
+                        invertedRed = invertedRed * scale / 255;
+                        invertedGreen = invertedGreen * scale / 255;
+                        invertedBlue = invertedBlue * scale / 255;
+                    }
+
+                    pixels[index] = Premultiply(invertedBlue, alpha);
+                    pixels[index + 1] = Premultiply(invertedGreen, alpha);
+                    pixels[index + 2] = Premultiply(invertedRed, alpha);
                 }
             }
 

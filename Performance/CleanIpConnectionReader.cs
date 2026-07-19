@@ -14,8 +14,11 @@ internal sealed class CleanIpConnectionReader : IDisposable
     private const int HourlyRefreshJitterWindowSeconds = 300;
     private const int ScheduledRetrySlotMinutes = 10;
     private const string CleanIpMeUrl = "https://cleanip.io/api/v2/me";
+    private static readonly object SharedSync = new object();
+    private static CleanIpConnectionReader sharedInstance;
     private readonly object sync = new object();
     private readonly Random random = new Random();
+    private readonly bool isShared;
     private CleanIpConnectionSnapshot snapshot = new CleanIpConnectionSnapshot();
     private DateTime lastRefreshUtc;
     private DateTime nextHourlyRefreshLocal;
@@ -32,9 +35,35 @@ internal sealed class CleanIpConnectionReader : IDisposable
     private CleanIpConnectionSnapshot testSnapshot;
 
     public CleanIpConnectionReader()
+        : this(false)
     {
+    }
+
+    private CleanIpConnectionReader(bool isShared)
+    {
+        this.isShared = isShared;
         NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
         NetworkChange.NetworkAvailabilityChanged += OnNetworkAvailabilityChanged;
+    }
+
+    // One reader per process, shared by every window that shows the outbound-IP profile.
+    // The cleanip.io lookup is rate-limited and self-throttled inside this class, so a second
+    // instance would silently double the query rate against that quota. Adding a consumer window
+    // must never cost an extra request; that is the whole reason this is shared rather than owned.
+    public static CleanIpConnectionReader Shared
+    {
+        get
+        {
+            lock (SharedSync)
+            {
+                if (sharedInstance == null)
+                {
+                    sharedInstance = new CleanIpConnectionReader(true);
+                }
+
+                return sharedInstance;
+            }
+        }
     }
 
     public void RequestRefresh()
@@ -820,6 +849,14 @@ internal sealed class CleanIpConnectionReader : IDisposable
 
     public void Dispose()
     {
+        // The shared instance outlives every window that borrows it: render-sample code routinely
+        // constructs and disposes throwaway forms, and tearing the reader down there would leave
+        // the surviving windows with a dead reader.
+        if (this.isShared)
+        {
+            return;
+        }
+
         lock (this.sync)
         {
             if (this.disposed)

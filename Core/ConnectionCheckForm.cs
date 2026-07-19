@@ -25,7 +25,7 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
     {
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
-        this.reader = new CleanIpConnectionReader();
+        this.reader = CleanIpConnectionReader.Shared;
         this.snapshot = new CleanIpConnectionSnapshot();
         ApplicationIcon.ApplyTo(this);
 
@@ -73,7 +73,8 @@ internal sealed partial class ConnectionCheckForm : LayeredWidgetFormBase
         this.hoverTimer.Stop();
         this.hoverTimer.Tick -= OnHoverTimerTick;
         this.hoverTimer.Dispose();
-        this.reader.Dispose();
+        // The reader is the process-wide shared instance (CleanIpConnectionReader.Shared) and is
+        // deliberately not disposed here; the network monitor window reads the same snapshot.
         this.fontCache.Dispose();
         base.OnFormClosed(e);
     }

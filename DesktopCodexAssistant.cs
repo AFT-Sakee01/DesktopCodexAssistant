@@ -184,6 +184,11 @@ internal static class Program
             return RenderSpecBoardSamples(args);
         }
 
+        if (HasArg(args, "--render-guard"))
+        {
+            return RenderGuardBoardSamples(args);
+        }
+
         if (HasArg(args, "--diagnose-idle-cpu"))
         {
             return RunIdleCpuDiagnosisCommand(args);
@@ -727,6 +732,8 @@ internal static class Program
             }
 
             NetworkMonitorReader.RunRollingPingSelfTest();
+            PathPingProbeReader.RunSelfTest();
+            FixedPingProbeReader.RunSelfTest();
             CloudEndpointProbe.RunSelfTest();
             ClaudeRadarReader.RunSelfTest();
             ClaudeRadarSnapshotScheduler.RunSelfTest();
@@ -740,6 +747,9 @@ internal static class Program
             RadarRuntimeDiagnostics.RunSelfTest();
             CodexTaskMonitorReader.RunSelfTest();
             CodexTaskPresentation.RunSelfTest();
+            GuardRuntime.RunSelfTest();
+            GuardBoardForm.RunSelfTest();
+            OperationForm.RunLeftDockMutualExclusionSelfTest();
             return 0;
         }
         catch (Exception ex)
@@ -1030,6 +1040,7 @@ internal static class Program
 
             NetworkMonitorForm.RenderVariantSamples(outputDir);
             NetworkMonitorForm.RenderCurrentSample(outputDir);
+            NetworkMonitorForm.RenderDockedSamples(outputDir);
             if (HasArg(args, "--scale-proof"))
             {
                 string summary = NetworkMonitorForm.RenderScaleOverrideProof(outputDir);
@@ -1064,10 +1075,10 @@ internal static class Program
                 outputDir = ".";
             }
 
-            if (HasArg(args, "--wide-options"))
+            if (HasArg(args, "--scenarios"))
             {
-                PowerThermalForm.RenderWideBarOptionSamples(outputDir);
-                Console.WriteLine("Rendered PowerThermal wide-bar option samples to " + Path.GetFullPath(outputDir));
+                PowerThermalForm.RenderWideBarScenarioSamples(outputDir);
+                Console.WriteLine("Rendered PowerThermal alert-scenario samples to " + Path.GetFullPath(outputDir));
                 return 0;
             }
 
@@ -1104,7 +1115,26 @@ internal static class Program
             }
             else
             {
-                WidgetForm.RenderVariantSamples(outputDir);
+                if (HasArg(args, "--integrated"))
+            {
+                WidgetForm.RenderHiddenModeProof = HasArg(args, "--hidden");
+                int previewHeight = 408;
+                string heightArg = GetStringArg(args, "--height");
+                if (!string.IsNullOrEmpty(heightArg))
+                {
+                    int parsed;
+                    if (int.TryParse(heightArg, out parsed) && parsed > 0)
+                    {
+                        previewHeight = parsed;
+                    }
+                }
+
+                WidgetForm.RenderIntegratedPreview(outputDir, previewHeight);
+                Console.WriteLine("Rendered integrated widget preview to " + Path.GetFullPath(outputDir));
+                return 0;
+            }
+
+            WidgetForm.RenderVariantSamples(outputDir);
                 WidgetForm.RenderCurrentSample(outputDir);
             }
             Console.WriteLine("Rendered main widget variant samples to " + Path.GetFullPath(outputDir));
@@ -1135,6 +1165,40 @@ internal static class Program
             OperationForm.RenderVariantSamples(outputDir);
             OperationForm.RenderCurrentSample(outputDir);
             Console.WriteLine("Rendered operation panel variant samples to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RenderGuardBoardSamples(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir))
+            {
+                outputDir = ".";
+            }
+
+            string mode = GetStringArg(args, "--render-guard");
+            bool sample = string.IsNullOrEmpty(mode) || string.Equals(mode, "sample", StringComparison.OrdinalIgnoreCase);
+            bool current = string.IsNullOrEmpty(mode) || string.Equals(mode, "current", StringComparison.OrdinalIgnoreCase);
+            if (!sample && !current)
+            {
+                throw new ArgumentException("--render-guard mode must be sample or current.");
+            }
+
+            GuardBoardForm.RenderSamples(outputDir, sample, current);
+            Console.WriteLine("Rendered guard board samples to " + Path.GetFullPath(outputDir));
             return 0;
         }
         catch (Exception ex)

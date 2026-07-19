@@ -383,6 +383,72 @@ internal static class NativeMethods
         }
     }
 
+    [Flags]
+    public enum ExecutionState : uint
+    {
+        None = 0x00000000,
+        SystemRequired = 0x00000001,
+        DisplayRequired = 0x00000002,
+        Continuous = 0x80000000
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern ExecutionState SetThreadExecutionState(ExecutionState esFlags);
+
+    [DllImport("powrprof.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetSuspendState(
+        [MarshalAs(UnmanagedType.Bool)] bool hibernate,
+        [MarshalAs(UnmanagedType.Bool)] bool forceCritical,
+        [MarshalAs(UnmanagedType.Bool)] bool disableWakeEvent);
+
+    // The execution-state flags are thread affine: Windows drops them when the calling thread
+    // exits, so every call must originate from the same long-lived thread (the UI thread) or the
+    // guard silently lapses. GuardRuntime enforces that; do not call this from a Task.Run body.
+    public static bool TrySetThreadExecutionState(ExecutionState state, out string detail)
+    {
+        detail = string.Empty;
+        try
+        {
+            ExecutionState previous = SetThreadExecutionState(state);
+            if (previous == ExecutionState.None)
+            {
+                detail = "SetThreadExecutionState returned 0, win32=" + Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            detail = ex.GetType().Name + ": " + ex.Message;
+            return false;
+        }
+    }
+
+    // Requests a normal (S3/Modern Standby) sleep. hibernate=false keeps this a sleep rather than
+    // a hibernate, and forceCritical=false lets applications veto, which is the polite behaviour
+    // the sleep guard wants when it gives up after a sustained outage.
+    public static bool TryRequestSystemSleep(out string detail)
+    {
+        detail = string.Empty;
+        try
+        {
+            if (SetSuspendState(false, false, false))
+            {
+                return true;
+            }
+
+            detail = "SetSuspendState failed, win32=" + Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            detail = ex.GetType().Name + ": " + ex.Message;
+            return false;
+        }
+    }
+
     public static bool TryRegisterEffectivePowerModeNotification(
         EffectivePowerModeCallback callback,
         out IntPtr registrationHandle)

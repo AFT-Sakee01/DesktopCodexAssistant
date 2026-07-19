@@ -316,9 +316,14 @@ internal sealed class GfwProbeSnapshot
 
     private static CloudEndpointSnapshot[] CloneCloudEndpoints(CloudEndpointSnapshot[] endpoints)
     {
-        if (endpoints == null || endpoints.Length == 0)
+        if (endpoints == null)
         {
             return CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Unknown);
+        }
+
+        if (endpoints.Length == 0)
+        {
+            return new CloudEndpointSnapshot[0];
         }
 
         CloudEndpointSnapshot[] clone = new CloudEndpointSnapshot[endpoints.Length];
@@ -378,6 +383,210 @@ internal sealed class PingRollingSnapshot
     }
 }
 
+internal enum PathPingHopSeverity
+{
+    None,
+    Normal,
+    RateLimited,
+    Loss,
+    Unresponsive
+}
+
+// Why the path is unhealthy, not merely which hop reported loss. A router that rate-limits
+// direct ICMP to itself is the single most common false positive in traceroute-style tools,
+// so it gets its own verdict distinct from real forwarding loss.
+internal enum PathPingBlame
+{
+    None,
+    NodeRateLimit,
+    LinkLoss,
+    Unreachable,
+    IcmpUnavailable
+}
+
+internal sealed class PathPingHopSnapshot
+{
+    public int HopNumber { get; set; }
+    public string Address { get; set; }
+    public bool Responding { get; set; }
+    public bool IsGateway { get; set; }
+    public bool IsTarget { get; set; }
+    public double AvgLatencyMs { get; set; }
+    public double LossPercent { get; set; }
+    public int SampleCount { get; set; }
+    // Consecutive silent hops collapse into one row; 1 means the row stands for a single hop.
+    public int MergedHopCount { get; set; }
+    public PathPingHopSeverity Severity { get; set; }
+
+    public PathPingHopSnapshot()
+    {
+        this.Address = string.Empty;
+        this.MergedHopCount = 1;
+        this.Severity = PathPingHopSeverity.None;
+    }
+
+    public PathPingHopSnapshot Clone()
+    {
+        return new PathPingHopSnapshot
+        {
+            HopNumber = this.HopNumber,
+            Address = this.Address,
+            Responding = this.Responding,
+            IsGateway = this.IsGateway,
+            IsTarget = this.IsTarget,
+            AvgLatencyMs = this.AvgLatencyMs,
+            LossPercent = this.LossPercent,
+            SampleCount = this.SampleCount,
+            MergedHopCount = this.MergedHopCount,
+            Severity = this.Severity
+        };
+    }
+}
+
+internal sealed class PathPingSnapshot
+{
+    public string TargetLabel { get; set; }
+    public bool PathKnown { get; set; }
+    public bool DiscoveryInProgress { get; set; }
+    public int DiscoveryCurrentHop { get; set; }
+    public int DiscoveryMaxHops { get; set; }
+    // True while a rediscovery is in flight: hops still hold the previous path so the UI
+    // keeps showing data instead of blanking out for the duration of the trace.
+    public bool Stale { get; set; }
+    public DateTime LastTraceLocal { get; set; }
+    public bool LastTraceKnown { get; set; }
+    public int RoundCount { get; set; }
+    public PathPingHopSnapshot[] Hops { get; set; }
+    public double EndToEndLatencyMs { get; set; }
+    public double EndToEndLossPercent { get; set; }
+    public bool EndToEndKnown { get; set; }
+    public PathPingBlame Blame { get; set; }
+    public int BlameHopNumber { get; set; }
+    public string BlameText { get; set; }
+    public bool IcmpUnavailable { get; set; }
+
+    public PathPingSnapshot()
+    {
+        this.TargetLabel = string.Empty;
+        this.LastTraceLocal = DateTime.MinValue;
+        this.Hops = new PathPingHopSnapshot[0];
+        this.Blame = PathPingBlame.None;
+        this.BlameText = string.Empty;
+    }
+
+    public PathPingSnapshot Clone()
+    {
+        return new PathPingSnapshot
+        {
+            TargetLabel = this.TargetLabel,
+            PathKnown = this.PathKnown,
+            DiscoveryInProgress = this.DiscoveryInProgress,
+            DiscoveryCurrentHop = this.DiscoveryCurrentHop,
+            DiscoveryMaxHops = this.DiscoveryMaxHops,
+            Stale = this.Stale,
+            LastTraceLocal = this.LastTraceLocal,
+            LastTraceKnown = this.LastTraceKnown,
+            RoundCount = this.RoundCount,
+            Hops = CloneHops(this.Hops),
+            EndToEndLatencyMs = this.EndToEndLatencyMs,
+            EndToEndLossPercent = this.EndToEndLossPercent,
+            EndToEndKnown = this.EndToEndKnown,
+            Blame = this.Blame,
+            BlameHopNumber = this.BlameHopNumber,
+            BlameText = this.BlameText,
+            IcmpUnavailable = this.IcmpUnavailable
+        };
+    }
+
+    private static PathPingHopSnapshot[] CloneHops(PathPingHopSnapshot[] hops)
+    {
+        if (hops == null || hops.Length == 0)
+        {
+            return new PathPingHopSnapshot[0];
+        }
+
+        PathPingHopSnapshot[] clone = new PathPingHopSnapshot[hops.Length];
+        for (int i = 0; i < hops.Length; i++)
+        {
+            clone[i] = hops[i] == null ? new PathPingHopSnapshot() : hops[i].Clone();
+        }
+
+        return clone;
+    }
+}
+
+internal enum FixedPingStatus
+{
+    Unknown,
+    Checking,
+    Normal,
+    Slow,
+    Down
+}
+
+internal sealed class FixedPingTargetSnapshot
+{
+    public string Key { get; set; }
+    public string DisplayName { get; set; }
+    public string Target { get; set; }
+    public FixedPingStatus Status { get; set; }
+    public int LatencyMs { get; set; }
+    public string Reason { get; set; }
+
+    public FixedPingTargetSnapshot()
+    {
+        this.Key = string.Empty;
+        this.DisplayName = string.Empty;
+        this.Target = string.Empty;
+        this.Reason = string.Empty;
+    }
+
+    public FixedPingTargetSnapshot Clone()
+    {
+        return new FixedPingTargetSnapshot
+        {
+            Key = this.Key,
+            DisplayName = this.DisplayName,
+            Target = this.Target,
+            Status = this.Status,
+            LatencyMs = this.LatencyMs,
+            Reason = this.Reason
+        };
+    }
+}
+
+internal sealed class FixedPingSnapshot
+{
+    public bool Running { get; set; }
+    public DateTime CheckedAtLocal { get; set; }
+    public bool CheckedAtKnown { get; set; }
+    public FixedPingTargetSnapshot[] Targets { get; set; }
+
+    public FixedPingSnapshot()
+    {
+        this.CheckedAtLocal = DateTime.MinValue;
+        this.Targets = new FixedPingTargetSnapshot[0];
+    }
+
+    public FixedPingSnapshot Clone()
+    {
+        FixedPingTargetSnapshot[] source = this.Targets ?? new FixedPingTargetSnapshot[0];
+        FixedPingTargetSnapshot[] targets = new FixedPingTargetSnapshot[source.Length];
+        for (int i = 0; i < source.Length; i++)
+        {
+            targets[i] = source[i] == null ? new FixedPingTargetSnapshot() : source[i].Clone();
+        }
+
+        return new FixedPingSnapshot
+        {
+            Running = this.Running,
+            CheckedAtLocal = this.CheckedAtLocal,
+            CheckedAtKnown = this.CheckedAtKnown,
+            Targets = targets
+        };
+    }
+}
+
 // Immutable-by-convention transfer object. NetworkMonitorReader returns a deep clone
 // and NetworkMonitorForm treats the instance as read-only until the next timer tick.
 internal sealed class NetworkMonitorSnapshot
@@ -413,6 +622,8 @@ internal sealed class NetworkMonitorSnapshot
     public string LocalNetworkDegradedReason { get; set; }
     public GfwProbeSnapshot GfwProbe { get; set; }
     public PingRollingSnapshot PingRolling { get; set; }
+    public PathPingSnapshot PathPing { get; set; }
+    public FixedPingSnapshot FixedPing { get; set; }
     public string LastError { get; set; }
 
     public NetworkMonitorSnapshot()
@@ -436,6 +647,8 @@ internal sealed class NetworkMonitorSnapshot
         this.LocalNetworkDegradedReason = string.Empty;
         this.GfwProbe = new GfwProbeSnapshot();
         this.PingRolling = new PingRollingSnapshot();
+        this.PathPing = new PathPingSnapshot();
+        this.FixedPing = new FixedPingSnapshot();
         this.LastError = string.Empty;
     }
 
@@ -474,6 +687,8 @@ internal sealed class NetworkMonitorSnapshot
             LocalNetworkDegradedReason = this.LocalNetworkDegradedReason,
             GfwProbe = this.GfwProbe == null ? new GfwProbeSnapshot() : this.GfwProbe.Clone(),
             PingRolling = this.PingRolling == null ? new PingRollingSnapshot() : this.PingRolling.Clone(),
+            PathPing = this.PathPing == null ? new PathPingSnapshot() : this.PathPing.Clone(),
+            FixedPing = this.FixedPing == null ? new FixedPingSnapshot() : this.FixedPing.Clone(),
             LastError = this.LastError
         };
     }
@@ -644,6 +859,12 @@ internal sealed class PerfSnapshot
     public double MemoryPercent { get; set; }
     public double MemoryHardwareReservedGb { get; set; }
     public double MemoryHardwareReservedPercent { get; set; }
+    // Bytes actually written to pagefile.sys, not commit charge. Commit charge counts memory the
+    // system has promised (including pages never touched), so it reads far above physical usage and
+    // was routinely misread as "virtual memory is eating 35 GB". This is the figure that says how
+    // much really spilled to disk.
+    public double PageFileUsedGb { get; set; }
+    public double PageFileTotalGb { get; set; }
     public string MemoryManufacturer { get; set; }
     public int MemorySpeedMtps { get; set; }
     public string DiskName { get; set; }

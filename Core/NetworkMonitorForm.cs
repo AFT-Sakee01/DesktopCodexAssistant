@@ -71,7 +71,17 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         base.OnShown(e);
         ApplyRuntimeSettings(this.CurrentSettings);
         this.snapshot = this.reader.GetSnapshot(this.CurrentSettings);
-        PositionNetworkMonitorWindow();
+        if (this.IsLeftDocked)
+        {
+            // Docked, the panel is a transient surface owned by its tab: start collapsed and let
+            // the hover handler bring it up.
+            HideDockedPanel();
+        }
+        else
+        {
+            PositionNetworkMonitorWindow();
+        }
+
         this.timer.Start();
     }
 
@@ -83,6 +93,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         this.hoverTimer.Stop();
         this.hoverTimer.Tick -= OnHoverTimerTick;
         this.hoverTimer.Dispose();
+        DisposeDockTab();
         this.reader.Dispose();
         DisposeRenderBuffer();
         DisposeFontCache();
@@ -96,7 +107,10 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         // prevents stale dimensions and unbounded font growth during repeated resizing.
         DisposeRenderBuffer();
         DisposeFontCache();
-        using (GraphicsPath path = RoundedRectangle(new RectangleF(0, 0, this.Width, this.Height), S(12)))
+        // Docked corners match SpecBoardForm.OnSizeChanged; the floating strip keeps its own S(12).
+        using (GraphicsPath path = RoundedRectangle(
+            new RectangleF(0, 0, this.Width, this.Height),
+            this.IsLeftDocked ? Math.Max(3, S(10)) : S(12)))
         {
             Region oldRegion = this.Region;
             this.Region = new Region(path);
@@ -124,13 +138,36 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     public void ApplyRuntimeSettings(WidgetSettings settings)
     {
+        bool wasDocked = this.dockTab != null;
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
-        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MinNetworkMonitorHeight));
-        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorHeight));
+        ApplyDockedSizeBounds();
         ApplyPerformanceTimerIntervals();
         this.snapshot = this.reader.GetSnapshot(this.CurrentSettings);
+        SyncLeftDockTab();
+        // The docked panel is a board, not the legacy always-visible network strip. Clear any
+        // transparent-window style left behind by floating mode and stop its hover state before a
+        // collapsed-board early return can preserve those stale policies.
+        ApplyClickThroughStyle();
+        UpdateHoverAnimationTimer();
+        if (this.IsLeftDocked && !this.Visible)
+        {
+            // Collapsed docked panels have nothing to reposition or repaint; the tab owns display.
+            this.reader.SetPathPingSamplingActive(false);
+            InvalidateLayeredRenderBuffer();
+            return;
+        }
+
+        if (!this.IsLeftDocked && wasDocked)
+        {
+            // Leaving dock mode: the window becomes permanently visible again at its own anchor.
+            this.reader.SetPathPingSamplingActive(true);
+            if (!this.Visible && !this.hiddenForFullscreen)
+            {
+                Show();
+            }
+        }
 
         Size desiredSize = GetDesiredSize();
         if (this.Size != desiredSize)
@@ -138,14 +175,12 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             this.Size = desiredSize;
         }
 
-        bool shouldBeTopMost = this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
+        bool shouldBeTopMost = ShouldUseTopMostPlacement();
         if (this.TopMost != shouldBeTopMost)
         {
             this.TopMost = shouldBeTopMost;
         }
 
-        ApplyClickThroughStyle();
-        UpdateHoverAnimationTimer();
         NativeMethods.SetWindowPos(
             this.Handle,
             GetLayeredWidgetInsertAfter(shouldBeTopMost, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
@@ -163,6 +198,22 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     public void SetHiddenForFullscreen(bool hidden)
     {
+        // Docked, the window's own visibility is driven by tab hover, so the early-out below
+        // (which assumes visible == not hidden) does not describe a valid state; the tab is what
+        // has to disappear for fullscreen.
+        if (this.IsLeftDocked)
+        {
+            if (this.hiddenForFullscreen == hidden)
+            {
+                return;
+            }
+
+            this.hiddenForFullscreen = hidden;
+            SetDockTabHiddenForFullscreen(hidden);
+            UpdateHoverAnimationTimer();
+            return;
+        }
+
         if (this.hiddenForFullscreen == hidden &&
             ((hidden && !this.Visible) || (!hidden && this.Visible)))
         {
@@ -194,6 +245,10 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     public void ForceRefresh()
     {
         this.reader.RequestRefresh();
+        // The docked network board owns the visible Clean IP profile now that the standalone
+        // connection window is hidden. Keep both data sources behind this one user action while
+        // preserving each reader's existing single-flight and cooldown rules.
+        CleanIpConnectionReader.Shared.RequestRefresh();
         OnTimerTick(this, EventArgs.Empty);
     }
 
@@ -227,6 +282,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             }
 
             this.snapshot = nextSnapshot;
+            RefreshCleanIpSnapshot();
             bool alertChanged = AdvanceCloudEndpointAlertRotation();
             Size desiredSize = GetDesiredSize();
             bool sizeChanged = false;
@@ -294,6 +350,14 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private void OnHoverTimerTick(object sender, EventArgs e)
     {
+        if (this.IsLeftDocked)
+        {
+            // Defensive guard for a mode change delivered between timer messages. Docked boards
+            // never run the floating window's hover/click-through polling loop.
+            UpdateHoverAnimationTimer();
+            return;
+        }
+
         bool animationActive = ProcessInteractionTick();
         int desiredInterval = animationActive
             ? WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode)
@@ -306,6 +370,11 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private bool ProcessInteractionTick()
     {
+        if (this.IsLeftDocked)
+        {
+            return false;
+        }
+
         ApplyClickThroughStyle();
         bool opacityChanged = UpdateHoverOpacityAnimation();
         bool hoverTarget = IsHoverOpacityTargetActive();
@@ -342,7 +411,8 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     public bool ProcessSharedInteractionTick()
     {
-        if (!this.sharedInteractionPolling ||
+        if (this.IsLeftDocked ||
+            !this.sharedInteractionPolling ||
             this.hiddenForFullscreen ||
             (!IsHoverOpacityRuntimeEnabled() && !NeedsClickThroughPolling()))
         {
@@ -354,6 +424,29 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private void UpdateHoverAnimationTimer()
     {
+        if (this.IsLeftDocked)
+        {
+            // SpecBoard and CodexTask own no floating hover state. Reset all legacy state together
+            // so switching modes cannot leave the docked bitmap inverted, faded or timer-driven.
+            if (this.hoverTimer.Enabled)
+            {
+                this.hoverTimer.Stop();
+            }
+
+            bool needsNormalRepaint = this.hoverOpacityProgress > 0.0;
+            this.hoverOpacityProgress = 0.0;
+            this.hoverOpacityLastUtc = DateTime.UtcNow;
+            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
+            this.hoverOpacityDelayState.Reset();
+            if (needsNormalRepaint && this.Visible)
+            {
+                InvalidateLayeredRenderBuffer();
+                RenderLayeredWindow();
+            }
+
+            return;
+        }
+
         if (!this.hiddenForFullscreen &&
             (IsHoverOpacityRuntimeEnabled() || NeedsClickThroughPolling()))
         {
@@ -409,6 +502,11 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private bool IsHoverOpacityTargetActive()
     {
+        if (this.IsLeftDocked)
+        {
+            return false;
+        }
+
         return HoverInteractionPolicy.IsHoverOpacityTargetActive(
             this.CurrentSettings,
             this.Bounds,
@@ -421,7 +519,8 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private bool IsHoverOpacityRuntimeEnabled()
     {
-        return this.CurrentSettings.HoverOpacityEnabled || this.CurrentSettings.ForceHoverOpacityActive;
+        return !this.IsLeftDocked &&
+            (this.CurrentSettings.HoverOpacityEnabled || this.CurrentSettings.ForceHoverOpacityActive);
     }
 
     private void ApplyClickThroughStyle()
@@ -459,6 +558,13 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private bool ShouldClickThroughNow()
     {
+        if (this.IsLeftDocked)
+        {
+            // The board must receive the same mouse input as SpecBoard/CodexTask regardless of the
+            // global floating-widget click-through setting.
+            return false;
+        }
+
         if (NativeMethods.IsClickThroughModifierDown())
         {
             return false;
@@ -471,15 +577,34 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private bool NeedsClickThroughPolling()
     {
-        return WidgetSettings.ShouldEnableClickThrough(
+        return !this.IsLeftDocked && WidgetSettings.ShouldEnableClickThrough(
             this.CurrentSettings.ClickThroughMode,
             this.CurrentSettings.VisibilityMode);
+    }
+
+    private bool ShouldUseTopMostPlacement()
+    {
+        // Both sibling boards are shown in the protected topmost group. DesktopOnly remains a
+        // floating-strip policy and must not make a hover-expanded dock board appear behind apps.
+        return this.IsLeftDocked || this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
     }
 
     private void PositionNetworkMonitorWindow()
     {
         if (this.hiddenForFullscreen)
         {
+            return;
+        }
+
+        if (this.IsLeftDocked)
+        {
+            Size dockedSize = GetDockedSize();
+            if (this.Size != dockedSize)
+            {
+                this.Size = dockedSize;
+            }
+
+            PositionAtLeftDock();
             return;
         }
 
@@ -523,6 +648,11 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private Size GetDesiredSize()
     {
+        if (this.IsLeftDocked)
+        {
+            return GetDockedSize();
+        }
+
         int width = GetEffectiveNetworkMonitorWidth();
         return ScaleWindowSize(new Size(width, this.CurrentSettings.NetworkMonitorHeight));
     }
@@ -646,6 +776,15 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private void DrawNetworkMonitorWindow(Graphics g)
     {
+        // Docked mode paints the SpecBoard-family panel directly: no classic background wash, no
+        // fullscreen red cross (the dock tab's colour carries that state) and no hover opacity
+        // layer — the other two docked boards have none of those either.
+        if (this.IsLeftDocked)
+        {
+            DrawContentDocked(g);
+            return;
+        }
+
         DrawBackground(g);
         DrawNetworkProblemMark(g);
         DrawContentLayer(g);
@@ -1323,7 +1462,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     private CloudEndpointSnapshot[] GetDisplayCloudEndpoints()
     {
         GfwProbeSnapshot gfw = this.snapshot == null ? null : this.snapshot.GfwProbe;
-        if (gfw == null || gfw.CloudEndpoints == null || gfw.CloudEndpoints.Length == 0)
+        if (gfw == null || gfw.CloudEndpoints == null)
         {
             return CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Unknown);
         }
@@ -2347,6 +2486,25 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return GetDisplayAccessState(this.snapshot);
     }
 
+    // Connectivity as the guard board's offline auto-sleep needs it: a definite true/false only when
+    // this window has actually proven reachability one way or the other. Unknown and AdapterMissing
+    // both return null so the guard never starts its countdown on an inconclusive reading — the
+    // consequence of a false "offline" here is putting the machine to sleep under the user.
+    internal bool? GetGuardOnlineState()
+    {
+        switch (GetDisplayAccessState())
+        {
+            case NetworkAccessState.Online:
+                return true;
+
+            case NetworkAccessState.Offline:
+                return false;
+
+            default:
+                return null;
+        }
+    }
+
     private static NetworkAccessState GetDisplayAccessState(NetworkMonitorSnapshot snapshot)
     {
         if (snapshot == null)
@@ -2878,7 +3036,9 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             string.Equals(left.ConnectivityTarget, right.ConnectivityTarget, StringComparison.Ordinal) &&
             HasSameWifiData(left.WifiDetails, right.WifiDetails) &&
             HasSameGfwData(left.GfwProbe, right.GfwProbe) &&
-            HasSamePingRollingData(left.PingRolling, right.PingRolling);
+            HasSamePingRollingData(left.PingRolling, right.PingRolling) &&
+            HasSamePathPingData(left.PathPing, right.PathPing) &&
+            HasSameFixedPingData(left.FixedPing, right.FixedPing);
     }
 
     private static bool HasSamePingRollingData(PingRollingSnapshot left, PingRollingSnapshot right)
@@ -2905,6 +3065,116 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             Math.Abs(left.JitterMs - right.JitterMs) < 0.5 &&
             string.Equals(left.ActiveProfile, right.ActiveProfile, StringComparison.Ordinal) &&
             string.Equals(left.DiagnosisText, right.DiagnosisText, StringComparison.Ordinal);
+    }
+
+    private static bool HasSamePathPingData(PathPingSnapshot left, PathPingSnapshot right)
+    {
+        if (ReferenceEquals(left, right))
+        {
+            return true;
+        }
+
+        if (left == null || right == null)
+        {
+            return false;
+        }
+
+        if (left.PathKnown != right.PathKnown ||
+            left.DiscoveryInProgress != right.DiscoveryInProgress ||
+            left.DiscoveryCurrentHop != right.DiscoveryCurrentHop ||
+            left.DiscoveryMaxHops != right.DiscoveryMaxHops ||
+            left.Stale != right.Stale ||
+            left.LastTraceKnown != right.LastTraceKnown ||
+            left.LastTraceLocal != right.LastTraceLocal ||
+            left.RoundCount != right.RoundCount ||
+            left.EndToEndKnown != right.EndToEndKnown ||
+            left.Blame != right.Blame ||
+            left.BlameHopNumber != right.BlameHopNumber ||
+            left.IcmpUnavailable != right.IcmpUnavailable ||
+            Math.Abs(left.EndToEndLatencyMs - right.EndToEndLatencyMs) >= 0.5 ||
+            Math.Abs(left.EndToEndLossPercent - right.EndToEndLossPercent) >= 0.05 ||
+            !string.Equals(left.TargetLabel, right.TargetLabel, StringComparison.Ordinal) ||
+            !string.Equals(left.BlameText, right.BlameText, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        PathPingHopSnapshot[] leftHops = left.Hops ?? new PathPingHopSnapshot[0];
+        PathPingHopSnapshot[] rightHops = right.Hops ?? new PathPingHopSnapshot[0];
+        if (leftHops.Length != rightHops.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < leftHops.Length; i++)
+        {
+            PathPingHopSnapshot leftHop = leftHops[i];
+            PathPingHopSnapshot rightHop = rightHops[i];
+            if (ReferenceEquals(leftHop, rightHop))
+            {
+                continue;
+            }
+
+            if (leftHop == null || rightHop == null ||
+                leftHop.HopNumber != rightHop.HopNumber ||
+                leftHop.Responding != rightHop.Responding ||
+                leftHop.IsGateway != rightHop.IsGateway ||
+                leftHop.IsTarget != rightHop.IsTarget ||
+                leftHop.SampleCount != rightHop.SampleCount ||
+                leftHop.MergedHopCount != rightHop.MergedHopCount ||
+                leftHop.Severity != rightHop.Severity ||
+                Math.Abs(leftHop.AvgLatencyMs - rightHop.AvgLatencyMs) >= 0.5 ||
+                Math.Abs(leftHop.LossPercent - rightHop.LossPercent) >= 0.05 ||
+                !string.Equals(leftHop.Address, rightHop.Address, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool HasSameFixedPingData(FixedPingSnapshot left, FixedPingSnapshot right)
+    {
+        if (ReferenceEquals(left, right))
+        {
+            return true;
+        }
+
+        if (left == null || right == null)
+        {
+            return false;
+        }
+
+        FixedPingTargetSnapshot[] leftTargets = left.Targets ?? new FixedPingTargetSnapshot[0];
+        FixedPingTargetSnapshot[] rightTargets = right.Targets ?? new FixedPingTargetSnapshot[0];
+        if (left.Running != right.Running || leftTargets.Length != rightTargets.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < leftTargets.Length; i++)
+        {
+            FixedPingTargetSnapshot leftTarget = leftTargets[i];
+            FixedPingTargetSnapshot rightTarget = rightTargets[i];
+            if (ReferenceEquals(leftTarget, rightTarget))
+            {
+                continue;
+            }
+
+            if (leftTarget == null || rightTarget == null ||
+                leftTarget.Status != rightTarget.Status ||
+                leftTarget.LatencyMs != rightTarget.LatencyMs ||
+                !string.Equals(leftTarget.Key, rightTarget.Key, StringComparison.Ordinal) ||
+                !string.Equals(leftTarget.DisplayName, rightTarget.DisplayName, StringComparison.Ordinal) ||
+                !string.Equals(leftTarget.Target, rightTarget.Target, StringComparison.Ordinal) ||
+                !string.Equals(leftTarget.Reason, rightTarget.Reason, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool HasSameDnsServerData(DnsServerSnapshot[] left, DnsServerSnapshot[] right)
@@ -3009,9 +3279,11 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             if (leftEndpoint == null || rightEndpoint == null ||
                 leftEndpoint.Domestic != rightEndpoint.Domestic ||
                 leftEndpoint.Status != rightEndpoint.Status ||
+                leftEndpoint.LatencyMs != rightEndpoint.LatencyMs ||
                 !string.Equals(leftEndpoint.Key, rightEndpoint.Key, StringComparison.Ordinal) ||
                 !string.Equals(leftEndpoint.ShortLabel, rightEndpoint.ShortLabel, StringComparison.Ordinal) ||
                 !string.Equals(leftEndpoint.DisplayName, rightEndpoint.DisplayName, StringComparison.Ordinal) ||
+                !string.Equals(leftEndpoint.Reason, rightEndpoint.Reason, StringComparison.Ordinal) ||
                 !string.Equals(leftEndpoint.AlertReason, rightEndpoint.AlertReason, StringComparison.Ordinal) ||
                 !string.Equals(leftEndpoint.AlertName, rightEndpoint.AlertName, StringComparison.Ordinal))
             {
@@ -3024,7 +3296,10 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private bool IsBurnInColorProtectionActive()
     {
-        return BurnInProtection.ShouldApplyHiddenModeColorProtection(
+        // Hidden-mode colour inversion belongs to the floating hover-opacity feature. Applying it
+        // to a hover-summoned board produces the reported inverted/vanishing panel and differs from
+        // both SpecBoard and CodexTask.
+        return !this.IsLeftDocked && BurnInProtection.ShouldApplyHiddenModeColorProtection(
             this.CurrentSettings,
             IsHoverOpacityTargetActive());
     }
@@ -3092,6 +3367,9 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         }
 
         this.fontCache.Clear();
+        // UiFontCache.Dispose clears and stays reusable, matching how SpecBoardForm recycles its
+        // cache across size changes.
+        this.dockFonts.Dispose();
     }
 
     private int GetBackgroundOpacityAlpha()
@@ -3104,19 +3382,34 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
     }
 
+    // Docked, the panel is a member of the left-dock board family and must present exactly like
+    // its two siblings, so it follows the Spec board's transparency/scale overrides (the dock tab
+    // already does) instead of the network window's own knobs.
     protected override int WindowTransparencyOverridePercent
     {
-        get { return this.CurrentSettings.NetworkMonitorTransparencyOverridePercent; }
+        get
+        {
+            return this.IsLeftDocked
+                ? this.CurrentSettings.SpecBoardTransparencyOverridePercent
+                : this.CurrentSettings.NetworkMonitorTransparencyOverridePercent;
+        }
     }
 
     protected override int WindowScaleOverridePercent
     {
-        get { return this.CurrentSettings.NetworkMonitorScaleOverridePercent; }
+        get
+        {
+            return this.IsLeftDocked
+                ? this.CurrentSettings.SpecBoardScaleOverridePercent
+                : this.CurrentSettings.NetworkMonitorScaleOverridePercent;
+        }
     }
 
     protected override int ApplyHoverAlpha(int alpha)
     {
-        return ApplyHoverTransparencyTarget(alpha);
+        // The hover fade belongs to the always-visible floating strip; a hover-summoned docked
+        // panel fading because it is being hovered would be self-defeating.
+        return this.IsLeftDocked ? alpha : ApplyHoverTransparencyTarget(alpha);
     }
 
     private int ApplyHoverTransparencyTarget(int alpha)
@@ -3379,6 +3672,141 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         }
 
         RunClassicStripLayoutSelfTest();
+        RunDockedLayoutSelfTest();
+    }
+
+    // Docked mode has a different size contract from the floating strip: it follows the Spec board
+    // so the three boards in the left-edge queue expand to the same footprint, and the classic
+    // 300px height cap must not clamp it.
+    private static void RunDockedLayoutSelfTest()
+    {
+        Rectangle footer = new Rectangle(10, 364, 628, 26);
+        DockedFooterLayout footerLayout = ComputeDockedFooterLayout(footer, 24.0f, 24.0f, 42, 14, 4, 5);
+        if (footerLayout.RefreshAction.Left != footer.Left ||
+            footerLayout.RefreshAction.Width != 42 ||
+            footerLayout.CloseAction.Left != footerLayout.RefreshAction.Right + 4 ||
+            footerLayout.CloseAction.Width != 42 ||
+            footerLayout.RecentError.Left != footerLayout.CloseAction.Right + 5 ||
+            footerLayout.RecentError.Width <= footerLayout.Trace.Width ||
+            footerLayout.RecentError.Right != footerLayout.Trace.Left ||
+            footerLayout.Trace.Right != footer.Right)
+        {
+            throw new InvalidOperationException("Network monitor docked self-test: footer refresh/close/error/trace order is invalid.");
+        }
+
+        Point refreshCenter = new Point(
+            footerLayout.RefreshAction.Left + footerLayout.RefreshAction.Width / 2,
+            footerLayout.RefreshAction.Top + footerLayout.RefreshAction.Height / 2);
+        Point closeCenter = new Point(
+            footerLayout.CloseAction.Left + footerLayout.CloseAction.Width / 2,
+            footerLayout.CloseAction.Top + footerLayout.CloseAction.Height / 2);
+        if (!ShouldHandleDockedFooterActionClick(true, true, MouseButtons.Left, refreshCenter, footerLayout.RefreshAction) ||
+            !ShouldHandleDockedFooterActionClick(true, true, MouseButtons.Left, closeCenter, footerLayout.CloseAction) ||
+            ShouldHandleDockedFooterActionClick(true, true, MouseButtons.Right, refreshCenter, footerLayout.RefreshAction) ||
+            ShouldHandleDockedFooterActionClick(false, true, MouseButtons.Left, refreshCenter, footerLayout.RefreshAction) ||
+            ShouldHandleDockedFooterActionClick(true, true, MouseButtons.Left, footerLayout.RecentError.Location, footerLayout.RefreshAction) ||
+            ShouldHandleDockedFooterActionClick(true, true, MouseButtons.Left, footerLayout.RecentError.Location, footerLayout.CloseAction))
+        {
+            throw new InvalidOperationException("Network monitor docked self-test: footer action hit policy is invalid.");
+        }
+
+        DockedFooterLayout narrowFooter = ComputeDockedFooterLayout(new Rectangle(10, 364, 220, 26), 24.0f, 24.0f, 42, 14, 4, 5);
+        if (narrowFooter.RecentError.Width <= 0 ||
+            narrowFooter.Trace.Width <= 0 ||
+            narrowFooter.Trace.Right != 230)
+        {
+            throw new InvalidOperationException("Network monitor docked self-test: narrow footer must retain error and trace slots.");
+        }
+
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.NetworkMonitorLeftDockEnabled = true;
+        settings.SpecBoardWidth = 648;
+        settings.SpecBoardHeight = 400;
+        // Reproduce the user's 200%-DPI + 50%-compatibility combination: LayerScale is 1.0,
+        // while ScaleWindowSize alone sees only the 0.5 compatibility factor. Reusing the
+        // floating window's bounds in this state clamps a requested 648x400 panel to 350x400.
+        settings.ResolutionCompatibilityModeEnabled = true;
+        settings.ResolutionCompatibilityScalePercent = 50;
+        settings.Normalize();
+        using (NetworkMonitorForm form = new NetworkMonitorForm(settings))
+        {
+            form.SetLayerScale(1.0f);
+            form.ApplyDockedSizeBounds();
+            Size docked = form.GetDesiredSize();
+            if (docked.Width != 648 || docked.Height != 400)
+            {
+                throw new InvalidOperationException("Network monitor docked self-test: docked size must follow the Spec board size.");
+            }
+
+            if (form.MinimumSize != Size.Empty || form.MaximumSize != Size.Empty)
+            {
+                throw new InvalidOperationException("Network monitor docked self-test: docked mode must clear floating size bounds.");
+            }
+
+            form.Size = docked;
+            if (form.Size != docked)
+            {
+                throw new InvalidOperationException("Network monitor docked self-test: DPI/compatibility scaling must not clamp the Spec board footprint.");
+            }
+
+            if (form.IsDockedSingleColumn)
+            {
+                throw new InvalidOperationException("Network monitor docked self-test: the default width must keep two columns.");
+            }
+
+            // Style contract: docked presentation follows the Spec board's overrides, not the
+            // network window's own transparency/scale/hover knobs. This is what keeps the three
+            // left-dock boards visually interchangeable. Settings are assigned directly instead of
+            // via ApplyRuntimeSettings so the self-test never materialises a real dock tab window.
+            WidgetSettings overrides = settings.Clone();
+            overrides.SpecBoardTransparencyOverridePercent = 40;
+            overrides.NetworkMonitorTransparencyOverridePercent = 90;
+            overrides.SpecBoardScaleOverridePercent = 125;
+            overrides.NetworkMonitorScaleOverridePercent = 80;
+            overrides.VisibilityMode = WidgetVisibilityMode.AlwaysVisible;
+            overrides.ClickThroughMode = ClickThroughMode.Auto;
+            overrides.HoverOpacityEnabled = true;
+            overrides.BurnInHiddenModeColorProtectionEnabled = true;
+            overrides.Normalize();
+            form.CurrentSettings = overrides;
+            if (form.WindowTransparencyOverridePercent != overrides.SpecBoardTransparencyOverridePercent ||
+                form.WindowScaleOverridePercent != overrides.SpecBoardScaleOverridePercent)
+            {
+                throw new InvalidOperationException("Network monitor docked self-test: docked overrides must follow the Spec board.");
+            }
+
+            form.hoverOpacityProgress = 1.0;
+            if (form.ApplyHoverAlpha(255) != 255)
+            {
+                throw new InvalidOperationException("Network monitor docked self-test: hover fade must not apply to the docked panel.");
+            }
+
+            form.reverseHoverRevealUntilUtc = DateTime.UtcNow.AddMinutes(1.0);
+            form.UpdateHoverAnimationTimer();
+            if (form.hoverOpacityProgress != 0.0 ||
+                form.reverseHoverRevealUntilUtc != DateTime.MinValue ||
+                form.IsHoverOpacityRuntimeEnabled() ||
+                form.IsHoverOpacityTargetActive() ||
+                form.ShouldClickThroughNow() ||
+                form.NeedsClickThroughPolling() ||
+                form.IsBurnInColorProtectionActive() ||
+                form.ProcessSharedInteractionTick() ||
+                !form.ShouldUseTopMostPlacement())
+            {
+                throw new InvalidOperationException("Network monitor docked self-test: floating hover, click-through and hidden-colour policies must be isolated from the board.");
+            }
+
+            WidgetSettings narrow = settings.Clone();
+            narrow.SpecBoardWidth = WidgetSettings.MinSpecBoardWidth;
+            narrow.Normalize();
+            form.CurrentSettings = narrow;
+            if (!form.IsDockedSingleColumn)
+            {
+                throw new InvalidOperationException("Network monitor docked self-test: the minimum width must degrade to a single column.");
+            }
+        }
+
+        Console.WriteLine("Network monitor docked layout: PASS spec-board-size dpi-scale-unclamped spec-overrides board-interaction-isolation footer-refresh-close-hit single-column-degrade");
     }
 
     // The network layout is a fixed-canvas flat strip. These checks keep the reference
@@ -3388,6 +3816,9 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.NetworkMonitorRenderVariant = NetworkMonitorRenderVariant.Classic;
+        // This block covers the floating strip geometry; docked mode has its own size contract
+        // (it follows the Spec board) and is asserted by RunDockedLayoutSelfTest.
+        settings.NetworkMonitorLeftDockEnabled = false;
         settings.NetworkMonitorWidth = 520;
         settings.NetworkMonitorHeight = 250;
         settings.NetworkMonitorTransparencyPercent = 0;

@@ -66,6 +66,9 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         public bool EnergySaverEnabled;
         public bool BatteryCarePauseKnown;
         public bool BatteryCarePauseActive;
+        // Windows only estimates remaining runtime on battery; on AC it reports -1.
+        public bool RuntimeSecondsKnown;
+        public int RuntimeSeconds;
     }
 
     private sealed class ThermalReading
@@ -368,13 +371,40 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     private bool IsSamplingAllowed()
     {
-        // Pausing here prevents WMI wakeups while the result cannot be observed.
+        // Pausing here prevents WMI wakeups while the result cannot be observed. In integrated mode
+        // this window stays hidden but the main widget draws its readings, so the result IS
+        // observable and sampling must continue — gating on Visible alone would starve the strip.
         return !this.formClosing &&
             !this.hiddenForFullscreen &&
             this.sessionActive &&
             this.displayActive &&
             !this.powerSuspended &&
-            this.Visible;
+            (this.Visible || IsIntegratedIntoWidget());
+    }
+
+    internal bool IsIntegratedIntoWidget()
+    {
+        return this.CurrentSettings != null && this.CurrentSettings.PowerThermalIntegratedEnabled;
+    }
+
+    // Integrated mode keeps the form alive (it owns the sampler) but off-screen.
+    internal void ApplyIntegratedVisibility()
+    {
+        if (this.formClosing || this.IsDisposed)
+        {
+            return;
+        }
+
+        bool shouldHide = IsIntegratedIntoWidget();
+        if (shouldHide && this.Visible)
+        {
+            this.Hide();
+        }
+        else if (!shouldHide && !this.Visible && !this.hiddenForFullscreen)
+        {
+            this.Show();
+            PositionPowerThermalWindow();
+        }
     }
 
     public void ApplyRuntimeSettings(WidgetSettings settings)
@@ -449,7 +479,9 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             return;
         }
 
-        if (!this.Visible)
+        // Leaving fullscreen must not un-hide the window when the module is integrated into the
+        // main widget; sampling still resumes so the strip keeps updating.
+        if (!this.Visible && !IsIntegratedIntoWidget())
         {
             this.Show();
         }
@@ -949,6 +981,13 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             return;
         }
 
+        // In integrated mode the window must stay hidden, and the SetWindowPos below carries
+        // SWP_SHOWWINDOW — without this guard every timer tick would pop it back on screen.
+        if (IsIntegratedIntoWidget())
+        {
+            return;
+        }
+
         Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModulePowerThermal);
         Size desiredSize = GetDesiredSize();
         if (this.Size != desiredSize)
@@ -1284,6 +1323,15 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         if (IsPowerThermalAutoDown())
         {
             DrawDownExtendedContent(g, thermalAlerts, contentTop);
+            return;
+        }
+
+        // 1.0.5.80: the three-pane stat layout (Core/PowerThermalForm.ThreePane.cs) replaces the
+        // wide bar once there is room for three panes. Narrower fixed windows fall back to the
+        // wide bar, and both auto-size directions keep their own layouts.
+        if (!IsPowerThermalAutoLeft() && this.Width >= S(210))
+        {
+            DrawThreePaneContent(g, thermalAlerts);
             return;
         }
 
@@ -2419,6 +2467,13 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             {
                 reading.BatteryPercentKnown = true;
                 reading.BatteryPercent = (int)Math.Round(batteryPercent * 100.0f);
+            }
+
+            int runtimeSeconds = powerStatus.BatteryLifeRemaining;
+            if (runtimeSeconds > 0)
+            {
+                reading.RuntimeSecondsKnown = true;
+                reading.RuntimeSeconds = runtimeSeconds;
             }
 
             string powerModeText = ReadSystemPowerModeText(reading.PluggedInKnown, reading.IsPluggedIn);

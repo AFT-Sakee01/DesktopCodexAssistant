@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 
 [assembly: AssemblyTitle(ProductIdentity.DisplayName)]
 [assembly: AssemblyProduct(ProductIdentity.DisplayName)]
@@ -13,7 +13,7 @@ internal static class ProductIdentity
 {
     public const string SupportedDeviceLabel = "UX3407N / UX3607O";
     public const string DisplayName = "Desktop Codex Assistant UX3407N/UX3607O";
-    public const string Version = "1.0.5.67";
+    public const string Version = "1.0.6.03";
     public const string MachineName = "DesktopCodexAssistant";
     public const string ExecutableName = MachineName + ".exe";
     public const string LogFileName = MachineName + ".log";

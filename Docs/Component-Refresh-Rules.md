@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：1.0.5.64
+适用版本：1.0.5.83
 
 本文集中记录 Desktop Codex Assistant 各组件的刷新、轮询、手动刷新、网络事件、单飞任务和暂停恢复规则。修改定时器、刷新 token、网络事件、后台任务节流、测试模式或显示恢复逻辑时，应同步更新本文。
 
@@ -70,8 +70,8 @@ DNS 检测：
 | 覆盖开启 | 自动隐藏已经激活时，普通鼠标移动不再释放隐藏；只有鼠标进入任一程序窗口的敏感命中范围后才重置空闲计时并恢复。 |
 | 左下角圆圈保持显示 | `OperationRadialCoreAutoHideKeepAliveEnabled` 默认开启。`WidgetForm.UpdateOperationRadialCoreAutoHideKeepAlive` 在共享交互 tick 中查询 `OperationForm.IsRadialCoreAutoHideKeepAliveActive()`；鼠标停在 RadialDial 核心圆圈上时重置空闲计时、清除自动隐藏来源，并让各隐藏透明度窗口的延迟显现状态复位。该逻辑不新增定时器，也不覆盖手动隐藏来源。圆圈自身复用 `OperationForm.ProcessSharedInteractionTick` 记录悬停时长，达到 `AutoHoverOpacityIdleSeconds` 后只重绘一次低亮度加绿色环状态。 |
 | 反向隐藏 | 操作面板手动隐藏时，鼠标进入某个程序窗口的敏感命中范围会临时恢复该窗口，移开后按 1-30 s 延迟重新隐藏。 |
-| 防烧屏位移 | `LayeredWidgetFormBase.ShouldRefreshBurnInPosition` 为每个分层窗口实例维护 7 min 刷新 slot；主窗口和子窗口在各自位置维护入口调用 `BurnInProtection.ApplyRuntimeOffset` 微位移。salt 必须使用命名常量：`MainWidgetSalt=1`、`CodexRadarSalt=7`、`ClaudeRadarSalt=31`、`PowerThermalSalt=13`、`NetworkMonitorSalt=19`、`ConnectionCheckSalt=23`、`OperationPanelSalt=29`、`SpecBoardSalt=73`、`SpecBoardDockTabSalt=37`、`CodexTaskBoardSalt=41`、`CodexTaskBoardDockTabSalt=43`。新增分层窗口时先在 `BurnInProtection` 增加命名 salt，再在窗口定位方法中引用，不写裸数字。左缘停靠 tab 是永久可见元素，必须参与位移；`EdgeDockTabForm.PinToLeftEdge` 丢弃 `ApplyRuntimeOffset` 的水平分量并固定到 `workArea.Left`，只允许 Y 漂移，保证鼠标贴住屏幕绝对左缘仍可触发。 |
-| 操作面板刷新 | `ForceRefreshAllModules()` 触发主采样、磁盘用量刷新、Codex、功耗、网络和 CleanIP 刷新。 |
+| 防烧屏位移 | `LayeredWidgetFormBase.ShouldRefreshBurnInPosition` 为每个分层窗口实例维护 7 min 刷新 slot；主窗口和子窗口在各自位置维护入口调用 `BurnInProtection.ApplyRuntimeOffset` 微位移。salt 必须使用命名常量：`MainWidgetSalt=1`、`CodexRadarSalt=7`、`ClaudeRadarSalt=31`、`PowerThermalSalt=13`、`NetworkMonitorSalt=19`、`ConnectionCheckSalt=23`、`OperationPanelSalt=29`、`SpecBoardSalt=73`、`SpecBoardDockTabSalt=37`、`CodexTaskBoardSalt=41`、`CodexTaskBoardDockTabSalt=43`、`NetworkMonitorDockTabSalt=47`、`GuardBoardSalt=53`、`GuardBoardDockTabSalt=59`。新增分层窗口时先在 `BurnInProtection` 增加命名 salt，再在窗口定位方法中引用，不写裸数字。左缘停靠 tab 是永久可见元素，必须参与位移；`EdgeDockTabForm.PinToLeftEdge` 丢弃 `ApplyRuntimeOffset` 的水平分量并固定到 `workArea.Left`，只允许 Y 漂移，保证鼠标贴住屏幕绝对左缘仍可触发。 |
+| 操作面板刷新 | `ForceRefreshAllModules()` 触发主采样、磁盘用量刷新、Codex、功耗和网络刷新；`NetworkMonitorForm.ForceRefresh()` 同步请求共享 Clean IP reader，因此不依赖已隐藏的独立窗口实例。 |
 | 诊断日志 | 主采样诊断最多每 15 min 写一次；`TimingStats12h` 耗时摘要也最多每 15 min 写一次，具体样本只保存在内存滚动窗口中。UI 无响应看门狗由后台线程每 2 s 检查 UI 心跳，超过 10 s 写入 `ui-hang-watchdog.jsonl`，持续无响应每 30 s 重复记录，5 min 以上挂起空洞不报。 |
 
 ## 4. Codex Radar
@@ -133,11 +133,17 @@ DNS 检测：
 
 ## 6. 网络监控
 
-源码：`Core/NetworkMonitorForm.cs`、`Performance/NetworkMonitorReader.cs`、`Performance/GfwProbeReader.cs`、`Performance/CloudEndpointProbeReader.cs`
+源码：`Core/NetworkMonitorForm.cs`、`Performance/NetworkMonitorReader.cs`、`Performance/GfwProbeReader.cs`、`Performance/CloudEndpointProbeReader.cs`、`Performance/PathPingProbe.cs`、`Performance/FixedPingProbe.cs`
 
 | 项目 | 规则 |
 | --- | --- |
 | 网络窗口 UI tick | 使用普通面板调度 500/1000/3000 ms；只在显示字段变化、尺寸变化或动画需要时重绘。 |
+| 停靠看板交互轮询 | 网络窗口未停靠时继续复用 `WidgetForm` 的共享 hover/click-through tick；停靠时 `ProcessSharedInteractionTick` 直接退出，窗口自己的 `hoverTimer` 停止并清空动画/延迟/反向显现状态。看板的悬停展开、外部点击和离开收起只由 `EdgeDockTabForm` 既有 120 ms tick 驱动，不新增 timer。 |
+| PathPing 逐跳采样 | 仅在停靠面板展开（或未停靠时显式启用采样）期间运行；均衡 3000 ms、省电 10000 ms，模式经 `WidgetSettings.GetEffectivePerformanceMode` 解析后取值，因此默认的“跟随 Windows”会在系统进入电池节能时自动放缓。停靠收起时 `SetPathPingSamplingActive(false)` 完全暂停逐跳发包，收起态相对改动前无额外流量。每跳窗口 5..20 样本、TTL 15 min，跳间错峰 60 ms。 |
+| PathPing 路径发现 | 与采样周期无关，仅在下列条件触发：网络 generation 或 `InterfaceId` 变化、具体 `ConnectivityTarget` 变化、连续 3 轮目标失败、距上次发现满 10 min、或 `ForceRefresh()`。发现期间旧路径保留并标记 `Stale`；发现失败保留旧路径而非清空。滚动 Ping 的 `ActiveProfile`（`PUB`/`BAIDU`）只用于显示，不得覆盖具体目标或传入 traceroute。成功发现时只记录跳数和耗时，不记录沿途地址。 |
+| PathPing 发现进度 | TTL 1..30 的每一步在既有发现任务内更新 `DiscoveryCurrentHop/DiscoveryMaxHops`；UI 只消费快照并画进度条，不轮询新的网络接口、不新增 timer。发现完成、失败或 ICMP 不可用时清除进行中标记。 |
+| 固定站点 Ping | `FixedPingProbeReader` 复用网络窗口 tick 和 PathPing 的 3000/10000 ms 有效模式间隔，不创建 timer；仅在 PathPing 采样面可见、网卡连接且目标勾选时运行。默认 Google/百度/Yahoo，`FixedPingTargets` 变化或 `ForceRefresh()` 使下一轮立即到期；取消勾选在任务创建前剔除，因此不会产生该目标的 ICMP 流量。单轮内不同目标可并行，每个目标保持一个 `Ping.Send`、1000 ms 超时。 |
+| 出口画像（cleanip） | 网络停靠面板是唯一运行时展示入口，消费 `CleanIpConnectionReader.Shared` 单例及其节流（`ConnectionCheckIntervalSeconds` + 整点计划 + 错误重试）；独立 `ConnectionCheckForm` 不再由主窗口创建，其绘制器只保留作回归。 |
 | 本地网卡 | 首次、手动刷新、网卡选择变化、网络事件或 2 s/5 s 到期刷新；省电模式仅事件驱动。 |
 | 连通性 | 根据实际状态使用全局连通性表；`AdapterMissing` 不周期请求。在线结果会额外输出本地链路劣化标记，阈值为丢包 `>=15%`、抖动 `>=250 ms` 或延迟 `>=800 ms`。 |
 | PING 滚动采样 | 仅 `Online` 时单飞后台采样；性能/均衡/省电间隔 2 s/5 s/10 s。每轮最多探测默认网关和当前活动组，公网组轮转多个 anycast IP，墙内判定后活动组切换为百度。 |
@@ -145,7 +151,7 @@ DNS 检测：
 | DNS | DNS 地址签名变化立即测；否则按 DNS 最差状态自适应周期；单轮最多 2 个 DNS 并发。UDP/TCP 无响应需同地址连续两轮失败才置灰，本地链路劣化时保持黄色问题。 |
 | 网络事件 | 30 s 防抖；只标记本地信息失效、增加 generation、清空公网 IP/连通性/DNS deadline。GFW/云服务不直接跟随事件刷新，需本地快照确认连接恢复、网卡 ID、默认网关或主 IP 地址变化后才强制刷新。DNS 顺序或地址抖动只重测 DNS/连通性，不重置 GFW/云服务周期。PING 滚动窗口随 generation、网卡、主 IP 或默认网关变化清空。 |
 | 过期结果 | 公网 IP、DNS、连通性和 PING 滚动任务提交前必须验证 generation 和 `InterfaceId`；PING 还验证主 IP/默认网关签名，不匹配则丢弃并设为可重试。 |
-| 手动刷新 | 网络窗口 `ForceRefresh()` 重置本地、公网、连通性、DNS、GFW 和云服务 deadline。 |
+| 底部操作区 | 网络停靠面板底部左侧 `刷新` 经 `NetworkMonitorForm.OnMouseUp` 调用既有 `ForceRefresh()`，重置本地、公网、连通性、DNS、GFW、云服务、PathPing 和固定 Ping，并请求共享 Clean IP reader；红色 `关闭` 只收起面板并暂停 PathPing，保留 Tab 与全部 reader。两者只复用现有 UI tick、单飞和冷却，不新增 timer、线程或并发网络路径。 |
 | 网络检查历史 | `network-check-history.jsonl` 先写入内存缓冲，15 s、32 KiB 或进程退出时批量追加落盘；启动时修剪旧记录，运行中每 6 h 粗粒度修剪一次。 |
 
 GFW：
@@ -163,12 +169,14 @@ GFW：
 云服务：
 
 - 与 GFW 结论解耦，但复用 GFW 间隔和手动 token。
+- `CloudEndpointTargets` 保存六项内置服务的勾选状态和最多 8 项自定义显示名称 + IP/主机；未勾选项在任务创建前剔除。列表签名变化会取消旧配置在途请求并把下一轮置为立即到期；全部关闭时保持空结果且不发起探测。
+- 自定义目标走 ICMP，复用同一并发上限、异常确认、缓存、状态滞后和日志路径，不创建独立调度器。
 - 手动刷新有 45 s 冷却；地区设置变化强制刷新相关官方状态源。
 - 正常官方 API 缓存 30 min，普通 HTTPS 正常缓存 15 min，异常/慢响应缓存 2 min，无法连接缓存 45 s，未知缓存 30 s。
 - 状态变化需 30 s 滞后确认，避免网络抖动造成频繁日志和 UI 变色。
 - 本地链路劣化时，DNS/TCP/TLS/超时等链路敏感的非全数失败会从红色无法连接降为黄色本地丢包影响；官方故障或官方降级不降级。
 - 同一时间最多一个云服务探测任务；新强制刷新会取消旧请求。真实状态不是 `Online` 时停止/取消云服务探测并返回无告警 `Unknown` 方块。云服务错误在 Classic 扁平信息条中只改变对应服务方块颜色；异常明细由 DNS/GFW/PING 的既有显示位承担，不新增刷新或告警槽。
-- 云服务顺序固定为 `Cf Ak Gi Aw Az Go`；Akamai 使用 Statuspage v2 summary，Azure 使用公开 Azure Status RSS。地区设置变化会刷新 Cloudflare、Akamai、Azure、Google 这类带地区过滤的官方状态源。
+- 内置云服务默认顺序为 `Cf Ak Gi Aw Az Go`；Akamai 使用 Statuspage v2 summary，Azure 使用公开 Azure Status RSS。地区设置变化会刷新 Cloudflare、Akamai、Azure、Google 这类带地区过滤的官方状态源。
 
 DNS 告警：
 
@@ -178,16 +186,16 @@ DNS 告警：
 
 ## 7. CleanIP 连接检测
 
-源码：`Core/ConnectionCheckForm.cs`、`Performance/CleanIpConnectionReader.cs`
+源码：`Core/NetworkMonitorForm.cs`、`Core/NetworkMonitorForm.Dock.cs`、`Core/NetworkMonitorForm.DockedLayout.cs`、`Core/ConnectionCheckForm.cs`、`Performance/CleanIpConnectionReader.cs`
 
 | 项目 | 规则 |
 | --- | --- |
-| UI tick | 使用普通面板调度 500/1000/3000 ms；只有三框实际显示字段变化、尺寸变化、位置位移或透明动画需要时重绘；旧详情字段如延迟、IP、ASN、地区和触发来源变化不再触发重绘。 |
+| UI tick | 正常运行时由网络窗口既有 500/1000/3000 ms tick 消费共享出口画像快照；独立 `ConnectionCheckForm` 不实例化，其三框绘制与自测只作回归。 |
 | 设置间隔 | `ConnectionCheckIntervalSeconds` 范围 15-600 s；当前默认设置值为 600 s，代码 fallback 为 60 s。 |
 | 首次和联网 | 首次启动或从断网变为联网时立即检测。 |
 | 每小时计划 | 每小时一次，随机偏移正负 5 min 并包含秒，避免整点集中请求。 |
 | 错误重试 | 失败状态下在每 10 min 时间槽重试，同一时间槽只试一次。 |
-| 手动刷新 | 设置页 token 触发，操作面板强制刷新走 `RequestRefresh()`。 |
+| 手动刷新 | 设置页 token 由共享 reader 消费；网络面板底部刷新与操作面板强制刷新均经 `NetworkMonitorForm.ForceRefresh()` 调用 `RequestRefresh()`。 |
 | 网络事件 | 只使网络状态缓存失效；真实网络判断和请求在 reader 调度路径执行。 |
 | 测试模式 | 测试快照稳定缓存；只有测试模式或手动 token 变化时重建。 |
 | 单飞 | `requestRunning` 防止 CleanIP 请求并发。 |
@@ -233,11 +241,23 @@ DNS 告警：
 | 新 Spec 自动弹窗 | 首次完整快照只播种进程内 `project + spec_path` 基线；之后第一次出现且状态为未登记/待执行/需要修改/待验证的非丢失文件才弹出并高亮，已见项不因状态切换或重复 watcher 事件再次提示。`SpecBoardAutoPopupEnabled` 默认 true；`SpecBoardAutoPopupSeconds` 默认 5 s、范围 1-120。 |
 | 对账 | 显示/隐藏监测期间每 5 min、每次呼出、以及 watcher 信号时扫描注册项目的 `spec_glob`；扫描任务 3 s 未完成则放弃该轮结果并显示警告，不阻塞 UI。 |
 | 自动收回 | 手动小看板使用 `SpecBoardAutoHideSeconds`（默认 20 s、范围 0-600，0 关闭）；自动弹窗使用独立的 `SpecBoardAutoPopupSeconds`。两者在鼠标位于窗口内时暂停，移出后从完整时长重新计时。footer 的“关闭”只隐藏小看板。 |
-| 看板外部点击收回 | `LeftDockOutsideClickCollapseEnabled` 默认 true；停靠展开的 Spec/Codex Task 与 Spec 自动弹窗在点击自身、自己的 tab、Spec 管理窗以外的位置时收回，未停靠的手动常驻 Spec 不参与。`OutsideClickDismissalMonitor` 只在 `EdgeDockTabForm` 既有 120 ms hover tick 采样，Spec 的既有 500 ms 维护 tick 为无 tab 自动弹窗兜底；两板用独立序号消费同一点击，不新增 timer、鼠标 hook 或 capture。收回后 800 ms 且光标未离开 tab 时禁止悬停重开，离开 tab 立即解除。进程内 `VK_LBUTTON` 异步状态读取必须统一经过该监测器，避免低位被提前清除。 |
+| 看板外部点击收回 | `LeftDockOutsideClickCollapseEnabled` 默认 true；停靠展开的 Spec/Codex Task/Network 与 Spec 自动弹窗在点击自身、自己的 tab、Spec 管理窗以外的位置时收回，未停靠的手动常驻 Spec 不参与。`OutsideClickDismissalMonitor` 只在 `EdgeDockTabForm` 既有 120 ms hover tick 采样，Spec 的既有 500 ms 维护 tick 为无 tab 自动弹窗兜底；三板用独立序号消费同一点击，不新增 timer、鼠标 hook 或 capture。收回后 800 ms 且光标未离开 tab 时禁止悬停重开，离开 tab 立即解除。进程内 `VK_LBUTTON` 异步状态读取必须统一经过该监测器，避免低位被提前清除。 |
 | 隐藏/挂起 | 普通隐藏且自动弹窗开启时保留 500 ms 维护计时器与 watcher；关闭自动弹窗且小看板不可见、进入全屏隐藏、显示挂起或销毁时停止全部 watcher/计时器。显示恢复后重建 layered 资源、重新定位并按当前设置恢复监测。 |
 | 网络与 AI 请求 | 纯本地只读功能，不发网络请求，不参与 AI 请求保护。 |
 
-## 8.2 鼠标隐藏与延迟显现
+## 8.2 GUARD 守护看板
+
+源码：`Core/GuardBoardForm.cs`、`Core/GuardRuntime.cs`、`Core/OperationForm.GuardBoard.cs`
+
+| 触发 | 规则 |
+| --- | --- |
+| 维护 tick | 固定 500 ms，从隐藏窗口构造完成起持续运行，不随 tab 关闭或面板收起而停止。状态变化立即保存 Guard 设置；窗口可见时每 tick 重绘秒级倒计时，隐藏时只维护状态与 tab 颜色。 |
+| 离线判定 | 复用 `NetworkMonitorForm.GetGuardOnlineState`；`null` 表示未知并按在线处理，不回退成可能误判的离线。确定离线可以累计进度，但仅当睡眠防护已武装时才允许达到阈值后请求睡眠。 |
+| 系统恢复 | `WidgetForm.HandlePowerBroadcast` 收到 `PBT_APMRESUME*` 后立即调用 `GuardRuntime.OnSystemResume` 清除旧离线起点；恢复后必须重新累计完整阈值，禁止唤醒即再次睡眠。 |
+| 显示计时 | 到期时清除 `ES_DISPLAY_REQUIRED`，保留睡眠防护的 `ES_SYSTEM_REQUIRED`；关闭睡眠防护时同时清除亮屏计时。 |
+| 显示挂起 | 只释放并在恢复时重建 layered 渲染资源；状态机 timer 不因显示器熄灭而停止。系统挂起期间进程自然暂停，恢复广播负责重置离线时钟。 |
+
+## 8.3 鼠标隐藏与延迟显现
 
 - 普通“悬停透明”由 `HoverInteractionPolicy` 统一判断鼠标敏感范围；延迟显现可在设置中关闭。
 - 延迟显现开启时，鼠标离开判定区后继续隐藏 `HoverOpacityRevealDelaySeconds`，倒计时内重新进入判定区需持续 `HoverOpacityRevealResetSeconds` 才重置倒计时。

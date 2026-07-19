@@ -1,6 +1,6 @@
 # Codex 监测窗口技术说明
 
-适用版本：1.0.5.66
+适用版本：1.0.6.03
 
 ## 1. 范围
 
@@ -155,7 +155,7 @@ reader 为每个文件保存字节偏移。首次发现只读末尾最多 8 MiB�
 
 启动器任务节点与任务看板（方案 4 + 方案 1）：启动器第二个节点显示跟踪任务数，外光环取最紧急状态色，有待处理任务时数字也用状态色，无任务时整体压暗；tooltip 给出计数、最紧急状态和待处理个数。点击开 `OperationCodexTaskBoardForm`（`Core/OperationForm.CodexTasks.cs`），它加入既有浮层互斥（见 `Docs/Component-Refresh-Rules.md`）。
 
-任务看板与 Spec 看板共用同一套 app 设计语言 `DesignTokens.Colors.*`（外壳 `AppBackground`、边框/分隔线 `Border`、标题/正文 `Text`、次要文字 `GlyphMuted`、卡片填充 `Surface`、切换与关闭胶囊描边 `Accent`），不再使用独立的 `OledAmber`/`OledCard` 暖色主题；状态点、卡片注意态描边与上下文水位环继续走语义色。左缘停靠页签用青色 `Accent`，与 Spec 看板的紫色 `AccentAlt` 页签区分。
+任务看板与 Spec 看板共用同一套 app 设计语言 `DesignTokens.Colors.*`（外壳 `AppBackground`、边框/分隔线 `Border`、标题/正文 `Text`、次要文字 `GlyphMuted`、卡片填充 `Surface`），不再使用独立的 `OledAmber`/`OledCard` 暖色主题；状态点、卡片注意态描边与上下文水位环继续走语义色。Codex Task 左缘页签固定使用队列第三位的绿色，中央箭头为同色低透明度；防烧屏配色保护开启且看板收起时梯形保持灰色，只有看板真正展开后才恢复绿色。任务看板外沿同样使用该绿色的共享 Radar 风格内描边；停靠定位调用 `BurnInProtection.ApplyRuntimeOffsetWithPinnedX`，与另外三块看板共用 `工作区左缘 + tab 宽度` 的固定 X，仅保留独立 Y 轴微位移。状态、边框与定位契约统一见 `Docs/Performance-And-Window-Runtime.md` §6.1。
 
 看板尺寸由 `CodexTaskBoardWidth`/`CodexTaskBoardHeight`（默认 648×400，范围同 Spec 看板 240–700 / 240–800）决定，有两种视图：
 
@@ -168,7 +168,7 @@ reader 为每个文件保存字节偏移。首次发现只读末尾最多 8 MiB�
 
 **时间线数据来源**：后端只发布"当前为真"，因此泳道由前端自行累积——`CodexTaskPresentation.SampleTimeline` 每次 tick 要么延长该任务当前段、要么开新段（存状态转换而非原始采样，每任务几十个结构封顶 `MaximumTimelineSegmentsPerTask = 96`），超出窗口的段自动裁剪、任务消失后其历史老化即删除。采样由看板自己的 2 秒 tick 驱动，**在折叠/可见性判断之前执行**，所以停靠收起时仍在积累历史。停靠关闭且看板关闭时不积累，此时时间线只显示上次运行期间观察到的内容。
 
-看板是常驻窗（不用鼠标捕获）。卡片视图按内容签名去抖、变化才重绘；时间线视图每 tick 必重绘（时间轴本身在走）。高 DPI 下的任务文字使用整数物理像素字号与基线，并在 `LayerScale >= 1.25` 时使用 `SingleBitPerPixelGridFit`，避免分层 ARGB 表面的 ClearType 彩边和灰阶半像素柔边；低缩放继续使用高对比 `AntiAliasGridFit`；水位环在 `DrawWaterRing` 内临时开 `AntiAlias` 画弧后复原。footer 右侧为 `时间线`/`卡片` 切换胶囊与 `关闭` 胶囊；切换为**会话级**（存实例字段，看板常驻故折叠/展开不丢），`CodexTaskBoardView` 设置键决定启动默认值——持久化点击需要一条枚举写回通道，而现有设置管线只承载布尔。左键命中 footer 两个胶囊时保留原动作，点击其余非控件/空白区域收起任务看板。
+看板是常驻窗（不用鼠标捕获）。卡片视图按内容签名去抖、变化才重绘；时间线视图每 tick 必重绘（时间轴本身在走）。高 DPI 下的任务文字使用整数物理像素字号与基线，并在 `LayerScale >= 1.25` 时使用 `SingleBitPerPixelGridFit`，避免分层 ARGB 表面的 ClearType 彩边和灰阶半像素柔边；低缩放继续使用高对比 `AntiAliasGridFit`；水位环在 `DrawWaterRing` 内临时开 `AntiAlias` 画弧后复原。footer 与 Spec Board 的操作栏同构：左起为 4px 圆角、`Control` 实底的 `时间线`/`卡片` 操作键（`Success` 描边），其后为 `关闭` 操作键（`Danger` 描边），任务统计紧随其后；宽版与窄版均使用 `ComputeCodexTaskFooterLayout` 的同一几何规则，不使用右对齐蓝色全圆胶囊或永久 active 高亮。切换为**会话级**（存实例字段，看板常驻故折叠/展开不丢），`CodexTaskBoardView` 设置键决定启动默认值——持久化点击需要一条枚举写回通道，而现有设置管线只承载布尔。左键命中 footer 两个操作键时保留原动作，点击其余非控件/空白区域收起任务看板。
 
 停靠展开时，`LeftDockOutsideClickCollapseEnabled`（默认 true）还会让桌面、其他窗口或另一块看板上的左键点击收回任务看板；自身与自己的梯形 tab 是排除区。该路径复用 `EdgeDockTabForm` 的 120 ms tick 和共享 `OutsideClickDismissalMonitor` 的按键边沿序号，不新增鼠标钩子、捕获或定时器；收回后的 800 ms 内且光标未离开 tab 时抑制悬停重开。板内空白关闭的既有逻辑保持不变。
 

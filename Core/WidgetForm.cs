@@ -29,40 +29,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private const int HotkeyToggleAllWindowsId = 0x51A1;
     private const int HotkeyToggleHoverOpacityId = 0x51A2;
     private const int HotkeyOpenSettingsId = 0x51A3;
-    private static readonly string[] HardwareVendorPrefixes = new string[]
-    {
-        "Western Digital",
-        "Hewlett-Packard",
-        "SK hynix",
-        "Snapdragon(R)",
-        "Snapdragon",
-        "Qualcomm(R)",
-        "Qualcomm",
-        "Intel(R)",
-        "Intel",
-        "AMD",
-        "NVIDIA",
-        "Samsung",
-        "SAMSUNG",
-        "Micron",
-        "KIOXIA",
-        "Toshiba",
-        "TOSHIBA",
-        "Seagate",
-        "Kingston",
-        "SanDisk",
-        "Realtek",
-        "MediaTek",
-        "Broadcom",
-        "Marvell",
-        "WDC",
-        "WD",
-        "Dell",
-        "Lenovo",
-        "ASUS",
-        "HP"
-    };
-
     private readonly PdhSampler sampler;
     private readonly EventWaitHandle stopEvent;
     private readonly bool useDesktopParent;
@@ -250,13 +216,18 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         EnsureRadarChildWindows();
         this.powerThermalForm = new PowerThermalForm(this.CurrentSettings);
         this.powerThermalForm.SetSharedInteractionPolling(true);
+        // Shown unconditionally so the form's timers start, then hidden immediately in integrated
+        // mode; it keeps sampling for the main widget's power strip while off-screen.
         this.powerThermalForm.Show(this);
+        this.powerThermalForm.ApplyIntegratedVisibility();
         this.networkMonitorForm = new NetworkMonitorForm(this.CurrentSettings);
         this.networkMonitorForm.SetSharedInteractionPolling(true);
         this.networkMonitorForm.Show(this);
-        this.connectionCheckForm = new ConnectionCheckForm(this.CurrentSettings);
-        this.connectionCheckForm.SetSharedInteractionPolling(true);
-        this.connectionCheckForm.Show(this);
+        // Clean IP is already presented in the docked network board. Do not create the old
+        // bottom-right standalone window; the shared reader remains alive and is refreshed by
+        // NetworkMonitorForm, while the null-safe lifecycle paths below preserve rollback safety.
+        this.connectionCheckForm = null;
+        Program.LogInfo("Standalone Clean IP window hidden; network dock owns Clean IP presentation.");
         this.operationForm = new OperationForm(
             this.CurrentSettings,
             delegate { OpenSettings(); },
@@ -270,6 +241,33 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             delegate(bool enabled) { return SetCodexQuotaPlanFromOperationPanel(enabled); },
             delegate(string propertyName, bool enabled) { return SetBooleanSettingFromOperationPanel(propertyName, enabled); });
         this.operationForm.Show(this);
+        // Left-dock mutual exclusion: the network panel and the two operation-owned boards live in
+        // different forms, so WidgetForm (the coordination owner) ties the two directions together.
+        this.operationForm.HideNetworkDockedPanelForOverlay = delegate
+        {
+            if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
+            {
+                this.networkMonitorForm.HideDockedPanelIfVisible();
+            }
+        };
+        this.networkMonitorForm.CollapseOtherLeftDockOverlays = delegate
+        {
+            if (this.operationForm != null && !this.operationForm.IsDisposed)
+            {
+                this.operationForm.HideLeftDockBoardsForPeerOverlay();
+            }
+        };
+        // The guard board's offline auto-sleep reads connectivity from the network window rather
+        // than probing on its own, so the two never disagree about whether the link is down.
+        this.operationForm.GuardNetworkOnlineProvider = delegate
+        {
+            if (this.networkMonitorForm == null || this.networkMonitorForm.IsDisposed)
+            {
+                return null;
+            }
+
+            return this.networkMonitorForm.GetGuardOnlineState();
+        };
         this.timer.Start();
         UpdateSeelenDockPulseTimer();
         UpdateWinDRecoveryWatcher();
@@ -675,6 +673,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         if (IsPowerResumeEventType(eventType))
         {
+            if (this.operationForm != null && !this.operationForm.IsDisposed)
+            {
+                this.operationForm.NotifyGuardBoardSystemResume();
+            }
+
             this.pendingPowerResumeRestart = this.CurrentSettings.PowerResumeRestartEnabled;
             ScheduleDisplayRecovery("power resume 0x" + eventType.ToString("X"));
             return;
@@ -2210,6 +2213,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         {
             UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_power_thermal");
             this.powerThermalForm.ApplyRuntimeSettings(this.CurrentSettings);
+            // Standalone vs integrated: hide or restore the window after its own settings apply.
+            this.powerThermalForm.ApplyIntegratedVisibility();
         }
 
         if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
@@ -3159,40 +3164,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             g.DrawPath(outline, shell);
         }
 
-        int margin = S(13);
-        int gap = S(14);
-        int rowGap = S(8);
-        List<MetricPanel> panels = BuildMetricPanels();
-        if (panels.Count == 0)
-        {
-            Font font = GetCachedFont(13.0f * this.LayerScale, FontStyle.Bold);
-            using (SolidBrush brush = new SolidBrush(DesignTokens.Colors.TextMuted))
-            using (StringFormat format = new StringFormat())
-            {
-                format.Alignment = StringAlignment.Center;
-                format.LineAlignment = StringAlignment.Center;
-                g.DrawString("No metrics enabled", font, brush, this.ClientRectangle, format);
-            }
-
-            return;
-        }
-
-        int columns = panels.Count == 1 ? 1 : 2;
-        int rows = (panels.Count + columns - 1) / columns;
-        int colWidth = (this.ClientSize.Width - margin * 2 - gap * (columns - 1)) / columns;
-        int rowHeight = (this.ClientSize.Height - margin * 2 - rowGap * (rows - 1)) / rows;
-
-        for (int i = 0; i < panels.Count; i++)
-        {
-            int column = i % columns;
-            int row = i / columns;
-            RectangleF area = new RectangleF(
-                margin + column * (colWidth + gap),
-                margin + row * (rowHeight + rowGap),
-                colWidth,
-                rowHeight);
-            DrawMetric(g, area, panels[i]);
-        }
+        // 1.0.5.69: the dense grid replaces the graph-box cells (see Core/WidgetForm.DenseGrid.cs).
+        DrawDenseGrid(g);
     }
 
     private bool IsBurnInColorProtectionActive()
@@ -3200,291 +3173,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return BurnInProtection.ShouldApplyHiddenModeColorProtection(
             this.CurrentSettings,
             IsHoverOpacityTargetActive());
-    }
-
-    private List<MetricPanel> BuildMetricPanels()
-    {
-        List<MetricPanel> panels = new List<MetricPanel>();
-        string[] order = this.CurrentSettings.MetricOrder ?? WidgetSettings.DefaultMetricOrder;
-        for (int i = 0; i < order.Length; i++)
-        {
-            AddMetricPanel(panels, order[i]);
-        }
-
-        return panels;
-    }
-
-    private void AddMetricPanel(List<MetricPanel> panels, string metricId)
-    {
-        if (string.Equals(metricId, WidgetSettings.MetricCpu, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowCpu)
-        {
-            MetricPanel cpuPanel = new MetricPanel(
-                new string[] { FormatHardwareNameForPanel(this.snapshot.CpuName), string.Format("CPU {0:0}%", this.snapshot.CpuPercent), FormatCpuFrequencyPair(this.snapshot.CpuFrequencyGhz, this.snapshot.CpuBaseFrequencyGhz) },
-                new Color[] { DesignTokens.Colors.Accent },
-                new List<double>[] { this.cpuHistory },
-                100.0,
-                false);
-            cpuPanel.CoreValues = this.snapshot.CpuCorePercents;
-            cpuPanel.UseHardwareStackText = true;
-            if (this.CurrentSettings.AlertTestEnabled)
-            {
-                cpuPanel.AlertPercent = 100.0;
-                cpuPanel.AlertIconVisible = true;
-            }
-
-            panels.Add(cpuPanel);
-            return;
-        }
-
-        if (string.Equals(metricId, WidgetSettings.MetricMemory, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowMemory)
-        {
-            MetricPanel memoryPanel = new MetricPanel(
-                new string[]
-                {
-                    FormatMemoryTitleForPanel(this.snapshot.MemoryManufacturer, this.snapshot.MemorySpeedMtps),
-                    string.Format("MEM {0:0}%", this.snapshot.MemoryPercent),
-                    FormatGbPair(this.snapshot.MemoryUsedGb, this.snapshot.MemoryTotalGb)
-                },
-                new Color[] { DesignTokens.Colors.AccentAlt, DesignTokens.Colors.Warning },
-                new List<double>[] { this.memoryHistory, this.memoryHardwareReservedHistory },
-                100.0,
-                false);
-            memoryPanel.AlertPercent = this.snapshot.MemoryPercent;
-            memoryPanel.UseHardwareStackText = true;
-            if (this.CurrentSettings.AlertTestEnabled)
-            {
-                memoryPanel.AlertPercent = 100.0;
-                memoryPanel.AlertIconVisible = true;
-            }
-            else
-            {
-                memoryPanel.AlertIconVisible = this.memoryAlertIconActive;
-            }
-
-            panels.Add(memoryPanel);
-            return;
-        }
-
-        if (string.Equals(metricId, WidgetSettings.MetricDisk, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowDisk)
-        {
-            MetricPanel diskPanel = new MetricPanel(
-                new string[]
-                {
-                    FormatDiskTitleForPanel(this.snapshot.DiskVolumeLabel),
-                    "WT " + FormatRate(this.snapshot.DiskWriteBytesPerSecond),
-                    "RD " + FormatRate(this.snapshot.DiskReadBytesPerSecond),
-                    FormatRoundedGbPair(this.snapshot.DiskUsedGb, this.snapshot.DiskTotalGb)
-                },
-                new Color[] { DesignTokens.Colors.Warning, DesignTokens.Colors.Success },
-                new List<double>[] { this.diskWriteHistory, this.diskReadHistory },
-                1.0,
-                true);
-            diskPanel.AlertPercent = GetDiskCombinedAlertPercent();
-            diskPanel.UseHardwareStackText = true;
-            diskPanel.UseCompactValueFont = true;
-            if (this.CurrentSettings.AlertTestEnabled)
-            {
-                diskPanel.AlertPercent = 100.0;
-                diskPanel.AlertIconVisible = true;
-            }
-            else
-            {
-                diskPanel.AlertIconVisible = this.diskAlertIconActive;
-            }
-
-            panels.Add(diskPanel);
-            return;
-        }
-
-        if (string.Equals(metricId, WidgetSettings.MetricNetwork, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowNetwork)
-        {
-            MetricPanel networkPanel = new MetricPanel(
-                GetNetworkPanelTextLines(),
-                new Color[] { DesignTokens.Colors.Accent, DesignTokens.Colors.Danger },
-                new List<double>[] { this.networkSentHistory, this.networkReceivedHistory },
-                1.0,
-                true);
-            networkPanel.UseCompactValueFont = true;
-            networkPanel.IsNetworkDisconnected = !this.snapshot.NetworkConnected;
-            if (this.CurrentSettings.AlertTestEnabled)
-            {
-                networkPanel.AlertPercent = 100.0;
-                networkPanel.AlertIconVisible = true;
-            }
-
-            panels.Add(networkPanel);
-            return;
-        }
-
-        if (string.Equals(metricId, WidgetSettings.MetricGpu, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowGpu)
-        {
-            MetricPanel gpuPanel = new MetricPanel(
-                new string[] { FormatHardwareNameForPanel(this.snapshot.GpuName), string.Format("GPU {0:0}%", this.snapshot.GpuPercent), FormatGbPair(this.snapshot.GpuMemoryUsedGb, this.snapshot.GpuMemoryTotalGb) },
-                new Color[] { DesignTokens.Colors.Accent, DesignTokens.Colors.AccentAlt },
-                new List<double>[] { this.gpuHistory, this.gpuMemoryHistory },
-                100.0,
-                false);
-            gpuPanel.AlertPercent = Math.Max(this.snapshot.GpuPercent, this.snapshot.GpuMemoryPercent);
-            gpuPanel.UseHardwareStackText = true;
-            if (this.CurrentSettings.AlertTestEnabled)
-            {
-                gpuPanel.AlertPercent = 100.0;
-                gpuPanel.AlertIconVisible = true;
-            }
-            else
-            {
-                gpuPanel.AlertIconVisible = this.gpuAlertIconActive;
-            }
-
-            panels.Add(gpuPanel);
-            return;
-        }
-
-        if (string.Equals(metricId, WidgetSettings.MetricNpu, StringComparison.OrdinalIgnoreCase) && this.CurrentSettings.ShowNpu)
-        {
-            MetricPanel npuPanel = new MetricPanel(
-                new string[] { FormatHardwareNameForPanel(this.snapshot.NpuName), string.Format("NPU {0:0}%", this.snapshot.NpuPercent), FormatGbPair(this.snapshot.NpuMemoryUsedGb, this.snapshot.NpuMemoryTotalGb) },
-                new Color[] { DesignTokens.Colors.Warning, DesignTokens.Colors.AccentAlt },
-                new List<double>[] { this.npuHistory, this.npuMemoryHistory },
-                100.0,
-                false);
-            npuPanel.AlertPercent = Math.Max(this.snapshot.NpuPercent, this.snapshot.NpuMemoryPercent);
-            npuPanel.UseHardwareStackText = true;
-            if (this.CurrentSettings.AlertTestEnabled)
-            {
-                npuPanel.AlertPercent = 100.0;
-                npuPanel.AlertIconVisible = true;
-            }
-            else
-            {
-                npuPanel.AlertIconVisible = this.npuAlertIconActive;
-            }
-
-            panels.Add(npuPanel);
-        }
-    }
-
-    private void DrawMetric(Graphics g, RectangleF area, MetricPanel panel)
-    {
-        float graphW = Math.Min(S(86), Math.Max(S(58), area.Width * 0.34f));
-        float graphH = Math.Max(S(32), area.Height - S(8));
-        RectangleF graphRect = new RectangleF(area.X, area.Y + Math.Max(0, (area.Height - graphH) / 2), graphW, graphH);
-        bool quotaAlertsVisible = AlertPresentationPolicy.ShouldPresent(
-            this.CurrentSettings,
-            AlertPresentationCategory.Quota);
-        DrawGraph(
-            g,
-            graphRect,
-            panel.Colors,
-            panel.Histories,
-            panel.GraphMax,
-            panel.AutoScale,
-            panel.IsNetworkDisconnected,
-            panel.CoreValues,
-            quotaAlertsVisible ? panel.AlertPercent : 0.0,
-            quotaAlertsVisible && panel.AlertIconVisible);
-
-        if (panel.IsNetworkDisconnected)
-        {
-            DrawDisconnectedCross(g, graphRect);
-        }
-
-        float textX = graphRect.Right + S(9);
-        float textWidth = Math.Max(20, area.Right - textX);
-        // Disk capacity and Wi-Fi RSSI opt into a fourth line; other metrics keep three-line spacing.
-        int textLineCount = panel.TextLines != null && panel.TextLines.Length >= 4 ? 4 : 3;
-        float lineH = Math.Max(1.0f, area.Height / textLineCount);
-
-        Font smallFont = GetCachedFont(10.5f * this.LayerScale, FontStyle.Bold);
-        Font valueFont = GetCachedFont(11.5f * this.LayerScale, FontStyle.Bold);
-        Font compactFont = GetCachedFont(10.0f * this.LayerScale, FontStyle.Bold);
-        using (SolidBrush titleBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
-        using (SolidBrush valueBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
-        using (SolidBrush alertBrush = new SolidBrush(DesignTokens.Colors.Danger))
-        {
-            RectangleF first = new RectangleF(textX, area.Y, textWidth, lineH);
-            RectangleF second = new RectangleF(textX, area.Y + lineH, textWidth, lineH);
-            RectangleF third = new RectangleF(textX, area.Y + lineH * 2, textWidth, lineH);
-            RectangleF fourth = new RectangleF(textX, area.Y + lineH * 3, textWidth, lineH);
-            if (panel.UseHardwareStackText && panel.TextLines[0].IndexOf('\n') >= 0)
-            {
-                DrawHardwareStackText(g, area, textX, textWidth, panel, smallFont, valueFont, titleBrush, valueBrush);
-                return;
-            }
-
-            DrawTitleText(g, panel.TextLines[0], smallFont, titleBrush, first);
-            if (panel.TextLines.Length >= 4)
-            {
-                DrawFixedText(g, panel.TextLines[1], compactFont, valueBrush, second);
-                DrawFixedText(g, panel.TextLines[2], compactFont, valueBrush, third);
-                DrawFixedText(g, panel.TextLines[3], compactFont, valueBrush, fourth);
-                return;
-            }
-
-            if (panel.UseCompactValueFont)
-            {
-                DrawFixedText(g, panel.TextLines[1], compactFont, panel.IsNetworkDisconnected ? alertBrush : valueBrush, second);
-                DrawFixedText(g, panel.TextLines[2], compactFont, valueBrush, third);
-            }
-            else
-            {
-                DrawFittedText(g, panel.TextLines[1], valueFont, valueBrush, second);
-                DrawFittedText(g, panel.TextLines[2], valueFont, valueBrush, third);
-            }
-        }
-    }
-
-    private void DrawGraph(Graphics g, RectangleF rect, Color[] accents, List<double>[] histories, double graphMax, bool autoScale, bool dimmed, double[] coreValues, double alertPercent, bool alertIconVisible)
-    {
-        Color borderColor = accents.Length > 0 ? accents[0] : DesignTokens.Colors.TextMuted;
-        int backgroundAlpha = GetBackgroundOpacityAlpha();
-        int fillAlpha = dimmed ? Math.Min(backgroundAlpha, 128) : backgroundAlpha;
-        int borderAlpha = dimmed ? 90 : 180;
-        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, fillAlpha)))
-        using (Pen border = new Pen(DesignTokens.WithAlpha(borderColor, borderAlpha), Math.Max(1.0f, 1.5f * this.LayerScale)))
-        {
-            g.FillRectangle(fill, rect);
-            g.DrawRectangle(border, rect.X, rect.Y, rect.Width, rect.Height);
-        }
-
-        DrawUsageAlertLayer(g, rect, alertPercent, alertIconVisible);
-        DrawCoreBars(g, rect, coreValues);
-
-        double max = autoScale ? MaxValue(histories) : graphMax;
-        if (max < 1.0)
-        {
-            max = 1.0;
-        }
-
-        for (int h = 0; h < histories.Length; h++)
-        {
-            List<double> history = histories[h];
-            if (history == null || history.Count < 2)
-            {
-                continue;
-            }
-
-            PointF[] points = new PointF[history.Count];
-            for (int i = 0; i < history.Count; i++)
-            {
-                double normalized = Clamp(history[i] / max, 0.0, 1.0);
-                float x = rect.Left + (rect.Width - 2) * i / Math.Max(1, history.Count - 1) + 1;
-                float y = rect.Bottom - 1 - (float)(normalized * (rect.Height - 2));
-                points[i] = new PointF(x, y);
-            }
-
-            Color accent = accents[Math.Min(h, accents.Length - 1)];
-            if (dimmed)
-            {
-                accent = DesignTokens.WithAlpha(accent, 110);
-            }
-
-            using (Pen line = new Pen(accent, Math.Max(1.0f, 2.0f * this.LayerScale)))
-            {
-                line.LineJoin = LineJoin.Round;
-                g.DrawLines(line, points);
-            }
-        }
     }
 
     private int GetBackgroundOpacityAlpha()
@@ -3577,78 +3265,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
     }
 
-    private void DrawCoreBars(Graphics g, RectangleF rect, double[] values)
-    {
-        if (values == null || values.Length == 0)
-        {
-            return;
-        }
-
-        float left = rect.Left + Math.Max(2.0f, 2.0f * this.LayerScale);
-        float bottom = rect.Bottom - Math.Max(2.0f, 2.0f * this.LayerScale);
-        float width = Math.Max(1.0f, rect.Width - Math.Max(4.0f, 4.0f * this.LayerScale));
-        float height = Math.Max(1.0f, rect.Height - Math.Max(4.0f, 4.0f * this.LayerScale));
-        float slot = width / values.Length;
-        float gap = slot >= 4.0f ? Math.Min(2.0f * this.LayerScale, slot * 0.28f) : 0.0f;
-        float barWidth = Math.Max(1.0f, slot - gap);
-
-        using (SolidBrush normalBrush = new SolidBrush(DesignTokens.Accent(115)))
-        using (SolidBrush warningBrush = new SolidBrush(DesignTokens.Warning(210)))
-        using (SolidBrush criticalBrush = new SolidBrush(DesignTokens.Danger(225)))
-        {
-            for (int i = 0; i < values.Length; i++)
-            {
-                double value = Clamp(values[i], 0.0, 100.0);
-                float x = left + slot * i + gap / 2.0f;
-                float valueTop = bottom - (float)(height * value / 100.0);
-
-                if (value > 95.0)
-                {
-                    g.FillRectangle(criticalBrush, x, valueTop, barWidth, bottom - valueTop);
-                    continue;
-                }
-
-                float normalValue = (float)Math.Min(value, 80.0);
-                if (normalValue > 0.0f)
-                {
-                    float normalTop = bottom - height * normalValue / 100.0f;
-                    g.FillRectangle(normalBrush, x, normalTop, barWidth, bottom - normalTop);
-                }
-
-                if (value > 80.0)
-                {
-                    float warningTop = valueTop;
-                    float warningBottom = bottom - height * 80.0f / 100.0f;
-                    g.FillRectangle(warningBrush, x, warningTop, barWidth, warningBottom - warningTop);
-                }
-            }
-        }
-    }
-
-    private void DrawDisconnectedCross(Graphics g, RectangleF rect)
-    {
-        float padding = Math.Max(3.0f, 4.0f * this.LayerScale);
-        using (Pen cross = new Pen(DesignTokens.Colors.DangerGlyph, Math.Max(2.0f, 3.2f * this.LayerScale)))
-        {
-            cross.StartCap = LineCap.Round;
-            cross.EndCap = LineCap.Round;
-            g.DrawLine(cross, rect.Left + padding, rect.Top + padding, rect.Right - padding, rect.Bottom - padding);
-            g.DrawLine(cross, rect.Right - padding, rect.Top + padding, rect.Left + padding, rect.Bottom - padding);
-        }
-    }
-
-    private void DrawFixedText(Graphics g, string text, Font font, Brush brush, RectangleF rect)
-    {
-        using (StringFormat format = new StringFormat())
-        {
-            format.Alignment = StringAlignment.Near;
-            format.LineAlignment = StringAlignment.Center;
-            format.Trimming = StringTrimming.EllipsisCharacter;
-            format.FormatFlags = StringFormatFlags.NoWrap;
-            g.DrawString(text, font, brush, rect, format);
-        }
-    }
-
     private Font GetCachedFont(float size, FontStyle style)
     {
         float normalizedSize = (float)Math.Round(Math.Max(1.0f, size), 2);
@@ -3673,84 +3289,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.fontCache.Clear();
     }
 
-    private void DrawHardwareStackText(Graphics g, RectangleF area, float textX, float textWidth, MetricPanel panel, Font titleFont, Font valueFont, Brush titleBrush, Brush valueBrush)
-    {
-        string[] titleLines = panel.TextLines[0].Replace("\r", string.Empty).Split('\n');
-        string titleFirst = titleLines.Length > 0 ? titleLines[0] : string.Empty;
-        string titleSecond = titleLines.Length > 1 ? titleLines[1] : string.Empty;
-        float stackLineH = Math.Max(S(10), area.Height / 4.0f);
-        float stackTop = area.Y + Math.Max(0, (area.Height - stackLineH * 4.0f) / 2.0f);
-
-        RectangleF titleFirstRect = new RectangleF(textX, stackTop, textWidth, stackLineH);
-        RectangleF titleSecondRect = new RectangleF(textX, stackTop + stackLineH, textWidth, stackLineH);
-        RectangleF valueRect = new RectangleF(textX, stackTop + stackLineH * 2.0f, textWidth, stackLineH);
-        RectangleF detailRect = new RectangleF(textX, stackTop + stackLineH * 3.0f, textWidth, stackLineH);
-
-        DrawFittedText(g, titleFirst, titleFont, titleBrush, titleFirstRect);
-        DrawFittedText(g, titleSecond, titleFont, titleBrush, titleSecondRect);
-        DrawFittedText(g, panel.TextLines[1], valueFont, valueBrush, valueRect);
-        DrawFittedText(g, panel.TextLines[2], valueFont, valueBrush, detailRect);
-    }
-
-    private void DrawTitleText(Graphics g, string text, Font baseFont, Brush brush, RectangleF rect)
-    {
-        if (string.IsNullOrEmpty(text) || text.IndexOf('\n') < 0)
-        {
-            DrawFittedText(g, text, baseFont, brush, rect);
-            return;
-        }
-
-        string[] lines = text.Replace("\r", string.Empty).Split('\n');
-        using (StringFormat format = new StringFormat())
-        {
-            format.Alignment = StringAlignment.Near;
-            format.LineAlignment = StringAlignment.Center;
-            format.Trimming = StringTrimming.EllipsisCharacter;
-
-            Font drawFont = baseFont;
-            bool disposeFont = false;
-            float size = baseFont.Size;
-            while (size > 7.0f * this.LayerScale && !TitleTextFits(g, lines, drawFont, rect))
-            {
-                if (disposeFont)
-                {
-                    drawFont.Dispose();
-                }
-
-                size -= 0.6f * this.LayerScale;
-                drawFont = new Font(baseFont.FontFamily, size, baseFont.Style, GraphicsUnit.Pixel);
-                disposeFont = true;
-            }
-
-            g.DrawString(text, drawFont, brush, rect, format);
-
-            if (disposeFont)
-            {
-                drawFont.Dispose();
-            }
-        }
-    }
-
-    private bool TitleTextFits(Graphics g, string[] lines, Font font, RectangleF rect)
-    {
-        float maxWidth = 0.0f;
-        int visibleLines = 0;
-        for (int i = 0; i < lines.Length; i++)
-        {
-            if (lines[i].Length == 0)
-            {
-                continue;
-            }
-
-            visibleLines++;
-            maxWidth = Math.Max(maxWidth, g.MeasureString(lines[i], font).Width);
-        }
-
-        visibleLines = Math.Max(1, visibleLines);
-        float totalHeight = font.GetHeight(g) * visibleLines;
-        return maxWidth <= rect.Width && totalHeight <= rect.Height * 1.02f;
-    }
-
     private void DrawFittedText(Graphics g, string text, Font baseFont, Brush brush, RectangleF rect)
     {
         using (StringFormat format = new StringFormat())
@@ -3764,7 +3302,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             bool disposeFont = false;
             float size = baseFont.Size;
 
-            while (size > 8.0f * this.LayerScale && g.MeasureString(text, drawFont).Width > rect.Width)
+            while (size > 7.0f * this.LayerScale && g.MeasureString(text, drawFont).Width > rect.Width)
             {
                 if (disposeFont)
                 {
@@ -3790,34 +3328,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return NetworkRateFormatter.Format(bytesPerSecond);
     }
 
-    private static string FormatDiskTitleForPanel(string volumeLabel)
-    {
-        return string.IsNullOrWhiteSpace(volumeLabel) ? "DISK" : "DISK " + volumeLabel.Trim();
-    }
-
-    private string[] GetNetworkPanelTextLines()
-    {
-        if (!this.snapshot.NetworkConnected)
-        {
-            return new string[] { "Network", "网络已断开", "" };
-        }
-
-        string up = "UP " + FormatRate(this.snapshot.NetworkSentBytesPerSecond);
-        string down = "DL " + FormatRate(this.snapshot.NetworkReceivedBytesPerSecond);
-        if (this.snapshot.NetworkIsWifi)
-        {
-            return new string[]
-            {
-                this.snapshot.NetworkName,
-                up,
-                down,
-                FormatWifiRssi(this.snapshot.NetworkRssiKnown, this.snapshot.NetworkRssiDbm)
-            };
-        }
-
-        return new string[] { this.snapshot.NetworkName, up, down };
-    }
-
     private static string FormatWifiRssi(bool known, int rssiDbm)
     {
         return known
@@ -3835,18 +3345,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return string.Format("{0:0.0}/{1:0.#} GB", usedGb, totalGb);
     }
 
-    private static string FormatRoundedGbPair(double usedGb, double totalGb)
-    {
-        double roundedUsed = Math.Round(Math.Max(0.0, usedGb), 0, MidpointRounding.AwayFromZero);
-        if (totalGb <= 0.0)
-        {
-            return string.Format("{0:0}/-- GB", roundedUsed);
-        }
-
-        double roundedTotal = Math.Round(Math.Max(0.0, totalGb), 0, MidpointRounding.AwayFromZero);
-        return string.Format("{0:0}/{1:0} GB", roundedUsed, roundedTotal);
-    }
-
     private static string FormatCpuFrequencyPair(double currentGhz, double baseGhz)
     {
         if (currentGhz <= 0.0 && baseGhz <= 0.0)
@@ -3860,121 +3358,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         return string.Format("{0:0.00}GHz/{1:0.00}GHz", currentGhz, baseGhz);
-    }
-
-    private static string FormatMemoryTitleForPanel(string manufacturer, int speedMtps)
-    {
-        string first = string.IsNullOrWhiteSpace(manufacturer) ? "Memory" : CollapseWhitespace(manufacturer.Trim());
-        string second = speedMtps > 0 ? speedMtps.ToString() + " MT/s" : "-- MT/s";
-        return first + "\n" + second;
-    }
-
-    private static string FormatHardwareNameForPanel(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return string.Empty;
-        }
-
-        string text = CollapseWhitespace(name.Trim());
-        if (text.IndexOf('\n') >= 0)
-        {
-            return text;
-        }
-
-        for (int i = 0; i < HardwareVendorPrefixes.Length; i++)
-        {
-            string vendor = HardwareVendorPrefixes[i];
-            if (!StartsWithVendorPrefix(text, vendor))
-            {
-                continue;
-            }
-
-            string remainder = text.Substring(vendor.Length).TrimStart(' ', '\t', '-', '_');
-            if (remainder.Length == 0)
-            {
-                return text;
-            }
-
-            return text.Substring(0, vendor.Length).Trim() + "\n" + remainder;
-        }
-
-        return text;
-    }
-
-    private static bool StartsWithVendorPrefix(string text, string vendor)
-    {
-        if (!text.StartsWith(vendor, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (text.Length == vendor.Length)
-        {
-            return true;
-        }
-
-        char next = text[vendor.Length];
-        return char.IsWhiteSpace(next) || next == '-' || next == '_' || next == '(';
-    }
-
-    private static string CollapseWhitespace(string value)
-    {
-        StringBuilder builder = new StringBuilder(value.Length);
-        bool previousWhitespace = false;
-        for (int i = 0; i < value.Length; i++)
-        {
-            char ch = value[i];
-            if (char.IsWhiteSpace(ch))
-            {
-                if (!previousWhitespace)
-                {
-                    builder.Append(' ');
-                    previousWhitespace = true;
-                }
-
-                continue;
-            }
-
-            builder.Append(ch);
-            previousWhitespace = false;
-        }
-
-        return builder.ToString();
-    }
-
-    private static double MaxValue(List<double> values)
-    {
-        double max = 0.0;
-        for (int i = 0; i < values.Count; i++)
-        {
-            if (values[i] > max)
-            {
-                max = values[i];
-            }
-        }
-
-        return max;
-    }
-
-    private static double MaxValue(List<double>[] histories)
-    {
-        double max = 0.0;
-        for (int i = 0; i < histories.Length; i++)
-        {
-            if (histories[i] == null)
-            {
-                continue;
-            }
-
-            double value = MaxValue(histories[i]);
-            if (value > max)
-            {
-                max = value;
-            }
-        }
-
-        return max;
     }
 
     private static double Clamp(double value, double min, double max)

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -16,30 +16,6 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
-
-internal sealed class MetricPanel
-{
-    public MetricPanel(string[] textLines, Color[] colors, List<double>[] histories, double graphMax, bool autoScale)
-    {
-        this.TextLines = textLines;
-        this.Colors = colors;
-        this.Histories = histories;
-        this.GraphMax = graphMax;
-        this.AutoScale = autoScale;
-    }
-
-    public string[] TextLines { get; private set; }
-    public Color[] Colors { get; private set; }
-    public List<double>[] Histories { get; private set; }
-    public double GraphMax { get; private set; }
-    public bool AutoScale { get; private set; }
-    public bool UseCompactValueFont { get; set; }
-    public bool UseHardwareStackText { get; set; }
-    public bool IsNetworkDisconnected { get; set; }
-    public double[] CoreValues { get; set; }
-    public double AlertPercent { get; set; }
-    public bool AlertIconVisible { get; set; }
-}
 
 internal enum WidgetVisibilityMode
 {
@@ -226,6 +202,10 @@ internal sealed class WidgetSettings
     private const int CodexRadarEvenRowWidthReduction = 40;
     public const int CodexRadarHiddenServiceHealthPanelWidthReduction = 76;
     public const int CodexRadarCompactQuotaWidthReduction = 122;
+    public const int MinCpuCoreThresholdPercent = 1;
+    public const int MaxCpuCoreThresholdPercent = 100;
+    public const int DefaultCpuCoreWarningPercent = 80;
+    public const int DefaultCpuCoreCriticalPercent = 100;
     public const int MinPowerThermalWidth = 90;
     public const int MaxPowerThermalWidth = 900;
     public const int MinPowerThermalHeight = 44;
@@ -245,10 +225,23 @@ internal sealed class WidgetSettings
     public const int MinSpecBoardAutoHideSeconds = 0;
     public const int MaxSpecBoardAutoHideSeconds = 600;
     public const int DefaultSpecBoardAutoHideSeconds = 20;
-    // Left-edge dock: -1 tab centers mean "auto", resolved at show time to two adjacent slots around
-    // the work area's vertical middle so the two tabs never overlap out of the box.
+    // Left-edge dock: -1 tab centers mean "auto", resolved at show time to adjacent slots around
+    // the work area's vertical middle so the tabs never overlap out of the box. Four boards now
+    // share the queue at offsets -3 (network), -1 (spec), +1 (codex task) and +3 (guard).
     public const int AutoLeftDockTabCenterY = -1;
     public const int LeftDockTabAutoOffsetY = 20;
+    // Guard board: the fourth dock member. It borrows the Spec board's footprint the same way the
+    // docked network panel does, so it has no width/height settings of its own.
+    public const int MinGuardBoardAutoHideSeconds = 0;
+    public const int MaxGuardBoardAutoHideSeconds = 600;
+    public const int DefaultGuardBoardAutoHideSeconds = 30;
+    // Display-guard steps mirror the CodexSleepGuard combo box (30 min / 1 / 2 / 5 / 8 hours) and
+    // the offline steps mirror its threshold list (1 / 5 / 10 / 30 min). Both are snapped to these
+    // ladders rather than clamped to a range, so the board's +/- stepper cannot land off-menu.
+    public static readonly int[] GuardDisplayMinuteSteps = { 30, 60, 120, 300, 480 };
+    public static readonly int[] GuardOfflineThresholdMinuteSteps = { 1, 5, 10, 30 };
+    public const int DefaultGuardDisplayMinutes = 300;
+    public const int DefaultGuardOfflineThresholdMinutes = 10;
     public const int MinLeftDockCollapseSeconds = 0;
     public const int MaxLeftDockCollapseSeconds = 30;
     public const int DefaultLeftDockCollapseSeconds = 1;
@@ -347,7 +340,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 77;
+    private const int CurrentSettingsVersion = 79;
     private const int EffectivePerformanceModeCacheMs = 2000;
     private static readonly object EffectivePerformanceModeSync = new object();
     private static DateTime effectivePerformanceModeCacheUtc = DateTime.MinValue;
@@ -508,6 +501,13 @@ internal sealed class WidgetSettings
     public PowerThermalAutoDirection PowerThermalAutoDirection { get; set; }
     public int PowerThermalVisibleAlertCount { get; set; }
     public int PowerThermalManualEnergySaverThresholdPercent { get; set; }
+    // true: the power module is drawn as a strip at the bottom of the main widget and the
+    // standalone window stays hidden. false: the standalone window is shown as before.
+    public bool PowerThermalIntegratedEnabled { get; set; }
+    // Per-core CPU bar colour thresholds: at/above warning the bar tops out in warning colour, at/above
+    // critical the whole bar turns danger.
+    public int CpuCoreWarningPercent { get; set; }
+    public int CpuCoreCriticalPercent { get; set; }
     public int NetworkMonitorWidth { get; set; }
     public int NetworkMonitorHeight { get; set; }
     public int NetworkMonitorLeftX { get; set; }
@@ -520,6 +520,8 @@ internal sealed class WidgetSettings
     public int GfwProbeManualRefreshToken { get; set; }
     public int CloudEndpointTestSeed { get; set; }
     public int CloudStatusRegionMask { get; set; }
+    public string[] CloudEndpointTargets { get; set; }
+    public string[] FixedPingTargets { get; set; }
     public int ConnectionCheckWidth { get; set; }
     public int ConnectionCheckHeight { get; set; }
     public int ConnectionCheckLeftX { get; set; }
@@ -543,6 +545,20 @@ internal sealed class WidgetSettings
     public int SpecBoardLeftDockTabCenterY { get; set; }
     public bool CodexTaskBoardLeftDockEnabled { get; set; }
     public int CodexTaskBoardLeftDockTabCenterY { get; set; }
+    public bool NetworkMonitorLeftDockEnabled { get; set; }
+    public int NetworkMonitorLeftDockTabCenterY { get; set; }
+    public bool GuardBoardLeftDockEnabled { get; set; }
+    public int GuardBoardLeftDockTabCenterY { get; set; }
+    public int GuardBoardAutoHideSeconds { get; set; }
+    // Guard state. GuardSleepEnabled and the two deadline ticks are live runtime state rather than
+    // preferences: they are persisted so a restart during a long unattended run does not silently
+    // drop the protection the board promises. Ticks are UTC; 0 means "not armed".
+    public bool GuardSleepEnabled { get; set; }
+    public long GuardSleepSinceUtcTicks { get; set; }
+    public int GuardDisplayMinutes { get; set; }
+    public int GuardOfflineThresholdMinutes { get; set; }
+    public long GuardDisplayUntilUtcTicks { get; set; }
+    public long GuardBatteryCarePauseUntilUtcTicks { get; set; }
     public int LeftDockCollapseSeconds { get; set; }
     public bool LeftDockOutsideClickCollapseEnabled { get; set; }
     public int CodexTaskBoardWidth { get; set; }
@@ -818,6 +834,9 @@ internal sealed class WidgetSettings
         this.PowerThermalBottomY = defaults.PowerThermalBottomY;
         this.PowerThermalTransparencyPercent = defaults.PowerThermalTransparencyPercent;
         this.PowerThermalAutoSizeEnabled = defaults.PowerThermalAutoSizeEnabled;
+        this.PowerThermalIntegratedEnabled = defaults.PowerThermalIntegratedEnabled;
+        this.CpuCoreWarningPercent = defaults.CpuCoreWarningPercent;
+        this.CpuCoreCriticalPercent = defaults.CpuCoreCriticalPercent;
         this.PowerThermalAutoDirection = defaults.PowerThermalAutoDirection;
         this.PowerThermalVisibleAlertCount = defaults.PowerThermalVisibleAlertCount;
         this.PowerThermalManualEnergySaverThresholdPercent = defaults.PowerThermalManualEnergySaverThresholdPercent;
@@ -833,6 +852,8 @@ internal sealed class WidgetSettings
         this.GfwProbeManualRefreshToken = 0;
         this.CloudEndpointTestSeed = defaults.CloudEndpointTestSeed;
         this.CloudStatusRegionMask = defaults.CloudStatusRegionMask;
+        this.CloudEndpointTargets = NetworkProbeTargetSettings.CloneArray(defaults.CloudEndpointTargets);
+        this.FixedPingTargets = NetworkProbeTargetSettings.CloneArray(defaults.FixedPingTargets);
         this.ConnectionCheckWidth = defaults.ConnectionCheckWidth;
         this.ConnectionCheckHeight = defaults.ConnectionCheckHeight;
         this.ConnectionCheckLeftX = defaults.ConnectionCheckLeftX;
@@ -856,6 +877,17 @@ internal sealed class WidgetSettings
         this.SpecBoardLeftDockTabCenterY = defaults.SpecBoardLeftDockTabCenterY;
         this.CodexTaskBoardLeftDockEnabled = defaults.CodexTaskBoardLeftDockEnabled;
         this.CodexTaskBoardLeftDockTabCenterY = defaults.CodexTaskBoardLeftDockTabCenterY;
+        this.NetworkMonitorLeftDockEnabled = defaults.NetworkMonitorLeftDockEnabled;
+        this.NetworkMonitorLeftDockTabCenterY = defaults.NetworkMonitorLeftDockTabCenterY;
+        this.GuardBoardLeftDockEnabled = defaults.GuardBoardLeftDockEnabled;
+        this.GuardBoardLeftDockTabCenterY = defaults.GuardBoardLeftDockTabCenterY;
+        this.GuardBoardAutoHideSeconds = defaults.GuardBoardAutoHideSeconds;
+        this.GuardSleepEnabled = defaults.GuardSleepEnabled;
+        this.GuardSleepSinceUtcTicks = defaults.GuardSleepSinceUtcTicks;
+        this.GuardDisplayMinutes = defaults.GuardDisplayMinutes;
+        this.GuardOfflineThresholdMinutes = defaults.GuardOfflineThresholdMinutes;
+        this.GuardDisplayUntilUtcTicks = defaults.GuardDisplayUntilUtcTicks;
+        this.GuardBatteryCarePauseUntilUtcTicks = defaults.GuardBatteryCarePauseUntilUtcTicks;
         this.LeftDockCollapseSeconds = defaults.LeftDockCollapseSeconds;
         this.LeftDockOutsideClickCollapseEnabled = defaults.LeftDockOutsideClickCollapseEnabled;
         this.CodexTaskBoardWidth = defaults.CodexTaskBoardWidth;
@@ -1089,6 +1121,9 @@ internal sealed class WidgetSettings
         settings.PowerThermalBottomY = 582;
         settings.PowerThermalTransparencyPercent = 30;
         settings.PowerThermalAutoSizeEnabled = true;
+        settings.PowerThermalIntegratedEnabled = true;
+        settings.CpuCoreWarningPercent = DefaultCpuCoreWarningPercent;
+        settings.CpuCoreCriticalPercent = DefaultCpuCoreCriticalPercent;
         settings.PowerThermalAutoDirection = PowerThermalAutoDirection.Down;
         settings.PowerThermalVisibleAlertCount = 8;
         settings.PowerThermalManualEnergySaverThresholdPercent = DefaultPowerThermalManualEnergySaverThresholdPercent;
@@ -1104,6 +1139,8 @@ internal sealed class WidgetSettings
         settings.GfwProbeManualRefreshToken = 0;
         settings.CloudEndpointTestSeed = 0;
         settings.CloudStatusRegionMask = DefaultCloudStatusRegionMask;
+        settings.CloudEndpointTargets = NetworkProbeTargetSettings.CloneArray(NetworkProbeTargetSettings.DefaultCloudEndpointTargets);
+        settings.FixedPingTargets = NetworkProbeTargetSettings.CloneArray(NetworkProbeTargetSettings.DefaultFixedPingTargets);
         settings.ConnectionCheckWidth = 292;
         settings.ConnectionCheckHeight = 95;
         settings.ConnectionCheckLeftX = 2588;
@@ -1127,6 +1164,17 @@ internal sealed class WidgetSettings
         settings.SpecBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CodexTaskBoardLeftDockEnabled = true;
         settings.CodexTaskBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.NetworkMonitorLeftDockEnabled = true;
+        settings.NetworkMonitorLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.GuardBoardLeftDockEnabled = true;
+        settings.GuardBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.GuardBoardAutoHideSeconds = DefaultGuardBoardAutoHideSeconds;
+        settings.GuardSleepEnabled = false;
+        settings.GuardSleepSinceUtcTicks = 0L;
+        settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
+        settings.GuardOfflineThresholdMinutes = DefaultGuardOfflineThresholdMinutes;
+        settings.GuardDisplayUntilUtcTicks = 0L;
+        settings.GuardBatteryCarePauseUntilUtcTicks = 0L;
         settings.LeftDockCollapseSeconds = DefaultLeftDockCollapseSeconds;
         settings.LeftDockOutsideClickCollapseEnabled = true;
         settings.CodexTaskBoardWidth = DefaultCodexTaskBoardWidth;
@@ -1305,9 +1353,12 @@ internal sealed class WidgetSettings
         // User-confirmed default snapshot captured from settings.ini on 2026-07-06.
         // Runtime refresh/probe tokens stay on their original zero defaults so a fresh profile
         // does not inherit stale manual-refresh counters or force network probe side effects.
-        settings.Width = 628;
-        settings.Height = 414;
-        settings.LeftX = 2252;
+        // Main widget sized to the radar width (522) so the radar, main widget and power/thermal bar
+        // share one left and right edge. Height 448 seats three metric rows, one row of three power
+        // panes and the guard badge row; all of them span the same 8..514 x range as the badges.
+        settings.Width = 522;
+        settings.Height = 448;
+        settings.LeftX = 2358;
         settings.BottomY = 1549;
         settings.BackgroundTransparencyPercent = 40;
         settings.ApplicationTransparencyPercent = 0;
@@ -1390,12 +1441,18 @@ internal sealed class WidgetSettings
         settings.CodexRadarIqRingOffsetY = 0;
         settings.CodexRadarIqTextOffsetX = 0;
         settings.CodexRadarIqTextOffsetY = 0;
-        settings.PowerThermalWidth = 120;
-        settings.PowerThermalHeight = 114;
-        settings.PowerThermalLeftX = 2760;
+        // Wide bar aligned to the main widget width (522) and the radar height (120), sharing both
+        // edges. Auto-size stays off so the alignment cannot be broken by alert count; overflowing
+        // alerts collapse into the trailing "+N" chip instead.
+        settings.PowerThermalWidth = 522;
+        settings.PowerThermalHeight = 120;
+        settings.PowerThermalLeftX = 2358;
         settings.PowerThermalBottomY = 540;
         settings.PowerThermalTransparencyPercent = 30;
-        settings.PowerThermalAutoSizeEnabled = true;
+        settings.PowerThermalAutoSizeEnabled = false;
+        settings.PowerThermalIntegratedEnabled = true;
+        settings.CpuCoreWarningPercent = DefaultCpuCoreWarningPercent;
+        settings.CpuCoreCriticalPercent = DefaultCpuCoreCriticalPercent;
         settings.PowerThermalAutoDirection = PowerThermalAutoDirection.Down;
         settings.PowerThermalVisibleAlertCount = 8;
         settings.PowerThermalManualEnergySaverThresholdPercent = DefaultPowerThermalManualEnergySaverThresholdPercent;
@@ -1410,6 +1467,8 @@ internal sealed class WidgetSettings
         settings.GfwProbeIntervalMinutes = 30;
         settings.CloudEndpointTestSeed = 0;
         settings.CloudStatusRegionMask = 1;
+        settings.CloudEndpointTargets = NetworkProbeTargetSettings.CloneArray(NetworkProbeTargetSettings.DefaultCloudEndpointTargets);
+        settings.FixedPingTargets = NetworkProbeTargetSettings.CloneArray(NetworkProbeTargetSettings.DefaultFixedPingTargets);
         settings.ConnectionCheckWidth = 292;
         settings.ConnectionCheckHeight = 98;
         settings.ConnectionCheckLeftX = 2588;
@@ -1432,6 +1491,17 @@ internal sealed class WidgetSettings
         settings.SpecBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CodexTaskBoardLeftDockEnabled = true;
         settings.CodexTaskBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.NetworkMonitorLeftDockEnabled = true;
+        settings.NetworkMonitorLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.GuardBoardLeftDockEnabled = true;
+        settings.GuardBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.GuardBoardAutoHideSeconds = DefaultGuardBoardAutoHideSeconds;
+        settings.GuardSleepEnabled = false;
+        settings.GuardSleepSinceUtcTicks = 0L;
+        settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
+        settings.GuardOfflineThresholdMinutes = DefaultGuardOfflineThresholdMinutes;
+        settings.GuardDisplayUntilUtcTicks = 0L;
+        settings.GuardBatteryCarePauseUntilUtcTicks = 0L;
         settings.LeftDockCollapseSeconds = DefaultLeftDockCollapseSeconds;
         settings.LeftDockOutsideClickCollapseEnabled = true;
         settings.CodexTaskBoardWidth = DefaultCodexTaskBoardWidth;
@@ -1691,6 +1761,9 @@ internal sealed class WidgetSettings
             PowerThermalBottomY = this.PowerThermalBottomY,
             PowerThermalTransparencyPercent = this.PowerThermalTransparencyPercent,
             PowerThermalAutoSizeEnabled = this.PowerThermalAutoSizeEnabled,
+            PowerThermalIntegratedEnabled = this.PowerThermalIntegratedEnabled,
+            CpuCoreWarningPercent = this.CpuCoreWarningPercent,
+            CpuCoreCriticalPercent = this.CpuCoreCriticalPercent,
             PowerThermalAutoDirection = this.PowerThermalAutoDirection,
             PowerThermalVisibleAlertCount = this.PowerThermalVisibleAlertCount,
             PowerThermalManualEnergySaverThresholdPercent = this.PowerThermalManualEnergySaverThresholdPercent,
@@ -1706,6 +1779,8 @@ internal sealed class WidgetSettings
             GfwProbeManualRefreshToken = this.GfwProbeManualRefreshToken,
             CloudEndpointTestSeed = this.CloudEndpointTestSeed,
             CloudStatusRegionMask = this.CloudStatusRegionMask,
+            CloudEndpointTargets = NetworkProbeTargetSettings.CloneArray(this.CloudEndpointTargets),
+            FixedPingTargets = NetworkProbeTargetSettings.CloneArray(this.FixedPingTargets),
             ConnectionCheckWidth = this.ConnectionCheckWidth,
             ConnectionCheckHeight = this.ConnectionCheckHeight,
             ConnectionCheckLeftX = this.ConnectionCheckLeftX,
@@ -1729,6 +1804,17 @@ internal sealed class WidgetSettings
             SpecBoardLeftDockTabCenterY = this.SpecBoardLeftDockTabCenterY,
             CodexTaskBoardLeftDockEnabled = this.CodexTaskBoardLeftDockEnabled,
             CodexTaskBoardLeftDockTabCenterY = this.CodexTaskBoardLeftDockTabCenterY,
+            NetworkMonitorLeftDockEnabled = this.NetworkMonitorLeftDockEnabled,
+            NetworkMonitorLeftDockTabCenterY = this.NetworkMonitorLeftDockTabCenterY,
+            GuardBoardLeftDockEnabled = this.GuardBoardLeftDockEnabled,
+            GuardBoardLeftDockTabCenterY = this.GuardBoardLeftDockTabCenterY,
+            GuardBoardAutoHideSeconds = this.GuardBoardAutoHideSeconds,
+            GuardSleepEnabled = this.GuardSleepEnabled,
+            GuardSleepSinceUtcTicks = this.GuardSleepSinceUtcTicks,
+            GuardDisplayMinutes = this.GuardDisplayMinutes,
+            GuardOfflineThresholdMinutes = this.GuardOfflineThresholdMinutes,
+            GuardDisplayUntilUtcTicks = this.GuardDisplayUntilUtcTicks,
+            GuardBatteryCarePauseUntilUtcTicks = this.GuardBatteryCarePauseUntilUtcTicks,
             LeftDockCollapseSeconds = this.LeftDockCollapseSeconds,
             LeftDockOutsideClickCollapseEnabled = this.LeftDockOutsideClickCollapseEnabled,
             CodexTaskBoardWidth = this.CodexTaskBoardWidth,
@@ -1964,6 +2050,10 @@ internal sealed class WidgetSettings
         this.PowerThermalHeight = Clamp(this.PowerThermalHeight, MinPowerThermalHeight, MaxPowerThermalHeight);
         this.PowerThermalTransparencyPercent = Clamp(this.PowerThermalTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
         this.PowerThermalVisibleAlertCount = Clamp(this.PowerThermalVisibleAlertCount, MinPowerThermalVisibleAlerts, MaxPowerThermalVisibleAlerts);
+        this.CpuCoreWarningPercent = Clamp(this.CpuCoreWarningPercent, MinCpuCoreThresholdPercent, MaxCpuCoreThresholdPercent);
+        this.CpuCoreCriticalPercent = Clamp(this.CpuCoreCriticalPercent, MinCpuCoreThresholdPercent, MaxCpuCoreThresholdPercent);
+        // An inverted pair would erase the warning band; keep critical at or above warning.
+        this.CpuCoreCriticalPercent = Math.Max(this.CpuCoreCriticalPercent, this.CpuCoreWarningPercent);
         this.PowerThermalManualEnergySaverThresholdPercent = Clamp(
             this.PowerThermalManualEnergySaverThresholdPercent,
             MinPowerThermalManualEnergySaverThresholdPercent,
@@ -1978,6 +2068,9 @@ internal sealed class WidgetSettings
         {
             this.CloudStatusRegionMask = DefaultCloudStatusRegionMask;
         }
+
+        this.CloudEndpointTargets = NetworkProbeTargetSettings.NormalizeCloudTargets(this.CloudEndpointTargets);
+        this.FixedPingTargets = NetworkProbeTargetSettings.NormalizeFixedPingTargets(this.FixedPingTargets);
 
         this.ConnectionCheckWidth = Clamp(this.ConnectionCheckWidth, MinConnectionCheckWidth, MaxConnectionCheckWidth);
         this.ConnectionCheckHeight = Clamp(this.ConnectionCheckHeight, MinConnectionCheckHeight, MaxConnectionCheckHeight);
@@ -1997,6 +2090,14 @@ internal sealed class WidgetSettings
         // is meaningless, and the windows clamp the resolved value into the work area anyway.
         this.SpecBoardLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.SpecBoardLeftDockTabCenterY);
         this.CodexTaskBoardLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.CodexTaskBoardLeftDockTabCenterY);
+        this.NetworkMonitorLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.NetworkMonitorLeftDockTabCenterY);
+        this.GuardBoardLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.GuardBoardLeftDockTabCenterY);
+        this.GuardBoardAutoHideSeconds = Clamp(this.GuardBoardAutoHideSeconds, MinGuardBoardAutoHideSeconds, MaxGuardBoardAutoHideSeconds);
+        this.GuardDisplayMinutes = NormalizeGuardDisplayMinutes(this.GuardDisplayMinutes);
+        this.GuardOfflineThresholdMinutes = NormalizeGuardOfflineThresholdMinutes(this.GuardOfflineThresholdMinutes);
+        this.GuardSleepSinceUtcTicks = NormalizeUtcTicks(this.GuardSleepSinceUtcTicks);
+        this.GuardDisplayUntilUtcTicks = NormalizeUtcTicks(this.GuardDisplayUntilUtcTicks);
+        this.GuardBatteryCarePauseUntilUtcTicks = NormalizeUtcTicks(this.GuardBatteryCarePauseUntilUtcTicks);
         this.LeftDockCollapseSeconds = Clamp(this.LeftDockCollapseSeconds, MinLeftDockCollapseSeconds, MaxLeftDockCollapseSeconds);
         this.CodexTaskBoardWidth = Clamp(this.CodexTaskBoardWidth, MinCodexTaskBoardWidth, MaxCodexTaskBoardWidth);
         this.CodexTaskBoardHeight = Clamp(this.CodexTaskBoardHeight, MinCodexTaskBoardHeight, MaxCodexTaskBoardHeight);
@@ -2547,6 +2648,33 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (settingsVersion > 0 && settingsVersion < 78)
+        {
+            // Version 78 makes cloud and fixed Ping targets user-configurable. Existing installs
+            // receive the documented defaults once; later disabled rows remain explicit entries
+            // so an unchecked service is excluded before any network request is scheduled.
+            settings.CloudEndpointTargets = NetworkProbeTargetSettings.CloneArray(NetworkProbeTargetSettings.DefaultCloudEndpointTargets);
+            settings.FixedPingTargets = NetworkProbeTargetSettings.CloneArray(NetworkProbeTargetSettings.DefaultFixedPingTargets);
+            saveAfterMigration = true;
+        }
+
+        if (settingsVersion > 0 && settingsVersion < 79)
+        {
+            // Version 79 adds the guard board as the fourth left-dock member. Existing installs get
+            // the tab, but every guard starts disarmed: silently inheriting a sleep guard the user
+            // never asked for could keep a laptop awake on battery overnight.
+            settings.GuardBoardLeftDockEnabled = true;
+            settings.GuardBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+            settings.GuardBoardAutoHideSeconds = DefaultGuardBoardAutoHideSeconds;
+            settings.GuardSleepEnabled = false;
+            settings.GuardSleepSinceUtcTicks = 0L;
+            settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
+            settings.GuardOfflineThresholdMinutes = DefaultGuardOfflineThresholdMinutes;
+            settings.GuardDisplayUntilUtcTicks = 0L;
+            settings.GuardBatteryCarePauseUntilUtcTicks = 0L;
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2836,6 +2964,9 @@ internal sealed class WidgetSettings
             "PowerThermalBottomY=" + this.PowerThermalBottomY,
             "PowerThermalTransparencyPercent=" + this.PowerThermalTransparencyPercent,
             "PowerThermalAutoSizeEnabled=" + this.PowerThermalAutoSizeEnabled,
+            "PowerThermalIntegratedEnabled=" + this.PowerThermalIntegratedEnabled,
+            "CpuCoreWarningPercent=" + this.CpuCoreWarningPercent.ToString(CultureInfo.InvariantCulture),
+            "CpuCoreCriticalPercent=" + this.CpuCoreCriticalPercent.ToString(CultureInfo.InvariantCulture),
             "PowerThermalAutoDirection=" + this.PowerThermalAutoDirection,
             "PowerThermalVisibleAlertCount=" + this.PowerThermalVisibleAlertCount,
             "PowerThermalManualEnergySaverThresholdPercent=" + this.PowerThermalManualEnergySaverThresholdPercent,
@@ -2850,6 +2981,8 @@ internal sealed class WidgetSettings
             "GfwProbeIntervalMinutes=" + this.GfwProbeIntervalMinutes,
             "CloudEndpointTestSeed=" + this.CloudEndpointTestSeed,
             "CloudStatusRegionMask=" + this.CloudStatusRegionMask,
+            "CloudEndpointTargets=" + NetworkProbeTargetSettings.SerializeArray(this.CloudEndpointTargets),
+            "FixedPingTargets=" + NetworkProbeTargetSettings.SerializeArray(this.FixedPingTargets),
             "ConnectionCheckWidth=" + this.ConnectionCheckWidth,
             "ConnectionCheckHeight=" + this.ConnectionCheckHeight,
             "ConnectionCheckLeftX=" + this.ConnectionCheckLeftX,
@@ -2872,6 +3005,17 @@ internal sealed class WidgetSettings
             "SpecBoardLeftDockTabCenterY=" + this.SpecBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
             "CodexTaskBoardLeftDockEnabled=" + this.CodexTaskBoardLeftDockEnabled,
             "CodexTaskBoardLeftDockTabCenterY=" + this.CodexTaskBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
+            "NetworkMonitorLeftDockEnabled=" + this.NetworkMonitorLeftDockEnabled,
+            "NetworkMonitorLeftDockTabCenterY=" + this.NetworkMonitorLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
+            "GuardBoardLeftDockEnabled=" + this.GuardBoardLeftDockEnabled,
+            "GuardBoardLeftDockTabCenterY=" + this.GuardBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
+            "GuardBoardAutoHideSeconds=" + this.GuardBoardAutoHideSeconds.ToString(CultureInfo.InvariantCulture),
+            "GuardSleepEnabled=" + this.GuardSleepEnabled,
+            "GuardSleepSinceUtcTicks=" + this.GuardSleepSinceUtcTicks.ToString(CultureInfo.InvariantCulture),
+            "GuardDisplayMinutes=" + this.GuardDisplayMinutes.ToString(CultureInfo.InvariantCulture),
+            "GuardOfflineThresholdMinutes=" + this.GuardOfflineThresholdMinutes.ToString(CultureInfo.InvariantCulture),
+            "GuardDisplayUntilUtcTicks=" + this.GuardDisplayUntilUtcTicks.ToString(CultureInfo.InvariantCulture),
+            "GuardBatteryCarePauseUntilUtcTicks=" + this.GuardBatteryCarePauseUntilUtcTicks.ToString(CultureInfo.InvariantCulture),
             "LeftDockCollapseSeconds=" + this.LeftDockCollapseSeconds.ToString(CultureInfo.InvariantCulture),
             "LeftDockOutsideClickCollapseEnabled=" + this.LeftDockOutsideClickCollapseEnabled,
             "CodexTaskBoardWidth=" + this.CodexTaskBoardWidth.ToString(CultureInfo.InvariantCulture),
@@ -3439,6 +3583,24 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "PowerThermalIntegratedEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.PowerThermalIntegratedEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CpuCoreWarningPercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CpuCoreWarningPercent = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CpuCoreCriticalPercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CpuCoreCriticalPercent = intValue;
+            return;
+        }
+
         if ((string.Equals(key, "PowerThermalAutoDirection", StringComparison.OrdinalIgnoreCase) ||
              string.Equals(key, "PowerThermalAutoSizeDirection", StringComparison.OrdinalIgnoreCase)) &&
             value.Length > 0)
@@ -3543,6 +3705,18 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "CloudStatusRegionMask", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
         {
             settings.CloudStatusRegionMask = intValue & CloudStatusRegionMaskAll;
+            return;
+        }
+
+        if (string.Equals(key, "CloudEndpointTargets", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.CloudEndpointTargets = NetworkProbeTargetSettings.DeserializeArray(value);
+            return;
+        }
+
+        if (string.Equals(key, "FixedPingTargets", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.FixedPingTargets = NetworkProbeTargetSettings.DeserializeArray(value);
             return;
         }
 
@@ -3684,6 +3858,74 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "CodexTaskBoardLeftDockTabCenterY", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
         {
             settings.CodexTaskBoardLeftDockTabCenterY = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "NetworkMonitorLeftDockEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.NetworkMonitorLeftDockEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "GuardBoardLeftDockEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.GuardBoardLeftDockEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "GuardBoardLeftDockTabCenterY", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.GuardBoardLeftDockTabCenterY = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "GuardBoardAutoHideSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.GuardBoardAutoHideSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "GuardSleepEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.GuardSleepEnabled = boolValue;
+            return;
+        }
+
+        long guardSinceTicks;
+        if (string.Equals(key, "GuardSleepSinceUtcTicks", StringComparison.OrdinalIgnoreCase) && long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out guardSinceTicks))
+        {
+            settings.GuardSleepSinceUtcTicks = guardSinceTicks;
+            return;
+        }
+
+        if (string.Equals(key, "GuardDisplayMinutes", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.GuardDisplayMinutes = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "GuardOfflineThresholdMinutes", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.GuardOfflineThresholdMinutes = intValue;
+            return;
+        }
+
+        long guardTicks;
+        if (string.Equals(key, "GuardDisplayUntilUtcTicks", StringComparison.OrdinalIgnoreCase) && long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out guardTicks))
+        {
+            settings.GuardDisplayUntilUtcTicks = guardTicks;
+            return;
+        }
+
+        if (string.Equals(key, "GuardBatteryCarePauseUntilUtcTicks", StringComparison.OrdinalIgnoreCase) && long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out guardTicks))
+        {
+            settings.GuardBatteryCarePauseUntilUtcTicks = guardTicks;
+            return;
+        }
+
+        if (string.Equals(key, "NetworkMonitorLeftDockTabCenterY", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.NetworkMonitorLeftDockTabCenterY = intValue;
             return;
         }
 
@@ -6332,6 +6574,7 @@ internal sealed class WidgetSettings
     private static bool IsFullRoundTripSupportedType(Type type)
     {
         return type == typeof(int) ||
+            type == typeof(long) ||
             type == typeof(bool) ||
             type == typeof(double) ||
             type == typeof(string) ||
@@ -6364,6 +6607,15 @@ internal sealed class WidgetSettings
         if (type == typeof(int))
         {
             property.SetValue(settings, 37 + (index % 41), null);
+            return;
+        }
+
+        // Long-typed settings are all UTC tick stamps today, and Normalize discards ticks outside
+        // the DateTime range. Offsetting from a fixed valid instant keeps each sentinel distinct
+        // without ever landing on a value normalization would reset to 0.
+        if (type == typeof(long))
+        {
+            property.SetValue(settings, new DateTime(2031, 3, 7, 4, 5, 6, DateTimeKind.Utc).Ticks + index, null);
             return;
         }
 
@@ -6415,7 +6667,26 @@ internal sealed class WidgetSettings
         settings.DisplayTimeZoneId = "UTC";
         settings.OperationPrimaryPanelMode = OperationPrimaryPanelMode.Hidden;
         settings.ResolutionCompatibilityScalePercent = 125;
+        // Guard durations snap to a fixed ladder, so the generic numeric sentinel would be rewritten
+        // by Normalize on load and fail the comparison. These pick real off-default ladder steps.
+        settings.GuardDisplayMinutes = 120;
+        settings.GuardOfflineThresholdMinutes = 5;
         settings.MetricOrder = new string[] { MetricNpu, MetricGpu, MetricNetwork, MetricDisk, MetricMemory, MetricCpu };
+        settings.CloudEndpointTargets = new string[]
+        {
+            "builtin|cloudflare|1",
+            "builtin|akamai|0",
+            "builtin|github|1",
+            "builtin|aws|1",
+            "builtin|azure|1",
+            "builtin|google|1",
+            "custom|RoundTrip Cloud|9.9.9.9|1"
+        };
+        settings.FixedPingTargets = new string[]
+        {
+            "target|RoundTrip Ping|1.0.0.1|1",
+            "target|Disabled Ping|8.8.4.4|0"
+        };
     }
 
     private static void RunWindowTransparencyOverrideSelfTest()
@@ -7123,6 +7394,47 @@ internal sealed class WidgetSettings
     private static int NormalizeLeftDockTabCenterY(int value)
     {
         return value == AutoLeftDockTabCenterY || (value >= 0 && value <= 1000000) ? value : AutoLeftDockTabCenterY;
+    }
+
+    // Guard steppers walk a fixed ladder, so an out-of-menu value from a hand-edited settings.ini
+    // snaps to the nearest legal step instead of being clamped into a duration the UI cannot show.
+    public static int NormalizeGuardDisplayMinutes(int value)
+    {
+        return SnapToNearestStep(value, GuardDisplayMinuteSteps, DefaultGuardDisplayMinutes);
+    }
+
+    public static int NormalizeGuardOfflineThresholdMinutes(int value)
+    {
+        return SnapToNearestStep(value, GuardOfflineThresholdMinuteSteps, DefaultGuardOfflineThresholdMinutes);
+    }
+
+    private static int SnapToNearestStep(int value, int[] steps, int fallback)
+    {
+        if (steps == null || steps.Length == 0)
+        {
+            return fallback;
+        }
+
+        int best = steps[0];
+        int bestDistance = Math.Abs(value - best);
+        for (int i = 1; i < steps.Length; i++)
+        {
+            int distance = Math.Abs(value - steps[i]);
+            if (distance < bestDistance)
+            {
+                best = steps[i];
+                bestDistance = distance;
+            }
+        }
+
+        return best;
+    }
+
+    // A tick value that cannot be a UTC DateTime (negative, or past DateTime.MaxValue) would throw
+    // inside the DateTime constructor at load time, so it is discarded here as "not armed".
+    private static long NormalizeUtcTicks(long value)
+    {
+        return value > 0L && value <= DateTime.MaxValue.Ticks ? value : 0L;
     }
 
     private static string NormalizeSpecBoardLedgerPath(string value)

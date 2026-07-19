@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -198,6 +198,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         DisposeQuickGridForm();
         DisposeLauncherTrioForm();
         DisposeCodexTaskBoardForm();
+        DisposeGuardBoardForm();
         if (Interlocked.CompareExchange(ref this.foregroundFpsReadRunning, 0, 0) == 0)
         {
             this.foregroundFpsReader.Dispose();
@@ -351,6 +352,11 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.codexTaskBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
+        // The guard board is always built at startup, including when its left-edge tab is disabled:
+        // its hidden runtime owns sleep/display requirements and deadline maintenance independently
+        // of whether the presentation surface is enabled.
+        EnsureGuardBoardForm();
+
         if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed)
         {
             this.launcherTrioForm.ApplyRuntimeSettings(this.CurrentSettings);
@@ -406,6 +412,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.codexTaskBoardForm.SetDockTabHiddenForFullscreen(hidden);
         }
 
+        SetGuardBoardHiddenForFullscreen(hidden);
+
         if (this.hiddenForFullscreen == hidden &&
             ((hidden && !this.Visible) || (!hidden && this.Visible)))
         {
@@ -450,6 +458,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.codexTaskBoardForm.SyncLeftDockTab();
         }
 
+        RecoverGuardBoardAfterDisplayResume();
+
         PositionOperationWindow();
         UpdateForegroundFpsTimer();
         RenderLayeredWindow();
@@ -470,6 +480,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.codexTaskBoardForm.SetDockTabDisplaySuspended(true);
         }
 
+        PrepareGuardBoardForDisplaySuspend();
         ResetDisplayRenderResources();
     }
 
@@ -3544,6 +3555,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         RunCodexTaskBoardPlacementSelfTest();
         EdgeDockTabForm.RunSelfTest();
         OutsideClickDismissalMonitor.RunSelfTest();
+        PathPingProbeReader.RunSelfTest();
     }
 
     private static void RunInteractionHitMaskSelfTest()

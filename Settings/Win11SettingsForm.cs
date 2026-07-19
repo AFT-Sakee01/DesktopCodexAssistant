@@ -545,7 +545,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         AddPageGrouped("\uEBB0", "功耗与温度", "UX3407N / UX3607O 专用功耗温度窗口。", new string[][]
         {
-            new string[] { "自动布局与告警", "PowerThermalAutoSizeEnabled", "PowerThermalAutoDirection", "PowerThermalVisibleAlertCount" },
+            new string[] { "自动布局与告警", "PowerThermalIntegratedEnabled", "PowerThermalAutoSizeEnabled", "PowerThermalAutoDirection", "PowerThermalVisibleAlertCount", "CpuCoreWarningPercent", "CpuCoreCriticalPercent" },
             new string[] { "电池与节能", "PowerThermalManualEnergySaverThresholdPercent" },
             new string[] { "透明度", "PowerThermalTransparencyPercent", "PowerThermalTransparencyOverridePercent" },
             new string[] { "!测试", "ThermalTestMode" }
@@ -555,9 +555,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             new string[] { "网络监控", "NetworkMonitorAdapterId", "NetworkMonitorTransparencyPercent", "NetworkMonitorTransparencyOverridePercent" },
             new string[] { "GFW 检测", "GfwProbeEnabled", "GfwProbeIntervalMinutes" },
+            new string[] { "云服务检测", "CloudEndpointTargets", "CloudStatusRegionMask" },
+            new string[] { "固定站点 Ping", "FixedPingTargets" },
             new string[] { "连接检测", "ConnectionCheckIntervalSeconds", "ConnectionCheckTransparencyPercent", "ConnectionCheckBorderTransparencyPercent", "ConnectionCheckTransparencyOverridePercent" },
             new string[] { "!手动刷新", "GfwProbeManualRefreshToken", "ConnectionCheckManualRefreshToken" },
-            new string[] { "!云服务端点", "CloudEndpointTestSeed", "CloudStatusRegionMask" },
+            new string[] { "!云服务测试", "CloudEndpointTestSeed" },
             new string[] { "!测试", "CleanIpBadgeTestMode", "NetworkStatusTestMode" }
         });
 
@@ -795,7 +797,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         PropertyInfo property = typeof(WidgetSettings).GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
-        if (property == null || !property.CanRead || !property.CanWrite || property.PropertyType == typeof(string[]))
+        if (property == null || !property.CanRead || !property.CanWrite ||
+            (property.PropertyType == typeof(string[]) && !IsNetworkProbeTargetSetting(property.Name)))
         {
             return null;
         }
@@ -1158,6 +1161,29 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private Control BuildValueControl(PropertyInfo property)
     {
         Type type = property.PropertyType;
+        if (type == typeof(string[]) && IsNetworkProbeTargetSetting(property.Name))
+        {
+            bool cloud = string.Equals(property.Name, "CloudEndpointTargets", StringComparison.Ordinal);
+            NetworkProbeTargetEditorState state = new NetworkProbeTargetEditorState(cloud, null);
+            Button button = BuildCommandButton(state.GetButtonText(), false, AccentClr);
+            button.Width = 300;
+            button.Height = 54;
+            button.Tag = state;
+            button.Click += delegate
+            {
+                using (NetworkProbeTargetEditorForm dialog = new NetworkProbeTargetEditorForm(state.Cloud, state.Values))
+                {
+                    if (dialog.ShowDialog(this) == DialogResult.OK)
+                    {
+                        state.SetValues(dialog.GetValues());
+                        button.Text = state.GetButtonText();
+                        OnSettingChanged();
+                    }
+                }
+            };
+            return button;
+        }
+
         if (type == typeof(bool))
         {
             ToggleSwitch toggle = new ToggleSwitch();
@@ -1306,6 +1332,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         text.Font = GetUiFont(9.5f);
         text.TextChanged += delegate { OnSettingChanged(); };
         return text;
+    }
+
+    private static bool IsNetworkProbeTargetSetting(string propertyName)
+    {
+        return string.Equals(propertyName, "CloudEndpointTargets", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "FixedPingTargets", StringComparison.Ordinal);
     }
 
     private Control BuildSpecBoardLedgerPathPicker()
@@ -1706,8 +1738,16 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             return;
         }
 
-        button.BackColor = option.Available ? DesignTokens.SettingsWarmTheme.ButtonRest : MicaLayer;
-        button.ForeColor = option.Available ? TextSecondary : TextTertiary;
+        if (option.Available)
+        {
+            button.BackColor = DesignTokens.Colors.Warning;
+            button.ForeColor = Color.Black;
+            button.FlatAppearance.BorderColor = DesignTokens.Colors.WarningDeep;
+            return;
+        }
+
+        button.BackColor = MicaLayer;
+        button.ForeColor = TextTertiary;
         button.FlatAppearance.BorderColor = option.Pending ? DesignTokens.Colors.Warning : ControlBorder;
     }
 
@@ -2158,6 +2198,16 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
     private void SetEditorValue(SettingEditor editor, object value)
     {
+        NetworkProbeTargetEditorState targetState = editor.Control == null
+            ? null
+            : editor.Control.Tag as NetworkProbeTargetEditorState;
+        if (targetState != null)
+        {
+            targetState.SetValues(value as string[]);
+            editor.Control.Text = targetState.GetButtonText();
+            return;
+        }
+
         if (editor.Property != null && string.Equals(editor.Property.Name, "SpecBoardLedgerPath", StringComparison.Ordinal))
         {
             TextBox pathText = editor.Control.Tag as TextBox;
@@ -2354,6 +2404,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         Type type = editor.Property.PropertyType;
+        NetworkProbeTargetEditorState targetState = editor.Control == null
+            ? null
+            : editor.Control.Tag as NetworkProbeTargetEditorState;
+        if (targetState != null)
+        {
+            return NetworkProbeTargetSettings.CloneArray(targetState.Values);
+        }
+
         if (string.Equals(editor.Property.Name, "SpecBoardLedgerPath", StringComparison.Ordinal))
         {
             TextBox pathText = editor.Control.Tag as TextBox;
@@ -3520,9 +3578,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexQuotaPlanAutoResumePausedGoals",
             "CodexQuotaPlanPauseGoalIds",
             "CodexQuotaPlanResumeGoalIds",
+            "PowerThermalIntegratedEnabled",
+            "CpuCoreWarningPercent",
+            "CpuCoreCriticalPercent",
             "PowerThermalAutoSizeEnabled",
             "PowerThermalManualEnergySaverThresholdPercent",
             "GfwProbeIntervalMinutes",
+            "CloudEndpointTargets",
+            "FixedPingTargets",
             "OperationButtonSize",
             "OperationPrimaryPanelMode",
             "OperationDoubleClickSpecialMenuEnabled",
@@ -3552,10 +3615,36 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             throw new InvalidOperationException("WinUI settings read failed.");
         }
 
+        VerifyNetworkProbeTargetEditors(settings);
+
         FluentScrollPanel page = GetSelectedScrollPage();
         if (page == null || !page.ScrollByMouseWheelDelta(-120))
         {
             throw new InvalidOperationException("WinUI settings page wheel scroll failed.");
+        }
+    }
+
+    private void VerifyNetworkProbeTargetEditors(WidgetSettings settings)
+    {
+        string[] names = { "CloudEndpointTargets", "FixedPingTargets" };
+        for (int i = 0; i < names.Length; i++)
+        {
+            SettingEditor editor;
+            if (!this.editors.TryGetValue(names[i], out editor))
+            {
+                throw new InvalidOperationException("Network probe target editor missing: " + names[i]);
+            }
+
+            NetworkProbeTargetEditorState state = editor.Control.Tag as NetworkProbeTargetEditorState;
+            string[] value = editor.Property.GetValue(settings, null) as string[];
+            if (state == null || value == null ||
+                !string.Equals(
+                    NetworkProbeTargetSettings.BuildSignature(state.Values),
+                    NetworkProbeTargetSettings.BuildSignature(value),
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Network probe target editor round-trip failed: " + names[i]);
+            }
         }
     }
 
@@ -3564,6 +3653,32 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         if (ClaudeRadarModelButtonWidth != 216 || ClaudeRadarModelButtonMaxTextChars != 21)
         {
             throw new InvalidOperationException("Claude Radar model grid cells must retain the requested 50% width and text-capacity increase.");
+        }
+
+        using (Button unselected = new Button())
+        using (Button selected = new Button())
+        using (Button empty = new Button())
+        {
+            ClaudeModelOption available = new ClaudeModelOption("m1", "Opus", true, false);
+            ApplyClaudeRadarModelButtonStyle(unselected, available, false);
+            ApplyClaudeRadarModelButtonStyle(selected, available, true);
+            ApplyClaudeRadarModelButtonStyle(empty, null, false);
+            if (unselected.BackColor != DesignTokens.Colors.Warning ||
+                unselected.ForeColor != Color.Black ||
+                unselected.FlatAppearance.BorderColor != DesignTokens.Colors.WarningDeep)
+            {
+                throw new InvalidOperationException("Claude Radar selectable unselected model buttons must use the yellow fill style.");
+            }
+
+            if (selected.BackColor != DesignTokens.SettingsWarmTheme.Accent || selected.ForeColor != Color.Black)
+            {
+                throw new InvalidOperationException("Claude Radar selected model button must retain the green accent style.");
+            }
+
+            if (empty.BackColor == DesignTokens.Colors.Warning)
+            {
+                throw new InvalidOperationException("Claude Radar empty model slots must remain visually disabled instead of yellow.");
+            }
         }
 
         SettingEditor editor;
@@ -4056,6 +4171,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexModelTimeEfficiencyLowThresholdPercent", "时间低效阈值" },
         { "DisplayTimeZoneId", "通用显示时区 ID" },
         { "DisplayTimeZoneMode", "通用显示时区模式" },
+        { "PowerThermalIntegratedEnabled", "功耗模块集成到性能窗口" },
+        { "CpuCoreWarningPercent", "CPU 核心警戒阈值 (%)" },
+        { "CpuCoreCriticalPercent", "CPU 核心满载阈值 (%)" },
         { "PowerThermalAutoSizeEnabled", "功耗模块自动大小" },
         { "PowerThermalAutoDirection", "自动大小方向" },
         { "PowerThermalVisibleAlertCount", "可见告警数量" },
@@ -4068,6 +4186,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "GfwProbeEnabled", "启用 GFW 检测" },
         { "GfwProbeManualRefreshToken", "立即刷新 GFW 检测" },
         { "CloudEndpointTestSeed", "云服务测试种子" },
+        { "CloudEndpointTargets", "检测目标" },
+        { "FixedPingTargets", "Ping 目标" },
         { "CloudStatusRegionMask", "云服务地区掩码" },
         { "ConnectionCheckIntervalSeconds", "连接检测间隔" },
         { "ConnectionCheckTransparencyPercent", "连接检测透明度" },
@@ -4183,6 +4303,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarManualIqStatusWidthPixels", "调整余额区右侧 IQ 圆环与降智文字列宽。" },
         { "CodexRadarManualTextScalePercent", "只影响 Codex Radar 内部状态文字和余额时间字号。" },
         { "CodexRadarManualRingScalePercent", "只影响 Codex Radar 内部效率、余额和 IQ 圆环大小。" },
+        { "PowerThermalIntegratedEnabled", "开启后功耗温度显示为性能窗口底部的一条区域，独立窗口隐藏；关闭则恢复为独立窗口。" },
+        { "CpuCoreWarningPercent", "单个核心占用达到该值后，柱状图超出部分显示为黄色。默认 80。" },
+        { "CpuCoreCriticalPercent", "单个核心占用达到该值后，整根柱子显示为红色。默认 100，不得低于警戒阈值。" },
         { "PowerThermalAutoSizeEnabled", "根据告警数量自动调整功耗温度窗口高度。" },
         { "PowerThermalAutoDirection", "自动调整时从哪个方向展开。" },
         { "PowerThermalVisibleAlertCount", "功耗温度窗口中最多显示的告警数量。" },
@@ -4196,6 +4319,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ConnectionCheckManualRefreshToken", "点击后请求立刻刷新连接检测。" },
         { "ConnectionCheckIntervalSeconds", "连接检测的自动刷新间隔。" },
         { "CloudEndpointTestSeed", "仅用于测试显示效果，日常保持默认。" },
+        { "CloudEndpointTargets", "勾选的内置服务会保留原官方状态检测；也可新增显示名称和 IP/主机。取消勾选后不发起该项检测。" },
+        { "FixedPingTargets", "PathPing 下方固定显示的 Ping 站点；默认 Google、百度、Yahoo，可新增、删除或取消检测。" },
         { "CloudStatusRegionMask", "云服务状态的地区过滤位掩码，日常保持默认。" },
         { "CleanIpBadgeTestMode", "仅用于测试显示效果，日常保持关闭。" },
         { "AlertTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
