@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.5
+适用版本：2.0.0.6
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -114,7 +114,7 @@ Cpu, Memory, Disk, Network, Gpu, Npu, Power, Guard, CodexQuota, ClaudeQuota
 
 `PushMetricTileFeed()` 把同一个 feed 推给全部 tile；方块不自行采样。鼠标悬停时 `MetricTileExpandForm` 使用同一 feed 和相同 tile ID 展开详情，也不建立 reader 或 timer。
 
-CPU、MEM、DISK 与 NET 展开详情使用现有 tile 角色色绘制标题和窗口边框。CPU 的总占用曲线与每核柱共用 `MetricTileExpandForm.ResolvePlotY()` 的 0–100 投影，100% 柱顶与 100 参考线落在同一像素行；频率、基准频率、核心数与峰值核心显示在标题下方，不再保留曲线/柱说明图例。MEM 同时消费 `MemoryHistory` 与 `MemoryHardwareReservedHistory`，以紫色显示已用内存、黄色显示硬件保留曲线和底部条段。NET 以蓝色下行、红色上行绘制镜像曲线，两个当前速率在左侧连续显示；DISK 以黄色写入、绿色读取绘制共享刻度曲线，两个当前速率同样靠左显示。上述展开窗只读同一 `MetricTileFeed`，不得在绘制路径另行采样。
+CPU、MEM、DISK 与 NET 展开详情使用现有 tile 角色色绘制标题和窗口边框。CPU 的总占用曲线与每核柱共用 `MetricTileExpandForm.ResolvePlotY()` 的 0–100 投影，100% 柱顶与 100 参考线落在同一像素行；频率、基准频率、核心数与峰值核心显示在标题下方，不再保留曲线/柱说明图例。MEM 外环和中心数字继续显示物理内存占用率，内环改为 `MemoryPressureTracker` 根据可用物理内存、系统提交率和持续换页计算的 0–100 压力指数；展开窗仍以紫色显示已用历史、黄色显示 GPU/NPU 共享内存历史，底部则显示带 50/70/85 刻度的压力轨和当前提交率/换页速率，不能把页文件占用或 GPU/NPU 共享量直接等同于压力。NET 以蓝色下行、红色上行绘制镜像曲线，两个当前速率在左侧连续显示；DISK 以黄色写入、绿色读取绘制共享刻度曲线，两个当前速率同样靠左显示。上述展开窗只读同一 `MetricTileFeed`，不得在绘制路径另行采样。
 
 两级防烧屏由 `WidgetForm.UpdateBurnInProtectionTriggers()` 统一发布。一级通过 `LayeredWidgetFormBase.PresentationLuminancePercent` 把 10 个 tile 与当前展开窗按同一亮度策略处理；`WidgetForm.UpdateMetricTileBurnInPresentation()` 命中任意一个右侧 tile 或展开窗时，整组临时恢复亮度。二级由 `MetricTileForm.ResolveBurnInRingColor()` 只反转环形强调色，由 `MetricTileForm.ShouldDrawCenterText()` 抑制 tile 中心白字，并由 `MetricTileExpandForm.ShouldDrawNeutralText()` 抑制展开窗的白色/中性色文字，避免把整个位图做全局反色。
 

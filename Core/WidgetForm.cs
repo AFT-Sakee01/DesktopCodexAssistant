@@ -1464,9 +1464,12 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             {
                 this.lastSampleDiagnosticUtc = nowUtc;
                 Program.LogInfo(string.Format(
-                    "Sample CPU={0:0}% Memory={1:0}% Disk={2:0}% GPU={3:0}% GPUMem={4:0}% NPU={5:0}% NPUMem={6:0}% NetConnected={7} NetSent={8:0.0}Bps NetRecv={9:0.0}Bps",
+                    "Sample CPU={0:0}% Memory={1:0}% MemoryPressure={2:0}% Commit={3:0}% Paging={4:0.0}MBps Disk={5:0}% GPU={6:0}% GPUMem={7:0}% NPU={8:0}% NPUMem={9:0}% NetConnected={10} NetSent={11:0.0}Bps NetRecv={12:0.0}Bps",
                     this.snapshot.CpuPercent,
                     this.snapshot.MemoryPercent,
+                    this.snapshot.MemoryPressurePercent,
+                    this.snapshot.MemoryCommitPercent,
+                    this.snapshot.MemoryPagingMegabytesPerSecond,
                     this.snapshot.DiskPercent,
                     this.snapshot.GpuPercent,
                     this.snapshot.GpuMemoryPercent,
@@ -1523,7 +1526,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private void UpdateAlertIconStates()
     {
         DateTime now = DateTime.UtcNow;
-        UpdateAlertIconState(this.snapshot.MemoryPercent, now, ref this.memoryCriticalSinceUtc, ref this.memoryAlertIconActive);
+        UpdateAlertIconState(this.snapshot.MemoryPressurePercent, now, ref this.memoryCriticalSinceUtc, ref this.memoryAlertIconActive);
         UpdateAlertIconState(GetDiskCombinedAlertPercent(), now, ref this.diskCriticalSinceUtc, ref this.diskAlertIconActive);
         UpdateAlertIconState(
             Math.Max(this.snapshot.GpuPercent, this.snapshot.GpuMemoryPercent),

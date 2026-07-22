@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.2
+适用版本：2.0.0.6
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -55,6 +55,7 @@ DNS 检测：
 | 项目 | 规则 |
 | --- | --- |
 | 主控制 tick | hidden `WidgetForm` 按主性能间隔检查设置热加载、全屏/显示状态、PDH 采样和 `MetricTileFeed` 推送；宿主自身不绘制。停止事件另由 ThreadPool 注册等待直接投递 `WM_CLOSE`，主 tick 轮询仅作兼容兜底。 |
+| 内存压力 | `PdhSampler` 在同一次主 PDH 采样读取 `Memory\\Committed Bytes`、`Memory\\Commit Limit`、`Memory\\Pages Input/sec` 与 `Memory\\Pages Output/sec`；换页按 `MemoryPressureTracker.PagingSmoothingSeconds = 10` 秒时间 EWMA 平滑，不新增 timer。压力升级需持续 `PromoteDelaySeconds = 5` 秒，恢复需持续 `RecoverDelaySeconds = 20` 秒；提交率达到 95% 或可用物理内存低于临界头寸时可立即进入危险。 |
 | 应用窗口事件 | 前台窗口 Hook 始终启用；只有最大化自动隐藏或全屏/最大化/遮挡可见性模式才启用对象 Hook 和主采样周期完整枚举。事件按 HWND 合并，125 ms 批处理，每批最多 64 项，队列上限 256 项；溢出退化为一次完整枚举。同产品测试/辅助进程的窗口事件按 PID 身份缓存过滤。 |
 | 昂贵硬件 | GPU/NPU 按 1/2/5 s 独立 deadline；不能被更快的 CPU tick 放大。 |
 | 设置热加载 | `settings.ini` 由 `FileSystemWatcher` 与主 tick 的修改时间检查共同覆盖。 |

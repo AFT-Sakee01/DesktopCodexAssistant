@@ -1,6 +1,6 @@
 # 接口与复用资源汇总
 
-适用版本：2.0.0.2
+适用版本：2.0.0.6
 
 ## 1. 文档用途
 
@@ -98,7 +98,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 
 | 索引 ID | 能力 | 主要复用位置 |
 | --- | --- | --- |
-| `service.windows.pdh` | CPU、磁盘、网络、GPU、NPU 计数器 | `PdhSampler` |
+| `service.windows.pdh` | CPU、内存提交/换页、磁盘、网络、GPU、NPU 计数器 | `PdhSampler`；MEM 压力复用主 query，不在 UI 重采样 |
 | `service.windows.wmi_hardware` | CPU、内存、磁盘、GPU、NPU 硬件信息 | `PdhSampler` |
 | `service.windows.wmi_power_thermal` | 电池功耗、温度区、电源计划 | `PowerThermalForm` |
 | `service.windows.layered_window` | 透明分层窗口提交和缓存 | 10 个 tiles、5 组 Dock tab/board 与 `OperationForm` 等可见分层表面；headless owners 不提交位图 |
@@ -124,7 +124,8 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `internal_api.logger` | 缓冲日志、错误日志和 GFW 日志 | 高频事件聚合或只记录状态变化；目录大小扫描默认 10 分钟节流，活动日志轮转时强制执行 |
 | `internal_api.timing_stats` | 12 小时滚动耗时统计 | 新增性能计时点复用内存滚动窗口和 15 分钟 P95/P99/max 摘要，不逐样本写盘 |
 | `internal_api.idle_cpu_diagnostics` | 空闲 CPU 飙升归因 | 复用一次性 CPU/进程采样、事件日志扫描和公式化归因规则 |
-| `internal_api.pdh_sampler` | 性能快照 | UI 不直接访问 PDH/WMI |
+| `internal_api.pdh_sampler` | 性能快照与内存压力采样 | UI 不直接访问 PDH/WMI；提交、可用内存和换页统一进入 `PerfSnapshot` |
+| `internal_api.snapshot_models` | `PerfSnapshot` 与 `MemoryPressureTracker` 等快照契约 | MEM tile/展开窗只消费已经计算和防抖的压力分值/等级，不复制阈值 |
 | `internal_api.network_monitor_reader` | 网络状态总快照 | UI 只读取 Clone |
 | `internal_api.gfw_probe_reader` | GFW 调度 | 与云检测保持解耦 |
 | `internal_api.cloud_endpoint_probe` | 云服务异步探测 | 复用取消、缓存和异常确认 |
@@ -186,7 +187,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 
 | 类别 | 对象与边界 |
 | --- | --- |
-| 右侧可见表面 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度共 10 个 `MetricTileForm`；悬停详情复用一个 `MetricTileExpandForm`，只读同一 `MetricTileFeed` |
+| 右侧可见表面 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度共 10 个 `MetricTileForm`；悬停详情复用一个 `MetricTileExpandForm`，只读同一 `MetricTileFeed`。MEM 外环/中心显示物理占用，内环/压力轨显示 `MemoryPressureTracker` 结果 |
 | 左侧固定 Dock | Network、Spec Board、Codex Task、GUARD、Codex IQ 共 5 枚 `EdgeDockTabForm` 及对应 board；五角色始终存在，只允许排序，不允许恢复浮动窗或禁用角色 |
 | 其他用户界面 | `OperationForm` 常驻；`Win11SettingsForm` 与 `SpecBoardManagerForm` 按需打开，后二者是可聚焦的普通工具窗口 |
 | headless owners | `CodexRadarForm` 统一拥有 Codex/Claude 双 family；`PowerThermalForm` 拥有功耗、温度和电池采样。两者只运行 scheduler、缓存和 cache-only snapshot builder，不调用 `Show()`、不参与布局编辑；旧 Radar/Power renderer 已物理删除 |

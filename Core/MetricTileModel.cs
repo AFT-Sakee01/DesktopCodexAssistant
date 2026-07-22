@@ -223,13 +223,14 @@ internal static class MetricTileModel
 
             case MetricTileId.Memory:
                 tile.OuterPercent = s.MemoryPercent;
-                // GPU and NPU share the system pool on this platform, same reasoning as the classic
-                // panel's gauge segment.
-                tile.InnerPercent = s.MemoryTotalGb > 0.0
-                    ? Clamp((s.GpuMemoryUsedGb + s.NpuMemoryUsedGb) / s.MemoryTotalGb * 100.0, 0.0, 100.0)
-                    : -1.0;
+                // The outer ring and centre keep the familiar physical-use reading. The inner ring
+                // is the pressure index so a cache-heavy 90% does not look critical unless commit,
+                // available headroom or sustained paging also says the system is constrained.
+                tile.InnerPercent = Clamp(s.MemoryPressurePercent, 0.0, 100.0);
+                tile.InnerAccent = GetMemoryPressureColor(s.MemoryPressureLevel);
                 tile.CenterValue = Round(s.MemoryPercent);
-                tile.AlertPercent = s.MemoryPercent;
+                tile.AlertPercent = s.MemoryPressureLevel >= MemoryPressureLevel.High ? 100.0 : 0.0;
+                tile.AlertIconVisible = s.MemoryPressureLevel == MemoryPressureLevel.Critical;
                 break;
 
             case MetricTileId.Disk:
@@ -478,6 +479,28 @@ internal static class MetricTileModel
             (int)(color.B * 0.62));
     }
 
+    internal static Color GetMemoryPressureColor(MemoryPressureLevel level)
+    {
+        switch (level)
+        {
+            case MemoryPressureLevel.Moderate: return DesignTokens.Colors.Warning;
+            case MemoryPressureLevel.High: return DesignTokens.Colors.WarningDeep;
+            case MemoryPressureLevel.Critical: return DesignTokens.Colors.DangerStrong;
+            default: return DesignTokens.Colors.Success;
+        }
+    }
+
+    internal static string GetMemoryPressureLabel(MemoryPressureLevel level)
+    {
+        switch (level)
+        {
+            case MemoryPressureLevel.Moderate: return "注意";
+            case MemoryPressureLevel.High: return "高";
+            case MemoryPressureLevel.Critical: return "危险";
+            default: return "低";
+        }
+    }
+
     internal static double Clamp(double value, double min, double max)
     {
         if (double.IsNaN(value))
@@ -496,6 +519,8 @@ internal static class MetricTileModel
         feed.Snapshot.CpuBaseFrequencyGhz = 4.45;
         feed.Snapshot.MemoryPercent = 63.0;
         feed.Snapshot.MemoryTotalGb = 47.6;
+        feed.Snapshot.MemoryPressurePercent = 18.0;
+        feed.Snapshot.MemoryPressureLevel = MemoryPressureLevel.Low;
         feed.Snapshot.GpuMemoryUsedGb = 1.3;
         feed.Snapshot.NpuMemoryUsedGb = 0.7;
         feed.Snapshot.NetworkConnected = true;
@@ -521,9 +546,21 @@ internal static class MetricTileModel
         }
 
         MetricTileData memory = tiles[1];
-        if (Math.Abs(memory.InnerPercent - (2.0 / 47.6 * 100.0)) > 0.01)
+        if (Math.Abs(memory.InnerPercent - 18.0) > 0.01 ||
+            memory.InnerAccent != DesignTokens.Colors.Success ||
+            memory.AlertPercent > 0.0)
         {
-            throw new InvalidOperationException("Memory tile inner ring must carry the GPU+NPU share of total memory.");
+            throw new InvalidOperationException("Memory tile inner ring must carry the low pressure index without alerting.");
+        }
+
+        feed.Snapshot.MemoryPressurePercent = 88.0;
+        feed.Snapshot.MemoryPressureLevel = MemoryPressureLevel.Critical;
+        memory = BuildTile(MetricTileId.Memory, feed);
+        if (memory.InnerAccent != DesignTokens.Colors.DangerStrong ||
+            memory.AlertPercent < 80.0 ||
+            !memory.AlertIconVisible)
+        {
+            throw new InvalidOperationException("Critical memory pressure must drive the red inner ring and tile alert.");
         }
 
         MetricTileData network = tiles[3];
@@ -550,6 +587,6 @@ internal static class MetricTileModel
             throw new InvalidOperationException("Guard tile must suppress both rings in favour of its dot pad.");
         }
 
-        Console.WriteLine("Metric tile model: PASS 8 tiles, dual-ring mapping, guard dot pad");
+        Console.WriteLine("Metric tile model: PASS 8 tiles, memory pressure ring, dual-ring mapping, guard dot pad");
     }
 }

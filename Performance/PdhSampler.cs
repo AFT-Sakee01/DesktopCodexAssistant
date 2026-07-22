@@ -24,6 +24,10 @@ internal sealed class PdhSampler : IDisposable
     private readonly PdhCounter cpuCounter;
     private readonly PdhCounter cpuFrequencyCounter;
     private readonly List<PdhCounter> cpuCoreCounters;
+    private readonly PdhCounter memoryCommittedBytesCounter;
+    private readonly PdhCounter memoryCommitLimitCounter;
+    private readonly PdhCounter memoryPagesInputCounter;
+    private readonly PdhCounter memoryPagesOutputCounter;
     private readonly PdhCounter diskCounter;
     private readonly PdhCounter diskWriteCounter;
     private readonly PdhCounter diskReadCounter;
@@ -44,6 +48,7 @@ internal sealed class PdhSampler : IDisposable
     private readonly double cpuBaseFrequencyGhz;
     private readonly double cpuCurrentFrequencyFallbackGhz;
     private readonly MemoryInfo memoryInfo;
+    private readonly MemoryPressureTracker memoryPressureTracker;
     private readonly string gpuName;
     private readonly double gpuMemoryTotalGb;
     private readonly string npuName;
@@ -103,6 +108,23 @@ internal sealed class PdhSampler : IDisposable
         }
 
         this.memoryInfo = DetectMemoryInfo();
+        this.memoryPressureTracker = new MemoryPressureTracker();
+        this.memoryCommittedBytesCounter = AddFirstAvailable(new string[]
+        {
+            @"\Memory\Committed Bytes"
+        });
+        this.memoryCommitLimitCounter = AddFirstAvailable(new string[]
+        {
+            @"\Memory\Commit Limit"
+        });
+        this.memoryPagesInputCounter = AddFirstAvailable(new string[]
+        {
+            @"\Memory\Pages Input/sec"
+        });
+        this.memoryPagesOutputCounter = AddFirstAvailable(new string[]
+        {
+            @"\Memory\Pages Output/sec"
+        });
 
         this.diskInfo = DetectDiskInfo();
         this.diskCounter = AddFirstAvailable(new string[]
@@ -198,10 +220,14 @@ internal sealed class PdhSampler : IDisposable
             this.npuSharedMemoryCounters.Count,
             JoinSet(this.npuLuidTokens)));
         Program.LogInfo(string.Format(
-            "Memory hardware initialized. Manufacturer={0}, Speed={1}MT/s, PageFileCounter={2}",
+            "Memory hardware initialized. Manufacturer={0}, Speed={1}MT/s, PageFileCounter={2}, Commit={3}/{4}, Paging={5}/{6}",
             this.memoryInfo.Manufacturer,
             this.memoryInfo.SpeedMtps,
-            this.pageFileUsageCounter == null ? "none" : this.pageFileUsageCounter.Path));
+            this.pageFileUsageCounter == null ? "none" : this.pageFileUsageCounter.Path,
+            this.memoryCommittedBytesCounter == null ? "none" : this.memoryCommittedBytesCounter.Path,
+            this.memoryCommitLimitCounter == null ? "none" : this.memoryCommitLimitCounter.Path,
+            this.memoryPagesInputCounter == null ? "none" : this.memoryPagesInputCounter.Path,
+            this.memoryPagesOutputCounter == null ? "none" : this.memoryPagesOutputCounter.Path));
     }
 
     public PerfSnapshot Sample()
@@ -234,6 +260,15 @@ internal sealed class PdhSampler : IDisposable
         snapshot.CpuBaseFrequencyGhz = this.cpuBaseFrequencyGhz;
         snapshot.MemoryManufacturer = this.memoryInfo.Manufacturer;
         snapshot.MemorySpeedMtps = this.memoryInfo.SpeedMtps;
+        double committedBytes = Math.Max(0.0, ReadCounter(this.memoryCommittedBytesCounter));
+        double commitLimitBytes = Math.Max(0.0, ReadCounter(this.memoryCommitLimitCounter));
+        snapshot.MemoryCommittedGb = committedBytes / 1073741824.0;
+        snapshot.MemoryCommitLimitGb = commitLimitBytes / 1073741824.0;
+        snapshot.MemoryCommitPercent = commitLimitBytes > 0.0
+            ? Clamp(committedBytes * 100.0 / commitLimitBytes, 0.0, 100.0)
+            : 0.0;
+        snapshot.MemoryPagesInputPerSecond = Math.Max(0.0, ReadCounter(this.memoryPagesInputCounter));
+        snapshot.MemoryPagesOutputPerSecond = Math.Max(0.0, ReadCounter(this.memoryPagesOutputCounter));
         snapshot.DiskPercent = Clamp(ReadCounter(this.diskCounter), 0.0, 100.0);
         snapshot.DiskWriteBytesPerSecond = Math.Max(0.0, ReadCounter(this.diskWriteCounter));
         snapshot.DiskReadBytesPerSecond = Math.Max(0.0, ReadCounter(this.diskReadCounter));
@@ -291,6 +326,7 @@ internal sealed class PdhSampler : IDisposable
             snapshot.MemoryTotalGb = totalBytes / 1073741824.0;
             snapshot.MemoryUsedGb = usedBytes / 1073741824.0;
             snapshot.MemoryPercent = Clamp(memory.dwMemoryLoad, 0.0, 100.0);
+            snapshot.MemoryAvailableGb = availableBytes / 1073741824.0;
 
             // Page file really written to disk. ullTotalPageFile is the commit limit
             // (physical + page file), so subtracting physical leaves the page-file allocation;
@@ -316,6 +352,8 @@ internal sealed class PdhSampler : IDisposable
                 0.0,
                 100.0);
         }
+
+        this.memoryPressureTracker.Update(snapshot, nowUtc);
 
         return snapshot;
     }

@@ -1,6 +1,6 @@
 # Desktop Codex Assistant（UX3407N / UX3607O 专调版）
 
-适用版本：2.0.0.5
+适用版本：2.0.0.6
 
 A Windows-on-Arm desktop workspace for AI-assisted development: ten right-edge metric/quota tiles, five left-edge dock tabs and boards, an operation panel, and an on-demand settings window. Sampling and Radar coordination run in hidden owners. Tuned for ASUS UX3407N / UX3607O; ARM64 is the formal build target.
 
@@ -10,7 +10,7 @@ A Windows-on-Arm desktop workspace for AI-assisted development: ten right-edge m
 
 | 类别 | 当前内容 |
 |---|---|
-| 右侧 10 个方块 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度；每项是独立 `MetricTileForm`，悬停详情只消费同一份快照 |
+| 右侧 10 个方块 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度；每项是独立 `MetricTileForm`，悬停详情只消费同一份快照；MEM 外环显示物理占用、内环和底部压力轨显示综合内存压力 |
 | 左侧 5 个停靠位 | Network、Spec Board、Codex Task、GUARD、Codex IQ；常驻 tab 与展开 board 组成一套停靠拓扑 |
 | Network 看板 | 接口、DNS、公网连通性、GFW、云服务、PathPing、固定 Ping，以及共享 Clean IP 出口画像；只以 Dock 形态展示 |
 | Operation | 扇形速控盘、常用开关、电池保养、CTF 重启与 SeelenUI 联动 |

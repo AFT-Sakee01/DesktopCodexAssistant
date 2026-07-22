@@ -153,6 +153,13 @@ internal sealed partial class MetricTileForm
         s.MemoryUsedGb = 30.2;
         s.MemoryTotalGb = 47.6;
         s.MemoryPercent = 63.0;
+        s.MemoryAvailableGb = 17.4;
+        s.MemoryCommittedGb = 34.2;
+        s.MemoryCommitLimitGb = 79.5;
+        s.MemoryCommitPercent = 43.0;
+        s.MemoryPagingMegabytesPerSecond = 0.1;
+        s.MemoryPressurePercent = 18.0;
+        s.MemoryPressureLevel = MemoryPressureLevel.Low;
         s.MemoryHardwareReservedGb = 3.8;
         s.MemoryHardwareReservedPercent = 8.0;
         s.PageFileUsedGb = 0.09;
@@ -253,6 +260,15 @@ internal sealed partial class MetricTileForm
         r.BurnPercentPerHour = claude ? 1.4 : 2.4;
         r.RunwayHours = claude ? 55 : 26;
         r.HoursToReset = claude ? 54 : 31;
+        r.BurnObservedHours = claude ? 4.2 : 6.0;
+        r.BurnConfidence = claude ? QuotaForecastConfidence.High : QuotaForecastConfidence.Medium;
+        r.CalendarRunwayKnown = true;
+        r.CalendarRunwayHours = claude ? 70 : 42;
+        r.FiveHourBurnRateKnown = true;
+        r.FiveHourBurnPercentPerHour = claude ? 45.0 : 9.0;
+        r.FiveHourRunwayHours = claude ? 0.91 : 9.78;
+        r.FiveHourHoursToReset = claude ? 1.4 : 3.2;
+        r.FiveHourBurnConfidence = QuotaForecastConfidence.Medium;
         if (!claude)
         {
             r.IqKnown = true;
