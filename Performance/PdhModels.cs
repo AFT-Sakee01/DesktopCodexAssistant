@@ -856,10 +856,16 @@ internal sealed class MemoryInfo
 
 internal enum MemoryPressureLevel
 {
-    Low,
-    Moderate,
-    High,
+    Normal,
+    Warning,
     Critical
+}
+
+internal struct MemoryPressureHistoryPoint
+{
+    public DateTime TimestampUtc;
+    public double Percent;
+    public MemoryPressureLevel Level;
 }
 
 internal sealed class DiskInfo
@@ -886,9 +892,8 @@ internal sealed class PerfSnapshot
     public double MemoryCommittedGb { get; set; }
     public double MemoryCommitLimitGb { get; set; }
     public double MemoryCommitPercent { get; set; }
-    public double MemoryPagesInputPerSecond { get; set; }
     public double MemoryPagesOutputPerSecond { get; set; }
-    public double MemoryPagingMegabytesPerSecond { get; set; }
+    public double MemoryPageOutMegabytesPerSecond { get; set; }
     public double MemoryPressurePercent { get; set; }
     public MemoryPressureLevel MemoryPressureLevel { get; set; }
     public double MemoryHardwareReservedGb { get; set; }
@@ -943,21 +948,23 @@ internal sealed class PerfSnapshot
     }
 }
 
-// Windows exposes the ingredients of memory pressure rather than a single macOS-style value.
-// This stateful policy turns physical headroom, system commit and sustained hard paging into a
-// compact 0-100 presentation index. Paging can amplify an already constrained system but cannot
-// make an otherwise healthy cold application launch look like memory pressure.
+// Apple describes memory pressure as how efficiently memory is serving current processing needs,
+// so this Windows projection is deliberately driven by reclaimable physical headroom and sustained
+// page-outs. Commit is only a late safety floor: promised-but-untouched private allocations must not
+// turn a machine with abundant available RAM and no swapping yellow or red.
 internal sealed class MemoryPressureTracker
 {
-    internal const double PromoteDelaySeconds = 5.0;
-    internal const double RecoverDelaySeconds = 20.0;
-    internal const double PagingSmoothingSeconds = 10.0;
+    internal const double WarningPromotionDelaySeconds = 10.0;
+    internal const double CriticalPromotionDelaySeconds = 5.0;
+    internal const double CriticalRecoveryDelaySeconds = 30.0;
+    internal const double NormalRecoveryDelaySeconds = 60.0;
+    internal const double PageOutSmoothingSeconds = 10.0;
 
-    private MemoryPressureLevel currentLevel = MemoryPressureLevel.Low;
-    private MemoryPressureLevel pendingLevel = MemoryPressureLevel.Low;
+    private MemoryPressureLevel currentLevel = MemoryPressureLevel.Normal;
+    private MemoryPressureLevel pendingLevel = MemoryPressureLevel.Normal;
     private DateTime pendingSinceUtc = DateTime.MinValue;
     private DateTime lastSampleUtc = DateTime.MinValue;
-    private double smoothedPagingMegabytesPerSecond;
+    private double smoothedPageOutMegabytesPerSecond;
 
     internal void Update(PerfSnapshot snapshot, DateTime nowUtc)
     {
@@ -966,40 +973,38 @@ internal sealed class MemoryPressureTracker
             return;
         }
 
-        double rawPagingMegabytesPerSecond = Math.Max(
-            0.0,
-            snapshot.MemoryPagesInputPerSecond + snapshot.MemoryPagesOutputPerSecond) *
+        double rawPageOutMegabytesPerSecond = Math.Max(0.0, snapshot.MemoryPagesOutputPerSecond) *
             Math.Max(1, Environment.SystemPageSize) /
             1048576.0;
 
         if (this.lastSampleUtc == DateTime.MinValue || nowUtc <= this.lastSampleUtc)
         {
-            this.smoothedPagingMegabytesPerSecond = rawPagingMegabytesPerSecond;
+            this.smoothedPageOutMegabytesPerSecond = rawPageOutMegabytesPerSecond;
         }
         else
         {
-            // A time-based EWMA keeps the same ten-second meaning in performance, balanced and
-            // battery modes even though their main sampling intervals differ.
+            // Time-based smoothing preserves a ten-second page-out meaning across performance
+            // modes even though their main sampling intervals differ.
             double elapsedSeconds = Math.Min(30.0, (nowUtc - this.lastSampleUtc).TotalSeconds);
-            double alpha = 1.0 - Math.Exp(-elapsedSeconds / PagingSmoothingSeconds);
-            this.smoothedPagingMegabytesPerSecond +=
-                (rawPagingMegabytesPerSecond - this.smoothedPagingMegabytesPerSecond) * alpha;
+            double alpha = 1.0 - Math.Exp(-elapsedSeconds / PageOutSmoothingSeconds);
+            this.smoothedPageOutMegabytesPerSecond +=
+                (rawPageOutMegabytesPerSecond - this.smoothedPageOutMegabytesPerSecond) * alpha;
         }
 
         this.lastSampleUtc = nowUtc;
-        double score = CalculateScore(
+        double rawScore = CalculateScore(
             snapshot.MemoryTotalGb,
             snapshot.MemoryAvailableGb,
             snapshot.MemoryCommitPercent,
-            this.smoothedPagingMegabytesPerSecond);
-        MemoryPressureLevel targetLevel = Classify(score);
+            this.smoothedPageOutMegabytesPerSecond);
+        MemoryPressureLevel targetLevel = ResolveTargetLevel(rawScore, this.currentLevel);
         bool immediateCritical = targetLevel == MemoryPressureLevel.Critical &&
-            (snapshot.MemoryCommitPercent >= 95.0 ||
+            (snapshot.MemoryCommitPercent >= 98.0 ||
              IsCriticallyLowAvailable(snapshot.MemoryTotalGb, snapshot.MemoryAvailableGb));
 
         UpdateStableLevel(targetLevel, immediateCritical, nowUtc);
-        snapshot.MemoryPagingMegabytesPerSecond = this.smoothedPagingMegabytesPerSecond;
-        snapshot.MemoryPressurePercent = score;
+        snapshot.MemoryPageOutMegabytesPerSecond = this.smoothedPageOutMegabytesPerSecond;
+        snapshot.MemoryPressurePercent = ApplyStableLevelFloor(rawScore, this.currentLevel);
         snapshot.MemoryPressureLevel = this.currentLevel;
     }
 
@@ -1027,9 +1032,20 @@ internal sealed class MemoryPressureTracker
             return;
         }
 
-        double requiredSeconds = targetLevel > this.currentLevel
-            ? PromoteDelaySeconds
-            : RecoverDelaySeconds;
+        double requiredSeconds;
+        if (targetLevel > this.currentLevel)
+        {
+            requiredSeconds = targetLevel == MemoryPressureLevel.Critical
+                ? CriticalPromotionDelaySeconds
+                : WarningPromotionDelaySeconds;
+        }
+        else
+        {
+            requiredSeconds = this.currentLevel == MemoryPressureLevel.Critical
+                ? CriticalRecoveryDelaySeconds
+                : NormalRecoveryDelaySeconds;
+        }
+
         if ((nowUtc - this.pendingSinceUtc).TotalSeconds >= requiredSeconds)
         {
             this.currentLevel = targetLevel;
@@ -1042,67 +1058,106 @@ internal sealed class MemoryPressureTracker
         double totalGb,
         double availableGb,
         double commitPercent,
-        double pagingMegabytesPerSecond)
+        double pageOutMegabytesPerSecond)
     {
-        double commitScore = MapCommitPercent(commitPercent);
         double availableScore = MapAvailableMemory(totalGb, availableGb);
-        double baseScore = Math.Max(commitScore, availableScore);
-
-        // Paging by itself is commonly a cold-start or file-backed read. It only promotes a system
-        // that already has meaningful commit/headroom pressure, and is capped to one severity band.
-        double pagingBonus = 0.0;
-        if (baseScore >= 35.0 && pagingMegabytesPerSecond > 0.25)
-        {
-            pagingBonus = MapRange(pagingMegabytesPerSecond, 0.25, 16.0, 0.0, 20.0);
-        }
-
-        return Clamp(baseScore + pagingBonus, 0.0, 100.0);
+        double pageOutScore = MapPageOutRate(pageOutMegabytesPerSecond);
+        double activePressure = Math.Max(availableScore, pageOutScore) +
+            0.25 * Math.Min(availableScore, pageOutScore);
+        double commitSafetyFloor = MapCommitSafetyFloor(commitPercent);
+        return Math.Max(Clamp(activePressure, 0.0, 100.0), commitSafetyFloor);
     }
 
     internal static MemoryPressureLevel Classify(double score)
     {
-        if (score >= 85.0)
+        if (score >= 80.0)
         {
             return MemoryPressureLevel.Critical;
         }
 
-        if (score >= 70.0)
-        {
-            return MemoryPressureLevel.High;
-        }
-
         if (score >= 50.0)
         {
-            return MemoryPressureLevel.Moderate;
+            return MemoryPressureLevel.Warning;
         }
 
-        return MemoryPressureLevel.Low;
+        return MemoryPressureLevel.Normal;
     }
 
-    private static double MapCommitPercent(double commitPercent)
+    private static MemoryPressureLevel ResolveTargetLevel(double score, MemoryPressureLevel currentLevel)
+    {
+        if (currentLevel == MemoryPressureLevel.Critical)
+        {
+            return score < 70.0 ? MemoryPressureLevel.Warning : MemoryPressureLevel.Critical;
+        }
+
+        if (currentLevel == MemoryPressureLevel.Warning)
+        {
+            if (score >= 80.0)
+            {
+                return MemoryPressureLevel.Critical;
+            }
+
+            return score < 40.0 ? MemoryPressureLevel.Normal : MemoryPressureLevel.Warning;
+        }
+
+        return Classify(score);
+    }
+
+    private static double ApplyStableLevelFloor(double score, MemoryPressureLevel level)
+    {
+        if (level == MemoryPressureLevel.Critical)
+        {
+            return Math.Max(80.0, score);
+        }
+
+        if (level == MemoryPressureLevel.Warning)
+        {
+            return Math.Max(50.0, score);
+        }
+
+        return score;
+    }
+
+    private static double MapCommitSafetyFloor(double commitPercent)
     {
         double value = Clamp(commitPercent, 0.0, 100.0);
-        if (value <= 50.0)
+        if (value <= 90.0)
         {
-            return MapRange(value, 0.0, 50.0, 0.0, 20.0);
-        }
-
-        if (value <= 60.0)
-        {
-            return MapRange(value, 50.0, 60.0, 20.0, 50.0);
-        }
-
-        if (value <= 80.0)
-        {
-            return MapRange(value, 60.0, 80.0, 50.0, 70.0);
+            return 0.0;
         }
 
         if (value <= 95.0)
         {
-            return MapRange(value, 80.0, 95.0, 70.0, 85.0);
+            return MapRange(value, 90.0, 95.0, 0.0, 50.0);
         }
 
-        return MapRange(value, 95.0, 100.0, 85.0, 100.0);
+        if (value <= 98.0)
+        {
+            return MapRange(value, 95.0, 98.0, 50.0, 85.0);
+        }
+
+        return MapRange(value, 98.0, 100.0, 85.0, 100.0);
+    }
+
+    private static double MapPageOutRate(double pageOutMegabytesPerSecond)
+    {
+        double value = Math.Max(0.0, pageOutMegabytesPerSecond);
+        if (value <= 0.25)
+        {
+            return 0.0;
+        }
+
+        if (value <= 1.0)
+        {
+            return MapRange(value, 0.25, 1.0, 0.0, 25.0);
+        }
+
+        if (value <= 4.0)
+        {
+            return MapRange(value, 1.0, 4.0, 25.0, 60.0);
+        }
+
+        return MapRange(value, 4.0, 16.0, 60.0, 100.0);
     }
 
     private static double MapAvailableMemory(double totalGb, double availableGb)
@@ -1114,14 +1169,16 @@ internal sealed class MemoryPressureTracker
 
         double total = Math.Max(0.01, totalGb);
         double available = Clamp(availableGb, 0.0, total);
-        double healthyThreshold = Math.Min(total * 0.10, 4.0);
-        double abundantThreshold = Math.Min(total * 0.20, 8.0);
+        double abundantThreshold = total * 0.20;
+        double healthyThreshold = total * 0.10;
+        double severeThreshold = total * 0.05;
         double criticalThreshold = Math.Max(total * 0.01, 0.5);
-        if (healthyThreshold <= criticalThreshold)
+        if (severeThreshold <= criticalThreshold)
         {
-            healthyThreshold = Math.Min(total, criticalThreshold + Math.Max(0.1, total * 0.05));
+            severeThreshold = Math.Min(total, criticalThreshold + Math.Max(0.1, total * 0.02));
         }
 
+        healthyThreshold = Math.Max(severeThreshold, healthyThreshold);
         abundantThreshold = Math.Max(healthyThreshold, abundantThreshold);
         if (available >= abundantThreshold)
         {
@@ -1133,12 +1190,17 @@ internal sealed class MemoryPressureTracker
             return MapRange(available, abundantThreshold, healthyThreshold, 0.0, 50.0);
         }
 
-        if (available >= criticalThreshold)
+        if (available >= severeThreshold)
         {
-            return MapRange(available, healthyThreshold, criticalThreshold, 50.0, 85.0);
+            return MapRange(available, healthyThreshold, severeThreshold, 50.0, 80.0);
         }
 
-        return MapRange(available, criticalThreshold, 0.0, 85.0, 100.0);
+        if (available >= criticalThreshold)
+        {
+            return MapRange(available, severeThreshold, criticalThreshold, 80.0, 100.0);
+        }
+
+        return 100.0;
     }
 
     private static bool IsCriticallyLowAvailable(double totalGb, double availableGb)
@@ -1174,25 +1236,28 @@ internal sealed class MemoryPressureTracker
 
     internal static void RunSelfTest()
     {
-        double healthy = CalculateScore(48.0, 16.0, 43.0, 0.0);
-        if (healthy < 15.0 || healthy >= 50.0 || Classify(healthy) != MemoryPressureLevel.Low)
+        double commitHeavyButIdle = CalculateScore(47.6, 20.6, 83.8, 0.0);
+        if (commitHeavyButIdle >= 10.0 || Classify(commitHeavyButIdle) != MemoryPressureLevel.Normal)
         {
-            throw new InvalidOperationException("Healthy memory must remain a low, non-zero pressure index.");
+            throw new InvalidOperationException("Abundant available RAM and no page-outs must stay normal below the commit guard.");
         }
 
-        if (Classify(CalculateScore(48.0, 16.0, 60.0, 0.0)) != MemoryPressureLevel.Moderate ||
-            Classify(CalculateScore(48.0, 16.0, 80.0, 0.0)) != MemoryPressureLevel.High ||
-            Classify(CalculateScore(48.0, 16.0, 95.0, 0.0)) != MemoryPressureLevel.Critical)
+        if (Classify(CalculateScore(48.0, 4.8, 43.0, 0.0)) != MemoryPressureLevel.Warning ||
+            Classify(CalculateScore(48.0, 2.4, 43.0, 0.0)) != MemoryPressureLevel.Critical)
         {
-            throw new InvalidOperationException("Commit thresholds must map to moderate/high/critical pressure bands.");
+            throw new InvalidOperationException("Available-memory headroom must drive the macOS-style warning and critical bands.");
         }
 
-        double coldStart = CalculateScore(48.0, 16.0, 43.0, 64.0);
-        double constrainedPaging = CalculateScore(48.0, 16.0, 60.0, 16.0);
-        if (Classify(coldStart) != MemoryPressureLevel.Low ||
-            Classify(constrainedPaging) != MemoryPressureLevel.High)
+        if (Classify(CalculateScore(48.0, 20.0, 43.0, 4.0)) != MemoryPressureLevel.Warning ||
+            Classify(CalculateScore(48.0, 20.0, 43.0, 16.0)) != MemoryPressureLevel.Critical)
         {
-            throw new InvalidOperationException("Paging must only promote a system that is already constrained.");
+            throw new InvalidOperationException("Sustained page-outs must independently express active pressure.");
+        }
+
+        if (Classify(CalculateScore(48.0, 20.0, 95.0, 0.0)) != MemoryPressureLevel.Warning ||
+            Classify(CalculateScore(48.0, 20.0, 98.0, 0.0)) != MemoryPressureLevel.Critical)
+        {
+            throw new InvalidOperationException("Commit must remain a late warning/critical safety floor.");
         }
 
         MemoryPressureTracker tracker = new MemoryPressureTracker();
@@ -1200,38 +1265,53 @@ internal sealed class MemoryPressureTracker
         PerfSnapshot sample = new PerfSnapshot
         {
             MemoryTotalGb = 48.0,
-            MemoryAvailableGb = 16.0,
+            MemoryAvailableGb = 20.0,
             MemoryCommitPercent = 43.0
         };
         tracker.Update(sample, start);
-        sample.MemoryCommitPercent = 80.0;
+        sample.MemoryAvailableGb = 4.8;
         tracker.Update(sample, start.AddSeconds(1.0));
-        if (sample.MemoryPressureLevel != MemoryPressureLevel.Low)
+        if (sample.MemoryPressureLevel != MemoryPressureLevel.Normal)
         {
-            throw new InvalidOperationException("Pressure promotion must wait for the five-second confirmation window.");
+            throw new InvalidOperationException("Warning promotion must wait for ten seconds.");
         }
 
-        tracker.Update(sample, start.AddSeconds(6.1));
-        if (sample.MemoryPressureLevel != MemoryPressureLevel.High)
+        tracker.Update(sample, start.AddSeconds(11.1));
+        if (sample.MemoryPressureLevel != MemoryPressureLevel.Warning)
         {
-            throw new InvalidOperationException("Sustained high pressure must promote after five seconds.");
+            throw new InvalidOperationException("Sustained pressure must promote to warning after ten seconds.");
         }
 
-        sample.MemoryCommitPercent = 43.0;
-        tracker.Update(sample, start.AddSeconds(7.0));
-        tracker.Update(sample, start.AddSeconds(28.0));
-        if (sample.MemoryPressureLevel != MemoryPressureLevel.Low)
+        sample.MemoryAvailableGb = 2.4;
+        tracker.Update(sample, start.AddSeconds(12.0));
+        tracker.Update(sample, start.AddSeconds(17.1));
+        if (sample.MemoryPressureLevel != MemoryPressureLevel.Critical)
         {
-            throw new InvalidOperationException("Pressure recovery must settle after the twenty-second recovery window.");
+            throw new InvalidOperationException("Critical promotion must settle after five seconds.");
         }
 
-        sample.MemoryCommitPercent = 95.0;
-        tracker.Update(sample, start.AddSeconds(29.0));
+        sample.MemoryAvailableGb = 20.0;
+        tracker.Update(sample, start.AddSeconds(18.0));
+        tracker.Update(sample, start.AddSeconds(48.1));
+        if (sample.MemoryPressureLevel != MemoryPressureLevel.Warning)
+        {
+            throw new InvalidOperationException("Critical recovery must step down to warning after thirty seconds.");
+        }
+
+        tracker.Update(sample, start.AddSeconds(49.0));
+        tracker.Update(sample, start.AddSeconds(109.1));
+        if (sample.MemoryPressureLevel != MemoryPressureLevel.Normal)
+        {
+            throw new InvalidOperationException("Warning recovery must return to normal after sixty seconds.");
+        }
+
+        sample.MemoryCommitPercent = 98.0;
+        tracker.Update(sample, start.AddSeconds(110.0));
         if (sample.MemoryPressureLevel != MemoryPressureLevel.Critical)
         {
             throw new InvalidOperationException("Commit exhaustion must enter critical pressure immediately.");
         }
 
-        Console.WriteLine("Memory pressure: PASS score bands, paging gate, 5s promotion, 20s recovery, immediate critical");
+        Console.WriteLine("Memory pressure: PASS macOS-style headroom/page-out score, commit guard, three states, hysteresis");
     }
 }

@@ -44,6 +44,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private readonly List<double> cpuHistory;
     private readonly List<double> memoryHistory;
     private readonly List<double> memoryHardwareReservedHistory;
+    private readonly List<MemoryPressureHistoryPoint> memoryPressureHistory;
     private readonly List<double> diskWriteHistory;
     private readonly List<double> diskReadHistory;
     private readonly List<double> networkSentHistory;
@@ -150,6 +151,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.cpuHistory = new List<double>();
         this.memoryHistory = new List<double>();
         this.memoryHardwareReservedHistory = new List<double>();
+        this.memoryPressureHistory = new List<MemoryPressureHistoryPoint>();
         this.diskWriteHistory = new List<double>();
         this.diskReadHistory = new List<double>();
         this.networkSentHistory = new List<double>();
@@ -1441,6 +1443,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             AddHistory(this.cpuHistory, this.snapshot.CpuPercent);
             AddHistory(this.memoryHistory, this.snapshot.MemoryPercent);
             AddHistory(this.memoryHardwareReservedHistory, this.snapshot.MemoryHardwareReservedPercent);
+            AddMemoryPressureHistory(this.memoryPressureHistory, this.snapshot, DateTime.UtcNow);
             // Rate histories use Kbps so disk and network graphs share the same scaling convention.
             AddHistory(this.diskWriteHistory, this.snapshot.DiskWriteBytesPerSecond * 8.0 / 1000.0);
             AddHistory(this.diskReadHistory, this.snapshot.DiskReadBytesPerSecond * 8.0 / 1000.0);
@@ -1464,12 +1467,12 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             {
                 this.lastSampleDiagnosticUtc = nowUtc;
                 Program.LogInfo(string.Format(
-                    "Sample CPU={0:0}% Memory={1:0}% MemoryPressure={2:0}% Commit={3:0}% Paging={4:0.0}MBps Disk={5:0}% GPU={6:0}% GPUMem={7:0}% NPU={8:0}% NPUMem={9:0}% NetConnected={10} NetSent={11:0.0}Bps NetRecv={12:0.0}Bps",
+                    "Sample CPU={0:0}% Memory={1:0}% MemoryPressure={2:0}% Commit={3:0}% PageOut={4:0.0}MBps Disk={5:0}% GPU={6:0}% GPUMem={7:0}% NPU={8:0}% NPUMem={9:0}% NetConnected={10} NetSent={11:0.0}Bps NetRecv={12:0.0}Bps",
                     this.snapshot.CpuPercent,
                     this.snapshot.MemoryPercent,
                     this.snapshot.MemoryPressurePercent,
                     this.snapshot.MemoryCommitPercent,
-                    this.snapshot.MemoryPagingMegabytesPerSecond,
+                    this.snapshot.MemoryPageOutMegabytesPerSecond,
                     this.snapshot.DiskPercent,
                     this.snapshot.GpuPercent,
                     this.snapshot.GpuMemoryPercent,
@@ -1518,6 +1521,33 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         const int MaxPoints = 34;
         history.Add(value);
         while (history.Count > MaxPoints)
+        {
+            history.RemoveAt(0);
+        }
+    }
+
+    private static void AddMemoryPressureHistory(
+        List<MemoryPressureHistoryPoint> history,
+        PerfSnapshot snapshot,
+        DateTime timestampUtc)
+    {
+        history.Add(new MemoryPressureHistoryPoint
+        {
+            TimestampUtc = timestampUtc,
+            Percent = snapshot == null ? 0.0 : snapshot.MemoryPressurePercent,
+            Level = snapshot == null ? MemoryPressureLevel.Normal : snapshot.MemoryPressureLevel
+        });
+
+        // The pressure strip is a real time axis rather than a fixed number of samples because the
+        // main PDH interval changes with performance mode. The hard cap only protects a future mode
+        // from retaining an unbounded number of sub-second points.
+        DateTime cutoffUtc = timestampUtc.AddSeconds(-60.0);
+        while (history.Count > 0 && history[0].TimestampUtc < cutoffUtc)
+        {
+            history.RemoveAt(0);
+        }
+
+        while (history.Count > 120)
         {
             history.RemoveAt(0);
         }

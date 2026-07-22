@@ -26,7 +26,6 @@ internal sealed class PdhSampler : IDisposable
     private readonly List<PdhCounter> cpuCoreCounters;
     private readonly PdhCounter memoryCommittedBytesCounter;
     private readonly PdhCounter memoryCommitLimitCounter;
-    private readonly PdhCounter memoryPagesInputCounter;
     private readonly PdhCounter memoryPagesOutputCounter;
     private readonly PdhCounter diskCounter;
     private readonly PdhCounter diskWriteCounter;
@@ -116,10 +115,6 @@ internal sealed class PdhSampler : IDisposable
         this.memoryCommitLimitCounter = AddFirstAvailable(new string[]
         {
             @"\Memory\Commit Limit"
-        });
-        this.memoryPagesInputCounter = AddFirstAvailable(new string[]
-        {
-            @"\Memory\Pages Input/sec"
         });
         this.memoryPagesOutputCounter = AddFirstAvailable(new string[]
         {
@@ -220,13 +215,12 @@ internal sealed class PdhSampler : IDisposable
             this.npuSharedMemoryCounters.Count,
             JoinSet(this.npuLuidTokens)));
         Program.LogInfo(string.Format(
-            "Memory hardware initialized. Manufacturer={0}, Speed={1}MT/s, PageFileCounter={2}, Commit={3}/{4}, Paging={5}/{6}",
+            "Memory hardware initialized. Manufacturer={0}, Speed={1}MT/s, PageFileCounter={2}, Commit={3}/{4}, PageOut={5}",
             this.memoryInfo.Manufacturer,
             this.memoryInfo.SpeedMtps,
             this.pageFileUsageCounter == null ? "none" : this.pageFileUsageCounter.Path,
             this.memoryCommittedBytesCounter == null ? "none" : this.memoryCommittedBytesCounter.Path,
             this.memoryCommitLimitCounter == null ? "none" : this.memoryCommitLimitCounter.Path,
-            this.memoryPagesInputCounter == null ? "none" : this.memoryPagesInputCounter.Path,
             this.memoryPagesOutputCounter == null ? "none" : this.memoryPagesOutputCounter.Path));
     }
 
@@ -267,7 +261,6 @@ internal sealed class PdhSampler : IDisposable
         snapshot.MemoryCommitPercent = commitLimitBytes > 0.0
             ? Clamp(committedBytes * 100.0 / commitLimitBytes, 0.0, 100.0)
             : 0.0;
-        snapshot.MemoryPagesInputPerSecond = Math.Max(0.0, ReadCounter(this.memoryPagesInputCounter));
         snapshot.MemoryPagesOutputPerSecond = Math.Max(0.0, ReadCounter(this.memoryPagesOutputCounter));
         snapshot.DiskPercent = Clamp(ReadCounter(this.diskCounter), 0.0, 100.0);
         snapshot.DiskWriteBytesPerSecond = Math.Max(0.0, ReadCounter(this.diskWriteCounter));

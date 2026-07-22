@@ -942,7 +942,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         if (data.InnerPercent >= 0.0)
         {
             RectangleF innerBox = RectangleF.Inflate(ringBox, -innerInset, -innerInset);
-            // MEM's inner ring is itself the severity signal, so preserve its green/yellow/orange/red
+            // MEM's inner ring is itself the severity signal, so preserve its green/yellow/red
             // state even when the outer ring and centre enter the shared alert treatment.
             Color innerAccent = alert && data.Id != MetricTileId.Memory
                 ? DesignTokens.Colors.Warning

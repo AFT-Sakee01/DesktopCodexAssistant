@@ -48,6 +48,7 @@ internal sealed class MetricTileFeed
     public List<double> CpuHistory;
     public List<double> MemoryHistory;
     public List<double> MemoryHardwareReservedHistory;
+    public List<MemoryPressureHistoryPoint> MemoryPressureHistory;
     public List<double> DiskWriteHistory;
     public List<double> DiskReadHistory;
     public List<double> NetworkSentHistory;
@@ -224,12 +225,12 @@ internal static class MetricTileModel
             case MetricTileId.Memory:
                 tile.OuterPercent = s.MemoryPercent;
                 // The outer ring and centre keep the familiar physical-use reading. The inner ring
-                // is the pressure index so a cache-heavy 90% does not look critical unless commit,
-                // available headroom or sustained paging also says the system is constrained.
+                // is the service-efficiency pressure index: available headroom and sustained
+                // page-outs lead, while commit is only a late allocation-safety guard.
                 tile.InnerPercent = Clamp(s.MemoryPressurePercent, 0.0, 100.0);
                 tile.InnerAccent = GetMemoryPressureColor(s.MemoryPressureLevel);
                 tile.CenterValue = Round(s.MemoryPercent);
-                tile.AlertPercent = s.MemoryPressureLevel >= MemoryPressureLevel.High ? 100.0 : 0.0;
+                tile.AlertPercent = s.MemoryPressureLevel == MemoryPressureLevel.Critical ? 100.0 : 0.0;
                 tile.AlertIconVisible = s.MemoryPressureLevel == MemoryPressureLevel.Critical;
                 break;
 
@@ -483,8 +484,7 @@ internal static class MetricTileModel
     {
         switch (level)
         {
-            case MemoryPressureLevel.Moderate: return DesignTokens.Colors.Warning;
-            case MemoryPressureLevel.High: return DesignTokens.Colors.WarningDeep;
+            case MemoryPressureLevel.Warning: return DesignTokens.Colors.Warning;
             case MemoryPressureLevel.Critical: return DesignTokens.Colors.DangerStrong;
             default: return DesignTokens.Colors.Success;
         }
@@ -494,10 +494,9 @@ internal static class MetricTileModel
     {
         switch (level)
         {
-            case MemoryPressureLevel.Moderate: return "注意";
-            case MemoryPressureLevel.High: return "高";
-            case MemoryPressureLevel.Critical: return "危险";
-            default: return "低";
+            case MemoryPressureLevel.Warning: return "有压力";
+            case MemoryPressureLevel.Critical: return "严重";
+            default: return "正常";
         }
     }
 
@@ -519,8 +518,8 @@ internal static class MetricTileModel
         feed.Snapshot.CpuBaseFrequencyGhz = 4.45;
         feed.Snapshot.MemoryPercent = 63.0;
         feed.Snapshot.MemoryTotalGb = 47.6;
-        feed.Snapshot.MemoryPressurePercent = 18.0;
-        feed.Snapshot.MemoryPressureLevel = MemoryPressureLevel.Low;
+        feed.Snapshot.MemoryPressurePercent = 8.0;
+        feed.Snapshot.MemoryPressureLevel = MemoryPressureLevel.Normal;
         feed.Snapshot.GpuMemoryUsedGb = 1.3;
         feed.Snapshot.NpuMemoryUsedGb = 0.7;
         feed.Snapshot.NetworkConnected = true;
@@ -546,11 +545,19 @@ internal static class MetricTileModel
         }
 
         MetricTileData memory = tiles[1];
-        if (Math.Abs(memory.InnerPercent - 18.0) > 0.01 ||
+        if (Math.Abs(memory.InnerPercent - 8.0) > 0.01 ||
             memory.InnerAccent != DesignTokens.Colors.Success ||
             memory.AlertPercent > 0.0)
         {
-            throw new InvalidOperationException("Memory tile inner ring must carry the low pressure index without alerting.");
+            throw new InvalidOperationException("Memory tile inner ring must carry normal pressure without alerting.");
+        }
+
+        feed.Snapshot.MemoryPressurePercent = 58.0;
+        feed.Snapshot.MemoryPressureLevel = MemoryPressureLevel.Warning;
+        memory = BuildTile(MetricTileId.Memory, feed);
+        if (memory.InnerAccent != DesignTokens.Colors.Warning || memory.AlertPercent > 0.0 || memory.AlertIconVisible)
+        {
+            throw new InvalidOperationException("Warning memory pressure must use yellow without the critical alert treatment.");
         }
 
         feed.Snapshot.MemoryPressurePercent = 88.0;

@@ -157,12 +157,12 @@ internal sealed partial class MetricTileForm
         s.MemoryTotalGb = 47.6;
         s.MemoryPercent = 63.0;
         s.MemoryAvailableGb = 17.4;
-        s.MemoryCommittedGb = 34.2;
-        s.MemoryCommitLimitGb = 79.5;
-        s.MemoryCommitPercent = 43.0;
-        s.MemoryPagingMegabytesPerSecond = 0.1;
-        s.MemoryPressurePercent = 18.0;
-        s.MemoryPressureLevel = MemoryPressureLevel.Low;
+        s.MemoryCommittedGb = 46.7;
+        s.MemoryCommitLimitGb = 55.7;
+        s.MemoryCommitPercent = 83.8;
+        s.MemoryPageOutMegabytesPerSecond = 0.0;
+        s.MemoryPressurePercent = 8.0;
+        s.MemoryPressureLevel = MemoryPressureLevel.Normal;
         s.MemoryHardwareReservedGb = 3.8;
         s.MemoryHardwareReservedPercent = 8.0;
         s.PageFileUsedGb = 0.09;
@@ -194,6 +194,7 @@ internal sealed partial class MetricTileForm
         feed.CpuHistory = Hist(18, 24, 46, 38, 52, 61, 44, 33, 29, 41, 55, 48, 36, 30, 44, 58, 51, 39, 33, 32);
         feed.MemoryHistory = Hist(58, 59, 61, 60, 62, 63, 63, 62, 64, 63, 63, 63, 62, 63, 64, 63, 63, 62, 63, 63);
         feed.MemoryHardwareReservedHistory = Hist(7.8, 7.9, 7.8, 7.7, 8.0, 7.9, 7.9, 8.0, 8.1, 8.0, 7.9, 8.0, 8.0, 8.1, 8.0, 7.9, 8.0, 8.0, 8.1, 8.0);
+        feed.MemoryPressureHistory = BuildMemoryPressureHistory();
         feed.DiskWriteHistory = Hist(200, 4400, 1200, 500, 6100, 8800, 2300, 900, 400, 3100, 1700, 700, 2600, 1200, 900, 3300, 2100, 800, 1100, 5000);
         feed.DiskReadHistory = Hist(5, 10, 5, 5, 20, 30, 10, 5, 5, 10, 5, 5, 10, 5, 5, 10, 5, 5, 5, 1);
         feed.NetworkReceivedHistory = Hist(12, 38, 91, 64, 22, 15, 47, 83, 55, 28, 19, 36, 42, 58, 49, 61, 44, 37, 52, 58);
@@ -290,5 +291,45 @@ internal sealed partial class MetricTileForm
     private static List<double> Hist(params double[] values)
     {
         return new List<double>(values);
+    }
+
+    private static List<MemoryPressureHistoryPoint> BuildMemoryPressureHistory()
+    {
+        List<MemoryPressureHistoryPoint> history = new List<MemoryPressureHistoryPoint>();
+        DateTime endUtc = DateTime.UtcNow;
+        for (int i = 0; i <= 30; i++)
+        {
+            MemoryPressureLevel level;
+            double percent;
+            if (i >= 10 && i < 16)
+            {
+                level = MemoryPressureLevel.Warning;
+                percent = 58.0;
+            }
+            else if (i >= 16 && i < 19)
+            {
+                level = MemoryPressureLevel.Critical;
+                percent = 86.0;
+            }
+            else if (i >= 19 && i < 23)
+            {
+                level = MemoryPressureLevel.Warning;
+                percent = 54.0;
+            }
+            else
+            {
+                level = MemoryPressureLevel.Normal;
+                percent = 8.0;
+            }
+
+            history.Add(new MemoryPressureHistoryPoint
+            {
+                TimestampUtc = endUtc.AddSeconds(-60.0 + i * 2.0),
+                Percent = percent,
+                Level = level
+            });
+        }
+
+        return history;
     }
 }

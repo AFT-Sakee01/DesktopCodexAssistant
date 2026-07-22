@@ -660,7 +660,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         DrawSparkLineOnly(g, ground, this.feed.MemoryHardwareReservedHistory,
             DesignTokens.Colors.Warning, 100.0, 225, true);
         DrawMemoryPressureSummary(g, content, s);
-        DrawMemoryPressureRail(g, StripRect(content), s.MemoryPressurePercent, s.MemoryPressureLevel);
+        DrawMemoryPressureHistory(g, StripRect(content), this.feed.MemoryPressureHistory, s);
 
         DrawFloatingHeader(g, content, accent, "MEM",
             Math.Round(s.MemoryPercent).ToString("0", CultureInfo.InvariantCulture), "%",
@@ -681,18 +681,18 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         }
 
         Color pressureColor = MetricTileModel.GetMemoryPressureColor(s.MemoryPressureLevel);
-        string pressureText = string.Format(
-            CultureInfo.InvariantCulture,
-            "压力 {0:0} {1}",
-            MetricTileModel.Clamp(s.MemoryPressurePercent, 0.0, 100.0),
-            MetricTileModel.GetMemoryPressureLabel(s.MemoryPressureLevel));
+        string pressureText = "压力 " + MetricTileModel.GetMemoryPressureLabel(s.MemoryPressureLevel);
         string commitText = s.MemoryCommitLimitGb > 0.0
-            ? string.Format(CultureInfo.InvariantCulture, "提交 {0:0}%", s.MemoryCommitPercent)
+            ? string.Format(
+                CultureInfo.InvariantCulture,
+                "提交 {0:0}%{1}",
+                s.MemoryCommitPercent,
+                s.MemoryCommitPercent >= 80.0 ? " 偏高" : string.Empty)
             : "提交 --";
-        string pagingText = string.Format(
+        string pageOutText = string.Format(
             CultureInfo.InvariantCulture,
-            "换页 {0}/s",
-            FormatPagingRate(s.MemoryPagingMegabytesPerSecond));
+            "换出 {0}/s",
+            FormatPageOutRate(s.MemoryPageOutMegabytesPerSecond));
 
         float y = content.Bottom - S(25);
         float fontSize = Math.Max(7.0f, S(11.5f));
@@ -710,76 +710,82 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         using (Font detailFont = new Font("Segoe UI", fontSize, FontStyle.Regular, GraphicsUnit.Pixel))
         using (SolidBrush pressureBrush = new SolidBrush(DesignTokens.WithAlpha(pressureColor, 235)))
         using (SolidBrush detailBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 190)))
-        using (StringFormat right = new StringFormat(StringFormatFlags.NoWrap))
+        using (SolidBrush commitBrush = new SolidBrush(DesignTokens.WithAlpha(
+            s.MemoryCommitPercent >= 98.0
+                ? DesignTokens.Colors.DangerStrong
+                : (s.MemoryCommitPercent >= 80.0 ? DesignTokens.Colors.Warning : DesignTokens.Colors.TextMuted),
+            220)))
         {
-            right.Alignment = StringAlignment.Far;
             g.DrawString(pressureText, font, pressureBrush, content.X, y);
-            g.DrawString(
-                commitText + " · " + pagingText,
-                detailFont,
-                detailBrush,
-                new RectangleF(content.X, y, content.Width, fontSize + S(3)),
-                right);
+            SizeF pageOutSize = g.MeasureString(pageOutText, detailFont);
+            SizeF separatorSize = g.MeasureString(" · ", detailFont);
+            SizeF commitSize = g.MeasureString(commitText, detailFont);
+            float pageOutX = content.Right - pageOutSize.Width;
+            float separatorX = pageOutX - separatorSize.Width;
+            float commitX = separatorX - commitSize.Width;
+            g.DrawString(commitText, detailFont, commitBrush, commitX, y);
+            g.DrawString(" · ", detailFont, detailBrush, separatorX, y);
+            g.DrawString(pageOutText, detailFont, detailBrush, pageOutX, y);
         }
     }
 
-    private void DrawMemoryPressureRail(
+    private void DrawMemoryPressureHistory(
         Graphics g,
         RectangleF rect,
-        double pressurePercent,
-        MemoryPressureLevel level)
+        List<MemoryPressureHistoryPoint> history,
+        PerfSnapshot snapshot)
     {
         float radius = Math.Max(1.5f, rect.Height / 2.0f);
-        double clamped = MetricTileModel.Clamp(pressurePercent, 0.0, 100.0);
-        Color pressureColor = MetricTileModel.GetMemoryPressureColor(level);
         using (GraphicsPath track = RoundedRectangle(rect, radius))
         using (SolidBrush trackBrush = new SolidBrush(DesignTokens.White(28)))
         {
             g.FillPath(trackBrush, track);
             Region previous = g.Clip;
             g.SetClip(track, CombineMode.Intersect);
-            float fillWidth = (float)(rect.Width * clamped / 100.0);
-            if (fillWidth > 0.0f)
+
+            if (history != null && history.Count > 0)
             {
-                using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(pressureColor, 225)))
+                DateTime endUtc = history[history.Count - 1].TimestampUtc;
+                DateTime startUtc = endUtc.AddSeconds(-60.0);
+                for (int i = 0; i < history.Count; i++)
                 {
-                    g.FillRectangle(fill, rect.X, rect.Y, fillWidth, rect.Height);
+                    MemoryPressureHistoryPoint point = history[i];
+                    DateTime nextUtc = i + 1 < history.Count ? history[i + 1].TimestampUtc : endUtc;
+                    double startSeconds = (point.TimestampUtc - startUtc).TotalSeconds;
+                    double endSeconds = (nextUtc - startUtc).TotalSeconds;
+                    float x1 = rect.X + (float)(MetricTileModel.Clamp(startSeconds, 0.0, 60.0) / 60.0 * rect.Width);
+                    float x2 = rect.X + (float)(MetricTileModel.Clamp(endSeconds, 0.0, 60.0) / 60.0 * rect.Width);
+                    float width = Math.Max(S(1.4f), x2 - x1);
+                    Color color = MetricTileModel.GetMemoryPressureColor(point.Level);
+                    int alpha = (int)Math.Round(155.0 + MetricTileModel.Clamp(point.Percent, 0.0, 100.0) * 0.85);
+                    using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, alpha)))
+                    {
+                        g.FillRectangle(fill, x1, rect.Y, width, rect.Height);
+                    }
+                }
+            }
+            else
+            {
+                Color color = MetricTileModel.GetMemoryPressureColor(snapshot.MemoryPressureLevel);
+                using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 225)))
+                {
+                    g.FillRectangle(fill, rect);
                 }
             }
 
             g.Clip = previous;
         }
 
-        // The three etched thresholds make the rail a pressure instrument rather than another
-        // unlabeled capacity bar. The current plunger remains visible at very low percentages.
-        double[] thresholds = { 50.0, 70.0, 85.0 };
-        using (Pen tick = new Pen(DesignTokens.White(72), Math.Max(1.0f, S(0.8f))))
+        // The bright right edge is "now". Unlike a capacity fill, the strip reads left-to-right as
+        // time and preserves the green/yellow/red state changes that made the current state useful.
+        Color currentColor = MetricTileModel.GetMemoryPressureColor(snapshot.MemoryPressureLevel);
+        using (Pen marker = new Pen(DesignTokens.WithAlpha(currentColor, 255), Math.Max(1.5f, S(1.8f))))
         {
-            for (int i = 0; i < thresholds.Length; i++)
-            {
-                float x = rect.X + (float)(rect.Width * thresholds[i] / 100.0);
-                g.DrawLine(tick, x, rect.Y + S(1), x, rect.Bottom - S(1));
-            }
-        }
-
-        if (clamped > 0.0)
-        {
-            float markerX = rect.X + (float)(rect.Width * clamped / 100.0);
-            float markerWidth = Math.Max(2.0f, S(2.4f));
-            markerX = Math.Max(rect.X, Math.Min(markerX, rect.Right - markerWidth / 2.0f));
-            using (SolidBrush marker = new SolidBrush(DesignTokens.WithAlpha(pressureColor, 255)))
-            {
-                g.FillEllipse(
-                    marker,
-                    markerX - markerWidth / 2.0f,
-                    rect.Y - S(1),
-                    markerWidth,
-                    rect.Height + S(2));
-            }
+            g.DrawLine(marker, rect.Right - S(1), rect.Y, rect.Right - S(1), rect.Bottom);
         }
     }
 
-    private static string FormatPagingRate(double megabytesPerSecond)
+    private static string FormatPageOutRate(double megabytesPerSecond)
     {
         double value = Math.Max(0.0, megabytesPerSecond);
         if (value < 0.05)
