@@ -50,11 +50,10 @@ internal sealed partial class GuardBoardForm
             this.hitTargets.Clear();
         }
 
-        // Same call as SpecBoardForm: this board opts out of hidden-mode colour protection, whose
-        // desaturation would flatten exactly the green/yellow/red state coding the guards rely on.
-        BurnInProtection.ConfigureGraphics(g, false);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        g.InterpolationMode = InterpolationMode.Bilinear;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
         using (SolidBrush background = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 238)))
         {

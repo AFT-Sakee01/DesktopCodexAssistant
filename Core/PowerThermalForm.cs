@@ -427,8 +427,17 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     private void OnEffectivePowerModeChanged(int mode, IntPtr context)
     {
-        WidgetSettings.InvalidateEffectivePerformanceModeCache();
-        RequestSamplingFromAnyThread(true, false);
+        try
+        {
+            WidgetSettings.InvalidateEffectivePerformanceModeCache();
+            RequestSamplingFromAnyThread(true, false);
+        }
+        catch (Exception ex)
+        {
+            // Never allow a managed exception to cross this native callback boundary.
+            try { Program.LogException(ex); }
+            catch { }
+        }
     }
 
     private void RequestSamplingFromAnyThread(bool readPower, bool readThermal)

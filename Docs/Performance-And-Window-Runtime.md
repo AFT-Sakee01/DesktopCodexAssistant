@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.0
+适用版本：2.0.0.1
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -66,6 +66,8 @@ flowchart LR
 - `ForceRefreshAllModules()`、设置预览和正式保存分发。
 - 统一 Z-order、Win+D/SeelenUI 恢复和退出。
 
+`ApplicationWindowStateTracker` 始终只保留低频前台窗口 Hook；最大化自动隐藏或全屏/最大化/遮挡可见性策略启用时才动态注册对象 Hook，并执行主采样周期的完整窗口枚举。回调只进入有界合并器，`WidgetForm` 每 125 ms 在 UI 线程批量消费并至多执行一次可见性更新；同产品辅助进程会在入队前过滤。命名停止事件由 ThreadPool 注册等待直接向宿主 HWND 投递 `WM_CLOSE`，退出不依赖可能被消息风暴饿死的 `WM_TIMER`。
+
 隐藏宿主不创建 layered bitmap，不参与屏幕定位、hover、burn-in 或全局布局编辑，也不能被桌面宿主模式重新设为 `WS_VISIBLE`。
 
 ## 4. Headless 数据所有者
@@ -128,7 +130,7 @@ Network, SpecBoard, CodexTask, Guard, CodexIq
 
 - 左缘绝对可达的梯形 tab。
 - 悬停展开与离开/外部点击收起。
-- 固定角色色、收起灰态和 board 内描边。
+- 固定角色色、隐藏态透明度和 board 内描边。
 - 共享 120 ms 交互 tick，不建立全局 mouse hook。
 - `ApplyRuntimeOffsetWithPinnedX`：X 固定在工作区左缘，只允许整组 Y 微位移。
 
@@ -191,7 +193,7 @@ hover、click-through、敏感鼠标范围、延迟显现和反向隐藏只作�
 - `NativeMethods.LayeredBitmapSurface`
 - `UiFontCache`
 - `DesignTokens`
-- `BurnInProtection`
+- `BurnInProtection` 的像素微迁移和夜间亮度处理
 
 内容变化时才重建像素；仅整体透明度变化时复用现有位图提交 Alpha。尺寸变化、显示挂起和关闭必须释放 Bitmap、Graphics、字体、Region 与原生句柄。绘制失败可记录诊断并降级，但不能在 paint 路径同步访问网络、WMI、文件或外部进程。
 
@@ -204,6 +206,7 @@ headless owners 不拥有展示缓冲。Codex/Power 的旧 renderer 已删除，
 - 展开 board 可以使用自己的 named salt，但固定相同展开 X。
 - Operation 使用自己的 named salt。
 - hidden host 与 headless owners不参与 burn-in。
+- 当前 burn-in 只改变窗口位置；夜间计划可独立降低位图亮度。隐藏状态不执行颜色反相、白灰透明化或低能耗替代配色，旧 `BurnInHiddenModeColorProtectionEnabled` 输入仅作为 schema 88 退休键丢弃。
 
 TopMost 恢复只遍历当前可见 forms，保持组内顺序，并把本程序表面放在受保护的 Codex 宠物/SeelenUI 层级策略所要求的位置。不得维护包含已删除表面的固定列表。
 

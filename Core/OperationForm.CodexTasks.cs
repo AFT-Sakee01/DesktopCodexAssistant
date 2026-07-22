@@ -559,7 +559,6 @@ internal sealed partial class OperationForm
 
             this.dockTab.SetDisplaySuspended(this.displaySuspended);
             this.dockTab.SetHiddenForFullscreen(this.hiddenForFullscreen);
-            this.dockTab.SetBoardExpanded(this.Visible);
             this.dockTab.ShowTab(ResolveDockTabCenterY());
             // Docked and collapsed still needs the tick: it drives the tab's burn-in drift and the
             // collapse countdown once a hover expand happens.
@@ -779,22 +778,12 @@ internal sealed partial class OperationForm
                 NativeMethods.SWP_NOOWNERZORDER |
                 NativeMethods.SWP_FRAMECHANGED |
                 NativeMethods.SWP_SHOWWINDOW);
-            if (this.dockTab != null && !this.dockTab.IsDisposed)
-            {
-                this.dockTab.SetBoardExpanded(true);
-            }
-
             this.refreshTimer.Start();
             RenderLayeredWindow();
         }
 
         public void HideBoard()
         {
-            if (this.dockTab != null && !this.dockTab.IsDisposed)
-            {
-                this.dockTab.SetBoardExpanded(false);
-            }
-
             this.dockPointerLeftUtc = DateTime.MinValue;
             if (this.Visible)
             {

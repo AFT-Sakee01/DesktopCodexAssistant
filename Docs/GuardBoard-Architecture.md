@@ -1,6 +1,6 @@
 # Guard Board 架构
 
-适用版本：1.0.6.29
+适用版本：2.0.0.1
 
 本文负责电源守护状态机（睡眠防护、亮屏计时、断网自动睡眠、电池保护暂停窗口）、GUARD 看板窗口的布局与交互，以及该窗口与「特殊设置」三项程序守护的共用边界。
 
@@ -71,8 +71,6 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 
 `GuardBoardForm` 继承 `LayeredWidgetFormBase`，绘制在 `GuardBoardForm.Layout.cs`。视觉家族与 SpecBoardForm / NetworkMonitorForm.DockedLayout 一致：`AppBackground` 底色 @238、`Border` 发丝线、`S(12)/S(9.2)/S(9)/S(7.8)` 字号阶梯。所有行高经 `MeasureLineHeight` 实测，不写死像素。
 
-本窗口不参与隐藏模式配色保护（与 SpecBoardForm 相同传 `false`）：其去饱和会压平绿/黄/红的状态编码，而这正是守护状态的唯一载体。
-
 ### 左栏：计时环与两条轨道
 
 外环始终承载**当前正在发生的那个守护**：有亮屏计时走计时剩余（黄），否则走睡眠防护已持续时长（绿，以 `SleepGuardGaugeHours = 12` 小时为参考扫程）。内环只在两者同时运行时出现。早期版本把外环固定绑给亮屏计时，结果在最常见的状态（只开睡眠防护）下整块最大元素是空的，读起来像坏了而不是空闲。
@@ -104,7 +102,7 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 
 维护 tick 500 ms，从窗口构造完成起持续运行，与面板是否展开无关——守护要跨夜生效。守护状态色只在看板内容中表达；常驻 tab 固定使用队列第四位的紫色角色编码，不再因有守护、电池暂停或空闲而变色。窗口可见时每 tick 无条件重绘，因为板上每个倒计时都是秒级精度。
 
-防烧屏 salt：`GuardBoardSalt = 53`、`GuardBoardDockTabSalt = 59`。防烧屏配色保护开启且 GUARD 看板收起时，梯形保持低亮灰色，中央箭头仍显示紫色；看板真正展开后梯形才恢复紫色，收起后立即回灰。展开的 GUARD 看板外沿使用同一紫色的共享 Radar 风格内描边。梯形与箭头处于同一分层位图和同一个窗口边界内，因此 `GuardBoardDockTabSalt` 的 Y 轴微位移同时覆盖两者；展开看板的 `PositionAtLeftDock` 使用 `ApplyRuntimeOffsetWithPinnedX` 固定 X，只保留 `GuardBoardSalt` 的 Y 轴微位移。共享绘制、定位和命中契约见 `Docs/Performance-And-Window-Runtime.md` §6.1。
+防烧屏 salt：`GuardBoardSalt = 53`、`GuardBoardDockTabSalt = 59`。常驻梯形始终使用紫色角色编码，普通隐藏状态只降低既有填充、边框和箭头 Alpha，不改变颜色。展开的 GUARD 看板外沿使用同一紫色的共享 Radar 风格内描边。梯形与箭头处于同一分层位图和同一个窗口边界内，因此 `GuardBoardDockTabSalt` 的 Y 轴微位移同时覆盖两者；展开看板的 `PositionAtLeftDock` 使用 `ApplyRuntimeOffsetWithPinnedX` 固定 X，只保留 `GuardBoardSalt` 的 Y 轴微位移。共享绘制、定位和命中契约见 `Docs/Performance-And-Window-Runtime.md` §6.1。
 
 ## 渲染取样
 

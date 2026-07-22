@@ -88,9 +88,10 @@ internal sealed partial class NetworkMonitorForm
 
     private void DrawContentDocked(Graphics g)
     {
-        BurnInProtection.ConfigureGraphics(g, IsBurnInColorProtectionActive());
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        g.InterpolationMode = InterpolationMode.Bilinear;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
         // Family shell: AppBackground wash plus the Codex board's subtle Border outline. The
         // window transparency knob is the SpecBoard override at the layered-window level, so the

@@ -50,8 +50,6 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     private DateTime reverseHoverRevealUntilUtc = DateTime.MinValue;
     private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool autoHideKeepAliveActive;
-    private bool lastLowEnergyPalette;
-    private int renderSampleLowEnergyOverride = -1;
     private bool renderSampleHoverOverride;
 
     private struct AutoTileLayoutMetrics
@@ -114,26 +112,6 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     protected override bool CanRenderLayeredWindow()
     {
         return !this.displaySuspended && !this.hiddenForFullscreen;
-    }
-
-    // A tile is a rounded square built almost entirely from anti-aliased rings and arcs. The generic
-    // bitmap inversion pass rewrites each pixel independently, turning every anti-aliased edge into
-    // a jagged halo, and the usual mitigation — disabling anti-aliasing — only replaces smooth rings
-    // with stair-stepped ones. EdgeDockTabForm opted out for the same reason. DrawTile selects a
-    // low-energy palette directly instead, and hidden mode still dims via ApplyHoverAlpha.
-    protected override bool IsLayeredBurnInColorProtectionActive()
-    {
-        return false;
-    }
-
-    private bool IsLowEnergyPaletteActive()
-    {
-        if (this.renderSampleLowEnergyOverride >= 0)
-        {
-            return this.renderSampleLowEnergyOverride == 1;
-        }
-
-        return BurnInProtection.ShouldApplyHiddenModeColorProtection(this.CurrentSettings, IsHoverOpacityTargetActive());
     }
 
     internal int GetTilePixels()
@@ -782,13 +760,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         bool changed = Math.Abs(previous - this.hoverOpacityProgress) > 0.001;
         if (changed && this.Visible)
         {
-            bool paletteChanged = IsLowEnergyPaletteActive() != this.lastLowEnergyPalette;
-            if (paletteChanged)
-            {
-                InvalidateLayeredRenderBuffer();
-            }
-
-            RenderLayeredWindow(paletteChanged);
+            RenderLayeredWindow(false);
         }
 
         return Math.Abs(this.hoverOpacityProgress - target) > 0.001;
@@ -875,29 +847,12 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
 
     internal void DrawTileContent(Graphics g)
     {
-        // Anti-aliasing stays on in both states: opting out of the inversion pass is what makes that
-        // safe here.
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        this.lastLowEnergyPalette = IsLowEnergyPaletteActive();
 
         int px = GetTilePixels();
         DrawTile(g, new RectangleF(0, 0, px, px), this.tile, this.pointerInside || this.renderSampleHoverOverride);
-    }
-
-    private Color Energy(Color color)
-    {
-        if (!this.lastLowEnergyPalette)
-        {
-            return color;
-        }
-
-        return Color.FromArgb(
-            color.A,
-            (int)(color.R * 0.34),
-            (int)(color.G * 0.34),
-            (int)(color.B * 0.34));
     }
 
     private void DrawTile(Graphics g, RectangleF bounds, MetricTileData data, bool hovered)
@@ -909,18 +864,14 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
 
         float radius = S(TileLogicalRadius);
         bool alert = data.AlertPercent >= 80.0;
-        // The hover border keeps the undimmed accent. Everything else follows the low-energy palette,
-        // so the tile reads as "quieted, and this is the one under the pointer" rather than as a
-        // uniformly faded square.
-        Color accentPure = alert ? DesignTokens.Colors.DangerStrong : data.Accent;
-        Color accent = Energy(accentPure);
+        Color accent = alert ? DesignTokens.Colors.DangerStrong : data.Accent;
 
         using (GraphicsPath path = RoundedRectangle(new RectangleF(bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1), radius))
-        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.Surface), 214)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, 214)))
         {
             g.FillPath(fill, path);
             using (Pen border = new Pen(
-                hovered ? DesignTokens.WithAlpha(accentPure, 240) : DesignTokens.White(38),
+                hovered ? DesignTokens.WithAlpha(accent, 240) : DesignTokens.White(38),
                 hovered ? Math.Max(1.0f, S(1.5f)) : 1.0f))
             {
                 g.DrawPath(border, path);
@@ -958,7 +909,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         if (data.InnerPercent >= 0.0)
         {
             RectangleF innerBox = RectangleF.Inflate(ringBox, -innerInset, -innerInset);
-            DrawRing(g, innerBox, innerStroke, data.InnerPercent, Energy(alert ? DesignTokens.Colors.Warning : data.InnerAccent), 190);
+            DrawRing(g, innerBox, innerStroke, data.InnerPercent, alert ? DesignTokens.Colors.Warning : data.InnerAccent, 190);
         }
 
         DrawCenterValue(g, ringBox, data, alert);
@@ -1005,7 +956,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     private void DrawCenterValue(Graphics g, RectangleF ringBox, MetricTileData data, bool alert)
     {
         string text = string.IsNullOrEmpty(data.CenterValue) ? "--" : data.CenterValue;
-        Color color = Energy(alert ? DesignTokens.Colors.DangerText : DesignTokens.Colors.TextStrong);
+        Color color = alert ? DesignTokens.Colors.DangerText : DesignTokens.Colors.TextStrong;
         float basis = ringBox.Height * (text.Length >= 3 ? 0.31f : 0.42f);
         using (Font font = new Font("Segoe UI", Math.Max(7.0f, basis), FontStyle.Bold, GraphicsUnit.Pixel))
         using (SolidBrush brush = new SolidBrush(color))
@@ -1027,7 +978,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             float cx = box.X + col * (cell + pad) + cell / 2.0f;
             float cy = box.Y + row * (cell + pad) + cell / 2.0f;
             bool active = guards != null && i < guards.Count && guards[i].Active;
-            Color accent = Energy(guards != null && i < guards.Count ? guards[i].Accent : DesignTokens.Colors.GlyphMuted);
+            Color accent = guards != null && i < guards.Count ? guards[i].Accent : DesignTokens.Colors.GlyphMuted;
             RectangleF dotBox = new RectangleF(cx - dot / 2.0f, cy - dot / 2.0f, dot, dot);
             if (active)
             {
@@ -1054,7 +1005,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             bounds.Y + bounds.Height * 0.075f,
             size,
             size);
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.Warning), 235)))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 235)))
         {
             g.FillEllipse(brush, dot);
         }
@@ -1089,11 +1040,6 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     internal void UpdateFeedForRenderSample(MetricTileFeed feed)
     {
         this.tile = MetricTileModel.BuildTile(this.MetricId, feed);
-    }
-
-    internal void SetLowEnergyPaletteForRenderSample(bool active)
-    {
-        this.renderSampleLowEnergyOverride = active ? 1 : 0;
     }
 
     internal void SetHoveredForRenderSample(bool hovered)

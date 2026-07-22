@@ -193,7 +193,6 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
 
         this.dockTab.SetDisplaySuspended(this.displaySuspended);
         this.dockTab.SetHiddenForFullscreen(this.hiddenForFullscreen);
-        this.dockTab.SetBoardExpanded(this.Visible);
         this.dockTab.ShowTab(ResolveDockTabCenterY());
         this.maintenanceTimer.Start();
     }
@@ -310,22 +309,12 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
             this.Width,
             this.Height,
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_FRAMECHANGED | NativeMethods.SWP_SHOWWINDOW);
-        if (this.dockTab != null && !this.dockTab.IsDisposed)
-        {
-            this.dockTab.SetBoardExpanded(true);
-        }
-
         ResetAutoHideClock();
         RenderLayeredWindow();
     }
 
     internal void HideBoard()
     {
-        if (this.dockTab != null && !this.dockTab.IsDisposed)
-        {
-            this.dockTab.SetBoardExpanded(false);
-        }
-
         if (this.Visible)
         {
             Hide();

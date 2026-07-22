@@ -410,11 +410,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         DrawContentDocked(g);
     }
 
-    protected override bool IsLayeredBurnInColorProtectionActive()
-    {
-        return false;
-    }
-
     private string BuildNetworkLinkSummary()
     {
         if (this.snapshot == null || !this.snapshot.InterfaceKnown)
@@ -1920,11 +1915,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return true;
     }
 
-    private bool IsBurnInColorProtectionActive()
-    {
-        return false;
-    }
-
     private Font GetCachedUiFont(float size, FontStyle style)
     {
         // Fitted text requests a small bounded set of sizes; cache them until layout changes.
@@ -2281,7 +2271,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             overrides.VisibilityMode = WidgetVisibilityMode.AlwaysVisible;
             overrides.ClickThroughMode = ClickThroughMode.Auto;
             overrides.HoverOpacityEnabled = true;
-            overrides.BurnInHiddenModeColorProtectionEnabled = true;
             overrides.Normalize();
             form.CurrentSettings = overrides;
             if (form.WindowTransparencyOverridePercent != overrides.NetworkMonitorTransparencyOverridePercent ||
@@ -2295,11 +2284,10 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
                 throw new InvalidOperationException("Network monitor docked self-test: hover fade must not apply to the docked panel.");
             }
 
-            if (form.IsBurnInColorProtectionActive() ||
-                form.ProcessSharedInteractionTick() ||
+            if (form.ProcessSharedInteractionTick() ||
                 !form.ShouldUseTopMostPlacement())
             {
-                throw new InvalidOperationException("Network monitor docked self-test: floating hover, click-through and hidden-colour policies must be isolated from the board.");
+                throw new InvalidOperationException("Network monitor docked self-test: floating hover and click-through policies must be isolated from the board.");
             }
 
             WidgetSettings narrow = settings.Clone();

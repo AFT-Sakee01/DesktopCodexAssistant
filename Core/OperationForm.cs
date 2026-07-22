@@ -3,10 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
 using System.IO;
 using System.Management;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -29,7 +27,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private const int HoverOpacityToggleButtonIndex = 12;
     private const int SmallColumnCount = 6;
     private const int ForcedOperationOpacityAlpha = 48;
-    private const byte HiddenModeHitTestAlpha = 64;
     private const string AsusAssistantPackagePrefix = "B9ECED6F.ASUSPCAssistant_";
     private const string AsusAssistantPackageSuffix = "_qmba6cd70vzyy";
     private const string AsusKeyboardHostRelativePath = @"HwAdjustPage\ATK Package\AsusKeyboardHost.exe";
@@ -91,7 +88,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly double[] hoverProgress = new double[ButtonCount];
     private RectangleF[] buttonRects;
     private bool buttonRectsValid;
-    private Bitmap interactionHitMask;
 
     public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction, Func<string, bool, bool> setBooleanSettingAction, Action<WidgetSettings> persistGuardStateAction = null)
     {
@@ -506,7 +502,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         }
 
         this.seelenUiRunning = next;
-        DisposeInteractionHitMask();
         if (!ShouldShowStartButton())
         {
             if (this.hoveredButton == StartButtonIndex)
@@ -2640,27 +2635,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         return DesignTokens.ClampByte((int)Math.Round(alpha * GetLayeredWindowOpacityAlpha() / 255.0));
     }
 
-    protected override bool IsLayeredBurnInColorProtectionActive()
-    {
-        return IsBurnInColorProtectionActive();
-    }
-
-    protected override void OnLayeredBitmapPrepared(Bitmap bitmap, bool burnInColorProtectionActive)
-    {
-        if (!burnInColorProtectionActive)
-        {
-            return;
-        }
-
-        EnsureInteractionHitMask();
-        ApplyInteractionHitMask(bitmap, this.interactionHitMask);
-    }
-
-    protected override void DisposeAdditionalRenderBuffers()
-    {
-        DisposeInteractionHitMask();
-    }
-
     private RectangleF GetIconRect(RectangleF tileRect)
     {
         float inset = Math.Max(S(4), tileRect.Height * 0.20f);
@@ -3340,14 +3314,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             : 255);
     }
 
-    private bool IsBurnInColorProtectionActive()
-    {
-        // The operation panel is an active control surface. Hidden-mode color inversion can erase
-        // grayscale glyph pixels and make the panel feel broken, so it is disabled here regardless
-        // of which hidden trigger is active. RadialDial's long-core-hover visual is drawn separately.
-        return false;
-    }
-
     private bool IsReverseHoverRevealActive()
     {
         if (this.suppressReverseHoverRevealUntilCursorLeaves)
@@ -3371,145 +3337,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     {
         this.buttonRects = null;
         this.buttonRectsValid = false;
-        DisposeInteractionHitMask();
-    }
-
-    private void EnsureInteractionHitMask()
-    {
-        if (this.interactionHitMask != null &&
-            this.interactionHitMask.Width == this.Width &&
-            this.interactionHitMask.Height == this.Height)
-        {
-            return;
-        }
-
-        DisposeInteractionHitMask();
-        this.interactionHitMask = new Bitmap(
-            this.Width,
-            this.Height,
-            PixelFormat.Format32bppPArgb);
-        using (Graphics graphics = Graphics.FromImage(this.interactionHitMask))
-        using (SolidBrush brush = new SolidBrush(Color.White))
-        {
-            graphics.Clear(Color.Transparent);
-            graphics.SmoothingMode = SmoothingMode.None;
-            if (IsRadialDialActive())
-            {
-                PaintRadialHitMask(graphics, brush);
-                return;
-            }
-
-            RectangleF[] rects = GetButtonRects();
-            if (ShouldDrawStartFallbackPanel())
-            {
-                float fallbackRadius = Math.Max(S(5), rects[StartButtonIndex].Height * 0.24f);
-                using (GraphicsPath fallbackPath = RoundedSegment(
-                    rects[StartButtonIndex],
-                    fallbackRadius,
-                    true,
-                    false,
-                    false))
-                {
-                    graphics.FillPath(brush, fallbackPath);
-                }
-            }
-
-            for (int button = 0; button < rects.Length; button++)
-            {
-                if (!IsButtonVisible(button))
-                {
-                    continue;
-                }
-
-                bool leftSegment;
-                bool topRight;
-                bool bottomRight;
-                GetButtonSegmentShape(button, out leftSegment, out topRight, out bottomRight);
-                float radius = Math.Max(S(5), rects[button].Height * 0.24f);
-                using (GraphicsPath path = RoundedSegment(
-                    rects[button],
-                    radius,
-                    leftSegment,
-                    topRight,
-                    bottomRight))
-                {
-                    graphics.FillPath(brush, path);
-                }
-            }
-        }
-    }
-
-    private static void ApplyInteractionHitMask(Bitmap bitmap, Bitmap mask)
-    {
-        if (bitmap == null ||
-            mask == null ||
-            bitmap.Width != mask.Width ||
-            bitmap.Height != mask.Height)
-        {
-            return;
-        }
-
-        Rectangle bounds = new Rectangle(0, 0, bitmap.Width, bitmap.Height);
-        BitmapData bitmapData = bitmap.LockBits(bounds, ImageLockMode.ReadWrite, PixelFormat.Format32bppPArgb);
-        BitmapData maskData = mask.LockBits(bounds, ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
-        try
-        {
-            int bitmapByteCount = Math.Abs(bitmapData.Stride) * bitmapData.Height;
-            int maskByteCount = Math.Abs(maskData.Stride) * maskData.Height;
-            byte[] bitmapPixels = new byte[bitmapByteCount];
-            byte[] maskPixels = new byte[maskByteCount];
-            Marshal.Copy(bitmapData.Scan0, bitmapPixels, 0, bitmapByteCount);
-            Marshal.Copy(maskData.Scan0, maskPixels, 0, maskByteCount);
-
-            for (int y = 0; y < bitmapData.Height; y++)
-            {
-                int bitmapRow = y * Math.Abs(bitmapData.Stride);
-                int maskRow = y * Math.Abs(maskData.Stride);
-                for (int x = 0; x < bitmapData.Width; x++)
-                {
-                    int bitmapIndex = bitmapRow + x * 4;
-                    int maskIndex = maskRow + x * 4;
-                    if (maskPixels[maskIndex + 3] != 0 &&
-                        bitmapPixels[bitmapIndex + 3] == 0)
-                    {
-                        // Alpha=1 is not reliable once the layered window source alpha is
-                        // reduced for hidden mode. This stays visually faint after the global
-                        // alpha multiplier but remains non-zero in User32 hit testing.
-                        bitmapPixels[bitmapIndex] = 0;
-                        bitmapPixels[bitmapIndex + 1] = 0;
-                        bitmapPixels[bitmapIndex + 2] = 0;
-                        bitmapPixels[bitmapIndex + 3] = HiddenModeHitTestAlpha;
-                    }
-                }
-            }
-
-            Marshal.Copy(bitmapPixels, 0, bitmapData.Scan0, bitmapByteCount);
-        }
-        finally
-        {
-            mask.UnlockBits(maskData);
-            bitmap.UnlockBits(bitmapData);
-        }
-    }
-
-    private void DisposeInteractionHitMask()
-    {
-        if (this.interactionHitMask != null)
-        {
-            this.interactionHitMask.Dispose();
-            this.interactionHitMask = null;
-        }
-    }
-
-    private static void GetButtonSegmentShape(
-        int button,
-        out bool leftSegment,
-        out bool topRight,
-        out bool bottomRight)
-    {
-        leftSegment = button == StartButtonIndex;
-        topRight = button == BatteryLimitRestoreButtonIndex;
-        bottomRight = button == WindowsAiStudioButtonIndex;
     }
 
     private static bool TryBeginSingleFlight(ref int state)
@@ -3524,7 +3351,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     internal static void RunSelfTest()
     {
-        RunInteractionHitMaskSelfTest();
         RunAnimationStateSelfTest();
         RunSingleFlightSelfTest();
         RunFpsIntervalSelfTest();
@@ -3538,32 +3364,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         OutsideClickDismissalMonitor.RunSelfTest();
         PathPingProbeReader.RunSelfTest();
         AiRequestProtection.RunSelfTest();
-    }
-
-    private static void RunInteractionHitMaskSelfTest()
-    {
-        using (Bitmap bitmap = new Bitmap(6, 4, PixelFormat.Format32bppPArgb))
-        using (Bitmap mask = new Bitmap(6, 4, PixelFormat.Format32bppPArgb))
-        using (Graphics bitmapGraphics = Graphics.FromImage(bitmap))
-        using (Graphics maskGraphics = Graphics.FromImage(mask))
-        using (SolidBrush existingBrush = new SolidBrush(Color.FromArgb(100, 30, 60, 90)))
-        using (SolidBrush maskBrush = new SolidBrush(Color.White))
-        {
-            bitmapGraphics.Clear(Color.Transparent);
-            maskGraphics.Clear(Color.Transparent);
-            bitmapGraphics.FillRectangle(existingBrush, 2, 1, 1, 1);
-            maskGraphics.FillRectangle(maskBrush, 1, 1, 3, 2);
-
-            ApplyInteractionHitMask(bitmap, mask);
-
-            AssertSelfTest(bitmap.GetPixel(1, 1).A == HiddenModeHitTestAlpha, "transparent interactive pixel");
-            AssertSelfTest(bitmap.GetPixel(2, 1).A == 100, "existing alpha preserved");
-            AssertSelfTest(bitmap.GetPixel(0, 0).A == 0, "mask exterior remains transparent");
-            AssertSelfTest(bitmap.GetPixel(4, 1).A == 0, "button gap remains transparent");
-            AssertSelfTest(
-                HiddenModeHitTestAlpha * ForcedOperationOpacityAlpha / 255 >= 1,
-                "hidden mode hit-test alpha survives source alpha");
-        }
     }
 
     private static void RunAnimationStateSelfTest()
@@ -3748,12 +3548,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     private void ConfigureGraphics(Graphics g)
     {
-        if (IsBurnInColorProtectionActive())
-        {
-            BurnInProtection.ConfigureGraphics(g, true);
-            return;
-        }
-
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;

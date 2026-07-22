@@ -73,7 +73,6 @@ internal sealed partial class NetworkMonitorForm
 
         this.dockTab.SetDisplaySuspended(this.displaySuspended);
         this.dockTab.SetHiddenForFullscreen(this.hiddenForFullscreen);
-        this.dockTab.SetBoardExpanded(this.Visible);
         this.dockTab.ShowTab(ResolveDockTabCenterY());
     }
 
@@ -225,11 +224,6 @@ internal sealed partial class NetworkMonitorForm
             NativeMethods.SWP_NOOWNERZORDER |
             NativeMethods.SWP_FRAMECHANGED |
             NativeMethods.SWP_SHOWWINDOW);
-        if (this.dockTab != null && !this.dockTab.IsDisposed)
-        {
-            this.dockTab.SetBoardExpanded(true);
-        }
-
         // Show() can recreate the native handle after a mode/display transition. Reassert the
         // board's input policy on that final handle before the first visible render.
         ApplyClickThroughStyle();
@@ -238,11 +232,6 @@ internal sealed partial class NetworkMonitorForm
 
     private void HideDockedPanel()
     {
-        if (this.dockTab != null && !this.dockTab.IsDisposed)
-        {
-            this.dockTab.SetBoardExpanded(false);
-        }
-
         this.dockPointerLeftUtc = DateTime.MinValue;
         this.dockedRefreshButtonBounds = Rectangle.Empty;
         this.dockedCloseButtonBounds = Rectangle.Empty;

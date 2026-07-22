@@ -1,21 +1,107 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 
 internal sealed class ApplicationWindowStateTracker : IDisposable
 {
+    private const int AssistantProcessCacheSeconds = 5;
+    private const int MaxAssistantProcessCacheEntries = 128;
     private readonly IntPtr ownHandle;
+    private readonly int currentProcessId;
     private readonly Dictionary<IntPtr, TrackedWindow> windows =
         new Dictionary<IntPtr, TrackedWindow>();
+    private readonly WindowEventAccumulator pendingEvents = new WindowEventAccumulator();
+    private readonly object processIdentitySync = new object();
+    private readonly Dictionary<int, ProcessIdentityCacheEntry> processIdentityCache =
+        new Dictionary<int, ProcessIdentityCacheEntry>();
     private NativeMethods.WindowEventHook hook;
     private bool disposed;
 
-    public ApplicationWindowStateTracker(IntPtr ownHandle, NativeMethods.WindowEventHandler handler)
+    public ApplicationWindowStateTracker(
+        IntPtr ownHandle,
+        NativeMethods.WindowEventHandler handler,
+        bool includeObjectEvents)
     {
         this.ownHandle = ownHandle;
+        this.currentProcessId = Process.GetCurrentProcess().Id;
         RefreshAll();
-        this.hook = new NativeMethods.WindowEventHook(handler);
-        Program.LogInfo("Application window state tracker started. HookActive=" + this.hook.IsActive);
+        this.hook = new NativeMethods.WindowEventHook(handler, includeObjectEvents);
+        Program.LogInfo(
+            "Application window state tracker started. HookActive=" +
+            this.hook.IsActive.ToString() +
+            ", ObjectEvents=" +
+            this.hook.ObjectEventsEnabled.ToString());
+    }
+
+    public bool ObjectEventsEnabled
+    {
+        get
+        {
+            NativeMethods.WindowEventHook activeHook = this.hook;
+            return activeHook != null && activeHook.ObjectEventsEnabled;
+        }
+    }
+
+    public void SetObjectEventsEnabled(bool enabled)
+    {
+        NativeMethods.WindowEventHook activeHook = this.hook;
+        if (this.disposed || activeHook == null || activeHook.ObjectEventsEnabled == enabled)
+        {
+            return;
+        }
+
+        if (!enabled)
+        {
+            this.pendingEvents.ClearObjectEvents();
+        }
+        else
+        {
+            RefreshAll();
+        }
+
+        activeHook.SetObjectEventsEnabled(enabled);
+        Program.LogInfo("Application window object events enabled=" + activeHook.ObjectEventsEnabled.ToString() + ".");
+    }
+
+    public WindowEventQueueResult QueueWindowEvent(
+        uint eventId,
+        IntPtr windowHandle,
+        int maximumPendingEvents,
+        out int pendingCount)
+    {
+        pendingCount = 0;
+        if (this.disposed || windowHandle == IntPtr.Zero)
+        {
+            return WindowEventQueueResult.Ignored;
+        }
+
+        bool foreground = eventId == NativeMethods.EVENT_SYSTEM_FOREGROUND;
+        if (!foreground && !ObjectEventsEnabled)
+        {
+            return WindowEventQueueResult.Ignored;
+        }
+
+        if (IsSiblingAssistantWindow(windowHandle))
+        {
+            return WindowEventQueueResult.Ignored;
+        }
+
+        return this.pendingEvents.Enqueue(
+            eventId,
+            windowHandle,
+            Math.Max(1, maximumPendingEvents),
+            out pendingCount);
+    }
+
+    public PendingWindowEventBatch DrainPendingWindowEvents(int maximumEvents)
+    {
+        return this.pendingEvents.Drain(Math.Max(1, maximumEvents));
+    }
+
+    public void ClearPendingWindowEvents()
+    {
+        this.pendingEvents.ClearAll();
     }
 
     public void RefreshAll()
@@ -189,6 +275,7 @@ internal sealed class ApplicationWindowStateTracker : IDisposable
 
     internal static void RunSelfTest()
     {
+        RunWindowEventAccumulatorSelfTest();
         Rectangle screen = new Rectangle(0, 0, 1920, 1080);
         Rectangle widget = new Rectangle(20, 20, 200, 120);
         Rectangle otherScreen = new Rectangle(1920, 0, 1920, 1080);
@@ -240,6 +327,95 @@ internal sealed class ApplicationWindowStateTracker : IDisposable
         AssertSelfTest(
             NativeMethods.IsApplicationWindowFullscreenForState(0, screen, screen),
             "Borderless screen-covering window was not classified as fullscreen");
+    }
+
+    private static void RunWindowEventAccumulatorSelfTest()
+    {
+        WindowEventAccumulator accumulator = new WindowEventAccumulator();
+        int pending;
+        AssertSelfTest(
+            accumulator.Enqueue(NativeMethods.EVENT_OBJECT_LOCATIONCHANGE, new IntPtr(11), 2, out pending) == WindowEventQueueResult.Added &&
+            pending == 1,
+            "Window event accumulator did not queue the first object event.");
+        AssertSelfTest(
+            accumulator.Enqueue(NativeMethods.EVENT_OBJECT_STATECHANGE, new IntPtr(11), 2, out pending) == WindowEventQueueResult.Coalesced &&
+            pending == 1,
+            "Window event accumulator did not coalesce the same HWND.");
+        accumulator.Enqueue(NativeMethods.EVENT_SYSTEM_FOREGROUND, new IntPtr(21), 2, out pending);
+        AssertSelfTest(
+            accumulator.Enqueue(NativeMethods.EVENT_SYSTEM_FOREGROUND, new IntPtr(22), 2, out pending) == WindowEventQueueResult.Coalesced &&
+            pending == 2,
+            "Window event accumulator did not retain only the latest foreground HWND.");
+        accumulator.Enqueue(NativeMethods.EVENT_OBJECT_SHOW, new IntPtr(12), 2, out pending);
+        AssertSelfTest(
+            accumulator.Enqueue(NativeMethods.EVENT_OBJECT_CREATE, new IntPtr(13), 2, out pending) == WindowEventQueueResult.Overflowed,
+            "Window event accumulator did not collapse overflow into a full refresh.");
+
+        PendingWindowEventBatch overflow = accumulator.Drain(1);
+        AssertSelfTest(
+            overflow.FullRefresh && overflow.HasForegroundEvent && overflow.ForegroundWindowHandle == new IntPtr(22) &&
+            overflow.Events.Count == 0 && overflow.RemainingCount == 0,
+            "Window event overflow batch did not preserve the latest foreground event.");
+
+        accumulator.Enqueue(NativeMethods.EVENT_OBJECT_SHOW, new IntPtr(31), 3, out pending);
+        accumulator.Enqueue(NativeMethods.EVENT_OBJECT_HIDE, new IntPtr(32), 3, out pending);
+        PendingWindowEventBatch first = accumulator.Drain(1);
+        PendingWindowEventBatch second = accumulator.Drain(1);
+        AssertSelfTest(
+            first.Events.Count == 1 && first.RemainingCount == 1 &&
+            second.Events.Count == 1 && second.RemainingCount == 0,
+            "Window event accumulator did not enforce bounded batches.");
+    }
+
+    private bool IsSiblingAssistantWindow(IntPtr windowHandle)
+    {
+        int processId;
+        if (!NativeMethods.TryGetWindowProcessId(windowHandle, out processId) || processId <= 0)
+        {
+            return false;
+        }
+
+        if (processId == this.currentProcessId)
+        {
+            return true;
+        }
+
+        DateTime nowUtc = DateTime.UtcNow;
+        lock (this.processIdentitySync)
+        {
+            ProcessIdentityCacheEntry cached;
+            if (this.processIdentityCache.TryGetValue(processId, out cached) && cached.ExpiresUtc > nowUtc)
+            {
+                return cached.IsAssistant;
+            }
+        }
+
+        bool isAssistant = false;
+        try
+        {
+            using (Process process = Process.GetProcessById(processId))
+            {
+                string processName = process.ProcessName ?? string.Empty;
+                isAssistant = processName.StartsWith(ProductIdentity.MachineName, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        catch
+        {
+        }
+
+        lock (this.processIdentitySync)
+        {
+            if (this.processIdentityCache.Count >= MaxAssistantProcessCacheEntries)
+            {
+                this.processIdentityCache.Clear();
+            }
+
+            this.processIdentityCache[processId] = new ProcessIdentityCacheEntry(
+                isAssistant,
+                nowUtc.AddSeconds(AssistantProcessCacheSeconds));
+        }
+
+        return isAssistant;
     }
 
     private void RefreshWindow(IntPtr windowHandle, bool foreground)
@@ -395,7 +571,193 @@ internal sealed class ApplicationWindowStateTracker : IDisposable
             activeHook.Dispose();
         }
 
+        this.pendingEvents.ClearAll();
+        lock (this.processIdentitySync)
+        {
+            this.processIdentityCache.Clear();
+        }
+
         this.windows.Clear();
+    }
+
+    internal enum WindowEventQueueResult
+    {
+        Ignored,
+        Added,
+        Coalesced,
+        Overflowed
+    }
+
+    internal struct PendingWindowEvent
+    {
+        public PendingWindowEvent(uint eventId, IntPtr windowHandle)
+        {
+            this.EventId = eventId;
+            this.WindowHandle = windowHandle;
+        }
+
+        public readonly uint EventId;
+        public readonly IntPtr WindowHandle;
+    }
+
+    internal sealed class PendingWindowEventBatch
+    {
+        public PendingWindowEventBatch(
+            bool fullRefresh,
+            bool hasForegroundEvent,
+            IntPtr foregroundWindowHandle,
+            List<PendingWindowEvent> events,
+            int remainingCount)
+        {
+            this.FullRefresh = fullRefresh;
+            this.HasForegroundEvent = hasForegroundEvent;
+            this.ForegroundWindowHandle = foregroundWindowHandle;
+            this.Events = events ?? new List<PendingWindowEvent>();
+            this.RemainingCount = remainingCount;
+        }
+
+        public bool FullRefresh { get; private set; }
+        public bool HasForegroundEvent { get; private set; }
+        public IntPtr ForegroundWindowHandle { get; private set; }
+        public List<PendingWindowEvent> Events { get; private set; }
+        public int RemainingCount { get; private set; }
+    }
+
+    private sealed class WindowEventAccumulator
+    {
+        private readonly object syncRoot = new object();
+        private readonly Dictionary<IntPtr, uint> objectEvents = new Dictionary<IntPtr, uint>();
+        private bool fullRefreshPending;
+        private bool foregroundPending;
+        private IntPtr foregroundWindowHandle;
+
+        public WindowEventQueueResult Enqueue(
+            uint eventId,
+            IntPtr windowHandle,
+            int maximumPendingEvents,
+            out int pendingCount)
+        {
+            lock (this.syncRoot)
+            {
+                if (eventId == NativeMethods.EVENT_SYSTEM_FOREGROUND)
+                {
+                    bool coalesced = this.foregroundPending;
+                    this.foregroundPending = true;
+                    this.foregroundWindowHandle = windowHandle;
+                    pendingCount = GetPendingCount();
+                    return coalesced ? WindowEventQueueResult.Coalesced : WindowEventQueueResult.Added;
+                }
+
+                if (this.fullRefreshPending)
+                {
+                    pendingCount = GetPendingCount();
+                    return WindowEventQueueResult.Coalesced;
+                }
+
+                if (this.objectEvents.ContainsKey(windowHandle))
+                {
+                    this.objectEvents[windowHandle] = eventId;
+                    pendingCount = GetPendingCount();
+                    return WindowEventQueueResult.Coalesced;
+                }
+
+                if (this.objectEvents.Count >= maximumPendingEvents)
+                {
+                    // Once the bounded map fills, one full enumeration is cheaper and more accurate
+                    // than retaining an unbounded sequence of stale intermediate HWND transitions.
+                    this.objectEvents.Clear();
+                    this.fullRefreshPending = true;
+                    pendingCount = GetPendingCount();
+                    return WindowEventQueueResult.Overflowed;
+                }
+
+                this.objectEvents[windowHandle] = eventId;
+                pendingCount = GetPendingCount();
+                return WindowEventQueueResult.Added;
+            }
+        }
+
+        public PendingWindowEventBatch Drain(int maximumEvents)
+        {
+            lock (this.syncRoot)
+            {
+                bool fullRefresh = this.fullRefreshPending;
+                bool hasForeground = this.foregroundPending;
+                IntPtr foreground = this.foregroundWindowHandle;
+                this.fullRefreshPending = false;
+                this.foregroundPending = false;
+                this.foregroundWindowHandle = IntPtr.Zero;
+
+                List<PendingWindowEvent> events = new List<PendingWindowEvent>();
+                if (fullRefresh)
+                {
+                    this.objectEvents.Clear();
+                }
+                else
+                {
+                    List<IntPtr> drainedHandles = new List<IntPtr>();
+                    foreach (KeyValuePair<IntPtr, uint> pair in this.objectEvents)
+                    {
+                        events.Add(new PendingWindowEvent(pair.Value, pair.Key));
+                        drainedHandles.Add(pair.Key);
+                        if (events.Count >= maximumEvents)
+                        {
+                            break;
+                        }
+                    }
+
+                    for (int i = 0; i < drainedHandles.Count; i++)
+                    {
+                        this.objectEvents.Remove(drainedHandles[i]);
+                    }
+                }
+
+                return new PendingWindowEventBatch(
+                    fullRefresh,
+                    hasForeground,
+                    foreground,
+                    events,
+                    GetPendingCount());
+            }
+        }
+
+        public void ClearObjectEvents()
+        {
+            lock (this.syncRoot)
+            {
+                this.objectEvents.Clear();
+                this.fullRefreshPending = false;
+            }
+        }
+
+        public void ClearAll()
+        {
+            lock (this.syncRoot)
+            {
+                this.objectEvents.Clear();
+                this.fullRefreshPending = false;
+                this.foregroundPending = false;
+                this.foregroundWindowHandle = IntPtr.Zero;
+            }
+        }
+
+        private int GetPendingCount()
+        {
+            return (this.fullRefreshPending ? 1 : this.objectEvents.Count) +
+                (this.foregroundPending ? 1 : 0);
+        }
+    }
+
+    private struct ProcessIdentityCacheEntry
+    {
+        public ProcessIdentityCacheEntry(bool isAssistant, DateTime expiresUtc)
+        {
+            this.IsAssistant = isAssistant;
+            this.ExpiresUtc = expiresUtc;
+        }
+
+        public readonly bool IsAssistant;
+        public readonly DateTime ExpiresUtc;
     }
 
     private sealed class TrackedWindow

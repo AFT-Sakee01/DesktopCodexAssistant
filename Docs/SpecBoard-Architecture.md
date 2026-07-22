@@ -1,6 +1,6 @@
 # Spec Board 架构
 
-适用版本：2.0.0.0
+适用版本：2.0.0.1
 
 本文负责跨项目 spec 账本读取、对账、看板窗口、交互和只读边界。
 
@@ -52,7 +52,7 @@ RadialDial 核心圆圈或 Start 按钮双击调用 `ToggleLauncherTrioWindow`�
 
 Network、Spec、Codex Task、GUARD 与 Codex IQ 五个固定停靠角色共用 `EdgeDockTabForm`（`Core/EdgeDockTabForm.cs`）——`5×30` 逻辑尺寸、左边全高向右收窄的梯形，中央有同角色色、较低不透明度的向右三角箭头，整体贴在工作区左缘。默认队列从上到下为 Network 蓝、Spec 橙、Codex Task 绿、GUARD 紫、Codex IQ 青；用户可调整五角色顺序，但不可禁用或删除角色。展开看板也继承对应角色色的共享圆角内描边，精确线宽与绘制契约见 `Docs/Performance-And-Window-Runtime.md` §6.1。鼠标移上 tab 即展开对应看板；指针离开看板与 tab 后经 `LeftDockCollapseSeconds`（默认 1 s，范围 0–30）自动收起。**一个角色一枚 tab**，互不影响。
 
-tab 自身用 120 ms 计时器轮询 `Cursor.Position` 判定 hover（不依赖分层窗 alpha 命中测试，整个 `5×30` 矩形都是可命中区）。边框和任务栏仍隐藏，`Text`/`AccessibleName` 使用各自稳定名称，让辅助功能和 UI 验收工具能区分五枚微型窗口。展开时看板左缘落在 `工作区左缘 + tab 宽`，tab 保持可见，指针可以从 tab 连续滑入看板而不触发收起倒计时。tab 是**永久可见**元素，因此五枚都使用独立防烧屏 salt；梯形与箭头绘制在同一分层位图内，`EdgeDockTabForm.PositionAtLeftEdge` 先取得 `ApplyRuntimeOffset`，再由 `PinToLeftEdge` 丢弃水平分量并固定到 `workArea.Left`，所以两者共同承受 Y 轴微位移，鼠标贴住主屏或负坐标副屏的绝对最左像素时仍能命中。五个角色的展开面板同样固定水平锚点：各自 `PositionAtLeftDock` 调用 `ApplyRuntimeOffsetWithPinnedX`，统一停在 `工作区左缘 + tab 宽度`，仅保留独立 salt 的 Y 轴微位移。隐藏模式与防烧屏配色保护的共享视觉契约以 `Docs/Performance-And-Window-Runtime.md` §6.1 为单一事实源。
+tab 自身用 120 ms 计时器轮询 `Cursor.Position` 判定 hover（不依赖分层窗 alpha 命中测试，整个 `5×30` 矩形都是可命中区）。边框和任务栏仍隐藏，`Text`/`AccessibleName` 使用各自稳定名称，让辅助功能和 UI 验收工具能区分五枚微型窗口。展开时看板左缘落在 `工作区左缘 + tab 宽`，tab 保持可见，指针可以从 tab 连续滑入看板而不触发收起倒计时。tab 是**永久可见**元素，因此五枚都使用独立防烧屏 salt；梯形与箭头绘制在同一分层位图内，`EdgeDockTabForm.PositionAtLeftEdge` 先取得 `ApplyRuntimeOffset`，再由 `PinToLeftEdge` 丢弃水平分量并固定到 `workArea.Left`，所以两者共同承受 Y 轴微位移，鼠标贴住主屏或负坐标副屏的绝对最左像素时仍能命中。五个角色的展开面板同样固定水平锚点：各自 `PositionAtLeftDock` 调用 `ApplyRuntimeOffsetWithPinnedX`，统一停在 `工作区左缘 + tab 宽度`，仅保留独立 salt 的 Y 轴微位移。隐藏透明度与像素微迁移的共享视觉契约以 `Docs/Performance-And-Window-Runtime.md` §6.1 为单一事实源。
 
 `LeftDockOutsideClickCollapseEnabled` 默认开启。停靠展开的 Spec、Codex Task、GUARD、Codex IQ 看板，以及 Spec 的自动弹窗态，在用户点击看板外部（桌面、其他窗口或另一块看板）时收回；自身窗口、自己的 tab 与 Spec 管理窗属于排除区。生产路径不存在手动打开且未停靠的常驻 Spec 看板。板内空白区域原有的 `HideBoard()` 语义继续保留，两条关闭路径互补。
 
@@ -60,7 +60,7 @@ tab 自身用 120 ms 计时器轮询 `Cursor.Position` 判定 hover（不依赖�
 
 tab 中心 Y 由各自 `*LeftDockTabCenterY` 指定，`-1`（`AutoLeftDockTabCenterY`）表示交给 `LeftDockLayout`：按 `LeftDockButtonOrder` 对 Network、Spec、Codex Task、GUARD、Codex IQ 五个角色的实际缩放后高度累计排队，并在相邻项间保留 10 个 DPI 逻辑像素。五枚 tab 与对应看板统一使用 `ModuleOperation` 工作区和所属角色的透明度/缩放槽位。五个角色始终在启动时构造（即使收起）——tab 是其唯一常驻表面，由所属宿主的运行时设置链路负责建立；四个历史 `*LeftDockEnabled` 键只作兼容持久化，`Normalize` 强制为 `true`，设置 UI 不显示。挂起或全屏隐藏时 `ShowTab`/`ShowBoard` 不得重现窗口，恢复必须由 owner 显式重新显示。
 
-几何、自动槽位、边缘命中和隐藏/保护态视觉层级有独立自测（`EdgeDockTabForm.RunSelfTest`：`5×30` 梯形方向、中央右箭头、蓝橙绿紫青角色映射、五枚自动 tab 不重叠、主屏与负坐标副屏左缘可命中、收起保护态灰色、展开态恢复角色色）；显示生命周期自测也逐一覆盖五角色。外部点击的边沿、多消费者、命中排除与回弹抑制由 `OutsideClickDismissalMonitor.RunSelfTest` 覆盖。两者都随 `--test-operation-panel` 运行；`--render-operation` 为 Network、Spec、Codex Task、GUARD、Codex IQ 各产出一张 8× 状态条，顺序为普通静止/悬停、隐藏静止、保护收起、保护展开/展开悬停。
+几何、自动槽位、边缘命中和普通/隐藏视觉层级有独立自测（`EdgeDockTabForm.RunSelfTest`：`5×30` 梯形方向、中央右箭头、蓝橙绿紫青角色映射、五枚自动 tab 不重叠、主屏与负坐标副屏左缘可命中）；显示生命周期自测也逐一覆盖五角色。外部点击的边沿、多消费者、命中排除与回弹抑制由 `OutsideClickDismissalMonitor.RunSelfTest` 覆盖。两者都随 `--test-operation-panel` 运行；`--render-operation` 为 Network、Spec、Codex Task、GUARD、Codex IQ 各产出一张 8× 状态条，顺序为普通静止、普通悬停、隐藏静止、隐藏悬停。
 
 ## 操作面板双击启动器（LauncherTrio）
 

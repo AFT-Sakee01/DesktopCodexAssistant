@@ -1,6 +1,6 @@
 # 网络监控停靠架构
 
-适用版本：2.0.0.0
+适用版本：2.0.0.1
 
 本文说明 Network 左缘停靠 tab/board 的数据读取、状态机、单飞一致性、PathPing、Clean IP 投影和 Dock-only 渲染边界。
 
@@ -168,7 +168,7 @@ board 复用 `SpecBoardWidth × SpecBoardHeight` footprint，并按 648×400 参
 交互规则：
 
 - `EdgeDockTabForm` 的既有 hover tick 控制展开、收起和外部点击。
-- board 接收正常鼠标输入，不启用 click-through、浮窗 hover 透明或隐藏反色。
+- board 接收正常鼠标输入，不启用 click-through 或浮窗 hover 透明。
 - 刷新按钮调用 `ForceRefresh()`，复用现有单飞、冷却和 token。
 - 关闭按钮只收起 board 并暂停 PathPing，保留 tab 与全部 reader。
 - 与其它左侧 board 互斥，后展开者收起当前 board。

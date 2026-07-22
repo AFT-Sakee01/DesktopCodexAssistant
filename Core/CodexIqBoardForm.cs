@@ -159,7 +159,6 @@ internal sealed partial class CodexIqBoardForm : LayeredWidgetFormBase
 
         this.dockTab.SetDisplaySuspended(this.displaySuspended);
         this.dockTab.SetHiddenForFullscreen(this.hiddenForFullscreen);
-        this.dockTab.SetBoardExpanded(this.Visible);
         this.dockTab.ShowTab(ResolveDockTabCenterY());
     }
 
@@ -262,11 +261,6 @@ internal sealed partial class CodexIqBoardForm : LayeredWidgetFormBase
             this.Height,
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER |
             NativeMethods.SWP_FRAMECHANGED | NativeMethods.SWP_SHOWWINDOW);
-        if (this.dockTab != null && !this.dockTab.IsDisposed)
-        {
-            this.dockTab.SetBoardExpanded(true);
-        }
-
         this.maintenanceTimer.Start();
         ResetAutoHideClock();
         RenderLayeredWindow();
@@ -276,11 +270,6 @@ internal sealed partial class CodexIqBoardForm : LayeredWidgetFormBase
     internal void HideBoard()
     {
         this.maintenanceTimer.Stop();
-        if (this.dockTab != null && !this.dockTab.IsDisposed)
-        {
-            this.dockTab.SetBoardExpanded(false);
-        }
-
         if (this.Visible)
         {
             Hide();

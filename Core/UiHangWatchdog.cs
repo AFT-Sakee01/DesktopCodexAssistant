@@ -25,6 +25,15 @@ internal static class UiHangWatchdog
     private static string currentOperation = string.Empty;
     private static string lastCompletedOperation = string.Empty;
     private static int reportedCurrentHang;
+    private static int uiManagedThreadId;
+    private static long windowEventsReceived;
+    private static long windowEventsCoalesced;
+    private static long windowEventsDropped;
+    private static long windowEventQueueOverflows;
+    private static long windowEventsProcessed;
+    private static long windowEventBatchesProcessed;
+    private static long windowEventFullRefreshes;
+    private static int pendingWindowEvents;
 
     public static string LogPath
     {
@@ -54,6 +63,15 @@ internal static class UiHangWatchdog
             currentOperation = "startup";
             lastCompletedOperation = string.Empty;
             reportedCurrentHang = 0;
+            uiManagedThreadId = Thread.CurrentThread.ManagedThreadId;
+            Interlocked.Exchange(ref windowEventsReceived, 0L);
+            Interlocked.Exchange(ref windowEventsCoalesced, 0L);
+            Interlocked.Exchange(ref windowEventsDropped, 0L);
+            Interlocked.Exchange(ref windowEventQueueOverflows, 0L);
+            Interlocked.Exchange(ref windowEventsProcessed, 0L);
+            Interlocked.Exchange(ref windowEventBatchesProcessed, 0L);
+            Interlocked.Exchange(ref windowEventFullRefreshes, 0L);
+            Interlocked.Exchange(ref pendingWindowEvents, 0);
             workerThread = new Thread(WatchLoop);
             workerThread.Name = "DesktopCodexAssistant UI hang watchdog";
             workerThread.IsBackground = true;
@@ -95,13 +113,10 @@ internal static class UiHangWatchdog
         lock (SyncRoot)
         {
             lastHeartbeatUtc = nowUtc;
-            if (!string.IsNullOrEmpty(operation))
-            {
-                currentOperation = operation;
-                currentOperationStartedUtc = nowUtc;
-            }
-
-            reportedCurrentHang = 0;
+            lastCompletedOperation = string.IsNullOrEmpty(operation) ? currentOperation : operation;
+            lastCompletedOperationUtc = nowUtc;
+            currentOperation = string.Empty;
+            currentOperationStartedUtc = DateTime.MinValue;
         }
     }
 
@@ -113,7 +128,6 @@ internal static class UiHangWatchdog
             lastHeartbeatUtc = nowUtc;
             currentOperation = string.IsNullOrEmpty(operation) ? "unknown" : operation;
             currentOperationStartedUtc = nowUtc;
-            reportedCurrentHang = 0;
         }
 
         return new OperationScope(operation);
@@ -127,7 +141,6 @@ internal static class UiHangWatchdog
             lastHeartbeatUtc = nowUtc;
             currentOperation = string.IsNullOrEmpty(operation) ? "unknown" : operation;
             currentOperationStartedUtc = nowUtc;
-            reportedCurrentHang = 0;
         }
     }
 
@@ -141,8 +154,56 @@ internal static class UiHangWatchdog
             lastCompletedOperationUtc = nowUtc;
             currentOperation = string.Empty;
             currentOperationStartedUtc = DateTime.MinValue;
-            reportedCurrentHang = 0;
         }
+    }
+
+    public static void RecordWindowEventQueued(
+        int pendingCount,
+        bool coalesced,
+        bool dropped,
+        bool overflowed)
+    {
+        Interlocked.Increment(ref windowEventsReceived);
+        if (coalesced)
+        {
+            Interlocked.Increment(ref windowEventsCoalesced);
+        }
+
+        if (dropped)
+        {
+            Interlocked.Increment(ref windowEventsDropped);
+        }
+
+        if (overflowed)
+        {
+            Interlocked.Increment(ref windowEventQueueOverflows);
+        }
+
+        // Ignored events do not report the accumulator's current size. Preserve the last known
+        // pending count instead of replacing it with the caller's sentinel zero.
+        if (!dropped)
+        {
+            Interlocked.Exchange(ref pendingWindowEvents, Math.Max(0, pendingCount));
+        }
+    }
+
+    public static void RecordWindowEventBatchProcessed(
+        int pendingCount,
+        int processedCount,
+        bool fullRefresh)
+    {
+        Interlocked.Increment(ref windowEventBatchesProcessed);
+        if (processedCount > 0)
+        {
+            Interlocked.Add(ref windowEventsProcessed, processedCount);
+        }
+
+        if (fullRefresh)
+        {
+            Interlocked.Increment(ref windowEventFullRefreshes);
+        }
+
+        Interlocked.Exchange(ref pendingWindowEvents, Math.Max(0, pendingCount));
     }
 
     private static void WatchLoop()
@@ -188,10 +249,31 @@ internal static class UiHangWatchdog
                     currentOperationStartedUtc,
                     lastCompletedOperation,
                     lastCompletedOperationUtc,
-                    reportedCurrentHang != 0);
+                    reportedCurrentHang != 0,
+                    uiManagedThreadId,
+                    Interlocked.CompareExchange(ref pendingWindowEvents, 0, 0),
+                    Interlocked.Read(ref windowEventsReceived),
+                    Interlocked.Read(ref windowEventsCoalesced),
+                    Interlocked.Read(ref windowEventsDropped),
+                    Interlocked.Read(ref windowEventQueueOverflows),
+                    Interlocked.Read(ref windowEventsProcessed),
+                    Interlocked.Read(ref windowEventBatchesProcessed),
+                    Interlocked.Read(ref windowEventFullRefreshes));
+            }
+
+            bool reportWritten = WriteEmergencyHangReport(snapshot, Logger.DirectoryPath);
+            if (!reportWritten)
+            {
+                // Keep the state unchanged so the next watchdog pass retries the record instead
+                // of silently losing either the first hang or its recovery boundary.
+                continue;
+            }
+
+            lock (SyncRoot)
+            {
                 if (shouldReport)
                 {
-                    lastHangReportUtc = nowUtc;
+                    lastHangReportUtc = snapshot.TimestampUtc;
                     reportedCurrentHang = 1;
                 }
                 else
@@ -199,12 +281,10 @@ internal static class UiHangWatchdog
                     reportedCurrentHang = 0;
                 }
             }
-
-            WriteEmergencyHangReport(snapshot, Logger.DirectoryPath);
         }
     }
 
-    private static void WriteEmergencyHangReport(HangSnapshot snapshot, string directoryPath)
+    private static bool WriteEmergencyHangReport(HangSnapshot snapshot, string directoryPath)
     {
         try
         {
@@ -213,9 +293,11 @@ internal static class UiHangWatchdog
             RotateIfNeeded(path, 4096);
             File.AppendAllText(path, BuildJsonLine(snapshot), SharedEncoding.Utf8NoBom);
             EnforceArchiveLimit(directoryPath);
+            return true;
         }
         catch
         {
+            return false;
         }
     }
 
@@ -239,6 +321,15 @@ internal static class UiHangWatchdog
         AppendJsonString(builder, "last_completed_operation", snapshot.LastCompletedOperation, true);
         AppendJsonNullableDate(builder, "last_completed_operation_utc", snapshot.LastCompletedOperationUtc, true);
         AppendJsonBool(builder, "repeated", snapshot.Repeated, true);
+        AppendJsonNumber(builder, "ui_managed_thread_id", snapshot.UiManagedThreadId, true);
+        AppendJsonNumber(builder, "pending_window_events", snapshot.PendingWindowEvents, true);
+        AppendJsonNumber(builder, "window_events_received", snapshot.WindowEventsReceived, true);
+        AppendJsonNumber(builder, "window_events_coalesced", snapshot.WindowEventsCoalesced, true);
+        AppendJsonNumber(builder, "window_events_dropped", snapshot.WindowEventsDropped, true);
+        AppendJsonNumber(builder, "window_event_queue_overflows", snapshot.WindowEventQueueOverflows, true);
+        AppendJsonNumber(builder, "window_events_processed", snapshot.WindowEventsProcessed, true);
+        AppendJsonNumber(builder, "window_event_batches_processed", snapshot.WindowEventBatchesProcessed, true);
+        AppendJsonNumber(builder, "window_event_full_refreshes", snapshot.WindowEventFullRefreshes, true);
         builder.Append('}');
         builder.Append(Environment.NewLine);
         return builder.ToString();
@@ -387,6 +478,7 @@ internal static class UiHangWatchdog
 
     internal static void RunSelfTest()
     {
+        RunRecoveryStateSelfTest();
         string testDirectory = Path.Combine(
             Path.GetTempPath(),
             ProductIdentity.MachineName + "-UiHangWatchdogTest-" + Guid.NewGuid().ToString("N"));
@@ -402,8 +494,20 @@ internal static class UiHangWatchdog
                 DateTime.UtcNow.AddSeconds(-12),
                 "widget.hover_tick",
                 DateTime.UtcNow.AddSeconds(-13),
-                false);
-            WriteEmergencyHangReport(snapshot, testDirectory);
+                false,
+                1,
+                2,
+                30,
+                20,
+                4,
+                1,
+                10,
+                3,
+                1);
+            if (!WriteEmergencyHangReport(snapshot, testDirectory))
+            {
+                throw new InvalidOperationException("UI hang watchdog self-test could not write its JSONL row.");
+            }
             string path = Path.Combine(testDirectory, "ui-hang-watchdog.jsonl");
             string[] lines = File.ReadAllLines(path, Encoding.UTF8);
             if (lines.Length != 1)
@@ -413,7 +517,9 @@ internal static class UiHangWatchdog
 
             JavaScriptSerializer serializer = new JavaScriptSerializer();
             object parsed = serializer.DeserializeObject(lines[0]);
-            if (parsed == null || !lines[0].Contains("\"event\":\"ui_thread_unresponsive\""))
+            if (parsed == null ||
+                !lines[0].Contains("\"event\":\"ui_thread_unresponsive\"") ||
+                !lines[0].Contains("\"window_events_coalesced\":20"))
             {
                 throw new InvalidOperationException("UI hang watchdog JSONL self-test failed.");
             }
@@ -423,6 +529,69 @@ internal static class UiHangWatchdog
             if (Directory.Exists(testDirectory))
             {
                 Directory.Delete(testDirectory, true);
+            }
+        }
+    }
+
+    private static void RunRecoveryStateSelfTest()
+    {
+        DateTime savedHeartbeat;
+        DateTime savedCurrentStarted;
+        DateTime savedCompletedUtc;
+        string savedCurrent;
+        string savedCompleted;
+        int savedReported;
+        lock (SyncRoot)
+        {
+            if (running)
+            {
+                return;
+            }
+
+            savedHeartbeat = lastHeartbeatUtc;
+            savedCurrentStarted = currentOperationStartedUtc;
+            savedCompletedUtc = lastCompletedOperationUtc;
+            savedCurrent = currentOperation;
+            savedCompleted = lastCompletedOperation;
+            savedReported = reportedCurrentHang;
+            reportedCurrentHang = 1;
+            currentOperation = "test:active";
+            currentOperationStartedUtc = DateTime.UtcNow.AddSeconds(-12);
+        }
+
+        try
+        {
+            MarkUiHeartbeat("test:complete");
+            lock (SyncRoot)
+            {
+                if (reportedCurrentHang != 1 ||
+                    currentOperation.Length != 0 ||
+                    !string.Equals(lastCompletedOperation, "test:complete", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("UI hang watchdog heartbeat cleared recovery state or mislabeled completion.");
+                }
+            }
+
+            MarkUiCheckpoint("test:next");
+            lock (SyncRoot)
+            {
+                if (reportedCurrentHang != 1 ||
+                    !string.Equals(currentOperation, "test:next", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("UI hang watchdog checkpoint cleared recovery state.");
+                }
+            }
+        }
+        finally
+        {
+            lock (SyncRoot)
+            {
+                lastHeartbeatUtc = savedHeartbeat;
+                currentOperationStartedUtc = savedCurrentStarted;
+                lastCompletedOperationUtc = savedCompletedUtc;
+                currentOperation = savedCurrent;
+                lastCompletedOperation = savedCompleted;
+                reportedCurrentHang = savedReported;
             }
         }
     }
@@ -458,6 +627,15 @@ internal static class UiHangWatchdog
         public readonly string LastCompletedOperation;
         public readonly DateTime LastCompletedOperationUtc;
         public readonly bool Repeated;
+        public readonly int UiManagedThreadId;
+        public readonly int PendingWindowEvents;
+        public readonly long WindowEventsReceived;
+        public readonly long WindowEventsCoalesced;
+        public readonly long WindowEventsDropped;
+        public readonly long WindowEventQueueOverflows;
+        public readonly long WindowEventsProcessed;
+        public readonly long WindowEventBatchesProcessed;
+        public readonly long WindowEventFullRefreshes;
 
         public HangSnapshot(
             string eventName,
@@ -468,7 +646,16 @@ internal static class UiHangWatchdog
             DateTime currentOperationStartedUtc,
             string lastCompletedOperation,
             DateTime lastCompletedOperationUtc,
-            bool repeated)
+            bool repeated,
+            int uiManagedThreadId,
+            int pendingWindowEvents,
+            long windowEventsReceived,
+            long windowEventsCoalesced,
+            long windowEventsDropped,
+            long windowEventQueueOverflows,
+            long windowEventsProcessed,
+            long windowEventBatchesProcessed,
+            long windowEventFullRefreshes)
         {
             this.EventName = eventName;
             this.TimestampUtc = timestampUtc;
@@ -479,6 +666,15 @@ internal static class UiHangWatchdog
             this.LastCompletedOperation = lastCompletedOperation ?? string.Empty;
             this.LastCompletedOperationUtc = lastCompletedOperationUtc;
             this.Repeated = repeated;
+            this.UiManagedThreadId = uiManagedThreadId;
+            this.PendingWindowEvents = pendingWindowEvents;
+            this.WindowEventsReceived = windowEventsReceived;
+            this.WindowEventsCoalesced = windowEventsCoalesced;
+            this.WindowEventsDropped = windowEventsDropped;
+            this.WindowEventQueueOverflows = windowEventQueueOverflows;
+            this.WindowEventsProcessed = windowEventsProcessed;
+            this.WindowEventBatchesProcessed = windowEventBatchesProcessed;
+            this.WindowEventFullRefreshes = windowEventFullRefreshes;
         }
     }
 }

@@ -477,12 +477,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "!操作面板位置", "OperationLeftOffset", "OperationBottomOffset" }
         });
 
-        AddPageGrouped("\uE7B3", "隐藏与防烧屏", "鼠标靠近时隐藏、空闲自动隐藏和 OLED 防烧屏。", new string[][]
+        AddPageGrouped("\uE7B3", "显示与隐藏", "配置鼠标靠近、空闲和窗口状态触发的隐藏行为。", new string[][]
         {
             new string[] { "夜间时段", "NightScheduleEnabled", "NightScheduleStartMinutes", "NightScheduleEndMinutes", "NightDimLuminancePercent", "NightQuietHoursEnabled" },
             new string[] { "提醒分类", "AlertQuotaEnabled", "AlertResetProtectionEnabled", "AlertServiceHealthEnabled", "AlertCodexTaskEnabled" },
             new string[] { "鼠标靠近时隐藏", "HoverOpacityEnabled", "SensitiveMouseModeEnabled", "SensitiveMouseRangePixels" },
-            new string[] { "自动隐藏", "AutoHoverOpacityIdleEnabled", "AutoHoverOpacityIdleSeconds", "AutoHoverOpacityMaximizedEnabled", "OperationRadialCoreAutoHideKeepAliveEnabled", "OperationRadialIdleCollapseSeconds", "OperationRadialIdleResetOnInteractionEnabled", "OperationRadialKeepOpenAfterLeafClickEnabled", "BurnInHiddenModeColorProtectionEnabled" },
+            new string[] { "自动隐藏", "AutoHoverOpacityIdleEnabled", "AutoHoverOpacityIdleSeconds", "AutoHoverOpacityMaximizedEnabled", "OperationRadialCoreAutoHideKeepAliveEnabled", "OperationRadialIdleCollapseSeconds", "OperationRadialIdleResetOnInteractionEnabled", "OperationRadialKeepOpenAfterLeafClickEnabled" },
             new string[] { "!延迟显现", "HoverOpacityRevealDelayEnabled", "HoverOpacityRevealDelaySeconds", "HoverOpacityRevealResetSeconds" },
             new string[] { "!覆盖与反向", "HoverOpacityCoverEnabled", "ReverseHoverOpacityRevealEnabled", "ReverseHoverOpacityRestoreDelaySeconds" }
         });
@@ -3730,7 +3730,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationRadialIdleCollapseSeconds", "扇形盘自动收回秒数" },
         { "OperationRadialIdleResetOnInteractionEnabled", "操作后重置收回计时" },
         { "OperationRadialKeepOpenAfterLeafClickEnabled", "末端按钮后保持展开" },
-        { "BurnInHiddenModeColorProtectionEnabled", "隐藏反色防烧屏" },
         { "CodexRadarSoftwareMode", "Radar 数据族" },
         { "CodexRadarModelKey", "CODEX 模型" },
         { "RadarClockAutoSwitchModelEnabled", "过期自动切换模型" },
@@ -3810,7 +3809,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationRadialKeepOpenAfterLeafClickEnabled", "开启后点击扇形速控盘末端按钮不会自动收起菜单；关闭后恢复点击末端按钮即收起。" },
         { "OperationSettingsLogicExtensionEnabled", "开启后在扇形速控盘“设置”分支中增加常用逻辑和全部开关目录；关闭时保持原来的 3 项设置菜单。" },
         { "OperationDoubleClickSpecialMenuEnabled", "开启后双击左下角主操作按钮会打开 Spec 管理、Codex 任务和睡眠防护特殊菜单；关闭时双击直接开关隐藏模式。" },
-        { "BurnInHiddenModeColorProtectionEnabled", "隐藏时执行颜色反相和白灰透明化。" },
         { "CodexRadarSoftwareMode", "控制后台额度数据族自动按运行态选择，或固定使用 CODEX/CLAUDE；CLAUDE 只读取官方 Claude Code 用量。" },
         { "CodexRadarModelKey", "仅用于 CODEX 数据族的 CodexRadar 模型选择；CLAUDE 额度不区分模型。" },
         { "RadarClockAutoSwitchModelEnabled", "Codex Radar 跨过完整周期仍没有当前模型 IQ 更新时，自动切到站点当天最近刷新 IQ 的模型。" },

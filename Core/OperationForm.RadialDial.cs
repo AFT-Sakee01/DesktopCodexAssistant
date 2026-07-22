@@ -414,7 +414,6 @@ internal sealed partial class OperationForm
         visibility.Children.Add(NewSettingToggle("AutoHoverOpacityIdleEnabled", "common_idle_hide", "空闲隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.AutoHoverOpacityIdleEnabled));
         visibility.Children.Add(NewSettingToggle("AutoHoverOpacityMaximizedEnabled", "common_max_hide", "最大化隐藏", RadialSettingsColor, this.DrawAppWindowGlyph, s => s.AutoHoverOpacityMaximizedEnabled));
         visibility.Children.Add(NewSettingToggle("OperationRadialCoreAutoHideKeepAliveEnabled", "common_core_keepalive", "圆圈保持", RadialSettingsColor, this.DrawPowerRingGlyph, s => s.OperationRadialCoreAutoHideKeepAliveEnabled));
-        visibility.Children.Add(NewSettingToggle("BurnInHiddenModeColorProtectionEnabled", "common_burnin", "反色防烧屏", RadialSettingsColor, this.DrawSparkleShieldGlyph, s => s.BurnInHiddenModeColorProtectionEnabled));
         common.Children.Add(visibility);
 
         RadialNode aiQuota = NewBranch("common_ai_quota", "AI/额度", RadialAdvancedColor, this.DrawPieWedgeGlyph);
@@ -493,13 +492,12 @@ internal sealed partial class OperationForm
         system.Children.Add(NewSettingToggle("PowerResumeRestartEnabled", "all_resume_restart", "唤醒重启", RadialPowerColor, this.DrawRestartLoopGlyph, s => s.PowerResumeRestartEnabled));
         all.Children.Add(system);
 
-        RadialNode visibility = NewBranch("all_visibility", "隐藏防烧屏", RadialSettingsColor, this.DrawHalfMoonGlyph);
+        RadialNode visibility = NewBranch("all_visibility", "显示隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph);
         visibility.Children.Add(NewSettingToggle("HoverOpacityEnabled", "all_hover_hide", "靠近隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.HoverOpacityEnabled));
         visibility.Children.Add(NewSettingToggle("SensitiveMouseModeEnabled", "all_sensitive_mouse", "敏感鼠标", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.SensitiveMouseModeEnabled));
         visibility.Children.Add(NewSettingToggle("HoverOpacityRevealDelayEnabled", "all_reveal_delay", "延迟显现", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.HoverOpacityRevealDelayEnabled));
         visibility.Children.Add(NewSettingToggle("HoverOpacityCoverEnabled", "all_hover_cover", "覆盖开启", RadialSettingsColor, this.DrawAppWindowGlyph, s => s.HoverOpacityCoverEnabled));
         visibility.Children.Add(NewSettingToggle("ReverseHoverOpacityRevealEnabled", "all_reverse_reveal", "反向隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.ReverseHoverOpacityRevealEnabled));
-        visibility.Children.Add(NewSettingToggle("BurnInHiddenModeColorProtectionEnabled", "all_burnin", "反色防烧屏", RadialSettingsColor, this.DrawSparkleShieldGlyph, s => s.BurnInHiddenModeColorProtectionEnabled));
         RadialNode autoHide = NewBranch("all_auto_hide", "自动隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph);
         autoHide.Children.Add(NewSettingToggle("AutoHoverOpacityIdleEnabled", "all_idle_hide", "空闲隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.AutoHoverOpacityIdleEnabled));
         autoHide.Children.Add(NewSettingToggle("AutoHoverOpacityMaximizedEnabled", "all_max_hide", "最大化隐藏", RadialSettingsColor, this.DrawAppWindowGlyph, s => s.AutoHoverOpacityMaximizedEnabled));
@@ -666,11 +664,6 @@ internal sealed partial class OperationForm
     private void DrawSparkleGlyphSix(Graphics g, RectangleF rect)
     {
         DrawSparkleGlyph(g, rect, 6);
-    }
-
-    private void DrawSparkleShieldGlyph(Graphics g, RectangleF rect)
-    {
-        DrawSparkleGlyph(g, rect, 5);
     }
 
     private bool IsRadialCtfRestartBusy()
@@ -2218,24 +2211,6 @@ internal sealed partial class OperationForm
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Hidden-mode burn-in hit mask (see EnsureInteractionHitMask's IsRadialDialActive() branch)
-    // ---------------------------------------------------------------------------------------------
-
-    private void PaintRadialHitMask(Graphics graphics, Brush brush)
-    {
-        RadialLayout layout = ComputeRadialLayout();
-        graphics.FillEllipse(brush, layout.Core);
-        for (int levelIdx = 0; levelIdx < layout.Levels.Count; levelIdx++)
-        {
-            RectangleF[] rects = layout.Levels[levelIdx].Rects;
-            for (int i = 0; i < rects.Length; i++)
-            {
-                graphics.FillEllipse(brush, rects[i]);
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------------------------------------
     // Self-test (called from OperationForm.RunSelfTest via --test-operation-panel)
     // ---------------------------------------------------------------------------------------------
 
@@ -2487,7 +2462,6 @@ internal sealed partial class OperationForm
             "OperationRadialKeepOpenAfterLeafClickEnabled",
             "OperationSettingsLogicExtensionEnabled",
             "SpecBoardAutoPopupEnabled",
-            "BurnInHiddenModeColorProtectionEnabled",
             "HoverOpacityRevealDelayEnabled",
             "HoverOpacityCoverEnabled",
             "ReverseHoverOpacityRevealEnabled",

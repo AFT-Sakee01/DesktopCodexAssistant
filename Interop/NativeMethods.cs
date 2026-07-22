@@ -1191,35 +1191,62 @@ internal static class NativeMethods
 
     public sealed class WindowEventHook : IDisposable
     {
-        private readonly List<IntPtr> hookHandles;
+        private readonly List<IntPtr> foregroundHookHandles;
+        private readonly List<IntPtr> objectHookHandles;
         private readonly WinEventProc callback;
         private readonly WindowEventHandler handler;
+        private bool objectEventsEnabled;
         private bool disposed;
 
-        internal WindowEventHook(WindowEventHandler handler)
+        internal WindowEventHook(WindowEventHandler handler, bool includeObjectEvents)
         {
             this.handler = handler;
-            this.hookHandles = new List<IntPtr>();
+            this.foregroundHookHandles = new List<IntPtr>();
+            this.objectHookHandles = new List<IntPtr>();
             this.callback = OnWinEvent;
-            AddHook(EVENT_SYSTEM_FOREGROUND);
-            AddHook(EVENT_OBJECT_CREATE);
-            AddHook(EVENT_OBJECT_DESTROY);
-            AddHook(EVENT_OBJECT_SHOW);
-            AddHook(EVENT_OBJECT_HIDE);
-            AddHook(EVENT_OBJECT_STATECHANGE);
-            AddHook(EVENT_OBJECT_LOCATIONCHANGE);
-            AddHook(EVENT_OBJECT_NAMECHANGE);
-            AddHook(EVENT_OBJECT_PARENTCHANGE);
-            AddHook(EVENT_OBJECT_CLOAKED);
-            AddHook(EVENT_OBJECT_UNCLOAKED);
+            AddHook(EVENT_SYSTEM_FOREGROUND, this.foregroundHookHandles);
+            SetObjectEventsEnabled(includeObjectEvents);
         }
 
         public bool IsActive
         {
-            get { return this.hookHandles.Count > 0; }
+            get { return this.foregroundHookHandles.Count > 0 || this.objectHookHandles.Count > 0; }
         }
 
-        private void AddHook(uint eventId)
+        public bool ObjectEventsEnabled
+        {
+            get { return this.objectEventsEnabled; }
+        }
+
+        // Object-level WinEvents can arrive thousands of times while another process builds or moves
+        // a window. Keep only the low-frequency foreground hook unless a visibility policy actually
+        // consumes detailed window geometry; toggling is always performed by the owning UI thread.
+        internal void SetObjectEventsEnabled(bool enabled)
+        {
+            if (this.disposed || enabled == this.objectEventsEnabled)
+            {
+                return;
+            }
+
+            if (!enabled)
+            {
+                UnhookAll(this.objectHookHandles);
+                this.objectEventsEnabled = false;
+                return;
+            }
+
+            AddHook(EVENT_OBJECT_CREATE, this.objectHookHandles);
+            AddHook(EVENT_OBJECT_DESTROY, this.objectHookHandles);
+            AddHook(EVENT_OBJECT_SHOW, this.objectHookHandles);
+            AddHook(EVENT_OBJECT_HIDE, this.objectHookHandles);
+            AddHook(EVENT_OBJECT_STATECHANGE, this.objectHookHandles);
+            AddHook(EVENT_OBJECT_LOCATIONCHANGE, this.objectHookHandles);
+            AddHook(EVENT_OBJECT_CLOAKED, this.objectHookHandles);
+            AddHook(EVENT_OBJECT_UNCLOAKED, this.objectHookHandles);
+            this.objectEventsEnabled = this.objectHookHandles.Count > 0;
+        }
+
+        private void AddHook(uint eventId, List<IntPtr> target)
         {
             IntPtr handle = SetWinEventHook(
                 eventId,
@@ -1232,8 +1259,29 @@ internal static class NativeMethods
 
             if (handle != IntPtr.Zero)
             {
-                this.hookHandles.Add(handle);
+                target.Add(handle);
             }
+        }
+
+        private static void UnhookAll(List<IntPtr> handles)
+        {
+            for (int i = 0; i < handles.Count; i++)
+            {
+                if (handles[i] == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    UnhookWinEvent(handles[i]);
+                }
+                catch
+                {
+                }
+            }
+
+            handles.Clear();
         }
 
         private void OnWinEvent(
@@ -1271,21 +1319,9 @@ internal static class NativeMethods
             }
 
             this.disposed = true;
-            for (int i = 0; i < this.hookHandles.Count; i++)
-            {
-                if (this.hookHandles[i] != IntPtr.Zero)
-                {
-                    try
-                    {
-                        UnhookWinEvent(this.hookHandles[i]);
-                    }
-                    catch
-                    {
-                    }
-                }
-            }
-
-            this.hookHandles.Clear();
+            UnhookAll(this.objectHookHandles);
+            UnhookAll(this.foregroundHookHandles);
+            this.objectEventsEnabled = false;
         }
     }
 

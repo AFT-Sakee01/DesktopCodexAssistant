@@ -24,9 +24,10 @@ internal sealed partial class CodexIqBoardForm
 
     private void DrawBoard(Graphics g)
     {
-        BurnInProtection.ConfigureGraphics(g, false);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        g.InterpolationMode = InterpolationMode.Bilinear;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
         using (SolidBrush background = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 242)))
         {

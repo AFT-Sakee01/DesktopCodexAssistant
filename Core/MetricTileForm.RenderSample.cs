@@ -4,8 +4,8 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 
-// Test-only render harness for --render-tilecolumn. Paints the eight tiles (normal, hidden and
-// hovered states) and every one of the eight expanded panels to PNGs so the layout can be reviewed
+// Test-only render harness for --render-tilecolumn. Paints the ten tiles (normal and hovered
+// states) and every one of the ten expanded panels to PNGs so the layout can be reviewed
 // without running the app: none of these windows is reachable from the Start menu and the panel only
 // exists while the cursor is on its tile.
 //
@@ -21,17 +21,13 @@ internal sealed partial class MetricTileForm
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.Normalize();
 
-        RenderColumn(outputDir, settings, feed, "tilecolumn.png", false, -1);
-        RenderColumn(outputDir, settings, feed, "tilecolumn-hidden.png", true, -1);
-        RenderColumn(outputDir, settings, feed, "tilecolumn-hover.png", false, 0);
-        // The state the pointer actually produces: hovering a tile turns on the low-energy palette
-        // *and* the hovered border, so it has to be reviewable as one picture rather than two.
-        RenderColumn(outputDir, settings, feed, "tilecolumn-hover-dim.png", true, 0);
+        RenderColumn(outputDir, settings, feed, "tilecolumn.png", -1);
+        RenderColumn(outputDir, settings, feed, "tilecolumn-hover.png", 0);
 
         WidgetSettings large = WidgetSettings.CreateDefaults();
         large.MainWidgetTileLargeModeEnabled = true;
         large.Normalize();
-        RenderColumn(outputDir, large, feed, "tilecolumn-large.png", false, -1);
+        RenderColumn(outputDir, large, feed, "tilecolumn-large.png", -1);
 
         for (int i = 0; i < MetricTileModel.AllOrder.Length; i++)
         {
@@ -54,7 +50,7 @@ internal sealed partial class MetricTileForm
         }
     }
 
-    private static void RenderColumn(string outputDir, WidgetSettings settings, MetricTileFeed feed, string fileName, bool lowEnergy, int hoveredIndex)
+    private static void RenderColumn(string outputDir, WidgetSettings settings, MetricTileFeed feed, string fileName, int hoveredIndex)
     {
         int px = settings.MainWidgetTileLargeModeEnabled ? TileLargePixels : TileCompactPixels;
         int gap = GetTileGapPixels(settings);
@@ -72,7 +68,6 @@ internal sealed partial class MetricTileForm
                     tile.MaximumSize = new Size(4000, 4000);
                     tile.Size = tile.GetDesiredSize();
                     tile.UpdateFeedForRenderSample(feed);
-                    tile.SetLowEnergyPaletteForRenderSample(lowEnergy);
                     tile.SetHoveredForRenderSample(i == hoveredIndex);
                     using (Bitmap one = new Bitmap(px, px, PixelFormat.Format32bppPArgb))
                     using (Graphics tg = Graphics.FromImage(one))

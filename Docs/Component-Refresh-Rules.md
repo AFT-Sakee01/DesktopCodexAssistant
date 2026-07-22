@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.0
+适用版本：2.0.0.1
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -54,7 +54,8 @@ DNS 检测：
 
 | 项目 | 规则 |
 | --- | --- |
-| 主控制 tick | hidden `WidgetForm` 按主性能间隔检查停止事件、设置热加载、全屏/显示状态、PDH 采样和 `MetricTileFeed` 推送；宿主自身不绘制。 |
+| 主控制 tick | hidden `WidgetForm` 按主性能间隔检查设置热加载、全屏/显示状态、PDH 采样和 `MetricTileFeed` 推送；宿主自身不绘制。停止事件另由 ThreadPool 注册等待直接投递 `WM_CLOSE`，主 tick 轮询仅作兼容兜底。 |
+| 应用窗口事件 | 前台窗口 Hook 始终启用；只有最大化自动隐藏或全屏/最大化/遮挡可见性模式才启用对象 Hook 和主采样周期完整枚举。事件按 HWND 合并，125 ms 批处理，每批最多 64 项，队列上限 256 项；溢出退化为一次完整枚举。同产品测试/辅助进程的窗口事件按 PID 身份缓存过滤。 |
 | 昂贵硬件 | GPU/NPU 按 1/2/5 s 独立 deadline；不能被更快的 CPU tick 放大。 |
 | 设置热加载 | `settings.ini` 由 `FileSystemWatcher` 与主 tick 的修改时间检查共同覆盖。 |
 | 右侧 tiles | 10 个 `MetricTileForm` 只消费同一次 feed；方块和 hover expand 不自行采样。 |
@@ -64,7 +65,7 @@ DNS 检测：
 | Win+D | 全局 Win+D 后延迟 2000 ms 执行本程序和 SeelenUI 拉前；不拦截系统显示桌面。 |
 | 休眠唤醒 | `PBT_APMRESUME*` 后完成显示恢复，再按设置重启 SeelenUI/本程序；30 s 内重复恢复事件只处理一次。 |
 | 强制刷新 | `ForceRefreshAllModules()` 使 PDH、磁盘用量、Radar、Power/Thermal 与 Network 到期；Network 同时请求共享 Clean IP reader。 |
-| 诊断 | 主采样与 12 h timing 摘要最多每 15 min 记录一次；UI watchdog 后台每 2 s 检查心跳，超过 10 s 记录，持续卡住每 30 s 重复。 |
+| 诊断 | 主采样与 12 h timing 摘要最多每 15 min 记录一次；UI watchdog 后台每 2 s 检查心跳，超过 10 s 记录，持续卡住每 30 s 重复，恢复后补一条 responsive 记录。快照包含 UI managed thread ID、窗口事件接收/合并/丢弃/溢出/处理/批次/完整刷新计数和当前待处理量。 |
 
 hover/自动隐藏规则：
 

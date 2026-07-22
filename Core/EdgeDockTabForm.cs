@@ -31,14 +31,9 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     private const int HiddenIdleBorderAlpha = 84;
     private const int HiddenHoverFillAlpha = 148;
     private const int HiddenHoverBorderAlpha = 224;
-    private const int ProtectedIdleFillAlpha = 18;
-    private const int ProtectedIdleBorderAlpha = 72;
-    private const int ProtectedHoverBorderAlpha = 96;
     private const int NormalIdleArrowAlpha = 72;
     private const int NormalHoverArrowAlpha = 96;
     private const int HiddenIdleArrowAlpha = 28;
-    private const int ProtectedIdleArrowAlpha = 68;
-    private const int ProtectedHoverArrowAlpha = 84;
 
     private readonly System.Windows.Forms.Timer hoverTimer;
     private readonly int burnInSalt;
@@ -47,7 +42,6 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     private Func<Point> cursorPositionProvider;
     private Color accent;
     private bool hovered;
-    private bool boardExpanded;
     private bool displaySuspended;
     private bool hiddenForFullscreen;
     private long burnInSlot = long.MinValue;
@@ -119,14 +113,6 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     protected override bool CanRenderLayeredWindow()
     {
         return !LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen);
-    }
-
-    protected override bool IsLayeredBurnInColorProtectionActive()
-    {
-        // A dock tab is an active control surface made almost entirely from one coloured shape.
-        // The generic bitmap pass would invert that shape and can erase its anti-aliased neutral
-        // edge. DrawWindowContent selects a low-energy neutral state directly instead.
-        return false;
     }
 
     internal Func<Point> CursorPositionProviderForTest
@@ -205,24 +191,6 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         if (this.Visible && !LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
         {
             PositionAtLeftEdge(this.anchorCenterY);
-            RenderLayeredWindow();
-        }
-        else
-        {
-            InvalidateLayeredRenderBuffer();
-        }
-    }
-
-    public void SetBoardExpanded(bool expanded)
-    {
-        if (this.boardExpanded == expanded)
-        {
-            return;
-        }
-
-        this.boardExpanded = expanded;
-        if (this.Visible && !this.displaySuspended)
-        {
             RenderLayeredWindow();
         }
         else
@@ -404,8 +372,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     internal static GraphicsPath CreateArrowPath(RectangleF bounds)
     {
         // The arrow stays inside the same layered bitmap as the trapezoid, so both shapes always
-        // receive the exact same burn-in translation. Its small colour cue remains visible while a
-        // protected collapsed trapezoid is neutral gray.
+        // receive the exact same burn-in translation.
         float horizontalInset = Math.Max(0.2f, bounds.Width * 0.18f);
         float halfHeight = Math.Min(bounds.Height * 0.12f, Math.Max(2.0f, bounds.Width * 0.65f));
         float centerY = bounds.Top + bounds.Height / 2.0f;
@@ -423,11 +390,6 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     protected override void DrawWindowContent(Graphics g)
     {
         bool hiddenModeActive = this.CurrentSettings != null && this.CurrentSettings.ForceHoverOpacityActive;
-        // Dock tabs are permanent OLED pixels. For this surface the existing colour-protection
-        // switch applies even when global hidden opacity is not active: a collapsed tab stays gray
-        // and only the small arrow carries identity until its board is actually visible.
-        bool colorProtectionEnabled = this.CurrentSettings != null &&
-            this.CurrentSettings.BurnInHiddenModeColorProtectionEnabled;
         DrawTab(
             g,
             new RectangleF(0.0f, 0.0f, this.Width, this.Height),
@@ -435,9 +397,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             ResolveVisualState(
                 this.accent,
                 this.hovered,
-                hiddenModeActive,
-                colorProtectionEnabled,
-                this.boardExpanded));
+                hiddenModeActive));
     }
 
     private static void DrawTab(Graphics g, RectangleF bounds, float scale, TabVisualState visual)
@@ -458,30 +418,8 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     private static TabVisualState ResolveVisualState(
         Color accent,
         bool isHovered,
-        bool hiddenModeActive,
-        bool colorProtectionEnabled,
-        bool boardExpanded)
+        bool hiddenModeActive)
     {
-        if (colorProtectionEnabled)
-        {
-            if (!boardExpanded)
-            {
-                return new TabVisualState(
-                    DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, ProtectedIdleFillAlpha),
-                    DesignTokens.WithAlpha(
-                        DesignTokens.Colors.GlyphMuted,
-                        isHovered ? ProtectedHoverBorderAlpha : ProtectedIdleBorderAlpha),
-                    DesignTokens.WithAlpha(
-                        accent,
-                        isHovered ? ProtectedHoverArrowAlpha : ProtectedIdleArrowAlpha));
-            }
-
-            return new TabVisualState(
-                DesignTokens.WithAlpha(accent, isHovered ? NormalHoverFillAlpha : NormalIdleFillAlpha),
-                DesignTokens.WithAlpha(accent, isHovered ? NormalHoverBorderAlpha : NormalIdleBorderAlpha),
-                DesignTokens.WithAlpha(accent, isHovered ? NormalHoverArrowAlpha : NormalIdleArrowAlpha));
-        }
-
         if (hiddenModeActive)
         {
             return new TabVisualState(
@@ -635,40 +573,16 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         }
 
         Color sampleAccent = ResolveQueueAccent(EdgeDockTabRole.Network);
-        TabVisualState normalIdle = ResolveVisualState(sampleAccent, false, false, false, false);
-        TabVisualState normalHover = ResolveVisualState(sampleAccent, true, false, false, false);
-        TabVisualState hiddenIdle = ResolveVisualState(sampleAccent, false, true, false, false);
-        TabVisualState hiddenHover = ResolveVisualState(sampleAccent, true, true, false, false);
-        TabVisualState protectedIdle = ResolveVisualState(sampleAccent, false, false, true, false);
-        TabVisualState protectedHover = ResolveVisualState(sampleAccent, true, false, true, false);
-        TabVisualState protectedExpanded = ResolveVisualState(sampleAccent, false, false, true, true);
-        TabVisualState protectedExpandedHover = ResolveVisualState(sampleAccent, true, true, true, true);
+        TabVisualState normalIdle = ResolveVisualState(sampleAccent, false, false);
+        TabVisualState normalHover = ResolveVisualState(sampleAccent, true, false);
+        TabVisualState hiddenIdle = ResolveVisualState(sampleAccent, false, true);
+        TabVisualState hiddenHover = ResolveVisualState(sampleAccent, true, true);
         if (hiddenIdle.Fill.A >= normalIdle.Fill.A || hiddenIdle.Border.A >= normalIdle.Border.A ||
             hiddenHover.Fill.A <= hiddenIdle.Fill.A || hiddenHover.Border.A <= hiddenIdle.Border.A ||
             normalHover.Fill.A <= normalIdle.Fill.A || normalHover.Border.A <= normalIdle.Border.A ||
             normalIdle.Arrow.A >= normalIdle.Fill.A || hiddenIdle.Arrow.A >= hiddenIdle.Fill.A)
         {
             throw new InvalidOperationException("Edge dock tab hidden and hover states must have a strict visual hierarchy.");
-        }
-
-        if (protectedIdle.Fill.R != DesignTokens.Colors.GlyphMuted.R ||
-            protectedIdle.Fill.G != DesignTokens.Colors.GlyphMuted.G ||
-            protectedIdle.Fill.B != DesignTokens.Colors.GlyphMuted.B ||
-            protectedHover.Fill.R != DesignTokens.Colors.GlyphMuted.R ||
-            protectedHover.Fill.G != DesignTokens.Colors.GlyphMuted.G ||
-            protectedHover.Fill.B != DesignTokens.Colors.GlyphMuted.B ||
-            protectedIdle.Arrow.R != sampleAccent.R ||
-            protectedIdle.Arrow.G != sampleAccent.G ||
-            protectedIdle.Arrow.B != sampleAccent.B ||
-            protectedIdle.Arrow.A <= 0 ||
-            protectedIdle.Arrow.A >= protectedIdle.Border.A ||
-            protectedExpanded.Fill.R != sampleAccent.R ||
-            protectedExpanded.Fill.G != sampleAccent.G ||
-            protectedExpanded.Fill.B != sampleAccent.B ||
-            protectedExpanded.Arrow.A >= protectedExpanded.Fill.A ||
-            protectedExpandedHover.Fill.A <= protectedExpanded.Fill.A)
-        {
-            throw new InvalidOperationException("Edge dock tab burn-in state must stay gray until the board expands while preserving its arrow cue.");
         }
 
         Color[] queueAccents = new Color[]
@@ -708,7 +622,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Left-dock board accent borders must stay as a clipped-safe 3px inner stroke.");
         }
 
-        Console.WriteLine("Edge dock tab: PASS 5x30 trapezoid arrow blue-orange-green-purple-cyan board-border-3px auto-slots-5 shared-pixel-shift protected-gray-expanded-color");
+        Console.WriteLine("Edge dock tab: PASS 5x30 trapezoid arrow blue-orange-green-purple-cyan board-border-3px auto-slots-5 shared-pixel-shift");
     }
 
     internal static void RunDisplayLifecycleSelfTest()
@@ -786,12 +700,10 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         int gap = Math.Max(2, (int)Math.Round(2.0f * scale));
         TabVisualState[] states = new TabVisualState[]
         {
-            ResolveVisualState(this.accent, false, false, false, false),
-            ResolveVisualState(this.accent, true, false, false, false),
-            ResolveVisualState(this.accent, false, true, false, false),
-            ResolveVisualState(this.accent, false, false, true, false),
-            ResolveVisualState(this.accent, false, false, true, true),
-            ResolveVisualState(this.accent, true, true, true, true)
+            ResolveVisualState(this.accent, false, false),
+            ResolveVisualState(this.accent, true, false),
+            ResolveVisualState(this.accent, false, true),
+            ResolveVisualState(this.accent, true, true)
         };
         int sampleWidth = this.Width * states.Length + gap * (states.Length - 1);
         using (Bitmap bitmap = new Bitmap(sampleWidth, this.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb))

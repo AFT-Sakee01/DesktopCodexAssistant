@@ -24,6 +24,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private const int SeelenDockPulseFallbackIntervalMs = 30 * 60 * 1000;
     private const int WinDRecoveryDelayMs = 2000;
     private const int PowerResumeRestartGuardSeconds = 30;
+    private const int ApplicationWindowEventBatchIntervalMs = 125;
+    private const int ApplicationWindowEventBatchLimit = 64;
+    private const int ApplicationWindowEventQueueLimit = 256;
     private const int HotkeyToggleAllWindowsId = 0x51A1;
     private const int HotkeyToggleHoverOpacityId = 0x51A2;
     private const int HotkeyOpenSettingsId = 0x51A3;
@@ -36,6 +39,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private readonly System.Windows.Forms.Timer displayRecoveryTimer;
     private readonly System.Windows.Forms.Timer seelenDockPulseTimer;
     private readonly System.Windows.Forms.Timer winDRecoveryTimer;
+    private readonly System.Windows.Forms.Timer applicationWindowEventTimer;
     private readonly GlobalWinDWatcher winDWatcher;
     private readonly List<double> cpuHistory;
     private readonly List<double> memoryHistory;
@@ -85,6 +89,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool operationRadialCoreAutoHideKeepAliveActive;
     private bool autoHideKeepAliveActive;
     private ApplicationWindowStateTracker applicationWindowStateTracker;
+    private RegisteredWaitHandle stopEventRegistration;
+    private IntPtr stopEventTargetHandle;
+    private int applicationWindowEventTimerStartPosted;
     private Point lastMouseActivityPosition;
     private bool lastMouseButtonDown;
     private DateTime lastMouseActivityUtc;
@@ -153,6 +160,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.winDRecoveryTimer = new System.Windows.Forms.Timer();
         this.winDRecoveryTimer.Interval = WinDRecoveryDelayMs;
         this.winDRecoveryTimer.Tick += OnWinDRecoveryTimerTick;
+        this.applicationWindowEventTimer = new System.Windows.Forms.Timer();
+        this.applicationWindowEventTimer.Interval = ApplicationWindowEventBatchIntervalMs;
+        this.applicationWindowEventTimer.Tick += OnApplicationWindowEventTimerTick;
         this.winDWatcher = new GlobalWinDWatcher();
         this.winDWatcher.WinDPressed += OnGlobalWinDPressed;
 
@@ -203,6 +213,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
+        RegisterStopEventWait();
         Program.LogInfo("Widget shown. Handle=0x" + this.Handle.ToInt64().ToString("X"));
         StartApplicationWindowStateTracking();
         ApplyRuntimeSettings(this.CurrentSettings);
@@ -289,16 +300,73 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         this.applicationWindowStateTracker =
-            new ApplicationWindowStateTracker(this.Handle, OnApplicationWindowStateEvent);
+            new ApplicationWindowStateTracker(
+                this.Handle,
+                OnApplicationWindowStateEvent,
+                RequiresApplicationWindowObjectEvents(this.CurrentSettings));
     }
 
     private void StopApplicationWindowStateTracking()
     {
+        this.applicationWindowEventTimer.Stop();
         ApplicationWindowStateTracker tracker = this.applicationWindowStateTracker;
         this.applicationWindowStateTracker = null;
         if (tracker != null)
         {
+            tracker.ClearPendingWindowEvents();
             tracker.Dispose();
+        }
+    }
+
+    private void RegisterStopEventWait()
+    {
+        if (this.stopEventRegistration != null || this.stopEvent == null || !this.IsHandleCreated)
+        {
+            return;
+        }
+
+        this.stopEventTargetHandle = this.Handle;
+        try
+        {
+            // The named stop event must not depend on WM_TIMER: Windows only synthesizes timer
+            // messages while the queue is idle, so a message storm could previously block exit.
+            this.stopEventRegistration = ThreadPool.RegisterWaitForSingleObject(
+                this.stopEvent,
+                OnStopEventSignaled,
+                null,
+                Timeout.Infinite,
+                true);
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+        }
+    }
+
+    private void OnStopEventSignaled(object state, bool timedOut)
+    {
+        if (!timedOut && this.stopEventTargetHandle != IntPtr.Zero)
+        {
+            NativeMethods.RequestCloseWindow(this.stopEventTargetHandle);
+        }
+    }
+
+    private void UnregisterStopEventWait()
+    {
+        RegisteredWaitHandle registration = this.stopEventRegistration;
+        this.stopEventRegistration = null;
+        this.stopEventTargetHandle = IntPtr.Zero;
+        if (registration == null)
+        {
+            return;
+        }
+
+        try
+        {
+            registration.Unregister(null);
+        }
+        catch
+        {
         }
     }
 
@@ -309,23 +377,28 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        if (this.InvokeRequired)
+        ApplicationWindowStateTracker tracker = this.applicationWindowStateTracker;
+        if (tracker == null)
         {
-            try
-            {
-                this.BeginInvoke((MethodInvoker)delegate
-                {
-                    ProcessApplicationWindowStateEvent(eventId, windowHandle);
-                });
-            }
-            catch (InvalidOperationException)
-            {
-            }
-
             return;
         }
 
-        ProcessApplicationWindowStateEvent(eventId, windowHandle);
+        int pendingCount;
+        ApplicationWindowStateTracker.WindowEventQueueResult result = tracker.QueueWindowEvent(
+            eventId,
+            windowHandle,
+            ApplicationWindowEventQueueLimit,
+            out pendingCount);
+        bool ignored = result == ApplicationWindowStateTracker.WindowEventQueueResult.Ignored;
+        UiHangWatchdog.RecordWindowEventQueued(
+            pendingCount,
+            result == ApplicationWindowStateTracker.WindowEventQueueResult.Coalesced,
+            ignored,
+            result == ApplicationWindowStateTracker.WindowEventQueueResult.Overflowed);
+        if (!ignored)
+        {
+            ScheduleApplicationWindowEventDrain();
+        }
     }
 
     private void ProcessApplicationWindowStateEvent(uint eventId, IntPtr windowHandle)
@@ -336,8 +409,88 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         this.applicationWindowStateTracker.ProcessWindowEvent(eventId, windowHandle);
-        UpdateVisibilityForMode();
-        if (eventId == NativeMethods.EVENT_SYSTEM_FOREGROUND &&
+    }
+
+    private void ScheduleApplicationWindowEventDrain()
+    {
+        if (!this.InvokeRequired)
+        {
+            if (!this.applicationWindowEventTimer.Enabled)
+            {
+                this.applicationWindowEventTimer.Start();
+            }
+
+            return;
+        }
+
+        if (Interlocked.CompareExchange(ref this.applicationWindowEventTimerStartPosted, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            this.BeginInvoke((MethodInvoker)delegate
+            {
+                Interlocked.Exchange(ref this.applicationWindowEventTimerStartPosted, 0);
+                if (!this.formClosing && !this.applicationWindowEventTimer.Enabled)
+                {
+                    this.applicationWindowEventTimer.Start();
+                }
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            Interlocked.Exchange(ref this.applicationWindowEventTimerStartPosted, 0);
+        }
+    }
+
+    private void OnApplicationWindowEventTimerTick(object sender, EventArgs e)
+    {
+        this.applicationWindowEventTimer.Stop();
+        ApplicationWindowStateTracker tracker = this.applicationWindowStateTracker;
+        if (this.formClosing || tracker == null)
+        {
+            return;
+        }
+
+        ApplicationWindowStateTracker.PendingWindowEventBatch batch =
+            tracker.DrainPendingWindowEvents(ApplicationWindowEventBatchLimit);
+        bool detailedTracking = tracker.ObjectEventsEnabled;
+        int processedCount = 0;
+
+        if (detailedTracking && batch.FullRefresh)
+        {
+            tracker.RefreshAll();
+        }
+        else if (detailedTracking)
+        {
+            for (int i = 0; i < batch.Events.Count; i++)
+            {
+                ApplicationWindowStateTracker.PendingWindowEvent pending = batch.Events[i];
+                ProcessApplicationWindowStateEvent(pending.EventId, pending.WindowHandle);
+                processedCount++;
+            }
+        }
+
+        if (detailedTracking && batch.HasForegroundEvent)
+        {
+            ProcessApplicationWindowStateEvent(
+                NativeMethods.EVENT_SYSTEM_FOREGROUND,
+                batch.ForegroundWindowHandle);
+            processedCount++;
+        }
+
+        if (detailedTracking && (batch.FullRefresh || processedCount > 0))
+        {
+            UpdateVisibilityForMode();
+            if (this.CurrentSettings != null && this.CurrentSettings.AutoHoverOpacityMaximizedEnabled)
+            {
+                UpdateAutomaticHoverOpacityTriggers();
+            }
+        }
+
+        if (batch.HasForegroundEvent &&
             !this.globalLayoutEditActive &&
             this.CurrentSettings != null &&
             this.CurrentSettings.VisibilityMode == WidgetVisibilityMode.AlwaysVisible)
@@ -345,17 +498,46 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             RestoreApplicationTopMostPriority();
         }
 
-        if (this.CurrentSettings != null && this.CurrentSettings.AutoHoverOpacityMaximizedEnabled)
+        UiHangWatchdog.RecordWindowEventBatchProcessed(
+            batch.RemainingCount,
+            processedCount,
+            batch.FullRefresh);
+        if (batch.RemainingCount > 0)
         {
-            UpdateAutomaticHoverOpacityTriggers();
+            this.applicationWindowEventTimer.Start();
         }
+    }
+
+    private void UpdateApplicationWindowEventTrackingPolicy()
+    {
+        ApplicationWindowStateTracker tracker = this.applicationWindowStateTracker;
+        if (tracker != null)
+        {
+            tracker.SetObjectEventsEnabled(RequiresApplicationWindowObjectEvents(this.CurrentSettings));
+        }
+    }
+
+    private static bool RequiresApplicationWindowObjectEvents(WidgetSettings settings)
+    {
+        if (settings == null)
+        {
+            return false;
+        }
+
+        return settings.AutoHoverOpacityMaximizedEnabled ||
+            settings.VisibilityMode == WidgetVisibilityMode.HideWhenFullscreen ||
+            settings.VisibilityMode == WidgetVisibilityMode.HideWhenMaximized ||
+            settings.VisibilityMode == WidgetVisibilityMode.HideWhenOverlapped;
     }
 
     private void RefreshApplicationWindowState()
     {
-        if (this.applicationWindowStateTracker != null)
+        ApplicationWindowStateTracker tracker = this.applicationWindowStateTracker;
+        if (tracker != null && tracker.ObjectEventsEnabled)
         {
-            this.applicationWindowStateTracker.RefreshAll();
+            // AlwaysVisible only consumes foreground events for topmost restoration. A full
+            // cross-process enumeration is useful only when a geometry-based policy is active.
+            tracker.RefreshAll();
         }
     }
 
@@ -476,7 +658,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     {
         this.formClosing = true;
         this.childWindowLifecycleStarted = false;
+        UnregisterStopEventWait();
         SystemEvents.SessionSwitch -= OnSystemSessionSwitch;
+        this.applicationWindowEventTimer.Stop();
+        this.applicationWindowEventTimer.Tick -= OnApplicationWindowEventTimerTick;
+        this.applicationWindowEventTimer.Dispose();
         this.displayRecoveryTimer.Stop();
         this.displayRecoveryTimer.Tick -= OnDisplayRecoveryTimerTick;
         this.displayRecoveryTimer.Dispose();
@@ -654,8 +840,17 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void OnEffectivePowerModeChanged(int mode, IntPtr context)
     {
-        WidgetSettings.InvalidateEffectivePerformanceModeCache();
-        RefreshAutomaticPerformanceModeFromAnyThread("effective power mode");
+        try
+        {
+            WidgetSettings.InvalidateEffectivePerformanceModeCache();
+            RefreshAutomaticPerformanceModeFromAnyThread("effective power mode");
+        }
+        catch (Exception ex)
+        {
+            // Exceptions escaping a native callback are process-fatal (0xc000041d).
+            try { Program.LogException(ex); }
+            catch { }
+        }
     }
 
     private void RefreshAutomaticPerformanceModeFromAnyThread(string reason)
@@ -1959,6 +2154,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         nextSettings.ForceHoverOpacityActive = IsCombinedHoverOpacityActive();
         nextSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.CurrentSettings = nextSettings;
+        UpdateApplicationWindowEventTrackingPolicy();
         if (chinaGuardWasEnabled && !this.CurrentSettings.AiChinaEgressGuardEnabled)
         {
             this.chinaEgressOutsideConfirmed = false;
@@ -3037,11 +3233,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     protected override bool CanRenderLayeredWindow()
     {
         // Runtime presentation belongs exclusively to MetricTileForm.
-        return false;
-    }
-
-    protected override bool IsLayeredBurnInColorProtectionActive()
-    {
         return false;
     }
 

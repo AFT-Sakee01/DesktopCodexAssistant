@@ -9,7 +9,6 @@ internal abstract class LayeredWidgetFormBase : Form
     private Bitmap renderBitmap;
     private Graphics renderGraphics;
     private bool renderBufferValid;
-    private bool lastRenderedBurnInColorProtectionActive;
     private bool layeredUpdateFailureLogged;
     private long burnInShiftSlot = long.MinValue;
     private int lastNightLuminancePercent = -1;
@@ -130,36 +129,22 @@ internal abstract class LayeredWidgetFormBase : Form
         try
         {
             EnsureRenderBuffer();
-            bool burnInColorProtectionActive = IsLayeredBurnInColorProtectionActive();
             int nightLuminancePercent = NightScheduleController.GetActiveLuminancePercent(this.CurrentSettings, DateTime.Now);
             bool refreshNativeBitmap =
                 redrawContent ||
                 !this.renderBufferValid ||
-                burnInColorProtectionActive != this.lastRenderedBurnInColorProtectionActive ||
                 nightLuminancePercent != this.lastNightLuminancePercent;
             if (refreshNativeBitmap)
             {
                 this.renderGraphics.Clear(Color.Transparent);
-                bool contentReady = TryDrawCachedWindowContent(this.renderGraphics, burnInColorProtectionActive);
-                if (!contentReady)
-                {
-                    DrawWindowContent(this.renderGraphics);
-                    if (burnInColorProtectionActive)
-                    {
-                        BurnInProtection.ApplyHiddenModeColorProtection(this.renderBitmap);
-                    }
-
-                    OnLayeredBitmapPrepared(this.renderBitmap, burnInColorProtectionActive);
-                }
+                DrawWindowContent(this.renderGraphics);
 
                 if (nightLuminancePercent < 100)
                 {
                     BurnInProtection.ApplyLuminance(this.renderBitmap, nightLuminancePercent);
                 }
 
-                this.lastRenderedBurnInColorProtectionActive = burnInColorProtectionActive;
                 this.lastNightLuminancePercent = nightLuminancePercent;
-                OnLayeredNativeBitmapRefreshed(burnInColorProtectionActive);
                 this.renderBufferValid = true;
             }
 
@@ -363,30 +348,12 @@ internal abstract class LayeredWidgetFormBase : Form
         Console.WriteLine("Layered window scale policy: PASS global=80 override=125 clamp=200 bounds=150%");
     }
 
-    protected virtual bool IsLayeredBurnInColorProtectionActive()
-    {
-        return false;
-    }
-
     protected virtual bool CanRenderLayeredWindow()
     {
         return true;
     }
 
     protected virtual void DisposeAdditionalRenderBuffers()
-    {
-    }
-
-    protected virtual void OnLayeredBitmapPrepared(Bitmap bitmap, bool burnInColorProtectionActive)
-    {
-    }
-
-    protected virtual bool TryDrawCachedWindowContent(Graphics g, bool burnInColorProtectionActive)
-    {
-        return false;
-    }
-
-    protected virtual void OnLayeredNativeBitmapRefreshed(bool burnInColorProtectionActive)
     {
     }
 

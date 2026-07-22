@@ -282,8 +282,8 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 87;
-    private const int RetiredCanonicalSettingsCount = 97;
+    private const int CurrentSettingsVersion = 88;
+    private const int RetiredCanonicalSettingsCount = 98;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -333,7 +333,11 @@ internal sealed class WidgetSettings
 
         "DeepSeekApiKeyRevision", "AlertDeepSeekBalanceEnabled", "ClaudeRadarJsonEnabled",
         "ClaudeRadarHomepageFallbackEnabled", "ClaudeRadarCommunityRatingsEnabled",
-        "ClaudeRadarLocalQuotaFallbackEnabled", "ClaudeRadarModelKey"
+        "ClaudeRadarLocalQuotaFallbackEnabled", "ClaudeRadarModelKey",
+
+        // Version 88 removes the previous hidden-mode colour inversion implementation. Keep the
+        // key retired permanently so a future redesign cannot inherit an old True value.
+        "BurnInHiddenModeColorProtectionEnabled"
     };
     private const int EffectivePerformanceModeCacheMs = 2000;
     private static readonly object EffectivePerformanceModeSync = new object();
@@ -801,7 +805,6 @@ internal sealed class WidgetSettings
     public bool OperationRadialKeepOpenAfterLeafClickEnabled { get; set; }
     public bool OperationDoubleClickSpecialMenuEnabled { get; set; }
     public bool OperationSettingsLogicExtensionEnabled { get; set; }
-    public bool BurnInHiddenModeColorProtectionEnabled { get; set; }
 
     public static string SettingsPath
     {
@@ -1004,7 +1007,6 @@ internal sealed class WidgetSettings
         this.OperationRadialIdleResetOnInteractionEnabled = defaults.OperationRadialIdleResetOnInteractionEnabled;
         this.OperationDoubleClickSpecialMenuEnabled = defaults.OperationDoubleClickSpecialMenuEnabled;
         this.OperationSettingsLogicExtensionEnabled = defaults.OperationSettingsLogicExtensionEnabled;
-        this.BurnInHiddenModeColorProtectionEnabled = defaults.BurnInHiddenModeColorProtectionEnabled;
         this.MetricTileLeftX = CloneTileArray(defaults.MetricTileLeftX);
         this.MetricTileBottomY = CloneTileArray(defaults.MetricTileBottomY);
         this.RightTileAutoArrangeEnabled = defaults.RightTileAutoArrangeEnabled;
@@ -1222,7 +1224,6 @@ internal sealed class WidgetSettings
         settings.OperationRadialKeepOpenAfterLeafClickEnabled = true;
         settings.OperationDoubleClickSpecialMenuEnabled = false;
         settings.OperationSettingsLogicExtensionEnabled = false;
-        settings.BurnInHiddenModeColorProtectionEnabled = false;
         ApplyUserDefaultSnapshot(settings);
         settings.Normalize();
         return settings;
@@ -1430,7 +1431,6 @@ internal sealed class WidgetSettings
         settings.AutoHoverOpacityIdleEnabled = true;
         settings.AutoHoverOpacityIdleSeconds = 40;
         settings.AutoHoverOpacityMaximizedEnabled = false;
-        settings.BurnInHiddenModeColorProtectionEnabled = true;
     }
 
     public WidgetSettings Clone()
@@ -1634,7 +1634,6 @@ internal sealed class WidgetSettings
             OperationRadialKeepOpenAfterLeafClickEnabled = this.OperationRadialKeepOpenAfterLeafClickEnabled,
             OperationDoubleClickSpecialMenuEnabled = this.OperationDoubleClickSpecialMenuEnabled,
             OperationSettingsLogicExtensionEnabled = this.OperationSettingsLogicExtensionEnabled,
-            BurnInHiddenModeColorProtectionEnabled = this.BurnInHiddenModeColorProtectionEnabled,
             MetricTileLeftX = CloneTileArray(this.MetricTileLeftX),
             MetricTileBottomY = CloneTileArray(this.MetricTileBottomY),
             RightTileAutoArrangeEnabled = this.RightTileAutoArrangeEnabled,
@@ -2353,6 +2352,14 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 88)
+        {
+            // Version 88 retires the old hidden-mode colour inversion. ApplyValue ignores retired
+            // keys and this canonical rewrite removes the stale value without changing any other
+            // hidden-opacity, night-luminance or pixel-migration setting.
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2695,7 +2702,6 @@ internal sealed class WidgetSettings
             "OperationRadialKeepOpenAfterLeafClickEnabled=" + this.OperationRadialKeepOpenAfterLeafClickEnabled,
             "OperationDoubleClickSpecialMenuEnabled=" + this.OperationDoubleClickSpecialMenuEnabled,
             "OperationSettingsLogicExtensionEnabled=" + this.OperationSettingsLogicExtensionEnabled,
-            "BurnInHiddenModeColorProtectionEnabled=" + this.BurnInHiddenModeColorProtectionEnabled,
             "MetricTileLeftX=" + SerializeTileArray(this.MetricTileLeftX),
             "MetricTileBottomY=" + SerializeTileArray(this.MetricTileBottomY),
             "RightTileAutoArrangeEnabled=" + this.RightTileAutoArrangeEnabled,
@@ -4080,12 +4086,6 @@ internal sealed class WidgetSettings
             return;
         }
 
-        if (string.Equals(key, "BurnInHiddenModeColorProtectionEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
-        {
-            settings.BurnInHiddenModeColorProtectionEnabled = boolValue;
-            return;
-        }
-
         if (string.Equals(key, "MetricTileLeftX", StringComparison.OrdinalIgnoreCase))
         {
             settings.MetricTileLeftX = ParseTileArray(value);
@@ -4629,6 +4629,7 @@ internal sealed class WidgetSettings
         RunRetiredSettingsSchema85MigrationSelfTest();
         RunRetiredSettingsSchema86MigrationSelfTest();
         RunChinaEgressGuardSchema87MigrationSelfTest();
+        RunHiddenColorProtectionSchema88MigrationSelfTest();
         RunCodexTaskMonitorSettingsSelfTest();
         RunSpecBoardSettingsSelfTest();
         RunCodexIqBoardSettingsSelfTest();
@@ -5350,7 +5351,7 @@ internal sealed class WidgetSettings
             string path = Path.Combine(root, "settings.ini");
             AssertLayout(
                 RetiredSettingsInputNames.Count == RetiredCanonicalSettingsCount + RetiredSettingsAliasCount,
-                "retired-key registry should contain exactly 97 canonical names and 11 aliases");
+                "retired-key registry should contain exactly 98 canonical names and 11 aliases");
 
             List<string> fixture = new List<string>
             {
@@ -5406,7 +5407,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 Array.Exists(
                     migratedLines,
-                    delegate(string line) { return string.Equals(line, "Version=87", StringComparison.Ordinal); }),
+                    delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }),
                 "retired settings migration should atomically rewrite the current schema");
             AssertLayout(!File.Exists(path + ".tmp"), "retired settings migration should not leave a temp file");
 
@@ -5431,7 +5432,7 @@ internal sealed class WidgetSettings
 
             AssertLayout(
                 leakedKeys.Count == 0,
-                "canonical save should remove all 108 retired input names: " +
+                "canonical save should remove all 109 retired input names: " +
                     string.Join(",", leakedKeys.ToArray()));
 
             WidgetSettings roundTrip = LoadFromPathForSelfTest(path);
@@ -5464,7 +5465,7 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("Retired settings migration: PASS current-schema=87 canonical=97 aliases=11 atomic round-trip");
+        Console.WriteLine("Retired settings migration: PASS current-schema=88 canonical=98 aliases=11 atomic round-trip");
     }
 
     private static void RunRetiredSettingsSchema86MigrationSelfTest()
@@ -5524,7 +5525,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 Array.Exists(
                     migratedLines,
-                    delegate(string line) { return string.Equals(line, "Version=87", StringComparison.Ordinal); }),
+                    delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }),
                 "schema 86 retired-key migration should atomically rewrite Version=85 input to the current schema");
             AssertLayout(!File.Exists(path + ".tmp"), "schema 86 migration should not leave a temp file");
 
@@ -5578,7 +5579,7 @@ internal sealed class WidgetSettings
                 string.Equals(versionless.NetworkMonitorAdapterId, "versionless-retained-adapter", StringComparison.Ordinal) &&
                 Array.Exists(
                     versionlessLines,
-                    delegate(string line) { return string.Equals(line, "Version=87", StringComparison.Ordinal); }) &&
+                    delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }) &&
                 !Array.Exists(
                     versionlessLines,
                     delegate(string line)
@@ -5595,7 +5596,7 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("Retired settings migration: PASS current-schema=87 previous=85 retired=7 atomic round-trip");
+        Console.WriteLine("Retired settings migration: PASS current-schema=88 previous=85 retired=7 atomic round-trip");
     }
 
     private static void RunChinaEgressGuardSchema87MigrationSelfTest()
@@ -5615,7 +5616,7 @@ internal sealed class WidgetSettings
             string[] defaultLines = File.ReadAllLines(defaultPath);
             AssertLayout(
                 migratedDefault.AiChinaEgressGuardEnabled &&
-                Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "Version=87", StringComparison.Ordinal); }) &&
+                Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }) &&
                 Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "AiChinaEgressGuardEnabled=True", StringComparison.Ordinal); }) &&
                 !File.Exists(defaultPath + ".tmp"),
                 "schema 87 migration should atomically persist the enabled guard default");
@@ -5631,7 +5632,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 !migratedDisabled.AiChinaEgressGuardEnabled &&
                 !roundTrip.AiChinaEgressGuardEnabled &&
-                Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "Version=87", StringComparison.Ordinal); }) &&
+                Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }) &&
                 Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "AiChinaEgressGuardEnabled=False", StringComparison.Ordinal); }) &&
                 !File.Exists(disabledPath + ".tmp"),
                 "schema 87 migration should preserve an explicit disabled guard");
@@ -5642,7 +5643,56 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("China-egress guard migration: PASS schema=87 default-on explicit-off atomic round-trip");
+        Console.WriteLine("China-egress guard migration: PASS source=86 feature=87 target=88 default-on explicit-off atomic round-trip");
+    }
+
+    private static void RunHiddenColorProtectionSchema88MigrationSelfTest()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "DesktopCodexAssistant-hidden-color-v88-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string path = Path.Combine(root, "settings.ini");
+            File.WriteAllLines(
+                path,
+                new string[]
+                {
+                    "Version=87",
+                    "ApplicationTransparencyPercent=41",
+                    "HoverOpacityEnabled=False",
+                    "BurnInHiddenModeColorProtectionEnabled=True"
+                },
+                SharedEncoding.Utf8NoBom);
+
+            WidgetSettings migrated = LoadFromPathAndSaveForSelfTest(path);
+            WidgetSettings roundTrip = LoadFromPathForSelfTest(path);
+            string[] lines = File.ReadAllLines(path);
+            AssertLayout(
+                migrated.ApplicationTransparencyPercent == 41 &&
+                !migrated.HoverOpacityEnabled &&
+                roundTrip.ApplicationTransparencyPercent == 41 &&
+                !roundTrip.HoverOpacityEnabled,
+                "schema 88 migration should preserve unrelated hidden-opacity settings");
+            AssertLayout(
+                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }) &&
+                !Array.Exists(
+                    lines,
+                    delegate(string line)
+                    {
+                        return line.StartsWith("BurnInHiddenModeColorProtectionEnabled=", StringComparison.OrdinalIgnoreCase);
+                    }) &&
+                !File.Exists(path + ".tmp"),
+                "schema 88 migration should atomically remove the retired hidden-colour key");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); }
+            catch { }
+        }
+
+        Console.WriteLine("Hidden colour protection migration: PASS source=87 target=88 retired-key removed");
     }
 
     private static void RunGuardBoardOverrideMigrationSelfTest()

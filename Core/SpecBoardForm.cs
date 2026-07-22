@@ -203,7 +203,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
         this.dockTab.SetDisplaySuspended(this.displaySuspended);
         this.dockTab.SetHiddenForFullscreen(this.hiddenForFullscreen);
-        this.dockTab.SetBoardExpanded(this.Visible);
         this.dockTab.ShowTab(ResolveDockTabCenterY());
         this.maintenanceTimer.Start();
     }
@@ -405,11 +404,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             this.Width,
             this.Height,
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_FRAMECHANGED | NativeMethods.SWP_SHOWWINDOW);
-        if (this.dockTab != null && !this.dockTab.IsDisposed)
-        {
-            this.dockTab.SetBoardExpanded(true);
-        }
-
         ResetAutoHideClock();
         RequestRefresh(true);
         RenderLayeredWindow();
@@ -417,11 +411,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
     public void HideBoard()
     {
-        if (this.dockTab != null && !this.dockTab.IsDisposed)
-        {
-            this.dockTab.SetBoardExpanded(false);
-        }
-
         this.autoPopupActive = false;
         this.autoPopupHideUtc = DateTime.MinValue;
         this.autoPopupHighlightedRows.Clear();
@@ -670,9 +659,10 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
     protected override void DrawWindowContent(Graphics g)
     {
-        BurnInProtection.ConfigureGraphics(g, false);
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        g.InterpolationMode = InterpolationMode.Bilinear;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
         this.projectHitTargets.Clear();
         this.cardHitTargets.Clear();
         this.managerButtonBounds = Rectangle.Empty;

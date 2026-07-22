@@ -28,8 +28,6 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     private MetricTileId metricId = MetricTileId.Cpu;
     private MetricTileFeed feed = new MetricTileFeed();
     private bool displaySuspended;
-    private bool forceHoverOpacityActive;
-    private bool lowEnergyPalette;
 
     public MetricTileExpandForm(WidgetSettings settings)
     {
@@ -71,48 +69,9 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         return !this.displaySuspended;
     }
 
-    // Same reasoning as the tile column: this panel is built from anti-aliased rounded shapes,
-    // arcs and filled chart areas, and the per-pixel inversion pass turns every one of those edges
-    // into a jagged halo. It opts out and paints a low-energy palette instead. In practice the
-    // panel is only on screen while the cursor is on it, so it is an active surface anyway —
-    // OperationForm opts out for that reason too.
-    // In hidden/dim mode the panel's coloured pixels get the same burn-in inversion the rest of the
-    // widget uses (greys and dark pixels -> black, bright colours -> inverted and floored), so a
-    // window left faded for a long idle stretch stops emitting a fixed bright image. A normal hover
-    // keeps it at full brightness; only the hidden-mode fade triggers the inversion.
-    protected override bool IsLayeredBurnInColorProtectionActive()
-    {
-        bool hiddenActive = this.forceHoverOpacityActive ||
-            (this.CurrentSettings != null && this.CurrentSettings.ForceHoverOpacityActive);
-        return BurnInProtection.ShouldApplyHiddenModeColorProtection(this.CurrentSettings, hiddenActive);
-    }
-
-    // The panel still opts out of the low-energy palette and the hover-opacity fade: it only exists
-    // while the pointer is on its tile, so dimming or hiding the thing the user just asked to see
-    // would be wrong. The bitmap inversion above is the one burn-in measure it takes.
-    private bool IsLowEnergyPaletteActive()
-    {
-        return false;
-    }
-
     protected override int ApplyHoverAlpha(int alpha)
     {
         return alpha;
-    }
-
-    // Low-energy substitute applied at draw time, replacing the bitmap inversion.
-    private Color Energy(Color color)
-    {
-        if (!this.lowEnergyPalette)
-        {
-            return color;
-        }
-
-        return Color.FromArgb(
-            color.A,
-            (int)(color.R * 0.34),
-            (int)(color.G * 0.34),
-            (int)(color.B * 0.34));
     }
 
     // Dedicated expanded-panel size, doubled in large mode.
@@ -238,13 +197,6 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         ResetDisplayRenderResources();
     }
 
-    // Retained so the host can call it uniformly, but the panel is exempt from hidden mode: the
-    // state is recorded and deliberately not acted on.
-    public void SetForceHoverOpacityActive(bool active)
-    {
-        this.forceHoverOpacityActive = active;
-    }
-
     public void RecoverAfterDisplayResume()
     {
         ResetDisplayRenderResources();
@@ -258,16 +210,13 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
 
     internal void DrawPanel(Graphics g)
     {
-        // Anti-aliasing stays on in both states; opting out of the inversion pass is what makes that
-        // safe here.
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-        this.lowEnergyPalette = IsLowEnergyPaletteActive();
 
         RectangleF bounds = new RectangleF(0, 0, this.Width - 1, this.Height - 1);
-        Color accent = Energy(MetricTileModel.GetAccent(this.metricId));
+        Color accent = MetricTileModel.GetAccent(this.metricId);
         using (GraphicsPath shell = RoundedRectangle(bounds, S(DesignTokens.Radius.Panel)))
-        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.AppBackground), 245)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 245)))
         using (Pen border = new Pen(DesignTokens.WithAlpha(accent, 150), Math.Max(1.0f, S(1))))
         {
             g.FillPath(fill, shell);
@@ -334,7 +283,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         scrimW = Math.Min(scrimW, content.Width + S(8));
         // A light veil rather than an opaque plate: just enough to seat the glyphs, so the chart
         // behind stays visible and reads as the panel's background.
-        using (SolidBrush scrim = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.AppBackground), 60)))
+        using (SolidBrush scrim = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 60)))
         {
             g.FillRectangle(scrim, content.X - S(4), content.Y - S(3), scrimW, scrimH);
         }
@@ -343,8 +292,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         using (Font valueFont = new Font("Segoe UI", S(ValueSize), FontStyle.Bold, GraphicsUnit.Pixel))
         using (Font suffixFont = new Font("Segoe UI", S(SuffixSize), FontStyle.Bold, GraphicsUnit.Pixel))
         using (SolidBrush labelBrush = new SolidBrush(DesignTokens.WithAlpha(accent, 205)))
-        using (SolidBrush valueBrush = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.TextStrong), 205)))
-        using (SolidBrush suffixBrush = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.TextMuted), 188)))
+        using (SolidBrush valueBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextStrong, 205)))
+        using (SolidBrush suffixBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 188)))
         {
             g.DrawString(label, labelFont, labelBrush, content.X, content.Y + S(9));
             float labelW = g.MeasureString(label, labelFont).Width;
@@ -360,7 +309,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         if (!string.IsNullOrEmpty(subLine))
         {
             DrawText(g, subLine, content.X, content.Y + S(ValueSize) + S(2), S(SubSize) * 0.92f,
-                DesignTokens.WithAlpha(Energy(DesignTokens.Colors.TextMuted), 180), FontStyle.Regular);
+                DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 180), FontStyle.Regular);
         }
     }
 
@@ -388,7 +337,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         }
 
         using (Font font = new Font("Segoe UI", S(CaptionSize), FontStyle.Regular, GraphicsUnit.Pixel))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.GlyphMuted), 220)))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 220)))
         using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
         {
             format.Alignment = StringAlignment.Far;
@@ -496,7 +445,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
 
         double ratio = MetricTileModel.Clamp(value / max, 0.0, 1.0);
         float y = rect.Bottom - (float)(ratio * (rect.Height - 2.0f)) - 1.0f;
-        using (Pen guide = new Pen(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.GlyphMuted), 96), 1.0f))
+        using (Pen guide = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 96), 1.0f))
         {
             guide.DashStyle = DashStyle.Dot;
             g.DrawLine(guide, rect.Left, y, rect.Right, y);
@@ -506,7 +455,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         // left-edge "100" would hide behind it once the chart runs full-height behind the text.
         float labelSize = Math.Max(6.0f, S(SubSize) * 0.66f);
         using (Font font = new Font("Segoe UI", labelSize, FontStyle.Regular, GraphicsUnit.Pixel))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.GlyphMuted), 220)))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 220)))
         using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
         {
             format.Alignment = StringAlignment.Far;
@@ -621,8 +570,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             float h = Math.Max(1.5f, (float)(value / 100.0 * (rect.Height - 1.0f)));
             // accent is already energy-adjusted by the caller; the raw warn/danger tokens are not.
             Color barColor = value >= CoreLoadDangerPercent
-                ? Energy(DesignTokens.Colors.DangerStrong)
-                : (value >= CoreLoadWarningPercent ? Energy(DesignTokens.Colors.Warning) : accent);
+                ? DesignTokens.Colors.DangerStrong
+                : (value >= CoreLoadWarningPercent ? DesignTokens.Colors.Warning : accent);
             int alpha = 96 + (int)(value / 100.0 * 96.0);
             using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(barColor, alpha)))
             {
@@ -799,7 +748,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         int battery = p != null && p.BatteryPercentKnown ? p.BatteryPercent : -1;
         DrawSegmentBar(g, StripRect(content),
             new double[] { battery >= 0 ? battery : 0 },
-            new Color[] { Energy(battery >= 0 && battery <= 20 ? DesignTokens.Colors.DangerStrong : DesignTokens.Colors.Success) },
+            new Color[] { battery >= 0 && battery <= 20 ? DesignTokens.Colors.DangerStrong : DesignTokens.Colors.Success },
             new int[] { 225 });
 
         string watts = p != null && p.WattsKnown ? p.Watts.ToString("0.0", CultureInfo.InvariantCulture) + " W" : "-- W";
@@ -853,7 +802,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             int alpha = 55 + (int)(ratio * 185.0);
             RectangleF cell = new RectangleF(rect.X + i * (cellW + gap), rect.Bottom - h, cellW, h);
             using (GraphicsPath path = RoundedRectangle(cell, Math.Max(1.0f, S(2))))
-            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.Warning), alpha)))
+            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, alpha)))
             {
                 g.FillPath(brush, path);
             }
@@ -894,7 +843,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             // sample clock only advances while the app is running, so a fresh process genuinely has
             // no rate to report.
             DrawText(g, "尚未积累实测样本", ground.X, ground.Y + ground.Height * 0.42f,
-                S(SubSize) * 0.92f, Energy(DesignTokens.Colors.GlyphMuted), FontStyle.Regular);
+                S(SubSize) * 0.92f, DesignTokens.Colors.GlyphMuted, FontStyle.Regular);
         }
 
         // Bottom strip is the 5-hour window, the other quota the tile's inner ring carries.
@@ -978,7 +927,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             PointF last = pts[pts.Length - 1];
             // Red when the projection reaches zero before the reset does: that is the one state
             // this panel exists to surface.
-            Color projColor = projected <= 0.0 ? Energy(DesignTokens.Colors.DangerStrong) : accent;
+            Color projColor = projected <= 0.0 ? DesignTokens.Colors.DangerStrong : accent;
             using (Pen dash = new Pen(DesignTokens.WithAlpha(projColor, 170), Math.Max(1.0f, S(1.2f))))
             {
                 dash.DashStyle = DashStyle.Dash;
@@ -986,7 +935,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             }
         }
 
-        using (Pen resetLine = new Pen(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.TextMuted), 120), 1.0f))
+        using (Pen resetLine = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 120), 1.0f))
         {
             resetLine.DashStyle = DashStyle.Dot;
             g.DrawLine(resetLine, rect.Right - S(2), rect.Y, rect.Right - S(2), rect.Bottom);
@@ -1018,7 +967,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         {
             MetricTileGuardEntry entry = guards[i];
             RectangleF band = new RectangleF(content.X, content.Y + i * rowH, content.Width, rowH - S(2));
-            Color tint = Energy(entry.Accent);
+            Color tint = entry.Accent;
             using (GraphicsPath path = RoundedRectangle(band, Math.Max(1.0f, S(3))))
             using (SolidBrush brush = new SolidBrush(entry.Active
                 ? DesignTokens.WithAlpha(tint, 46)
@@ -1037,12 +986,12 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
 
             float textY = band.Y + (band.Height - S(SubSize)) / 2.0f;
             DrawText(g, entry.Label, band.X + S(10), textY, S(SubSize),
-                Energy(entry.Active ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.TextMuted), FontStyle.Bold);
+                entry.Active ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.TextMuted, FontStyle.Bold);
             DrawText(g, entry.Description, band.X + S(92), textY + S(1), S(SubSize) * 0.86f,
-                Energy(DesignTokens.Colors.GlyphMuted), FontStyle.Regular);
+                DesignTokens.Colors.GlyphMuted, FontStyle.Regular);
 
             using (Font font = new Font("Segoe UI", S(SubSize) * 0.94f, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (SolidBrush brush = new SolidBrush(Energy(entry.Active ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted)))
+            using (SolidBrush brush = new SolidBrush(entry.Active ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted))
             using (StringFormat fmt = new StringFormat(StringFormatFlags.NoWrap))
             {
                 fmt.Alignment = StringAlignment.Far;
@@ -1125,77 +1074,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             }
         }
 
-        // Hidden mode: the panel keeps full brightness (no low-energy palette, no hover fade) but the
-        // burn-in bitmap inversion DOES run, so its coloured pixels invert while the widget is faded.
-        WidgetSettings hidden = WidgetSettings.CreateDefaults();
-        hidden.ForceHoverOpacityActive = true;
-        hidden.ManualHoverOpacityActive = true;
-        hidden.HoverOpacityEnabled = true;
-        hidden.BurnInHiddenModeColorProtectionEnabled = true;
-        hidden.Normalize();
-        using (MetricTileExpandForm panel = new MetricTileExpandForm(hidden))
-        {
-            panel.SetForceHoverOpacityActive(true);
-            if (panel.IsLowEnergyPaletteActiveForTest())
-            {
-                throw new InvalidOperationException("Expand panel must not switch to the low-energy hidden palette.");
-            }
-
-            if (panel.ApplyHoverAlphaForTest(255) != 255 || panel.ApplyHoverAlphaForTest(180) != 180)
-            {
-                throw new InvalidOperationException("Expand panel must not fade under hidden mode.");
-            }
-
-            if (!panel.IsLayeredBurnInColorProtectionActiveForTest())
-            {
-                throw new InvalidOperationException("Expand panel must run the bitmap inversion pass while faded in hidden mode.");
-            }
-        }
-
-        // With the color-protection setting off, hidden mode must not invert.
-        WidgetSettings hiddenNoProtection = WidgetSettings.CreateDefaults();
-        hiddenNoProtection.ForceHoverOpacityActive = true;
-        hiddenNoProtection.ManualHoverOpacityActive = true;
-        hiddenNoProtection.HoverOpacityEnabled = true;
-        hiddenNoProtection.BurnInHiddenModeColorProtectionEnabled = false;
-        hiddenNoProtection.Normalize();
-        using (MetricTileExpandForm panel = new MetricTileExpandForm(hiddenNoProtection))
-        {
-            panel.SetForceHoverOpacityActive(true);
-            if (panel.IsLayeredBurnInColorProtectionActiveForTest())
-            {
-                throw new InvalidOperationException("Expand panel must not invert when color protection is disabled.");
-            }
-        }
-
-        // Not faded: no inversion, even with the setting on.
-        WidgetSettings visible = WidgetSettings.CreateDefaults();
-        visible.BurnInHiddenModeColorProtectionEnabled = true;
-        visible.Normalize();
-        using (MetricTileExpandForm panel = new MetricTileExpandForm(visible))
-        {
-            if (panel.IsLayeredBurnInColorProtectionActiveForTest())
-            {
-                throw new InvalidOperationException("Expand panel must not invert while it is fully visible.");
-            }
-        }
-
-        Console.WriteLine("Metric tile expand: PASS Radar-module size, placement, large mode, hidden-mode inversion");
-    }
-
-    internal bool IsLowEnergyPaletteActiveForTest()
-    {
-        return IsLowEnergyPaletteActive();
-    }
-
-    internal int ApplyHoverAlphaForTest(int alpha)
-    {
-        return ApplyHoverAlpha(alpha);
-    }
-
-    internal bool IsLayeredBurnInColorProtectionActiveForTest()
-    {
-        return IsLayeredBurnInColorProtectionActive();
+        Console.WriteLine("Metric tile expand: PASS Radar-module size, placement, large mode");
     }
 
     // Geometry-only half of ShowForTile, so the self test can assert placement without creating a

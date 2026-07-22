@@ -1,6 +1,6 @@
 # 接口与复用资源汇总
 
-适用版本：2.0.0.0
+适用版本：2.0.0.1
 
 ## 1. 文档用途
 
@@ -55,7 +55,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | 参数 | 用途 |
 | --- | --- |
 | `--desktop-parent` / `--workerw` | 尝试挂接桌面 WorkerW |
-| `--stop` | 通过命名事件停止现有实例 |
+| `--stop` | 通过命名事件停止现有实例；宿主注册后台等待并直接投递 `WM_CLOSE`，主 tick 轮询只作兜底 |
 | `--install` / `--uninstall` | 维护当前用户启动项 |
 | `--no-start` | 安装后不启动 |
 | `--restart-after-pid PID` | 等待旧进程退出后重启 |
@@ -142,7 +142,9 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `internal_api.deepseek_service_monitor` | DeepSeek 服务健康单飞监控 | timer、网络事件和手动刷新 join 同一无凭据请求；健康状态只以 clone 快照交付 |
 | `internal_api.ui_font_cache` | 字体缓存 | 每个窗口生命周期内复用 |
 | `internal_api.shared_encoding` | UTF-8 no BOM 编码常量 | 持久化文本写入复用 `SharedEncoding.Utf8NoBom`，不在调用点重复 `new UTF8Encoding(false)` |
-| `internal_api.burn_in_protection` | 像素位移和隐藏反色 | 新窗口分配独立 salt；操作面板隐藏态只为可见按钮恢复命中 Alpha |
+| `internal_api.burn_in_protection` | 像素微迁移和夜间亮度 | 新窗口分配独立 salt；自动列共享相位，左缘表面固定 X；不得在此重新引入隐藏颜色变换 |
+| `internal_api.application_window_state_tracker` | 前台/对象窗口状态跟踪 | 按可见性策略动态启停对象 Hook，事件先按 HWND 有界合并再由 UI 线程批量消费 |
+| `internal_api.ui_hang_watchdog` | UI 心跳与窗口事件诊断 | 卡死、重复卡死和恢复均写独立 JSONL，并携带队列累计计数 |
 | `internal_api.hover_interaction_policy` | 鼠标隐藏命中策略 | 敏感鼠标范围、延迟显现、覆盖开启和反向隐藏统一复用，不在窗口中重复点命中或倒计时逻辑 |
 | `internal_api.time_zone_utilities` | 北京时间调度和显示时区 | 区分业务时间与显示时间 |
 | `internal_api.secret_store` | DPAPI CurrentUser 密钥文件保护 | 统一读写 `dpapi-v1:` envelope；旧格式只有严格 validator 通过后才原子迁移，损坏/未知 Base64 fail-closed 且原字节不变 |
