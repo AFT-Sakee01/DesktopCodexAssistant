@@ -86,6 +86,8 @@ flowchart LR
 
 Claude 软件运行期间，`UpdateQuotaBurnObservationClock()` 推进本 family 的活跃时间轴；`ApplyQuotaSnapshot(Claude)` 只记录通过官方完整快照校验后的 5 小时/周余额。reset identity 改变或余额上升只清除对应窗口，活跃趋势与近时钟趋势均为进程内状态，重启后重新积累。tile 和 expand 只消费同一份 published snapshot，不读取凭据、磁盘或网络。
 
+启用“你是天才程序员吗”时，未绑定 Claude setup-token 或额度已知为 0 均视为 Claude 空额度。只有已知空额度随后恢复为非空才登记复活，且只在第一次展开 CLD 详情时消费；冷启动 unknown→known 和单纯绑定凭据不触发。Codex 空、Claude 空和双方同时空分别投影黄色单方提示或红色双方提示，普通额度内容先降低亮度。
+
 ## 7. 服务健康
 
 Claude 服务健康由 `StatuspageMonitor` 和 Claude usage 状态共同形成。DeepSeek 健康由独立的 `DeepSeekServiceMonitor` 提供；它不读取 key、不查询余额，也不记录账户数据。可选的 DeepSeek 余额由另一个 `DeepSeekBalanceMonitor` 直接服务 `DS` tile，不进入 Claude family。

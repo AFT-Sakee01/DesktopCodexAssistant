@@ -101,7 +101,7 @@ headless owners 永不调用 `Show()`。全屏状态只隐藏可见表面，不�
 `Core/MetricTileModel.cs` 定义稳定顺序：
 
 ```text
-Cpu, Memory, Disk, Network, Gpu, Npu, Power, Guard, CodexQuota, ClaudeQuota
+Cpu, Memory, Disk, Network, Gpu, Npu, Power, Guard, CodexQuota, ClaudeQuota, DeepSeekQuota
 ```
 
 每个 ID 对应一个独立 `MetricTileForm`。`WidgetForm.BuildMetricTileFeed()` 在控制 tick 中组装一次输入：
@@ -110,17 +110,19 @@ Cpu, Memory, Disk, Network, Gpu, Npu, Power, Guard, CodexQuota, ClaudeQuota
 - CPU/内存/磁盘/网络/GPU/NPU 历史缓冲。
 - `PowerThermalForm.BuildStripSnapshot()` 的缓存副本。
 - GUARD 状态。
-- Codex 与 Claude 的 `RadarTileSnapshot`。
+- Codex 与 Claude 的 `RadarTileSnapshot`，以及 DeepSeek balance/service 的缓存快照。
 
 `PushMetricTileFeed()` 把同一个 feed 推给全部 tile；方块不自行采样。鼠标悬停时 `MetricTileExpandForm` 使用同一 feed 和相同 tile ID 展开详情，也不建立 reader 或 timer。
 
 CPU、MEM、DISK 与 NET 展开详情使用现有 tile 角色色绘制标题和窗口边框。CPU 的总占用曲线与每核柱共用 `MetricTileExpandForm.ResolvePlotY()` 的 0–100 投影，100% 柱顶与 100 参考线落在同一像素行；频率、基准频率、核心数与峰值核心显示在标题下方，不再保留曲线/柱说明图例。MEM 外环和中心数字继续显示物理内存占用率；内环改为 `MemoryPressureTracker` 投影的绿/黄/红三态服务效率压力。压力以可用物理内存和 10 秒平滑后的 `Memory\\Pages Output/sec` 换出速率为主，Commit 低于 90% 不加分，90% 以上只作为接近分配上限的安全下限。展开窗仍以紫色显示已用历史、黄色显示 GPU/NPU 共享内存历史，底部改为按真实时间保留最近 60 秒状态的压力色带；当前状态、Commit 风险和换出速率分栏显示，不能把物理占用、文件映射页读入、页文件占用或 GPU/NPU 共享量直接等同于压力。NET 以蓝色下行、红色上行绘制镜像曲线，当前值使用 Kbps/Mbps/Gbps 位速率；DISK 以黄色写入、绿色读取绘制共享刻度曲线，当前值使用 KB/s/MB/s/GB/s 字节速率。两组当前值都在左侧连续显示。上述展开窗只读同一 `MetricTileFeed`，不得在绘制路径另行采样。
 
-Codex/CLD 展开详情保留各自绿色/黄色角色色与边框。周额度历史占图表前 68%，右侧预测区显示预计耗尽或撑到 reset 的结论，5 小时额度在底条独立显示同类判断；两者仍只读同一 `MetricTileFeed`。二级防烧屏继续隐藏白色/中性色文字，并反转额度曲线、预测结论和底条的角色色。
+Codex/CLD 展开详情保留各自绿色/黄色角色色与边框。周额度历史占图表前 68%，右侧预测区显示预计耗尽或撑到 reset 的结论，5 小时额度在底条独立显示同类判断；两者仍只读同一 `MetricTileFeed`。DeepSeek 展开详情使用蓝色余额曲线、黄色 24 小时消耗和底条，并根据本地余额下降历史给出预计可用时长；UI 不在绘制路径发起 API 请求。二级防烧屏继续隐藏白色/中性色文字，并反转额度曲线、预测结论和底条的角色色。
+
+`QuotaEasterEggTracker` 只在 Codex/Claude 已知额度从空恢复到非空时登记一次复活；启动时的 unknown→known、仅绑定凭据或未绑定状态不会误触发。额度为空时对应 tile/expand 先降低内容亮度，再显示黄色单方“陨落”或红色双方“已经陨落”；恢复后只在第一次展开该 family 时显示蓝色斜体复活提示。`GeniusProgrammerEasterEggEnabled` 默认开启并可整体关闭。
 
 两级防烧屏由 `WidgetForm.UpdateBurnInProtectionTriggers()` 统一发布。一级通过 `LayeredWidgetFormBase.PresentationLuminancePercent` 把 11 个 tile 与当前展开窗按同一亮度策略处理；`WidgetForm.UpdateMetricTileBurnInPresentation()` 命中任意一个右侧 tile 或展开窗时，整组临时恢复亮度。二级由 `MetricTileForm.ResolveBurnInRingColor()` 只反转环形强调色，由 `MetricTileForm.ShouldDrawCenterText()` 抑制 tile 中心白字，并由 `MetricTileExpandForm.ShouldDrawNeutralText()` 抑制展开窗的白色/中性色文字，避免把整个位图做全局反色。
 
-右列排列由 `RightTileButtonOrder`、启用状态、0–100 分布间距、整组 Y 偏移和目标工作区解析。分布值 0 时相邻 tile 紧贴；100 时首个 tile 贴工作区顶部、末个贴底部，其余可用空白在 10 个间隔间均匀分摊；中间值线性使用对应比例的可用空白。自动排列保持整列贴住工作区右缘；防烧屏只对整组应用共享 Y 偏移，不能让 11 个方块各自漂移而破坏列结构。
+右列排列由 `RightTileButtonOrder`、启用状态、0–100 分布间距、整组 Y 偏移和目标工作区解析。分布值 0 时相邻 tile 紧贴；100 时首个 tile 贴工作区顶部、末个贴底部，其余可用空白在 10 个间隔间均匀分摊；中间值线性使用对应比例的可用空白。自动排列保持整列贴住工作区右缘；防烧屏只对整组应用共享 Y 偏移，不能让 11 个方块各自漂移而破坏列结构。`RightTileMouseClickThroughEnabled` 默认开启，通过 layered window 的 `WS_EX_TRANSPARENT` 同时覆盖 11 个小窗与展开窗；悬停仍由共享光标轮询判定。
 
 “主显示器/主工作区”设置仍是右侧 tile 的布局基线。目标显示器断开时按设置决定回退到主显示器或保留上次工作区；这些设置不依赖隐藏宿主是否可见。
 
