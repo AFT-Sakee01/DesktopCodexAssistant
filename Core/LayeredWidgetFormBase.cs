@@ -11,7 +11,7 @@ internal abstract class LayeredWidgetFormBase : Form
     private bool renderBufferValid;
     private bool layeredUpdateFailureLogged;
     private long burnInShiftSlot = long.MinValue;
-    private int lastNightLuminancePercent = -1;
+    private int lastPresentationLuminancePercent = -1;
 
     protected float LayerScale { get; private set; } = 1.0f;
 
@@ -129,22 +129,22 @@ internal abstract class LayeredWidgetFormBase : Form
         try
         {
             EnsureRenderBuffer();
-            int nightLuminancePercent = NightScheduleController.GetActiveLuminancePercent(this.CurrentSettings, DateTime.Now);
+            int presentationLuminancePercent = GetActivePresentationLuminancePercent();
             bool refreshNativeBitmap =
                 redrawContent ||
                 !this.renderBufferValid ||
-                nightLuminancePercent != this.lastNightLuminancePercent;
+                presentationLuminancePercent != this.lastPresentationLuminancePercent;
             if (refreshNativeBitmap)
             {
                 this.renderGraphics.Clear(Color.Transparent);
                 DrawWindowContent(this.renderGraphics);
 
-                if (nightLuminancePercent < 100)
+                if (presentationLuminancePercent < 100)
                 {
-                    BurnInProtection.ApplyLuminance(this.renderBitmap, nightLuminancePercent);
+                    BurnInProtection.ApplyLuminance(this.renderBitmap, presentationLuminancePercent);
                 }
 
-                this.lastNightLuminancePercent = nightLuminancePercent;
+                this.lastPresentationLuminancePercent = presentationLuminancePercent;
                 this.renderBufferValid = true;
             }
 
@@ -272,14 +272,29 @@ internal abstract class LayeredWidgetFormBase : Form
             return;
         }
 
-        int next = NightScheduleController.GetActiveLuminancePercent(this.CurrentSettings, DateTime.Now);
-        if (next == this.lastNightLuminancePercent)
+        int next = GetActivePresentationLuminancePercent();
+        if (next == this.lastPresentationLuminancePercent)
         {
             return;
         }
 
         InvalidateLayeredRenderBuffer();
         RenderLayeredWindow();
+    }
+
+    // Derived visible surfaces can contribute a presentation-specific luminance without duplicating
+    // bitmap walking. Multiplication composes burn-in dimming with the independent night schedule and
+    // never lets either policy brighten pixels suppressed by the other.
+    protected virtual int PresentationLuminancePercent
+    {
+        get { return 100; }
+    }
+
+    private int GetActivePresentationLuminancePercent()
+    {
+        int night = NightScheduleController.GetActiveLuminancePercent(this.CurrentSettings, DateTime.Now);
+        int presentation = Math.Max(0, Math.Min(100, this.PresentationLuminancePercent));
+        return Math.Max(0, Math.Min(100, (int)Math.Round(night * presentation / 100.0)));
     }
 
     protected static int ComputeOpacityAlpha(int transparencyPercent)

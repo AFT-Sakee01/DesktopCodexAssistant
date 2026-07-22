@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.1
+适用版本：2.0.0.2
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -114,6 +114,8 @@ Cpu, Memory, Disk, Network, Gpu, Npu, Power, Guard, CodexQuota, ClaudeQuota
 
 `PushMetricTileFeed()` 把同一个 feed 推给全部 tile；方块不自行采样。鼠标悬停时 `MetricTileExpandForm` 使用同一 feed 和相同 tile ID 展开详情，也不建立 reader 或 timer。
 
+两级防烧屏由 `WidgetForm.UpdateBurnInProtectionTriggers()` 统一发布。一级通过 `LayeredWidgetFormBase.PresentationLuminancePercent` 把 10 个 tile 与当前展开窗按同一亮度策略处理；`WidgetForm.UpdateMetricTileBurnInPresentation()` 命中任意一个右侧 tile 或展开窗时，整组临时恢复亮度。二级由 `MetricTileForm.ResolveBurnInRingColor()` 只反转环形强调色，由 `MetricTileForm.ShouldDrawCenterText()` 抑制 tile 中心白字，并由 `MetricTileExpandForm.ShouldDrawNeutralText()` 抑制展开窗的白色/中性色文字，避免把整个位图做全局反色。
+
 右列排列由 `RightTileButtonOrder`、启用状态、按钮间距、整组 Y 偏移和目标工作区解析。自动排列保持整列贴住工作区右缘；防烧屏只对整组应用共享 Y 偏移，不能让 10 个方块各自漂移而破坏列结构。
 
 “主显示器/主工作区”设置仍是右侧 tile 的布局基线。目标显示器断开时按设置决定回退到主显示器或保留上次工作区；这些设置不依赖隐藏宿主是否可见。
@@ -130,7 +132,7 @@ Network, SpecBoard, CodexTask, Guard, CodexIq
 
 - 左缘绝对可达的梯形 tab。
 - 悬停展开与离开/外部点击收起。
-- 固定角色色、隐藏态透明度和 board 内描边。
+- 固定角色色、隐藏态透明度、两级防烧屏 tab 配色和 board 内描边。
 - 共享 120 ms 交互 tick，不建立全局 mouse hook。
 - `ApplyRuntimeOffsetWithPinnedX`：X 固定在工作区左缘，只允许整组 Y 微位移。
 
@@ -193,7 +195,7 @@ hover、click-through、敏感鼠标范围、延迟显现和反向隐藏只作�
 - `NativeMethods.LayeredBitmapSurface`
 - `UiFontCache`
 - `DesignTokens`
-- `BurnInProtection` 的像素微迁移和夜间亮度处理
+- `BurnInProtection` 的像素微迁移、两级视觉状态、强调色反转和右列降亮处理
 
 内容变化时才重建像素；仅整体透明度变化时复用现有位图提交 Alpha。尺寸变化、显示挂起和关闭必须释放 Bitmap、Graphics、字体、Region 与原生句柄。绘制失败可记录诊断并降级，但不能在 paint 路径同步访问网络、WMI、文件或外部进程。
 
@@ -205,8 +207,12 @@ headless owners 不拥有展示缓冲。Codex/Power 的旧 renderer 已删除，
 - 左侧 5 个 tab 在自动模式使用同一个列 salt；X 始终钉住 work-area 左缘。
 - 展开 board 可以使用自己的 named salt，但固定相同展开 X。
 - Operation 使用自己的 named salt。
-- hidden host 与 headless owners不参与 burn-in。
-- 当前 burn-in 只改变窗口位置；夜间计划可独立降低位图亮度。隐藏状态不执行颜色反相、白灰透明化或低能耗替代配色，旧 `BurnInHiddenModeColorProtectionEnabled` 输入仅作为 schema 88 退休键丢弃。
+- `WidgetForm` hidden host 只拥有两级空闲状态，不绘制防烧屏像素；headless owners 完全不参与。
+- 一级下，左侧 `EdgeDockTabForm` 静止态绘制灰色梯形与角色色箭头，悬停只恢复当前梯形的角色色；右侧 tile/expand 使用 `BurnInProtection.LevelOneLuminancePercent = 45`，命中任意右侧窗口时整组恢复亮度。
+- 二级保持一级结构，并只反转左箭头与右 tile 环形强调色；右 tile 中心白字及展开窗白色/中性色文字不绘制。角色色标签、灰色轨道、board 内容和 Operation 不做全位图反相。
+- 鼠标移动在保护激活后是局部显现手势，不退出状态；点击、滚轮或键盘输入会退出并重启两级计时。显示挂起、布局编辑和关闭也归零状态。
+- 夜间计划与防烧屏亮度在 `LayeredWidgetFormBase` 内相乘，任一策略都不能把另一策略已压低的像素重新提亮。
+- 旧 `BurnInHiddenModeColorProtectionEnabled` 永久保留为 schema 88 退休输入；schema 89 的 `BurnInProtectionEnabled`、`BurnInLevelOneIdleSeconds` 与 `BurnInLevelTwoDelaySeconds` 是独立新设置，迁移不读取旧布尔值。
 
 TopMost 恢复只遍历当前可见 forms，保持组内顺序，并把本程序表面放在受保护的 Codex 宠物/SeelenUI 层级策略所要求的位置。不得维护包含已删除表面的固定列表。
 
@@ -252,6 +258,7 @@ MetricTile.ClaudeQuota
 - Network 始终按 Dock 结构运行；旧浮动展示选项不能改变 topology。
 - Radar 设置只控制 Codex 公共数据、Codex/Claude 官方额度、服务健康和测试，不包含 Claude 社区模型/fallback 或 DeepSeek key/余额；它不控制 owner 可见性。
 - 主显示/work-area 设置继续作为右 tile 列基线；不能因为 hidden host 没有画面而删除。
+- 两级防烧屏只作用于五个左 tab 与右侧 tile/expand；Operation、board、Settings、hidden host 和 headless owners 不进入配色投影。
 
 新设置若影响可见表面，必须覆盖 defaults、clone、load/save、normalize、UI、migration 和 `--test-settings-bindings`；兼容键不得重新进入设置 UI。
 

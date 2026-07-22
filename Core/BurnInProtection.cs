@@ -2,9 +2,20 @@ using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using System.Threading;
+
+internal enum BurnInVisualLevel
+{
+    Normal = 0,
+    LevelOne = 1,
+    LevelTwo = 2
+}
 
 internal static class BurnInProtection
 {
+    // Level one lowers the whole right-side presentation enough to materially reduce OLED load while
+    // retaining legibility. Hover restoration is handled by the right-column owner as one group.
+    public const int LevelOneLuminancePercent = 45;
     public const int MainWidgetSalt = 1;
     public const int CodexRadarSalt = 7;
     public const int PowerThermalSalt = 13;
@@ -25,6 +36,7 @@ internal static class BurnInProtection
     public const int LeftDockButtonColumnSalt = 83;
 
     private const int ShiftIntervalMinutes = 7;
+    private static int currentVisualLevel;
     private static readonly Point[] RuntimeOffsets = new Point[]
     {
         new Point(1, 0),
@@ -56,6 +68,83 @@ internal static class BurnInProtection
 
         lastSlot = slot;
         return true;
+    }
+
+    public static BurnInVisualLevel CurrentVisualLevel
+    {
+        get { return (BurnInVisualLevel)Volatile.Read(ref currentVisualLevel); }
+    }
+
+    public static bool SetCurrentVisualLevel(BurnInVisualLevel level)
+    {
+        int normalized = (int)NormalizeVisualLevel(level);
+        return Interlocked.Exchange(ref currentVisualLevel, normalized) != normalized;
+    }
+
+    public static BurnInVisualLevel ResolveVisualLevel(
+        TimeSpan idleDuration,
+        bool enabled,
+        int levelOneIdleSeconds,
+        int levelTwoDelaySeconds)
+    {
+        if (!enabled)
+        {
+            return BurnInVisualLevel.Normal;
+        }
+
+        int levelOneSeconds = Math.Max(
+            WidgetSettings.MinBurnInLevelOneIdleSeconds,
+            Math.Min(WidgetSettings.MaxBurnInLevelOneIdleSeconds, levelOneIdleSeconds));
+        int levelTwoSeconds = Math.Max(
+            WidgetSettings.MinBurnInLevelTwoDelaySeconds,
+            Math.Min(WidgetSettings.MaxBurnInLevelTwoDelaySeconds, levelTwoDelaySeconds));
+        double idleSeconds = Math.Max(0.0, idleDuration.TotalSeconds);
+        if (idleSeconds >= levelOneSeconds + levelTwoSeconds)
+        {
+            return BurnInVisualLevel.LevelTwo;
+        }
+
+        return idleSeconds >= levelOneSeconds
+            ? BurnInVisualLevel.LevelOne
+            : BurnInVisualLevel.Normal;
+    }
+
+    public static Color InvertColor(Color color)
+    {
+        return Color.FromArgb(color.A, 255 - color.R, 255 - color.G, 255 - color.B);
+    }
+
+    public static bool ShouldResetActivityTimer(
+        BurnInVisualLevel currentLevel,
+        bool pointerMoved,
+        bool mouseButtonDown,
+        bool systemInputChanged)
+    {
+        if (!pointerMoved && !mouseButtonDown && !systemInputChanged)
+        {
+            return false;
+        }
+
+        // Motion is a localized reveal only after protection starts. Button, wheel and keyboard
+        // input still represent deliberate activity and restart both protection thresholds.
+        return NormalizeVisualLevel(currentLevel) == BurnInVisualLevel.Normal ||
+            mouseButtonDown ||
+            (systemInputChanged && !pointerMoved);
+    }
+
+    public static BurnInVisualLevel NormalizeVisualLevel(BurnInVisualLevel level)
+    {
+        if (level < BurnInVisualLevel.Normal)
+        {
+            return BurnInVisualLevel.Normal;
+        }
+
+        if (level > BurnInVisualLevel.LevelTwo)
+        {
+            return BurnInVisualLevel.LevelTwo;
+        }
+
+        return level;
     }
 
     public static Point ApplyRuntimeOffset(Point baseLocation, Size windowSize, Rectangle workArea, int salt)
@@ -147,6 +236,46 @@ internal static class BurnInProtection
         }
 
         return value;
+    }
+
+    internal static void RunSelfTest()
+    {
+        int levelOneSeconds = WidgetSettings.DefaultBurnInLevelOneIdleSeconds;
+        int levelTwoSeconds = WidgetSettings.DefaultBurnInLevelTwoDelaySeconds;
+        if (ResolveVisualLevel(TimeSpan.FromSeconds(levelOneSeconds - 0.01), true, levelOneSeconds, levelTwoSeconds) != BurnInVisualLevel.Normal ||
+            ResolveVisualLevel(TimeSpan.FromSeconds(levelOneSeconds), true, levelOneSeconds, levelTwoSeconds) != BurnInVisualLevel.LevelOne ||
+            ResolveVisualLevel(TimeSpan.FromSeconds(levelOneSeconds + levelTwoSeconds - 0.01), true, levelOneSeconds, levelTwoSeconds) != BurnInVisualLevel.LevelOne ||
+            ResolveVisualLevel(TimeSpan.FromSeconds(levelOneSeconds + levelTwoSeconds), true, levelOneSeconds, levelTwoSeconds) != BurnInVisualLevel.LevelTwo ||
+            ResolveVisualLevel(TimeSpan.FromHours(1), false, levelOneSeconds, levelTwoSeconds) != BurnInVisualLevel.Normal)
+        {
+            throw new InvalidOperationException("Two-level burn-in idle thresholds are not deterministic.");
+        }
+
+        Color sample = Color.FromArgb(91, 12, 34, 56);
+        Color inverted = InvertColor(sample);
+        if (inverted.A != 91 || inverted.R != 243 || inverted.G != 221 || inverted.B != 199 ||
+            InvertColor(inverted).ToArgb() != sample.ToArgb())
+        {
+            throw new InvalidOperationException("Burn-in accent inversion must preserve alpha and be reversible.");
+        }
+
+        if (!ShouldResetActivityTimer(BurnInVisualLevel.Normal, true, false, true) ||
+            ShouldResetActivityTimer(BurnInVisualLevel.LevelOne, true, false, true) ||
+            !ShouldResetActivityTimer(BurnInVisualLevel.LevelOne, false, false, true) ||
+            !ShouldResetActivityTimer(BurnInVisualLevel.LevelTwo, true, true, true) ||
+            ShouldResetActivityTimer(BurnInVisualLevel.LevelTwo, false, false, false))
+        {
+            throw new InvalidOperationException("Burn-in activity reset and localized hover policy is not deterministic.");
+        }
+
+        SetCurrentVisualLevel(BurnInVisualLevel.LevelTwo);
+        if (CurrentVisualLevel != BurnInVisualLevel.LevelTwo)
+        {
+            throw new InvalidOperationException("Burn-in visual level publication failed.");
+        }
+
+        SetCurrentVisualLevel(BurnInVisualLevel.Normal);
+        Console.WriteLine("Burn-in protection: PASS level1=10s level2=+30s luminance=45 inversion=accent-only");
     }
 
 }

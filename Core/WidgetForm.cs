@@ -95,6 +95,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private Point lastMouseActivityPosition;
     private bool lastMouseButtonDown;
     private DateTime lastMouseActivityUtc;
+    private Point lastBurnInActivityPosition;
+    private bool lastBurnInMouseButtonDown;
+    private DateTime lastBurnInActivityUtc;
+    private BurnInVisualLevel burnInVisualLevel;
+    private uint lastBurnInInputTick;
     private bool applyingAutomaticHoverOpacityState;
     private DateTime lastSettingsWriteUtc;
     private DateTime lastSampleDiagnosticUtc;
@@ -135,6 +140,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.CurrentSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.lastMouseActivityPosition = Cursor.Position;
         this.lastMouseActivityUtc = DateTime.UtcNow;
+        this.lastBurnInActivityPosition = this.lastMouseActivityPosition;
+        this.lastBurnInActivityUtc = this.lastMouseActivityUtc;
+        NativeMethods.TryGetLastInputTickCount(out this.lastBurnInInputTick);
+        BurnInProtection.SetCurrentVisualLevel(BurnInVisualLevel.Normal);
         this.lastSettingsWriteUtc = GetSettingsWriteUtc();
         this.effectivePowerModeCallback = OnEffectivePowerModeChanged;
         InitializeSettingsWatcher();
@@ -657,6 +666,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         this.formClosing = true;
+        BurnInProtection.SetCurrentVisualLevel(BurnInVisualLevel.Normal);
         this.childWindowLifecycleStarted = false;
         UnregisterStopEventWait();
         SystemEvents.SessionSwitch -= OnSystemSessionSwitch;
@@ -1018,6 +1028,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void PrepareForDisplayInactive(string reason)
     {
+        ResetBurnInProtectionActivity(DateTime.UtcNow);
         ResetDisplayRenderResources();
 
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
@@ -2129,6 +2140,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:start");
         bool chinaGuardWasEnabled = this.CurrentSettings != null &&
             this.CurrentSettings.AiChinaEgressGuardEnabled;
+        bool burnInWasEnabled = this.CurrentSettings != null &&
+            this.CurrentSettings.BurnInProtectionEnabled;
         WidgetSettings nextSettings = settings.Clone();
         nextSettings.Normalize();
         if (!this.applyingAutomaticHoverOpacityState)
@@ -2154,6 +2167,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         nextSettings.ForceHoverOpacityActive = IsCombinedHoverOpacityActive();
         nextSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.CurrentSettings = nextSettings;
+        if (!this.CurrentSettings.BurnInProtectionEnabled || !burnInWasEnabled)
+        {
+            ResetBurnInProtectionActivity(DateTime.UtcNow);
+        }
         UpdateApplicationWindowEventTrackingPolicy();
         if (chinaGuardWasEnabled && !this.CurrentSettings.AiChinaEgressGuardEnabled)
         {
@@ -2534,6 +2551,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         try
         {
             UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:update_automatic_triggers");
+            bool burnInStateChanged = UpdateBurnInProtectionTriggers(DateTime.UtcNow);
             bool automaticStateChanged = UpdateAutomaticHoverOpacityTriggers();
             UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:apply_click_through");
             ApplyClickThroughStyle();
@@ -2541,6 +2559,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             UpdateHoverOpacityAnimation();
             bool hoverTarget = IsHoverOpacityTargetActive();
             bool animationActive =
+                burnInStateChanged ||
                 automaticStateChanged ||
                 Math.Abs(this.hoverOpacityProgress - (hoverTarget ? 1.0 : 0.0)) > 0.001;
             // Visible passive panels share this UI-thread timer. Headless Radar/Power owners are
@@ -2552,6 +2571,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             }
 
             UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:metric_tile_shared_tick");
+            animationActive |= UpdateMetricTileBurnInPresentation(this.burnInVisualLevel);
             animationActive |= ProcessMetricTileInteractionTick();
 
             if (this.operationForm != null && !this.operationForm.IsDisposed)
@@ -2624,6 +2644,87 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.manualForceHoverOpacityActive.ToString());
         UiHangWatchdog.MarkUiCheckpoint("hover.apply_combined:automatic trigger");
         ApplyCombinedHoverOpacityState("automatic trigger");
+        return true;
+    }
+
+    private bool UpdateBurnInProtectionTriggers(DateTime nowUtc)
+    {
+        if (this.CurrentSettings == null)
+        {
+            return SetBurnInVisualLevel(BurnInVisualLevel.Normal, "settings unavailable");
+        }
+
+        UpdateBurnInActivityState(nowUtc);
+        BurnInVisualLevel next = this.globalLayoutEditActive
+            ? BurnInVisualLevel.Normal
+            : BurnInProtection.ResolveVisualLevel(
+                nowUtc - this.lastBurnInActivityUtc,
+                this.CurrentSettings.BurnInProtectionEnabled,
+                this.CurrentSettings.BurnInLevelOneIdleSeconds,
+                this.CurrentSettings.BurnInLevelTwoDelaySeconds);
+        return SetBurnInVisualLevel(next, "shared idle tick");
+    }
+
+    private void UpdateBurnInActivityState(DateTime nowUtc)
+    {
+        Point cursor = Cursor.Position;
+        bool mouseButtonDown = NativeMethods.IsAnyMouseButtonDown();
+        bool pointerMoved = cursor != this.lastBurnInActivityPosition;
+        bool pointerStateChanged = pointerMoved ||
+            mouseButtonDown != this.lastBurnInMouseButtonDown ||
+            mouseButtonDown;
+        uint inputTick;
+        bool systemInputChanged = NativeMethods.TryGetLastInputTickCount(out inputTick) &&
+            inputTick != this.lastBurnInInputTick;
+        if (!pointerStateChanged && !systemInputChanged)
+        {
+            return;
+        }
+
+        this.lastBurnInActivityPosition = cursor;
+        this.lastBurnInMouseButtonDown = mouseButtonDown;
+        if (systemInputChanged)
+        {
+            this.lastBurnInInputTick = inputTick;
+        }
+
+        // Once protection is active, pointer motion is a local reveal gesture: left tabs restore
+        // only their trapezoid, while any right tile/expand restores the right group. Mouse clicks,
+        // wheel activity and keyboard input have no cursor displacement, so they exit the latched
+        // protection state and restart both timers.
+        if (BurnInProtection.ShouldResetActivityTimer(
+            this.burnInVisualLevel,
+            pointerMoved,
+            mouseButtonDown,
+            systemInputChanged))
+        {
+            this.lastBurnInActivityUtc = nowUtc;
+        }
+    }
+
+    private void ResetBurnInProtectionActivity(DateTime nowUtc)
+    {
+        this.lastBurnInActivityPosition = Cursor.Position;
+        this.lastBurnInMouseButtonDown = NativeMethods.IsAnyMouseButtonDown();
+        NativeMethods.TryGetLastInputTickCount(out this.lastBurnInInputTick);
+        this.lastBurnInActivityUtc = nowUtc;
+        SetBurnInVisualLevel(BurnInVisualLevel.Normal, "activity reset");
+    }
+
+    private bool SetBurnInVisualLevel(BurnInVisualLevel level, string reason)
+    {
+        BurnInVisualLevel normalized = BurnInProtection.NormalizeVisualLevel(level);
+        bool localChanged = this.burnInVisualLevel != normalized;
+        bool publishedChanged = BurnInProtection.SetCurrentVisualLevel(normalized);
+        if (!localChanged && !publishedChanged)
+        {
+            return false;
+        }
+
+        this.burnInVisualLevel = normalized;
+        Program.LogInfo(
+            "Burn-in visual level changed. Level=" + normalized.ToString() +
+            ", Reason=" + (reason ?? string.Empty));
         return true;
     }
 
@@ -2851,7 +2952,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return this.CurrentSettings.HoverOpacityEnabled ||
             this.CurrentSettings.ForceHoverOpacityActive ||
             this.CurrentSettings.AutoHoverOpacityIdleEnabled ||
-            this.CurrentSettings.AutoHoverOpacityMaximizedEnabled;
+            this.CurrentSettings.AutoHoverOpacityMaximizedEnabled ||
+            this.CurrentSettings.BurnInProtectionEnabled;
     }
 
     private void ApplyClickThroughStyle()

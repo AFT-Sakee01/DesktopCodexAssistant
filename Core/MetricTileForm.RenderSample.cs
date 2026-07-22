@@ -9,7 +9,7 @@ using System.IO;
 // without running the app: none of these windows is reachable from the Start menu and the panel only
 // exists while the cursor is on its tile.
 //
-// The tiles are separate windows now, so the "column" image is composited here from the eight tile
+// The tiles are separate windows now, so the "column" image is composited here from the ten tile
 // bitmaps at their auto-column offsets — that is what the default placement actually looks like.
 internal sealed partial class MetricTileForm
 {
@@ -21,13 +21,17 @@ internal sealed partial class MetricTileForm
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.Normalize();
 
-        RenderColumn(outputDir, settings, feed, "tilecolumn.png", -1);
-        RenderColumn(outputDir, settings, feed, "tilecolumn-hover.png", 0);
+        RenderColumn(outputDir, settings, feed, "tilecolumn.png", -1, BurnInVisualLevel.Normal, false);
+        RenderColumn(outputDir, settings, feed, "tilecolumn-hover.png", 0, BurnInVisualLevel.Normal, false);
+        RenderColumn(outputDir, settings, feed, "tilecolumn-burnin-level1.png", -1, BurnInVisualLevel.LevelOne, false);
+        RenderColumn(outputDir, settings, feed, "tilecolumn-burnin-level1-hover.png", 0, BurnInVisualLevel.LevelOne, true);
+        RenderColumn(outputDir, settings, feed, "tilecolumn-burnin-level2.png", -1, BurnInVisualLevel.LevelTwo, false);
+        RenderColumn(outputDir, settings, feed, "tilecolumn-burnin-level2-hover.png", 0, BurnInVisualLevel.LevelTwo, true);
 
         WidgetSettings large = WidgetSettings.CreateDefaults();
         large.MainWidgetTileLargeModeEnabled = true;
         large.Normalize();
-        RenderColumn(outputDir, large, feed, "tilecolumn-large.png", -1);
+        RenderColumn(outputDir, large, feed, "tilecolumn-large.png", -1, BurnInVisualLevel.Normal, false);
 
         for (int i = 0; i < MetricTileModel.AllOrder.Length; i++)
         {
@@ -46,11 +50,33 @@ internal sealed partial class MetricTileForm
                     bitmap.Save(path, ImageFormat.Png);
                     Console.WriteLine(id + " -> " + path + " (" + panel.Width + "x" + panel.Height + ")");
                 }
+
+                if (id == MetricTileId.Cpu)
+                {
+                    panel.SetBurnInVisualState(BurnInVisualLevel.LevelTwo, false);
+                    using (Bitmap bitmap = new Bitmap(panel.Width, panel.Height, PixelFormat.Format32bppPArgb))
+                    using (Graphics g = Graphics.FromImage(bitmap))
+                    {
+                        g.Clear(DesignTokens.Colors.AppBackground);
+                        panel.DrawPanel(g);
+                        BurnInProtection.ApplyLuminance(bitmap, BurnInProtection.LevelOneLuminancePercent);
+                        string path = Path.Combine(outputDir, "tileexpand-cpu-burnin-level2.png");
+                        bitmap.Save(path, ImageFormat.Png);
+                        Console.WriteLine("CPU level two -> " + path + " (" + panel.Width + "x" + panel.Height + ")");
+                    }
+                }
             }
         }
     }
 
-    private static void RenderColumn(string outputDir, WidgetSettings settings, MetricTileFeed feed, string fileName, int hoveredIndex)
+    private static void RenderColumn(
+        string outputDir,
+        WidgetSettings settings,
+        MetricTileFeed feed,
+        string fileName,
+        int hoveredIndex,
+        BurnInVisualLevel burnInVisualLevel,
+        bool restoreRightGroupBrightness)
     {
         int px = settings.MainWidgetTileLargeModeEnabled ? TileLargePixels : TileCompactPixels;
         int gap = GetTileGapPixels(settings);
@@ -69,11 +95,17 @@ internal sealed partial class MetricTileForm
                     tile.Size = tile.GetDesiredSize();
                     tile.UpdateFeedForRenderSample(feed);
                     tile.SetHoveredForRenderSample(i == hoveredIndex);
+                    tile.SetBurnInVisualStateForRenderSample(burnInVisualLevel, restoreRightGroupBrightness);
                     using (Bitmap one = new Bitmap(px, px, PixelFormat.Format32bppPArgb))
                     using (Graphics tg = Graphics.FromImage(one))
                     {
                         tg.Clear(Color.Transparent);
                         tile.DrawTileContent(tg);
+                        if (burnInVisualLevel != BurnInVisualLevel.Normal && !restoreRightGroupBrightness)
+                        {
+                            BurnInProtection.ApplyLuminance(one, BurnInProtection.LevelOneLuminancePercent);
+                        }
+
                         g.DrawImage(one, 0, i * stride);
                     }
                 }

@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.1
+适用版本：2.0.0.2
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -26,7 +26,7 @@
 | 普通 owner/board 调度 | 500 ms | 1000 ms | 3000 ms | 只检查 deadline；显示字段未变时不重绘 |
 | GPU/NPU 昂贵采样 | 1000 ms | 2000 ms | 5000 ms | 与 CPU/内存快照独立节流 |
 | 悬停动画 | 16 ms | 33 ms | 100 ms | 只在透明度/按压动画未收敛时运行 |
-| 静止交互轮询 | 30 ms | 100 ms | 250 ms | 鼠标、自动穿透、自动隐藏和层级维护 |
+| 静止交互轮询 | 30 ms | 100 ms | 250 ms | 鼠标、自动穿透、自动隐藏、两级防烧屏和层级维护 |
 | 本地网络信息 | 2 s | 5 s | 网络事件驱动 | 省电模式不做固定周期网卡枚举 |
 | 公网 IP | 5 min | 10 min | 15 min | 仅真实网络为 `Online` 时请求 |
 
@@ -72,8 +72,10 @@ hover/自动隐藏规则：
 - 敏感鼠标模式默认以鼠标为中心的 100 px 正方形与 visible surface 相交，范围 10-300 px；关闭后按点命中。
 - 离开判定区后延迟显现默认 1 s；倒计时内重新进入需连续停留默认 0.5 s 才重置。
 - 自动隐藏激活后普通鼠标移动不释放，必须进入任一 visible surface 的敏感范围。
+- 两级防烧屏默认开启：`BurnInLevelOneIdleSeconds = 10` 后进入一级，随后 `BurnInLevelTwoDelaySeconds = 30` 后进入二级；允许范围分别为 1-300 秒和 1-600 秒。
+- 防烧屏复用 hidden `WidgetForm` 的静止交互轮询和五个 `EdgeDockTabForm` 的 120 ms hover tick，不新增 timer。一级/二级激活后，纯鼠标移动只驱动左 tab 局部恢复或右侧 tile/expand 整组恢复；点击、滚轮、键盘输入、显示挂起与布局编辑会归零状态并重新计时。
 - Operation RadialDial 核心 keep-alive 复用共享交互 tick，不建立 timer；达到空闲阈值后只改变一次核心视觉。
-- hidden host 和 headless owners 不进入 hover、click-through、burn-in 或 Z-order 轮询。
+- hidden host 只协调防烧屏状态，不提交像素；headless owners 不进入 hover、click-through、burn-in 或 Z-order 轮询。
 
 ## 4. Codex / Claude Radar headless owner
 

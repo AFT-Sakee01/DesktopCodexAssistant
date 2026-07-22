@@ -1,6 +1,6 @@
 # 接口与复用资源汇总
 
-适用版本：2.0.0.1
+适用版本：2.0.0.2
 
 ## 1. 文档用途
 
@@ -193,7 +193,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 
 Network 的网络、GFW、云服务与 Clean IP 数据继续复用 `NetworkMonitorReader`、`GfwProbeReader`、`CloudEndpointProbe` 和 `CleanIpConnectionReader.Shared`，只投影到 Network Dock board；不存在独立连接检查窗口。`OperationForm` 启动时持有 Spec、Codex Task、GUARD、Codex IQ 四个 board，`NetworkMonitorForm` 持有 Network board，五者共同遵守固定左 Dock 拓扑。
 
-可见分层表面按职责复用 `ApplyRuntimeSettings`、`ForceRefresh`、`SetHiddenForFullscreen`、`RecoverAfterDisplayResume`、`PrepareForDisplaySuspend` 及共享交互/维护 tick。它们同时复用 `NativeMethods.LayeredBitmapSurface`、`UiFontCache`、`DesignTokens`、`BurnInProtection`、`LayeredWidgetFormBase.CurrentSettings`、内容变化判断和透明度-only 提交。headless owners 另走显式 `StartHeadlessDataOwner` / `StopHeadlessDataOwner` 生命周期；Radar owner 还复用 `OwnerOperationGeneration` 和原子 published projection，迟到任务不能提交副作用。
+可见分层表面按职责复用 `ApplyRuntimeSettings`、`ForceRefresh`、`SetHiddenForFullscreen`、`RecoverAfterDisplayResume`、`PrepareForDisplaySuspend` 及共享交互/维护 tick。它们同时复用 `NativeMethods.LayeredBitmapSurface`、`UiFontCache`、`DesignTokens`、`BurnInProtection` 的位移/两级视觉策略、`LayeredWidgetFormBase.CurrentSettings` 与 `PresentationLuminancePercent`、内容变化判断和透明度-only 提交。防烧屏状态只由 hidden `WidgetForm` 发布：左 tab 在自身既有 poll 中消费，右 tile/expand 由 host 按整组命中分发；不得为单窗新增 timer 或恢复旧 `BurnInHiddenModeColorProtectionEnabled`。headless owners 另走显式 `StartHeadlessDataOwner` / `StopHeadlessDataOwner` 生命周期；Radar owner 还复用 `OwnerOperationGeneration` 和原子 published projection，迟到任务不能提交副作用。
 
 ## 9. 索引维护规则
 

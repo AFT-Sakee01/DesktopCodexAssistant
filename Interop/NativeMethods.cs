@@ -150,6 +150,13 @@ internal static class NativeMethods
         public int BatteryFullLifeTime;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LASTINPUTINFO
+    {
+        public uint Size;
+        public uint TickCount;
+    }
+
     private delegate void WinEventProc(
         IntPtr hookHandle,
         uint eventId,
@@ -274,6 +281,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int virtualKey);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetLastInputInfo(ref LASTINPUTINFO lastInputInfo);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr RegisterPowerSettingNotification(IntPtr recipient, ref Guid powerSettingGuid, int flags);
@@ -4734,6 +4744,20 @@ internal static class NativeMethods
             (GetAsyncKeyState(VK_MBUTTON) & unchecked((short)0x8000)) != 0 ||
             (GetAsyncKeyState(VK_XBUTTON1) & unchecked((short)0x8000)) != 0 ||
             (GetAsyncKeyState(VK_XBUTTON2) & unchecked((short)0x8000)) != 0;
+    }
+
+    public static bool TryGetLastInputTickCount(out uint tickCount)
+    {
+        LASTINPUTINFO info = new LASTINPUTINFO();
+        info.Size = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));
+        if (GetLastInputInfo(ref info))
+        {
+            tickCount = info.TickCount;
+            return true;
+        }
+
+        tickCount = 0;
+        return false;
     }
 
     internal static short ReadLeftMouseButtonAsyncState()

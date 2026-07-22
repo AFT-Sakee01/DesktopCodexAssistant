@@ -273,6 +273,47 @@ internal sealed partial class WidgetForm
         return active;
     }
 
+    private bool UpdateMetricTileBurnInPresentation(BurnInVisualLevel level)
+    {
+        Point cursor = System.Windows.Forms.Cursor.Position;
+        bool restoreRightGroupBrightness = false;
+        for (int i = 0; i < this.metricTileForms.Count; i++)
+        {
+            MetricTileForm tile = this.metricTileForms[i];
+            if (tile != null && !tile.IsDisposed && tile.Visible && tile.Bounds.Contains(cursor))
+            {
+                restoreRightGroupBrightness = true;
+                break;
+            }
+        }
+
+        if (!restoreRightGroupBrightness &&
+            this.metricTileExpandForm != null &&
+            !this.metricTileExpandForm.IsDisposed &&
+            this.metricTileExpandForm.Visible &&
+            this.metricTileExpandForm.Bounds.Contains(cursor))
+        {
+            restoreRightGroupBrightness = true;
+        }
+
+        bool changed = false;
+        for (int i = 0; i < this.metricTileForms.Count; i++)
+        {
+            MetricTileForm tile = this.metricTileForms[i];
+            if (tile != null && !tile.IsDisposed)
+            {
+                changed |= tile.SetBurnInVisualState(level, restoreRightGroupBrightness);
+            }
+        }
+
+        if (this.metricTileExpandForm != null && !this.metricTileExpandForm.IsDisposed)
+        {
+            changed |= this.metricTileExpandForm.SetBurnInVisualState(level, restoreRightGroupBrightness);
+        }
+
+        return changed;
+    }
+
     private void RefreshMetricTileBurnInPosition()
     {
         for (int i = 0; i < this.metricTileForms.Count; i++)

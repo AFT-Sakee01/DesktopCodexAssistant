@@ -252,6 +252,12 @@ internal sealed class WidgetSettings
     public const int MinAutoHoverOpacityIdleSeconds = 1;
     public const int MaxAutoHoverOpacityIdleSeconds = 300;
     public const int DefaultAutoHoverOpacityIdleSeconds = 60;
+    public const int MinBurnInLevelOneIdleSeconds = 1;
+    public const int MaxBurnInLevelOneIdleSeconds = 300;
+    public const int DefaultBurnInLevelOneIdleSeconds = 10;
+    public const int MinBurnInLevelTwoDelaySeconds = 1;
+    public const int MaxBurnInLevelTwoDelaySeconds = 600;
+    public const int DefaultBurnInLevelTwoDelaySeconds = 30;
     public const int NeverOperationRadialIdleCollapseSeconds = 0;
     public const int MinOperationRadialIdleCollapseSeconds = 1;
     public const int MaxOperationRadialIdleCollapseSeconds = 60;
@@ -282,7 +288,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 88;
+    private const int CurrentSettingsVersion = 89;
     private const int RetiredCanonicalSettingsCount = 98;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -799,6 +805,9 @@ internal sealed class WidgetSettings
     public bool AutoHoverOpacityIdleEnabled { get; set; }
     public int AutoHoverOpacityIdleSeconds { get; set; }
     public bool AutoHoverOpacityMaximizedEnabled { get; set; }
+    public bool BurnInProtectionEnabled { get; set; }
+    public int BurnInLevelOneIdleSeconds { get; set; }
+    public int BurnInLevelTwoDelaySeconds { get; set; }
     public bool OperationRadialCoreAutoHideKeepAliveEnabled { get; set; }
     public int OperationRadialIdleCollapseSeconds { get; set; }
     public bool OperationRadialIdleResetOnInteractionEnabled { get; set; }
@@ -1002,6 +1011,9 @@ internal sealed class WidgetSettings
         this.AutoHoverOpacityIdleEnabled = defaults.AutoHoverOpacityIdleEnabled;
         this.AutoHoverOpacityIdleSeconds = defaults.AutoHoverOpacityIdleSeconds;
         this.AutoHoverOpacityMaximizedEnabled = defaults.AutoHoverOpacityMaximizedEnabled;
+        this.BurnInProtectionEnabled = defaults.BurnInProtectionEnabled;
+        this.BurnInLevelOneIdleSeconds = defaults.BurnInLevelOneIdleSeconds;
+        this.BurnInLevelTwoDelaySeconds = defaults.BurnInLevelTwoDelaySeconds;
         this.OperationRadialCoreAutoHideKeepAliveEnabled = defaults.OperationRadialCoreAutoHideKeepAliveEnabled;
         this.OperationRadialIdleCollapseSeconds = defaults.OperationRadialIdleCollapseSeconds;
         this.OperationRadialIdleResetOnInteractionEnabled = defaults.OperationRadialIdleResetOnInteractionEnabled;
@@ -1218,6 +1230,9 @@ internal sealed class WidgetSettings
         settings.AutoHoverOpacityIdleEnabled = false;
         settings.AutoHoverOpacityIdleSeconds = DefaultAutoHoverOpacityIdleSeconds;
         settings.AutoHoverOpacityMaximizedEnabled = false;
+        settings.BurnInProtectionEnabled = true;
+        settings.BurnInLevelOneIdleSeconds = DefaultBurnInLevelOneIdleSeconds;
+        settings.BurnInLevelTwoDelaySeconds = DefaultBurnInLevelTwoDelaySeconds;
         settings.OperationRadialCoreAutoHideKeepAliveEnabled = true;
         settings.OperationRadialIdleCollapseSeconds = DefaultOperationRadialIdleCollapseSeconds;
         settings.OperationRadialIdleResetOnInteractionEnabled = true;
@@ -1431,6 +1446,9 @@ internal sealed class WidgetSettings
         settings.AutoHoverOpacityIdleEnabled = true;
         settings.AutoHoverOpacityIdleSeconds = 40;
         settings.AutoHoverOpacityMaximizedEnabled = false;
+        settings.BurnInProtectionEnabled = true;
+        settings.BurnInLevelOneIdleSeconds = DefaultBurnInLevelOneIdleSeconds;
+        settings.BurnInLevelTwoDelaySeconds = DefaultBurnInLevelTwoDelaySeconds;
     }
 
     public WidgetSettings Clone()
@@ -1628,6 +1646,9 @@ internal sealed class WidgetSettings
             AutoHoverOpacityIdleEnabled = this.AutoHoverOpacityIdleEnabled,
             AutoHoverOpacityIdleSeconds = this.AutoHoverOpacityIdleSeconds,
             AutoHoverOpacityMaximizedEnabled = this.AutoHoverOpacityMaximizedEnabled,
+            BurnInProtectionEnabled = this.BurnInProtectionEnabled,
+            BurnInLevelOneIdleSeconds = this.BurnInLevelOneIdleSeconds,
+            BurnInLevelTwoDelaySeconds = this.BurnInLevelTwoDelaySeconds,
             OperationRadialCoreAutoHideKeepAliveEnabled = this.OperationRadialCoreAutoHideKeepAliveEnabled,
             OperationRadialIdleCollapseSeconds = this.OperationRadialIdleCollapseSeconds,
             OperationRadialIdleResetOnInteractionEnabled = this.OperationRadialIdleResetOnInteractionEnabled,
@@ -1766,6 +1787,14 @@ internal sealed class WidgetSettings
             this.AutoHoverOpacityIdleSeconds,
             MinAutoHoverOpacityIdleSeconds,
             MaxAutoHoverOpacityIdleSeconds);
+        this.BurnInLevelOneIdleSeconds = Clamp(
+            this.BurnInLevelOneIdleSeconds,
+            MinBurnInLevelOneIdleSeconds,
+            MaxBurnInLevelOneIdleSeconds);
+        this.BurnInLevelTwoDelaySeconds = Clamp(
+            this.BurnInLevelTwoDelaySeconds,
+            MinBurnInLevelTwoDelaySeconds,
+            MaxBurnInLevelTwoDelaySeconds);
         this.OperationRadialIdleCollapseSeconds = this.OperationRadialIdleCollapseSeconds <= NeverOperationRadialIdleCollapseSeconds
             ? NeverOperationRadialIdleCollapseSeconds
             : Clamp(
@@ -2360,6 +2389,14 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 89)
+        {
+            // Version 89 introduces the rebuilt two-level burn-in policy. Defaults are already
+            // present in memory; the canonical rewrite makes the new opt-out and both thresholds
+            // explicit without ever consulting the permanently retired v88 colour-protection key.
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2696,6 +2733,9 @@ internal sealed class WidgetSettings
             "AutoHoverOpacityIdleEnabled=" + this.AutoHoverOpacityIdleEnabled,
             "AutoHoverOpacityIdleSeconds=" + this.AutoHoverOpacityIdleSeconds,
             "AutoHoverOpacityMaximizedEnabled=" + this.AutoHoverOpacityMaximizedEnabled,
+            "BurnInProtectionEnabled=" + this.BurnInProtectionEnabled,
+            "BurnInLevelOneIdleSeconds=" + this.BurnInLevelOneIdleSeconds,
+            "BurnInLevelTwoDelaySeconds=" + this.BurnInLevelTwoDelaySeconds,
             "OperationRadialCoreAutoHideKeepAliveEnabled=" + this.OperationRadialCoreAutoHideKeepAliveEnabled,
             "OperationRadialIdleCollapseSeconds=" + this.OperationRadialIdleCollapseSeconds,
             "OperationRadialIdleResetOnInteractionEnabled=" + this.OperationRadialIdleResetOnInteractionEnabled,
@@ -4050,6 +4090,24 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "BurnInProtectionEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.BurnInProtectionEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "BurnInLevelOneIdleSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.BurnInLevelOneIdleSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "BurnInLevelTwoDelaySeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.BurnInLevelTwoDelaySeconds = intValue;
+            return;
+        }
+
         if (string.Equals(key, "OperationRadialCoreAutoHideKeepAliveEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.OperationRadialCoreAutoHideKeepAliveEnabled = boolValue;
@@ -4630,6 +4688,7 @@ internal sealed class WidgetSettings
         RunRetiredSettingsSchema86MigrationSelfTest();
         RunChinaEgressGuardSchema87MigrationSelfTest();
         RunHiddenColorProtectionSchema88MigrationSelfTest();
+        RunBurnInProtectionSchema89MigrationSelfTest();
         RunCodexTaskMonitorSettingsSelfTest();
         RunSpecBoardSettingsSelfTest();
         RunCodexIqBoardSettingsSelfTest();
@@ -5407,7 +5466,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 Array.Exists(
                     migratedLines,
-                    delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }),
+                    delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }),
                 "retired settings migration should atomically rewrite the current schema");
             AssertLayout(!File.Exists(path + ".tmp"), "retired settings migration should not leave a temp file");
 
@@ -5465,7 +5524,7 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("Retired settings migration: PASS current-schema=88 canonical=98 aliases=11 atomic round-trip");
+        Console.WriteLine("Retired settings migration: PASS current-schema=89 canonical=98 aliases=11 atomic round-trip");
     }
 
     private static void RunRetiredSettingsSchema86MigrationSelfTest()
@@ -5525,7 +5584,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 Array.Exists(
                     migratedLines,
-                    delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }),
+                    delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }),
                 "schema 86 retired-key migration should atomically rewrite Version=85 input to the current schema");
             AssertLayout(!File.Exists(path + ".tmp"), "schema 86 migration should not leave a temp file");
 
@@ -5579,7 +5638,7 @@ internal sealed class WidgetSettings
                 string.Equals(versionless.NetworkMonitorAdapterId, "versionless-retained-adapter", StringComparison.Ordinal) &&
                 Array.Exists(
                     versionlessLines,
-                    delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }) &&
+                    delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }) &&
                 !Array.Exists(
                     versionlessLines,
                     delegate(string line)
@@ -5596,7 +5655,7 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("Retired settings migration: PASS current-schema=88 previous=85 retired=7 atomic round-trip");
+        Console.WriteLine("Retired settings migration: PASS current-schema=89 previous=85 retired=7 atomic round-trip");
     }
 
     private static void RunChinaEgressGuardSchema87MigrationSelfTest()
@@ -5616,7 +5675,7 @@ internal sealed class WidgetSettings
             string[] defaultLines = File.ReadAllLines(defaultPath);
             AssertLayout(
                 migratedDefault.AiChinaEgressGuardEnabled &&
-                Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }) &&
+                Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }) &&
                 Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "AiChinaEgressGuardEnabled=True", StringComparison.Ordinal); }) &&
                 !File.Exists(defaultPath + ".tmp"),
                 "schema 87 migration should atomically persist the enabled guard default");
@@ -5632,7 +5691,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 !migratedDisabled.AiChinaEgressGuardEnabled &&
                 !roundTrip.AiChinaEgressGuardEnabled &&
-                Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }) &&
+                Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }) &&
                 Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "AiChinaEgressGuardEnabled=False", StringComparison.Ordinal); }) &&
                 !File.Exists(disabledPath + ".tmp"),
                 "schema 87 migration should preserve an explicit disabled guard");
@@ -5643,7 +5702,7 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("China-egress guard migration: PASS source=86 feature=87 target=88 default-on explicit-off atomic round-trip");
+        Console.WriteLine("China-egress guard migration: PASS source=86 feature=87 target=89 default-on explicit-off atomic round-trip");
     }
 
     private static void RunHiddenColorProtectionSchema88MigrationSelfTest()
@@ -5676,7 +5735,7 @@ internal sealed class WidgetSettings
                 !roundTrip.HoverOpacityEnabled,
                 "schema 88 migration should preserve unrelated hidden-opacity settings");
             AssertLayout(
-                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=88", StringComparison.Ordinal); }) &&
+                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }) &&
                 !Array.Exists(
                     lines,
                     delegate(string line)
@@ -5692,7 +5751,62 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("Hidden colour protection migration: PASS source=87 target=88 retired-key removed");
+        Console.WriteLine("Hidden colour protection migration: PASS source=87 feature=88 target=89 retired-key removed");
+    }
+
+    private static void RunBurnInProtectionSchema89MigrationSelfTest()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "DesktopCodexAssistant-burn-in-v89-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string defaultPath = Path.Combine(root, "settings-default.ini");
+            File.WriteAllLines(
+                defaultPath,
+                new string[] { "Version=88", "ApplicationTransparencyPercent=42" },
+                SharedEncoding.Utf8NoBom);
+            WidgetSettings migrated = LoadFromPathAndSaveForSelfTest(defaultPath);
+            string[] lines = File.ReadAllLines(defaultPath);
+            AssertLayout(
+                migrated.BurnInProtectionEnabled &&
+                migrated.BurnInLevelOneIdleSeconds == DefaultBurnInLevelOneIdleSeconds &&
+                migrated.BurnInLevelTwoDelaySeconds == DefaultBurnInLevelTwoDelaySeconds &&
+                migrated.ApplicationTransparencyPercent == 42 &&
+                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }) &&
+                Array.Exists(lines, delegate(string line) { return string.Equals(line, "BurnInProtectionEnabled=True", StringComparison.Ordinal); }) &&
+                Array.Exists(lines, delegate(string line) { return string.Equals(line, "BurnInLevelOneIdleSeconds=10", StringComparison.Ordinal); }) &&
+                Array.Exists(lines, delegate(string line) { return string.Equals(line, "BurnInLevelTwoDelaySeconds=30", StringComparison.Ordinal); }) &&
+                !Array.Exists(lines, delegate(string line) { return line.StartsWith("BurnInHiddenModeColorProtectionEnabled=", StringComparison.OrdinalIgnoreCase); }) &&
+                !File.Exists(defaultPath + ".tmp"),
+                "schema 89 migration should persist the rebuilt burn-in defaults without resurrecting the retired key");
+
+            string customPath = Path.Combine(root, "settings-custom.ini");
+            File.WriteAllLines(
+                customPath,
+                new string[]
+                {
+                    "Version=89",
+                    "BurnInProtectionEnabled=False",
+                    "BurnInLevelOneIdleSeconds=27",
+                    "BurnInLevelTwoDelaySeconds=91"
+                },
+                SharedEncoding.Utf8NoBom);
+            WidgetSettings custom = LoadFromPathForSelfTest(customPath);
+            AssertLayout(
+                !custom.BurnInProtectionEnabled &&
+                custom.BurnInLevelOneIdleSeconds == 27 &&
+                custom.BurnInLevelTwoDelaySeconds == 91,
+                "schema 89 should preserve explicit burn-in opt-out and thresholds");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); }
+            catch { }
+        }
+
+        Console.WriteLine("Burn-in protection migration: PASS source=88 target=89 defaults=10/+30 explicit-opt-out");
     }
 
     private static void RunGuardBoardOverrideMigrationSelfTest()

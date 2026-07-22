@@ -28,6 +28,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     private MetricTileId metricId = MetricTileId.Cpu;
     private MetricTileFeed feed = new MetricTileFeed();
     private bool displaySuspended;
+    private BurnInVisualLevel burnInVisualLevel;
+    private bool burnInBrightnessRestored;
 
     public MetricTileExpandForm(WidgetSettings settings)
     {
@@ -72,6 +74,36 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     protected override int ApplyHoverAlpha(int alpha)
     {
         return alpha;
+    }
+
+    protected override int PresentationLuminancePercent
+    {
+        get
+        {
+            return this.burnInVisualLevel != BurnInVisualLevel.Normal && !this.burnInBrightnessRestored
+                ? BurnInProtection.LevelOneLuminancePercent
+                : 100;
+        }
+    }
+
+    public bool SetBurnInVisualState(BurnInVisualLevel level, bool restoreRightGroupBrightness)
+    {
+        BurnInVisualLevel normalized = BurnInProtection.NormalizeVisualLevel(level);
+        bool restored = normalized != BurnInVisualLevel.Normal && restoreRightGroupBrightness;
+        if (this.burnInVisualLevel == normalized && this.burnInBrightnessRestored == restored)
+        {
+            return false;
+        }
+
+        this.burnInVisualLevel = normalized;
+        this.burnInBrightnessRestored = restored;
+        InvalidateLayeredRenderBuffer();
+        if (this.Visible && CanRenderLayeredWindow())
+        {
+            RenderLayeredWindow();
+        }
+
+        return true;
     }
 
     // Dedicated expanded-panel size, doubled in large mode.
@@ -268,6 +300,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     // where that line sits — so it never covers more of the ground than it has to.
     private void DrawFloatingHeader(Graphics g, RectangleF content, Color accent, string label, string value, string suffix, string subLine)
     {
+        bool drawNeutralText = ShouldDrawNeutralText(this.burnInVisualLevel);
         float scrimW = content.Width * 0.42f;
         float scrimH = S(ValueSize) + S(8);
         if (!string.IsNullOrEmpty(subLine))
@@ -298,15 +331,18 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             g.DrawString(label, labelFont, labelBrush, content.X, content.Y + S(9));
             float labelW = g.MeasureString(label, labelFont).Width;
             float vx = content.X + labelW + S(8);
-            g.DrawString(value, valueFont, valueBrush, vx, content.Y);
-            if (!string.IsNullOrEmpty(suffix))
+            if (drawNeutralText)
             {
-                float valueW = g.MeasureString(value, valueFont).Width;
-                g.DrawString(suffix, suffixFont, suffixBrush, vx + valueW - S(6), content.Y + S(14));
+                g.DrawString(value, valueFont, valueBrush, vx, content.Y);
+                if (!string.IsNullOrEmpty(suffix))
+                {
+                    float valueW = g.MeasureString(value, valueFont).Width;
+                    g.DrawString(suffix, suffixFont, suffixBrush, vx + valueW - S(6), content.Y + S(14));
+                }
             }
         }
 
-        if (!string.IsNullOrEmpty(subLine))
+        if (drawNeutralText && !string.IsNullOrEmpty(subLine))
         {
             DrawText(g, subLine, content.X, content.Y + S(ValueSize) + S(2), S(SubSize) * 0.92f,
                 DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 180), FontStyle.Regular);
@@ -331,7 +367,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
 
     private void DrawCaption(Graphics g, RectangleF rect, string text)
     {
-        if (string.IsNullOrEmpty(text))
+        if (!ShouldDrawNeutralText(this.burnInVisualLevel) || string.IsNullOrEmpty(text))
         {
             return;
         }
@@ -347,6 +383,11 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
 
     private void DrawText(Graphics g, string text, float x, float y, float pixelSize, Color color, FontStyle style)
     {
+        if (!ShouldDrawNeutralText(this.burnInVisualLevel))
+        {
+            return;
+        }
+
         using (Font font = new Font("Segoe UI", Math.Max(6.0f, pixelSize), style, GraphicsUnit.Pixel))
         using (SolidBrush brush = new SolidBrush(color))
         {
@@ -453,14 +494,17 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
 
         // Label right-aligned at the edge: the top-left is where the header value lives, so a
         // left-edge "100" would hide behind it once the chart runs full-height behind the text.
-        float labelSize = Math.Max(6.0f, S(SubSize) * 0.66f);
-        using (Font font = new Font("Segoe UI", labelSize, FontStyle.Regular, GraphicsUnit.Pixel))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 220)))
-        using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
+        if (ShouldDrawNeutralText(this.burnInVisualLevel))
         {
-            format.Alignment = StringAlignment.Far;
-            g.DrawString(((int)value).ToString(CultureInfo.InvariantCulture), font, brush,
-                new RectangleF(rect.Right - S(34), y + S(1), S(32), labelSize + S(2)), format);
+            float labelSize = Math.Max(6.0f, S(SubSize) * 0.66f);
+            using (Font font = new Font("Segoe UI", labelSize, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 220)))
+            using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
+            {
+                format.Alignment = StringAlignment.Far;
+                g.DrawString(((int)value).ToString(CultureInfo.InvariantCulture), font, brush,
+                    new RectangleF(rect.Right - S(34), y + S(1), S(32), labelSize + S(2)), format);
+            }
         }
     }
 
@@ -990,14 +1034,22 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             DrawText(g, entry.Description, band.X + S(92), textY + S(1), S(SubSize) * 0.86f,
                 DesignTokens.Colors.GlyphMuted, FontStyle.Regular);
 
-            using (Font font = new Font("Segoe UI", S(SubSize) * 0.94f, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (SolidBrush brush = new SolidBrush(entry.Active ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted))
-            using (StringFormat fmt = new StringFormat(StringFormatFlags.NoWrap))
+            if (ShouldDrawNeutralText(this.burnInVisualLevel))
             {
-                fmt.Alignment = StringAlignment.Far;
-                g.DrawString(entry.Detail, font, brush, new RectangleF(band.X, textY, band.Width - S(10), band.Height), fmt);
+                using (Font font = new Font("Segoe UI", S(SubSize) * 0.94f, FontStyle.Regular, GraphicsUnit.Pixel))
+                using (SolidBrush brush = new SolidBrush(entry.Active ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted))
+                using (StringFormat fmt = new StringFormat(StringFormatFlags.NoWrap))
+                {
+                    fmt.Alignment = StringAlignment.Far;
+                    g.DrawString(entry.Detail, font, brush, new RectangleF(band.X, textY, band.Width - S(10), band.Height), fmt);
+                }
             }
         }
+    }
+
+    internal static bool ShouldDrawNeutralText(BurnInVisualLevel level)
+    {
+        return BurnInProtection.NormalizeVisualLevel(level) != BurnInVisualLevel.LevelTwo;
     }
 
     private static double PeakOf(List<double> history)
@@ -1032,6 +1084,13 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
 
     internal static void RunSelfTest()
     {
+        if (!ShouldDrawNeutralText(BurnInVisualLevel.Normal) ||
+            !ShouldDrawNeutralText(BurnInVisualLevel.LevelOne) ||
+            ShouldDrawNeutralText(BurnInVisualLevel.LevelTwo))
+        {
+            throw new InvalidOperationException("Level-two burn-in must suppress expanded-panel neutral text.");
+        }
+
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.Normalize();
         using (MetricTileExpandForm panel = new MetricTileExpandForm(settings))
@@ -1074,7 +1133,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             }
         }
 
-        Console.WriteLine("Metric tile expand: PASS Radar-module size, placement, large mode");
+        Console.WriteLine("Metric tile expand: PASS Radar-module size, placement, large mode, level-two neutral-text suppression");
     }
 
     // Geometry-only half of ShowForTile, so the self test can assert placement without creating a

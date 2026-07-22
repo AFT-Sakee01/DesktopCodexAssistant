@@ -51,6 +51,8 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
     private bool autoHideKeepAliveActive;
     private bool renderSampleHoverOverride;
+    private BurnInVisualLevel burnInVisualLevel;
+    private bool burnInBrightnessRestored;
 
     private struct AutoTileLayoutMetrics
     {
@@ -710,6 +712,36 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         return Math.Max(0, Math.Min(255, (int)Math.Round(animated)));
     }
 
+    protected override int PresentationLuminancePercent
+    {
+        get
+        {
+            return this.burnInVisualLevel != BurnInVisualLevel.Normal && !this.burnInBrightnessRestored
+                ? BurnInProtection.LevelOneLuminancePercent
+                : 100;
+        }
+    }
+
+    public bool SetBurnInVisualState(BurnInVisualLevel level, bool restoreRightGroupBrightness)
+    {
+        BurnInVisualLevel normalized = BurnInProtection.NormalizeVisualLevel(level);
+        bool restored = normalized != BurnInVisualLevel.Normal && restoreRightGroupBrightness;
+        if (this.burnInVisualLevel == normalized && this.burnInBrightnessRestored == restored)
+        {
+            return false;
+        }
+
+        this.burnInVisualLevel = normalized;
+        this.burnInBrightnessRestored = restored;
+        InvalidateLayeredRenderBuffer();
+        if (this.Visible && CanRenderLayeredWindow())
+        {
+            RenderLayeredWindow();
+        }
+
+        return true;
+    }
+
     private bool IsHoverOpacityRuntimeEnabled()
     {
         return this.CurrentSettings.HoverOpacityEnabled ||
@@ -905,14 +937,18 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         float innerStroke = Math.Max(1.2f, ringSize * 0.090f);
         float innerInset = outerStroke + Math.Max(1.0f, ringSize * 0.045f);
 
-        DrawRing(g, ringBox, outerStroke, data.OuterPercent, accent, 255);
+        DrawRing(g, ringBox, outerStroke, data.OuterPercent, ResolveBurnInRingColor(accent, this.burnInVisualLevel), 255);
         if (data.InnerPercent >= 0.0)
         {
             RectangleF innerBox = RectangleF.Inflate(ringBox, -innerInset, -innerInset);
-            DrawRing(g, innerBox, innerStroke, data.InnerPercent, alert ? DesignTokens.Colors.Warning : data.InnerAccent, 190);
+            Color innerAccent = alert ? DesignTokens.Colors.Warning : data.InnerAccent;
+            DrawRing(g, innerBox, innerStroke, data.InnerPercent, ResolveBurnInRingColor(innerAccent, this.burnInVisualLevel), 190);
         }
 
-        DrawCenterValue(g, ringBox, data, alert);
+        if (ShouldDrawCenterText(this.burnInVisualLevel))
+        {
+            DrawCenterValue(g, ringBox, data, alert);
+        }
 
         if (data.AlertIconVisible)
         {
@@ -951,6 +987,18 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             arc.EndCap = LineCap.Round;
             g.DrawArc(arc, arcBox, -90.0f, sweep);
         }
+    }
+
+    internal static Color ResolveBurnInRingColor(Color color, BurnInVisualLevel level)
+    {
+        return BurnInProtection.NormalizeVisualLevel(level) == BurnInVisualLevel.LevelTwo
+            ? BurnInProtection.InvertColor(color)
+            : color;
+    }
+
+    internal static bool ShouldDrawCenterText(BurnInVisualLevel level)
+    {
+        return BurnInProtection.NormalizeVisualLevel(level) != BurnInVisualLevel.LevelTwo;
     }
 
     private void DrawCenterValue(Graphics g, RectangleF ringBox, MetricTileData data, bool alert)
@@ -1047,6 +1095,12 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         this.renderSampleHoverOverride = hovered;
     }
 
+    internal void SetBurnInVisualStateForRenderSample(BurnInVisualLevel level, bool restoreRightGroupBrightness)
+    {
+        this.burnInVisualLevel = BurnInProtection.NormalizeVisualLevel(level);
+        this.burnInBrightnessRestored = this.burnInVisualLevel != BurnInVisualLevel.Normal && restoreRightGroupBrightness;
+    }
+
     private static void AssertAutoColumnReachable(
         WidgetSettings settings,
         Rectangle workArea,
@@ -1087,6 +1141,15 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     {
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.Normalize();
+
+        Color burnInSample = Color.FromArgb(255, 14, 62, 201);
+        if (ResolveBurnInRingColor(burnInSample, BurnInVisualLevel.LevelOne).ToArgb() != burnInSample.ToArgb() ||
+            ResolveBurnInRingColor(burnInSample, BurnInVisualLevel.LevelTwo).ToArgb() != BurnInProtection.InvertColor(burnInSample).ToArgb() ||
+            !ShouldDrawCenterText(BurnInVisualLevel.LevelOne) ||
+            ShouldDrawCenterText(BurnInVisualLevel.LevelTwo))
+        {
+            throw new InvalidOperationException("Metric tile level-two protection must invert rings and suppress center text only at level two.");
+        }
 
         // Spec: 60x60 real screen pixels, independent of display DPI.
         using (MetricTileForm tile = new MetricTileForm(settings, 0))
@@ -1304,7 +1367,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             }
         }
 
-        Console.WriteLine("Metric tile window: PASS consistent sizing, short-screen fallback, group burn-in, custom auto column, per-tile placement, hover isolation, fixed ten-tile surface");
+        Console.WriteLine("Metric tile window: PASS consistent sizing, short-screen fallback, group burn-in, two-level ring/text protection, custom auto column, per-tile placement, hover isolation, fixed ten-tile surface");
     }
 }
 
