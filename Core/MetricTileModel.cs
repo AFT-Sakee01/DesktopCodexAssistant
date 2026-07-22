@@ -47,6 +47,7 @@ internal sealed class MetricTileFeed
     public PerfSnapshot Snapshot = new PerfSnapshot();
     public List<double> CpuHistory;
     public List<double> MemoryHistory;
+    public List<double> MemoryHardwareReservedHistory;
     public List<double> DiskWriteHistory;
     public List<double> DiskReadHistory;
     public List<double> NetworkSentHistory;

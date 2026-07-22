@@ -128,6 +128,7 @@ internal sealed partial class WidgetForm
         feed.Snapshot = this.snapshot;
         feed.CpuHistory = this.cpuHistory;
         feed.MemoryHistory = this.memoryHistory;
+        feed.MemoryHardwareReservedHistory = this.memoryHardwareReservedHistory;
         feed.DiskWriteHistory = this.diskWriteHistory;
         feed.DiskReadHistory = this.diskReadHistory;
         feed.NetworkSentHistory = this.networkSentHistory;

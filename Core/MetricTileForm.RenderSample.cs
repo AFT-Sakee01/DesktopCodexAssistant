@@ -147,13 +147,14 @@ internal sealed partial class MetricTileForm
         s.CpuPercent = 32.0;
         s.CpuFrequencyGhz = 4.15;
         s.CpuBaseFrequencyGhz = 4.45;
-        s.CpuCorePercents = new double[] { 34, 12, 88, 21, 45, 9, 62, 17, 28, 71, 15, 39, 8, 52, 24, 11, 96, 19 };
+        s.CpuCorePercents = new double[] { 34, 12, 88, 21, 45, 9, 62, 17, 28, 71, 15, 39, 8, 52, 24, 11, 100, 19 };
         s.MemoryManufacturer = "SAMSUNG";
         s.MemorySpeedMtps = 9523;
         s.MemoryUsedGb = 30.2;
         s.MemoryTotalGb = 47.6;
         s.MemoryPercent = 63.0;
-        s.MemoryHardwareReservedPercent = 3.6;
+        s.MemoryHardwareReservedGb = 3.8;
+        s.MemoryHardwareReservedPercent = 8.0;
         s.PageFileUsedGb = 0.09;
         s.PageFileTotalGb = 3.0;
         s.DiskVolumeLabel = "C/D";
@@ -182,6 +183,7 @@ internal sealed partial class MetricTileForm
 
         feed.CpuHistory = Hist(18, 24, 46, 38, 52, 61, 44, 33, 29, 41, 55, 48, 36, 30, 44, 58, 51, 39, 33, 32);
         feed.MemoryHistory = Hist(58, 59, 61, 60, 62, 63, 63, 62, 64, 63, 63, 63, 62, 63, 64, 63, 63, 62, 63, 63);
+        feed.MemoryHardwareReservedHistory = Hist(7.8, 7.9, 7.8, 7.7, 8.0, 7.9, 7.9, 8.0, 8.1, 8.0, 7.9, 8.0, 8.0, 8.1, 8.0, 7.9, 8.0, 8.0, 8.1, 8.0);
         feed.DiskWriteHistory = Hist(200, 4400, 1200, 500, 6100, 8800, 2300, 900, 400, 3100, 1700, 700, 2600, 1200, 900, 3300, 2100, 800, 1100, 5000);
         feed.DiskReadHistory = Hist(5, 10, 5, 5, 20, 30, 10, 5, 5, 10, 5, 5, 10, 5, 5, 10, 5, 5, 5, 1);
         feed.NetworkReceivedHistory = Hist(12, 38, 91, 64, 22, 15, 47, 83, 55, 28, 19, 36, 42, 58, 49, 61, 44, 37, 52, 58);

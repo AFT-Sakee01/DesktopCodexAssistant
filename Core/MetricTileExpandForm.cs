@@ -331,7 +331,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             g.DrawString(label, labelFont, labelBrush, content.X, content.Y + S(9));
             float labelW = g.MeasureString(label, labelFont).Width;
             float vx = content.X + labelW + S(8);
-            if (drawNeutralText)
+            if (drawNeutralText && !string.IsNullOrEmpty(value))
             {
                 g.DrawString(value, valueFont, valueBrush, vx, content.Y);
                 if (!string.IsNullOrEmpty(suffix))
@@ -442,8 +442,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         float step = rect.Width / (values.Count - 1);
         for (int i = 0; i < values.Count; i++)
         {
-            double ratio = MetricTileModel.Clamp(values[i] / max, 0.0, 1.0);
-            points[i] = new PointF(rect.X + i * step, rect.Bottom - (float)(ratio * (rect.Height - 2.0f)) - 1.0f);
+            points[i] = new PointF(rect.X + i * step, ResolvePlotY(rect, values[i], max));
         }
 
         using (GraphicsPath area = new GraphicsPath())
@@ -484,8 +483,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             return;
         }
 
-        double ratio = MetricTileModel.Clamp(value / max, 0.0, 1.0);
-        float y = rect.Bottom - (float)(ratio * (rect.Height - 2.0f)) - 1.0f;
+        float y = ResolvePlotY(rect, value, max);
         using (Pen guide = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 96), 1.0f))
         {
             guide.DashStyle = DashStyle.Dot;
@@ -508,9 +506,23 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         }
     }
 
+    // Curves, guides and per-core bars must share this exact projection. In particular, a core at
+    // 100% resolves to rect.Top + 1, the same pixel row as the 100 guide, instead of appearing one
+    // pixel short because two renderers rounded different height formulas.
+    private static float ResolvePlotY(RectangleF rect, double value, double max)
+    {
+        if (max <= 0.0)
+        {
+            return rect.Bottom - 1.0f;
+        }
+
+        double ratio = MetricTileModel.Clamp(value / max, 0.0, 1.0);
+        return rect.Bottom - (float)(ratio * (rect.Height - 2.0f)) - 1.0f;
+    }
+
     // Secondary series: thin translucent line, no fill, so two series share one ground without the
     // second reading as another area chart.
-    private void DrawSparkLineOnly(Graphics g, RectangleF rect, List<double> values, Color color, double max)
+    private void DrawSparkLineOnly(Graphics g, RectangleF rect, List<double> values, Color color, double max, int alpha, bool drawEndpoint)
     {
         if (values == null || values.Count < 2 || rect.Width <= 2.0f)
         {
@@ -526,14 +538,23 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         float step = rect.Width / (values.Count - 1);
         for (int i = 0; i < values.Count; i++)
         {
-            double ratio = MetricTileModel.Clamp(values[i] / max, 0.0, 1.0);
-            points[i] = new PointF(rect.X + i * step, rect.Bottom - (float)(ratio * (rect.Height - 2.0f)) - 1.0f);
+            points[i] = new PointF(rect.X + i * step, ResolvePlotY(rect, values[i], max));
         }
 
-        using (Pen line = new Pen(DesignTokens.WithAlpha(color, 115), Math.Max(1.0f, S(1.1f))))
+        using (Pen line = new Pen(DesignTokens.WithAlpha(color, alpha), Math.Max(1.0f, S(1.1f))))
         {
             line.LineJoin = LineJoin.Round;
             g.DrawLines(line, points);
+        }
+
+        if (drawEndpoint)
+        {
+            PointF last = points[points.Length - 1];
+            float dot = Math.Max(1.5f, S(2.0f));
+            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, Math.Max(alpha, 220))))
+            {
+                g.FillEllipse(brush, last.X - dot, last.Y - dot, dot * 2.0f, dot * 2.0f);
+            }
         }
     }
 
@@ -586,9 +607,9 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
 
         DrawFloatingHeader(g, content, accent, "CPU",
             Math.Round(s.CpuPercent).ToString("0", CultureInfo.InvariantCulture), "%",
-            string.Format(CultureInfo.InvariantCulture, "{0:0.00} / {1:0.00} GHz · {2} 核 · 峰值 {3:0}%",
-                s.CpuFrequencyGhz, s.CpuBaseFrequencyGhz, cores.Length, PeakOf(this.feed.CpuHistory)));
-        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒 · 折线=占用 柱=每核");
+            string.Format(CultureInfo.InvariantCulture, "{0:0.00} / {1:0.00} GHz · {2} 核 · 峰值核心 {3:0}%",
+                s.CpuFrequencyGhz, s.CpuBaseFrequencyGhz, cores.Length, PeakOf(cores)));
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒");
     }
 
     // Per-core bars, one per core across the shared ground, rising from the baseline. Each bar warns
@@ -611,7 +632,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         for (int i = 0; i < cores.Length; i++)
         {
             double value = MetricTileModel.Clamp(cores[i], 0.0, 100.0);
-            float h = Math.Max(1.5f, (float)(value / 100.0 * (rect.Height - 1.0f)));
+            float top = ResolvePlotY(rect, value, 100.0);
+            float h = Math.Max(1.5f, rect.Bottom - top);
             // accent is already energy-adjusted by the caller; the raw warn/danger tokens are not.
             Color barColor = value >= CoreLoadDangerPercent
                 ? DesignTokens.Colors.DangerStrong
@@ -627,17 +649,22 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     // ── Memory ───────────────────────────────────────────────────────────
     private void DrawMemory(Graphics g, RectangleF content, Color accent, PerfSnapshot s)
     {
-        double reservedGb = s.MemoryTotalGb * s.MemoryHardwareReservedPercent / 100.0;
-        DrawSpark(g, GroundRect(content, true), this.feed.MemoryHistory, accent, 100.0, true, true);
+        double reservedGb = s.MemoryHardwareReservedGb > 0.0
+            ? s.MemoryHardwareReservedGb
+            : s.MemoryTotalGb * s.MemoryHardwareReservedPercent / 100.0;
+        RectangleF ground = GroundRect(content, true);
+        DrawSpark(g, ground, this.feed.MemoryHistory, accent, 100.0, true, true);
+        DrawSparkLineOnly(g, ground, this.feed.MemoryHardwareReservedHistory,
+            DesignTokens.Colors.Warning, 100.0, 225, true);
         DrawSegmentBar(g, StripRect(content),
             new double[] { s.MemoryPercent, s.MemoryHardwareReservedPercent },
-            new Color[] { accent, accent },
-            new int[] { 215, 85 });
+            new Color[] { accent, DesignTokens.Colors.Warning },
+            new int[] { 215, 235 });
 
         DrawFloatingHeader(g, content, accent, "MEM",
             Math.Round(s.MemoryPercent).ToString("0", CultureInfo.InvariantCulture), "%",
-            string.Format(CultureInfo.InvariantCulture, "{0:0.0} / {1:0.0} GB · HW {2:0.0} GB", s.MemoryUsedGb, s.MemoryTotalGb, reservedGb));
-        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒 · 底条=已用/保留");
+            string.Format(CultureInfo.InvariantCulture, "{0:0.0} / {1:0.0} GB · 硬件保留 {2:0.0} GB", s.MemoryUsedGb, s.MemoryTotalGb, reservedGb));
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒");
     }
 
     // ── Disk ─────────────────────────────────────────────────────────────
@@ -647,17 +674,19 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         // Write and read share one auto-scaled axis so their relative magnitude stays honest; the
         // read line usually hugs the floor because Windows serves most reads from cache.
         double max = Math.Max(PeakOf(this.feed.DiskWriteHistory), PeakOf(this.feed.DiskReadHistory)) * 1.15;
-        DrawSpark(g, ground, this.feed.DiskWriteHistory, accent, max, true, false);
-        DrawSparkLineOnly(g, ground, this.feed.DiskReadHistory, accent, max);
+        DrawSpark(g, ground, this.feed.DiskWriteHistory, DesignTokens.Colors.Warning, max, true, false);
+        DrawSparkLineOnly(g, ground, this.feed.DiskReadHistory,
+            DesignTokens.Colors.Success, max, 225, true);
 
         double capacityPercent = s.DiskTotalGb > 0.0 ? s.DiskUsedGb / s.DiskTotalGb * 100.0 : 0.0;
         DrawSegmentBar(g, StripRect(content), new double[] { capacityPercent }, new Color[] { accent }, new int[] { 215 });
 
         DrawFloatingHeader(g, content, accent, "DISK",
             Math.Round(s.DiskPercent).ToString("0", CultureInfo.InvariantCulture), "%",
-            string.Format(CultureInfo.InvariantCulture, "W {0} · R {1} · {2:0}/{3:0} GB",
-                FormatRate(s.DiskWriteBytesPerSecond), FormatRate(s.DiskReadBytesPerSecond), s.DiskUsedGb, s.DiskTotalGb));
-        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒 亮=写 淡=读 · 底条=容量");
+            string.Format(CultureInfo.InvariantCulture, "W 写入 {0}    R 读取 {1}",
+                FormatRate(s.DiskWriteBytesPerSecond), FormatRate(s.DiskReadBytesPerSecond)));
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)),
+            string.Format(CultureInfo.InvariantCulture, "{0:0} / {1:0} GB", s.DiskUsedGb, s.DiskTotalGb));
     }
 
     // ── Network ──────────────────────────────────────────────────────────
@@ -665,7 +694,16 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     // panel with no bottom strip: the ground runs edge to edge.
     private void DrawNetwork(Graphics g, RectangleF content, Color accent, PerfSnapshot s)
     {
-        DrawMirrorChart(g, GroundRect(content, false), this.feed.NetworkReceivedHistory, this.feed.NetworkSentHistory, accent);
+        // The shell and NET label retain the existing green role accent. Only the two data series
+        // use their stable transfer-direction colors, so the window continues to look like the
+        // current product while down/up remain identifiable without a legend.
+        DrawMirrorChart(
+            g,
+            GroundRect(content, false),
+            this.feed.NetworkReceivedHistory,
+            this.feed.NetworkSentHistory,
+            DesignTokens.Colors.AccentSoft,
+            DesignTokens.Colors.Danger);
 
         // Prefix dropped: the SSID already identifies a wireless link, and the sub line has to fit.
         string link = s.NetworkConnected
@@ -675,13 +713,13 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             ? s.NetworkRssiDbm.ToString(CultureInfo.InvariantCulture) + " dBm"
             : (s.NetworkConnected ? "正常" : "断开");
 
-        DrawFloatingHeader(g, content, accent, "NET",
-            "↓" + MetricTileModel.FormatCompactRate(s.NetworkReceivedBytesPerSecond), null,
-            "↑ " + FormatRate(s.NetworkSentBytesPerSecond) + " · " + link + " · " + signal);
-        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒 · 下行朝上 · 上行朝下");
+        DrawFloatingHeader(g, content, accent, "NET", string.Empty, null,
+            "↓ 下行 " + FormatRate(s.NetworkReceivedBytesPerSecond) +
+            "    ↑ 上行 " + FormatRate(s.NetworkSentBytesPerSecond));
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), link + " · " + signal);
     }
 
-    private void DrawMirrorChart(Graphics g, RectangleF rect, List<double> down, List<double> up, Color accent)
+    private void DrawMirrorChart(Graphics g, RectangleF rect, List<double> down, List<double> up, Color downColor, Color upColor)
     {
         float baseline = rect.Y + rect.Height * 0.62f;
         double max = Math.Max(PeakOf(down), PeakOf(up)) * 1.1;
@@ -693,8 +731,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         // Both halves are built explicitly rather than by reusing DrawSpark under a flip transform:
         // the flipped version mapped the upstream box back above the baseline, drawing the two
         // series on top of each other instead of mirroring them.
-        DrawMirrorHalf(g, rect, down, accent, max, baseline, baseline - rect.Y, true, 48, true);
-        DrawMirrorHalf(g, rect, up, accent, max, baseline, rect.Bottom - baseline, false, 26, false);
+        DrawMirrorHalf(g, rect, down, downColor, max, baseline, baseline - rect.Y, true, 48, 235, true);
+        DrawMirrorHalf(g, rect, up, upColor, max, baseline, rect.Bottom - baseline, false, 26, 220, true);
 
         using (Pen basePen = new Pen(DesignTokens.White(54), 1.0f))
         {
@@ -702,7 +740,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         }
     }
 
-    private void DrawMirrorHalf(Graphics g, RectangleF rect, List<double> values, Color accent, double max, float baseline, float amplitude, bool growUp, int fillAlpha, bool drawEndpoint)
+    private void DrawMirrorHalf(Graphics g, RectangleF rect, List<double> values, Color color, double max, float baseline, float amplitude, bool growUp, int fillAlpha, int lineAlpha, bool drawEndpoint)
     {
         if (values == null || values.Count < 2 || amplitude <= 1.0f)
         {
@@ -723,14 +761,14 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             area.AddLines(points);
             area.AddLine(points[points.Length - 1].X, baseline, rect.X, baseline);
             area.CloseFigure();
-            using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(accent, fillAlpha)))
+            using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, fillAlpha)))
             {
                 g.FillPath(fill, area);
             }
         }
 
         using (Pen line = new Pen(
-            DesignTokens.WithAlpha(accent, growUp ? 235 : 155),
+            DesignTokens.WithAlpha(color, lineAlpha),
             Math.Max(1.0f, S(growUp ? 1.6f : 1.1f))))
         {
             line.LineJoin = LineJoin.Round;
@@ -741,7 +779,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         {
             PointF last = points[points.Length - 1];
             float dot = Math.Max(2.0f, S(2.6f));
-            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(accent, 255)))
+            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 255)))
             {
                 g.FillEllipse(brush, last.X - dot, last.Y - dot, dot * 2.0f, dot * 2.0f);
             }
@@ -771,7 +809,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     {
         RectangleF ground = GroundRect(content, true);
         DrawSpark(g, ground, load, accent, 100.0, true, true);
-        DrawSparkLineOnly(g, ground, memory, accent, 100.0);
+        DrawSparkLineOnly(g, ground, memory, accent, 100.0, 115, false);
         DrawSegmentBar(g, StripRect(content), new double[] { memoryPercent }, new Color[] { accent }, new int[] { 200 });
 
         DrawFloatingHeader(g, content, accent, label,
@@ -1071,6 +1109,25 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         return peak;
     }
 
+    private static double PeakOf(double[] values)
+    {
+        if (values == null || values.Length == 0)
+        {
+            return 0.0;
+        }
+
+        double peak = 0.0;
+        for (int i = 0; i < values.Length; i++)
+        {
+            if (values[i] > peak)
+            {
+                peak = values[i];
+            }
+        }
+
+        return peak;
+    }
+
     private static string FormatRate(double bytesPerSecond)
     {
         return NetworkRateFormatter.Format(bytesPerSecond);
@@ -1089,6 +1146,13 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             ShouldDrawNeutralText(BurnInVisualLevel.LevelTwo))
         {
             throw new InvalidOperationException("Level-two burn-in must suppress expanded-panel neutral text.");
+        }
+
+        RectangleF testPlot = new RectangleF(3.0f, 5.0f, 200.0f, 80.0f);
+        float fullScaleY = ResolvePlotY(testPlot, 100.0, 100.0);
+        if (Math.Abs(fullScaleY - (testPlot.Top + 1.0f)) > 0.001f)
+        {
+            throw new InvalidOperationException("A 100% CPU core must align with the 100% guide row.");
         }
 
         WidgetSettings settings = WidgetSettings.CreateDefaults();
