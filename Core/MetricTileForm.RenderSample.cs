@@ -260,15 +260,6 @@ internal sealed partial class MetricTileForm
         r.BurnPercentPerHour = claude ? 1.4 : 2.4;
         r.RunwayHours = claude ? 55 : 26;
         r.HoursToReset = claude ? 54 : 31;
-        r.BurnObservedHours = claude ? 4.2 : 6.0;
-        r.BurnConfidence = claude ? QuotaForecastConfidence.High : QuotaForecastConfidence.Medium;
-        r.CalendarRunwayKnown = true;
-        r.CalendarRunwayHours = claude ? 70 : 42;
-        r.FiveHourBurnRateKnown = true;
-        r.FiveHourBurnPercentPerHour = claude ? 45.0 : 9.0;
-        r.FiveHourRunwayHours = claude ? 0.91 : 9.78;
-        r.FiveHourHoursToReset = claude ? 1.4 : 3.2;
-        r.FiveHourBurnConfidence = QuotaForecastConfidence.Medium;
         if (!claude)
         {
             r.IqKnown = true;
