@@ -602,10 +602,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
     }
 
-    public CodexRadarForm(WidgetSettings settings, Action<string, string, ToolTipIcon> notificationAction)
+    public CodexRadarForm(
+        WidgetSettings settings,
+        Action<string, string, ToolTipIcon> notificationAction,
+        string quotaHistoryPathOverride = null)
     {
         this.notificationAction = notificationAction;
-        this.codexQuotaHistoryStore = new CodexQuotaHistoryStore();
+        this.codexQuotaHistoryStore = new CodexQuotaHistoryStore(quotaHistoryPathOverride);
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
         ApplicationIcon.ApplyTo(this);

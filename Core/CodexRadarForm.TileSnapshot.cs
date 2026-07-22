@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Text.RegularExpressions;
 
 // Builds the read-only RadarTileSnapshot the Radar tiles render from (1.0.6.20).
@@ -846,7 +847,10 @@ internal sealed partial class CodexRadarForm
         WidgetSettings settings = new WidgetSettings();
         settings.Normalize();
         settings.CodexRadarModelKey = "gpt_56_sol_low";
-        using (CodexRadarForm form = new CodexRadarForm(settings, null))
+        string historyPath = Path.Combine(
+            Path.GetTempPath(),
+            ProductIdentity.MachineName + "-tile-snapshot-" + Guid.NewGuid().ToString("N") + ".jsonl");
+        using (CodexRadarForm form = new CodexRadarForm(settings, null, historyPath))
         {
             form.codexRuntimeState.ModelKey = settings.CodexRadarModelKey;
             form.codexRuntimeState.RadarSnapshot = CodexRadarSnapshot.CreateDefault();
@@ -994,6 +998,7 @@ internal sealed partial class CodexRadarForm
 
             form.StopHeadlessDataOwner();
         }
+        try { File.Delete(historyPath); } catch { }
     }
 
     // The burn-down series and forecasts come from the same per-family accepted histories. Active

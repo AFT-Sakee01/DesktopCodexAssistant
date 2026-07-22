@@ -1447,7 +1447,10 @@ internal static class Program
             settings.CodexRadarRandomTestEnabled = true;
             settings.Normalize();
 
-            using (CodexRadarForm codex = new CodexRadarForm(settings, null))
+            string quotaHistoryTestPath = Path.Combine(
+                Path.GetTempPath(),
+                ProductIdentity.MachineName + "-radar-lifecycle-" + Guid.NewGuid().ToString("N") + ".jsonl");
+            using (CodexRadarForm codex = new CodexRadarForm(settings, null, quotaHistoryTestPath))
             using (PowerThermalForm power = new PowerThermalForm(settings))
             {
                 EdgeDockTabRole[] dockRoles =
@@ -1569,6 +1572,7 @@ internal static class Program
                     }
                 }
             }
+            try { File.Delete(quotaHistoryTestPath); } catch { }
 
             return 0;
         }
