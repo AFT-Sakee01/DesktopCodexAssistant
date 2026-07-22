@@ -1,6 +1,10 @@
 # Fable5-Data-Sources-And-Caching-Technical — 数据源、Fallback 链与缓存位置详解
 
-适用版本：`1.0.5.40`。核对时间：2026-07-16。
+> **历史快照（SUPERSEDED）**
+>
+> 本文冻结于 `1.0.5.40` 的旧数据源与多窗口消费关系；截至 `1.0.6.29`，独立 Claude Radar、双窗口消费者、旧窗体源码位置和部分调度说明已经失效。本文只供历史追溯，**禁止作为现行实现、修改或验收依据**。当前接口、URL 与持久化资源以 [`Interfaces/INTERFACE_INDEX.jsonl`](Interfaces/INTERFACE_INDEX.jsonl) 为机器 SSOT，刷新与单飞以 [`Component-Refresh-Rules.md`](Component-Refresh-Rules.md) 为 SSOT，Radar 数据所有权以 [`CodexRadar-Architecture.md`](CodexRadar-Architecture.md) 和 [`Codex-ClaudeRadar-Architecture.md`](Codex-ClaudeRadar-Architecture.md) 为准。
+
+快照版本：`1.0.5.40`。历史核对时间：2026-07-16。
 本文回答三个问题：**每个模块从哪个网站/本地文件的哪个位置读什么、失败时按什么顺序 fallback、结果缓存在哪个文件里**。所有 URL、路径、常量均直接摘自源码并附出处；刷新频率与调度规则的权威文档是 `Docs/Component-Refresh-Rules.md`，本文只在必要处引用不重复。
 
 约定：`<DATA>` = `%LOCALAPPDATA%\DesktopCodexAssistant`（`Logger.DirectoryPath`）；`<HOME>` = `%USERPROFILE%`。

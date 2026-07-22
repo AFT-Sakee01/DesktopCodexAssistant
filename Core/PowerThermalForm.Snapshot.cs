@@ -36,6 +36,146 @@ internal sealed class PowerStripZone
 
 internal sealed partial class PowerThermalForm
 {
+    private struct ThermalSummary
+    {
+        public int ZoneCount;
+        public int AlertCount;
+        public double MaxCelsius;
+        public double AvgCelsius;
+    }
+
+    // Snapshot projection reads only sampler-owned memory. Zero-valued ACPI zones are exposed by
+    // WMI on this device family but are not backed by a physical sensor, so they do not contribute
+    // to the aggregate or its denominator.
+    private ThermalSummary BuildThermalSummary(List<ThermalReading> alerts)
+    {
+        ThermalSummary summary = new ThermalSummary();
+        summary.AlertCount = alerts == null ? 0 : alerts.Count;
+
+        double sum = 0.0;
+        for (int i = 0; i < this.cachedThermalReadings.Count; i++)
+        {
+            ThermalReading reading = this.cachedThermalReadings[i];
+            if (reading == null || string.IsNullOrEmpty(reading.Name) || reading.Celsius <= 0.0)
+            {
+                continue;
+            }
+
+            summary.ZoneCount++;
+            sum += reading.Celsius;
+            summary.MaxCelsius = Math.Max(summary.MaxCelsius, reading.Celsius);
+        }
+
+        summary.AvgCelsius = summary.ZoneCount > 0 ? sum / summary.ZoneCount : 0.0;
+        return summary;
+    }
+
+    private bool IsEnergySaverDisplayActive(PowerReading reading)
+    {
+        return (reading.EnergySaverKnown && reading.EnergySaverEnabled) ||
+            IsManualEnergySaverThresholdActive(reading);
+    }
+
+    private bool IsManualEnergySaverThresholdActive(PowerReading reading)
+    {
+        // Snapshot-only fallback: some Windows builds keep EnergySaverStatus/SystemStatusFlag off
+        // even when the configured low-battery threshold should be represented as energy saver.
+        int threshold = this.CurrentSettings == null
+            ? WidgetSettings.DefaultPowerThermalManualEnergySaverThresholdPercent
+            : this.CurrentSettings.PowerThermalManualEnergySaverThresholdPercent;
+        if (threshold <= 0 || !reading.BatteryPercentKnown)
+        {
+            return false;
+        }
+
+        int percent = Math.Max(0, Math.Min(100, reading.BatteryPercent));
+        return percent < threshold;
+    }
+
+    private static string FormatSystemPowerModeDisplayText(PowerReading reading, bool energySaverActive)
+    {
+        string text = reading.SystemPowerModeKnown
+            ? NormalizeDisplaySystemPowerModeText(reading.SystemPowerModeText)
+            : "--";
+
+        return energySaverActive ? AppendEnergySaverSuffix(text) : text;
+    }
+
+    private static string NormalizeDisplaySystemPowerModeText(string text)
+    {
+        if (string.Equals(text, "均衡", StringComparison.Ordinal))
+        {
+            return "平衡";
+        }
+
+        return string.IsNullOrEmpty(text) ? "--" : text;
+    }
+
+    private static string AppendEnergySaverSuffix(string text)
+    {
+        if (string.IsNullOrEmpty(text) || string.Equals(text, "--", StringComparison.Ordinal))
+        {
+            return "节能";
+        }
+
+        if (text.IndexOf("节能", StringComparison.Ordinal) >= 0)
+        {
+            return text;
+        }
+
+        return text + "（节能）";
+    }
+
+    private static string FormatThermalSensorName(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            return "TZ";
+        }
+
+        string trimmed = name.Trim();
+        int slash = trimmed.LastIndexOf('\\');
+        int dot = trimmed.LastIndexOf('.');
+        int start = Math.Max(slash, dot);
+        if (start >= 0 && start < trimmed.Length - 1)
+        {
+            trimmed = trimmed.Substring(start + 1);
+        }
+
+        return trimmed.Length == 0 ? "TZ" : trimmed;
+    }
+
+    internal bool IsSamplingAllowedForSelfTest()
+    {
+        return IsSamplingAllowed();
+    }
+
+    internal int ResumePrimeCountForSelfTest
+    {
+        get { return this.displayResumePrimeCountForSelfTest; }
+    }
+
+    // Narrow lifecycle seams for the existing command-line self-tests. They expose no sampled
+    // values and let tests prove that the hidden owner has a notification HWND/main timer while
+    // all presentation and interaction machinery stays off.
+    internal bool IsHeadlessDataOwnerRunningForSelfTest()
+    {
+        return this.headlessDataOwner &&
+            this.dataOwnerRuntimeStarted &&
+            !this.ownedRuntimeResourcesDisposed &&
+            this.IsHandleCreated &&
+            this.timer.Enabled &&
+            !this.Visible &&
+            !CanRenderLayeredWindow();
+    }
+
+    internal bool IsHeadlessDataOwnerStoppedForSelfTest()
+    {
+        return this.headlessDataOwner &&
+            !this.dataOwnerRuntimeStarted &&
+            this.ownedRuntimeResourcesDisposed;
+    }
+
     // Called from the UI thread by WidgetForm while painting; reads only cached sampler output and
     // never triggers sampling itself.
     internal PowerStripSnapshot BuildStripSnapshot()

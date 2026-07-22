@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
@@ -212,6 +213,7 @@ internal sealed class CleanIpConnectionReader : IDisposable
 
     private void MarkNetworkChanged()
     {
+        bool invalidateEgress = false;
         lock (this.sync)
         {
             if (this.disposed)
@@ -222,6 +224,15 @@ internal sealed class CleanIpConnectionReader : IDisposable
             // Invalidate connectivity without changing the user-visible refresh trigger.
             this.networkStateRefreshRequested = true;
             this.networkStateKnown = false;
+            this.snapshot.EgressIdentityCurrent = false;
+            invalidateEgress = true;
+        }
+
+        if (invalidateEgress)
+        {
+            // NetworkChange runs independently of the UI tick. Clear authorization immediately;
+            // WidgetForm will publish the replacement country after the shared refresh succeeds.
+            AiRequestProtection.InvalidateEgressSignal("Windows network identity changed");
         }
     }
 
@@ -238,6 +249,7 @@ internal sealed class CleanIpConnectionReader : IDisposable
                 string json = FetchText(CleanIpMeUrl);
                 ApplyCleanIpResponse(next, json);
                 next.Success = true;
+                next.EgressIdentityCurrent = true;
                 next.Error = string.Empty;
             }
             catch (Exception ex)
@@ -358,6 +370,7 @@ internal sealed class CleanIpConnectionReader : IDisposable
         Dictionary<string, object> geo = DictionaryValue(root, "geo");
 
         snapshot.Ip = EmptyToDash(StringValue(root, "ip"));
+        snapshot.CountryRaw = (StringValue(geo, "country") ?? string.Empty).Trim();
         snapshot.Location = JoinNonEmpty(
             StringValue(geo, "country"),
             StringValue(geo, "region"),
@@ -605,17 +618,27 @@ internal sealed class CleanIpConnectionReader : IDisposable
         request.Referer = "https://cleanip.io/";
         request.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
 
-        using (WebResponse response = request.GetResponse())
-        using (System.IO.Stream stream = response.GetResponseStream())
-        using (System.IO.StreamReader reader = new System.IO.StreamReader(stream, Encoding.UTF8))
+        BoundedHttpTextResult response = BoundedHttpTextReader.Execute(
+            request,
+            BoundedHttpTextReader.SmallProbeMaxBytes,
+            RequestTimeoutMs,
+            CancellationToken.None);
+        if (!response.Success)
         {
-            return reader.ReadToEnd();
+            string code = response.StatusCode > 0
+                ? "HTTP_" + response.StatusCode.ToString(CultureInfo.InvariantCulture)
+                : response.ErrorCode;
+            throw new InvalidOperationException("CleanIP response failed: " + code);
         }
+
+        return response.Content;
     }
 
     private static Dictionary<string, object> ParseObject(string json)
     {
-        object parsed = new JavaScriptSerializer().DeserializeObject(json);
+        object parsed = BoundedHttpTextReader
+            .CreateJsonSerializer(BoundedHttpTextReader.SmallProbeMaxBytes)
+            .DeserializeObject(json);
         Dictionary<string, object> dictionary = parsed as Dictionary<string, object>;
         if (dictionary == null)
         {
@@ -765,12 +788,6 @@ internal sealed class CleanIpConnectionReader : IDisposable
                 status += " " + http.StatusDescription.Trim();
             }
 
-            string body = ReadResponseBody(http);
-            if (!string.IsNullOrWhiteSpace(body))
-            {
-                status += ": " + TrimErrorDetail(body);
-            }
-
             return status;
         }
 
@@ -800,29 +817,6 @@ internal sealed class CleanIpConnectionReader : IDisposable
         }
 
         return web.Status.ToString();
-    }
-
-    private static string ReadResponseBody(HttpWebResponse response)
-    {
-        try
-        {
-            using (System.IO.Stream stream = response.GetResponseStream())
-            {
-                if (stream == null)
-                {
-                    return string.Empty;
-                }
-
-                using (System.IO.StreamReader reader = new System.IO.StreamReader(stream, Encoding.UTF8))
-                {
-                    return reader.ReadToEnd();
-                }
-            }
-        }
-        catch
-        {
-            return string.Empty;
-        }
     }
 
     private static string TrimErrorDetail(string detail)

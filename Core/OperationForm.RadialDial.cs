@@ -442,9 +442,7 @@ internal sealed partial class OperationForm
         aiQuota.Children.Add(NewSettingToggle("CodexQuotaPlanAutoResumePausedGoals", "common_quota_auto_resume", "恢复上次", RadialAdvancedColor, this.DrawRestartLoopGlyph, s => s.CodexQuotaPlanAutoResumePausedGoals));
         common.Children.Add(aiQuota);
 
-        RadialNode radar = NewBranch("common_radar", "Radar 窗口", RadialAssistColor, (g, r) => DrawSparkleGlyph(g, r, 4));
-        radar.Children.Add(NewSettingToggle("CodexRadarEnabled", "common_codex_radar", "共享 Radar", RadialAssistColor, this.DrawAppWindowGlyph, s => s.CodexRadarEnabled));
-        radar.Children.Add(NewSettingToggle("ClaudeRadarEnabled", "common_claude_radar", "Claude 窗", RadialAssistColor, this.DrawAppWindowGlyph, s => s.ClaudeRadarEnabled));
+        RadialNode radar = NewBranch("common_radar", "Radar 数据", RadialAssistColor, (g, r) => DrawSparkleGlyph(g, r, 4));
         radar.Children.Add(NewSettingToggle("RadarClockAutoSwitchModelEnabled", "common_radar_auto_model", "自动模型", RadialAssistColor, this.DrawRefreshLoopGlyph, s => s.RadarClockAutoSwitchModelEnabled));
         common.Children.Add(radar);
 
@@ -470,7 +468,6 @@ internal sealed partial class OperationForm
 
         RadialNode networkPower = NewBranch("common_network_power", "网络功耗", RadialSystemColor, this.DrawGaugeGlyph);
         networkPower.Children.Add(NewSettingToggle("GfwProbeEnabled", "common_gfw_probe", "GFW 检测", RadialSystemColor, this.DrawChainLinkGlyph, s => s.GfwProbeEnabled));
-        networkPower.Children.Add(NewSettingToggle("PowerThermalAutoSizeEnabled", "common_power_auto_size", "功耗自适应", RadialPowerColor, this.DrawGaugeGlyph, s => s.PowerThermalAutoSizeEnabled));
         networkPower.Children.Add(NewLeaf("common_network_refresh", "刷新", RadialSystemColor, this.DrawRefreshLoopGlyph, () => ExecuteButton(RefreshButtonIndex, MouseButtons.Left), () => "刷新所有模块"));
         common.Children.Add(networkPower);
 
@@ -511,27 +508,13 @@ internal sealed partial class OperationForm
         visibility.Children.Add(autoHide);
         all.Children.Add(visibility);
 
-        RadialNode metrics = NewBranch("all_main_metrics", "主窗口指标", RadialSystemColor, this.DrawBarsGlyph);
-        metrics.Children.Add(NewSettingToggle("ShowCpu", "all_show_cpu", "CPU", RadialSystemColor, this.DrawGaugeGlyph, s => s.ShowCpu));
-        metrics.Children.Add(NewSettingToggle("ShowMemory", "all_show_memory", "内存", RadialSystemColor, this.DrawPieWedgeGlyph, s => s.ShowMemory));
-        metrics.Children.Add(NewSettingToggle("ShowDisk", "all_show_disk", "磁盘", RadialSystemColor, this.DrawBarsGlyph, s => s.ShowDisk));
-        metrics.Children.Add(NewSettingToggle("ShowNetwork", "all_show_network", "网络", RadialSystemColor, this.DrawChainLinkGlyph, s => s.ShowNetwork));
-        metrics.Children.Add(NewSettingToggle("ShowGpu", "all_show_gpu", "GPU", RadialSystemColor, this.DrawSparkleGlyphSix, s => s.ShowGpu));
-        metrics.Children.Add(NewSettingToggle("ShowNpu", "all_show_npu", "NPU", RadialSystemColor, this.DrawSparkleGlyphFour, s => s.ShowNpu));
-        all.Children.Add(metrics);
-
         RadialNode radar = NewBranch("all_radar_common", "Radar 通用", RadialAssistColor, (g, r) => DrawSparkleGlyph(g, r, 4));
         radar.Children.Add(NewSettingToggle("RadarClockAutoSwitchModelEnabled", "all_radar_auto_model", "自动模型", RadialAssistColor, this.DrawRefreshLoopGlyph, s => s.RadarClockAutoSwitchModelEnabled));
-        radar.Children.Add(NewSettingToggle("CodexRadarEnabled", "all_codex_radar_enabled", "共享 Radar", RadialAssistColor, this.DrawAppWindowGlyph, s => s.CodexRadarEnabled));
-        radar.Children.Add(NewSettingToggle("ClaudeRadarEnabled", "all_claude_radar_enabled", "Claude 窗", RadialAssistColor, this.DrawAppWindowGlyph, s => s.ClaudeRadarEnabled));
         all.Children.Add(radar);
 
         all.Children.Add(BuildRadialAllCodexSettingsBranch());
-        all.Children.Add(BuildRadialAllClaudeSettingsBranch());
-
         RadialNode networkPower = NewBranch("all_network_power_test", "网络功耗测试", RadialSystemColor, this.DrawGaugeGlyph);
         networkPower.Children.Add(NewSettingToggle("GfwProbeEnabled", "all_gfw_probe", "GFW 检测", RadialSystemColor, this.DrawChainLinkGlyph, s => s.GfwProbeEnabled));
-        networkPower.Children.Add(NewSettingToggle("PowerThermalAutoSizeEnabled", "all_power_auto_size", "功耗自适应", RadialPowerColor, this.DrawGaugeGlyph, s => s.PowerThermalAutoSizeEnabled));
         networkPower.Children.Add(NewSettingToggle("AlertTestEnabled", "all_alert_test", "告警测试", RadialAdvancedColor, this.DrawBeakerGlyph, s => s.AlertTestEnabled));
         networkPower.Children.Add(NewSettingToggle("ForceShowForegroundFpsEnabled", "all_fps", "显示 FPS", RadialAdvancedColor, this.DrawGaugeGlyph, s => s.ForceShowForegroundFpsEnabled));
         networkPower.Children.Add(NewSettingToggle("OperationSettingsLogicExtensionEnabled", "all_settings_logic_extension", "设置逻辑扩展", RadialSettingsColor, this.DrawTogglesGlyph, s => s.OperationSettingsLogicExtensionEnabled));
@@ -585,27 +568,12 @@ internal sealed partial class OperationForm
         protection.Children.Add(NewSettingToggle("CodexQuotaWeeklyBaselineAutoRepairEnabled", "all_quota_week_repair", "周基线修复", RadialAdvancedColor, this.DrawWrenchGlyph, s => s.CodexQuotaWeeklyBaselineAutoRepairEnabled));
         codex.Children.Add(protection);
 
-        RadialNode tests = NewBranch("all_codex_tests", "测试覆盖", RadialAdvancedColor, this.DrawBeakerGlyph);
-        tests.Children.Add(NewSettingToggle("CodexModelIqTestEnabled", "all_codex_iq_test", "IQ 测试", RadialAdvancedColor, this.DrawBeakerGlyph, s => s.CodexModelIqTestEnabled));
-        tests.Children.Add(NewSettingToggle("CodexModelIqBaselineAutoEnabled", "all_codex_iq_auto", "IQ 自动基准", RadialAdvancedColor, this.DrawRefreshLoopGlyph, s => s.CodexModelIqBaselineAutoEnabled));
-        tests.Children.Add(NewSettingToggle("CodexModelEfficiencyTestEnabled", "all_codex_eff_test", "效率测试", RadialAdvancedColor, this.DrawGaugeGlyph, s => s.CodexModelEfficiencyTestEnabled));
-        tests.Children.Add(NewSettingToggle("CodexRadarRandomTestEnabled", "all_codex_random", "随机测试", RadialAdvancedColor, this.DrawSparkleGlyphFour, s => s.CodexRadarRandomTestEnabled));
-        tests.Children.Add(NewSettingToggle("CodexRadarRandomTestAutoRefresh", "all_codex_random_auto", "随机自刷", RadialAdvancedColor, this.DrawRefreshLoopGlyph, s => s.CodexRadarRandomTestAutoRefresh));
+        RadialNode tests = NewBranch("all_codex_tests", "健康测试", RadialAdvancedColor, this.DrawBeakerGlyph);
+        tests.Children.Add(NewSettingToggle("CodexRadarRandomTestEnabled", "all_codex_random", "随机健康", RadialAdvancedColor, this.DrawSparkleGlyphFour, s => s.CodexRadarRandomTestEnabled));
+        tests.Children.Add(NewSettingToggle("CodexRadarRandomTestAutoRefresh", "all_codex_random_auto", "自动轮换", RadialAdvancedColor, this.DrawRefreshLoopGlyph, s => s.CodexRadarRandomTestAutoRefresh));
         codex.Children.Add(tests);
 
         return codex;
-    }
-
-    private RadialNode BuildRadialAllClaudeSettingsBranch()
-    {
-        RadialNode claude = NewBranch("all_claude", "Claude 设置", RadialAssistColor, (g, r) => DrawSparkleGlyph(g, r, 6));
-        claude.Children.Add(NewSettingToggle("ClaudeRadarJsonEnabled", "all_claude_json", "站点 JSON", RadialAssistColor, this.DrawChainLinkGlyph, s => s.ClaudeRadarJsonEnabled));
-        claude.Children.Add(NewSettingToggle("ClaudeRadarCommunityRatingsEnabled", "all_claude_ratings", "社区体感分", RadialAssistColor, this.DrawSparkleGlyphSix, s => s.ClaudeRadarCommunityRatingsEnabled));
-        claude.Children.Add(NewSettingToggle("ClaudeRadarLocalQuotaFallbackEnabled", "all_claude_local_quota", "本地额度线", RadialAssistColor, this.DrawPieWedgeGlyph, s => s.ClaudeRadarLocalQuotaFallbackEnabled));
-        claude.Children.Add(NewSettingToggle("ClaudeRadarHomepageFallbackEnabled", "all_claude_homepage", "首页元数据", RadialAssistColor, this.DrawAppWindowGlyph, s => s.ClaudeRadarHomepageFallbackEnabled));
-        claude.Children.Add(NewSettingToggle("ClaudeRadarRandomTestEnabled", "all_claude_random", "随机测试", RadialAdvancedColor, this.DrawBeakerGlyph, s => s.ClaudeRadarRandomTestEnabled));
-        claude.Children.Add(NewSettingToggle("ClaudeRadarRandomTestAutoRefresh", "all_claude_random_auto", "随机自刷", RadialAdvancedColor, this.DrawRefreshLoopGlyph, s => s.ClaudeRadarRandomTestAutoRefresh));
-        return claude;
     }
 
     private RadialNode NewSettingToggle(
@@ -2523,14 +2491,7 @@ internal sealed partial class OperationForm
             "HoverOpacityRevealDelayEnabled",
             "HoverOpacityCoverEnabled",
             "ReverseHoverOpacityRevealEnabled",
-            "ShowCpu",
-            "ShowMemory",
-            "ShowDisk",
-            "ShowNetwork",
-            "ShowGpu",
-            "ShowNpu",
             "RadarClockAutoSwitchModelEnabled",
-            "CodexRadarEnabled",
             "CodexRadarPublicJsonEnabled",
             "CodexRadarHtmlFallbackEnabled",
             "CodexRadarRssFallbackEnabled",
@@ -2542,19 +2503,8 @@ internal sealed partial class OperationForm
             "CodexQuotaProviderWeeklySpikeProtectionEnabled",
             "CodexQuotaStrictFiveHourResetBoundaryEnabled",
             "CodexQuotaWeeklyBaselineAutoRepairEnabled",
-            "CodexModelIqTestEnabled",
-            "CodexModelIqBaselineAutoEnabled",
-            "CodexModelEfficiencyTestEnabled",
             "CodexRadarRandomTestEnabled",
             "CodexRadarRandomTestAutoRefresh",
-            "ClaudeRadarEnabled",
-            "ClaudeRadarJsonEnabled",
-            "ClaudeRadarCommunityRatingsEnabled",
-            "ClaudeRadarLocalQuotaFallbackEnabled",
-            "ClaudeRadarHomepageFallbackEnabled",
-            "ClaudeRadarRandomTestEnabled",
-            "ClaudeRadarRandomTestAutoRefresh",
-            "PowerThermalAutoSizeEnabled",
             "GfwProbeEnabled",
             "AlertTestEnabled"
         };

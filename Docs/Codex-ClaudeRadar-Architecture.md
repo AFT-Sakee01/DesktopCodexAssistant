@@ -1,109 +1,122 @@
-# Claude Radar Architecture
+# Claude CLD 官方额度链架构
 
-适用版本：1.0.5.39
+适用版本：2.0.0.0
 
-This document records the current standalone Claude Radar window implementation. It is intentionally separate from the Codex Radar architecture because the two windows must not share cache files, model catalogs, or provider queues.
+本文说明共享 headless owner 内的 Claude 官方额度读取、缓存、调度、服务健康和 CLD tile 投影；Claude 不拥有公共 Radar 模型链或独立窗口。
 
-## Runtime Ownership
+## 1. 当前定位
 
-- `Core/WidgetForm.cs` owns the Claude Radar window lifetime. It creates `ClaudeRadarForm`, applies settings, forwards display suspend/resume, fullscreen visibility, shared interaction ticks, and shutdown.
-- `Core/ClaudeRadarForm.cs` owns only the standalone layered window, render scene cache, public-data refresh scheduling, Claude Code usage result application, notifications, and deterministic render fixtures.
-- `Core/ClaudeRadarSnapshotScheduler.cs` owns process-wide single-flight scheduling for public Claude Radar website reads. It wraps `ClaudeRadarReader.ReadSnapshot`, keys requests by selected model and data-source settings, writes request-level network history once, and returns cloned snapshots to each consumer.
-- `Core/ClaudeRadarReader.cs` owns public Claude Radar defensive parsing, model-map maintenance, local quota-history fallback, public cache writes, and parser self-tests.
-- `Core/ClaudeCodeUsageScheduler.cs` owns the process-wide single-flight cadence for Claude Code usage so Codex Radar Claude mode and the standalone Claude Radar window consume one shared result.
-- `Core/ClaudeCodeUsageReader.cs` owns authenticated Claude Code usage reads. Successful personal quota snapshots are written through the shared `ClaudeRadarReader.TryWriteClaudeCodeQuotaCache` writer by the scheduler.
-- `Core/StatuspageMonitor.cs` owns OpenAI and Claude official Statuspage reads for both radar windows, using one process-wide request per service key.
-- `Core/DeepSeekBalanceMonitor.cs` owns DeepSeek public API status and optional Claude-view DS balance reads for the shared Codex Radar window and the standalone Claude window, using one encrypted key file, endpoint, refresh cadence, display text, history file and cache signature rule.
-- `Core/ServiceAlertDebouncer.cs` owns the shared 10 second new-error debounce logic while each window still owns its own debounce state container.
-- `ClaudeRadarClockAutoSwitchSelector` in `Core/ClaudeRadarModels.cs` owns the pure latest-model decision shared by standalone Claude Radar and shared-window Claude mode. It includes the current model in the comparison, preserves it on equal timestamps, and performs no settings or network I/O.
+Claude family 的数据能力由以下保留模块组成：
 
-## Data Sources
+- `ClaudeCodeUsageReader`：读取 Claude Code 官方 usage，或消费 Claude Code statusline 生成的本地额度快照。
+- `ClaudeCodeUsageScheduler`：进程级单飞、调度结果封装和官方额度缓存提交。
+- `CodexRadarForm.ClaudeUsage.cs`：把 scheduler 结果提交到 Claude family 的 quota state。
+- `StatuspageMonitor`：Anthropic 官方服务状态。
+- `DeepSeekServiceMonitor`：与 Claude 额度无关的共享服务可达性探测。
 
-| Source | Owner | Purpose | Cache |
-|---|---|---|---|
-| `https://claudecoderadar.com/data/claude-code-radar.json` | `ClaudeRadarSnapshotScheduler` -> `ClaudeRadarReader.ReadSnapshot` | IQ, efficiency, public quota, quota radar, site updated time, model catalog | `claude-radar-cache.ini`, `claude-radar-quota-history.jsonl` |
-| `https://claudecoderadar.com/api/model-ratings?history=14` | `ClaudeRadarReader.ReadSnapshot` | Community rating data in a separate semantic key namespace | `claude-radar-model-map.ini` stores user mapping |
-| `https://claudecoderadar.com/` | `ClaudeRadarReader.TryFetchHomepageMetadata` | Weak fallback for `MODEL_NAMES` metadata only | No business-data cache |
-| `https://status.claude.com/api/v2/summary.json` | `StatuspageMonitor` | Claude public service state for the `C` service square | In-memory status snapshot |
-| `https://status.openai.com/api/v2/summary.json` | `StatuspageMonitor` | OpenAI Statuspage state for the `O` service LED, matching the shared Codex Radar Claude-mode service column without reading Codex quota data | In-memory status snapshot |
-| Claude Code personal usage chain | `ClaudeCodeUsageScheduler` -> `ClaudeCodeUsageReader.Read` | With an explicit setup token, OAuth usage is authoritative; without one, the passive statusline bridge remains zero-API. | `claude-statusline-quota.ini` / `claude-code-oauth-token.bin` -> `claude-quota.ini` |
-| `https://api.deepseek.com/user/balance` | `DeepSeekBalanceMonitor.RefreshIfNeeded` | Public DeepSeek API status for `D`; optional bottom `DS:￥n` balance for Claude views | `deepseek-balance-history.jsonl`; key in `deepseek-api-key.bin` only for balance |
+可见 Claude 信息只有两个入口：
 
-`ClaudeRadarReader.TryFetchJson` 必须保留每个数据源声明的 URI：主数据只请求精确的 `/data/claude-code-radar.json`，不得追加 `?t=`、`?cb=`、`?v=` 等 cache-buster。站点目前会把带任意查询参数的该静态路径路由为 SPA HTML，而精确路径返回 JSON；新鲜度通过 `Cache-Control: no-store, no-cache` 与 `Pragma: no-cache` 请求头保证。模型评分地址自身声明的 `?history=14` 必须原样保留。`ClaudeRadarReader.RunSelfTest` 对这两个 URI 约束做回归断言。
+1. 右侧 `MetricTileForm` 的 `ClaudeQuota` 方块及其悬停详情，紧凑标题为 `CLD`。
+2. Codex IQ 看板中的 Claude/DeepSeek 服务健康项。
 
-Public Claude Radar website data is not gated by local Codex/Claude process presence. Personal Claude Code usage is gated by the consumer window: standalone Claude Radar must be enabled, visible, not suspended, not in random test mode, and have the local Claude process present; Codex Radar Claude mode must pass the selected-provider gate. Both consumers join the same process-wide `ClaudeCodeUsageScheduler` request and receive the same result when they overlap.
+Claude family 不读取社区 Radar、不维护模型目录，不产生 IQ、评分或效率数据，也不拥有独立可见窗口。
 
-Claude Radar quota line data comes from the public `quota` block. The reader prefers `quota.chart.trend` for the 7d quota trend, accepts the current site `chart.key` values such as `d7` and `total_7d`, then falls back to `base_d7_trend`. When the site has only a single usable point, the reader uses the local `claude-radar-quota-history.jsonl` 7-day values; the current `base_d7` or `quota.metrics` d7 value is recorded with a metric/update/run signature so refreshes do not duplicate the same calibration run. The standalone Claude window draws this as `ClaudeRadarQuotaLineSnapshot`; Codex Radar Claude mode converts the same snapshot into the shared `CodexQuotaRadarSnapshot` so the IQ-left vertical line keeps the same average tick, current dot, and trend segment behavior.
+## 2. 数据流
 
-`ClaudeCodeUsageScheduler` calls `ClaudeCodeUsageReader.Read`. When an explicit setup token exists, `ReadViaSetupToken` calls OAuth usage first; only non-authentication failures may use the Messages-header fallback and then a fresh statusline cache. OAuth 401/403 returns `TOKEN_INVALID`, skips Messages, and drives the settings-page rebind warning. Without a token, the reader uses the passive statusline bridge, installs `%USERPROFILE%/.claude/desktop-codex-statusline-bridge.ps1` only when no custom statusline exists, and returns `NO_SETUP_TOKEN` if no fresh cache becomes available. Local token storage is `%LOCALAPPDATA%/DesktopCodexAssistant/claude-code-oauth-token.bin`, protected by `SecretStore` with DPAPI CurrentUser; a legacy `.txt` token is migrated once and renamed `.txt.migrated`. The scheduler logs only host/source and result summary, never token or response body.
+```mermaid
+flowchart LR
+    A["CodexRadarForm headless owner"] --> B["ClaudeCodeUsageScheduler"]
+    B --> C["ClaudeCodeUsageReader"]
+    C --> D["official OAuth usage"]
+    C --> E["Claude statusline quota snapshot"]
+    B --> F["atomic claude-quota.ini cache"]
+    B --> G["Claude family quota state"]
+    F --> G
+    A --> H["StatuspageMonitor"]
+    A --> I["DeepSeekServiceMonitor"]
+    G --> J["BuildRadarTileSnapshot(Claude)"]
+    H --> K["BuildServiceHealth"]
+    I --> K
+    J --> L["CLD tile / expand"]
+    K --> M["Codex IQ board"]
+```
 
-## Model Mapping
+官方额度请求开始时捕获 Claude family，完成时只提交到该 family。切换当前检测软件不会把 Codex 额度、错误或刷新时间写入 Claude 状态；两枚额度 tile 在同一次 `MetricTileFeed` 中各自读取缓存。
 
-Claude Radar site model keys such as `m1` and community rating keys such as `opus48_high` are different namespaces. `claude-radar-model-map.ini` links them explicitly:
+## 3. Headless 生命周期
 
-- New source keys default to `pending` with an empty `rating_key`.
-- Display-name matches do not auto-merge rating keys.
-- Enabled rows without a nonempty `rating_key` are normalized back to `pending`.
-- Missing/deleted state can advance only after a complete `ok=true` `iq.models` catalog with unique nonempty keys and a matching parsed/raw model count.
-- Homepage-only metadata is weak and never increments missing/deleted counters.
-- The pipe-delimited map has an eleventh `source_display_name` column. Ten-column rows remain readable; the first complete catalog establishes their source-name baseline without inventing a rename event.
-- A site rename updates both names only while `display_name` still equals the previous `source_display_name`. A user-customized `display_name` is retained and a rename notification reports the new site name.
-- Complete catalogs rewrite live `sort_order` values to the exact site order and place absent retained rows afterward in their previous relative order.
+`WidgetForm.EnsureCodexRadarWindow()` 构造共享 owner 后调用 `StartHeadlessDataOwner()`。owner 创建隐藏 HWND 并启动既有 backend scheduler，但不调用 `Show()`，不进入定位、hover、burn-in、Z-order 或 layered render 路径。
 
-The settings page renders the selectable model list as a generated five-column button grid. Disabled continuity slots and trailing placeholders render as disabled buttons.
+退出时 `StopHeadlessDataOwner()` 统一停止 timer、取消订阅并使当前 owner generation 失效。所有 Claude scheduler completion 捕获 generation；停止或挂起后的迟到结果不得写 quota/cache/log/通知/UI。显示器关闭、会话锁定或系统挂起时按 `Docs/Component-Refresh-Rules.md` 暂停远程轮询，恢复后只 prime 一轮。
 
-When the 24-hour clock is overdue, the selector evaluates eligible `iq.models` entries rather than excluding the current key. `HistoricalOnly`, disabled, and deleted rows are excluded before the pure latest-model selector runs. It switches only when another model is the global latest candidate; an already-latest current model produces no settings write. Missing/deleted events for `ClaudeRadarModelKey` explicitly identify that the current selected model is affected. With both Radar windows enabled, standalone Claude Radar is the sole `ClaudeRadarModelKey` auto-switch writer. Shared-window Claude mode takes ownership only when the standalone window is disabled, preventing two snapshots from alternating one shared setting.
+## 4. 官方额度来源
 
-Known lifecycle limits are intentional: Codex default-model seeds still require a release when a generation changes; Claude model identity assumes each site `m-key` is never reused for a different model; deleted Claude rows remain disabled in the map for history continuity while Codex removes rows after its deletion threshold.
+`ClaudeCodeUsageReader` 只使用 Claude Code 官方或本地官方客户端衍生的数据路径：
 
-## Rendering
+- 配置 setup-token 时，优先读取官方 OAuth usage 端点。
+- OAuth 结果不完整且凭据有效时，可使用官方 Messages 限额 header 作为受控 fallback。
+- 没有 setup-token 时，读取 Claude Code `statusLine` 命令生成的本地额度快照；程序只在用户尚未设置自定义 statusline 时安装桥接脚本。
+- 401/403 鉴权失败不会由 Messages fallback 掩盖。
 
-`ClaudeRadarForm` draws the same compact EvenRow visual contract as the Codex Radar window:
+外部接口、凭据位置和文件协议以 `Docs/Interfaces/INTERFACE_INDEX.jsonl` 为机器事实源。调度周期、退避、网络事件和手动刷新只在 `Docs/Component-Refresh-Rules.md` 维护。
 
-- Two efficiency rings.
-- 5h and 7d personal quota rings.
-- IQ ring.
-- Vertical quota radar line.
-- Right-side three-line service/data/update status panel.
-- Bottom software-family / `RC` / `DS` / `LLM` metadata row, matching the shared Codex Radar window when it is fixed to Claude mode.
-- Orange 3 px software-family inner border.
-- `Core/RadarClockDial.cs` owns the shared Model IQ clock state machine, 24-hour geometry and drawing used here and by shared-window Claude mode. `ClaudeRadarForm.DrawClaudeEvenRowBatchDial` only supplies the selected model `latest_at`, local request state, font-cache objects and its existing fitted-text callback. The white dot is the current-time pointer, the neutral-white vertical tick marks the 12 o'clock/day boundary, and the smaller green dot marks `latest_at` for up to 24 hours before expiring at one full lap. Status tolerates one delayed publication window: current-window and one-window-late data are green, two-window-late data are yellow with a boundary-to-now wait arc, and data at least three windows late draw a low-alpha red full ring plus the high-alpha red current-window arc. Labels ending in `pm2` or `n2` (including `_2` and `-2`) show the second-run badge without changing the phase because both publications share one batch window. `ApplyClaudeRadarClockAutoSwitchIfNeeded` calls the same `RadarClockDial.GetCycleBoundaryLocal` function; its switch threshold remains `batch < previousBoundary`, aligned with the yellow phase. `RadarClockTimeDisplayMode` controls the center lower time for both Radar windows and draws the matching `UTC`/`NOW`/`LAST`/`REF` label without moving the established date or time rectangles.
+## 5. 额度提交与缓存
 
-`ClaudeRadarWidth` remains an independent saved setting for deliberate standalone-window tuning. Version 57 only fixes the historical default mismatch: the user-default snapshot now starts at the same width as the shared Codex Radar window, and existing configs still at the old untouched 580 px Claude default migrate once to the current `CodexRadarWidth`.
+`ClaudeCodeUsageScheduler` 把一次有效结果作为完整 `ClaudeCodeUsageSnapshot` 提交，包含：
 
-The visual contract is intentionally shared where possible, but the Codex and Claude business data contracts stay isolated. The standalone Claude window paints `ClaudeRadarSnapshot` state produced by `ClaudeRadarSnapshotScheduler` / `ClaudeRadarReader` and `ClaudeCodeUsageScheduler`, plus shared light service probes from `StatuspageMonitor` and `DeepSeekBalanceMonitor`. Shared Codex Radar Claude mode converts that same snapshot through `ConvertClaudeRadarSnapshotForSharedWindow`: IQ、Token/时间效率、社区评分、额度线和数据时间必须与独立窗同源；数据时间统一调用 `ClaudeRadarReader.ResolveDataObtainedLocalTime`，优先选中模型稳定的 `latest_at`，仅在站点未提供时回退本机抓取时刻。转换自测同时断言这些字段。独立窗仍不得读取 Codex quota 缓存、Codex 公共网站结果、Codex reset-card 状态或 Codex provider 队列。
+- `FiveHourPercent` 与 `FiveHourResetLocal/Known`。
+- `WeeklyPercent` 与 `WeeklyResetLocal/Known`。
+- `SourceUpdatedUtc/Known` 与来源标识。
 
-Standalone positioning stays local to `ClaudeRadarForm.PositionClaudeRadarWindow`. The method computes the saved size/work-area based base location, then applies `BurnInProtection.ApplyRuntimeOffset` with `BurnInProtection.ClaudeRadarSalt = 31`; this keeps the Claude window on the shared 7 minute burn-in micro-shift schedule without sharing the Codex Radar salt or embedding a raw numeric salt in the window code.
+只有两组百分比、两组 reset 和可信来源时间都完整且新鲜的结果，才由 `ClaudeCodeUsageReader.TryWriteQuotaCache` 原子写入 `%LOCALAPPDATA%\DesktopCodexAssistant\claude-quota.ini`。写入先生成同目录临时文件，再以替换/移动提交；部分结果或失败不发布，也不破坏 last-good 文件。
 
-Quota reset labels use `ClaudeRadarResetTextFormatter` before paint: long strings such as `13:00 重置` and `7月4日 16:00 重置` are rendered as `13:00` and `07/04`. `ClaudeRadarQuotaSnapshot.Source` and the shared `CodexQuotaSnapshot.SourceKind` preserve whether the rings came from personal data or public-site fallback. Both Claude views render only the public-site reset labels in Danger red with forced color; personal reset labels retain their normal color, and quota numbers, rings, geometry, and Codex-family visuals remain unchanged.
+启动恢复只接受同时包含 5 小时/周额度、各自 reset 和可信更新时间且满足新鲜度边界的缓存。缓存读取不会发起网络请求，也不会从公共 Radar、旧缓存或历史趋势拼接补值。
 
-The render path reads only cloned snapshot state and cached runtime presence/service state. It must not perform network I/O, disk I/O, process enumeration, or parser refresh while painting. The bottom `Claude/RC/DS/LLM` band derives `RC` and `LLM` from `ClaudeRadarSnapshot.SelectedModel*` and `ClaudeRadarSnapshot.Community`, and derives `DS` from `DeepSeekBalanceMonitor.GetSnapshot`; it must not reload `claude-radar-model-map.ini` or the DeepSeek key file during paint. `RC` displays the highest `average` row from the website community ratings payload, using `count` as the tie-breaker, while `LLM` displays the selected model. Claude-family short labels use the first two family letters plus version and tier, for example `Op4.8H`, `Fa5MAX`, and `So5Ult`.
+## 6. CLD Tile 契约
 
-The right-side `R/O/C/D` service LED column and API summary use the same `ApplyClaudeServiceAlertDebounce` candidates, backed by `ServiceAlertDebouncer`. `R` is Claude Radar data, `O` is OpenAI Statuspage, `C` accepts both Claude Statuspage and Claude Code usage alerts, and `D` is DeepSeek public API status. `D` remains visible without an API key; unauthenticated 401/402/422 responses mean the API gateway is reachable, while DNS/TLS/timeout/connection failures, 5xx/429, or unexpected response structure become the LED/API alert. A new non-normal service error must remain present for 10 seconds before it changes the text or LED color; recovery to normal removes the candidate immediately. Random test mode bypasses the debounce state so generated fixtures remain deterministic.
+`BuildRadarTileSnapshot(CodexRadarSoftwareMode.Claude)` 只把 Claude family 的官方 quota state 映射到 `RadarTileSnapshot`：
 
-The scene cache stores at most six pre-rendered bitmaps. The cache key includes window size, render variant, opacity, burn-in color protection, clock time display mode/current minute/last attempt time, runtime presence, request/test state, animation/status rotation phase, model/IQ/efficiency/quota source/service signatures, OpenAI status, DeepSeek API/balance signature, bottom community rating key/label, and the quota radar line signature. Including quota source prevents a site-to-personal transition from reusing the red-label scene. Size changes, display suspend, and form close release the cache. `claude-radar-cache.ini` also persists the parsed `QuotaLine*` values so startup or public-data failures keep the last quota line instead of falling back to an empty gray bar.
+- `ModelName` 固定为 `Claude`，紧凑 tile 标签固定为 `CLD`。
+- 5 小时与周额度分别映射到两层额度环。
+- 展开卡同时显示两个额度百分比及各自 reset 时间。
+- `IqKnown` 和 `EfficiencyKnown` 恒为 `false`，快照不再包含社区评分字段。
+- 当前 active family 改变不清空 CLD tile，也不借用 Codex 模型数据。
 
-## Refresh Rules
+tile 和 expand 只消费同一份缓存快照，不读取凭据、磁盘或网络。
 
-- Public data refresh is scheduled by `ClaudeRadarSnapshotScheduler` and runs in a background task. Shared Codex Radar Claude mode and the standalone Claude Radar window join the same running task when their request key (`selectedModelKey | json | homepage | ratings | localQuotaFallback`) matches; different keys run independently.
-- Successful public refreshes schedule the next check between 15 and 60 minutes, bounded by the remote community rating `refresh_seconds`.
-- Public failures preserve the last successful business snapshot, including bottom-band community/model metadata, and retry after 10 minutes while updating service state.
-- Random test mode replaces snapshots in memory and does not call the public reader or write real caches.
-- Claude Code usage refresh is process-wide single-flight through `ClaudeCodeUsageScheduler`, shared by Codex Radar Claude mode and standalone Claude Radar. An explicit setup token makes OAuth usage the first source; authentication failures return `TOKEN_INVALID` without Messages fallback, while non-authentication failures may use Messages headers and then fresh statusline data. Without a token, the reader uses the statusline bridge and returns `NO_SETUP_TOKEN` when unavailable. Both statusline and persisted personal `claude-quota.ini` data expire after 360 minutes; the persisted cache also requires an explicit timestamp.
-- OpenAI and Claude Statuspage reads are probed through `StatuspageMonitor` only while a consuming window is enabled, visible, not suspended, and not in random test mode: normal 15 minutes, non-normal or failure 2 minutes, with AI request protection respected. They are status-only reads and never trigger Codex quota/provider logic. The monitor writes one request-level network history row with `joined_consumers`.
-- DeepSeek public API status is refreshed through `DeepSeekBalanceMonitor` whenever the shared Radar or standalone Claude Radar is active and not in random test mode. Both Claude views consume the same snapshot for `DS:￥n`; the shared Codex-mode view consumes the same snapshot for the `D` LED while keeping bottom `RS`. Normal refresh is 60 seconds, failure retry is 5 minutes, and `DeepSeekApiKeyRevision` forces an immediate refresh. The monitor writes one request-level network history row with `joined_consumers`, service status and balance status.
-- In the shared transition Codex Radar window, Claude mode reads `ClaudeRadarSnapshotScheduler` data instead of Codex Radar public status. It maps selected-model IQ/efficiency, community rating, and `QuotaLine` into the shared Codex Radar snapshot; IQ, quota-line, or community-rating data is enough for the refresh result to update the display. When no personal `claude-quota.ini` exists, the shared window uses Claude Radar public `quota.usage` h5/d7 values as a display fallback and suppresses the noisy `NO_SETUP_TOKEN`/legacy `NO_TOKEN` alert because that state means no setup-token source was configured, not that the visible Claude app is necessarily logged out.
+## 7. 服务健康
 
-## Acceptance Entrypoints
+Claude 服务健康由 `StatuspageMonitor` 和 Claude usage 状态共同形成。DeepSeek 健康由独立的 `DeepSeekServiceMonitor` 提供；它不读取 key、不查询余额，也不记录账户数据。
 
-- `--test` covers reader parsing, service status mapping, partial catalog deletion guards, failure-state fixtures, storage isolation, quota-history duplicate/bad-line/trim behavior, Claude Code usage parsing, and selected-provider runtime gates.
-- `--test-settings-bindings` covers the Claude Radar settings controls and five-column model selector policy.
-- `--test-layout` covers general layout checks plus `ClaudeRadarForm.RunRenderResourceSelfTest`, including notification-state de-duplication, last-good failure merge, public-refresh single-flight, Claude service alert debounce, nonblank render states, scene-cache cap, and render-buffer/cache disposal.
-- `--test-settings-open-close --iterations <n>` repeatedly opens and closes the Win11 settings window and asserts bounded handle/GDI/USER deltas.
-- `--test-radar-display-lifecycle --iterations <n>` creates Codex/Claude Radar handles with remote sources disabled, repeatedly runs display suspend/resume on both child windows, and asserts bounded handle/GDI/USER deltas.
-- `--render-clauderadar --out <dir>` writes deterministic normal, missing-data, warning, error, offline, and test-randomized fixture images plus matching 2880x1800 desktop screenshots, and a `clauderadar-current.png` real-configuration sample (see `Docs/Fable5-Frontend-Rendering-Technical.md` for sample-vs-current semantics).
-- `--diagnose-radar-runtime --diagnose-seconds <n> [--diagnose-target-pid <pid>] [--diagnose-label <name>]` samples the current process or a running target process CPU, working set, private bytes, handle count, GDI objects, and USER objects, then writes `radar-runtime-diagnosis-*.txt/.json` under `%LOCALAPPDATA%/DesktopCodexAssistant`.
+`BuildServiceHealth()` 把已有服务状态复制给 Codex IQ board。新的稳定错误经过 `ServiceAlertDebouncer` 后发布，恢复立即清除；具体刷新规则见 `Docs/Component-Refresh-Rules.md`。
 
-## Verification Matrix
+## 8. Cache-only 投影
 
-`CodexRadarEnabled` and `ClaudeRadarEnabled` independently control child-window creation, so the production runtime matrix covers only-Codex, only-Claude, and both-window settings. The heavier UI lifetime checks are covered by `--test-settings-open-close --iterations 200` and `--test-radar-display-lifecycle --iterations 100`. High-frequency scene switching is covered by `ClaudeRadarForm.RunRenderResourceSelfTest`, which cycles six deterministic scenes 120 times and asserts cache hits after warm-up. Historical 1.0.3.90 target-PID resource baselines live in the CHANGELOG record `change-20260705T061200Z-1-0-3-90-radar-independent-lifecycle-stress-validation`.
+以下展示边界只允许复制、格式化和 clone：
+
+- `BuildRadarTileSnapshot(Claude)`
+- `BuildServiceHealth()`
+- `WidgetForm.BuildMetricTileFeed()` 中的 Claude tile 投影
+
+这些路径不得启动 HTTP/provider 请求、读取 token 或缓存文件、修改 quota deadline，或写入 owner state。手动刷新必须走共享刷新 token 与 owner 调度入口。
+
+## 9. 设置与安全边界
+
+设置页只保留 Claude setup-token、请求保护和必要的 provider/family 控制。Claude 没有公共 JSON、homepage fallback、社区评分、本地公共额度 fallback 或模型 key 设置；DeepSeek 没有 API key、余额和余额提醒设置。
+
+setup-token 只从环境变量或 `dpapi-v1:` CurrentUser envelope 读取，不写入 `settings.ini`、日志或 snapshot。旧明文/无版本密文只有在严格 validator 通过后才原子迁移；DPAPI 损坏或未知 Base64 必须 fail-closed 并保留原字节。OAuth token、Authorization header、完整响应正文和 statusline 原始输入不得记录；HTTP 正文统一经过有界读取器。
+
+## 10. 验证
+
+建议验证：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPath .\_build\DesktopCodexAssistant-arm64-test.exe -Platform arm64
+.\_build\DesktopCodexAssistant-arm64-test.exe --test
+.\_build\DesktopCodexAssistant-arm64-test.exe --test-settings-bindings
+.\_build\DesktopCodexAssistant-arm64-test.exe --test-layout
+.\_build\DesktopCodexAssistant-arm64-test.exe --test-radar-display-lifecycle --iterations 20
+.\_build\DesktopCodexAssistant-arm64-test.exe --render-tilecolumn --out .\_build\tilecolumn
+```
+
+验收重点是：共享 owner 从未可见、官方 usage/statusline 是唯一 Claude 额度来源、`claude-quota.ini` 原子且有新鲜度保护、CLD tile 显示 5 小时/周额度与两个 reset、Claude IQ/评分/效率恒 unknown，以及 DeepSeek 仅保留服务健康。

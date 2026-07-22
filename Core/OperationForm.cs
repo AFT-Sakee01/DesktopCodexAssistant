@@ -55,6 +55,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly Func<bool, bool> setAiBlockAction;
     private readonly Func<bool, bool> setQuotaPlanAction;
     private readonly Func<string, bool, bool> setBooleanSettingAction;
+    private readonly Action<WidgetSettings> persistGuardStateAction;
     private readonly System.Windows.Forms.Timer animationTimer;
     private readonly System.Windows.Forms.Timer foregroundFpsTimer;
     private readonly System.Windows.Forms.Timer restartSingleClickTimer;
@@ -91,9 +92,8 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private RectangleF[] buttonRects;
     private bool buttonRectsValid;
     private Bitmap interactionHitMask;
-    private OperationQuickGridForm quickGridForm;
 
-    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction, Func<string, bool, bool> setBooleanSettingAction)
+    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction, Func<string, bool, bool> setBooleanSettingAction, Action<WidgetSettings> persistGuardStateAction = null)
     {
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
@@ -107,6 +107,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.setAiBlockAction = setAiBlockAction;
         this.setQuotaPlanAction = setQuotaPlanAction;
         this.setBooleanSettingAction = setBooleanSettingAction;
+        this.persistGuardStateAction = persistGuardStateAction;
         ApplicationIcon.ApplyTo(this);
         this.isAsusZenbookDevice = DetectAsusZenbookDevice();
         this.myAsusInstalled = DetectMyAsusInstalled();
@@ -195,10 +196,10 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.appSettingsSingleClickTimer.Tick -= OnAppSettingsSingleClickTimerTick;
         this.appSettingsSingleClickTimer.Dispose();
         DisposeSpecBoardForm();
-        DisposeQuickGridForm();
         DisposeLauncherTrioForm();
         DisposeCodexTaskBoardForm();
         DisposeGuardBoardForm();
+        DisposeCodexIqBoardForm();
         if (Interlocked.CompareExchange(ref this.foregroundFpsReadRunning, 0, 0) == 0)
         {
             this.foregroundFpsReader.Dispose();
@@ -323,39 +324,21 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         UpdateForegroundFpsTimer();
         RefreshSeelenUiStatus(DateTime.UtcNow, true);
         RefreshMemoryPieSnapshot(DateTime.UtcNow, true);
-        if (this.quickGridForm != null && !this.quickGridForm.IsDisposed)
-        {
-            this.quickGridForm.ApplyRuntimeSettings(this.CurrentSettings);
-        }
-
         // A left-docked board must exist from startup even while collapsed: its dock tab is the only
         // always-visible surface, so the (hidden) board has to be constructed to own it.
-        if (this.CurrentSettings.SpecBoardAutoPopupEnabled || this.CurrentSettings.SpecBoardLeftDockEnabled)
+        SpecBoardForm autoPopupForm = EnsureSpecBoardForm();
+        if (this.CurrentSettings.SpecBoardAutoPopupEnabled)
         {
-            SpecBoardForm autoPopupForm = EnsureSpecBoardForm();
-            if (this.CurrentSettings.SpecBoardAutoPopupEnabled)
-            {
-                autoPopupForm.StartAutoPopupMonitoring();
-            }
-        }
-        else if (this.specBoardForm != null && !this.specBoardForm.IsDisposed)
-        {
-            this.specBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
+            autoPopupForm.StartAutoPopupMonitoring();
         }
 
-        if (this.CurrentSettings.CodexTaskBoardLeftDockEnabled)
-        {
-            EnsureCodexTaskBoardForm();
-        }
-        else if (this.codexTaskBoardForm != null && !this.codexTaskBoardForm.IsDisposed)
-        {
-            this.codexTaskBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
-        }
+        EnsureCodexTaskBoardForm();
 
-        // The guard board is always built at startup, including when its left-edge tab is disabled:
-        // its hidden runtime owns sleep/display requirements and deadline maintenance independently
-        // of whether the presentation surface is enabled.
+        // The guard board is always built at startup: its hidden runtime owns sleep/display
+        // requirements and deadline maintenance while its canonical tab remains collapsed.
         EnsureGuardBoardForm();
+
+        EnsureCodexIqBoardForm();
 
         if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed)
         {
@@ -413,6 +396,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         }
 
         SetGuardBoardHiddenForFullscreen(hidden);
+        SetCodexIqBoardHiddenForFullscreen(hidden);
 
         if (this.hiddenForFullscreen == hidden &&
             ((hidden && !this.Visible) || (!hidden && this.Visible)))
@@ -459,6 +443,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         }
 
         RecoverGuardBoardAfterDisplayResume();
+        RecoverCodexIqBoardAfterDisplayResume();
 
         PositionOperationWindow();
         UpdateForegroundFpsTimer();
@@ -481,6 +466,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         }
 
         PrepareGuardBoardForDisplaySuspend();
+        PrepareCodexIqBoardForDisplaySuspend();
         ResetDisplayRenderResources();
     }
 
@@ -2628,10 +2614,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     public void RefreshNightScheduleFromOwnerTick()
     {
         RefreshNightScheduleAtExistingTick();
-        if (this.quickGridForm != null && !this.quickGridForm.IsDisposed)
-        {
-            this.quickGridForm.RefreshNightScheduleFromOwnerTick();
-        }
         if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed)
         {
             this.launcherTrioForm.RefreshNightScheduleFromOwnerTick();
@@ -3550,12 +3532,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         RunMouseButtonAcceptanceSelfTest();
         RunOperationDoubleClickRoutingSelfTest();
         RunRadialDialSelfTest();
-        RunQuickGridSelfTest();
         AiQuickMenuForm.RunSelfTest();
         RunCodexTaskBoardPlacementSelfTest();
         EdgeDockTabForm.RunSelfTest();
         OutsideClickDismissalMonitor.RunSelfTest();
         PathPingProbeReader.RunSelfTest();
+        AiRequestProtection.RunSelfTest();
     }
 
     private static void RunInteractionHitMaskSelfTest()

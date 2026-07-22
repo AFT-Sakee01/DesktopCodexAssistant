@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Management;
 using System.Runtime.InteropServices;
@@ -13,14 +12,20 @@ using Windows.System.Power;
 
 internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 {
-    private const int RenderSecondBoundaryOffsetMs = 30;
+    private const int SamplingTimerBoundaryOffsetMs = 30;
     private readonly System.Windows.Forms.Timer timer;
-    private readonly System.Windows.Forms.Timer hoverTimer;
     // WMI access is single-flight. Forced events are coalesced into these pending flags.
     private readonly object samplingSync = new object();
     private readonly Dictionary<string, DateTime> thermalCriticalSinceUtc = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> thermalAlertNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-    private bool hiddenForFullscreen;
+    // Headless ownership is deliberately independent from fullscreen visibility. The power tile
+    // still needs this form's sampler and power-notification HWND after the retired window stops
+    // being shown, while fullscreen hiding remains a presentation-only state.
+    // This type is permanently headless. The readonly invariant blocks any stale Show call while
+    // preserving its sampler and notification HWND for the Power metric tile.
+    private readonly bool headlessDataOwner = true;
+    private bool dataOwnerRuntimeStarted;
+    private bool ownedRuntimeResourcesDisposed;
     private bool samplingWorkerRunning;
     private bool pendingPowerSample;
     private bool pendingThermalSample;
@@ -28,7 +33,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     private bool sessionActive = true;
     private bool displayActive = true;
     private bool powerSuspended;
-    private bool suppressSizeRender;
+    private bool displayResumePrimePending;
+    private int displayResumePrimeCountForSelfTest;
     // Native registrations wake the sampler immediately; timed sampling remains the fallback.
     private IntPtr displayPowerNotificationHandle;
     private IntPtr acDcPowerNotificationHandle;
@@ -41,14 +47,6 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     private DateTime cachedPowerReadingUtc;
     private List<ThermalReading> cachedThermalReadings = new List<ThermalReading>();
     private DateTime cachedThermalReadingsUtc;
-    private int renderTickCount;
-    private double hoverOpacityProgress;
-    private DateTime hoverOpacityLastUtc;
-    private DateTime reverseHoverRevealUntilUtc;
-    private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
-    private bool autoHideKeepAliveActive;
-    private bool sharedInteractionPolling;
-    private readonly UiFontCache fontCache = new UiFontCache();
 
     private struct PowerReading
     {
@@ -103,31 +101,17 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         this.CurrentSettings.Normalize();
         ApplicationIcon.ApplyTo(this);
 
-        this.SetStyle(
-            ControlStyles.AllPaintingInWmPaint |
-            ControlStyles.OptimizedDoubleBuffer |
-            ControlStyles.ResizeRedraw |
-            ControlStyles.UserPaint,
-            true);
-
-        InitializeLayerScaleFromCurrentDpi();
-        ApplyLayerScaleFromSettings(this.CurrentSettings);
-
         this.FormBorderStyle = FormBorderStyle.None;
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
-        this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
-        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
-        this.Size = GetDesiredSize();
+        this.MinimumSize = new Size(1, 1);
+        this.MaximumSize = new Size(1, 1);
+        this.Size = new Size(1, 1);
 
         this.timer = new System.Windows.Forms.Timer();
-        this.timer.Interval = GetNextRenderTickIntervalMs();
+        this.timer.Interval = GetNextSamplingTickIntervalMs();
         this.timer.Tick += OnTimerTick;
-        this.hoverTimer = new System.Windows.Forms.Timer();
-        this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
-        this.hoverTimer.Tick += OnHoverTimerTick;
         this.effectivePowerModeCallback = OnEffectivePowerModeChanged;
         SystemEvents.SessionSwitch += OnSystemSessionSwitch;
     }
@@ -135,15 +119,105 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        // SetVisibleCore normally prevents this path. Keep the defensive hide so a future
+        // WinForms lifecycle change cannot resurrect the retired window.
+        if (this.Visible)
+        {
+            this.Hide();
+        }
+    }
+
+    protected override void SetVisibleCore(bool value)
+    {
+        // Headless data ownership must remain stronger than any legacy Show call.
+        base.SetVisibleCore(false);
+    }
+
+    // Starts the sampler as a permanently hidden data owner. Call this on the WinForms UI thread:
+    // creating the handle is required so display/power lifecycle notifications keep working even
+    // though Show/OnShown is never used.
+    public void StartHeadlessDataOwner()
+    {
+        if (this.IsDisposed || this.ownedRuntimeResourcesDisposed)
+        {
+            throw new ObjectDisposedException(nameof(PowerThermalForm));
+        }
+
+        if (this.IsHandleCreated && this.InvokeRequired)
+        {
+            this.Invoke((MethodInvoker)StartHeadlessDataOwner);
+            return;
+        }
+
+        if (this.headlessDataOwner && this.dataOwnerRuntimeStarted)
+        {
+            return;
+        }
+
+        if (this.Visible)
+        {
+            this.Hide();
+        }
+
+        // Accessing Handle creates the hidden message target and runs OnHandleCreated, which owns
+        // the existing console-display, battery, power-scheme, and effective-mode registrations.
+        if (this.Handle == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("Power data-owner notification handle was not created.");
+        }
+
         ApplyRuntimeSettings(this.CurrentSettings);
-        PositionPowerThermalWindow();
-        this.timer.Start();
+        StartDataOwnerRuntime();
+    }
+
+    // Final shutdown for the headless owner. The application creates one owner for its lifetime,
+    // so Stop intentionally tears down registrations/timers and is idempotent rather than being a
+    // pause/resume switch. Dispose and OnFormClosed share this exact cleanup path.
+    public void StopHeadlessDataOwner()
+    {
+        if (this.IsDisposed || this.ownedRuntimeResourcesDisposed)
+        {
+            return;
+        }
+
+        if (this.IsHandleCreated && this.InvokeRequired)
+        {
+            this.Invoke((MethodInvoker)StopHeadlessDataOwner);
+            return;
+        }
+
+        if (this.Visible)
+        {
+            this.Hide();
+        }
+
+        DisposeOwnedRuntimeResources();
+    }
+
+    private void StartDataOwnerRuntime()
+    {
+        if (this.formClosing || this.ownedRuntimeResourcesDisposed)
+        {
+            return;
+        }
+
+        if (!this.dataOwnerRuntimeStarted)
+        {
+            this.dataOwnerRuntimeStarted = true;
+            this.timer.Start();
+        }
+
         RequestSampling(true, true, true);
     }
 
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        if (this.formClosing || this.ownedRuntimeResourcesDisposed)
+        {
+            return;
+        }
+
         // Register both broad power broadcasts and specific setting GUIDs. Some devices
         // expose only a subset, so failure of one registration is intentionally non-fatal.
         this.displayPowerNotificationHandle = NativeMethods.RegisterConsoleDisplayStateNotification(this.Handle);
@@ -166,6 +240,12 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        UnregisterPowerLifecycleNotifications();
+        base.OnHandleDestroyed(e);
+    }
+
+    private void UnregisterPowerLifecycleNotifications()
+    {
         NativeMethods.UnregisterPowerNotification(this.displayPowerNotificationHandle);
         NativeMethods.UnregisterPowerNotification(this.acDcPowerNotificationHandle);
         NativeMethods.UnregisterPowerNotification(this.batteryPowerNotificationHandle);
@@ -178,12 +258,24 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         this.powerSchemeNotificationHandle = IntPtr.Zero;
         this.energySaverNotificationHandle = IntPtr.Zero;
         this.effectivePowerModeNotificationHandle = IntPtr.Zero;
-        base.OnHandleDestroyed(e);
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        DisposeOwnedRuntimeResources();
+        base.OnFormClosed(e);
+    }
+
+    private void DisposeOwnedRuntimeResources()
+    {
+        if (this.ownedRuntimeResourcesDisposed)
+        {
+            return;
+        }
+
+        this.ownedRuntimeResourcesDisposed = true;
         this.formClosing = true;
+        this.dataOwnerRuntimeStarted = false;
         lock (this.samplingSync)
         {
             this.pendingPowerSample = false;
@@ -194,32 +286,19 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         this.timer.Stop();
         this.timer.Tick -= OnTimerTick;
         this.timer.Dispose();
-        this.hoverTimer.Stop();
-        this.hoverTimer.Tick -= OnHoverTimerTick;
-        this.hoverTimer.Dispose();
-        this.fontCache.Dispose();
-        base.OnFormClosed(e);
+        UnregisterPowerLifecycleNotifications();
     }
 
-    protected override void OnSizeChanged(EventArgs e)
+    protected override void Dispose(bool disposing)
     {
-        base.OnSizeChanged(e);
-        DisposeRenderBuffer();
-        this.fontCache.Dispose();
-        using (GraphicsPath path = RoundedRectangle(new RectangleF(0, 0, this.Width, this.Height), S(12)))
+        if (disposing)
         {
-            Region oldRegion = this.Region;
-            this.Region = new Region(path);
-            if (oldRegion != null)
-            {
-                oldRegion.Dispose();
-            }
+            // Direct Dispose on a never-shown Form does not raise FormClosed. Sharing the cleanup
+            // prevents SystemEvents, native callbacks, and timers from retaining the data owner.
+            DisposeOwnedRuntimeResources();
         }
 
-        if (!this.suppressSizeRender)
-        {
-            RenderLayeredWindow();
-        }
+        base.Dispose(disposing);
     }
 
     protected override void WndProc(ref Message m)
@@ -236,7 +315,6 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
         if (m.Msg == WM_DISPLAYCHANGE || m.Msg == WM_SETTINGCHANGE)
         {
-            PositionPowerThermalWindow();
             if (m.Msg == WM_SETTINGCHANGE)
             {
                 RequestSampling(true, false, true);
@@ -270,14 +348,15 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         if (e.Reason == SessionSwitchReason.SessionLock)
         {
             this.sessionActive = false;
-            ScheduleNextRenderTick();
+            this.displayResumePrimePending = true;
+            ScheduleNextSamplingTick();
             return;
         }
 
         if (e.Reason == SessionSwitchReason.SessionUnlock)
         {
             this.sessionActive = true;
-            RequestSampling(true, true, true);
+            TryPrimeDisplayResumeOnce();
         }
     }
 
@@ -287,7 +366,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         if (eventType == NativeMethods.PBT_APMSUSPEND)
         {
             this.powerSuspended = true;
-            ScheduleNextRenderTick();
+            this.displayResumePrimePending = true;
+            ScheduleNextSamplingTick();
             return;
         }
 
@@ -297,7 +377,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         {
             this.powerSuspended = false;
             this.displayActive = true;
-            RequestSampling(true, true, true);
+            TryPrimeDisplayResumeOnce();
             return;
         }
 
@@ -324,11 +404,12 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
                 this.displayActive = active;
                 if (active)
                 {
-                    RequestSampling(true, true, true);
+                    TryPrimeDisplayResumeOnce();
                 }
                 else
                 {
-                    ScheduleNextRenderTick();
+                    this.displayResumePrimePending = true;
+                    ScheduleNextSamplingTick();
                 }
             }
 
@@ -371,40 +452,15 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     private bool IsSamplingAllowed()
     {
-        // Pausing here prevents WMI wakeups while the result cannot be observed. In integrated mode
-        // this window stays hidden but the main widget draws its readings, so the result IS
-        // observable and sampling must continue — gating on Visible alone would starve the strip.
+        // Sampling belongs exclusively to the explicitly started headless owner. Visibility is
+        // intentionally absent from this gate so fullscreen/layout policies cannot starve tiles.
         return !this.formClosing &&
-            !this.hiddenForFullscreen &&
+            this.headlessDataOwner &&
+            this.dataOwnerRuntimeStarted &&
+            !this.ownedRuntimeResourcesDisposed &&
             this.sessionActive &&
             this.displayActive &&
-            !this.powerSuspended &&
-            (this.Visible || IsIntegratedIntoWidget());
-    }
-
-    internal bool IsIntegratedIntoWidget()
-    {
-        return this.CurrentSettings != null && this.CurrentSettings.PowerThermalIntegratedEnabled;
-    }
-
-    // Integrated mode keeps the form alive (it owns the sampler) but off-screen.
-    internal void ApplyIntegratedVisibility()
-    {
-        if (this.formClosing || this.IsDisposed)
-        {
-            return;
-        }
-
-        bool shouldHide = IsIntegratedIntoWidget();
-        if (shouldHide && this.Visible)
-        {
-            this.Hide();
-        }
-        else if (!shouldHide && !this.Visible && !this.hiddenForFullscreen)
-        {
-            this.Show();
-            PositionPowerThermalWindow();
-        }
+            !this.powerSuspended;
     }
 
     public void ApplyRuntimeSettings(WidgetSettings settings)
@@ -413,9 +469,6 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         WidgetPerformanceMode oldPerformanceMode = this.CurrentSettings.PerformanceMode;
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
-        ApplyLayerScaleFromSettings(this.CurrentSettings);
-        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MinPowerThermalHeight));
-        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxPowerThermalWidth, WidgetSettings.MaxPowerThermalAutoHeight + S(32)));
         if (oldThermalTestMode != this.CurrentSettings.ThermalTestMode)
         {
             this.thermalCriticalSinceUtc.Clear();
@@ -423,34 +476,13 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             this.cachedThermalReadingsUtc = DateTime.MinValue;
         }
 
-        ApplyPerformanceTimerIntervals();
-        Size desiredSize = GetDesiredSize();
-        if (this.Size != desiredSize)
+        ScheduleNextSamplingTick();
+        // Thermal-test mode and performance mode remain live data settings; geometry, z-order,
+        // interaction, burn-in, and layered-render work are permanently retired.
+        if (this.Visible)
         {
-            SetSizeWithoutImmediateRender(desiredSize);
+            this.Hide();
         }
-
-        bool shouldBeTopMost = this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
-        if (this.TopMost != shouldBeTopMost)
-        {
-            this.TopMost = shouldBeTopMost;
-        }
-
-        ApplyClickThroughStyle();
-        UpdateHoverAnimationTimer();
-        NativeMethods.SetWindowPos(
-            this.Handle,
-            GetLayeredWidgetInsertAfter(shouldBeTopMost, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
-            0,
-            0,
-            0,
-            0,
-            NativeMethods.SWP_NOACTIVATE |
-            NativeMethods.SWP_NOMOVE |
-            NativeMethods.SWP_NOSIZE);
-
-        PositionPowerThermalWindow();
-        RenderLayeredWindow();
 
         if (oldThermalTestMode != this.CurrentSettings.ThermalTestMode ||
             oldPerformanceMode != this.CurrentSettings.PerformanceMode)
@@ -461,35 +493,12 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     public void SetHiddenForFullscreen(bool hidden)
     {
-        if (this.hiddenForFullscreen == hidden &&
-            ((hidden && !this.Visible) || (!hidden && this.Visible)))
+        // Kept as a lifecycle seam for the shared visibility coordinator. The owner never becomes
+        // visible and this flag never controls sampling.
+        if (this.Visible)
         {
-            return;
+            this.Hide();
         }
-
-        this.hiddenForFullscreen = hidden;
-        if (hidden)
-        {
-            if (this.Visible)
-            {
-                this.Hide();
-            }
-
-            UpdateHoverAnimationTimer();
-            return;
-        }
-
-        // Leaving fullscreen must not un-hide the window when the module is integrated into the
-        // main widget; sampling still resumes so the strip keeps updating.
-        if (!this.Visible && !IsIntegratedIntoWidget())
-        {
-            this.Show();
-        }
-
-        PositionPowerThermalWindow();
-        RenderLayeredWindow();
-        UpdateHoverAnimationTimer();
-        RequestSampling(true, true, true);
     }
 
     public void ForceRefresh()
@@ -506,21 +515,37 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         this.sessionActive = true;
         this.cachedPowerReadingUtc = DateTime.MinValue;
         this.cachedThermalReadingsUtc = DateTime.MinValue;
-        ResetDisplayRenderResources();
-        PositionPowerThermalWindow();
-        RenderLayeredWindow();
-        RequestSampling(true, true, true);
-        ScheduleNextRenderTick();
+        TryPrimeDisplayResumeOnce();
+        ScheduleNextSamplingTick();
     }
 
     public void PrepareForDisplaySuspend()
     {
-        ResetDisplayRenderResources();
+        this.powerSuspended = true;
+        this.displayActive = false;
+        this.displayResumePrimePending = true;
+    }
+
+    private void TryPrimeDisplayResumeOnce()
+    {
+        if (!this.displayResumePrimePending || !IsSamplingAllowed())
+        {
+            return;
+        }
+
+        this.displayResumePrimePending = false;
+        unchecked
+        {
+            this.displayResumePrimeCountForSelfTest++;
+        }
+
+        this.cachedPowerReadingUtc = DateTime.MinValue;
+        this.cachedThermalReadingsUtc = DateTime.MinValue;
+        RequestSampling(true, true, true);
     }
 
     private void OnTimerTick(object sender, EventArgs e)
     {
-        RefreshNightScheduleAtExistingTick();
         try
         {
             if (!IsSamplingAllowed())
@@ -545,31 +570,20 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         }
         finally
         {
-            ScheduleNextRenderTick();
+            ScheduleNextSamplingTick();
         }
     }
 
-    private void ApplyPerformanceTimerIntervals()
+    private void ScheduleNextSamplingTick()
     {
-        ScheduleNextRenderTick();
-
-        int hoverInterval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
-        if (this.hoverTimer.Interval != hoverInterval)
-        {
-            this.hoverTimer.Interval = hoverInterval;
-        }
-    }
-
-    private void ScheduleNextRenderTick()
-    {
-        int interval = GetNextRenderTickIntervalMs();
+        int interval = GetNextSamplingTickIntervalMs();
         if (this.timer.Interval != interval)
         {
             this.timer.Interval = interval;
         }
     }
 
-    private int GetNextRenderTickIntervalMs()
+    private int GetNextSamplingTickIntervalMs()
     {
         if (!IsSamplingAllowed())
         {
@@ -586,7 +600,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             ? 50.0
             : thermalInterval - (now - this.cachedThermalReadingsUtc).TotalMilliseconds;
         int interval = (int)Math.Ceiling(Math.Min(powerRemaining, thermalRemaining));
-        return Math.Max(50, Math.Min(5000, interval + RenderSecondBoundaryOffsetMs));
+        return Math.Max(50, Math.Min(5000, interval + SamplingTimerBoundaryOffsetMs));
     }
 
     private SamplingPolicy GetSamplingPolicy()
@@ -653,7 +667,7 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
     {
         if ((!readPower && !readThermal) || !IsSamplingAllowed())
         {
-            ScheduleNextRenderTick();
+            ScheduleNextSamplingTick();
             return;
         }
 
@@ -751,10 +765,8 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
 
     private void ApplySamplingResult(SamplingResult result)
     {
-        // All cache, alert-state, layout, and rendering changes stay on the UI thread.
-        PowerReading oldPower = this.cachedPowerReading;
-        List<ThermalReading> oldAlerts = GetThermalAlerts();
-
+        // Cache replacement and alert-state transitions stay on the UI thread. The owner has no
+        // presentation state, so a completed sample never performs layout, paint, or hover work.
         if (result.PowerSampled)
         {
             this.cachedPowerReading = result.Power;
@@ -772,41 +784,9 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
                 this.CurrentSettings.ThermalTestMode != ThermalTestMode.Off);
         }
 
-        List<ThermalReading> newAlerts = GetThermalAlerts();
-        bool contentChanged =
-            (result.PowerSampled && !PowerDisplayEquals(oldPower, this.cachedPowerReading)) ||
-            (result.ThermalSampled && !ThermalDisplayEquals(oldAlerts, newAlerts));
-        // Critical temperature and very low battery colors alternate once per completed sample.
-        bool animatedWarning =
-            HasCriticalThermalAlert(newAlerts) ||
-            (this.cachedPowerReading.BatteryPercentKnown && this.cachedPowerReading.BatteryPercent < 10);
-
-        this.renderTickCount++;
-        Size desiredSize = GetDesiredSize(newAlerts);
-        bool sizeChanged = this.Size != desiredSize;
-        if (sizeChanged)
-        {
-            SetSizeWithoutImmediateRender(desiredSize);
-            PositionPowerThermalWindow();
-        }
-
-        bool positionChanged = false;
-        if (!this.hiddenForFullscreen &&
-            this.Visible &&
-            ShouldRefreshBurnInPosition())
-        {
-            PositionPowerThermalWindow();
-            positionChanged = true;
-        }
-
         lock (this.samplingSync)
         {
             this.samplingWorkerRunning = false;
-        }
-
-        if (contentChanged || animatedWarning || sizeChanged || positionChanged)
-        {
-            RenderLayeredWindow();
         }
 
         bool pendingPower;
@@ -825,1331 +805,18 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         }
         else
         {
-            ScheduleNextRenderTick();
+            ScheduleNextSamplingTick();
         }
     }
 
-    private void SetSizeWithoutImmediateRender(Size size)
+    protected override bool CanRenderLayeredWindow()
     {
-        this.suppressSizeRender = true;
-        try
-        {
-            this.Size = size;
-        }
-        finally
-        {
-            this.suppressSizeRender = false;
-        }
+        return false;
     }
 
-    private void OnHoverTimerTick(object sender, EventArgs e)
-    {
-        bool animationActive = ProcessInteractionTick();
-        int desiredInterval = animationActive
-            ? WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode)
-            : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
-        if (this.hoverTimer.Interval != desiredInterval)
-        {
-            this.hoverTimer.Interval = desiredInterval;
-        }
-    }
-
-    private bool ProcessInteractionTick()
-    {
-        ApplyClickThroughStyle();
-        bool opacityChanged = UpdateHoverOpacityAnimation();
-        bool hoverTarget = IsHoverOpacityTargetActive();
-        bool animationActive = Math.Abs(this.hoverOpacityProgress - (hoverTarget ? 1.0 : 0.0)) > 0.001;
-        if (opacityChanged && !this.hiddenForFullscreen && this.Visible)
-        {
-            RenderLayeredWindow(false);
-        }
-
-        return animationActive;
-    }
-
-    public void SetSharedInteractionPolling(bool shared)
-    {
-        this.sharedInteractionPolling = shared;
-        this.hoverOpacityLastUtc = DateTime.UtcNow;
-        UpdateHoverAnimationTimer();
-    }
-
-    public void SetAutoHideKeepAliveActive(bool active)
-    {
-        if (this.autoHideKeepAliveActive == active)
-        {
-            return;
-        }
-
-        this.autoHideKeepAliveActive = active;
-        if (active)
-        {
-            this.hoverOpacityDelayState.Reset();
-            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
-        }
-    }
-
-    public bool ProcessSharedInteractionTick()
-    {
-        if (!this.sharedInteractionPolling ||
-            this.hiddenForFullscreen ||
-            (!IsHoverOpacityRuntimeEnabled() && !NeedsClickThroughPolling()))
-        {
-            return false;
-        }
-
-        return ProcessInteractionTick();
-    }
-
-    private void UpdateHoverAnimationTimer()
-    {
-        if (!this.hiddenForFullscreen &&
-            (IsHoverOpacityRuntimeEnabled() || NeedsClickThroughPolling()))
-        {
-            if (this.sharedInteractionPolling)
-            {
-                this.hoverTimer.Stop();
-                return;
-            }
-
-            if (!this.hoverTimer.Enabled)
-            {
-                this.hoverOpacityLastUtc = DateTime.UtcNow;
-                this.hoverTimer.Start();
-            }
-
-            return;
-        }
-
-        if (this.hoverTimer.Enabled)
-        {
-            this.hoverTimer.Stop();
-        }
-
-        if (this.hoverOpacityProgress > 0.0)
-        {
-            this.hoverOpacityProgress = 0.0;
-            RenderLayeredWindow(false);
-        }
-    }
-
-    private bool UpdateHoverOpacityAnimation()
-    {
-        DateTime now = DateTime.UtcNow;
-        double elapsed = this.hoverOpacityLastUtc == DateTime.MinValue ? 0.03 : (now - this.hoverOpacityLastUtc).TotalSeconds;
-        this.hoverOpacityLastUtc = now;
-
-        bool hovered = IsHoverOpacityTargetActive();
-
-        double target = hovered ? 1.0 : 0.0;
-        double old = this.hoverOpacityProgress;
-        double step = Math.Max(0.0, Math.Min(1.0, elapsed / 0.15));
-        if (this.hoverOpacityProgress < target)
-        {
-            this.hoverOpacityProgress = Math.Min(target, this.hoverOpacityProgress + step);
-        }
-        else if (this.hoverOpacityProgress > target)
-        {
-            this.hoverOpacityProgress = Math.Max(target, this.hoverOpacityProgress - step);
-        }
-
-        return Math.Abs(old - this.hoverOpacityProgress) > 0.001;
-    }
-
-    private bool IsHoverOpacityTargetActive()
-    {
-        return HoverInteractionPolicy.IsHoverOpacityTargetActive(
-            this.CurrentSettings,
-            this.Bounds,
-            this.hiddenForFullscreen,
-            this.Visible,
-            ref this.reverseHoverRevealUntilUtc,
-            this.hoverOpacityDelayState,
-            this.autoHideKeepAliveActive);
-    }
-
-    private bool IsHoverOpacityRuntimeEnabled()
-    {
-        return this.CurrentSettings.HoverOpacityEnabled || this.CurrentSettings.ForceHoverOpacityActive;
-    }
-
-    private void PositionPowerThermalWindow()
-    {
-        if (this.hiddenForFullscreen)
-        {
-            return;
-        }
-
-        // In integrated mode the window must stay hidden, and the SetWindowPos below carries
-        // SWP_SHOWWINDOW — without this guard every timer tick would pop it back on screen.
-        if (IsIntegratedIntoWidget())
-        {
-            return;
-        }
-
-        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModulePowerThermal);
-        Size desiredSize = GetDesiredSize();
-        if (this.Size != desiredSize)
-        {
-            SetSizeWithoutImmediateRender(desiredSize);
-        }
-
-        int left;
-        if (IsPowerThermalAutoLeft())
-        {
-            int baseWidth = Math.Max(
-                WidgetSettings.MinPowerThermalWidth,
-                Math.Min(WidgetSettings.MaxPowerThermalWidth, this.CurrentSettings.PowerThermalWidth));
-            int mappedLeft = this.CurrentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModulePowerThermal, workArea, this.CurrentSettings.PowerThermalLeftX);
-            int anchorRight = mappedLeft + this.CurrentSettings.ScaleResolutionCompatibilityPixels(baseWidth);
-            anchorRight = Math.Max(workArea.Left + this.Width, Math.Min(anchorRight, workArea.Right));
-            left = anchorRight - this.Width;
-            left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
-        }
-        else
-        {
-            left = this.CurrentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModulePowerThermal, workArea, this.CurrentSettings.PowerThermalLeftX);
-            left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
-        }
-
-        int baseHeight = Math.Max(WidgetSettings.MinPowerThermalHeight, this.CurrentSettings.PowerThermalHeight);
-        int mappedBottom = this.CurrentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModulePowerThermal, workArea, this.CurrentSettings.PowerThermalBottomY);
-        int top = mappedBottom - this.CurrentSettings.ScaleResolutionCompatibilityPixels(baseHeight) + 1;
-        top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
-        Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
-            new Point(left, top),
-            this.Size,
-            workArea,
-            BurnInProtection.PowerThermalSalt);
-        left = shiftedLocation.X;
-        top = shiftedLocation.Y;
-        this.Location = new Point(left, top);
-
-        NativeMethods.SetWindowPos(
-            this.Handle,
-            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
-            left,
-            top,
-            this.Width,
-            this.Height,
-            NativeMethods.SWP_NOACTIVATE |
-            NativeMethods.SWP_NOOWNERZORDER |
-            NativeMethods.SWP_FRAMECHANGED |
-            NativeMethods.SWP_SHOWWINDOW);
-    }
-
-    private Size GetDesiredSize()
-    {
-        return GetDesiredSize(GetThermalAlerts());
-    }
-
-    private Size GetDesiredSize(List<ThermalReading> alerts)
-    {
-        int width = this.CurrentSettings.PowerThermalWidth;
-        int height = Math.Max(WidgetSettings.MinPowerThermalHeight, Math.Min(WidgetSettings.MaxPowerThermalHeight, this.CurrentSettings.PowerThermalHeight));
-        if (this.CurrentSettings.PowerThermalAutoSizeEnabled)
-        {
-            if (IsPowerThermalAutoLeft())
-            {
-                width += GetThermalAutoExtensionWidth(alerts);
-            }
-            else if (IsPowerThermalAutoDown())
-            {
-                height += GetBatteryAutoExtensionHeight();
-                height += GetThermalAutoExtensionHeight(alerts);
-            }
-        }
-
-        width = Math.Max(WidgetSettings.MinPowerThermalWidth, Math.Min(WidgetSettings.MaxPowerThermalWidth, width));
-        int maxHeight = IsPowerThermalAutoDown() ? WidgetSettings.MaxPowerThermalAutoHeight : WidgetSettings.MaxPowerThermalHeight;
-        height = Math.Max(WidgetSettings.MinPowerThermalHeight, Math.Min(maxHeight, height));
-        return ScaleWindowSize(new Size(width, height));
-    }
-
-    private bool IsPowerThermalAutoLeft()
-    {
-        return this.CurrentSettings.PowerThermalAutoSizeEnabled &&
-            this.CurrentSettings.PowerThermalAutoDirection == PowerThermalAutoDirection.Left;
-    }
-
-    private bool IsPowerThermalAutoDown()
-    {
-        return this.CurrentSettings.PowerThermalAutoSizeEnabled &&
-            this.CurrentSettings.PowerThermalAutoDirection == PowerThermalAutoDirection.Down;
-    }
-
-    private int GetThermalAutoExtensionWidth(List<ThermalReading> alerts)
-    {
-        if (alerts == null || alerts.Count == 0)
-        {
-            return 0;
-        }
-
-        int maxVisible = GetMaxVisibleThermalAlerts();
-        int visibleSensors = Math.Min(maxVisible, alerts.Count);
-        bool hasMore = alerts.Count > visibleSensors;
-        float width = S(16);
-        float gap = S(4);
-        using (Font chipFont = CreateThermalChipFont())
-        {
-            if (hasMore)
-            {
-                string moreText = "+" + (alerts.Count - visibleSensors).ToString(CultureInfo.InvariantCulture);
-                width += MeasureThermalChipWidth(moreText, false, chipFont) + gap;
-            }
-
-            for (int i = 0; i < visibleSensors; i++)
-            {
-                string text = FormatThermalSensorName(alerts[i].Name);
-                width += MeasureThermalChipWidth(text, alerts[i].CriticalActive, chipFont);
-                if (i < visibleSensors - 1)
-                {
-                    width += gap;
-                }
-            }
-        }
-
-        return Math.Max(0, (int)Math.Ceiling(width));
-    }
-
-    private int GetThermalAutoExtensionHeight(List<ThermalReading> alerts)
-    {
-        if (alerts == null || alerts.Count == 0)
-        {
-            return 0;
-        }
-
-        int maxVisible = GetMaxVisibleThermalAlerts();
-        int visibleSensors = Math.Min(maxVisible, alerts.Count);
-        int chipCount = visibleSensors + (alerts.Count > visibleSensors ? 1 : 0);
-        if (chipCount <= 0)
-        {
-            return 0;
-        }
-
-        float chipHeight = GetThermalVerticalChipHeight();
-        float gap = S(4);
-        float bottomGap = S(7);
-        return Math.Max(0, (int)Math.Ceiling(chipHeight * chipCount + gap * Math.Max(0, chipCount - 1) + bottomGap));
-    }
-
-    private Font CreateThermalChipFont()
-    {
-        return DesignTokens.CreateUIFont(Math.Max(9.0f, 10.0f * this.LayerScale), FontStyle.Bold, GraphicsUnit.Pixel);
-    }
-
-    private int GetMaxVisibleThermalAlerts()
-    {
-        int count = this.CurrentSettings.PowerThermalAutoSizeEnabled
-            ? this.CurrentSettings.PowerThermalVisibleAlertCount
-            : WidgetSettings.DefaultPowerThermalVisibleAlerts;
-        return Math.Max(
-            WidgetSettings.MinPowerThermalVisibleAlerts,
-            Math.Min(WidgetSettings.MaxPowerThermalVisibleAlerts, count));
-    }
-
-    private float GetThermalVerticalChipHeight()
-    {
-        return S(20);
-    }
-
-    private float GetBatteryModuleTopGap()
-    {
-        return S(5);
-    }
-
-    private float GetBatteryModuleHeight()
-    {
-        return S(36);
-    }
-
-    private float GetBatteryModuleBottomGap()
-    {
-        return S(6);
-    }
-
-    private int GetBatteryAutoExtensionHeight()
-    {
-        return (int)Math.Ceiling(GetBatteryModuleTopGap() + GetBatteryModuleHeight() + GetBatteryModuleBottomGap());
-    }
-
-    private float MeasureThermalChipWidth(string text, bool criticalActive, Font font)
-    {
-        Size proposed = new Size(int.MaxValue, int.MaxValue);
-        Size measured = TextRenderer.MeasureText(
-            string.IsNullOrEmpty(text) ? "TZ" : text,
-            font,
-            proposed,
-            TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
-        float sidePadding = S(8);
-        return Math.Max(S(38), measured.Width + sidePadding * 2.0f);
-    }
-
-    private void ApplyClickThroughStyle()
-    {
-        if (!this.IsHandleCreated)
-        {
-            return;
-        }
-
-        bool clickThrough = ShouldClickThroughNow();
-        int exStyle = NativeMethods.GetWindowLong(this.Handle, NativeMethods.GWL_EXSTYLE);
-        int desired = clickThrough ?
-            (exStyle | NativeMethods.WS_EX_TRANSPARENT | NativeMethods.WS_EX_LAYERED) :
-            ((exStyle & ~NativeMethods.WS_EX_TRANSPARENT) | NativeMethods.WS_EX_LAYERED);
-
-        if (desired == exStyle)
-        {
-            return;
-        }
-
-        NativeMethods.SetWindowLong(this.Handle, NativeMethods.GWL_EXSTYLE, desired);
-        NativeMethods.SetWindowPos(
-            this.Handle,
-            IntPtr.Zero,
-            0,
-            0,
-            0,
-            0,
-            NativeMethods.SWP_NOACTIVATE |
-            NativeMethods.SWP_NOMOVE |
-            NativeMethods.SWP_NOSIZE |
-            NativeMethods.SWP_NOZORDER |
-            NativeMethods.SWP_FRAMECHANGED);
-    }
-
-    private bool ShouldClickThroughNow()
-    {
-        if (NativeMethods.IsClickThroughModifierDown())
-        {
-            return false;
-        }
-
-        return WidgetSettings.ShouldEnableClickThrough(
-            this.CurrentSettings.ClickThroughMode,
-            this.CurrentSettings.VisibilityMode);
-    }
-
-    private bool NeedsClickThroughPolling()
-    {
-        return WidgetSettings.ShouldEnableClickThrough(
-            this.CurrentSettings.ClickThroughMode,
-            this.CurrentSettings.VisibilityMode);
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        base.OnPaint(e);
-        DrawPowerThermalWindow(e.Graphics);
-    }
-
-    private void DrawPowerThermalWindow(Graphics g)
-    {
-        DrawBackground(g);
-        DrawContentLayer(g);
-    }
-
+    // LayeredWidgetFormBase requires a draw hook, but this owner never owns a visible surface.
     protected override void DrawWindowContent(Graphics g)
     {
-        DrawPowerThermalWindow(g);
-    }
-
-    protected override bool IsLayeredBurnInColorProtectionActive()
-    {
-        return IsBurnInColorProtectionActive();
-    }
-
-    private void ConfigureGraphics(Graphics g)
-    {
-        BurnInProtection.ConfigureGraphics(g, IsBurnInColorProtectionActive());
-    }
-
-    private void DrawBackground(Graphics g)
-    {
-        ConfigureGraphics(g);
-
-        int alpha = GetBackgroundOpacityAlpha();
-        using (GraphicsPath shell = RoundedRectangle(new RectangleF(0, 0, this.Width - 1, this.Height - 1), S(DesignTokens.Radius.Panel)))
-        using (SolidBrush background = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, alpha)))
-        {
-            g.FillPath(background, shell);
-        }
-    }
-
-    private void DrawContentLayer(Graphics g)
-    {
-        int contentAlpha = GetContentOpacityAlpha();
-        if (contentAlpha <= 0)
-        {
-            return;
-        }
-
-        if (contentAlpha >= 255)
-        {
-            DrawContent(g);
-            return;
-        }
-
-        using (Bitmap contentBitmap = new Bitmap(this.Width, this.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
-        using (Graphics contentGraphics = Graphics.FromImage(contentBitmap))
-        {
-            contentGraphics.Clear(Color.Transparent);
-            DrawContent(contentGraphics);
-            DrawingUtil.DrawImageWithAlpha(g, contentBitmap, contentAlpha);
-        }
-    }
-
-    // Render-variant dispatch (mirrors CodexRadarForm). Only Classic exists today; add a case and a
-    // sibling partial file (PowerThermalForm.<Name>.cs) to introduce an alternate layout.
-    private void DrawContent(Graphics g)
-    {
-        DrawContentClassic(g);
-    }
-
-    private void DrawContentClassic(Graphics g)
-    {
-        ConfigureGraphics(g);
-
-        using (GraphicsPath shell = RoundedRectangle(new RectangleF(0, 0, this.Width - 1, this.Height - 1), S(DesignTokens.Radius.Panel)))
-        using (Pen outline = new Pen(DesignTokens.White(DesignTokens.Alpha.ShellOutline), Math.Max(1, S(1))))
-        {
-            g.DrawPath(outline, shell);
-        }
-
-        List<ThermalReading> thermalAlerts = GetThermalAlerts();
-        float contentTop = S(5);
-        float contentHeight = Math.Max(10, this.Height - S(10));
-        if (IsPowerThermalAutoDown())
-        {
-            DrawDownExtendedContent(g, thermalAlerts, contentTop);
-            return;
-        }
-
-        // 1.0.5.80: the three-pane stat layout (Core/PowerThermalForm.ThreePane.cs) replaces the
-        // wide bar once there is room for three panes. Narrower fixed windows fall back to the
-        // wide bar, and both auto-size directions keep their own layouts.
-        if (!IsPowerThermalAutoLeft() && this.Width >= S(210))
-        {
-            DrawThreePaneContent(g, thermalAlerts);
-            return;
-        }
-
-        if (!IsPowerThermalAutoLeft() && this.Width >= S(150))
-        {
-            DrawWideBarContent(g, thermalAlerts, contentTop, contentHeight);
-            return;
-        }
-
-        float powerWidth;
-        float powerRight;
-        if (IsPowerThermalAutoLeft())
-        {
-            powerWidth = Math.Max(
-                WidgetSettings.MinPowerThermalWidth,
-                Math.Min(this.Width, this.CurrentSettings.PowerThermalWidth));
-            powerRight = this.Width;
-        }
-        else
-        {
-            RectangleF contentRect = new RectangleF(
-                S(10),
-                contentTop,
-                Math.Max(10, this.Width - S(30)),
-                contentHeight);
-            powerWidth = thermalAlerts.Count > 0
-                ? Math.Max(S(54), Math.Min(S(82), contentRect.Width * 0.36f))
-                : Math.Max(S(62), Math.Min(S(96), contentRect.Width * 0.42f));
-            if (thermalAlerts.Count == 0)
-            {
-                powerWidth = Math.Min(contentRect.Width, Math.Max(powerWidth, contentRect.Width * 0.48f));
-            }
-
-            powerRight = contentRect.Right;
-        }
-
-        RectangleF powerRect = new RectangleF(
-            Math.Max(0.0f, powerRight - powerWidth),
-            contentTop,
-            powerWidth,
-            contentHeight);
-
-        DrawPowerModule(g, powerRect);
-
-        if (thermalAlerts.Count > 0)
-        {
-            float thermalLeft = S(10);
-            float thermalRight = powerRect.Left - S(6);
-            RectangleF thermalRect = new RectangleF(
-                thermalLeft,
-                contentTop,
-                Math.Max(1.0f, thermalRight - thermalLeft),
-                contentHeight);
-            DrawThermalAlerts(g, thermalRect, thermalAlerts);
-        }
-    }
-
-    private void DrawDownExtendedContent(Graphics g, List<ThermalReading> thermalAlerts, float contentTop)
-    {
-        int baseHeight = Math.Max(WidgetSettings.MinPowerThermalHeight, Math.Min(WidgetSettings.MaxPowerThermalHeight, this.CurrentSettings.PowerThermalHeight));
-        float powerContentHeight = Math.Max(10, baseHeight - S(10));
-        RectangleF powerRect = new RectangleF(0, contentTop, this.Width, powerContentHeight);
-        DrawPowerModule(g, powerRect);
-
-        float batteryTop = baseHeight + GetBatteryModuleTopGap();
-        RectangleF batteryRect = new RectangleF(
-            S(10),
-            batteryTop,
-            Math.Max(1.0f, this.Width - S(20)),
-            GetBatteryModuleHeight());
-        DrawBatteryModule(g, batteryRect);
-
-        if (thermalAlerts.Count <= 0)
-        {
-            return;
-        }
-
-        float thermalTop = baseHeight + GetBatteryAutoExtensionHeight();
-        RectangleF thermalRect = new RectangleF(
-            S(10),
-            thermalTop,
-            Math.Max(1.0f, this.Width - S(20)),
-            Math.Max(1.0f, this.Height - thermalTop - S(7)));
-        DrawThermalAlertsVertical(g, thermalRect, thermalAlerts);
-    }
-
-    // Fixed-size wide-bar layout: the window stays at the configured size (sized to align with the
-    // radar window height and the main widget width), with the power watts module on the left, the
-    // battery module against the right edge, and thermal alert chips wrapping between them. Narrow
-    // fixed windows and both auto-size modes keep their previous layouts.
-    private void DrawWideBarContent(Graphics g, List<ThermalReading> thermalAlerts, float contentTop, float contentHeight)
-    {
-        float pad = S(10);
-        RectangleF contentRect = new RectangleF(pad, contentTop, Math.Max(10.0f, this.Width - pad * 2.0f), contentHeight);
-        float powerWidth = Math.Min(S(60), Math.Max(S(44), contentRect.Width * 0.30f));
-        float batteryWidth = Math.Min(S(60), Math.Max(S(46), contentRect.Width * 0.30f));
-        RectangleF powerRect = new RectangleF(contentRect.Left, contentRect.Top, powerWidth, contentRect.Height);
-        RectangleF batteryRect = new RectangleF(contentRect.Right - batteryWidth, contentRect.Top, batteryWidth, contentRect.Height);
-        DrawPowerModule(g, powerRect);
-        DrawBatteryModule(g, batteryRect);
-
-        if (thermalAlerts.Count <= 0)
-        {
-            return;
-        }
-
-        float chipsLeft = powerRect.Right + S(6);
-        float chipsRight = batteryRect.Left - S(8);
-        if (chipsRight - chipsLeft < S(30))
-        {
-            return;
-        }
-
-        RectangleF chipsRect = new RectangleF(chipsLeft, contentRect.Top, chipsRight - chipsLeft, contentRect.Height);
-        DrawThermalAlertsWrapped(g, chipsRect, thermalAlerts);
-    }
-
-    // Right-aligned chip flow that wraps into as many rows as the bounds height allows (two rows at
-    // the standard wide-bar height). Hidden alerts collapse into a trailing "+N" chip, evicting
-    // placed chips when needed so the "+N" chip always fits.
-    private void DrawThermalAlertsWrapped(Graphics g, RectangleF bounds, List<ThermalReading> alerts)
-    {
-        if (alerts == null || alerts.Count == 0 || bounds.Width <= 0 || bounds.Height <= 0)
-        {
-            return;
-        }
-
-        int total = alerts.Count;
-        int maxVisible = Math.Min(GetMaxVisibleThermalAlerts(), total);
-        float gap = S(4);
-        float chipHeight = Math.Min(GetThermalVerticalChipHeight(), bounds.Height);
-        int maxRows = Math.Max(1, (int)Math.Floor((bounds.Height + gap) / (chipHeight + gap)));
-
-        using (Font chipFont = CreateThermalChipFont())
-        {
-            List<float> chipLefts = new List<float>();
-            List<float> chipWidths = new List<float>();
-            List<int> chipRows = new List<int>();
-            List<int> prevRows = new List<int>();
-            List<float> prevRights = new List<float>();
-            int row = 0;
-            float nextRight = bounds.Right;
-            int placed = 0;
-            while (placed < maxVisible && row < maxRows)
-            {
-                string text = FormatThermalSensorName(alerts[placed].Name);
-                float width = Math.Min(bounds.Width, MeasureThermalChipWidth(text, alerts[placed].CriticalActive, chipFont));
-                if (nextRight - width < bounds.Left && nextRight < bounds.Right)
-                {
-                    row++;
-                    nextRight = bounds.Right;
-                    continue;
-                }
-
-                prevRows.Add(row);
-                prevRights.Add(nextRight);
-                chipLefts.Add(nextRight - width);
-                chipWidths.Add(width);
-                chipRows.Add(row);
-                nextRight -= width + gap;
-                placed++;
-            }
-
-            bool hasMore = total > placed;
-            float moreLeft = 0.0f;
-            float moreWidth = 0.0f;
-            int moreRow = 0;
-            if (hasMore)
-            {
-                while (true)
-                {
-                    string moreText = "+" + (total - placed).ToString(CultureInfo.InvariantCulture);
-                    moreWidth = Math.Min(bounds.Width, MeasureThermalChipWidth(moreText, false, chipFont));
-                    if (row < maxRows && nextRight - moreWidth < bounds.Left && nextRight < bounds.Right)
-                    {
-                        row++;
-                        nextRight = bounds.Right;
-                    }
-
-                    if (row < maxRows && nextRight - moreWidth >= bounds.Left)
-                    {
-                        moreLeft = nextRight - moreWidth;
-                        moreRow = row;
-                        break;
-                    }
-
-                    if (placed <= 0)
-                    {
-                        moreLeft = bounds.Left;
-                        moreRow = 0;
-                        break;
-                    }
-
-                    placed--;
-                    row = prevRows[placed];
-                    nextRight = prevRights[placed];
-                    chipLefts.RemoveAt(placed);
-                    chipWidths.RemoveAt(placed);
-                    chipRows.RemoveAt(placed);
-                }
-            }
-
-            int rowsUsed = hasMore ? moreRow + 1 : 1;
-            for (int i = 0; i < placed; i++)
-            {
-                rowsUsed = Math.Max(rowsUsed, chipRows[i] + 1);
-            }
-
-            float usedHeight = chipHeight * rowsUsed + gap * Math.Max(0, rowsUsed - 1);
-            float top = bounds.Top + Math.Max(0.0f, (bounds.Height - usedHeight) / 2.0f);
-            for (int i = 0; i < placed; i++)
-            {
-                RectangleF chipRect = new RectangleF(
-                    chipLefts[i],
-                    top + chipRows[i] * (chipHeight + gap),
-                    chipWidths[i],
-                    chipHeight);
-                DrawThermalChip(g, chipRect, FormatThermalSensorName(alerts[i].Name), alerts[i].Celsius, alerts[i].CriticalActive, chipFont);
-            }
-
-            if (hasMore)
-            {
-                double hiddenMaxTemp = 0.0;
-                for (int i = placed; i < total; i++)
-                {
-                    hiddenMaxTemp = Math.Max(hiddenMaxTemp, alerts[i].Celsius);
-                }
-
-                string finalMoreText = "+" + (total - placed).ToString(CultureInfo.InvariantCulture);
-                RectangleF moreRect = new RectangleF(moreLeft, top + moreRow * (chipHeight + gap), moreWidth, chipHeight);
-                DrawThermalChip(g, moreRect, finalMoreText, hiddenMaxTemp, false, chipFont);
-            }
-        }
-    }
-
-    private void DrawPowerModule(Graphics g, RectangleF bounds)
-    {
-        PowerReading reading = GetPowerReading();
-        bool charging = reading.StatusKnown && reading.IsCharging;
-        string labelText = charging ? "Charging" : "Power";
-        string valueText = reading.WattsKnown ? FormatWatts(reading.Watts) : "-- W";
-        Color accent = GetPowerModuleTextColor(charging);
-        RectangleF textBounds = new RectangleF(bounds.Left + S(8), bounds.Top, Math.Max(4.0f, bounds.Width - S(16)), bounds.Height);
-        RectangleF labelRect = new RectangleF(textBounds.Left, textBounds.Top, textBounds.Width, textBounds.Height * 0.48f);
-        RectangleF valueRect = new RectangleF(textBounds.Left, textBounds.Top + textBounds.Height * 0.45f, textBounds.Width, textBounds.Height * 0.55f);
-        float labelFontSize = Math.Max(8.5f, Math.Min(bounds.Height * 0.22f, bounds.Width * 0.18f));
-        float valueFontSize = Math.Max(9.0f, Math.Min(bounds.Height * 0.28f, bounds.Width * 0.18f));
-
-        Font labelFont = this.fontCache.GetUi(labelFontSize, FontStyle.Bold);
-        Font valueFont = this.fontCache.GetUi(valueFontSize, FontStyle.Bold);
-        using (SolidBrush brush = new SolidBrush(accent))
-        {
-            DrawFittedText(g, labelText, labelFont, brush, labelRect, StringAlignment.Center);
-            DrawFittedText(g, valueText, valueFont, brush, valueRect, StringAlignment.Center);
-        }
-    }
-
-    private void DrawBatteryModule(Graphics g, RectangleF bounds)
-    {
-        PowerReading reading = GetPowerReading();
-        bool known = reading.BatteryPercentKnown;
-        int percent = known ? Math.Max(0, Math.Min(100, reading.BatteryPercent)) : 0;
-        bool charging = reading.StatusKnown && reading.IsCharging;
-        bool pluggedIn = reading.PluggedInKnown && reading.IsPluggedIn;
-        Color accent = GetBatteryPercentColor(known, percent);
-        bool hiddenColorProtectionActive = IsBurnInColorProtectionActive();
-        Color borderColor = GetBatteryBorderColor(pluggedIn, hiddenColorProtectionActive);
-        bool energySaverActive = IsEnergySaverDisplayActive(reading);
-        string powerModeText = FormatSystemPowerModeDisplayText(reading, energySaverActive);
-
-        float bodyWidth = Math.Max(S(46), Math.Min(bounds.Width - S(12), bounds.Width * 0.64f));
-        float modeTextHeight = S(11);
-        float bodyHeight = Math.Max(S(14), Math.Min(S(18), bounds.Height - modeTextHeight - S(5)));
-        float bodyLeft = bounds.Left + (bounds.Width - bodyWidth) / 2.0f - S(2);
-        float stackHeight = bodyHeight + S(2) + modeTextHeight;
-        float bodyTop = bounds.Top + Math.Max(0.0f, (bounds.Height - stackHeight) / 2.0f);
-        RectangleF bodyRect = new RectangleF(bodyLeft, bodyTop, bodyWidth, bodyHeight);
-        float nubWidth = S(4);
-        float nubHeight = Math.Max(S(6), bodyHeight * 0.46f);
-        RectangleF nubRect = new RectangleF(bodyRect.Right + S(2), bodyRect.Top + (bodyHeight - nubHeight) / 2.0f, nubWidth, nubHeight);
-        float radius = Math.Min(S(4), bodyHeight / 3.0f);
-
-        Color bodySurfaceColor = hiddenColorProtectionActive
-            ? DesignTokens.WithAlpha(DesignTokens.Colors.AccentDeep, 46)
-            : DesignTokens.White(28);
-        using (GraphicsPath bodyPath = RoundedRectangle(bodyRect, radius))
-        using (GraphicsPath nubPath = RoundedRectangle(nubRect, Math.Min(radius, nubRect.Height / 2.0f)))
-        using (SolidBrush surfaceBrush = new SolidBrush(bodySurfaceColor))
-        using (SolidBrush nubBrush = new SolidBrush(DesignTokens.WithAlpha(borderColor, pluggedIn ? 210 : 145)))
-        using (Pen borderPen = new Pen(DesignTokens.WithAlpha(borderColor, pluggedIn ? 245 : 180), Math.Max(1.0f, this.LayerScale)))
-        {
-            g.FillPath(surfaceBrush, bodyPath);
-            g.DrawPath(borderPen, bodyPath);
-            g.FillPath(nubBrush, nubPath);
-        }
-
-        if (known && percent > 0)
-        {
-            RectangleF innerRect = RectangleF.Inflate(bodyRect, -S(3), -S(3));
-            innerRect.Width = Math.Max(1.0f, innerRect.Width * percent / 100.0f);
-            using (GraphicsPath fillPath = RoundedRectangle(innerRect, Math.Min(radius, innerRect.Height / 2.0f)))
-            using (SolidBrush fillBrush = new SolidBrush(DesignTokens.WithAlpha(accent, charging ? 168 : 142)))
-            {
-                g.FillPath(fillBrush, fillPath);
-            }
-        }
-
-        string percentText = known ? percent.ToString(CultureInfo.InvariantCulture) + "%" : "--";
-        bool batteryCarePauseActive = reading.BatteryCarePauseKnown && reading.BatteryCarePauseActive;
-        Font percentFont = this.fontCache.GetUi(Math.Max(8.0f, Math.Min(bodyHeight * 0.58f, bodyWidth * 0.20f)), FontStyle.Bold);
-        using (SolidBrush textBrush = new SolidBrush(GetHiddenSafeNeutralColor(DesignTokens.Colors.TextStrong, DesignTokens.Colors.AccentAlt)))
-        {
-            if (batteryCarePauseActive || energySaverActive)
-            {
-                float badgeSize = Math.Max(S(8), bodyHeight * 0.64f);
-                float gap = S(1.2f);
-                float maxTextWidth = Math.Max(S(10), bodyRect.Width - badgeSize - gap - S(4));
-                float measuredTextWidth = Math.Min(maxTextWidth, g.MeasureString(percentText, percentFont).Width);
-                float totalWidth = measuredTextWidth + gap + badgeSize;
-                float left = bodyRect.Left + Math.Max(S(2), (bodyRect.Width - totalWidth) / 2.0f);
-                RectangleF percentRect = new RectangleF(left, bodyRect.Top, measuredTextWidth, bodyRect.Height);
-                RectangleF badgeRect = new RectangleF(
-                    percentRect.Right + gap,
-                    bodyRect.Top + (bodyRect.Height - badgeSize) / 2.0f,
-                    badgeSize,
-                    badgeSize);
-                DrawFittedText(g, percentText, percentFont, textBrush, percentRect, StringAlignment.Center);
-                if (energySaverActive)
-                {
-                    DrawEnergySaverLeafGlyph(g, badgeRect);
-                }
-                else
-                {
-                    DrawBatteryCarePauseBadge(g, badgeRect);
-                }
-            }
-            else
-            {
-                DrawFittedText(g, percentText, percentFont, textBrush, bodyRect, StringAlignment.Center);
-            }
-        }
-
-        float modeLeft = Math.Max(0.0f, bounds.Left - S(8));
-        float modeRight = Math.Min(this.Width, bounds.Right + S(8));
-        RectangleF modeRect = new RectangleF(modeLeft, bodyRect.Bottom + S(1), Math.Max(S(10), modeRight - modeLeft), Math.Max(S(10), bounds.Bottom - bodyRect.Bottom - S(1)));
-        Font modeFont = this.fontCache.GetUi(Math.Max(7.0f, 8.0f * this.LayerScale), FontStyle.Bold);
-        using (SolidBrush modeBrush = new SolidBrush(GetSystemPowerModeColor(powerModeText, energySaverActive)))
-        {
-            DrawFittedText(g, powerModeText, modeFont, modeBrush, modeRect, StringAlignment.Center);
-        }
-    }
-
-    private Color GetPowerModuleTextColor(bool charging)
-    {
-        if (IsBurnInColorProtectionActive())
-        {
-            return charging ? DesignTokens.Colors.Success : DesignTokens.Colors.DangerStrong;
-        }
-
-        return charging ? DesignTokens.Colors.SuccessText : DesignTokens.Colors.DangerText;
-    }
-
-    private Color GetBatteryBorderColor(bool pluggedIn, bool hiddenColorProtectionActive)
-    {
-        if (hiddenColorProtectionActive)
-        {
-            return pluggedIn ? DesignTokens.Colors.Accent : DesignTokens.Colors.AccentAlt;
-        }
-
-        return pluggedIn
-            ? Color.FromArgb(246, 248, 250)
-            : Color.FromArgb(190, 195, 199);
-    }
-
-    private Color GetHiddenSafeNeutralColor(Color normal, Color hidden)
-    {
-        return IsBurnInColorProtectionActive() ? hidden : normal;
-    }
-
-    private bool IsEnergySaverDisplayActive(PowerReading reading)
-    {
-        return (reading.EnergySaverKnown && reading.EnergySaverEnabled) ||
-            IsManualEnergySaverThresholdActive(reading);
-    }
-
-    private bool IsManualEnergySaverThresholdActive(PowerReading reading)
-    {
-        // Display-only fallback: some Windows builds keep EnergySaverStatus/SystemStatusFlag off
-        // even when the user wants low battery to be treated visually as energy saver.
-        int threshold = this.CurrentSettings == null
-            ? WidgetSettings.DefaultPowerThermalManualEnergySaverThresholdPercent
-            : this.CurrentSettings.PowerThermalManualEnergySaverThresholdPercent;
-        if (threshold <= 0 || !reading.BatteryPercentKnown)
-        {
-            return false;
-        }
-
-        int percent = Math.Max(0, Math.Min(100, reading.BatteryPercent));
-        return percent < threshold;
-    }
-
-    private static string FormatSystemPowerModeDisplayText(PowerReading reading, bool energySaverActive)
-    {
-        string text = reading.SystemPowerModeKnown
-            ? NormalizeDisplaySystemPowerModeText(reading.SystemPowerModeText)
-            : "--";
-
-        if (energySaverActive)
-        {
-            return AppendEnergySaverSuffix(text);
-        }
-
-        return text;
-    }
-
-    private static string NormalizeDisplaySystemPowerModeText(string text)
-    {
-        if (string.Equals(text, "均衡", StringComparison.Ordinal))
-        {
-            return "平衡";
-        }
-
-        return string.IsNullOrEmpty(text) ? "--" : text;
-    }
-
-    private static string AppendEnergySaverSuffix(string text)
-    {
-        if (string.IsNullOrEmpty(text) || string.Equals(text, "--", StringComparison.Ordinal))
-        {
-            return "节能";
-        }
-
-        if (text.IndexOf("节能", StringComparison.Ordinal) >= 0)
-        {
-            return text;
-        }
-
-        return text + "（节能）";
-    }
-
-    private Color GetSystemPowerModeColor(string powerModeText, bool energySaverActive)
-    {
-        if (energySaverActive)
-        {
-            return IsBurnInColorProtectionActive()
-                ? DesignTokens.Colors.Success
-                : Color.FromArgb(134, 238, 150);
-        }
-
-        if (string.Equals(powerModeText, "性能", StringComparison.OrdinalIgnoreCase))
-        {
-            return IsBurnInColorProtectionActive()
-                ? DesignTokens.Colors.DangerStrong
-                : Color.FromArgb(255, 166, 174);
-        }
-
-        if (string.Equals(powerModeText, "省电", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(powerModeText, "节能", StringComparison.OrdinalIgnoreCase))
-        {
-            return IsBurnInColorProtectionActive()
-                ? DesignTokens.Colors.Success
-                : Color.FromArgb(134, 238, 150);
-        }
-
-        return GetHiddenSafeNeutralColor(DesignTokens.Colors.TextStrong, DesignTokens.Colors.Accent);
-    }
-
-    private void DrawEnergySaverLeafGlyph(Graphics g, RectangleF rect)
-    {
-        float size = Math.Min(rect.Width, rect.Height);
-        RectangleF leafRect = new RectangleF(
-            rect.Left + (rect.Width - size) / 2.0f + size * 0.04f,
-            rect.Top + (rect.Height - size) / 2.0f,
-            size * 0.82f,
-            size * 0.82f);
-        Color fillColor = IsBurnInColorProtectionActive()
-            ? DesignTokens.Colors.Success
-            : Color.FromArgb(134, 238, 150);
-        Color lineColor = GetHiddenSafeNeutralColor(DesignTokens.White(238), DesignTokens.Colors.Accent);
-        PointF tip = new PointF(leafRect.Right, leafRect.Top + leafRect.Height * 0.18f);
-        PointF basePoint = new PointF(leafRect.Left + leafRect.Width * 0.12f, leafRect.Bottom - leafRect.Height * 0.14f);
-        PointF mid = new PointF(leafRect.Left + leafRect.Width * 0.44f, leafRect.Top + leafRect.Height * 0.50f);
-
-        using (GraphicsPath leafPath = new GraphicsPath())
-        using (SolidBrush fillBrush = new SolidBrush(DesignTokens.WithAlpha(fillColor, 235)))
-        using (Pen veinPen = new Pen(DesignTokens.WithAlpha(lineColor, 210), Math.Max(1.0f, 0.9f * this.LayerScale)))
-        {
-            leafPath.StartFigure();
-            leafPath.AddBezier(
-                basePoint,
-                new PointF(leafRect.Left + leafRect.Width * 0.18f, leafRect.Top + leafRect.Height * 0.04f),
-                new PointF(leafRect.Left + leafRect.Width * 0.70f, leafRect.Top - leafRect.Height * 0.02f),
-                tip);
-            leafPath.AddBezier(
-                tip,
-                new PointF(leafRect.Right - leafRect.Width * 0.05f, leafRect.Top + leafRect.Height * 0.62f),
-                new PointF(leafRect.Left + leafRect.Width * 0.50f, leafRect.Bottom + leafRect.Height * 0.06f),
-                basePoint);
-            leafPath.CloseFigure();
-            g.FillPath(fillBrush, leafPath);
-            g.DrawLine(veinPen, basePoint, mid);
-            g.DrawLine(veinPen, mid, tip);
-            g.DrawLine(
-                veinPen,
-                new PointF(basePoint.X - size * 0.09f, basePoint.Y + size * 0.10f),
-                new PointF(basePoint.X + size * 0.16f, basePoint.Y - size * 0.06f));
-        }
-    }
-
-    private void DrawBatteryCarePauseBadge(Graphics g, RectangleF rect)
-    {
-        float size = Math.Min(rect.Width, rect.Height);
-        float stroke = Math.Max(1.0f, 1.05f * this.LayerScale);
-        RectangleF body = new RectangleF(
-            rect.Left + size * 0.12f,
-            rect.Top + size * 0.20f,
-            size * 0.66f,
-            size * 0.58f);
-        RectangleF cap = new RectangleF(
-            body.Right + size * 0.03f,
-            body.Top + body.Height * 0.28f,
-            size * 0.10f,
-            body.Height * 0.44f);
-        Color outlineColor = GetHiddenSafeNeutralColor(DesignTokens.White(246), DesignTokens.Colors.Accent);
-        using (GraphicsPath bodyPath = RoundedRectangle(body, Math.Max(1.0f, size * 0.08f)))
-        using (GraphicsPath capPath = RoundedRectangle(cap, Math.Max(1.0f, size * 0.04f)))
-        using (Pen pen = new Pen(outlineColor, stroke))
-        using (SolidBrush accentBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 255)))
-        {
-            pen.LineJoin = LineJoin.Round;
-            g.DrawPath(pen, bodyPath);
-            g.FillPath(accentBrush, capPath);
-            g.DrawLine(
-                pen,
-                body.Left + body.Width * 0.20f,
-                body.Top + body.Height * 0.58f,
-                body.Left + body.Width * 0.39f,
-                body.Top + body.Height * 0.38f);
-            g.DrawLine(
-                pen,
-                body.Left + body.Width * 0.39f,
-                body.Top + body.Height * 0.38f,
-                body.Left + body.Width * 0.59f,
-                body.Top + body.Height * 0.58f);
-            g.DrawLine(
-                pen,
-                body.Left + body.Width * 0.39f,
-                body.Top + body.Height * 0.38f,
-                body.Left + body.Width * 0.39f,
-                body.Bottom - body.Height * 0.18f);
-        }
-    }
-
-    private Color GetBatteryPercentColor(bool known, int percent)
-    {
-        if (IsBurnInColorProtectionActive())
-        {
-            if (!known)
-            {
-                return DesignTokens.Colors.AccentAlt;
-            }
-
-            if (percent >= 97)
-            {
-                return DesignTokens.Colors.Accent;
-            }
-
-            if (percent >= 75)
-            {
-                return DesignTokens.Colors.Success;
-            }
-
-            if (percent >= 50)
-            {
-                return DesignTokens.Colors.Warning;
-            }
-
-            if (percent >= 30)
-            {
-                return DesignTokens.Colors.WarningDeep;
-            }
-
-            return DesignTokens.Colors.DangerStrong;
-        }
-
-        if (!known)
-        {
-            return DesignTokens.Colors.SubtleText;
-        }
-
-        if (percent >= 97)
-        {
-            return Color.FromArgb(78, 177, 255);
-        }
-
-        if (percent >= 90)
-        {
-            return Color.FromArgb(75, 222, 108);
-        }
-
-        if (percent >= 75)
-        {
-            return Color.FromArgb(176, 246, 152);
-        }
-
-        if (percent >= 50)
-        {
-            return DesignTokens.Colors.Warning;
-        }
-
-        if (percent >= 30)
-        {
-            return DesignTokens.Colors.WarningDeep;
-        }
-
-        if (percent >= 10)
-        {
-            return DesignTokens.Colors.DangerStrong;
-        }
-
-        return (this.renderTickCount % 2 == 0) ? DesignTokens.Colors.DangerStrong : Color.FromArgb(105, 7, 18);
-    }
-
-    private void DrawThermalAlerts(Graphics g, RectangleF bounds, List<ThermalReading> alerts)
-    {
-        if (alerts == null || alerts.Count == 0 || bounds.Width <= 0 || bounds.Height <= 0)
-        {
-            return;
-        }
-
-        int total = alerts.Count;
-        int maxVisible = GetMaxVisibleThermalAlerts();
-        int visibleSensors = Math.Min(maxVisible, total);
-        bool hasMore = total > visibleSensors;
-        if (visibleSensors <= 0)
-        {
-            return;
-        }
-
-        float gap = S(4);
-        float chipHeight = Math.Max(S(13), Math.Min(S(20), (bounds.Height - S(2)) * 0.67f));
-        float chipTop = bounds.Top + Math.Max(0.0f, (bounds.Height * 0.48f - chipHeight) / 2.0f);
-
-        using (Font chipFont = CreateThermalChipFont())
-        {
-            float nextRight = bounds.Right;
-            for (int i = 0; i < visibleSensors; i++)
-            {
-                string text = FormatThermalSensorName(alerts[i].Name);
-                float width = MeasureThermalChipWidth(text, alerts[i].CriticalActive, chipFont);
-                RectangleF chipRect = new RectangleF(nextRight - width, chipTop, width, chipHeight);
-                DrawThermalChip(g, chipRect, text, alerts[i].Celsius, alerts[i].CriticalActive, chipFont);
-                nextRight = chipRect.Left - gap;
-            }
-
-            if (hasMore)
-            {
-                string moreText = "+" + (total - visibleSensors).ToString(CultureInfo.InvariantCulture);
-                float moreWidth = MeasureThermalChipWidth(moreText, false, chipFont);
-                RectangleF moreRect = new RectangleF(nextRight - moreWidth, chipTop, moreWidth, chipHeight);
-                double hiddenMaxTemp = 0.0;
-                for (int i = visibleSensors; i < total; i++)
-                {
-                    hiddenMaxTemp = Math.Max(hiddenMaxTemp, alerts[i].Celsius);
-                }
-
-                DrawThermalChip(g, moreRect, moreText, hiddenMaxTemp, false, chipFont);
-            }
-        }
-    }
-
-    private void DrawThermalChip(Graphics g, RectangleF rect, string text, double celsius, bool criticalActive, Font font)
-    {
-        float radius = Math.Min(rect.Height / 2.0f, S(8));
-        int redAlpha = GetThermalRedAlpha(celsius);
-        Color borderColor = GetHiddenSafeNeutralColor(DesignTokens.White(45), DesignTokens.Colors.AccentAlt);
-        using (GraphicsPath path = RoundedRectangle(rect, radius))
-        using (SolidBrush baseBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.ThermalChipSurface, 160)))
-        using (SolidBrush redBrush = new SolidBrush(DesignTokens.DangerStrong(redAlpha)))
-        using (Pen border = new Pen(borderColor, Math.Max(1.0f, this.LayerScale)))
-        {
-            g.FillPath(baseBrush, path);
-            g.FillPath(redBrush, path);
-            g.DrawPath(border, path);
-        }
-
-        if (criticalActive)
-        {
-            float iconSize = Math.Max(S(12), Math.Min(rect.Height * 0.90f, S(18)));
-            RectangleF iconRect = new RectangleF(
-                rect.Left + (rect.Width - iconSize) / 2.0f,
-                rect.Top + (rect.Height - iconSize) / 2.0f,
-                iconSize,
-                iconSize);
-            DrawSmallWarningIcon(g, iconRect);
-        }
-
-        RectangleF textRect = new RectangleF(rect.Left + S(5), rect.Top, Math.Max(4, rect.Width - S(10)), rect.Height);
-
-        using (SolidBrush textBrush = new SolidBrush(GetHiddenSafeNeutralColor(DesignTokens.Colors.TextStrong, DesignTokens.Colors.Accent)))
-        {
-            DrawFittedText(g, text, font, textBrush, textRect, StringAlignment.Center);
-        }
-    }
-
-    private float GetThermalWarningIconSize(float chipHeight)
-    {
-        return Math.Max(S(10), Math.Min(chipHeight * 0.66f, S(13)));
-    }
-
-    private void DrawThermalAlertsVertical(Graphics g, RectangleF bounds, List<ThermalReading> alerts)
-    {
-        if (alerts == null || alerts.Count == 0 || bounds.Width <= 0 || bounds.Height <= 0)
-        {
-            return;
-        }
-
-        int total = alerts.Count;
-        int maxVisible = GetMaxVisibleThermalAlerts();
-        int visibleSensors = Math.Min(maxVisible, total);
-        bool hasMore = total > visibleSensors;
-        if (visibleSensors <= 0)
-        {
-            return;
-        }
-
-        float gap = S(4);
-        float chipHeight = Math.Min(GetThermalVerticalChipHeight(), Math.Max(S(13), bounds.Height));
-        float nextTop = bounds.Top;
-        using (Font chipFont = CreateThermalChipFont())
-        {
-            for (int i = 0; i < visibleSensors; i++)
-            {
-                string text = FormatThermalSensorName(alerts[i].Name);
-                float width = Math.Min(bounds.Width, MeasureThermalChipWidth(text, alerts[i].CriticalActive, chipFont));
-                RectangleF chipRect = new RectangleF(bounds.Left + (bounds.Width - width) / 2.0f, nextTop, width, chipHeight);
-                DrawThermalChip(g, chipRect, text, alerts[i].Celsius, alerts[i].CriticalActive, chipFont);
-                nextTop = chipRect.Bottom + gap;
-            }
-
-            if (hasMore)
-            {
-                string moreText = "+" + (total - visibleSensors).ToString(CultureInfo.InvariantCulture);
-                float moreWidth = Math.Min(bounds.Width, MeasureThermalChipWidth(moreText, false, chipFont));
-                RectangleF moreRect = new RectangleF(bounds.Left + (bounds.Width - moreWidth) / 2.0f, nextTop, moreWidth, chipHeight);
-                double hiddenMaxTemp = 0.0;
-                for (int i = visibleSensors; i < total; i++)
-                {
-                    hiddenMaxTemp = Math.Max(hiddenMaxTemp, alerts[i].Celsius);
-                }
-
-                DrawThermalChip(g, moreRect, moreText, hiddenMaxTemp, false, chipFont);
-            }
-        }
-    }
-
-    private void DrawSmallWarningIcon(Graphics g, RectangleF rect)
-    {
-        int warningAlpha = (this.renderTickCount % 2 == 0) ? 77 : 179;
-        float centerX = rect.Left + rect.Width / 2.0f;
-        float centerY = rect.Top + rect.Height / 2.0f;
-        float size = Math.Min(rect.Width, rect.Height);
-        PointF[] triangle = new PointF[]
-        {
-            new PointF(centerX, centerY - size * 0.46f),
-            new PointF(centerX - size * 0.48f, centerY + size * 0.42f),
-            new PointF(centerX + size * 0.48f, centerY + size * 0.42f)
-        };
-
-        using (Pen pen = new Pen(DesignTokens.Warning(warningAlpha), Math.Max(1.0f, 2.0f * this.LayerScale)))
-        {
-            pen.LineJoin = LineJoin.Round;
-            g.DrawPolygon(pen, triangle);
-        }
-
-        float markCenterY = (triangle[0].Y + triangle[1].Y + triangle[2].Y) / 3.0f;
-        RectangleF markRect = new RectangleF(rect.Left, markCenterY - rect.Height / 2.0f, rect.Width, rect.Height);
-        Font markFont = this.fontCache.GetUi(Math.Max(7.0f, size * 0.62f), FontStyle.Bold);
-        using (SolidBrush markBrush = new SolidBrush(DesignTokens.Warning(warningAlpha)))
-        using (StringFormat format = new StringFormat())
-        {
-            format.Alignment = StringAlignment.Center;
-            format.LineAlignment = StringAlignment.Center;
-            g.DrawString("!", markFont, markBrush, markRect, format);
-        }
-    }
-
-    private void DrawFittedText(Graphics g, string text, Font baseFont, Brush brush, RectangleF rect, StringAlignment alignment)
-    {
-        using (StringFormat format = new StringFormat())
-        {
-            format.Alignment = alignment;
-            format.LineAlignment = StringAlignment.Center;
-            format.Trimming = StringTrimming.EllipsisCharacter;
-            format.FormatFlags = StringFormatFlags.NoWrap;
-
-            Font drawFont = baseFont;
-            bool disposeFont = false;
-            float size = baseFont.Size;
-            while (size > 8.0f * this.LayerScale && g.MeasureString(text, drawFont).Width > rect.Width)
-            {
-                if (disposeFont)
-                {
-                    drawFont.Dispose();
-                }
-
-                size -= 0.8f * this.LayerScale;
-                drawFont = new Font(baseFont.FontFamily, size, baseFont.Style, GraphicsUnit.Pixel);
-                disposeFont = true;
-            }
-
-            g.DrawString(text, drawFont, brush, rect, format);
-
-            if (disposeFont)
-            {
-                drawFont.Dispose();
-            }
-        }
     }
 
     private PowerReading GetPowerReading()
@@ -2214,67 +881,6 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         {
             this.thermalAlertNames.Remove(staleNames[i]);
         }
-    }
-
-    private static bool PowerDisplayEquals(PowerReading left, PowerReading right)
-    {
-        return left.StatusKnown == right.StatusKnown &&
-            left.IsCharging == right.IsCharging &&
-            left.PluggedInKnown == right.PluggedInKnown &&
-            left.IsPluggedIn == right.IsPluggedIn &&
-            left.WattsKnown == right.WattsKnown &&
-            (!left.WattsKnown || string.Equals(FormatWatts(left.Watts), FormatWatts(right.Watts), StringComparison.Ordinal)) &&
-            left.BatteryPercentKnown == right.BatteryPercentKnown &&
-            left.BatteryPercent == right.BatteryPercent &&
-            left.SystemPowerModeKnown == right.SystemPowerModeKnown &&
-            string.Equals(left.SystemPowerModeText, right.SystemPowerModeText, StringComparison.Ordinal) &&
-            left.EnergySaverKnown == right.EnergySaverKnown &&
-            left.EnergySaverEnabled == right.EnergySaverEnabled &&
-            left.BatteryCarePauseKnown == right.BatteryCarePauseKnown &&
-            left.BatteryCarePauseActive == right.BatteryCarePauseActive;
-    }
-
-    private static bool ThermalDisplayEquals(List<ThermalReading> left, List<ThermalReading> right)
-    {
-        if (ReferenceEquals(left, right))
-        {
-            return true;
-        }
-
-        if (left == null || right == null || left.Count != right.Count)
-        {
-            return false;
-        }
-
-        for (int i = 0; i < left.Count; i++)
-        {
-            if (!string.Equals(left[i].Name, right[i].Name, StringComparison.OrdinalIgnoreCase) ||
-                left[i].CriticalActive != right[i].CriticalActive ||
-                GetThermalRedAlpha(left[i].Celsius) != GetThermalRedAlpha(right[i].Celsius))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static bool HasCriticalThermalAlert(List<ThermalReading> alerts)
-    {
-        if (alerts == null)
-        {
-            return false;
-        }
-
-        for (int i = 0; i < alerts.Count; i++)
-        {
-            if (alerts[i].CriticalActive)
-            {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     private void UpdateThermalCriticalStates(List<ThermalReading> readings, DateTime now, bool instantCritical)
@@ -2896,100 +1502,6 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         {
             return 0;
         }
-    }
-
-    private static string FormatWatts(double watts)
-    {
-        if (watts >= 100.0)
-        {
-            return watts.ToString("0", CultureInfo.InvariantCulture) + " W";
-        }
-
-        return watts.ToString("0.0", CultureInfo.InvariantCulture) + " W";
-    }
-
-    private static int GetThermalRedAlpha(double celsius)
-    {
-        double progress = (celsius - 70.0) / 30.0;
-        if (progress < 0.0)
-        {
-            progress = 0.0;
-        }
-        else if (progress > 1.0)
-        {
-            progress = 1.0;
-        }
-
-        double alpha = 0.30 + progress * (0.85 - 0.30);
-        return (int)Math.Round(alpha * 255.0);
-    }
-
-    private static string FormatThermalSensorName(string name)
-    {
-        if (string.IsNullOrEmpty(name))
-        {
-            return "TZ";
-        }
-
-        string trimmed = name.Trim();
-        int slash = trimmed.LastIndexOf('\\');
-        int dot = trimmed.LastIndexOf('.');
-        int start = Math.Max(slash, dot);
-        if (start >= 0 && start < trimmed.Length - 1)
-        {
-            trimmed = trimmed.Substring(start + 1);
-        }
-
-        return trimmed.Length == 0 ? "TZ" : trimmed;
-    }
-
-    private bool IsBurnInColorProtectionActive()
-    {
-        return BurnInProtection.ShouldApplyHiddenModeColorProtection(
-            this.CurrentSettings,
-            IsHoverOpacityTargetActive());
-    }
-
-    private int GetBackgroundOpacityAlpha()
-    {
-        return ComputeOpacityAlpha(this.CurrentSettings.PowerThermalTransparencyPercent);
-    }
-
-    private int GetContentOpacityAlpha()
-    {
-        return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
-    }
-
-    protected override int WindowTransparencyOverridePercent
-    {
-        get { return this.CurrentSettings.PowerThermalTransparencyOverridePercent; }
-    }
-
-    protected override int WindowScaleOverridePercent
-    {
-        get { return this.CurrentSettings.PowerThermalScaleOverridePercent; }
-    }
-
-    protected override int ApplyHoverAlpha(int alpha)
-    {
-        return ApplyHoverTransparencyTarget(alpha);
-    }
-
-    private int ApplyHoverTransparencyTarget(int alpha)
-    {
-        if (!IsHoverOpacityRuntimeEnabled() || this.hoverOpacityProgress <= 0.0)
-        {
-            return alpha;
-        }
-
-        int hoverAlpha = (int)Math.Round(255.0 * 0.05);
-        if (alpha <= hoverAlpha)
-        {
-            return alpha;
-        }
-
-        double animated = alpha + (hoverAlpha - alpha) * this.hoverOpacityProgress;
-        return Math.Max(0, Math.Min(255, (int)Math.Round(animated)));
     }
 
 }

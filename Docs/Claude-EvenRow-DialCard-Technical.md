@@ -1,8 +1,12 @@
 # Claude-EvenRow-DialCard-Technical.md — EvenRow 表盘状态卡技术说明
 
+> **历史快照（SUPERSEDED）**
+>
+> 本文冻结于 `1.0.5.06` 的旧 EvenRow/独立 Claude Radar 绘制实现；截至 `1.0.6.29`，`ClaudeRadarForm` 与可见 `CodexRadarForm` 已移除，Radar 仅由永久 headless owner 提供缓存投影。本文只供历史追溯，**禁止作为现行实现、修改或验收依据**。当前 Radar 所有权和展示边界以 [`CodexRadar-Architecture.md`](CodexRadar-Architecture.md)、[`Codex-ClaudeRadar-Architecture.md`](Codex-ClaudeRadar-Architecture.md) 与 [`Performance-And-Window-Runtime.md`](Performance-And-Window-Runtime.md) 为准。
+
 > 作者模型：Claude（按项目规则，非 Codex 模型生成的文档使用模型名前缀）
-> 适用版本：1.0.5.06
-> 适用窗口：CodexRadar EvenRow 变体（`Core/CodexRadarForm.EvenRow.cs`）、独立 Claude Radar EvenRow（`Core/ClaudeRadarForm.cs`）
+> 快照版本：1.0.5.06
+> 历史适用窗口：CodexRadar EvenRow 变体（`Core/CodexRadarForm.EvenRow.cs`）、独立 Claude Radar EvenRow（`Core/ClaudeRadarForm.cs`）
 
 ## 1. 概览
 

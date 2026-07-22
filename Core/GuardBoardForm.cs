@@ -13,7 +13,7 @@ using System.Windows.Forms;
 // Layout is scheme D: a countdown ring column on the left carrying everything that changes with
 // time (display-guard remaining, offline elapsed, battery-care pause remaining), and a card column
 // on the right carrying the six controls. The board borrows the Spec board's footprint the same way
-// the docked network panel does, so all four dock members expand to an identical rectangle.
+// the docked network panel does, so every dock member expands to an identical rectangle.
 internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
 {
     private const int MaintenanceIntervalMs = 500;
@@ -36,7 +36,7 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
     private string statusNotice = string.Empty;
     private string lastVisibleStateSignature = string.Empty;
 
-    // Mutual exclusion with the other three left-dock boards, wired by the owner the same way the
+    // Mutual exclusion with the other left-dock boards, wired by the owner the same way the
     // network panel's CollapseOtherLeftDockOverlays is.
     internal Action CollapseOtherLeftDockOverlays;
 
@@ -79,16 +79,16 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         get { return "GuardBoard"; }
     }
 
-    // The guard board is a peer of the Spec board in the dock queue and shares its footprint, so it
-    // also follows the Spec board's transparency and scale overrides rather than inventing its own.
+    // GUARD shares the Spec board footprint, but owns visual overrides so changing one board cannot
+    // silently restyle another board or its dock tab.
     protected override int WindowTransparencyOverridePercent
     {
-        get { return this.CurrentSettings.SpecBoardTransparencyOverridePercent; }
+        get { return this.CurrentSettings.GuardBoardTransparencyOverridePercent; }
     }
 
     protected override int WindowScaleOverridePercent
     {
-        get { return this.CurrentSettings.SpecBoardScaleOverridePercent; }
+        get { return this.CurrentSettings.GuardBoardScaleOverridePercent; }
     }
 
     protected override bool CanRenderLayeredWindow()
@@ -96,9 +96,15 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         return !this.displaySuspended;
     }
 
+    internal void PreparePresentationState(bool suspended, bool fullscreenHidden)
+    {
+        this.displaySuspended = suspended;
+        this.hiddenForFullscreen = fullscreenHidden;
+    }
+
     private bool IsLeftDocked
     {
-        get { return this.CurrentSettings != null && this.CurrentSettings.GuardBoardLeftDockEnabled && this.owner != null; }
+        get { return this.owner != null; }
     }
 
     private Size GetDesiredSize()
@@ -175,7 +181,7 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
                 GetDockTabAccent(),
                 BurnInProtection.GuardBoardDockTabSalt,
                 "GuardBoardDockTab",
-                false);
+                EdgeDockTabRole.Guard);
             this.dockTab.HoverEntered += OnDockTabHoverEntered;
             this.dockTab.HoverExited += OnDockTabHoverExited;
             this.dockTab.PollTick += OnDockTabPollTick;
@@ -185,7 +191,8 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
             this.dockTab.ApplyRuntimeSettings(this.CurrentSettings, GetDockTabAccent());
         }
 
-        this.dockTab.SetDisplaySuspended(this.displaySuspended || this.hiddenForFullscreen);
+        this.dockTab.SetDisplaySuspended(this.displaySuspended);
+        this.dockTab.SetHiddenForFullscreen(this.hiddenForFullscreen);
         this.dockTab.SetBoardExpanded(this.Visible);
         this.dockTab.ShowTab(ResolveDockTabCenterY());
         this.maintenanceTimer.Start();
@@ -203,18 +210,16 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
     // Codex task board at +1, so +3 clears all three without moving them.
     private int ResolveDockTabCenterY()
     {
-        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
-        if (this.CurrentSettings.GuardBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY)
-        {
-            return this.CurrentSettings.GuardBoardLeftDockTabCenterY;
-        }
-
-        return workArea.Top + workArea.Height / 2 + S(WidgetSettings.LeftDockTabAutoOffsetY * 3);
+        return LeftDockLayout.ResolveTabCenterY(
+            this.CurrentSettings,
+            EdgeDockTabRole.Guard,
+            this.LayerScale);
     }
 
     private void OnDockTabHoverEntered(object sender, EventArgs e)
     {
-        if (this.IsDisposed || !this.IsLeftDocked || this.Visible)
+        if (this.IsDisposed || !this.IsLeftDocked || this.Visible ||
+            LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
         {
             return;
         }
@@ -265,6 +270,11 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
 
     internal void ShowBoard()
     {
+        if (LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
+        {
+            return;
+        }
+
         if (this.owner != null)
         {
             this.owner.PrepareForGuardBoardOverlayShow();
@@ -338,15 +348,10 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         }
 
         this.hiddenForFullscreen = hidden;
-        // A fullscreen app must not keep a dock tab painted over it, and the tab has to come back
-        // when the app exits fullscreen.
         if (this.dockTab != null && !this.dockTab.IsDisposed)
         {
-            if (hidden)
-            {
-                this.dockTab.HideTab();
-            }
-            else if (this.IsLeftDocked)
+            this.dockTab.SetHiddenForFullscreen(hidden);
+            if (!hidden && !this.displaySuspended && this.IsLeftDocked)
             {
                 this.dockTab.ShowTab(ResolveDockTabCenterY());
             }
@@ -357,7 +362,7 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
             this.restoreAfterFullscreen = this.Visible;
             HideBoard();
         }
-        else if (this.restoreAfterFullscreen)
+        else if (this.restoreAfterFullscreen && !this.displaySuspended)
         {
             this.restoreAfterFullscreen = false;
             ShowBoard();
@@ -382,6 +387,12 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         if (this.dockTab != null && !this.dockTab.IsDisposed)
         {
             this.dockTab.SetDisplaySuspended(false);
+        }
+
+        if (!this.hiddenForFullscreen && this.restoreAfterFullscreen)
+        {
+            this.restoreAfterFullscreen = false;
+            ShowBoard();
         }
 
         SyncLeftDockTab();
@@ -423,12 +434,17 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
             return;
         }
 
-        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
-        int left = workArea.Left + S(EdgeDockTabForm.LogicalWidth);
-        int top = ResolveDockTabCenterY() - this.Height / 2;
-        left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
-        top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
-        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(new Point(left, top), this.Size, workArea, BurnInProtection.GuardBoardSalt);
+        Rectangle workArea = LeftDockLayout.ResolveWorkArea(this.CurrentSettings);
+        Point baseLocation = LeftDockLayout.ResolveBoardBaseLocation(
+            this.CurrentSettings,
+            EdgeDockTabRole.Guard,
+            this.LayerScale,
+            this.Size);
+        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
+            baseLocation,
+            this.Size,
+            workArea,
+            BurnInProtection.GuardBoardSalt);
     }
 
     private void PositionNearOperationPanel()
@@ -615,6 +631,14 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
             builder.Append(this.CurrentSettings.AiRequestProtectionManualBlockEnabled ? '1' : '0');
             builder.Append(this.CurrentSettings.CodexQuotaPlanEnabled ? '1' : '0');
         }
+
+        // The power-request info block renders these. The three flags derive from the armed guards
+        // already in the signature, but the AC line changes independently (plug / unplug) and its
+        // caveat text must repaint when it does.
+        builder.Append('|').Append(this.runtime.SystemPowerRequestActive ? '1' : '0');
+        builder.Append(this.runtime.ExecutionPowerRequestActive ? '1' : '0');
+        builder.Append(this.runtime.DisplayPowerRequestActive ? '1' : '0');
+        builder.Append('|').Append(((int)ResolveAcState()).ToString(CultureInfo.InvariantCulture));
 
         return builder.ToString();
     }

@@ -9,7 +9,6 @@ internal static class BurnInProtection
 {
     public const int MainWidgetSalt = 1;
     public const int CodexRadarSalt = 7;
-    public const int ClaudeRadarSalt = 31;
     public const int PowerThermalSalt = 13;
     public const int NetworkMonitorSalt = 19;
     public const int ConnectionCheckSalt = 23;
@@ -21,6 +20,11 @@ internal static class BurnInProtection
     public const int NetworkMonitorDockTabSalt = 47;
     public const int GuardBoardSalt = 53;
     public const int GuardBoardDockTabSalt = 59;
+    public const int MetricTileColumnSalt = 61;
+    public const int MetricTileExpandSalt = 67;
+    public const int CodexIqBoardSalt = 71;
+    public const int CodexIqBoardDockTabSalt = 79;
+    public const int LeftDockButtonColumnSalt = 83;
 
     private const int ShiftIntervalMinutes = 7;
     private const int GrayscaleTolerance = 18;

@@ -3,61 +3,21 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 
-// Test-only render harness for --render-networkmonitor: paints one representative frame of the
-// Classic reference strip to a PNG for visual review, mirroring the CodexRadar/ConnectionCheck
-// render harnesses.
+// Test-only render harness for --render-networkmonitor. It exercises only the retained left-dock
+// panel and uses deterministic data for visual review.
 internal sealed partial class NetworkMonitorForm
 {
-    internal static void RenderVariantSamples(string outputDir)
-    {
-        Directory.CreateDirectory(outputDir);
-        NetworkMonitorRenderVariant[] variants =
-        {
-            NetworkMonitorRenderVariant.Classic
-        };
-
-        foreach (NetworkMonitorRenderVariant variant in variants)
-        {
-            WidgetSettings settings = WidgetSettings.CreateDefaults();
-            settings.NetworkMonitorRenderVariant = variant;
-            settings.Normalize();
-
-            using (NetworkMonitorForm form = new NetworkMonitorForm(settings))
-            {
-                form.SetLayerScale(2.0f);
-                form.MaximumSize = new Size(4000, 4000);
-                // NetworkMonitorWidth/Height are already the real physical pixel size (runtime
-                // GetDesiredSize() applies them 1:1); an earlier *2 here rendered a canvas twice as
-                // large as any real window, hiding genuine overflow/truncation. Same fix as
-                // CodexRadarForm.RenderSample.cs.
-                form.Size = new Size(settings.NetworkMonitorWidth, settings.NetworkMonitorHeight);
-                form.snapshot = BuildSampleSnapshot();
-
-                using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
-                using (Graphics g = Graphics.FromImage(bitmap))
-                {
-                    g.Clear(Color.FromArgb(15, 15, 19));
-                    form.DrawContent(g);
-                    string path = Path.Combine(outputDir, "networkmonitor-" + variant.ToString().ToLowerInvariant() + ".png");
-                    bitmap.Save(path, ImageFormat.Png);
-                    Console.WriteLine(variant.ToString() + " -> " + path);
-                }
-            }
-        }
-    }
-
-    // Current-mode sample: real settings.ini (size/variant/transparency). Live network state is
-    // owned by background readers with no disk cache, so the frame reuses the synthetic snapshot
-    // for content while geometry and styling stay the user's real configuration.
+    // Current sample keeps real user geometry/scale and the retained docked renderer while using a
+    // deterministic snapshot; readers have no durable display cache.
     internal static void RenderCurrentSample(string outputDir)
     {
         WidgetSettings settings = WidgetSettings.Load();
         using (NetworkMonitorForm form = new NetworkMonitorForm(settings))
         {
-            form.SetLayerScale(2.0f);
-            form.MaximumSize = new Size(4000, 4000);
-            form.Size = new Size(settings.NetworkMonitorWidth, settings.NetworkMonitorHeight);
+            form.MaximumSize = Size.Empty;
+            form.Size = form.GetDockedSize();
             form.snapshot = BuildSampleSnapshot();
+            form.cleanIpSnapshot = BuildSampleCleanIpSnapshot();
             RenderSampleSupport.SaveComposited(
                 outputDir,
                 "networkmonitor-current.png",
@@ -121,7 +81,6 @@ internal sealed partial class NetworkMonitorForm
     private static void RenderDockedSample(string outputDir, string fileName, int width, int height, bool discovery)
     {
         WidgetSettings settings = WidgetSettings.CreateDefaults();
-        settings.NetworkMonitorLeftDockEnabled = true;
         settings.SpecBoardWidth = width;
         settings.SpecBoardHeight = height;
         settings.Normalize();

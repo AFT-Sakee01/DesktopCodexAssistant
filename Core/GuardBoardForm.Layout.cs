@@ -200,9 +200,19 @@ internal sealed partial class GuardBoardForm
         int trackHeight = Math.Max(labelRow, actionRow) + barHeight + labelRow + S(4);
         int trackGap = S(8);
 
-        // The ring takes whatever is left after both tracks have their measured height, so adding
-        // the battery track shrinks the ring instead of pushing it off the bottom edge.
-        int ringBudget = Math.Max(S(60), bounds.Height - trackHeight * 2 - trackGap * 2);
+        // Power-request status block, added under the battery track. It carries the Modern Standby
+        // fix's visible state (which requests are held) plus the AC caveat, so it claims its measured
+        // height the same way the two tracks claim theirs. A tighter gap sits between the battery
+        // track and this block than between the ring and the tracks, grouping the two power-related
+        // rows without stealing extra ring height.
+        int infoChipRow = MeasureLineHeight(g, smallBold, S(4));
+        int infoCaptionRow = MeasureLineHeight(g, smallFont, S(2));
+        int infoHeight = infoChipRow + infoCaptionRow + S(3);
+        int infoGap = S(6);
+
+        // The ring takes whatever is left after both tracks and the info block have their measured
+        // height, so adding rows shrinks the ring instead of pushing content off the bottom edge.
+        int ringBudget = Math.Max(S(56), bounds.Height - trackHeight * 2 - trackGap * 2 - infoGap - infoHeight);
         int ringSize = Math.Min(Math.Min(bounds.Width, ringBudget), S(168));
         Rectangle ring = new Rectangle(
             bounds.Left + Math.Max(0, (bounds.Width - ringSize) / 2),
@@ -218,6 +228,113 @@ internal sealed partial class GuardBoardForm
         y = offlineTrack.Bottom + trackGap;
         Rectangle batteryTrack = new Rectangle(bounds.Left, y, bounds.Width, trackHeight);
         DrawBatteryTrack(g, batteryTrack, labelRow, actionRow, barHeight, smallFont, smallBold, monoFont, nowUtc, recordHitTargets);
+
+        y = batteryTrack.Bottom + infoGap;
+        Rectangle powerInfo = new Rectangle(bounds.Left, y, bounds.Width, infoHeight);
+        DrawPowerRequestInfo(g, powerInfo, infoChipRow, infoCaptionRow, smallFont, smallBold);
+    }
+
+    private enum GuardAcState
+    {
+        Unknown = 0,
+        OnAc = 1,
+        OnBattery = 2
+    }
+
+    // AC status, shared by the power-request info block and the repaint signature. Queried at most
+    // once per repaint, and the board only repaints when the signature changes, so this stays cheap.
+    private static GuardAcState ResolveAcState()
+    {
+        bool onAc;
+        if (!NativeMethods.TryGetOnAcPower(out onAc))
+        {
+            return GuardAcState.Unknown;
+        }
+
+        return onAc ? GuardAcState.OnAc : GuardAcState.OnBattery;
+    }
+
+    // Modern Standby power-request status, drawn under the battery track. The three chips report
+    // which requests the guard currently holds — this is the mechanism that actually keeps an S0
+    // machine awake, so the board shows it rather than leaving the fix invisible. The caption carries
+    // the AC caveat: on battery Windows can still drop the requests after the sleep timeout, so a
+    // guard armed while unplugged is warned in the warning colour.
+    private void DrawPowerRequestInfo(
+        Graphics g,
+        Rectangle bounds,
+        int chipRow,
+        int captionRow,
+        Font smallFont,
+        Font smallBold)
+    {
+        bool armed = this.runtime.SleepGuardEnabled || this.runtime.DisplayGuardActive;
+
+        using (SolidBrush label = new SolidBrush(DesignTokens.Colors.TextStrong))
+        using (StringFormat near = CreateFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
+        {
+            float labelWidth = g.MeasureString("电源请求", smallBold).Width + S(4);
+            g.DrawString("电源请求", smallBold, label, new RectangleF(bounds.Left, bounds.Top, labelWidth, chipRow), near);
+
+            int right = bounds.Right;
+            right = DrawStateChip(g, right, bounds.Top, chipRow, "显示", this.runtime.DisplayPowerRequestActive, smallBold);
+            right = DrawStateChip(g, right, bounds.Top, chipRow, "执行", this.runtime.ExecutionPowerRequestActive, smallBold);
+            DrawStateChip(g, right, bounds.Top, chipRow, "系统", this.runtime.SystemPowerRequestActive, smallBold);
+        }
+
+        GuardAcState ac = ResolveAcState();
+        string caption;
+        Color captionColor;
+        if (!armed)
+        {
+            caption = "未守护 · 未持有电源请求";
+            captionColor = DesignTokens.Colors.GlyphMuted;
+        }
+        else if (ac == GuardAcState.OnBattery)
+        {
+            caption = "电池供电 · 待机超时后系统可能中断守护";
+            captionColor = DesignTokens.Colors.Warning;
+        }
+        else if (ac == GuardAcState.OnAc)
+        {
+            caption = "S0 待机感知 · 已接通电源，守护持续有效";
+            captionColor = DesignTokens.Colors.Success;
+        }
+        else
+        {
+            caption = "S0 待机感知 · 建议接通电源以免待机中断";
+            captionColor = DesignTokens.Colors.GlyphMuted;
+        }
+
+        using (SolidBrush captionBrush = new SolidBrush(captionColor))
+        using (StringFormat near = CreateFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
+        {
+            Rectangle captionBounds = new Rectangle(bounds.Left, bounds.Top + chipRow + S(1), bounds.Width, captionRow);
+            g.DrawString(caption, smallFont, captionBrush, captionBounds, near);
+        }
+    }
+
+    // Small right-aligned status pill used by the power-request row. Active chips read in the success
+    // colour, inactive ones stay muted, so the held requests are legible at a glance. Returns the new
+    // right edge so chips can be laid out right-to-left, mirroring the card-control convention.
+    private int DrawStateChip(Graphics g, int right, int top, int height, string label, bool active, Font font)
+    {
+        Color accent = active ? DesignTokens.Colors.Success : DesignTokens.Colors.GlyphMuted;
+        int width = Math.Max(S(30), (int)Math.Ceiling(g.MeasureString(label, font).Width) + S(12));
+        Rectangle bounds = new Rectangle(right - width, top, width, height);
+        using (GraphicsPath path = RoundedRectangle(new RectangleF(bounds.Left, bounds.Top, bounds.Width, bounds.Height), S(5)))
+        using (SolidBrush fill = new SolidBrush(active
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.Success, 46)
+            : DesignTokens.WithAlpha(DesignTokens.Colors.Surface, 210)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(accent, active ? 200 : 140), Math.Max(1.0f, this.LayerScale)))
+        using (SolidBrush text = new SolidBrush(accent))
+        using (StringFormat centered = CreateFormat(StringAlignment.Center, StringTrimming.EllipsisCharacter))
+        {
+            g.FillPath(fill, path);
+            g.DrawPath(border, path);
+            g.DrawString(label, font, text, bounds, centered);
+        }
+
+        return bounds.Left - S(4);
     }
 
     // The outer arc always carries whichever guard is currently the story: the display countdown

@@ -4,8 +4,10 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -21,7 +23,8 @@ internal sealed partial class CodexRadarForm
     private const int CodexProviderUsageRateLimitRefreshSeconds = 900;
     private const int CodexProviderUsageFreshSeconds = 900;
     private const int CodexAccountEndpointStaggerSeconds = 10;
-    private const int CodexUsageIdentityDiagnosticRetention = 8;
+    private const int CodexAuthJsonMaxBytes = 1024 * 1024;
+    private const int CodexAccessTokenMaxChars = 16 * 1024;
     private const int CodexResetCreditsNormalRefreshSeconds = 3600;
     private const int CodexResetCreditsErrorRefreshSeconds = 900;
 
@@ -190,11 +193,6 @@ internal sealed partial class CodexRadarForm
     {
         // Reset cards are account metadata, not quota percentages; keep them memory-only and out of
         // quota.ini/quota-decision-history so they cannot perturb 5h/weekly ring baselines.
-        if (GetEffectiveCodexRadarSoftwareMode() != CodexRadarSoftwareMode.Codex)
-        {
-            return;
-        }
-
         DateTime nowUtc = DateTime.UtcNow;
         if (IsCodexProviderUsageRequestRunning())
         {
@@ -223,9 +221,15 @@ internal sealed partial class CodexRadarForm
 
             if (changed)
             {
-                RenderLayeredWindow();
+                PublishProjectionStateFromOwner();
             }
 
+            return;
+        }
+
+        OwnerOperationLease lease = CaptureOwnerOperation();
+        if (lease == null)
+        {
             return;
         }
 
@@ -260,17 +264,18 @@ internal sealed partial class CodexRadarForm
             }
         }
 
+        WidgetSettings requestSettings = this.CurrentSettings.Clone();
         Task.Run((Action)delegate
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
             CodexResetCreditsResult result;
             try
             {
-                result = ReadCodexResetCredits(this.CurrentSettings);
+                result = ReadCodexResetCredits(requestSettings, lease.CancellationToken);
             }
             catch (Exception ex)
             {
-                Program.LogException(ex);
+                TryExecuteOwnerCurrent(lease, delegate { Program.LogException(ex); });
                 result = BuildCodexResetCreditsError(false, ServiceHealthState.Unreachable, "ERROR", "请求失败");
             }
 
@@ -280,66 +285,61 @@ internal sealed partial class CodexRadarForm
                 result = BuildCodexResetCreditsError(false, ServiceHealthState.Unreachable, "ERROR", "请求失败");
             }
 
-            DateTime nextRefreshUtc = DateTime.UtcNow.AddSeconds(
-                result.Success
-                    ? CodexResetCreditsNormalRefreshSeconds
-                    : CodexResetCreditsErrorRefreshSeconds);
-            CodexResetCreditsSnapshot displaySnapshot;
-            lock (this.codexResetCreditsLock)
+            TryExecuteOwnerCurrent(lease, delegate
             {
-                if (result.Success && result.Snapshot != null)
+                DateTime nextRefreshUtc = DateTime.UtcNow.AddSeconds(
+                    result.Success
+                        ? CodexResetCreditsNormalRefreshSeconds
+                        : CodexResetCreditsErrorRefreshSeconds);
+                CodexResetCreditsSnapshot displaySnapshot;
+                lock (this.codexResetCreditsLock)
                 {
-                    displaySnapshot = result.Snapshot.Clone();
+                    if (result.Success && result.Snapshot != null)
+                    {
+                        displaySnapshot = result.Snapshot.Clone();
+                    }
+                    else
+                    {
+                        displaySnapshot = this.codexResetCreditsSnapshot.Clone();
+                        displaySnapshot.TokenConfigured = result.TokenConfigured;
+                        displaySnapshot.ErrorCode = result.ErrorCode ?? string.Empty;
+                        displaySnapshot.ErrorMessage = result.ErrorMessage ?? string.Empty;
+                    }
+
+                    displaySnapshot.RequestRunning = false;
+                    this.codexResetCreditsSnapshot = displaySnapshot;
+                    this.codexResetCreditsRequestRunning = false;
+                    this.nextCodexResetCreditsRefreshUtc = nextRefreshUtc;
                 }
-                else
-                {
-                    displaySnapshot = this.codexResetCreditsSnapshot.Clone();
-                    displaySnapshot.TokenConfigured = result.TokenConfigured;
-                    displaySnapshot.ErrorCode = result.ErrorCode ?? string.Empty;
-                    displaySnapshot.ErrorMessage = result.ErrorMessage ?? string.Empty;
-                }
 
-                displaySnapshot.RequestRunning = false;
-                this.codexResetCreditsSnapshot = displaySnapshot;
-                this.codexResetCreditsRequestRunning = false;
-                this.nextCodexResetCreditsRefreshUtc = nextRefreshUtc;
-            }
+                TryBeginInvokeOwnerCurrent(lease, delegate { PublishProjectionStateFromOwner(); });
 
-            if (!this.IsDisposed && this.IsHandleCreated)
-            {
-                BeginInvoke((Action)delegate { RenderLayeredWindow(); });
-            }
-
-            DateTime logNowUtc = DateTime.UtcNow;
-            DateTime earliestUtc;
-            bool earliestKnown = displaySnapshot.TryGetEarliestActiveExpirationUtc(logNowUtc, out earliestUtc);
-            NetworkCheckHistoryLogger.LogCompleted(
-                "codex_radar",
-                "codex_reset_credits",
-                trigger,
-                result.Success ? "正常" : EmptyFallback(result.ErrorMessage, result.Health.ToString()),
-                result.Success,
-                (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
-                new Dictionary<string, object>
-                {
-                    { "health", result.Health.ToString() },
-                    { "error_code", result.ErrorCode ?? string.Empty },
-                    { "token_configured", result.TokenConfigured },
-                    { "rate_limited", result.RateLimited },
-                    { "count", displaySnapshot.GetActiveCount(logNowUtc) },
-                    { "earliest_expiration_known", earliestKnown },
-                    { "earliest_expiration_hours", earliestKnown ? (object)Math.Round((earliestUtc - logNowUtc).TotalHours, 2) : null }
-                });
+                DateTime logNowUtc = DateTime.UtcNow;
+                DateTime earliestUtc;
+                bool earliestKnown = displaySnapshot.TryGetEarliestActiveExpirationUtc(logNowUtc, out earliestUtc);
+                NetworkCheckHistoryLogger.LogCompleted(
+                    "codex_radar",
+                    "codex_reset_credits",
+                    trigger,
+                    result.Success ? "正常" : EmptyFallback(result.ErrorMessage, result.Health.ToString()),
+                    result.Success,
+                    (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
+                    new Dictionary<string, object>
+                    {
+                        { "health", result.Health.ToString() },
+                        { "error_code", result.ErrorCode ?? string.Empty },
+                        { "token_configured", result.TokenConfigured },
+                        { "rate_limited", result.RateLimited },
+                        { "count", displaySnapshot.GetActiveCount(logNowUtc) },
+                        { "earliest_expiration_known", earliestKnown },
+                        { "earliest_expiration_hours", earliestKnown ? (object)Math.Round((earliestUtc - logNowUtc).TotalHours, 2) : null }
+                    });
+            });
         });
     }
 
     private void RefreshCodexProviderUsageIfNeeded()
     {
-        if (GetEffectiveCodexRadarSoftwareMode() != CodexRadarSoftwareMode.Codex)
-        {
-            return;
-        }
-
         DateTime nowUtc = DateTime.UtcNow;
         if (IsCodexResetCreditsRequestRunning())
         {
@@ -358,6 +358,12 @@ internal sealed partial class CodexRadarForm
                 this.nextCodexProviderUsageRefreshUtc = nowUtc.AddSeconds(CodexProviderUsageErrorRefreshSeconds);
             }
 
+            return;
+        }
+
+        OwnerOperationLease lease = CaptureOwnerOperation();
+        if (lease == null)
+        {
             return;
         }
 
@@ -389,17 +395,18 @@ internal sealed partial class CodexRadarForm
             }
         }
 
+        WidgetSettings requestSettings = this.CurrentSettings.Clone();
         Task.Run((Action)delegate
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
             CodexProviderUsageResult result;
             try
             {
-                result = ReadCodexProviderUsage(this.CurrentSettings);
+                result = ReadCodexProviderUsage(requestSettings, lease.CancellationToken);
             }
             catch (Exception ex)
             {
-                Program.LogException(ex);
+                TryExecuteOwnerCurrent(lease, delegate { Program.LogException(ex); });
                 result = BuildCodexProviderUsageError(false, ServiceHealthState.Unreachable, "ERROR", "请求失败");
             }
 
@@ -409,46 +416,49 @@ internal sealed partial class CodexRadarForm
                 result = BuildCodexProviderUsageError(false, ServiceHealthState.Unreachable, "ERROR", "请求失败");
             }
 
-            DateTime nextRefreshUtc = DateTime.UtcNow.AddSeconds(
-                result.Success
-                    ? CodexProviderUsageNormalRefreshSeconds
-                    : (result.RateLimited ? CodexProviderUsageRateLimitRefreshSeconds : CodexProviderUsageErrorRefreshSeconds));
-            bool sourceKnownAfter;
-            lock (this.codexProviderUsageLock)
+            TryExecuteOwnerCurrent(lease, delegate
             {
-                this.codexProviderUsageHealth = result.Health;
-                this.codexProviderUsageErrorCode = result.ErrorCode ?? string.Empty;
-                this.codexProviderUsageErrorMessage = result.ErrorMessage ?? string.Empty;
-                this.codexProviderUsageRequestRunning = false;
-                this.nextCodexProviderUsageRefreshUtc = nextRefreshUtc;
-                sourceKnownAfter = this.codexProviderQuotaSourceKnown || (result.Success && result.Snapshot != null);
-            }
-
-            if (result.Success && result.Snapshot != null)
-            {
-                ApplyCodexProviderUsageResultOnUiThread(result.Snapshot);
-            }
-
-            NetworkCheckHistoryLogger.LogCompleted(
-                "codex_radar",
-                "codex_provider_usage",
-                trigger,
-                result.Success ? "正常" : EmptyFallback(result.ErrorMessage, result.Health.ToString()),
-                result.Success,
-                (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
-                new Dictionary<string, object>
+                DateTime nextRefreshUtc = DateTime.UtcNow.AddSeconds(
+                    result.Success
+                        ? CodexProviderUsageNormalRefreshSeconds
+                        : (result.RateLimited ? CodexProviderUsageRateLimitRefreshSeconds : CodexProviderUsageErrorRefreshSeconds));
+                bool sourceKnownAfter;
+                lock (this.codexProviderUsageLock)
                 {
-                    { "health", result.Health.ToString() },
-                    { "error_code", result.ErrorCode ?? string.Empty },
-                    { "token_configured", result.TokenConfigured },
-                    { "rate_limited", result.RateLimited },
-                    { "source_known_after", sourceKnownAfter },
-                    { "fallback_available", this.quotaSourceKnown }
-                });
+                    this.codexProviderUsageHealth = result.Health;
+                    this.codexProviderUsageErrorCode = result.ErrorCode ?? string.Empty;
+                    this.codexProviderUsageErrorMessage = result.ErrorMessage ?? string.Empty;
+                    this.codexProviderUsageRequestRunning = false;
+                    this.nextCodexProviderUsageRefreshUtc = nextRefreshUtc;
+                    sourceKnownAfter = this.codexProviderQuotaSourceKnown || (result.Success && result.Snapshot != null);
+                }
+
+                if (result.Success && result.Snapshot != null)
+                {
+                    ApplyCodexProviderUsageResultOnUiThread(result.Snapshot, lease);
+                }
+
+                NetworkCheckHistoryLogger.LogCompleted(
+                    "codex_radar",
+                    "codex_provider_usage",
+                    trigger,
+                    result.Success ? "正常" : EmptyFallback(result.ErrorMessage, result.Health.ToString()),
+                    result.Success,
+                    (int)Math.Min(int.MaxValue, stopwatch.ElapsedMilliseconds),
+                    new Dictionary<string, object>
+                    {
+                        { "health", result.Health.ToString() },
+                        { "error_code", result.ErrorCode ?? string.Empty },
+                        { "token_configured", result.TokenConfigured },
+                        { "rate_limited", result.RateLimited },
+                        { "source_known_after", sourceKnownAfter },
+                        { "fallback_available", this.quotaSourceKnown }
+                    });
+            });
         });
     }
 
-    private void ApplyCodexProviderUsageResultOnUiThread(CodexQuotaSnapshot snapshot)
+    private void ApplyCodexProviderUsageResultOnUiThread(CodexQuotaSnapshot snapshot, OwnerOperationLease lease)
     {
         if (snapshot == null || this.IsDisposed || !this.IsHandleCreated)
         {
@@ -457,32 +467,33 @@ internal sealed partial class CodexRadarForm
 
         try
         {
-            this.BeginInvoke((MethodInvoker)delegate
+            TryBeginInvokeOwnerCurrent(lease, delegate
             {
                 if (this.IsDisposed ||
                     this.CurrentSettings == null ||
-                    this.CurrentSettings.CodexRadarRandomTestEnabled ||
-                    GetEffectiveCodexRadarSoftwareMode() != CodexRadarSoftwareMode.Codex)
+                    this.CurrentSettings.CodexRadarRandomTestEnabled)
                 {
                     return;
                 }
 
                 DateTime nowUtc = DateTime.UtcNow;
-                this.lastQuotaRefreshUtc = nowUtc;
+                GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex).LastRefreshUtc = nowUtc;
                 CodexQuotaSnapshot providerSnapshot = NormalizeQuotaSnapshot(snapshot.Clone());
                 MarkQuotaSnapshotSource(providerSnapshot, "provider");
-                if (HasCodexProviderQuotaIdentityChange(providerSnapshot))
-                {
-                    WriteCodexUsageIdentityChangeDiagnostic(providerSnapshot.ProviderRawResponseBody);
-                }
+                bool identityChanged = HasCodexProviderQuotaIdentityChange(providerSnapshot);
 
                 bool codexRunning = GetLastSoftwareRuntimePresenceSnapshot().CodexRunning;
                 string rejectReason;
                 if (ShouldRejectSuspiciousProviderQuotaSnapshot(providerSnapshot, out rejectReason))
                 {
                     LogRejectedProviderQuotaSnapshot(providerSnapshot, rejectReason, codexRunning);
-                    RenderLayeredWindow();
+                    PublishProjectionStateFromOwner();
                     return;
+                }
+
+                if (identityChanged)
+                {
+                    LogCodexUsageIdentityChangeDiagnostic(providerSnapshot, codexRunning);
                 }
 
                 QuotaRingDecisionInfo decision = ApplyQuotaSnapshot(
@@ -504,7 +515,7 @@ internal sealed partial class CodexRadarForm
                     TryWriteQuotaIniSnapshot(providerSnapshot);
                 }
 
-                RenderLayeredWindow();
+                PublishProjectionStateFromOwner();
             });
         }
         catch
@@ -576,39 +587,52 @@ internal sealed partial class CodexRadarForm
             Math.Abs((incomingLocal - trackedLocal).TotalMinutes) > QuotaIdentityToleranceMinutes;
     }
 
-    private static void WriteCodexUsageIdentityChangeDiagnostic(string jsonBody)
+    private static void LogCodexUsageIdentityChangeDiagnostic(
+        CodexQuotaSnapshot snapshot,
+        bool codexRunning)
     {
-        if (string.IsNullOrWhiteSpace(jsonBody))
+        if (snapshot == null)
         {
             return;
         }
 
-        try
-        {
-            Directory.CreateDirectory(Logger.DirectoryPath);
-            string path = Path.Combine(
-                Logger.DirectoryPath,
-                "codex-usage-identity-change-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + ".json");
-            File.WriteAllText(path, jsonBody, SharedEncoding.Utf8NoBom);
-            FileInfo[] files = new DirectoryInfo(Logger.DirectoryPath).GetFiles("codex-usage-identity-change-*.json");
-            Array.Sort(files, delegate(FileInfo left, FileInfo right)
+        QuotaDecisionHistoryLogger.LogDecision(
+            "provider_identity_change",
+            true,
+            codexRunning,
+            new Dictionary<string, object>
             {
-                return right.LastWriteTimeUtc.CompareTo(left.LastWriteTimeUtc);
+                { "correlation_id", snapshot.ProviderCorrelationId ?? string.Empty },
+                { "http_status", snapshot.ProviderHttpStatus },
+                { "response_bytes", snapshot.ProviderResponseBytes },
+                { "body_sha256", snapshot.ProviderResponseBodySha256 ?? string.Empty },
+                { "provider_plan", NormalizeProviderDiagnosticEnum(snapshot.ProviderPlan) },
+                { "provider_pool", NormalizeProviderDiagnosticEnum(snapshot.ProviderPool) },
+                { "five_hour_used_percent", snapshot.FiveHourUsageDiagnosticKnown ? (object)snapshot.FiveHourNormalizedUsedPercent : null },
+                { "weekly_used_percent", snapshot.WeeklyUsageDiagnosticKnown ? (object)snapshot.WeeklyNormalizedUsedPercent : null },
+                { "five_hour_reset_local", snapshot.FiveHourResetKnown ? snapshot.FiveHourResetLocal.ToString("o", CultureInfo.InvariantCulture) : null },
+                { "weekly_reset_local", snapshot.WeeklyResetKnown ? snapshot.WeeklyResetLocal.ToString("o", CultureInfo.InvariantCulture) : null }
             });
-            for (int i = CodexUsageIdentityDiagnosticRetention; i < files.Length; i++)
-            {
-                try
-                {
-                    files[i].Delete();
-                }
-                catch
-                {
-                }
-            }
-        }
-        catch (Exception ex)
+    }
+
+    private static string NormalizeProviderDiagnosticEnum(string value)
+    {
+        string normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        switch (normalized)
         {
-            Program.LogException(ex);
+            case "free":
+            case "plus":
+            case "pro":
+            case "team":
+            case "business":
+            case "enterprise":
+            case "education":
+            case "base":
+            case "additional":
+            case "default":
+                return normalized;
+            default:
+                return "unknown";
         }
     }
 
@@ -695,7 +719,9 @@ internal sealed partial class CodexRadarForm
         return days.ToString(CultureInfo.InvariantCulture) + "d";
     }
 
-    private static CodexResetCreditsResult ReadCodexResetCredits(WidgetSettings settings)
+    private static CodexResetCreditsResult ReadCodexResetCredits(
+        WidgetSettings settings,
+        CancellationToken cancellationToken)
     {
         string aiBlockReason;
         if (AiRequestProtection.ShouldBlock(settings, CodexResetCreditsUrl, out aiBlockReason))
@@ -720,43 +746,39 @@ internal sealed partial class CodexRadarForm
         request.Headers["Cache-Control"] = "no-store, no-cache";
         request.Headers["Pragma"] = "no-cache";
 
-        try
+        BoundedHttpTextResult response = BoundedHttpTextReader.Execute(
+            request,
+            BoundedHttpTextReader.AuthenticatedJsonMaxBytes,
+            CodexResetCreditsTimeoutMs,
+            cancellationToken);
+        if (response.StatusCode <= 0)
         {
-            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
-            {
-                string content = ReadResponseText(response);
-                return ParseCodexResetCreditsResponse(content, true, (int)response.StatusCode);
-            }
+            return BuildCodexResetCreditsError(true, ServiceHealthState.Unreachable, response.ErrorCode, "无法连接");
         }
-        catch (WebException ex)
+
+        CodexResetCreditsResult parsed = ParseCodexResetCreditsResponse(
+            response.Content,
+            true,
+            response.StatusCode);
+        if (parsed != null && (parsed.Success || parsed.RateLimited))
         {
-            HttpWebResponse response = ex.Response as HttpWebResponse;
-            if (response != null)
-            {
-                using (response)
-                {
-                    int statusCode = (int)response.StatusCode;
-                    string content = ReadResponseText(response);
-                    CodexResetCreditsResult parsed = ParseCodexResetCreditsResponse(content, true, statusCode);
-                    if (parsed != null && parsed.RateLimited)
-                    {
-                        return parsed;
-                    }
-
-                    return BuildCodexResetCreditsError(
-                        true,
-                        statusCode == 429
-                            ? ServiceHealthState.Degraded
-                            : (statusCode == 401 || statusCode == 403
-                                ? ServiceHealthState.Unavailable
-                                : ServiceHealthState.Unreachable),
-                        statusCode.ToString(CultureInfo.InvariantCulture),
-                        GetCodexProviderUsageHttpErrorReason(statusCode));
-                }
-            }
-
-            return BuildCodexResetCreditsError(true, ServiceHealthState.Unreachable, "NET", "无法连接");
+            return parsed;
         }
+
+        if (!string.IsNullOrEmpty(response.ErrorCode) && response.StatusCode >= 200 && response.StatusCode < 300)
+        {
+            return BuildCodexResetCreditsError(true, ServiceHealthState.Unreachable, response.ErrorCode, "响应不可用");
+        }
+
+        return BuildCodexResetCreditsError(
+            true,
+            response.StatusCode == 429
+                ? ServiceHealthState.Degraded
+                : (response.StatusCode == 401 || response.StatusCode == 403
+                    ? ServiceHealthState.Unavailable
+                    : ServiceHealthState.Unreachable),
+            response.StatusCode.ToString(CultureInfo.InvariantCulture),
+            GetCodexProviderUsageHttpErrorReason(response.StatusCode));
     }
 
     private static CodexResetCreditsResult ParseCodexResetCreditsResponse(
@@ -786,7 +808,9 @@ internal sealed partial class CodexRadarForm
         object root;
         try
         {
-            root = new JavaScriptSerializer().DeserializeObject(content);
+            root = BoundedHttpTextReader
+                .CreateJsonSerializer(BoundedHttpTextReader.AuthenticatedJsonMaxBytes)
+                .DeserializeObject(content);
         }
         catch
         {
@@ -798,6 +822,15 @@ internal sealed partial class CodexRadarForm
         if (credits == null && creditsObject != null)
         {
             credits = FindJsonMemberIgnoreCase(creditsObject, "data", 0) as object[];
+        }
+
+        if (credits != null && credits.Length > 512)
+        {
+            return BuildCodexResetCreditsError(
+                tokenConfigured,
+                ServiceHealthState.Incomplete,
+                "ARRAY_TOO_LARGE",
+                "响应记录过多");
         }
 
         if (credits == null)
@@ -985,7 +1018,9 @@ internal sealed partial class CodexRadarForm
         };
     }
 
-    private static CodexProviderUsageResult ReadCodexProviderUsage(WidgetSettings settings)
+    private static CodexProviderUsageResult ReadCodexProviderUsage(
+        WidgetSettings settings,
+        CancellationToken cancellationToken)
     {
         string aiBlockReason;
         if (AiRequestProtection.ShouldBlock(settings, CodexProviderUsageUrl, out aiBlockReason))
@@ -1010,49 +1045,59 @@ internal sealed partial class CodexRadarForm
         request.Headers["Cache-Control"] = "no-store, no-cache";
         request.Headers["Pragma"] = "no-cache";
 
-        try
+        BoundedHttpTextResult response = BoundedHttpTextReader.Execute(
+            request,
+            BoundedHttpTextReader.AuthenticatedJsonMaxBytes,
+            CodexProviderUsageTimeoutMs,
+            cancellationToken);
+        if (response.StatusCode <= 0)
         {
-            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
-            {
-                string content = ReadResponseText(response);
-                return ParseCodexProviderUsageResponse(content, true, (int)response.StatusCode);
-            }
+            return BuildCodexProviderUsageError(true, ServiceHealthState.Unreachable, response.ErrorCode, "无法连接");
         }
-        catch (WebException ex)
+
+        CodexProviderUsageResult parsed = ParseCodexProviderUsageResponse(
+            response.Content,
+            true,
+            response.StatusCode,
+            response.Bytes);
+        if (parsed != null && (parsed.Success || parsed.RateLimited))
         {
-            HttpWebResponse response = ex.Response as HttpWebResponse;
-            if (response != null)
-            {
-                using (response)
-                {
-                    int statusCode = (int)response.StatusCode;
-                    string content = ReadResponseText(response);
-                    CodexProviderUsageResult parsed = ParseCodexProviderUsageResponse(content, true, statusCode);
-                    if (parsed != null && parsed.RateLimited)
-                    {
-                        return parsed;
-                    }
-
-                    return BuildCodexProviderUsageError(
-                        true,
-                        statusCode == 429
-                            ? ServiceHealthState.Degraded
-                            : (statusCode == 401 || statusCode == 403
-                                ? ServiceHealthState.Unavailable
-                                : ServiceHealthState.Unreachable),
-                        statusCode.ToString(CultureInfo.InvariantCulture),
-                        GetCodexProviderUsageHttpErrorReason(statusCode));
-                }
-            }
-
-            return BuildCodexProviderUsageError(true, ServiceHealthState.Unreachable, "NET", "无法连接");
+            return parsed;
         }
+
+        if (!string.IsNullOrEmpty(response.ErrorCode) && response.StatusCode >= 200 && response.StatusCode < 300)
+        {
+            return BuildCodexProviderUsageError(true, ServiceHealthState.Unreachable, response.ErrorCode, "响应不可用");
+        }
+
+        return BuildCodexProviderUsageError(
+            true,
+            response.StatusCode == 429
+                ? ServiceHealthState.Degraded
+                : (response.StatusCode == 401 || response.StatusCode == 403
+                    ? ServiceHealthState.Unavailable
+                    : ServiceHealthState.Unreachable),
+            response.StatusCode.ToString(CultureInfo.InvariantCulture),
+            GetCodexProviderUsageHttpErrorReason(response.StatusCode));
     }
 
     private static CodexProviderUsageResult ParseCodexProviderUsageResponse(
         string content,
         bool tokenConfigured,
         int statusCode)
+    {
+        return ParseCodexProviderUsageResponse(
+            content,
+            tokenConfigured,
+            statusCode,
+            string.IsNullOrEmpty(content) ? 0 : SharedEncoding.Utf8NoBom.GetByteCount(content));
+    }
+
+    private static CodexProviderUsageResult ParseCodexProviderUsageResponse(
+        string content,
+        bool tokenConfigured,
+        int statusCode,
+        int responseBytes)
     {
         if (statusCode == 429)
         {
@@ -1076,7 +1121,9 @@ internal sealed partial class CodexRadarForm
         Dictionary<string, object> root;
         try
         {
-            root = new JavaScriptSerializer().DeserializeObject(content) as Dictionary<string, object>;
+            root = BoundedHttpTextReader
+                .CreateJsonSerializer(BoundedHttpTextReader.AuthenticatedJsonMaxBytes)
+                .DeserializeObject(content) as Dictionary<string, object>;
         }
         catch
         {
@@ -1113,7 +1160,12 @@ internal sealed partial class CodexRadarForm
 
         snapshot.SourceUpdatedUtc = DateTime.UtcNow;
         snapshot.SourceUpdatedKnown = true;
-        snapshot.ProviderRawResponseBody = content;
+        snapshot.ProviderHttpStatus = statusCode;
+        snapshot.ProviderResponseBytes = Math.Max(0, responseBytes);
+        snapshot.ProviderResponseBodySha256 = ComputeSha256Hex(content);
+        snapshot.ProviderPlan = ResolveProviderDiagnosticValue(root, rateLimit, "plan_type", "account_plan");
+        snapshot.ProviderPool = ResolveProviderDiagnosticValue(root, rateLimit, "pool_type", "pool");
+        snapshot.ProviderCorrelationId = Guid.NewGuid().ToString("N");
         return new CodexProviderUsageResult
         {
             TokenConfigured = tokenConfigured,
@@ -1124,6 +1176,47 @@ internal sealed partial class CodexRadarForm
             ErrorCode = string.Empty,
             ErrorMessage = string.Empty
         };
+    }
+
+    private static string ResolveProviderDiagnosticValue(
+        Dictionary<string, object> root,
+        Dictionary<string, object> rateLimit,
+        string primaryKey,
+        string alternateKey)
+    {
+        string value = GetQuotaString(rateLimit, primaryKey);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            value = GetQuotaString(rateLimit, alternateKey);
+        }
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            value = GetQuotaString(root, primaryKey);
+        }
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            value = GetQuotaString(root, alternateKey);
+        }
+
+        return NormalizeProviderDiagnosticEnum(value);
+    }
+
+    private static string ComputeSha256Hex(string content)
+    {
+        byte[] bytes = SharedEncoding.Utf8NoBom.GetBytes(content ?? string.Empty);
+        using (SHA256 sha = SHA256.Create())
+        {
+            byte[] hash = sha.ComputeHash(bytes);
+            StringBuilder builder = new StringBuilder(hash.Length * 2);
+            for (int i = 0; i < hash.Length; i++)
+            {
+                builder.Append(hash[i].ToString("x2", CultureInfo.InvariantCulture));
+            }
+
+            return builder.ToString();
+        }
     }
 
     private static bool ApplyCodexProviderUsageSlot(
@@ -1324,9 +1417,10 @@ internal sealed partial class CodexRadarForm
 
         try
         {
-            string content = File.ReadAllText(path, Encoding.UTF8);
-            object root = new JavaScriptSerializer().DeserializeObject(content);
-            return FindCodexAccessToken(root);
+            string parsedToken;
+            return TryReadCodexAccessTokenFile(path, out parsedToken)
+                ? parsedToken
+                : string.Empty;
         }
         catch
         {
@@ -1366,46 +1460,311 @@ internal sealed partial class CodexRadarForm
         return string.IsNullOrWhiteSpace(value) ? string.Empty : value;
     }
 
-    private static string FindCodexAccessToken(object node)
+    private static bool TryReadCodexAccessTokenFile(string path, out string token)
     {
-        Dictionary<string, object> dictionary = node as Dictionary<string, object>;
-        if (dictionary != null)
+        token = string.Empty;
+        string content;
+        if (!TryReadBoundedUtf8File(path, CodexAuthJsonMaxBytes, out content))
         {
-            object token;
-            if (dictionary.TryGetValue("access_token", out token) ||
-                dictionary.TryGetValue("accessToken", out token))
+            return false;
+        }
+
+        return TryParseCodexAccessTokenJson(content, out token);
+    }
+
+    private static bool TryReadBoundedUtf8File(string path, int maxBytes, out string content)
+    {
+        content = string.Empty;
+        if (string.IsNullOrWhiteSpace(path) || maxBytes <= 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            FileInfo info = new FileInfo(path);
+            if (!info.Exists || info.Length < 0 || info.Length > maxBytes)
             {
-                string text = Convert.ToString(token, CultureInfo.InvariantCulture);
-                if (!string.IsNullOrWhiteSpace(text))
-                {
-                    return text.Trim();
-                }
+                return false;
             }
 
-            foreach (KeyValuePair<string, object> pair in dictionary)
+            using (FileStream stream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete))
+            using (MemoryStream buffer = new MemoryStream((int)Math.Min(info.Length, maxBytes)))
             {
-                string nested = FindCodexAccessToken(pair.Value);
-                if (!string.IsNullOrWhiteSpace(nested))
+                byte[] chunk = new byte[8192];
+                int total = 0;
+                int read;
+                while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
                 {
-                    return nested;
+                    total += read;
+                    if (total > maxBytes)
+                    {
+                        return false;
+                    }
+
+                    buffer.Write(chunk, 0, read);
                 }
+
+                content = new UTF8Encoding(false, true).GetString(buffer.ToArray());
+                return true;
+            }
+        }
+        catch
+        {
+            content = string.Empty;
+            return false;
+        }
+    }
+
+    private static bool TryParseCodexAccessTokenJson(string content, out string token)
+    {
+        token = string.Empty;
+        Dictionary<string, object> root;
+        try
+        {
+            root = BoundedHttpTextReader
+                .CreateJsonSerializer(CodexAuthJsonMaxBytes)
+                .DeserializeObject(content ?? string.Empty) as Dictionary<string, object>;
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (root == null)
+        {
+            return false;
+        }
+
+        List<string> candidates = new List<string>();
+        AddKnownCodexTokenCandidate(root, "access_token", candidates);
+        Dictionary<string, object> tokens = GetQuotaObject(root, "tokens");
+        AddKnownCodexTokenCandidate(tokens, "access_token", candidates);
+
+        string selected = string.Empty;
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            string candidate = candidates[i];
+            if (selected.Length == 0)
+            {
+                selected = candidate;
+            }
+            else if (!string.Equals(selected, candidate, StringComparison.Ordinal))
+            {
+                return false;
             }
         }
 
-        object[] array = node as object[];
-        if (array != null)
+        if (!IsPlausibleCodexAccessToken(selected) || !HasExpectedCodexJwtClaims(selected))
         {
-            for (int i = 0; i < array.Length; i++)
+            return false;
+        }
+
+        token = selected;
+        return true;
+    }
+
+    private static void AddKnownCodexTokenCandidate(
+        Dictionary<string, object> source,
+        string key,
+        List<string> candidates)
+    {
+        object value;
+        if (source == null || candidates == null || !source.TryGetValue(key, out value))
+        {
+            return;
+        }
+
+        string candidate = value as string;
+        if (!string.IsNullOrWhiteSpace(candidate))
+        {
+            candidates.Add(candidate.Trim());
+        }
+    }
+
+    private static bool IsPlausibleCodexAccessToken(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token) || token.Length > CodexAccessTokenMaxChars)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < token.Length; i++)
+        {
+            if (char.IsWhiteSpace(token[i]) || char.IsControl(token[i]))
             {
-                string nested = FindCodexAccessToken(array[i]);
-                if (!string.IsNullOrWhiteSpace(nested))
-                {
-                    return nested;
-                }
+                return false;
             }
         }
 
-        return string.Empty;
+        return true;
+    }
+
+    private static bool HasExpectedCodexJwtClaims(string token)
+    {
+        string[] segments = (token ?? string.Empty).Split('.');
+        if (segments.Length != 3)
+        {
+            // Older installations may persist an opaque access token. It is sent only to the
+            // fixed ChatGPT origin and is never logged, so JWT claim checks do not apply.
+            return true;
+        }
+
+        string payloadJson;
+        if (!TryDecodeJwtSegment(segments[1], out payloadJson))
+        {
+            return false;
+        }
+
+        Dictionary<string, object> payload;
+        try
+        {
+            payload = BoundedHttpTextReader
+                .CreateJsonSerializer(BoundedHttpTextReader.TinyProbeMaxBytes)
+                .DeserializeObject(payloadJson) as Dictionary<string, object>;
+        }
+        catch
+        {
+            return false;
+        }
+
+        string issuer = GetQuotaString(payload, "iss").TrimEnd('/');
+        bool issuerExpected = string.Equals(issuer, "https://auth.openai.com", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(issuer, "https://auth0.openai.com", StringComparison.OrdinalIgnoreCase);
+        object audience;
+        bool audienceExpected = payload != null &&
+            payload.TryGetValue("aud", out audience) &&
+            IsExpectedCodexAudience(audience);
+        return issuerExpected && audienceExpected;
+    }
+
+    private static bool IsExpectedCodexAudience(object value)
+    {
+        string text = value as string;
+        if (text != null)
+        {
+            return string.Equals(text.TrimEnd('/'), "https://api.openai.com/v1", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(text.TrimEnd('/'), "https://api.openai.com", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(text, "openai-api", StringComparison.OrdinalIgnoreCase);
+        }
+
+        object[] values = value as object[];
+        for (int i = 0; values != null && i < Math.Min(values.Length, 32); i++)
+        {
+            if (IsExpectedCodexAudience(values[i]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryDecodeJwtSegment(string segment, out string text)
+    {
+        text = string.Empty;
+        if (string.IsNullOrEmpty(segment) || segment.Length > BoundedHttpTextReader.TinyProbeMaxBytes)
+        {
+            return false;
+        }
+
+        try
+        {
+            string value = segment.Replace('-', '+').Replace('_', '/');
+            int remainder = value.Length % 4;
+            if (remainder == 1)
+            {
+                return false;
+            }
+
+            if (remainder > 0)
+            {
+                value = value.PadRight(value.Length + (4 - remainder), '=');
+            }
+
+            byte[] bytes = Convert.FromBase64String(value);
+            if (bytes.Length > BoundedHttpTextReader.TinyProbeMaxBytes)
+            {
+                return false;
+            }
+
+            text = new UTF8Encoding(false, true).GetString(bytes);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string EncodeJwtFixtureSegment(string value)
+    {
+        return Convert.ToBase64String(SharedEncoding.Utf8NoBom.GetBytes(value ?? string.Empty))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+    }
+
+    private static void RunCodexAuthJsonSelfTest()
+    {
+        string validJwt = EncodeJwtFixtureSegment("{\"alg\":\"none\"}") + "." +
+            EncodeJwtFixtureSegment("{\"iss\":\"https://auth.openai.com\",\"aud\":[\"https://api.openai.com/v1\"]}") +
+            ".fixture";
+        string token;
+        if (!TryParseCodexAccessTokenJson(
+                "{\"tokens\":{\"access_token\":\"" + validJwt + "\"}}",
+                out token) ||
+            !string.Equals(token, validJwt, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Codex auth self-test: known token path failed.");
+        }
+
+        if (!TryParseCodexAccessTokenJson("{\"access_token\":\"opaque-fixture-token\"}", out token) ||
+            !string.Equals(token, "opaque-fixture-token", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Codex auth self-test: legacy root token path failed.");
+        }
+
+        string[] rejected = new string[]
+        {
+            "{\"profile\":{\"access_token\":\"nested-decoy\"}}",
+            "{\"accessToken\":\"unknown-casing\"}",
+            "{\"access_token\":\"first\",\"tokens\":{\"access_token\":\"second\"}}",
+            "{\"tokens\":{\"access_token\":\"" +
+                EncodeJwtFixtureSegment("{\"alg\":\"none\"}") + "." +
+                EncodeJwtFixtureSegment("{\"iss\":\"https://attacker.invalid\",\"aud\":\"https://api.openai.com/v1\"}") +
+                ".fixture\"}}"
+        };
+        for (int i = 0; i < rejected.Length; i++)
+        {
+            if (TryParseCodexAccessTokenJson(rejected[i], out token))
+            {
+                throw new InvalidOperationException("Codex auth self-test: unsafe auth schema was accepted.");
+            }
+        }
+
+        string directory = Path.Combine(Path.GetTempPath(), "CodexAuthSelfTest-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string oversizedPath = Path.Combine(directory, "auth.json");
+            File.WriteAllBytes(oversizedPath, new byte[CodexAuthJsonMaxBytes + 1]);
+            DateTime writeUtc = File.GetLastWriteTimeUtc(oversizedPath);
+            if (TryReadCodexAccessTokenFile(oversizedPath, out token) ||
+                File.GetLastWriteTimeUtc(oversizedPath) != writeUtc)
+            {
+                throw new InvalidOperationException("Codex auth self-test: oversized file was read or modified.");
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(directory, true); } catch { }
+        }
+
     }
 
     private static void RunCodexResetCreditsSelfTest()

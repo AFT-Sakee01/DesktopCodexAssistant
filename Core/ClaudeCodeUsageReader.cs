@@ -5,38 +5,33 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Web.Script.Serialization;
+
+internal enum ClaudeCodeUsageServiceState
+{
+    Unknown,
+    Normal,
+    Offline,
+    Incomplete,
+    Unavailable,
+    Unreachable
+}
 
 internal sealed class ClaudeCodeUsageSnapshot
 {
     public int FiveHourPercent { get; set; }
+    public bool FiveHourPercentKnown { get; set; }
     public int WeeklyPercent { get; set; }
+    public bool WeeklyPercentKnown { get; set; }
     public DateTime FiveHourResetLocal { get; set; }
     public bool FiveHourResetKnown { get; set; }
     public DateTime WeeklyResetLocal { get; set; }
     public bool WeeklyResetKnown { get; set; }
     public DateTime SourceUpdatedUtc { get; set; }
     public bool SourceUpdatedKnown { get; set; }
-
-    public ClaudeRadarQuotaSnapshot ToClaudeRadarQuotaSnapshot()
-    {
-        return new ClaudeRadarQuotaSnapshot
-        {
-            Known = true,
-            Source = "personal",
-            FiveHourPercent = ClampPercent(this.FiveHourPercent),
-            WeeklyPercent = ClampPercent(this.WeeklyPercent),
-            FiveHourResetText = this.FiveHourResetKnown
-                ? this.FiveHourResetLocal.ToString("HH:mm", CultureInfo.CurrentCulture)
-                : "N/A",
-            WeeklyResetText = this.WeeklyResetKnown
-                ? this.WeeklyResetLocal.ToString("MM/dd", CultureInfo.CurrentCulture)
-                : "N/A",
-            UpdatedAtUtc = this.SourceUpdatedUtc,
-            UpdatedAtKnown = this.SourceUpdatedKnown
-        };
-    }
 
     public static int ClampPercent(int value)
     {
@@ -50,7 +45,7 @@ internal sealed class ClaudeCodeUsageReadResult
     public bool Success { get; set; }
     public bool RateLimited { get; set; }
     public ClaudeCodeUsageSnapshot Snapshot { get; set; }
-    public ClaudeRadarServiceState State { get; set; }
+    public ClaudeCodeUsageServiceState State { get; set; }
     public string ErrorCode { get; set; }
     public string ErrorMessage { get; set; }
 }
@@ -61,20 +56,37 @@ internal static class ClaudeCodeUsageReader
     public const string MessagesUrl = "https://api.anthropic.com/v1/messages";
     public const string SetupTokenFileName = "claude-code-oauth-token.bin";
     public const string StatusLineQuotaFileName = "claude-statusline-quota.ini";
+    public const string QuotaCacheFileName = "claude-quota.ini";
     public const int NormalRefreshSeconds = 300;
     public const int ErrorRefreshSeconds = 600;
     public const int RateLimitRefreshSeconds = 900;
 
     private const int RequestTimeoutMs = 10000;
-    private const int StatusLineCacheMaxAgeMinutes = 360;
+    private const int QuotaCacheMaxAgeMinutes = 360;
     private const string LegacySetupTokenFileName = "claude-code-oauth-token.txt";
     private const string StatusLineBridgeScriptName = "desktop-codex-statusline-bridge.ps1";
-    private const string StatusLineBridgeMarker = "# Desktop Codex Assistant Claude statusline bridge v2";
+    private const string StatusLineBridgeMarker = "# Desktop Codex Assistant Claude statusline bridge v3";
+    private const int StatusLineSettingsMergeAttempts = 2;
     private static readonly object StatusLineBridgeInstallLock = new object();
+    private static readonly object QuotaCacheLock = new object();
     private static bool statusLineBridgeInstallAttempted;
     private static bool statusLineBridgeInstallReady;
     private static string statusLineBridgeInstallErrorCode = string.Empty;
     private static string statusLineBridgeInstallErrorMessage = string.Empty;
+
+    private sealed class StatusLineFileIdentity
+    {
+        public bool Exists { get; set; }
+        public long Length { get; set; }
+        public DateTime LastWriteTimeUtc { get; set; }
+        public string Sha256 { get; set; }
+    }
+
+    private sealed class StatusLineInstallTestHooks
+    {
+        public Action<int, string> BeforeSettingsIdentityCheck { get; set; }
+        public Action<string> BeforeAtomicCommit { get; set; }
+    }
     private static readonly string[] MessagesFallbackModels = new string[]
     {
         "claude-3-haiku-20240307",
@@ -106,14 +118,18 @@ internal static class ClaudeCodeUsageReader
         ClaudeCodeUsageReadResult oauthResult = null;
         if (tokenConfigured)
         {
-            oauthResult = readOAuth == null ? null : readOAuth();
+            oauthResult = RequireCompleteQuotaSnapshot(
+                readOAuth == null ? null : readOAuth(),
+                DateTime.UtcNow);
             if (oauthResult != null && (oauthResult.Success || IsTokenInvalidResult(oauthResult)))
             {
                 return oauthResult;
             }
         }
 
-        ClaudeCodeUsageReadResult statusLineResult = readStatusLine == null ? null : readStatusLine();
+        ClaudeCodeUsageReadResult statusLineResult = RequireCompleteQuotaSnapshot(
+            readStatusLine == null ? null : readStatusLine(),
+            DateTime.UtcNow);
         if (statusLineResult != null && statusLineResult.Success)
         {
             return statusLineResult;
@@ -122,7 +138,9 @@ internal static class ClaudeCodeUsageReader
         bool bridgeReady = ensureBridge != null && ensureBridge();
         if (bridgeReady)
         {
-            statusLineResult = readStatusLine == null ? null : readStatusLine();
+            statusLineResult = RequireCompleteQuotaSnapshot(
+                readStatusLine == null ? null : readStatusLine(),
+                DateTime.UtcNow);
             if (statusLineResult != null && statusLineResult.Success)
             {
                 return statusLineResult;
@@ -134,7 +152,7 @@ internal static class ClaudeCodeUsageReader
             return oauthResult;
         }
 
-        return BuildError(false, ClaudeRadarServiceState.Unavailable, "NO_SETUP_TOKEN", "未绑定setup-token");
+        return BuildError(false, ClaudeCodeUsageServiceState.Unavailable, "NO_SETUP_TOKEN", "未绑定setup-token");
     }
 
     private static ClaudeCodeUsageReadResult ReadStatusLineQuotaCacheResult()
@@ -142,7 +160,7 @@ internal static class ClaudeCodeUsageReader
         ClaudeCodeUsageSnapshot snapshot;
         string errorCode;
         string errorMessage;
-        ClaudeRadarServiceState errorState;
+        ClaudeCodeUsageServiceState errorState;
         return TryReadStatusLineQuotaCache(out snapshot, out errorCode, out errorMessage, out errorState)
             ? BuildSuccess(snapshot)
             : BuildError(false, errorState, errorCode, errorMessage);
@@ -155,23 +173,23 @@ internal static class ClaudeCodeUsageReader
     {
         if (!IsNetworkAvailable())
         {
-            return BuildError(false, ClaudeRadarServiceState.Offline, "OFFLINE", "无网络");
+            return BuildError(false, ClaudeCodeUsageServiceState.Offline, "OFFLINE", "无网络");
         }
 
         string aiBlockReason;
         if (AiRequestProtection.ShouldBlock(settings, UsageUrl, out aiBlockReason))
         {
-            return BuildError(false, ClaudeRadarServiceState.Unavailable, "AI_BLOCK", "AI阻断");
+            return BuildError(false, ClaudeCodeUsageServiceState.Unavailable, "AI_BLOCK", "AI阻断");
         }
 
         string token = ReadConfiguredSetupToken();
         if (string.IsNullOrWhiteSpace(token))
         {
-            return BuildError(false, ClaudeRadarServiceState.Unavailable, "NO_SETUP_TOKEN", "无setup-token");
+            return BuildError(false, ClaudeCodeUsageServiceState.Unavailable, "NO_SETUP_TOKEN", "无setup-token");
         }
 
-        // Community Windows monitors use the OAuth usage endpoint as the authoritative source,
-        // then consult Messages API rate-limit headers only as a bounded fallback. Keep that
+        // Use the official OAuth usage endpoint as the authoritative source, then consult
+        // Messages API rate-limit headers only as a bounded fallback. Keep that
         // order so we do not burn an extra request every normal polling cycle, and never log or
         // persist the OAuth token or response body.
         ClaudeCodeUsageReadResult usageResult = FetchUsageEndpoint(token);
@@ -184,11 +202,9 @@ internal static class ClaudeCodeUsageReader
         ClaudeCodeUsageReadResult usageResult,
         Func<ClaudeCodeUsageReadResult> readHeaders)
     {
-        if (usageResult != null &&
-            usageResult.Success &&
-            usageResult.Snapshot != null &&
-            usageResult.Snapshot.FiveHourResetKnown &&
-            usageResult.Snapshot.WeeklyResetKnown)
+        DateTime nowUtc = DateTime.UtcNow;
+        ClaudeCodeUsageReadResult completeUsageResult = RequireCompleteQuotaSnapshot(usageResult, nowUtc);
+        if (completeUsageResult != null && completeUsageResult.Success)
         {
             return usageResult;
         }
@@ -201,18 +217,24 @@ internal static class ClaudeCodeUsageReader
         }
 
         ClaudeCodeUsageReadResult headerResult = readHeaders == null ? null : readHeaders();
+        ClaudeCodeUsageReadResult completeHeaderResult = RequireCompleteQuotaSnapshot(headerResult, DateTime.UtcNow);
         if (headerResult != null && headerResult.Success)
         {
             if (usageResult != null && usageResult.Success && usageResult.Snapshot != null)
             {
                 MergeMissingResetTimes(usageResult.Snapshot, headerResult.Snapshot);
-                return usageResult;
+                completeUsageResult = RequireCompleteQuotaSnapshot(usageResult, DateTime.UtcNow);
+                if (completeUsageResult != null && completeUsageResult.Success)
+                {
+                    return usageResult;
+                }
             }
 
-            return headerResult;
+            return completeHeaderResult;
         }
 
-        return usageResult ?? headerResult ?? BuildError(true, ClaudeRadarServiceState.Unreachable, "NET", "无法连接");
+        return completeUsageResult ?? completeHeaderResult ?? headerResult ??
+            BuildError(true, ClaudeCodeUsageServiceState.Unreachable, "NET", "无法连接");
     }
 
     private static bool IsTokenInvalidResult(ClaudeCodeUsageReadResult result)
@@ -225,12 +247,12 @@ internal static class ClaudeCodeUsageReader
         out ClaudeCodeUsageSnapshot snapshot,
         out string errorCode,
         out string errorMessage,
-        out ClaudeRadarServiceState errorState)
+        out ClaudeCodeUsageServiceState errorState)
     {
         snapshot = null;
         errorCode = string.Empty;
         errorMessage = string.Empty;
-        errorState = ClaudeRadarServiceState.Incomplete;
+        errorState = ClaudeCodeUsageServiceState.Incomplete;
 
         string path = StatusLineQuotaCachePath;
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
@@ -249,7 +271,7 @@ internal static class ClaudeCodeUsageReader
         {
             errorCode = "STATUSLINE_READ";
             errorMessage = "缓存读取失败";
-            errorState = ClaudeRadarServiceState.Unreachable;
+            errorState = ClaudeCodeUsageServiceState.Unreachable;
             return false;
         }
 
@@ -261,12 +283,12 @@ internal static class ClaudeCodeUsageReader
         out ClaudeCodeUsageSnapshot snapshot,
         out string errorCode,
         out string errorMessage,
-        out ClaudeRadarServiceState errorState)
+        out ClaudeCodeUsageServiceState errorState)
     {
         snapshot = null;
         errorCode = string.Empty;
         errorMessage = string.Empty;
-        errorState = ClaudeRadarServiceState.Incomplete;
+        errorState = ClaudeCodeUsageServiceState.Incomplete;
 
         Dictionary<string, string> values = ParseIniContent(content);
         if (values.Count == 0)
@@ -288,20 +310,6 @@ internal static class ClaudeCodeUsageReader
 
         DateTime updatedUtc;
         bool updatedKnown = TryReadUtcDate(values, "SourceUpdatedUtc", out updatedUtc);
-        if (updatedKnown)
-        {
-            TimeSpan age = DateTime.UtcNow - updatedUtc;
-            if (age > TimeSpan.FromMinutes(StatusLineCacheMaxAgeMinutes))
-            {
-                errorCode = "STATUSLINE_STALE";
-                errorMessage = "状态缓存过期";
-                return false;
-            }
-        }
-        else
-        {
-            updatedUtc = DateTime.UtcNow;
-        }
 
         DateTime fiveHourReset;
         bool fiveHourResetKnown = TryReadLocalDate(values, "FiveHourReset", out fiveHourReset);
@@ -311,7 +319,9 @@ internal static class ClaudeCodeUsageReader
         snapshot = new ClaudeCodeUsageSnapshot
         {
             FiveHourPercent = ClaudeCodeUsageSnapshot.ClampPercent(fiveHourPercent),
+            FiveHourPercentKnown = true,
             WeeklyPercent = ClaudeCodeUsageSnapshot.ClampPercent(weeklyPercent),
+            WeeklyPercentKnown = true,
             FiveHourResetLocal = fiveHourReset,
             FiveHourResetKnown = fiveHourResetKnown,
             WeeklyResetLocal = weeklyReset,
@@ -319,6 +329,17 @@ internal static class ClaudeCodeUsageReader
             SourceUpdatedUtc = updatedUtc,
             SourceUpdatedKnown = updatedKnown
         };
+
+        DateTime nowUtc = DateTime.UtcNow;
+        if (!IsCompleteQuotaSnapshot(snapshot, nowUtc))
+        {
+            bool stale = updatedKnown && !IsQuotaCacheFresh(true, updatedUtc, nowUtc);
+            snapshot = null;
+            errorCode = stale ? "STATUSLINE_STALE" : "STATUSLINE_INCOMPLETE";
+            errorMessage = stale ? "状态缓存过期" : "状态缓存不完整";
+            return false;
+        }
+
         return true;
     }
 
@@ -355,91 +376,357 @@ internal static class ClaudeCodeUsageReader
         }
 
         string claudeDirectory = Path.Combine(profile, ".claude");
+        return TryEnsureStatusLineBridgeInstalledInDirectory(
+            claudeDirectory,
+            null,
+            out errorCode,
+            out errorMessage);
+    }
+
+    private static bool TryEnsureStatusLineBridgeInstalledInDirectory(
+        string claudeDirectory,
+        StatusLineInstallTestHooks testHooks,
+        out string errorCode,
+        out string errorMessage)
+    {
+        errorCode = string.Empty;
+        errorMessage = string.Empty;
+
         string scriptPath = Path.Combine(claudeDirectory, StatusLineBridgeScriptName);
         string settingsPath = Path.Combine(claudeDirectory, "settings.json");
         try
         {
             Directory.CreateDirectory(claudeDirectory);
-            WriteStatusLineBridgeScript(scriptPath);
         }
         catch
         {
             errorCode = "STATUSLINE_SCRIPT";
-            errorMessage = "脚本写入失败";
+            errorMessage = "状态目录不可用";
             return false;
         }
 
-        Dictionary<string, object> settings = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
-        if (File.Exists(settingsPath))
+        for (int attempt = 1; attempt <= StatusLineSettingsMergeAttempts; attempt++)
         {
+            Dictionary<string, object> settings;
+            StatusLineFileIdentity settingsIdentity;
+            if (!TryReadStatusLineSettings(
+                    settingsPath,
+                    out settings,
+                    out settingsIdentity,
+                    out errorCode,
+                    out errorMessage))
+            {
+                if (string.Equals(errorCode, "STATUSLINE_SETTINGS_CONFLICT", StringComparison.Ordinal) &&
+                    attempt < StatusLineSettingsMergeAttempts)
+                {
+                    continue;
+                }
+
+                return false;
+            }
+
+            object statusLineObject;
+            bool hasStatusLine = settings.TryGetValue("statusLine", out statusLineObject);
+            Dictionary<string, object> statusLine = statusLineObject as Dictionary<string, object>;
+            if (hasStatusLine && statusLineObject != null && statusLine == null)
+            {
+                errorCode = "STATUSLINE_CUSTOM";
+                errorMessage = "已有状态行";
+                return false;
+            }
+
+            string currentCommand = statusLine == null
+                ? string.Empty
+                : Convert.ToString(ReadObject(statusLine, "command"), CultureInfo.InvariantCulture);
+            string command = BuildStatusLineBridgeCommand(scriptPath);
+            if (!string.IsNullOrWhiteSpace(currentCommand) &&
+                !string.Equals(currentCommand, command, StringComparison.OrdinalIgnoreCase))
+            {
+                errorCode = "STATUSLINE_CUSTOM";
+                errorMessage = "已有状态行";
+                return false;
+            }
+
+            bool settingsAlreadyCurrent = statusLine != null &&
+                string.Equals(
+                    Convert.ToString(ReadObject(statusLine, "type"), CultureInfo.InvariantCulture),
+                    "command",
+                    StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(currentCommand, command, StringComparison.OrdinalIgnoreCase) &&
+                statusLine.ContainsKey("padding");
+
+            if (statusLine == null)
+            {
+                statusLine = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            statusLine["type"] = "command";
+            statusLine["command"] = command;
+            if (!statusLine.ContainsKey("padding"))
+            {
+                statusLine["padding"] = 0;
+            }
+
+            settings["statusLine"] = statusLine;
+
+            string nextSettings;
             try
             {
-                string content = File.ReadAllText(settingsPath, Encoding.UTF8);
-                Dictionary<string, object> parsed = new JavaScriptSerializer().DeserializeObject(content) as Dictionary<string, object>;
-                if (parsed != null)
+                JavaScriptSerializer serializer = BoundedHttpTextReader.CreateJsonSerializer(
+                    BoundedHttpTextReader.PublicJsonMaxBytes);
+                nextSettings = serializer.Serialize(settings) + Environment.NewLine;
+                if (SharedEncoding.Utf8NoBom.GetByteCount(nextSettings) > BoundedHttpTextReader.PublicJsonMaxBytes)
                 {
-                    settings = parsed;
+                    throw new InvalidDataException("Claude settings exceed the supported size.");
                 }
             }
             catch
             {
-                errorCode = "STATUSLINE_SETTINGS_PARSE";
-                errorMessage = "设置解析失败";
+                errorCode = "STATUSLINE_SETTINGS_WRITE";
+                errorMessage = "设置序列化失败";
+                return false;
+            }
+
+            try
+            {
+                WriteStatusLineBridgeScript(scriptPath, testHooks);
+            }
+            catch
+            {
+                errorCode = "STATUSLINE_SCRIPT";
+                errorMessage = "脚本写入失败";
+                return false;
+            }
+
+            if (settingsAlreadyCurrent)
+            {
+                return true;
+            }
+
+            string tempPath = string.Empty;
+            try
+            {
+                // External tools may rewrite settings.json while this merge is in progress. Flush the
+                // candidate first, then compare length/mtime/hash immediately before the atomic swap.
+                // One conflict is re-merged; a second conflict fails closed without overwriting it.
+                tempPath = WriteAtomicTempFile(settingsPath, nextSettings);
+                if (testHooks != null && testHooks.BeforeSettingsIdentityCheck != null)
+                {
+                    testHooks.BeforeSettingsIdentityCheck(attempt, settingsPath);
+                }
+
+                if (testHooks != null && testHooks.BeforeAtomicCommit != null)
+                {
+                    testHooks.BeforeAtomicCommit(settingsPath);
+                }
+
+                StatusLineFileIdentity currentIdentity;
+                byte[] ignoredContent;
+                bool currentStable = TryReadStatusLineFileSnapshot(
+                    settingsPath,
+                    BoundedHttpTextReader.PublicJsonMaxBytes,
+                    out currentIdentity,
+                    out ignoredContent);
+                if (!currentStable || !StatusLineFileIdentityEquals(settingsIdentity, currentIdentity))
+                {
+                    if (attempt < StatusLineSettingsMergeAttempts)
+                    {
+                        continue;
+                    }
+
+                    errorCode = "STATUSLINE_SETTINGS_CONFLICT";
+                    errorMessage = "设置已被并发修改";
+                    return false;
+                }
+
+                CommitAtomicTempFile(
+                    tempPath,
+                    settingsPath,
+                    settingsPath + ".desktopcodex.bak",
+                    settingsIdentity.Exists);
+                tempPath = string.Empty;
+                return true;
+            }
+            catch
+            {
+                errorCode = "STATUSLINE_SETTINGS_WRITE";
+                errorMessage = "设置写入失败";
+                return false;
+            }
+            finally
+            {
+                DeleteTempFileBestEffort(tempPath);
+            }
+        }
+
+        errorCode = "STATUSLINE_SETTINGS_CONFLICT";
+        errorMessage = "设置已被并发修改";
+        return false;
+    }
+
+    private static bool TryReadStatusLineSettings(
+        string settingsPath,
+        out Dictionary<string, object> settings,
+        out StatusLineFileIdentity identity,
+        out string errorCode,
+        out string errorMessage)
+    {
+        settings = null;
+        identity = null;
+        errorCode = string.Empty;
+        errorMessage = string.Empty;
+
+        byte[] contentBytes;
+        try
+        {
+            if (!TryReadStatusLineFileSnapshot(
+                    settingsPath,
+                    BoundedHttpTextReader.PublicJsonMaxBytes,
+                    out identity,
+                    out contentBytes))
+            {
+                errorCode = "STATUSLINE_SETTINGS_CONFLICT";
+                errorMessage = "读取设置时发生并发修改";
                 return false;
             }
         }
-
-        object statusLineObject;
-        Dictionary<string, object> statusLine = null;
-        if (settings.TryGetValue("statusLine", out statusLineObject))
+        catch
         {
-            statusLine = statusLineObject as Dictionary<string, object>;
-        }
-
-        string currentCommand = statusLine == null ? string.Empty : Convert.ToString(ReadObject(statusLine, "command"), CultureInfo.InvariantCulture);
-        if (!string.IsNullOrWhiteSpace(currentCommand) && !IsStatusLineBridgeCommand(currentCommand))
-        {
-            errorCode = "STATUSLINE_CUSTOM";
-            errorMessage = "已有状态行";
+            errorCode = "STATUSLINE_SETTINGS_READ";
+            errorMessage = "设置读取失败";
             return false;
         }
 
-        string command = BuildStatusLineBridgeCommand(scriptPath);
-        if (statusLine == null)
+        if (!identity.Exists)
         {
-            statusLine = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            settings = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            return true;
         }
 
-        statusLine["type"] = "command";
-        statusLine["command"] = command;
-        if (!statusLine.ContainsKey("padding"))
-        {
-            statusLine["padding"] = 0;
-        }
-
-        settings["statusLine"] = statusLine;
         try
         {
-            if (File.Exists(settingsPath))
+            string content = DecodeStatusLineText(contentBytes);
+            settings = BoundedHttpTextReader
+                .CreateJsonSerializer(BoundedHttpTextReader.PublicJsonMaxBytes)
+                .DeserializeObject(content) as Dictionary<string, object>;
+            if (settings == null)
             {
-                string backupPath = settingsPath + ".desktopcodex.bak";
-                if (!File.Exists(backupPath))
-                {
-                    File.Copy(settingsPath, backupPath, false);
-                }
+                throw new InvalidDataException("Claude settings root must be a JSON object.");
             }
 
-            string json = new JavaScriptSerializer().Serialize(settings);
-            File.WriteAllText(settingsPath, json + Environment.NewLine, SharedEncoding.Utf8NoBom);
+            return true;
         }
         catch
         {
-            errorCode = "STATUSLINE_SETTINGS_WRITE";
-            errorMessage = "设置写入失败";
+            settings = null;
+            errorCode = "STATUSLINE_SETTINGS_PARSE";
+            errorMessage = "设置解析失败";
+            return false;
+        }
+    }
+
+    private static bool TryReadStatusLineFileSnapshot(
+        string path,
+        int maxBytes,
+        out StatusLineFileIdentity identity,
+        out byte[] content)
+    {
+        identity = null;
+        content = new byte[0];
+
+        FileInfo before = new FileInfo(path);
+        before.Refresh();
+        if (!before.Exists)
+        {
+            identity = new StatusLineFileIdentity
+            {
+                Exists = false,
+                Length = 0,
+                LastWriteTimeUtc = DateTime.MinValue,
+                Sha256 = string.Empty
+            };
+            return true;
+        }
+
+        long lengthBefore = before.Length;
+        DateTime writeTimeBefore = before.LastWriteTimeUtc;
+        if (lengthBefore < 0 || lengthBefore > maxBytes)
+        {
+            throw new InvalidDataException("Claude settings exceed the supported size.");
+        }
+
+        using (FileStream stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete))
+        using (MemoryStream buffer = new MemoryStream((int)Math.Min(lengthBefore, 65536L)))
+        {
+            byte[] chunk = new byte[8192];
+            int read;
+            while ((read = stream.Read(chunk, 0, chunk.Length)) > 0)
+            {
+                if (buffer.Length + read > maxBytes)
+                {
+                    throw new InvalidDataException("Claude settings exceed the supported size.");
+                }
+
+                buffer.Write(chunk, 0, read);
+            }
+
+            content = buffer.ToArray();
+        }
+
+        FileInfo after = new FileInfo(path);
+        after.Refresh();
+        if (!after.Exists ||
+            after.Length != lengthBefore ||
+            after.LastWriteTimeUtc != writeTimeBefore ||
+            content.LongLength != lengthBefore)
+        {
+            identity = null;
+            content = new byte[0];
             return false;
         }
 
+        identity = new StatusLineFileIdentity
+        {
+            Exists = true,
+            Length = lengthBefore,
+            LastWriteTimeUtc = writeTimeBefore,
+            Sha256 = ComputeSha256Hex(content)
+        };
         return true;
+    }
+
+    private static bool StatusLineFileIdentityEquals(StatusLineFileIdentity left, StatusLineFileIdentity right)
+    {
+        return left != null &&
+            right != null &&
+            left.Exists == right.Exists &&
+            left.Length == right.Length &&
+            left.LastWriteTimeUtc == right.LastWriteTimeUtc &&
+            string.Equals(left.Sha256, right.Sha256, StringComparison.Ordinal);
+    }
+
+    private static string ComputeSha256Hex(byte[] content)
+    {
+        using (SHA256 sha256 = SHA256.Create())
+        {
+            return BitConverter.ToString(sha256.ComputeHash(content ?? new byte[0])).Replace("-", string.Empty);
+        }
+    }
+
+    private static string DecodeStatusLineText(byte[] content)
+    {
+        using (MemoryStream stream = new MemoryStream(content ?? new byte[0], false))
+        using (StreamReader reader = new StreamReader(
+            stream,
+            new UTF8Encoding(false, true),
+            true))
+        {
+            return reader.ReadToEnd();
+        }
     }
 
     private static object ReadObject(Dictionary<string, object> values, string key)
@@ -448,36 +735,128 @@ internal static class ClaudeCodeUsageReader
         return values != null && values.TryGetValue(key, out value) ? value : null;
     }
 
-    private static bool IsStatusLineBridgeCommand(string command)
-    {
-        return !string.IsNullOrWhiteSpace(command) &&
-            command.IndexOf(StatusLineBridgeScriptName, StringComparison.OrdinalIgnoreCase) >= 0;
-    }
-
     private static string BuildStatusLineBridgeCommand(string scriptPath)
     {
         return "powershell -NoProfile -ExecutionPolicy Bypass -File \"" + scriptPath.Replace("\"", "\\\"") + "\"";
     }
 
-    private static void WriteStatusLineBridgeScript(string path)
+    private static void WriteStatusLineBridgeScript(string path, StatusLineInstallTestHooks testHooks)
     {
         string content = BuildStatusLineBridgeScript();
-        if (File.Exists(path))
+        bool destinationExists = File.Exists(path);
+        if (destinationExists)
         {
-            try
+            string existing = File.ReadAllText(path, Encoding.UTF8);
+            if (string.Equals(existing, content, StringComparison.Ordinal))
             {
-                string existing = File.ReadAllText(path, Encoding.UTF8);
-                if (string.Equals(existing, content, StringComparison.Ordinal))
-                {
-                    return;
-                }
-            }
-            catch
-            {
+                return;
             }
         }
 
-        File.WriteAllText(path, content, SharedEncoding.Utf8NoBom);
+        string tempPath = string.Empty;
+        try
+        {
+            tempPath = WriteAtomicTempFile(path, content);
+            if (testHooks != null && testHooks.BeforeAtomicCommit != null)
+            {
+                testHooks.BeforeAtomicCommit(path);
+            }
+
+            CommitAtomicTempFile(tempPath, path, null, destinationExists);
+            tempPath = string.Empty;
+        }
+        finally
+        {
+            DeleteTempFileBestEffort(tempPath);
+        }
+    }
+
+    private static string WriteAtomicTempFile(string destinationPath, string content)
+    {
+        string directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            throw new InvalidOperationException("Atomic destination requires a directory.");
+        }
+
+        Directory.CreateDirectory(directory);
+        string tempPath = Path.Combine(
+            directory,
+            Path.GetFileName(destinationPath) + "." + Guid.NewGuid().ToString("N") + ".tmp");
+        try
+        {
+            byte[] bytes = SharedEncoding.Utf8NoBom.GetBytes(content ?? string.Empty);
+            using (FileStream stream = new FileStream(
+                tempPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                4096,
+                FileOptions.WriteThrough))
+            {
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush(true);
+            }
+
+            return tempPath;
+        }
+        catch
+        {
+            DeleteTempFileBestEffort(tempPath);
+            throw;
+        }
+    }
+
+    private static void CommitAtomicTempFile(
+        string tempPath,
+        string destinationPath,
+        string backupPath,
+        bool destinationExpectedToExist)
+    {
+        if (destinationExpectedToExist)
+        {
+            if (!File.Exists(destinationPath))
+            {
+                throw new IOException("Atomic destination disappeared before commit.");
+            }
+
+            if ((File.GetAttributes(destinationPath) & FileAttributes.ReadOnly) != 0)
+            {
+                throw new UnauthorizedAccessException("Atomic destination is read-only.");
+            }
+
+            string replacementBackup = !string.IsNullOrWhiteSpace(backupPath) && !File.Exists(backupPath)
+                ? backupPath
+                : null;
+            // File.Replace keeps the destination file identity/security metadata and therefore its DACL.
+            // Supplying the one-time backup only when absent preserves the existing backup contract.
+            File.Replace(tempPath, destinationPath, replacementBackup);
+            return;
+        }
+
+        // Same-directory Move is atomic. It also fails closed if another process creates the file
+        // after the missing-file identity was captured.
+        File.Move(tempPath, destinationPath);
+    }
+
+    private static void DeleteTempFileBestEffort(string tempPath)
+    {
+        if (string.IsNullOrWhiteSpace(tempPath))
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(tempPath))
+            {
+                File.SetAttributes(tempPath, FileAttributes.Normal);
+                File.Delete(tempPath);
+            }
+        }
+        catch
+        {
+        }
     }
 
     private static string BuildStatusLineBridgeScript()
@@ -536,7 +915,7 @@ internal static class ClaudeCodeUsageReader
             "$dir = Join-Path $env:LOCALAPPDATA 'DesktopCodexAssistant'" + nl +
             "[System.IO.Directory]::CreateDirectory($dir) | Out-Null" + nl +
             "$path = Join-Path $dir '" + StatusLineQuotaFileName + "'" + nl +
-            "$tmp = $path + '.tmp'" + nl +
+            "$tmp = $path + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'" + nl +
             "$lines = New-Object System.Collections.Generic.List[string]" + nl +
             "$lines.Add('Version=1')" + nl +
             "$lines.Add('Source=claude_statusline')" + nl +
@@ -546,15 +925,23 @@ internal static class ClaudeCodeUsageReader
             "if ($sevenReset) { $lines.Add('WeeklyReset=' + $sevenReset) }" + nl +
             "$lines.Add('SourceUpdatedUtc=' + [DateTime]::UtcNow.ToString('o'))" + nl +
             "$utf8 = New-Object System.Text.UTF8Encoding($false)" + nl +
-            "[System.IO.File]::WriteAllLines($tmp, $lines.ToArray(), $utf8)" + nl +
-            "if (Test-Path $path) { Remove-Item -LiteralPath $path -Force }" + nl +
-            "Move-Item -LiteralPath $tmp -Destination $path -Force" + nl +
+            "$bytes = $utf8.GetBytes(($lines -join [Environment]::NewLine) + [Environment]::NewLine)" + nl +
+            "try {" + nl +
+            "  $stream = [System.IO.File]::Open($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)" + nl +
+            "  try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }" + nl +
+            "  if ([System.IO.File]::Exists($path)) { [System.IO.File]::Replace($tmp, $path, $null) } else { [System.IO.File]::Move($tmp, $path) }" + nl +
+            "} catch { exit 0 } finally { if ([System.IO.File]::Exists($tmp)) { [System.IO.File]::Delete($tmp) } }" + nl +
             "Write-Output ('5h {0}% 7d {1}%' -f $fiveRemaining, $sevenRemaining)" + nl;
     }
 
     public static string StatusLineQuotaCachePath
     {
         get { return Path.Combine(Logger.DirectoryPath, StatusLineQuotaFileName); }
+    }
+
+    public static string QuotaCachePath
+    {
+        get { return Path.Combine(Logger.DirectoryPath, QuotaCacheFileName); }
     }
 
     private static ClaudeCodeUsageReadResult FetchUsageEndpoint(string token)
@@ -571,43 +958,37 @@ internal static class ClaudeCodeUsageReader
         request.Headers["Cache-Control"] = "no-store, no-cache";
         request.Headers["Pragma"] = "no-cache";
 
-        try
+        BoundedHttpTextResult response = BoundedHttpTextReader.Execute(
+            request,
+            BoundedHttpTextReader.AuthenticatedJsonMaxBytes,
+            RequestTimeoutMs,
+            CancellationToken.None);
+        if (response.StatusCode <= 0)
         {
-            using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
-            {
-                string content = ReadResponseText(response);
-                return ParseResponse(content, true, (int)response.StatusCode);
-            }
+            return BuildError(true, ClaudeCodeUsageServiceState.Unreachable, response.ErrorCode, "无法连接");
         }
-        catch (WebException ex)
+
+        ClaudeCodeUsageReadResult parsed = ParseResponse(response.Content, true, response.StatusCode);
+        if (parsed != null && (parsed.Success || parsed.RateLimited))
         {
-            HttpWebResponse response = ex.Response as HttpWebResponse;
-            if (response != null)
-            {
-                using (response)
-                {
-                    int statusCode = (int)response.StatusCode;
-                    string content = ReadResponseText(response);
-                    ClaudeCodeUsageReadResult parsed = ParseResponse(content, true, statusCode);
-                    if (parsed != null && parsed.RateLimited)
-                    {
-                        return parsed;
-                    }
-
-                    return BuildError(
-                        true,
-                        statusCode == 401 || statusCode == 403
-                            ? ClaudeRadarServiceState.Unavailable
-                            : ClaudeRadarServiceState.Unreachable,
-                        statusCode == 401 || statusCode == 403
-                            ? "TOKEN_INVALID"
-                            : statusCode.ToString(CultureInfo.InvariantCulture),
-                        GetHttpErrorReason(statusCode));
-                }
-            }
-
-            return BuildError(true, ClaudeRadarServiceState.Unreachable, "NET", "无法连接");
+            return parsed;
         }
+
+        if (!string.IsNullOrEmpty(response.ErrorCode) &&
+            response.StatusCode >= 200 && response.StatusCode < 300)
+        {
+            return BuildError(true, ClaudeCodeUsageServiceState.Unreachable, response.ErrorCode, "响应不可用");
+        }
+
+        return BuildError(
+            true,
+            response.StatusCode == 401 || response.StatusCode == 403
+                ? ClaudeCodeUsageServiceState.Unavailable
+                : ClaudeCodeUsageServiceState.Unreachable,
+            response.StatusCode == 401 || response.StatusCode == 403
+                ? "TOKEN_INVALID"
+                : response.StatusCode.ToString(CultureInfo.InvariantCulture),
+            GetHttpErrorReason(response.StatusCode));
     }
 
     private static ClaudeCodeUsageReadResult FetchUsageViaMessagesHeaders(WidgetSettings settings, string token)
@@ -615,7 +996,7 @@ internal static class ClaudeCodeUsageReader
         string aiBlockReason;
         if (AiRequestProtection.ShouldBlock(settings, MessagesUrl, out aiBlockReason))
         {
-            return BuildError(true, ClaudeRadarServiceState.Unavailable, "AI_BLOCK", "AI阻断");
+            return BuildError(true, ClaudeCodeUsageServiceState.Unavailable, "AI_BLOCK", "AI阻断");
         }
 
         for (int i = 0; i < MessagesFallbackModels.Length; i++)
@@ -634,7 +1015,7 @@ internal static class ClaudeCodeUsageReader
             }
         }
 
-        return BuildError(true, ClaudeRadarServiceState.Unreachable, "NO_HEADERS", "无统一限额头");
+        return BuildError(true, ClaudeCodeUsageServiceState.Unreachable, "NO_HEADERS", "无统一限额头");
     }
 
     private static ClaudeCodeUsageReadResult FetchUsageViaMessagesHeaders(string token, string model)
@@ -686,14 +1067,14 @@ internal static class ClaudeCodeUsageReader
                     return BuildError(
                         true,
                         statusCode == 401 || statusCode == 403
-                            ? ClaudeRadarServiceState.Unavailable
-                            : ClaudeRadarServiceState.Unreachable,
+                            ? ClaudeCodeUsageServiceState.Unavailable
+                            : ClaudeCodeUsageServiceState.Unreachable,
                         statusCode.ToString(CultureInfo.InvariantCulture),
                         GetHttpErrorReason(statusCode));
                 }
             }
 
-            return BuildError(true, ClaudeRadarServiceState.Unreachable, "NET", "无法连接");
+            return BuildError(true, ClaudeCodeUsageServiceState.Unreachable, "NET", "无法连接");
         }
     }
 
@@ -704,7 +1085,7 @@ internal static class ClaudeCodeUsageReader
     {
         if (statusCode == 429)
         {
-            return BuildError(tokenConfigured, ClaudeRadarServiceState.Unavailable, "429", "限流");
+            return BuildError(tokenConfigured, ClaudeCodeUsageServiceState.Unavailable, "429", "限流");
         }
 
         if (statusCode < 200 || statusCode >= 300)
@@ -712,8 +1093,8 @@ internal static class ClaudeCodeUsageReader
             return BuildError(
                 tokenConfigured,
                 statusCode == 401 || statusCode == 403
-                    ? ClaudeRadarServiceState.Unavailable
-                    : ClaudeRadarServiceState.Unreachable,
+                    ? ClaudeCodeUsageServiceState.Unavailable
+                    : ClaudeCodeUsageServiceState.Unreachable,
                 statusCode == 401 || statusCode == 403
                     ? "TOKEN_INVALID"
                     : statusCode.ToString(CultureInfo.InvariantCulture),
@@ -722,28 +1103,30 @@ internal static class ClaudeCodeUsageReader
 
         if (string.IsNullOrWhiteSpace(content))
         {
-            return BuildError(tokenConfigured, ClaudeRadarServiceState.Incomplete, "EMPTY", "空响应");
+            return BuildError(tokenConfigured, ClaudeCodeUsageServiceState.Incomplete, "EMPTY", "空响应");
         }
 
         Dictionary<string, object> root;
         try
         {
-            root = new JavaScriptSerializer().DeserializeObject(content) as Dictionary<string, object>;
+            root = BoundedHttpTextReader
+                .CreateJsonSerializer(BoundedHttpTextReader.AuthenticatedJsonMaxBytes)
+                .DeserializeObject(content) as Dictionary<string, object>;
         }
         catch
         {
-            return BuildError(tokenConfigured, ClaudeRadarServiceState.Incomplete, "PARSE", "解析失败");
+            return BuildError(tokenConfigured, ClaudeCodeUsageServiceState.Incomplete, "PARSE", "解析失败");
         }
 
         if (root == null)
         {
-            return BuildError(tokenConfigured, ClaudeRadarServiceState.Incomplete, "PARSE", "解析失败");
+            return BuildError(tokenConfigured, ClaudeCodeUsageServiceState.Incomplete, "PARSE", "解析失败");
         }
 
         string errorType = TryGetNestedString(root, "error", "type");
         if (string.Equals(errorType, "rate_limit_error", StringComparison.OrdinalIgnoreCase))
         {
-            return BuildError(tokenConfigured, ClaudeRadarServiceState.Unavailable, "429", "限流");
+            return BuildError(tokenConfigured, ClaudeCodeUsageServiceState.Unavailable, "429", "限流");
         }
 
         ClaudeCodeUsageSnapshot snapshot = new ClaudeCodeUsageSnapshot();
@@ -756,9 +1139,11 @@ internal static class ClaudeCodeUsageReader
 
         if (!foundFiveHour || !foundWeekly)
         {
-            return BuildError(tokenConfigured, ClaudeRadarServiceState.Incomplete, "NO_USAGE", "数据不完整");
+            return BuildError(tokenConfigured, ClaudeCodeUsageServiceState.Incomplete, "NO_USAGE", "数据不完整");
         }
 
+        snapshot.FiveHourPercentKnown = true;
+        snapshot.WeeklyPercentKnown = true;
         snapshot.SourceUpdatedUtc = DateTime.UtcNow;
         snapshot.SourceUpdatedKnown = true;
         return new ClaudeCodeUsageReadResult
@@ -767,7 +1152,7 @@ internal static class ClaudeCodeUsageReader
             Success = true,
             RateLimited = false,
             Snapshot = snapshot,
-            State = ClaudeRadarServiceState.Normal,
+            State = ClaudeCodeUsageServiceState.Normal,
             ErrorCode = string.Empty,
             ErrorMessage = string.Empty
         };
@@ -780,12 +1165,12 @@ internal static class ClaudeCodeUsageReader
     {
         if (statusCode == 429)
         {
-            return BuildError(tokenConfigured, ClaudeRadarServiceState.Unavailable, "429", "限流");
+            return BuildError(tokenConfigured, ClaudeCodeUsageServiceState.Unavailable, "429", "限流");
         }
 
         if (headers == null)
         {
-            return BuildError(tokenConfigured, ClaudeRadarServiceState.Incomplete, "NO_HEADERS", "无统一限额头");
+            return BuildError(tokenConfigured, ClaudeCodeUsageServiceState.Incomplete, "NO_HEADERS", "无统一限额头");
         }
 
         ClaudeCodeUsageSnapshot snapshot = new ClaudeCodeUsageSnapshot();
@@ -829,9 +1214,11 @@ internal static class ClaudeCodeUsageReader
 
         if (!foundFiveHour || !foundWeekly)
         {
-            return BuildError(tokenConfigured, ClaudeRadarServiceState.Incomplete, "NO_HEADERS", "无统一限额头");
+            return BuildError(tokenConfigured, ClaudeCodeUsageServiceState.Incomplete, "NO_HEADERS", "无统一限额头");
         }
 
+        snapshot.FiveHourPercentKnown = true;
+        snapshot.WeeklyPercentKnown = true;
         snapshot.SourceUpdatedUtc = DateTime.UtcNow;
         snapshot.SourceUpdatedKnown = true;
         return new ClaudeCodeUsageReadResult
@@ -840,7 +1227,7 @@ internal static class ClaudeCodeUsageReader
             Success = true,
             RateLimited = false,
             Snapshot = snapshot,
-            State = ClaudeRadarServiceState.Normal,
+            State = ClaudeCodeUsageServiceState.Normal,
             ErrorCode = string.Empty,
             ErrorMessage = string.Empty
         };
@@ -848,16 +1235,158 @@ internal static class ClaudeCodeUsageReader
 
     public static void TryWriteQuotaCache(ClaudeCodeUsageSnapshot snapshot)
     {
-        if (snapshot == null)
+        TryWriteQuotaCache(snapshot, QuotaCachePath);
+    }
+
+    private static bool TryWriteQuotaCache(ClaudeCodeUsageSnapshot snapshot, string path)
+    {
+        return TryWriteQuotaCache(snapshot, path, DateTime.UtcNow);
+    }
+
+    private static bool TryWriteQuotaCache(ClaudeCodeUsageSnapshot snapshot, string path, DateTime nowUtc)
+    {
+        if (!IsCompleteQuotaSnapshot(snapshot, nowUtc) || string.IsNullOrWhiteSpace(path))
         {
-            return;
+            return false;
         }
 
-        ClaudeRadarReader.TryWriteClaudeCodeQuotaCache(snapshot);
+        List<string> lines = new List<string>();
+        lines.Add("Version=1");
+        lines.Add("FiveHourPercent=" + ClaudeCodeUsageSnapshot.ClampPercent(snapshot.FiveHourPercent).ToString(CultureInfo.InvariantCulture));
+        lines.Add("WeeklyPercent=" + ClaudeCodeUsageSnapshot.ClampPercent(snapshot.WeeklyPercent).ToString(CultureInfo.InvariantCulture));
+        if (snapshot.FiveHourResetKnown)
+        {
+            lines.Add("FiveHourReset=" + snapshot.FiveHourResetLocal.ToString("o", CultureInfo.InvariantCulture));
+        }
+
+        if (snapshot.WeeklyResetKnown)
+        {
+            lines.Add("WeeklyReset=" + snapshot.WeeklyResetLocal.ToString("o", CultureInfo.InvariantCulture));
+        }
+
+        if (snapshot.SourceUpdatedKnown)
+        {
+            lines.Add("SourceUpdatedUtc=" + snapshot.SourceUpdatedUtc.ToString("o", CultureInfo.InvariantCulture));
+        }
+
+        string tempPath = string.Empty;
+        try
+        {
+            string directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            string next = string.Join(Environment.NewLine, lines.ToArray()) + Environment.NewLine;
+            // The scheduler and form callbacks can converge on the same cache. Serialize writers and
+            // replace a complete temp file so readers never observe a partially written quota pair.
+            lock (QuotaCacheLock)
+            {
+                if (File.Exists(path) && string.Equals(File.ReadAllText(path), next, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                File.WriteAllText(tempPath, next, SharedEncoding.Utf8NoBom);
+                if (File.Exists(path))
+                {
+                    File.Replace(tempPath, path, null);
+                }
+                else
+                {
+                    File.Move(tempPath, path);
+                }
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            if (!string.IsNullOrWhiteSpace(tempPath))
+            {
+                try
+                {
+                    if (File.Exists(tempPath))
+                    {
+                        File.Delete(tempPath);
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            Program.LogException(ex);
+            return false;
+        }
+    }
+
+    internal static bool IsQuotaCacheFresh(bool updatedAtKnown, DateTime updatedAtUtc, DateTime nowUtc)
+    {
+        if (!updatedAtKnown || updatedAtUtc == DateTime.MinValue)
+        {
+            return false;
+        }
+
+        DateTime updated = updatedAtUtc.Kind == DateTimeKind.Utc
+            ? updatedAtUtc
+            : updatedAtUtc.ToUniversalTime();
+        DateTime now = nowUtc.Kind == DateTimeKind.Utc
+            ? nowUtc
+            : nowUtc.ToUniversalTime();
+        TimeSpan age = now - updated;
+        // Accept two minutes of source/host clock skew, but never let a persisted official quota
+        // snapshot outlive the six-hour freshness contract used by the CLD tile.
+        return age >= TimeSpan.FromMinutes(-2.0) &&
+            age <= TimeSpan.FromMinutes(QuotaCacheMaxAgeMinutes);
+    }
+
+    internal static bool IsCompleteQuotaSnapshot(ClaudeCodeUsageSnapshot snapshot, DateTime nowUtc)
+    {
+        if (snapshot == null ||
+            !snapshot.FiveHourPercentKnown ||
+            !snapshot.WeeklyPercentKnown ||
+            !snapshot.FiveHourResetKnown ||
+            snapshot.FiveHourResetLocal == DateTime.MinValue ||
+            !snapshot.WeeklyResetKnown ||
+            snapshot.WeeklyResetLocal == DateTime.MinValue)
+        {
+            return false;
+        }
+
+        return IsQuotaCacheFresh(snapshot.SourceUpdatedKnown, snapshot.SourceUpdatedUtc, nowUtc);
+    }
+
+    internal static ClaudeCodeUsageReadResult RequireCompleteQuotaSnapshot(
+        ClaudeCodeUsageReadResult result,
+        DateTime nowUtc)
+    {
+        if (result == null || !result.Success)
+        {
+            return result;
+        }
+
+        if (IsCompleteQuotaSnapshot(result.Snapshot, nowUtc))
+        {
+            return result;
+        }
+
+        // A partial sample must never replace the last complete CLD snapshot. OAuth parsing may
+        // temporarily produce one so Messages headers can supply reset times, but publication,
+        // persistence and restore all pass through this gate after that bounded merge attempt.
+        return BuildError(
+            result.TokenConfigured,
+            ClaudeCodeUsageServiceState.Incomplete,
+            "QUOTA_INCOMPLETE",
+            "额度数据不完整");
     }
 
     public static void RunSelfTest()
     {
+        RunUsedPercentBoundarySelfTest();
+
         string sample =
             "{\"five_hour\":{\"utilization\":0.42,\"resets_at\":\"2026-07-04T10:00:00Z\"},\"seven_day\":{\"used_percent\":73,\"resets_at\":\"2026-07-10T12:30:00Z\"}}";
         ClaudeCodeUsageReadResult parsed = ParseResponse(sample, true, 200);
@@ -873,7 +1402,7 @@ internal static class ClaudeCodeUsageReader
         }
 
         ClaudeCodeUsageReadResult limited = ParseResponse("{\"error\":{\"type\":\"rate_limit_error\"}}", true, 200);
-        if (limited == null || !limited.RateLimited || limited.State != ClaudeRadarServiceState.Unavailable)
+        if (limited == null || !limited.RateLimited || limited.State != ClaudeCodeUsageServiceState.Unavailable)
         {
             throw new InvalidOperationException("Claude Code usage rate-limit self-test failed.");
         }
@@ -922,11 +1451,12 @@ internal static class ClaudeCodeUsageReader
 
         SecretStore.RunSelfTest();
         RunSetupTokenSecretMigrationSelfTest();
+        RunStatusLineBridgeInstallSelfTest();
 
         ClaudeCodeUsageSnapshot statusLineSnapshot;
         string statusLineCode;
         string statusLineMessage;
-        ClaudeRadarServiceState statusLineState;
+        ClaudeCodeUsageServiceState statusLineState;
         string statusLineIni =
             "Version=1\n" +
             "Source=claude_statusline\n" +
@@ -945,7 +1475,550 @@ internal static class ClaudeCodeUsageReader
             throw new InvalidOperationException("Claude Code statusline quota cache self-test failed.");
         }
 
+        string statusLineMissingResetIni =
+            "Version=1\n" +
+            "Source=claude_statusline\n" +
+            "FiveHourPercent=61\n" +
+            "WeeklyPercent=34\n" +
+            "FiveHourReset=2026-07-04T10:00:00Z\n" +
+            "SourceUpdatedUtc=" + DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture) + "\n";
+        if (TryParseStatusLineQuotaCache(
+                statusLineMissingResetIni,
+                out statusLineSnapshot,
+                out statusLineCode,
+                out statusLineMessage,
+                out statusLineState) ||
+            statusLineSnapshot != null ||
+            !string.Equals(statusLineCode, "STATUSLINE_INCOMPLETE", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Claude Code statusline partial-reset rejection self-test failed.");
+        }
+
+        RunQuotaCacheSelfTest();
         RunSourceOrderSelfTest();
+    }
+
+    private static void RunStatusLineBridgeInstallSelfTest()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "desktopcodex-claude-statusline-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            RunStatusLineBridgeMissingSettingsFixture(root);
+            RunStatusLineBridgeSuccessFixture(root);
+            RunStatusLineBridgeCustomFixture(root);
+            RunStatusLineBridgeCorruptJsonFixture(root);
+            RunStatusLineBridgeLockedFixture(root);
+            RunStatusLineBridgeReadOnlyFixture(root);
+            RunStatusLineBridgeAtomicFailureFixture(root);
+            RunStatusLineBridgeScriptFailureFixture(root);
+            RunStatusLineBridgeConcurrentMergeFixture(root);
+            RunStatusLineBridgePersistentConflictFixture(root);
+            AssertNoStatusLineTempFiles(root, "final fixture sweep");
+        }
+        finally
+        {
+            DeleteStatusLineFixtureRoot(root);
+        }
+    }
+
+    private static void RunStatusLineBridgeSuccessFixture(string root)
+    {
+        string directory = CreateStatusLineFixtureDirectory(root, "success");
+        string settingsPath = Path.Combine(directory, "settings.json");
+        string scriptPath = Path.Combine(directory, StatusLineBridgeScriptName);
+        string backupPath = settingsPath + ".desktopcodex.bak";
+        string original = "{\"theme\":\"dark\"}" + Environment.NewLine;
+        File.WriteAllText(settingsPath, original, SharedEncoding.Utf8NoBom);
+
+        string errorCode;
+        string errorMessage;
+        if (!TryEnsureStatusLineBridgeInstalledInDirectory(
+                directory,
+                null,
+                out errorCode,
+                out errorMessage))
+        {
+            throw new InvalidOperationException("Claude statusline success fixture failed: " + errorCode);
+        }
+
+        Dictionary<string, object> installed = ReadStatusLineFixtureSettings(settingsPath);
+        Dictionary<string, object> statusLine = ReadObject(installed, "statusLine") as Dictionary<string, object>;
+        if (statusLine == null ||
+            !string.Equals(Convert.ToString(ReadObject(installed, "theme"), CultureInfo.InvariantCulture), "dark", StringComparison.Ordinal) ||
+            !string.Equals(Convert.ToString(ReadObject(statusLine, "type"), CultureInfo.InvariantCulture), "command", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(
+                Convert.ToString(ReadObject(statusLine, "command"), CultureInfo.InvariantCulture),
+                BuildStatusLineBridgeCommand(scriptPath),
+                StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(scriptPath) ||
+            !string.Equals(File.ReadAllText(scriptPath, Encoding.UTF8), BuildStatusLineBridgeScript(), StringComparison.Ordinal) ||
+            !File.Exists(backupPath) ||
+            !string.Equals(File.ReadAllText(backupPath, Encoding.UTF8), original, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Claude statusline success/backup fixture failed.");
+        }
+
+        string backupHash = ComputeSha256Hex(File.ReadAllBytes(backupPath));
+        statusLine.Remove("padding");
+        installed["externalAfterBackup"] = "kept";
+        File.WriteAllText(
+            settingsPath,
+            BoundedHttpTextReader.CreateJsonSerializer(BoundedHttpTextReader.PublicJsonMaxBytes).Serialize(installed) + Environment.NewLine,
+            SharedEncoding.Utf8NoBom);
+        if (!TryEnsureStatusLineBridgeInstalledInDirectory(
+                directory,
+                null,
+                out errorCode,
+                out errorMessage) ||
+            !string.Equals(backupHash, ComputeSha256Hex(File.ReadAllBytes(backupPath)), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Claude statusline one-time backup fixture failed: " + errorCode);
+        }
+
+        installed = ReadStatusLineFixtureSettings(settingsPath);
+        if (!string.Equals(
+                Convert.ToString(ReadObject(installed, "externalAfterBackup"), CultureInfo.InvariantCulture),
+                "kept",
+                StringComparison.Ordinal) ||
+            !(ReadObject(ReadObject(installed, "statusLine") as Dictionary<string, object>, "padding") is int))
+        {
+            throw new InvalidOperationException("Claude statusline existing-backup merge fixture failed.");
+        }
+
+        string script = BuildStatusLineBridgeScript();
+        if (script.IndexOf("[Guid]::NewGuid()", StringComparison.Ordinal) < 0 ||
+            script.IndexOf("$stream.Flush($true)", StringComparison.Ordinal) < 0 ||
+            script.IndexOf("[System.IO.File]::Replace", StringComparison.Ordinal) < 0 ||
+            script.IndexOf("Remove-Item -LiteralPath $path", StringComparison.Ordinal) >= 0)
+        {
+            throw new InvalidOperationException("Claude statusline generated-script atomic fixture failed.");
+        }
+
+        AssertNoStatusLineTempFiles(directory, "success");
+    }
+
+    private static void RunStatusLineBridgeMissingSettingsFixture(string root)
+    {
+        string directory = CreateStatusLineFixtureDirectory(root, "missing-settings");
+        string settingsPath = Path.Combine(directory, "settings.json");
+        string scriptPath = Path.Combine(directory, StatusLineBridgeScriptName);
+
+        string errorCode;
+        string errorMessage;
+        if (!TryEnsureStatusLineBridgeInstalledInDirectory(directory, null, out errorCode, out errorMessage) ||
+            !File.Exists(settingsPath) ||
+            !File.Exists(scriptPath) ||
+            File.Exists(settingsPath + ".desktopcodex.bak") ||
+            !(ReadObject(ReadStatusLineFixtureSettings(settingsPath), "statusLine") is Dictionary<string, object>))
+        {
+            throw new InvalidOperationException("Claude missing settings atomic-move fixture failed: " + errorCode);
+        }
+
+        AssertStatusLineScriptComplete(directory, "missing-settings");
+        AssertNoStatusLineTempFiles(directory, "missing-settings");
+    }
+
+    private static void RunStatusLineBridgeCustomFixture(string root)
+    {
+        string directory = CreateStatusLineFixtureDirectory(root, "custom");
+        string settingsPath = Path.Combine(directory, "settings.json");
+        string original = "{\"statusLine\":{\"type\":\"command\",\"command\":\"custom-status desktop-codex-statusline-bridge.ps1 --flag\"}}" + Environment.NewLine;
+        File.WriteAllText(settingsPath, original, SharedEncoding.Utf8NoBom);
+
+        string errorCode;
+        string errorMessage;
+        if (TryEnsureStatusLineBridgeInstalledInDirectory(directory, null, out errorCode, out errorMessage) ||
+            !string.Equals(errorCode, "STATUSLINE_CUSTOM", StringComparison.Ordinal) ||
+            !string.Equals(File.ReadAllText(settingsPath, Encoding.UTF8), original, StringComparison.Ordinal) ||
+            File.Exists(Path.Combine(directory, StatusLineBridgeScriptName)))
+        {
+            throw new InvalidOperationException("Claude custom statusline refusal fixture failed.");
+        }
+
+        AssertNoStatusLineTempFiles(directory, "custom");
+    }
+
+    private static void RunStatusLineBridgeCorruptJsonFixture(string root)
+    {
+        string directory = CreateStatusLineFixtureDirectory(root, "corrupt-json");
+        string settingsPath = Path.Combine(directory, "settings.json");
+        string original = "{\"statusLine\":";
+        File.WriteAllText(settingsPath, original, SharedEncoding.Utf8NoBom);
+
+        string errorCode;
+        string errorMessage;
+        if (TryEnsureStatusLineBridgeInstalledInDirectory(directory, null, out errorCode, out errorMessage) ||
+            !string.Equals(errorCode, "STATUSLINE_SETTINGS_PARSE", StringComparison.Ordinal) ||
+            !string.Equals(File.ReadAllText(settingsPath, Encoding.UTF8), original, StringComparison.Ordinal) ||
+            File.Exists(Path.Combine(directory, StatusLineBridgeScriptName)))
+        {
+            throw new InvalidOperationException("Claude corrupt settings fixture failed.");
+        }
+
+        AssertNoStatusLineTempFiles(directory, "corrupt-json");
+    }
+
+    private static void RunStatusLineBridgeLockedFixture(string root)
+    {
+        string directory = CreateStatusLineFixtureDirectory(root, "locked");
+        string settingsPath = Path.Combine(directory, "settings.json");
+        string original = "{\"locked\":true}" + Environment.NewLine;
+        File.WriteAllText(settingsPath, original, SharedEncoding.Utf8NoBom);
+
+        string errorCode;
+        string errorMessage;
+        using (FileStream locked = new FileStream(
+            settingsPath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None))
+        {
+            if (TryEnsureStatusLineBridgeInstalledInDirectory(directory, null, out errorCode, out errorMessage) ||
+                !string.Equals(errorCode, "STATUSLINE_SETTINGS_READ", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Claude locked settings fixture failed.");
+            }
+        }
+
+        if (!string.Equals(File.ReadAllText(settingsPath, Encoding.UTF8), original, StringComparison.Ordinal) ||
+            File.Exists(Path.Combine(directory, StatusLineBridgeScriptName)))
+        {
+            throw new InvalidOperationException("Claude locked settings fixture changed a target file.");
+        }
+
+        AssertNoStatusLineTempFiles(directory, "locked");
+    }
+
+    private static void RunStatusLineBridgeReadOnlyFixture(string root)
+    {
+        string directory = CreateStatusLineFixtureDirectory(root, "read-only");
+        string settingsPath = Path.Combine(directory, "settings.json");
+        string original = "{\"readOnly\":true}" + Environment.NewLine;
+        File.WriteAllText(settingsPath, original, SharedEncoding.Utf8NoBom);
+        File.SetAttributes(settingsPath, File.GetAttributes(settingsPath) | FileAttributes.ReadOnly);
+
+        string errorCode;
+        string errorMessage;
+        try
+        {
+            if (TryEnsureStatusLineBridgeInstalledInDirectory(directory, null, out errorCode, out errorMessage) ||
+                !string.Equals(errorCode, "STATUSLINE_SETTINGS_WRITE", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Claude read-only settings fixture failed.");
+            }
+        }
+        finally
+        {
+            File.SetAttributes(settingsPath, FileAttributes.Normal);
+        }
+
+        if (!string.Equals(File.ReadAllText(settingsPath, Encoding.UTF8), original, StringComparison.Ordinal) ||
+            File.Exists(settingsPath + ".desktopcodex.bak"))
+        {
+            throw new InvalidOperationException("Claude read-only settings fixture changed the target.");
+        }
+
+        AssertStatusLineScriptComplete(directory, "read-only");
+        AssertNoStatusLineTempFiles(directory, "read-only");
+    }
+
+    private static void RunStatusLineBridgeAtomicFailureFixture(string root)
+    {
+        string directory = CreateStatusLineFixtureDirectory(root, "atomic-settings-failure");
+        string settingsPath = Path.Combine(directory, "settings.json");
+        string original = "{\"atomic\":\"before\"}" + Environment.NewLine;
+        File.WriteAllText(settingsPath, original, SharedEncoding.Utf8NoBom);
+
+        StatusLineInstallTestHooks hooks = new StatusLineInstallTestHooks
+        {
+            BeforeAtomicCommit = delegate(string path)
+            {
+                if (string.Equals(Path.GetFileName(path), "settings.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new IOException("Simulated interruption before settings commit.");
+                }
+            }
+        };
+        string errorCode;
+        string errorMessage;
+        if (TryEnsureStatusLineBridgeInstalledInDirectory(directory, hooks, out errorCode, out errorMessage) ||
+            !string.Equals(errorCode, "STATUSLINE_SETTINGS_WRITE", StringComparison.Ordinal) ||
+            !string.Equals(File.ReadAllText(settingsPath, Encoding.UTF8), original, StringComparison.Ordinal) ||
+            File.Exists(settingsPath + ".desktopcodex.bak"))
+        {
+            throw new InvalidOperationException("Claude settings atomic-failure fixture failed.");
+        }
+
+        AssertStatusLineScriptComplete(directory, "atomic-settings-failure");
+        AssertNoStatusLineTempFiles(directory, "atomic-settings-failure");
+    }
+
+    private static void RunStatusLineBridgeScriptFailureFixture(string root)
+    {
+        string directory = CreateStatusLineFixtureDirectory(root, "atomic-script-failure");
+        string settingsPath = Path.Combine(directory, "settings.json");
+        string scriptPath = Path.Combine(directory, StatusLineBridgeScriptName);
+        string original = "{\"script\":\"before\"}" + Environment.NewLine;
+        string originalScript = "# preserved script" + Environment.NewLine;
+        File.WriteAllText(settingsPath, original, SharedEncoding.Utf8NoBom);
+        File.WriteAllText(scriptPath, originalScript, SharedEncoding.Utf8NoBom);
+
+        StatusLineInstallTestHooks hooks = new StatusLineInstallTestHooks
+        {
+            BeforeAtomicCommit = delegate(string path)
+            {
+                if (string.Equals(Path.GetFileName(path), StatusLineBridgeScriptName, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new IOException("Simulated interruption before script commit.");
+                }
+            }
+        };
+        string errorCode;
+        string errorMessage;
+        if (TryEnsureStatusLineBridgeInstalledInDirectory(directory, hooks, out errorCode, out errorMessage) ||
+            !string.Equals(errorCode, "STATUSLINE_SCRIPT", StringComparison.Ordinal) ||
+            !string.Equals(File.ReadAllText(settingsPath, Encoding.UTF8), original, StringComparison.Ordinal) ||
+            !string.Equals(File.ReadAllText(scriptPath, Encoding.UTF8), originalScript, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Claude script atomic-failure fixture failed.");
+        }
+
+        AssertNoStatusLineTempFiles(directory, "atomic-script-failure");
+    }
+
+    private static void RunStatusLineBridgeConcurrentMergeFixture(string root)
+    {
+        string directory = CreateStatusLineFixtureDirectory(root, "concurrent-merge");
+        string settingsPath = Path.Combine(directory, "settings.json");
+        File.WriteAllText(settingsPath, "{\"base\":\"initial\"}" + Environment.NewLine, SharedEncoding.Utf8NoBom);
+
+        int conflictCount = 0;
+        StatusLineInstallTestHooks hooks = new StatusLineInstallTestHooks
+        {
+            BeforeSettingsIdentityCheck = delegate(int attempt, string path)
+            {
+                if (attempt == 1)
+                {
+                    conflictCount++;
+                    File.WriteAllText(
+                        path,
+                        "{\"base\":\"external\",\"external\":1}" + Environment.NewLine,
+                        SharedEncoding.Utf8NoBom);
+                }
+            }
+        };
+
+        string errorCode;
+        string errorMessage;
+        if (!TryEnsureStatusLineBridgeInstalledInDirectory(directory, hooks, out errorCode, out errorMessage) ||
+            conflictCount != 1)
+        {
+            throw new InvalidOperationException("Claude statusline conflict re-merge fixture failed: " + errorCode);
+        }
+
+        Dictionary<string, object> merged = ReadStatusLineFixtureSettings(settingsPath);
+        if (!string.Equals(Convert.ToString(ReadObject(merged, "base"), CultureInfo.InvariantCulture), "external", StringComparison.Ordinal) ||
+            Convert.ToInt32(ReadObject(merged, "external"), CultureInfo.InvariantCulture) != 1 ||
+            !(ReadObject(merged, "statusLine") is Dictionary<string, object>))
+        {
+            throw new InvalidOperationException("Claude statusline conflict merge lost external settings.");
+        }
+
+        AssertNoStatusLineTempFiles(directory, "concurrent-merge");
+    }
+
+    private static void RunStatusLineBridgePersistentConflictFixture(string root)
+    {
+        string directory = CreateStatusLineFixtureDirectory(root, "persistent-conflict");
+        string settingsPath = Path.Combine(directory, "settings.json");
+        File.WriteAllText(settingsPath, "{\"base\":true}" + Environment.NewLine, SharedEncoding.Utf8NoBom);
+
+        int conflictCount = 0;
+        StatusLineInstallTestHooks hooks = new StatusLineInstallTestHooks
+        {
+            BeforeSettingsIdentityCheck = delegate(int attempt, string path)
+            {
+                conflictCount++;
+                File.WriteAllText(
+                    path,
+                    "{\"external\":" + attempt.ToString(CultureInfo.InvariantCulture) + "}" + Environment.NewLine,
+                    SharedEncoding.Utf8NoBom);
+            }
+        };
+
+        string errorCode;
+        string errorMessage;
+        if (TryEnsureStatusLineBridgeInstalledInDirectory(directory, hooks, out errorCode, out errorMessage) ||
+            !string.Equals(errorCode, "STATUSLINE_SETTINGS_CONFLICT", StringComparison.Ordinal) ||
+            conflictCount != StatusLineSettingsMergeAttempts)
+        {
+            throw new InvalidOperationException("Claude statusline persistent-conflict cap fixture failed.");
+        }
+
+        Dictionary<string, object> current = ReadStatusLineFixtureSettings(settingsPath);
+        if (Convert.ToInt32(ReadObject(current, "external"), CultureInfo.InvariantCulture) != StatusLineSettingsMergeAttempts ||
+            current.ContainsKey("statusLine"))
+        {
+            throw new InvalidOperationException("Claude statusline persistent conflict overwrote external settings.");
+        }
+
+        AssertStatusLineScriptComplete(directory, "persistent-conflict");
+        AssertNoStatusLineTempFiles(directory, "persistent-conflict");
+    }
+
+    private static string CreateStatusLineFixtureDirectory(string root, string name)
+    {
+        string directory = Path.Combine(root, name);
+        Directory.CreateDirectory(directory);
+        return directory;
+    }
+
+    private static Dictionary<string, object> ReadStatusLineFixtureSettings(string path)
+    {
+        Dictionary<string, object> settings = BoundedHttpTextReader
+            .CreateJsonSerializer(BoundedHttpTextReader.PublicJsonMaxBytes)
+            .DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as Dictionary<string, object>;
+        if (settings == null)
+        {
+            throw new InvalidOperationException("Claude statusline fixture settings are not an object.");
+        }
+
+        return settings;
+    }
+
+    private static void AssertNoStatusLineTempFiles(string directory, string fixtureName)
+    {
+        if (Directory.Exists(directory) &&
+            Directory.GetFiles(directory, "*.tmp", SearchOption.AllDirectories).Length != 0)
+        {
+            throw new InvalidOperationException("Claude statusline temp cleanup fixture failed: " + fixtureName);
+        }
+    }
+
+    private static void AssertStatusLineScriptComplete(string directory, string fixtureName)
+    {
+        string scriptPath = Path.Combine(directory, StatusLineBridgeScriptName);
+        if (!File.Exists(scriptPath) ||
+            !string.Equals(File.ReadAllText(scriptPath, Encoding.UTF8), BuildStatusLineBridgeScript(), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Claude statusline script completeness fixture failed: " + fixtureName);
+        }
+    }
+
+    private static void DeleteStatusLineFixtureRoot(string root)
+    {
+        try
+        {
+            if (!Directory.Exists(root))
+            {
+                return;
+            }
+
+            foreach (string path in Directory.GetFiles(root, "*", SearchOption.AllDirectories))
+            {
+                try
+                {
+                    File.SetAttributes(path, FileAttributes.Normal);
+                }
+                catch
+                {
+                }
+            }
+
+            Directory.Delete(root, true);
+        }
+        catch
+        {
+        }
+    }
+
+    private static void RunQuotaCacheSelfTest()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "desktopcodex-claude-quota-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string path = Path.Combine(root, QuotaCacheFileName);
+            DateTime nowUtc = new DateTime(2026, 7, 22, 0, 0, 0, DateTimeKind.Utc);
+            ClaudeCodeUsageSnapshot snapshot = new ClaudeCodeUsageSnapshot
+            {
+                FiveHourPercent = 51,
+                FiveHourPercentKnown = true,
+                WeeklyPercent = 62,
+                WeeklyPercentKnown = true,
+                FiveHourResetLocal = new DateTime(2026, 7, 22, 10, 0, 0, DateTimeKind.Local),
+                FiveHourResetKnown = true,
+                WeeklyResetLocal = new DateTime(2026, 7, 28, 12, 30, 0, DateTimeKind.Local),
+                WeeklyResetKnown = true,
+                SourceUpdatedUtc = nowUtc,
+                SourceUpdatedKnown = true
+            };
+
+            if (!TryWriteQuotaCache(snapshot, path, nowUtc) || !File.Exists(path))
+            {
+                throw new InvalidOperationException("Claude Code quota cache write self-test failed.");
+            }
+
+            string content = File.ReadAllText(path, Encoding.UTF8);
+            if (content.IndexOf("FiveHourPercent=51", StringComparison.Ordinal) < 0 ||
+                content.IndexOf("WeeklyPercent=62", StringComparison.Ordinal) < 0 ||
+                content.IndexOf("FiveHourReset=", StringComparison.Ordinal) < 0 ||
+                content.IndexOf("WeeklyReset=", StringComparison.Ordinal) < 0 ||
+                content.IndexOf("SourceUpdatedUtc=", StringComparison.Ordinal) < 0)
+            {
+                throw new InvalidOperationException("Claude Code quota cache content self-test failed.");
+            }
+
+            snapshot.WeeklyPercent = 63;
+            if (!TryWriteQuotaCache(snapshot, path, nowUtc) ||
+                File.ReadAllText(path, Encoding.UTF8).IndexOf("WeeklyPercent=63", StringComparison.Ordinal) < 0 ||
+                Directory.GetFiles(root, QuotaCacheFileName + ".*.tmp").Length != 0)
+            {
+                throw new InvalidOperationException("Claude Code quota cache atomic replace self-test failed.");
+            }
+
+            string lastGoodContent = File.ReadAllText(path, Encoding.UTF8);
+            ClaudeCodeUsageSnapshot partial = new ClaudeCodeUsageSnapshot
+            {
+                FiveHourPercent = 21,
+                FiveHourPercentKnown = true,
+                WeeklyPercent = 32,
+                WeeklyPercentKnown = true,
+                FiveHourResetLocal = snapshot.FiveHourResetLocal,
+                FiveHourResetKnown = true,
+                WeeklyResetKnown = false,
+                SourceUpdatedUtc = nowUtc,
+                SourceUpdatedKnown = true
+            };
+            if (TryWriteQuotaCache(partial, path, nowUtc) ||
+                !string.Equals(File.ReadAllText(path, Encoding.UTF8), lastGoodContent, StringComparison.Ordinal) ||
+                Directory.GetFiles(root, QuotaCacheFileName + ".*.tmp").Length != 0)
+            {
+                throw new InvalidOperationException("Claude Code partial quota overwrote the last-good cache.");
+            }
+
+            if (!IsQuotaCacheFresh(true, nowUtc.AddHours(-6.0), nowUtc) ||
+                IsQuotaCacheFresh(true, nowUtc.AddHours(-6.0).AddSeconds(-1.0), nowUtc) ||
+                !IsQuotaCacheFresh(true, nowUtc.AddMinutes(2.0), nowUtc) ||
+                IsQuotaCacheFresh(true, nowUtc.AddMinutes(2.0).AddSeconds(1.0), nowUtc) ||
+                IsQuotaCacheFresh(false, nowUtc, nowUtc))
+            {
+                throw new InvalidOperationException("Claude Code quota cache freshness self-test failed.");
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, true);
+            }
+            catch
+            {
+            }
+        }
     }
 
     private static void RunSourceOrderSelfTest()
@@ -953,7 +2026,13 @@ internal static class ClaudeCodeUsageReader
         ClaudeCodeUsageReadResult oauthSuccess = BuildSuccess(new ClaudeCodeUsageSnapshot
         {
             FiveHourPercent = 81,
+            FiveHourPercentKnown = true,
             WeeklyPercent = 72,
+            WeeklyPercentKnown = true,
+            FiveHourResetLocal = DateTime.Now.AddHours(2.0),
+            FiveHourResetKnown = true,
+            WeeklyResetLocal = DateTime.Now.AddDays(2.0),
+            WeeklyResetKnown = true,
             SourceUpdatedUtc = DateTime.UtcNow,
             SourceUpdatedKnown = true
         });
@@ -961,7 +2040,13 @@ internal static class ClaudeCodeUsageReader
         ClaudeCodeUsageReadResult statusLineSuccess = BuildSuccess(new ClaudeCodeUsageSnapshot
         {
             FiveHourPercent = 31,
+            FiveHourPercentKnown = true,
             WeeklyPercent = 22,
+            WeeklyPercentKnown = true,
+            FiveHourResetLocal = DateTime.Now.AddHours(3.0),
+            FiveHourResetKnown = true,
+            WeeklyResetLocal = DateTime.Now.AddDays(3.0),
+            WeeklyResetKnown = true,
             SourceUpdatedUtc = DateTime.UtcNow,
             SourceUpdatedKnown = true
         });
@@ -976,7 +2061,7 @@ internal static class ClaudeCodeUsageReader
             throw new InvalidOperationException("Claude Code usage OAuth-first source order self-test failed.");
         }
 
-        ClaudeCodeUsageReadResult networkFailure = BuildError(true, ClaudeRadarServiceState.Unreachable, "NET", "无法连接");
+        ClaudeCodeUsageReadResult networkFailure = BuildError(true, ClaudeCodeUsageServiceState.Unreachable, "NET", "无法连接");
         selected = ResolveReadSources(
             "oauth-test",
             delegate { return networkFailure; },
@@ -987,7 +2072,7 @@ internal static class ClaudeCodeUsageReader
             throw new InvalidOperationException("Claude Code usage statusline fallback self-test failed.");
         }
 
-        ClaudeCodeUsageReadResult missing = BuildError(false, ClaudeRadarServiceState.Incomplete, "NO_STATUSLINE_CACHE", "等Claude刷新");
+        ClaudeCodeUsageReadResult missing = BuildError(false, ClaudeCodeUsageServiceState.Incomplete, "NO_STATUSLINE_CACHE", "等Claude刷新");
         selected = ResolveReadSources(
             string.Empty,
             null,
@@ -1017,6 +2102,46 @@ internal static class ClaudeCodeUsageReader
         {
             throw new InvalidOperationException("Claude Code usage network Messages fallback self-test failed.");
         }
+
+        ClaudeCodeUsageReadResult partialOAuthForMerge = ParseResponse(
+            "{\"five_hour\":{\"used_percent\":20},\"seven_day\":{\"used_percent\":30}}",
+            true,
+            200);
+        selected = ResolveSetupTokenResult(partialOAuthForMerge, delegate { return statusLineSuccess; });
+        if (!object.ReferenceEquals(selected, partialOAuthForMerge) ||
+            !selected.Success ||
+            !IsCompleteQuotaSnapshot(selected.Snapshot, DateTime.UtcNow))
+        {
+            throw new InvalidOperationException("Claude Code usage partial OAuth reset merge self-test failed.");
+        }
+
+        ClaudeCodeUsageReadResult partialOAuthWithoutFallback = ParseResponse(
+            "{\"five_hour\":{\"used_percent\":20},\"seven_day\":{\"used_percent\":30}}",
+            true,
+            200);
+        selected = ResolveSetupTokenResult(
+            partialOAuthWithoutFallback,
+            delegate
+            {
+                return BuildError(true, ClaudeCodeUsageServiceState.Unreachable, "NET", "无法连接");
+            });
+        if (selected == null ||
+            selected.Success ||
+            selected.Snapshot != null ||
+            !string.Equals(selected.ErrorCode, "QUOTA_INCOMPLETE", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Claude Code usage partial OAuth fallback-failure self-test failed.");
+        }
+
+        selected = ResolveReadSources(
+            "oauth-test",
+            delegate { return partialOAuthWithoutFallback; },
+            delegate { return statusLineSuccess; },
+            delegate { return false; });
+        if (!object.ReferenceEquals(selected, statusLineSuccess))
+        {
+            throw new InvalidOperationException("Claude Code usage partial OAuth statusline fallback self-test failed.");
+        }
     }
 
     private static void RunSetupTokenSecretMigrationSelfTest()
@@ -1032,12 +2157,19 @@ internal static class ClaudeCodeUsageReader
             string token;
             bool migrated;
             string errorCode;
-            if (!SecretStore.TryReadOrMigrateSecret(encrypted, legacy, NormalizeSetupToken, out token, out migrated, out errorCode) ||
+            if (!SecretStore.TryReadOrMigrateSecret(
+                    encrypted,
+                    legacy,
+                    NormalizeSetupToken,
+                    IsSupportedLegacySetupToken,
+                    out token,
+                    out migrated,
+                    out errorCode) ||
                 !migrated ||
                 !string.Equals(token, "oauth-migrated", StringComparison.Ordinal) ||
                 !File.Exists(encrypted) ||
                 File.Exists(legacy) ||
-                !File.Exists(legacy + ".migrated"))
+                File.Exists(legacy + ".migrated"))
             {
                 throw new InvalidOperationException("Claude Code setup-token DPAPI migration self-test failed: " + errorCode);
             }
@@ -1258,19 +2390,25 @@ internal static class ClaudeCodeUsageReader
         object value;
         if (slot != null && slot.TryGetValue("utilization", out value) && TryReadNumber(value, out usedPercent))
         {
-            if (usedPercent <= 1.0)
+            if (double.IsNaN(usedPercent) || double.IsInfinity(usedPercent) ||
+                usedPercent < 0.0 || usedPercent > 1.0)
             {
-                usedPercent *= 100.0;
+                return false;
             }
 
+            usedPercent *= 100.0;
             return true;
         }
 
-        if (slot != null && slot.TryGetValue("used_percent", out value) && TryReadNumber(value, out usedPercent))
+        if (slot != null &&
+            (slot.TryGetValue("used_percent", out value) ||
+             slot.TryGetValue("used_percentage", out value)) &&
+            TryReadNumber(value, out usedPercent))
         {
-            if (usedPercent <= 1.0)
+            if (double.IsNaN(usedPercent) || double.IsInfinity(usedPercent) ||
+                usedPercent < 0.0 || usedPercent > 100.0)
             {
-                usedPercent *= 100.0;
+                return false;
             }
 
             return true;
@@ -1278,15 +2416,48 @@ internal static class ClaudeCodeUsageReader
 
         if (slot != null && slot.TryGetValue("percent", out value) && TryReadNumber(value, out usedPercent))
         {
-            if (usedPercent <= 1.0)
+            if (double.IsNaN(usedPercent) || double.IsInfinity(usedPercent) ||
+                usedPercent < 0.0 || usedPercent > 100.0)
             {
-                usedPercent *= 100.0;
+                return false;
             }
 
             return true;
         }
 
         return false;
+    }
+
+    private static void RunUsedPercentBoundarySelfTest()
+    {
+        AssertUsedPercentBoundary("utilization", 0.01, true, 1.0);
+        AssertUsedPercentBoundary("utilization", 1.0, true, 100.0);
+        AssertUsedPercentBoundary("used_percent", 0.01, true, 0.01);
+        AssertUsedPercentBoundary("used_percent", 1.0, true, 1.0);
+        AssertUsedPercentBoundary("used_percentage", 100.0, true, 100.0);
+        AssertUsedPercentBoundary("percent", 1.0, true, 1.0);
+        AssertUsedPercentBoundary("utilization", 1.01, false, 0.0);
+        AssertUsedPercentBoundary("used_percent", 100.01, false, 0.0);
+        AssertUsedPercentBoundary("percent", -0.01, false, 0.0);
+    }
+
+    private static void AssertUsedPercentBoundary(
+        string fieldName,
+        double input,
+        bool expectedSuccess,
+        double expectedPercent)
+    {
+        Dictionary<string, object> slot = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        slot[fieldName] = input;
+
+        double actualPercent;
+        bool actualSuccess = TryGetUsedPercent(slot, out actualPercent);
+        if (actualSuccess != expectedSuccess ||
+            (expectedSuccess && Math.Abs(actualPercent - expectedPercent) > 0.000001))
+        {
+            throw new InvalidOperationException(
+                "Claude Code usage percent-boundary self-test failed for " + fieldName + ".");
+        }
     }
 
     private static bool TryGetUnixHeaderDate(WebHeaderCollection headers, string key, out DateTime localTime)
@@ -1343,7 +2514,7 @@ internal static class ClaudeCodeUsageReader
 
     private static ClaudeCodeUsageReadResult BuildError(
         bool tokenConfigured,
-        ClaudeRadarServiceState state,
+        ClaudeCodeUsageServiceState state,
         string errorCode,
         string message)
     {
@@ -1367,7 +2538,7 @@ internal static class ClaudeCodeUsageReader
             Success = snapshot != null,
             RateLimited = false,
             Snapshot = snapshot,
-            State = snapshot == null ? ClaudeRadarServiceState.Incomplete : ClaudeRadarServiceState.Normal,
+            State = snapshot == null ? ClaudeCodeUsageServiceState.Incomplete : ClaudeCodeUsageServiceState.Normal,
             ErrorCode = string.Empty,
             ErrorMessage = string.Empty
         };
@@ -1483,13 +2654,19 @@ internal static class ClaudeCodeUsageReader
             return token.Trim();
         }
 
+        return ReadConfiguredSetupTokenFiles(SetupTokenFilePath, LegacySetupTokenFilePath);
+    }
+
+    internal static string ReadConfiguredSetupTokenFiles(string encryptedPath, string legacyTextPath)
+    {
         string secret;
         bool migrated;
         string errorCode;
         return SecretStore.TryReadOrMigrateSecret(
-            SetupTokenFilePath,
-            LegacySetupTokenFilePath,
+            encryptedPath,
+            legacyTextPath,
             NormalizeSetupToken,
+            IsSupportedLegacySetupToken,
             out secret,
             out migrated,
             out errorCode)
@@ -1502,12 +2679,12 @@ internal static class ClaudeCodeUsageReader
         get { return Path.Combine(Logger.DirectoryPath, SetupTokenFileName); }
     }
 
-    private static string LegacySetupTokenFilePath
+    internal static string LegacySetupTokenFilePath
     {
         get { return Path.Combine(Logger.DirectoryPath, LegacySetupTokenFileName); }
     }
 
-    private static string NormalizeSetupToken(string value)
+    internal static string NormalizeSetupToken(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -1541,6 +2718,37 @@ internal static class ClaudeCodeUsageReader
 
         text = text.Trim('"', '\'');
         return text;
+    }
+
+    private static bool IsSupportedLegacySetupToken(string value)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length < 8 || value.Length > 8192)
+        {
+            return false;
+        }
+
+        if (!value.StartsWith("oauth-", StringComparison.Ordinal) &&
+            !value.StartsWith("sk-ant-oat01-", StringComparison.Ordinal) &&
+            !value.StartsWith("sk-ant-", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        for (int i = 0; i < value.Length; i++)
+        {
+            char c = value[i];
+            bool allowed =
+                (c >= 'a' && c <= 'z') ||
+                (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') ||
+                c == '-' || c == '_' || c == '.';
+            if (!allowed)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string GetEnvironmentVariableAnyTarget(string name)
@@ -1639,22 +2847,6 @@ internal static class ClaudeCodeUsageReader
 
         local = parsed.ToLocalTime();
         return true;
-    }
-
-    private static string ReadResponseText(WebResponse response)
-    {
-        using (Stream stream = response.GetResponseStream())
-        {
-            if (stream == null)
-            {
-                return string.Empty;
-            }
-
-            using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
-            {
-                return reader.ReadToEnd();
-            }
-        }
     }
 
     private static bool IsNetworkAvailable()

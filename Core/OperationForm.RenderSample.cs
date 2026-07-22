@@ -50,8 +50,6 @@ internal sealed partial class OperationForm
             }
         }
 
-        RenderQuickGridSample(outputDir);
-
         // The launcher task node and the task flyout read live Codex sessions, which a sample run
         // must not depend on. Publish a fixture snapshot for both, then restore the real provider.
         Func<CodexTaskMonitorSnapshot> savedProvider = CodexTaskPresentation.SnapshotProvider;
@@ -65,6 +63,7 @@ internal sealed partial class OperationForm
             RenderLauncherTrioSample(outputDir);
             RenderCodexTaskBoardSample(outputDir);
             RenderEdgeDockTabSample(outputDir);
+            CodexIqBoardForm.RenderSample(outputDir);
         }
         finally
         {

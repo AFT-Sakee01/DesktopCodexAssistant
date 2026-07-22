@@ -39,6 +39,11 @@ internal sealed class GuardRuntime
     private int offlineThresholdMinutes = WidgetSettings.DefaultGuardOfflineThresholdMinutes;
     private string lastActionDetail = string.Empty;
 
+    // Modern Standby fix: the persistent power request is what actually holds an S0 machine in the
+    // active phase. SetThreadExecutionState alone was suspended with other desktop apps when the
+    // display powered off, which is why the old sleep prevention was ineffective on this hardware.
+    private readonly NativeMethods.PowerRequestGuard powerRequests = new NativeMethods.PowerRequestGuard();
+
     internal GuardRuntime(Func<bool?> onlineProvider)
         : this(onlineProvider, null)
     {
@@ -128,6 +133,25 @@ internal sealed class GuardRuntime
     internal string LastActionDetail
     {
         get { return this.lastActionDetail; }
+    }
+
+    // The three Modern Standby power requests actually held right now. The board surfaces these so
+    // the fix that keeps this machine awake is visible rather than implicit. They derive from the
+    // armed guards, but reflect what the OS accepted rather than merely what was asked for: if the
+    // power API failed the flag stays false even though the guard reads as enabled.
+    internal bool SystemPowerRequestActive
+    {
+        get { return this.powerRequests.SystemActive; }
+    }
+
+    internal bool ExecutionPowerRequestActive
+    {
+        get { return this.powerRequests.ExecutionActive; }
+    }
+
+    internal bool DisplayPowerRequestActive
+    {
+        get { return this.powerRequests.DisplayActive; }
     }
 
     // Fraction of the configured display-guard window still remaining, 0..1. Drives the outer ring.
@@ -598,17 +622,32 @@ internal sealed class GuardRuntime
         return changed;
     }
 
-    // ES_CONTINUOUS alone clears any previously registered requirement, which is exactly what the
-    // "everything off" state needs, so this one call covers both arming and releasing.
+    // Two layers, applied together. The persistent power request is the one that actually holds a
+    // Modern Standby (S0) machine in the active phase on AC power; the ES_* flags are the
+    // compatibility layer that S3 systems still honour, and ES_CONTINUOUS alone clears any previously
+    // registered requirement, so that one call covers both arming and releasing. SystemRequired
+    // without the sleep guard cannot happen (display implies sleep), but the wants are derived here
+    // rather than assumed so the request layer and the flag layer never disagree.
     private void ApplyExecutionState()
     {
+        bool wantSystem = this.sleepGuardEnabled || this.displayGuardUntilUtc != DateTime.MinValue;
+        bool wantExecution = this.sleepGuardEnabled;
+        bool wantDisplay = this.displayGuardUntilUtc != DateTime.MinValue;
+
+        string powerDetail;
+        if (!this.powerRequests.Sync(wantSystem, wantExecution, wantDisplay, out powerDetail))
+        {
+            this.lastActionDetail = "设置电源请求失败：" + powerDetail;
+            Program.LogInfo("Guard PowerRequest sync failed. Detail=" + powerDetail);
+        }
+
         NativeMethods.ExecutionState state = NativeMethods.ExecutionState.Continuous;
-        if (this.sleepGuardEnabled)
+        if (wantSystem)
         {
             state |= NativeMethods.ExecutionState.SystemRequired;
         }
 
-        if (this.displayGuardUntilUtc != DateTime.MinValue)
+        if (wantDisplay)
         {
             state |= NativeMethods.ExecutionState.DisplayRequired;
         }
@@ -628,6 +667,7 @@ internal sealed class GuardRuntime
         this.sleepGuardEnabled = false;
         this.sleepGuardSinceUtc = DateTime.MinValue;
         this.displayGuardUntilUtc = DateTime.MinValue;
+        this.powerRequests.Release();
         string detail;
         NativeMethods.TrySetThreadExecutionState(NativeMethods.ExecutionState.Continuous, out detail);
     }
@@ -638,10 +678,16 @@ internal sealed class GuardRuntime
 
         GuardRuntime online = new GuardRuntime(delegate { return true; });
         AssertSelfTest(!online.SleepGuardEnabled, "sleep guard starts disabled");
+        AssertSelfTest(!online.SystemPowerRequestActive, "system power request starts inactive");
         AssertSelfTest(online.SetSleepGuard(true), "enabling sleep guard reports a change");
         AssertSelfTest(!online.SetSleepGuard(true), "re-enabling sleep guard is a no-op");
+        // The Modern Standby fix: arming the sleep guard must hold both the system and execution
+        // power requests, not only the legacy execution-state flag.
+        AssertSelfTest(online.SystemPowerRequestActive, "enabling sleep guard holds the system power request");
+        AssertSelfTest(online.ExecutionPowerRequestActive, "enabling sleep guard holds the execution power request");
         AssertSelfTest(online.StartDisplayGuard(now), "display guard starts");
         AssertSelfTest(online.DisplayGuardActive, "display guard reports active");
+        AssertSelfTest(online.DisplayPowerRequestActive, "starting the display guard holds the display power request");
         AssertSelfTest(
             Math.Abs(online.GetDisplayGuardProgress(now) - 1.0f) < 0.001f,
             "display guard progress is full at start");
@@ -652,6 +698,9 @@ internal sealed class GuardRuntime
         // Turning the system guard off must take the display guard with it.
         online.SetSleepGuard(false);
         AssertSelfTest(!online.DisplayGuardActive, "disabling sleep guard clears the display guard");
+        AssertSelfTest(!online.SystemPowerRequestActive, "disabling sleep guard clears the system power request");
+        AssertSelfTest(!online.DisplayPowerRequestActive, "disabling sleep guard clears the display power request");
+        online.ReleaseAll();
 
         // Expiry path.
         GuardRuntime expiry = new GuardRuntime(delegate { return true; });
@@ -659,6 +708,9 @@ internal sealed class GuardRuntime
         expiry.StartDisplayGuard(now);
         AssertSelfTest(expiry.Tick(now.AddMinutes(31)), "display guard expiry reports a repaint");
         AssertSelfTest(!expiry.DisplayGuardActive, "display guard clears itself at the deadline");
+        // Display expiry leaves the sleep guard (and its system request) armed; release it so the
+        // --test run does not leave a real power request open on the developer's machine.
+        expiry.ReleaseAll();
 
         // Unknown connectivity must not start the offline clock.
         GuardRuntime unknown = new GuardRuntime(delegate { return (bool?)null; });

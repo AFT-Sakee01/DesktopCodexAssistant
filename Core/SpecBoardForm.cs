@@ -32,6 +32,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private readonly HashSet<string> autoPopupKnownRows = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> autoPopupHighlightedRows = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private readonly SpecBoardSeenStateStore seenStateStore;
+    private readonly object refreshCancellationSync = new object();
     private Func<Point> cursorPositionProvider;
     private FileSystemWatcher watcher;
     private SpecBoardSnapshot snapshot = new SpecBoardSnapshot();
@@ -47,6 +48,8 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private bool restoreAutoPopupAfterFullscreen;
     private int refreshRunning;
     private int refreshQueued;
+    private long refreshGeneration;
+    private CancellationTokenSource refreshCancellation;
     private int watcherSignal;
     private SpecBoardRow pendingCardSingleClick;
     private string suppressedCardMouseUpPath = string.Empty;
@@ -113,6 +116,12 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         return !this.displaySuspended;
     }
 
+    internal void PreparePresentationState(bool suspended, bool fullscreenHidden)
+    {
+        this.displaySuspended = suspended;
+        this.hiddenForFullscreen = fullscreenHidden;
+    }
+
     public void ApplyRuntimeSettings(WidgetSettings settings)
     {
         string oldLedgerPath = this.CurrentSettings == null ? string.Empty : this.CurrentSettings.SpecBoardLedgerPath;
@@ -129,6 +138,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         bool ledgerPathChanged = !string.Equals(oldLedgerPath, this.CurrentSettings.SpecBoardLedgerPath, StringComparison.OrdinalIgnoreCase);
         if (ledgerPathChanged)
         {
+            CancelRefresh();
             DisposeWatcher();
             DisposeProjectWatchers();
             this.autoPopupKnownRows.Clear();
@@ -179,7 +189,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                 EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SpecBoard),
                 BurnInProtection.SpecBoardDockTabSalt,
                 "SpecBoardDockTab",
-                false);
+                EdgeDockTabRole.SpecBoard);
             this.dockTab.HoverEntered += OnDockTabHoverEntered;
             this.dockTab.HoverExited += OnDockTabHoverExited;
             this.dockTab.PollTick += OnDockTabPollTick;
@@ -191,7 +201,8 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                 EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SpecBoard));
         }
 
-        this.dockTab.SetDisplaySuspended(this.displaySuspended || this.hiddenForFullscreen);
+        this.dockTab.SetDisplaySuspended(this.displaySuspended);
+        this.dockTab.SetHiddenForFullscreen(this.hiddenForFullscreen);
         this.dockTab.SetBoardExpanded(this.Visible);
         this.dockTab.ShowTab(ResolveDockTabCenterY());
         this.maintenanceTimer.Start();
@@ -199,7 +210,8 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
     private void OnDockTabHoverEntered(object sender, EventArgs e)
     {
-        if (this.IsDisposed || !this.IsLeftDocked || this.Visible)
+        if (this.IsDisposed || !this.IsLeftDocked || this.Visible ||
+            LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
         {
             return;
         }
@@ -348,6 +360,11 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
     private void ShowBoardCore(bool automaticPopup)
     {
+        if (LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
+        {
+            return;
+        }
+
         if (this.owner != null)
         {
             this.owner.PrepareForSpecBoardOverlayShow();
@@ -423,15 +440,10 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         }
 
         this.hiddenForFullscreen = hidden;
-        // A fullscreen app must not keep a dock tab painted over it, and the tab has to come back
-        // when the app exits fullscreen.
         if (this.dockTab != null && !this.dockTab.IsDisposed)
         {
-            if (hidden)
-            {
-                this.dockTab.HideTab();
-            }
-            else if (this.IsLeftDocked)
+            this.dockTab.SetHiddenForFullscreen(hidden);
+            if (!hidden && !this.displaySuspended && this.IsLeftDocked)
             {
                 this.dockTab.ShowTab(ResolveDockTabCenterY());
             }
@@ -443,7 +455,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             this.restoreAutoPopupAfterFullscreen = this.autoPopupActive;
             HideBoard();
         }
-        else if (this.restoreAfterFullscreen)
+        else if (this.restoreAfterFullscreen && !this.displaySuspended)
         {
             this.restoreAfterFullscreen = false;
             bool automaticPopup = this.restoreAutoPopupAfterFullscreen;
@@ -475,6 +487,14 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         if (this.dockTab != null && !this.dockTab.IsDisposed)
         {
             this.dockTab.SetDisplaySuspended(false);
+        }
+
+        if (!this.hiddenForFullscreen && this.restoreAfterFullscreen)
+        {
+            this.restoreAfterFullscreen = false;
+            bool automaticPopup = this.restoreAutoPopupAfterFullscreen;
+            this.restoreAutoPopupAfterFullscreen = false;
+            ShowBoardCore(automaticPopup);
         }
 
         if (ShouldMonitorWork())
@@ -1246,38 +1266,47 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     {
         if (Interlocked.CompareExchange(ref this.refreshRunning, 1, 0) != 0)
         {
-            Interlocked.Exchange(ref this.refreshQueued, reconcile ? 2 : 1);
+            QueueRefresh(reconcile);
             return;
         }
 
         string ledgerPath = this.CurrentSettings.SpecBoardLedgerPath;
-        Task.Run(delegate
+        long generation = Interlocked.Increment(ref this.refreshGeneration);
+        CancellationTokenSource cancellation = new CancellationTokenSource();
+        CancellationToken refreshToken = cancellation.Token;
+        lock (this.refreshCancellationSync)
         {
-            SpecBoardSnapshot basic = SpecBoardReader.Read(ledgerPath, false);
-            if (!reconcile || basic.LedgerMissing || !basic.ProjectRegistryAvailable)
-            {
-                return basic;
-            }
+            this.refreshCancellation = cancellation;
+        }
 
-            Task<SpecBoardSnapshot> full = Task.Run(() => SpecBoardReader.Read(ledgerPath, true));
-            if (full.Wait(ReconcileTimeoutMs))
-            {
-                return full.Result;
-            }
-
-            basic.ReconciliationTimedOut = true;
-            return basic;
-        }).ContinueWith(task =>
+        Task.Run(
+            () => ReadRefreshSnapshot(ledgerPath, reconcile, refreshToken),
+            refreshToken).ContinueWith(task =>
         {
-            SpecBoardSnapshot result = task.Status == TaskStatus.RanToCompletion ? task.Result : SpecBoardReader.Read(ledgerPath, false);
             try
             {
-                if (!this.IsDisposed && this.IsHandleCreated)
+                SpecBoardSnapshot result = task.Status == TaskStatus.RanToCompletion ? task.Result : null;
+                if (result != null && ShouldApplyRefreshResult(
+                    generation,
+                    Interlocked.Read(ref this.refreshGeneration),
+                    refreshToken.IsCancellationRequested) &&
+                    !this.IsDisposed && this.IsHandleCreated)
                 {
                     this.BeginInvoke((Action)delegate
                     {
-                        ApplyRefreshResult(result);
+                        if (ShouldApplyRefreshResult(
+                            generation,
+                            Interlocked.Read(ref this.refreshGeneration),
+                            refreshToken.IsCancellationRequested) &&
+                            !this.IsDisposed)
+                        {
+                            ApplyRefreshResult(result);
+                        }
                     });
+                }
+                else if (task.IsFaulted && task.Exception != null)
+                {
+                    Program.LogInfo("SpecBoard refresh failed: " + task.Exception.GetBaseException().Message);
                 }
             }
             catch (InvalidOperationException)
@@ -1285,6 +1314,15 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             }
             finally
             {
+                lock (this.refreshCancellationSync)
+                {
+                    if (object.ReferenceEquals(this.refreshCancellation, cancellation))
+                    {
+                        this.refreshCancellation = null;
+                    }
+                }
+
+                cancellation.Dispose();
                 Interlocked.Exchange(ref this.refreshRunning, 0);
                 int queued = Interlocked.Exchange(ref this.refreshQueued, 0);
                 if (queued != 0 && !this.IsDisposed)
@@ -1293,7 +1331,13 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                     {
                         if (this.IsHandleCreated)
                         {
-                            this.BeginInvoke((Action)(() => RequestRefresh(queued == 2)));
+                            this.BeginInvoke((Action)(() =>
+                            {
+                                if (!this.IsDisposed && ShouldMonitorWork())
+                                {
+                                    RequestRefresh(queued == 2);
+                                }
+                            }));
                         }
                     }
                     catch (InvalidOperationException)
@@ -1302,6 +1346,70 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                 }
             }
         });
+    }
+
+    private static SpecBoardSnapshot ReadRefreshSnapshot(
+        string ledgerPath,
+        bool reconcile,
+        CancellationToken cancellationToken)
+    {
+        SpecBoardSnapshot basic = SpecBoardReader.Read(ledgerPath, false, cancellationToken);
+        if (!reconcile || basic.LedgerMissing || !basic.ProjectRegistryAvailable)
+        {
+            return basic;
+        }
+
+        using (CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            timeout.CancelAfter(ReconcileTimeoutMs);
+            try
+            {
+                return SpecBoardReader.Read(ledgerPath, true, timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+
+                basic.ReconciliationTimedOut = true;
+                return basic;
+            }
+        }
+    }
+
+    private void QueueRefresh(bool reconcile)
+    {
+        int desired = reconcile ? 2 : 1;
+        while (true)
+        {
+            int current = Volatile.Read(ref this.refreshQueued);
+            if (current >= desired || Interlocked.CompareExchange(ref this.refreshQueued, desired, current) == current)
+            {
+                return;
+            }
+        }
+    }
+
+    private void CancelRefresh()
+    {
+        Interlocked.Increment(ref this.refreshGeneration);
+        CancellationTokenSource cancellation;
+        lock (this.refreshCancellationSync)
+        {
+            cancellation = this.refreshCancellation;
+        }
+
+        if (cancellation != null)
+        {
+            try { cancellation.Cancel(); } catch (ObjectDisposedException) { }
+        }
+    }
+
+    private static bool ShouldApplyRefreshResult(long resultGeneration, long currentGeneration, bool canceled)
+    {
+        return !canceled && resultGeneration == currentGeneration;
     }
 
     private void ApplyRefreshResult(SpecBoardSnapshot result)
@@ -1461,6 +1569,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private void SuspendVisibleWork()
     {
         this.maintenanceTimer.Stop();
+        CancelRefresh();
         CancelCardClick();
         if (this.watcher != null)
         {
@@ -1700,7 +1809,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
     private bool IsLeftDocked
     {
-        get { return this.CurrentSettings != null && this.CurrentSettings.SpecBoardLeftDockEnabled && this.owner != null; }
+        get { return this.owner != null; }
     }
 
     // Resolved screen Y of this board's dock tab center. The auto sentinel puts the Spec tab just
@@ -1708,13 +1817,10 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     // two 30px tabs sit adjacent without overlapping.
     private int ResolveDockTabCenterY()
     {
-        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
-        if (this.CurrentSettings.SpecBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY)
-        {
-            return this.CurrentSettings.SpecBoardLeftDockTabCenterY;
-        }
-
-        return workArea.Top + workArea.Height / 2 - S(WidgetSettings.LeftDockTabAutoOffsetY);
+        return LeftDockLayout.ResolveTabCenterY(
+            this.CurrentSettings,
+            EdgeDockTabRole.SpecBoard,
+            this.LayerScale);
     }
 
     private void PositionForDisplay()
@@ -1737,12 +1843,17 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             return;
         }
 
-        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
-        int left = workArea.Left + S(EdgeDockTabForm.LogicalWidth);
-        int top = ResolveDockTabCenterY() - this.Height / 2;
-        left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
-        top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
-        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(new Point(left, top), this.Size, workArea, BurnInProtection.SpecBoardSalt);
+        Rectangle workArea = LeftDockLayout.ResolveWorkArea(this.CurrentSettings);
+        Point baseLocation = LeftDockLayout.ResolveBoardBaseLocation(
+            this.CurrentSettings,
+            EdgeDockTabRole.SpecBoard,
+            this.LayerScale,
+            this.Size);
+        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
+            baseLocation,
+            this.Size,
+            workArea,
+            BurnInProtection.SpecBoardSalt);
     }
 
     private void PositionNearOperationPanel()
@@ -1764,19 +1875,13 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
     private void OpenRow(SpecBoardRow row)
     {
-        string path = row == null ? string.Empty : row.AbsolutePath;
-        if (string.IsNullOrEmpty(path))
+        if (row == null)
         {
             return;
         }
 
-        string target = File.Exists(path) && !row.FileMissing ? path : Path.GetDirectoryName(path);
-        if (string.IsNullOrEmpty(target) || !Directory.Exists(target) && !File.Exists(target))
-        {
-            target = row.ProjectRoot;
-        }
-
-        if (string.IsNullOrEmpty(target) || !Directory.Exists(target) && !File.Exists(target))
+        string target = ResolveOpenTarget(row.SpecPath, row.ProjectRoot);
+        if (string.IsNullOrEmpty(target))
         {
             return;
         }
@@ -1789,6 +1894,11 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         {
             Program.LogException(ex);
         }
+    }
+
+    internal static string ResolveOpenTarget(string specPath, string projectRoot)
+    {
+        return SpecBoardPathPolicy.ResolveOpenTarget(projectRoot, specPath);
     }
 
     private void HandleCardMouseUp(SpecBoardRow row)
@@ -1902,6 +2012,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     {
         if (disposing)
         {
+            CancelRefresh();
             SuspendVisibleWork();
             DisposeDockTab();
             this.maintenanceTimer.Tick -= OnMaintenanceTick;
@@ -2071,6 +2182,12 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         SpecBoardSeenStateStore.RunSelfTest();
         SpecBoardLedgerStore.RunSelfTest();
         SpecBoardManagerForm.RunSelfTest();
+        RunResolveOpenTargetSelfTest();
+        if (ShouldApplyRefreshResult(10, 11, false) || ShouldApplyRefreshResult(10, 10, true) ||
+            !ShouldApplyRefreshResult(10, 10, false))
+        {
+            throw new InvalidOperationException("Spec Board stale refresh result guard self-test failed.");
+        }
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         using (SpecBoardForm form = new SpecBoardForm(null, settings))
         using (Bitmap bitmap = new Bitmap(settings.SpecBoardWidth, settings.SpecBoardHeight, PixelFormat.Format32bppPArgb))
@@ -2259,6 +2376,55 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                 {
                     throw new InvalidOperationException("Spec Board compact card overlaps the footer.");
                 }
+            }
+        }
+    }
+
+    private static void RunResolveOpenTargetSelfTest()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "DesktopCodexAssistant-SpecBoardOpen-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string markdownPath = Path.Combine(root, "safe.md");
+            File.WriteAllText(markdownPath, "# safe", SharedEncoding.Utf8NoBom);
+            if (!string.Equals(ResolveOpenTarget("safe.md", root), markdownPath, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Spec Board open-target self-test failed for an allowed Markdown file.");
+            }
+
+            string executablePath = Path.Combine(root, "blocked.exe");
+            File.WriteAllText(executablePath, "not executable", SharedEncoding.Utf8NoBom);
+            if (!string.Equals(ResolveOpenTarget("blocked.exe", root), root, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Spec Board open-target self-test did not redirect an executable to its directory.");
+            }
+
+            if (!string.Equals(ResolveOpenTarget("missing.md", root), root, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Spec Board open-target self-test changed the existing missing-file directory fallback.");
+            }
+
+            if (!string.Equals(ResolveOpenTarget("missing/nested.md", root), root, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Spec Board open-target self-test did not fall back to the project root.");
+            }
+
+            if (!string.Equals(ResolveOpenTarget("../outside.md", root), root, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Spec Board traversal open-target self-test failed.");
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, true);
+            }
+            catch
+            {
             }
         }
     }

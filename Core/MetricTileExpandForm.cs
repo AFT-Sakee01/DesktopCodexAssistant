@@ -1,0 +1,1212 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Globalization;
+using System.Windows.Forms;
+
+// Hover-expanded detail window for the right-edge tile column (1.0.6.09). Its own retained size
+// settings are migrated from the retired Codex Radar geometry and it pops out to the LEFT of
+// the column so it never covers the tiles the cursor is tracking.
+//
+// One window is reused for all ten tiles: the metric only changes which content renderer runs, so
+// there is a single layered surface, a single burn-in slot and no per-tile window lifecycle. It
+// samples nothing — WidgetForm pushes the same MetricTileFeed the column renders from.
+internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
+{
+    // The panel size is expressed in real screen pixels (MetricTileExpandWidth/Height), matching
+    // every other user-facing size
+    // in this app. Content is authored against a 522x120 design box and scaled to whatever pixel
+    // size is in effect, so large mode is an exact 2x of the same drawing.
+    internal const int DesignHeightUnits = 120;
+    internal const int FallbackRadarWidth = 522;
+    internal const int FallbackRadarHeight = 120;
+    // Horizontal gap between the expand window and the tile column, so the accent outline of a
+    // hovered tile stays visible next to the panel it opened.
+    internal const int GapToColumnDesignUnits = 6;
+
+    private MetricTileId metricId = MetricTileId.Cpu;
+    private MetricTileFeed feed = new MetricTileFeed();
+    private bool displaySuspended;
+    private bool forceHoverOpacityActive;
+    private bool lowEnergyPalette;
+
+    public MetricTileExpandForm(WidgetSettings settings)
+    {
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
+        ApplicationIcon.ApplyTo(this);
+        this.FormBorderStyle = FormBorderStyle.None;
+        this.ShowInTaskbar = false;
+        this.TopMost = false;
+        this.StartPosition = FormStartPosition.Manual;
+        this.BackColor = Color.Black;
+        this.Text = "MetricTileExpand";
+        this.AccessibleName = "MetricTileExpand";
+        ApplyPanelSizeAndScale();
+    }
+
+    protected override string LayeredWindowLogName
+    {
+        get { return "MetricTileExpand"; }
+    }
+
+    protected override string LayeredRenderTimingName
+    {
+        get { return "tileexpand.render"; }
+    }
+
+    protected override int WindowTransparencyOverridePercent
+    {
+        get { return this.CurrentSettings.MainWidgetTransparencyOverridePercent; }
+    }
+
+    protected override int WindowScaleOverridePercent
+    {
+        get { return this.CurrentSettings.MainWidgetScaleOverridePercent; }
+    }
+
+    protected override bool CanRenderLayeredWindow()
+    {
+        return !this.displaySuspended;
+    }
+
+    // Same reasoning as the tile column: this panel is built from anti-aliased rounded shapes,
+    // arcs and filled chart areas, and the per-pixel inversion pass turns every one of those edges
+    // into a jagged halo. It opts out and paints a low-energy palette instead. In practice the
+    // panel is only on screen while the cursor is on it, so it is an active surface anyway —
+    // OperationForm opts out for that reason too.
+    // In hidden/dim mode the panel's coloured pixels get the same burn-in inversion the rest of the
+    // widget uses (greys and dark pixels -> black, bright colours -> inverted and floored), so a
+    // window left faded for a long idle stretch stops emitting a fixed bright image. A normal hover
+    // keeps it at full brightness; only the hidden-mode fade triggers the inversion.
+    protected override bool IsLayeredBurnInColorProtectionActive()
+    {
+        bool hiddenActive = this.forceHoverOpacityActive ||
+            (this.CurrentSettings != null && this.CurrentSettings.ForceHoverOpacityActive);
+        return BurnInProtection.ShouldApplyHiddenModeColorProtection(this.CurrentSettings, hiddenActive);
+    }
+
+    // The panel still opts out of the low-energy palette and the hover-opacity fade: it only exists
+    // while the pointer is on its tile, so dimming or hiding the thing the user just asked to see
+    // would be wrong. The bitmap inversion above is the one burn-in measure it takes.
+    private bool IsLowEnergyPaletteActive()
+    {
+        return false;
+    }
+
+    protected override int ApplyHoverAlpha(int alpha)
+    {
+        return alpha;
+    }
+
+    // Low-energy substitute applied at draw time, replacing the bitmap inversion.
+    private Color Energy(Color color)
+    {
+        if (!this.lowEnergyPalette)
+        {
+            return color;
+        }
+
+        return Color.FromArgb(
+            color.A,
+            (int)(color.R * 0.34),
+            (int)(color.G * 0.34),
+            (int)(color.B * 0.34));
+    }
+
+    // Dedicated expanded-panel size, doubled in large mode.
+    internal Size GetDesiredSize()
+    {
+        int width = FallbackRadarWidth;
+        int height = FallbackRadarHeight;
+        if (this.CurrentSettings != null)
+        {
+            width = Math.Max(1, this.CurrentSettings.MetricTileExpandWidth);
+            height = Math.Max(1, this.CurrentSettings.MetricTileExpandHeight);
+        }
+
+        int multiplier = this.CurrentSettings != null && this.CurrentSettings.MainWidgetTileLargeModeEnabled ? 2 : 1;
+        return new Size(width * multiplier, height * multiplier);
+    }
+
+    private float GetPanelContentScale()
+    {
+        return Math.Max(0.25f, GetDesiredSize().Height / (float)DesignHeightUnits);
+    }
+
+    private void ApplyPanelSizeAndScale()
+    {
+        SetLayerScale(GetPanelContentScale());
+        Size desired = GetDesiredSize();
+        if (this.Size != desired)
+        {
+            this.Size = desired;
+        }
+    }
+
+    internal MetricTileId MetricIdForTest
+    {
+        get { return this.metricId; }
+    }
+
+    public void ApplyRuntimeSettings(WidgetSettings settings)
+    {
+        this.CurrentSettings = settings.Clone();
+        this.CurrentSettings.Normalize();
+        ApplyPanelSizeAndScale();
+        InvalidateLayeredRenderBuffer();
+        if (this.Visible && CanRenderLayeredWindow())
+        {
+            RenderLayeredWindow();
+        }
+    }
+
+    public void UpdateFeed(MetricTileFeed next)
+    {
+        this.feed = next ?? new MetricTileFeed();
+        if (this.Visible && CanRenderLayeredWindow())
+        {
+            InvalidateLayeredRenderBuffer();
+            RenderLayeredWindow();
+        }
+    }
+
+    // anchorTile is the screen rect of the hovered tile. The panel's top edge lines up with the
+    // tile's top edge, then slides up if that would push it past the bottom of the work area, so a
+    // tile near the taskbar still opens a fully visible panel.
+    public void ShowForTile(MetricTileId id, Rectangle anchorTile, MetricTileFeed next)
+    {
+        this.metricId = id;
+        this.feed = next ?? this.feed ?? new MetricTileFeed();
+        ApplyPanelSizeAndScale();
+
+        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleMain);
+        int left = anchorTile.Left - this.Width - S(GapToColumnDesignUnits);
+        left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
+        int top = anchorTile.Top;
+        top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
+        this.Location = new Point(left, top);
+
+        if (!CanRenderLayeredWindow())
+        {
+            HidePanel();
+            return;
+        }
+
+        InvalidateLayeredRenderBuffer();
+        if (!this.Visible)
+        {
+            Show();
+        }
+
+        NativeMethods.SetWindowPos(
+            this.Handle,
+            GetLayeredWidgetInsertAfter(true, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
+            this.Left,
+            this.Top,
+            this.Width,
+            this.Height,
+            NativeMethods.SWP_NOACTIVATE |
+            NativeMethods.SWP_NOOWNERZORDER |
+            NativeMethods.SWP_FRAMECHANGED |
+            NativeMethods.SWP_SHOWWINDOW);
+        RenderLayeredWindow();
+    }
+
+    public void HidePanel()
+    {
+        if (this.Visible)
+        {
+            Hide();
+        }
+    }
+
+    public void SetDisplaySuspended(bool suspended)
+    {
+        if (this.displaySuspended == suspended)
+        {
+            return;
+        }
+
+        this.displaySuspended = suspended;
+        if (suspended)
+        {
+            HidePanel();
+        }
+
+        ResetDisplayRenderResources();
+    }
+
+    // Retained so the host can call it uniformly, but the panel is exempt from hidden mode: the
+    // state is recorded and deliberately not acted on.
+    public void SetForceHoverOpacityActive(bool active)
+    {
+        this.forceHoverOpacityActive = active;
+    }
+
+    public void RecoverAfterDisplayResume()
+    {
+        ResetDisplayRenderResources();
+        HidePanel();
+    }
+
+    protected override void DrawWindowContent(Graphics g)
+    {
+        DrawPanel(g);
+    }
+
+    internal void DrawPanel(Graphics g)
+    {
+        // Anti-aliasing stays on in both states; opting out of the inversion pass is what makes that
+        // safe here.
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+        this.lowEnergyPalette = IsLowEnergyPaletteActive();
+
+        RectangleF bounds = new RectangleF(0, 0, this.Width - 1, this.Height - 1);
+        Color accent = Energy(MetricTileModel.GetAccent(this.metricId));
+        using (GraphicsPath shell = RoundedRectangle(bounds, S(DesignTokens.Radius.Panel)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.AppBackground), 245)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(accent, 150), Math.Max(1.0f, S(1))))
+        {
+            g.FillPath(fill, shell);
+            g.DrawPath(border, shell);
+        }
+
+        float pad = S(12);
+        RectangleF content = new RectangleF(pad, S(7), this.Width - pad * 2.0f, this.Height - S(14));
+        PerfSnapshot s = this.feed.Snapshot ?? new PerfSnapshot();
+
+        switch (this.metricId)
+        {
+            case MetricTileId.Cpu: DrawCpu(g, content, accent, s); break;
+            case MetricTileId.Memory: DrawMemory(g, content, accent, s); break;
+            case MetricTileId.Disk: DrawDisk(g, content, accent, s); break;
+            case MetricTileId.Network: DrawNetwork(g, content, accent, s); break;
+            case MetricTileId.Gpu: DrawGpu(g, content, accent, s); break;
+            case MetricTileId.Npu: DrawNpu(g, content, accent, s); break;
+            case MetricTileId.Power: DrawPower(g, content, accent); break;
+            case MetricTileId.CodexQuota: DrawRadarQuota(g, content, accent, false); break;
+            case MetricTileId.ClaudeQuota: DrawRadarQuota(g, content, accent, true); break;
+            default: DrawGuard(g, content, accent); break;
+        }
+    }
+
+    // ── Layout ───────────────────────────────────────────────────────────
+    //
+    // Full-bleed: one large graphic fills the panel and acts as the ground, the label, headline
+    // value and a single sub line float over its top-left on a soft scrim, a thin strip along the
+    // bottom edge carries the granular secondary data, and a caption sits top-right.
+    //
+    // 522x120 is a 4.35:1 box. Stacking header / sub line / bar / legend / chart vertically starved
+    // all five and forced 8-10 px type; giving the chart the whole panel and floating the text over
+    // it buys both a readable type size and a chart wide enough to read a shape off.
+    //
+    // Two panels have no time series to spread across the ground and are adapted rather than faked:
+    // PWR has no watts history buffer, so its ground is the thermal zone wall; GUARD is four states,
+    // so its ground is four tinted bands. Drawing a curve through either would mean inventing data.
+    //
+    // Type scale, in design units (= physical px at compact scale):
+    private const int LabelSize = 18;      // metric name
+    private const int ValueSize = 32;      // headline number
+    private const int SuffixSize = 16;     // unit after the headline
+    private const int SubSize = 17;        // sub line
+    private const int CaptionSize = 13;    // caption
+
+    // The floating text block. The scrim is measured from the text it protects — including the sub
+    // line, because on a busy panel (MEM at 63%, the NET mirror) the curve runs straight through
+    // where that line sits — so it never covers more of the ground than it has to.
+    private void DrawFloatingHeader(Graphics g, RectangleF content, Color accent, string label, string value, string suffix, string subLine)
+    {
+        float scrimW = content.Width * 0.42f;
+        float scrimH = S(ValueSize) + S(8);
+        if (!string.IsNullOrEmpty(subLine))
+        {
+            using (Font subFont = new Font("Segoe UI", S(SubSize) * 0.92f, FontStyle.Regular, GraphicsUnit.Pixel))
+            {
+                scrimW = Math.Max(scrimW, g.MeasureString(subLine, subFont).Width + S(10));
+            }
+
+            scrimH = S(ValueSize) + S(SubSize) + S(8);
+        }
+
+        scrimW = Math.Min(scrimW, content.Width + S(8));
+        // A light veil rather than an opaque plate: just enough to seat the glyphs, so the chart
+        // behind stays visible and reads as the panel's background.
+        using (SolidBrush scrim = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.AppBackground), 60)))
+        {
+            g.FillRectangle(scrim, content.X - S(4), content.Y - S(3), scrimW, scrimH);
+        }
+
+        using (Font labelFont = new Font("Segoe UI", S(LabelSize), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font valueFont = new Font("Segoe UI", S(ValueSize), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font suffixFont = new Font("Segoe UI", S(SuffixSize), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.WithAlpha(accent, 205)))
+        using (SolidBrush valueBrush = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.TextStrong), 205)))
+        using (SolidBrush suffixBrush = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.TextMuted), 188)))
+        {
+            g.DrawString(label, labelFont, labelBrush, content.X, content.Y + S(9));
+            float labelW = g.MeasureString(label, labelFont).Width;
+            float vx = content.X + labelW + S(8);
+            g.DrawString(value, valueFont, valueBrush, vx, content.Y);
+            if (!string.IsNullOrEmpty(suffix))
+            {
+                float valueW = g.MeasureString(value, valueFont).Width;
+                g.DrawString(suffix, suffixFont, suffixBrush, vx + valueW - S(6), content.Y + S(14));
+            }
+        }
+
+        if (!string.IsNullOrEmpty(subLine))
+        {
+            DrawText(g, subLine, content.X, content.Y + S(ValueSize) + S(2), S(SubSize) * 0.92f,
+                DesignTokens.WithAlpha(Energy(DesignTokens.Colors.TextMuted), 180), FontStyle.Regular);
+        }
+    }
+
+    // The chart is the panel's background: it runs from just under the top caption row down to the
+    // bottom strip, filling the whole panel, and the header text floats over it on a light veil with
+    // semi-transparent glyphs (see DrawFloatingHeader) so peaks read through the text instead of being
+    // clipped by an opaque scrim.
+    private RectangleF GroundRect(RectangleF content, bool hasStrip)
+    {
+        float bottom = hasStrip ? content.Bottom - S(13) : content.Bottom;
+        float top = content.Y + content.Height * 0.16f;
+        return new RectangleF(content.X, top, content.Width, Math.Max(1.0f, bottom - top));
+    }
+
+    private RectangleF StripRect(RectangleF content)
+    {
+        return new RectangleF(content.X, content.Bottom - S(9), content.Width, S(9));
+    }
+
+    private void DrawCaption(Graphics g, RectangleF rect, string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        using (Font font = new Font("Segoe UI", S(CaptionSize), FontStyle.Regular, GraphicsUnit.Pixel))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.GlyphMuted), 220)))
+        using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
+        {
+            format.Alignment = StringAlignment.Far;
+            g.DrawString(text, font, brush, new RectangleF(rect.X, rect.Y, rect.Width, S(CaptionSize) + S(3)), format);
+        }
+    }
+
+    private void DrawText(Graphics g, string text, float x, float y, float pixelSize, Color color, FontStyle style)
+    {
+        using (Font font = new Font("Segoe UI", Math.Max(6.0f, pixelSize), style, GraphicsUnit.Pixel))
+        using (SolidBrush brush = new SolidBrush(color))
+        {
+            g.DrawString(text, font, brush, x, y);
+        }
+    }
+
+    // Filled area chart with an emphasised endpoint.
+    private void DrawSpark(Graphics g, RectangleF rect, List<double> values, Color color, double explicitMax, bool drawEndpoint, bool percentGuides)
+    {
+        if (rect.Width <= 2.0f || rect.Height <= 2.0f)
+        {
+            return;
+        }
+
+        if (percentGuides && explicitMax > 0.0)
+        {
+            DrawScaleGuide(g, rect, 50.0, explicitMax);
+            DrawScaleGuide(g, rect, 100.0, explicitMax);
+        }
+
+        if (values == null || values.Count < 2)
+        {
+            using (Pen flat = new Pen(DesignTokens.WithAlpha(color, 120), Math.Max(1.0f, S(1))))
+            {
+                g.DrawLine(flat, rect.Left, rect.Bottom - 1.0f, rect.Right, rect.Bottom - 1.0f);
+            }
+
+            return;
+        }
+
+        double max = explicitMax;
+        if (max <= 0.0)
+        {
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (values[i] > max)
+                {
+                    max = values[i];
+                }
+            }
+
+            max *= 1.15;
+        }
+
+        if (max <= 0.0)
+        {
+            max = 1.0;
+        }
+
+        PointF[] points = new PointF[values.Count];
+        float step = rect.Width / (values.Count - 1);
+        for (int i = 0; i < values.Count; i++)
+        {
+            double ratio = MetricTileModel.Clamp(values[i] / max, 0.0, 1.0);
+            points[i] = new PointF(rect.X + i * step, rect.Bottom - (float)(ratio * (rect.Height - 2.0f)) - 1.0f);
+        }
+
+        using (GraphicsPath area = new GraphicsPath())
+        {
+            area.AddLines(points);
+            area.AddLine(points[points.Length - 1].X, rect.Bottom, rect.X, rect.Bottom);
+            area.CloseFigure();
+            using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 40)))
+            {
+                g.FillPath(fill, area);
+            }
+        }
+
+        using (Pen line = new Pen(DesignTokens.WithAlpha(color, 235), Math.Max(1.0f, S(1.6f))))
+        {
+            line.LineJoin = LineJoin.Round;
+            g.DrawLines(line, points);
+        }
+
+        if (drawEndpoint)
+        {
+            PointF last = points[points.Length - 1];
+            float dot = Math.Max(2.0f, S(2.6f));
+            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 255)))
+            {
+                g.FillEllipse(brush, last.X - dot, last.Y - dot, dot * 2.0f, dot * 2.0f);
+            }
+        }
+    }
+
+    // A dotted horizontal reference at a value on the chart's own scale, with a small left-edge
+    // label. Only 50 and 100 are drawn, so a percentage curve makes half and full readable at a
+    // glance (100 lands just under the header now that the ground clears the text band).
+    private void DrawScaleGuide(Graphics g, RectangleF rect, double value, double max)
+    {
+        if (max <= 0.0)
+        {
+            return;
+        }
+
+        double ratio = MetricTileModel.Clamp(value / max, 0.0, 1.0);
+        float y = rect.Bottom - (float)(ratio * (rect.Height - 2.0f)) - 1.0f;
+        using (Pen guide = new Pen(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.GlyphMuted), 96), 1.0f))
+        {
+            guide.DashStyle = DashStyle.Dot;
+            g.DrawLine(guide, rect.Left, y, rect.Right, y);
+        }
+
+        // Label right-aligned at the edge: the top-left is where the header value lives, so a
+        // left-edge "100" would hide behind it once the chart runs full-height behind the text.
+        float labelSize = Math.Max(6.0f, S(SubSize) * 0.66f);
+        using (Font font = new Font("Segoe UI", labelSize, FontStyle.Regular, GraphicsUnit.Pixel))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.GlyphMuted), 220)))
+        using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
+        {
+            format.Alignment = StringAlignment.Far;
+            g.DrawString(((int)value).ToString(CultureInfo.InvariantCulture), font, brush,
+                new RectangleF(rect.Right - S(34), y + S(1), S(32), labelSize + S(2)), format);
+        }
+    }
+
+    // Secondary series: thin translucent line, no fill, so two series share one ground without the
+    // second reading as another area chart.
+    private void DrawSparkLineOnly(Graphics g, RectangleF rect, List<double> values, Color color, double max)
+    {
+        if (values == null || values.Count < 2 || rect.Width <= 2.0f)
+        {
+            return;
+        }
+
+        if (max <= 0.0)
+        {
+            max = 1.0;
+        }
+
+        PointF[] points = new PointF[values.Count];
+        float step = rect.Width / (values.Count - 1);
+        for (int i = 0; i < values.Count; i++)
+        {
+            double ratio = MetricTileModel.Clamp(values[i] / max, 0.0, 1.0);
+            points[i] = new PointF(rect.X + i * step, rect.Bottom - (float)(ratio * (rect.Height - 2.0f)) - 1.0f);
+        }
+
+        using (Pen line = new Pen(DesignTokens.WithAlpha(color, 115), Math.Max(1.0f, S(1.1f))))
+        {
+            line.LineJoin = LineJoin.Round;
+            g.DrawLines(line, points);
+        }
+    }
+
+    // Thin proportion strip. Deliberately slim: a fill ratio reads at a few pixels, and the height
+    // it does not take is what lets the ground graphic run the full panel.
+    private void DrawSegmentBar(Graphics g, RectangleF rect, double[] percents, Color[] colors, int[] alphas)
+    {
+        float radius = Math.Max(1.5f, rect.Height / 2.0f);
+        using (GraphicsPath track = RoundedRectangle(rect, radius))
+        using (SolidBrush trackBrush = new SolidBrush(DesignTokens.White(28)))
+        {
+            g.FillPath(trackBrush, track);
+            Region previous = g.Clip;
+            g.SetClip(track, CombineMode.Intersect);
+            float x = rect.X;
+            for (int i = 0; i < percents.Length; i++)
+            {
+                float w = (float)(MetricTileModel.Clamp(percents[i], 0.0, 100.0) / 100.0 * rect.Width);
+                if (w <= 0.0f)
+                {
+                    continue;
+                }
+
+                using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(colors[i], alphas[i])))
+                {
+                    g.FillRectangle(brush, x, rect.Y, w, rect.Height);
+                }
+
+                x += w;
+            }
+
+            g.Clip = previous;
+        }
+    }
+
+    // ── CPU ──────────────────────────────────────────────────────────────
+    // Core loads at or above this warn (yellow); a maxed core (at/near 100) is danger (red).
+    private const double CoreLoadWarningPercent = 75.0;
+    private const double CoreLoadDangerPercent = 95.0;
+
+    private void DrawCpu(Graphics g, RectangleF content, Color accent, PerfSnapshot s)
+    {
+        double[] cores = s.CpuCorePercents ?? new double[0];
+        // Per-core bars and the load curve share one 0-100 ground and the same bottom baseline: the
+        // bars are drawn first as a background histogram of the current spread, then the filled
+        // 60 s curve rides over them so both are read against one scale.
+        RectangleF ground = GroundRect(content, false);
+        DrawCoreBars(g, ground, cores, accent);
+        DrawSpark(g, ground, this.feed.CpuHistory, accent, 100.0, true, true);
+
+        DrawFloatingHeader(g, content, accent, "CPU",
+            Math.Round(s.CpuPercent).ToString("0", CultureInfo.InvariantCulture), "%",
+            string.Format(CultureInfo.InvariantCulture, "{0:0.00} / {1:0.00} GHz · {2} 核 · 峰值 {3:0}%",
+                s.CpuFrequencyGhz, s.CpuBaseFrequencyGhz, cores.Length, PeakOf(this.feed.CpuHistory)));
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒 · 折线=占用 柱=每核");
+    }
+
+    // Per-core bars, one per core across the shared ground, rising from the baseline. Each bar warns
+    // yellow at 75 %+ and turns red when the core is maxed, so a single hot core is visible even
+    // while the average load curve looks calm.
+    private void DrawCoreBars(Graphics g, RectangleF rect, double[] cores, Color accent)
+    {
+        if (cores == null || cores.Length == 0 || rect.Height <= 1.0f)
+        {
+            return;
+        }
+
+        float gap = Math.Max(1.0f, S(1));
+        float barW = (rect.Width - gap * (cores.Length - 1)) / cores.Length;
+        if (barW <= 0.3f)
+        {
+            return;
+        }
+
+        for (int i = 0; i < cores.Length; i++)
+        {
+            double value = MetricTileModel.Clamp(cores[i], 0.0, 100.0);
+            float h = Math.Max(1.5f, (float)(value / 100.0 * (rect.Height - 1.0f)));
+            // accent is already energy-adjusted by the caller; the raw warn/danger tokens are not.
+            Color barColor = value >= CoreLoadDangerPercent
+                ? Energy(DesignTokens.Colors.DangerStrong)
+                : (value >= CoreLoadWarningPercent ? Energy(DesignTokens.Colors.Warning) : accent);
+            int alpha = 96 + (int)(value / 100.0 * 96.0);
+            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(barColor, alpha)))
+            {
+                g.FillRectangle(brush, rect.X + i * (barW + gap), rect.Bottom - h, barW, h);
+            }
+        }
+    }
+
+    // ── Memory ───────────────────────────────────────────────────────────
+    private void DrawMemory(Graphics g, RectangleF content, Color accent, PerfSnapshot s)
+    {
+        double reservedGb = s.MemoryTotalGb * s.MemoryHardwareReservedPercent / 100.0;
+        DrawSpark(g, GroundRect(content, true), this.feed.MemoryHistory, accent, 100.0, true, true);
+        DrawSegmentBar(g, StripRect(content),
+            new double[] { s.MemoryPercent, s.MemoryHardwareReservedPercent },
+            new Color[] { accent, accent },
+            new int[] { 215, 85 });
+
+        DrawFloatingHeader(g, content, accent, "MEM",
+            Math.Round(s.MemoryPercent).ToString("0", CultureInfo.InvariantCulture), "%",
+            string.Format(CultureInfo.InvariantCulture, "{0:0.0} / {1:0.0} GB · HW {2:0.0} GB", s.MemoryUsedGb, s.MemoryTotalGb, reservedGb));
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒 · 底条=已用/保留");
+    }
+
+    // ── Disk ─────────────────────────────────────────────────────────────
+    private void DrawDisk(Graphics g, RectangleF content, Color accent, PerfSnapshot s)
+    {
+        RectangleF ground = GroundRect(content, true);
+        // Write and read share one auto-scaled axis so their relative magnitude stays honest; the
+        // read line usually hugs the floor because Windows serves most reads from cache.
+        double max = Math.Max(PeakOf(this.feed.DiskWriteHistory), PeakOf(this.feed.DiskReadHistory)) * 1.15;
+        DrawSpark(g, ground, this.feed.DiskWriteHistory, accent, max, true, false);
+        DrawSparkLineOnly(g, ground, this.feed.DiskReadHistory, accent, max);
+
+        double capacityPercent = s.DiskTotalGb > 0.0 ? s.DiskUsedGb / s.DiskTotalGb * 100.0 : 0.0;
+        DrawSegmentBar(g, StripRect(content), new double[] { capacityPercent }, new Color[] { accent }, new int[] { 215 });
+
+        DrawFloatingHeader(g, content, accent, "DISK",
+            Math.Round(s.DiskPercent).ToString("0", CultureInfo.InvariantCulture), "%",
+            string.Format(CultureInfo.InvariantCulture, "W {0} · R {1} · {2:0}/{3:0} GB",
+                FormatRate(s.DiskWriteBytesPerSecond), FormatRate(s.DiskReadBytesPerSecond), s.DiskUsedGb, s.DiskTotalGb));
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒 亮=写 淡=读 · 底条=容量");
+    }
+
+    // ── Network ──────────────────────────────────────────────────────────
+    // The mirror chart needs both halves and already spans the full height, so this is the one
+    // panel with no bottom strip: the ground runs edge to edge.
+    private void DrawNetwork(Graphics g, RectangleF content, Color accent, PerfSnapshot s)
+    {
+        DrawMirrorChart(g, GroundRect(content, false), this.feed.NetworkReceivedHistory, this.feed.NetworkSentHistory, accent);
+
+        // Prefix dropped: the SSID already identifies a wireless link, and the sub line has to fit.
+        string link = s.NetworkConnected
+            ? (s.NetworkIsWifi ? (string.IsNullOrEmpty(s.NetworkName) ? "Wi-Fi" : s.NetworkName) : "以太网")
+            : "未连接";
+        string signal = s.NetworkRssiKnown
+            ? s.NetworkRssiDbm.ToString(CultureInfo.InvariantCulture) + " dBm"
+            : (s.NetworkConnected ? "正常" : "断开");
+
+        DrawFloatingHeader(g, content, accent, "NET",
+            "↓" + MetricTileModel.FormatCompactRate(s.NetworkReceivedBytesPerSecond), null,
+            "↑ " + FormatRate(s.NetworkSentBytesPerSecond) + " · " + link + " · " + signal);
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒 · 下行朝上 · 上行朝下");
+    }
+
+    private void DrawMirrorChart(Graphics g, RectangleF rect, List<double> down, List<double> up, Color accent)
+    {
+        float baseline = rect.Y + rect.Height * 0.62f;
+        double max = Math.Max(PeakOf(down), PeakOf(up)) * 1.1;
+        if (max <= 0.0)
+        {
+            max = 1.0;
+        }
+
+        // Both halves are built explicitly rather than by reusing DrawSpark under a flip transform:
+        // the flipped version mapped the upstream box back above the baseline, drawing the two
+        // series on top of each other instead of mirroring them.
+        DrawMirrorHalf(g, rect, down, accent, max, baseline, baseline - rect.Y, true, 48, true);
+        DrawMirrorHalf(g, rect, up, accent, max, baseline, rect.Bottom - baseline, false, 26, false);
+
+        using (Pen basePen = new Pen(DesignTokens.White(54), 1.0f))
+        {
+            g.DrawLine(basePen, rect.Left, baseline, rect.Right, baseline);
+        }
+    }
+
+    private void DrawMirrorHalf(Graphics g, RectangleF rect, List<double> values, Color accent, double max, float baseline, float amplitude, bool growUp, int fillAlpha, bool drawEndpoint)
+    {
+        if (values == null || values.Count < 2 || amplitude <= 1.0f)
+        {
+            return;
+        }
+
+        PointF[] points = new PointF[values.Count];
+        float step = rect.Width / (values.Count - 1);
+        for (int i = 0; i < values.Count; i++)
+        {
+            double ratio = MetricTileModel.Clamp(values[i] / max, 0.0, 1.0);
+            float offset = (float)(ratio * (amplitude - 1.0f));
+            points[i] = new PointF(rect.X + i * step, growUp ? baseline - offset : baseline + offset);
+        }
+
+        using (GraphicsPath area = new GraphicsPath())
+        {
+            area.AddLines(points);
+            area.AddLine(points[points.Length - 1].X, baseline, rect.X, baseline);
+            area.CloseFigure();
+            using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(accent, fillAlpha)))
+            {
+                g.FillPath(fill, area);
+            }
+        }
+
+        using (Pen line = new Pen(
+            DesignTokens.WithAlpha(accent, growUp ? 235 : 155),
+            Math.Max(1.0f, S(growUp ? 1.6f : 1.1f))))
+        {
+            line.LineJoin = LineJoin.Round;
+            g.DrawLines(line, points);
+        }
+
+        if (drawEndpoint)
+        {
+            PointF last = points[points.Length - 1];
+            float dot = Math.Max(2.0f, S(2.6f));
+            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(accent, 255)))
+            {
+                g.FillEllipse(brush, last.X - dot, last.Y - dot, dot * 2.0f, dot * 2.0f);
+            }
+        }
+    }
+
+    // ── GPU / NPU ────────────────────────────────────────────────────────
+    private void DrawGpu(Graphics g, RectangleF content, Color accent, PerfSnapshot s)
+    {
+        DrawAcceleratorPanel(g, content, accent, "GPU", s.GpuPercent, s.GpuMemoryPercent,
+            this.feed.GpuHistory, this.feed.GpuMemoryHistory,
+            string.Format(CultureInfo.InvariantCulture, "VRAM {0:0.0} / {1:0.0} GB · 占用 {2:0.0}%",
+                s.GpuMemoryUsedGb, s.GpuMemoryTotalGb, s.GpuMemoryPercent),
+            "60 秒 亮=占用 淡=显存 · 底条=显存");
+    }
+
+    private void DrawNpu(Graphics g, RectangleF content, Color accent, PerfSnapshot s)
+    {
+        DrawAcceleratorPanel(g, content, accent, "NPU", s.NpuPercent, s.NpuMemoryPercent,
+            this.feed.NpuHistory, this.feed.NpuMemoryHistory,
+            string.Format(CultureInfo.InvariantCulture, "内存 {0:0.0} / {1:0.0} GB · {2}",
+                s.NpuMemoryUsedGb, s.NpuMemoryTotalGb, s.NpuPercent <= 0.5 ? "当前空闲" : "推理中"),
+            "60 秒 亮=占用 淡=内存 · 底条=内存");
+    }
+
+    private void DrawAcceleratorPanel(Graphics g, RectangleF content, Color accent, string label, double percent, double memoryPercent, List<double> load, List<double> memory, string subLine, string caption)
+    {
+        RectangleF ground = GroundRect(content, true);
+        DrawSpark(g, ground, load, accent, 100.0, true, true);
+        DrawSparkLineOnly(g, ground, memory, accent, 100.0);
+        DrawSegmentBar(g, StripRect(content), new double[] { memoryPercent }, new Color[] { accent }, new int[] { 200 });
+
+        DrawFloatingHeader(g, content, accent, label,
+            Math.Round(MetricTileModel.Clamp(percent, 0.0, 100.0)).ToString("0", CultureInfo.InvariantCulture), "%",
+            subLine);
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), caption);
+    }
+
+    // ── Power ────────────────────────────────────────────────────────────
+    // No watts history buffer exists, so there is no curve to spread across the ground. Rather than
+    // invent one, the ground is the thermal zone wall: every reporting sensor as a column, height
+    // and brightness both tracking temperature. Battery level takes the bottom strip.
+    private void DrawPower(Graphics g, RectangleF content, Color accent)
+    {
+        PowerStripSnapshot p = this.feed.Power;
+        DrawThermalWall(g, GroundRect(content, true), p);
+
+        int battery = p != null && p.BatteryPercentKnown ? p.BatteryPercent : -1;
+        DrawSegmentBar(g, StripRect(content),
+            new double[] { battery >= 0 ? battery : 0 },
+            new Color[] { Energy(battery >= 0 && battery <= 20 ? DesignTokens.Colors.DangerStrong : DesignTokens.Colors.Success) },
+            new int[] { 225 });
+
+        string watts = p != null && p.WattsKnown ? p.Watts.ToString("0.0", CultureInfo.InvariantCulture) + " W" : "-- W";
+        string mode = p != null && !string.IsNullOrEmpty(p.PowerModeText) ? p.PowerModeText : "--";
+        DrawFloatingHeader(g, content, accent, "PWR",
+            battery >= 0 ? battery.ToString(CultureInfo.InvariantCulture) : "--", "%",
+            watts + " · " + mode + " · " + FormatRuntime(p));
+
+        string maxText = p != null && p.MaxCelsius > 0.0
+            ? Math.Round(p.MaxCelsius).ToString("0", CultureInfo.InvariantCulture) + "°C"
+            : "--";
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)),
+            p != null && p.ZoneCount > 0
+                ? string.Format(CultureInfo.InvariantCulture, "{0} 传感区 峰值 {1} · 底条=电池", p.ZoneCount, maxText)
+                : "无温度传感数据");
+    }
+
+    private void DrawThermalWall(Graphics g, RectangleF rect, PowerStripSnapshot p)
+    {
+        int count = p != null && p.ZoneCount > 0 ? p.ZoneCount : 0;
+        if (count <= 0 || rect.Height <= 2.0f)
+        {
+            return;
+        }
+
+        // Hot zones carry real readings; the remaining sensors are known to be below the alert
+        // threshold, so they are drawn at the average rather than invented per-zone values.
+        List<double> temps = new List<double>();
+        if (p.HotZones != null)
+        {
+            for (int i = 0; i < p.HotZones.Count && temps.Count < count; i++)
+            {
+                temps.Add(p.HotZones[i].Celsius);
+            }
+        }
+
+        while (temps.Count < count)
+        {
+            temps.Add(p.AvgCelsius);
+        }
+
+        float gap = Math.Max(1.0f, S(2));
+        float cellW = (rect.Width - gap * (count - 1)) / count;
+        for (int i = 0; i < count; i++)
+        {
+            // Absolute 30-85 degree mapping, and the column height tracks temperature too, so the
+            // wall has a silhouette instead of being a flat block of equal bars. A cool machine
+            // honestly shows a low, dim, even row; a thermal event raises and lights its columns.
+            double ratio = MetricTileModel.Clamp((temps[i] - 30.0) / 55.0, 0.0, 1.0);
+            float h = Math.Max(rect.Height * 0.22f, (float)(0.35 + ratio * 0.65) * rect.Height);
+            int alpha = 55 + (int)(ratio * 185.0);
+            RectangleF cell = new RectangleF(rect.X + i * (cellW + gap), rect.Bottom - h, cellW, h);
+            using (GraphicsPath path = RoundedRectangle(cell, Math.Max(1.0f, S(2))))
+            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.Warning), alpha)))
+            {
+                g.FillPath(brush, path);
+            }
+        }
+    }
+
+    private static string FormatRuntime(PowerStripSnapshot p)
+    {
+        if (p == null || !p.RuntimeSecondsKnown || p.RuntimeSeconds <= 0)
+        {
+            return p != null && p.PluggedIn ? "外接电源" : "剩余未知";
+        }
+
+        int minutes = p.RuntimeSeconds / 60;
+        int hours = minutes / 60;
+        return hours > 0
+            ? string.Format(CultureInfo.InvariantCulture, "{0}h{1:00} 剩余", hours, minutes % 60)
+            : string.Format(CultureInfo.InvariantCulture, "{0}m 剩余", minutes);
+    }
+
+    // ── Radar: quota ─────────────────────────────────────────────────────
+    // Ground is the measured burn-down — accepted weekly remaining-% readings on an active-time
+    // axis — with a dashed projection at the measured rate and the reset moment marked. Where the
+    // projection lands relative to that line is the whole question: does this week's quota reach
+    // the reset. Rings can show the balance but never that.
+    private void DrawRadarQuota(Graphics g, RectangleF content, Color accent, bool claude)
+    {
+        RadarTileSnapshot r = this.feed.GetRadar(claude);
+        RectangleF ground = GroundRect(content, true);
+
+        if (r.HasBurnCurve)
+        {
+            DrawBurnDown(g, ground, r, accent);
+        }
+        else
+        {
+            // No accepted samples yet. Say so rather than draw a flat line through one point: the
+            // sample clock only advances while the app is running, so a fresh process genuinely has
+            // no rate to report.
+            DrawText(g, "尚未积累实测样本", ground.X, ground.Y + ground.Height * 0.42f,
+                S(SubSize) * 0.92f, Energy(DesignTokens.Colors.GlyphMuted), FontStyle.Regular);
+        }
+
+        // Bottom strip is the 5-hour window, the other quota the tile's inner ring carries.
+        if (r.QuotaKnown && !r.FiveHourLimitAbsent)
+        {
+            DrawSegmentBar(g, StripRect(content),
+                new double[] { MetricTileModel.Clamp(r.FiveHourPercent, 0.0, 100.0) },
+                new Color[] { accent }, new int[] { 200 });
+        }
+
+        string headline = r.QuotaKnown
+            ? Math.Round(MetricTileModel.Clamp(r.WeeklyPercent, 0.0, 100.0)).ToString("0", CultureInfo.InvariantCulture)
+            : "--";
+        string sub = r.QuotaKnown
+            ? string.Format(
+                CultureInfo.InvariantCulture,
+                "5h {0}@{1} · 周 {2}%@{3} · {4}",
+                r.FiveHourLimitAbsent ? "∞" : r.FiveHourPercent.ToString(CultureInfo.InvariantCulture) + "%",
+                r.FiveHourResetKnown ? r.FiveHourResetLocal.ToString("MM/dd HH:mm", CultureInfo.CurrentCulture) : "未知",
+                r.WeeklyPercent,
+                r.WeeklyResetKnown ? r.WeeklyResetLocal.ToString("MM/dd HH:mm", CultureInfo.CurrentCulture) : "未知",
+                string.IsNullOrEmpty(r.ModelName) ? r.FamilyLabel : r.ModelName)
+            : "额度未知";
+
+        DrawFloatingHeader(g, content, accent, r.FamilyLabel, headline, r.QuotaKnown ? "%" : null, sub);
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)),
+            BuildBurnCaption(r));
+    }
+
+    private static string BuildBurnCaption(RadarTileSnapshot r)
+    {
+        if (r.BurnRateKnown)
+        {
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0:0.0}%/活跃时 · 续航 {1:0}h / 距重置 {2:0}h · 底条=5h",
+                r.BurnPercentPerHour, r.RunwayHours, r.HoursToReset);
+        }
+
+        if (r.HoursToReset > 0.0)
+        {
+            return string.Format(CultureInfo.InvariantCulture, "距重置 {0:0}h · 速率待积累 · 底条=5h", r.HoursToReset);
+        }
+
+        return "速率待积累 · 底条=5h";
+    }
+
+    private void DrawBurnDown(Graphics g, RectangleF rect, RadarTileSnapshot r, Color accent)
+    {
+        List<double> v = r.WeeklyBurnRemaining;
+        PointF[] pts = new PointF[v.Count];
+        float step = rect.Width / (v.Count - 1);
+        for (int i = 0; i < v.Count; i++)
+        {
+            double ratio = MetricTileModel.Clamp(v[i] / 100.0, 0.0, 1.0);
+            pts[i] = new PointF(rect.X + i * step, rect.Bottom - (float)(ratio * (rect.Height - 2.0f)) - 1.0f);
+        }
+
+        using (GraphicsPath area = new GraphicsPath())
+        {
+            area.AddLines(pts);
+            area.AddLine(pts[pts.Length - 1].X, rect.Bottom, rect.X, rect.Bottom);
+            area.CloseFigure();
+            using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(accent, 40)))
+            {
+                g.FillPath(fill, area);
+            }
+        }
+
+        using (Pen line = new Pen(DesignTokens.WithAlpha(accent, 235), Math.Max(1.0f, S(1.6f))))
+        {
+            line.LineJoin = LineJoin.Round;
+            g.DrawLines(line, pts);
+        }
+
+        // Projection to the reset, only when there is a measured rate to project with.
+        if (r.BurnRateKnown && r.HoursToReset > 0.0)
+        {
+            double projected = Math.Max(0.0, r.WeeklyPercent - r.BurnPercentPerHour * r.HoursToReset);
+            float projY = rect.Bottom - (float)(projected / 100.0 * (rect.Height - 2.0f)) - 1.0f;
+            PointF last = pts[pts.Length - 1];
+            // Red when the projection reaches zero before the reset does: that is the one state
+            // this panel exists to surface.
+            Color projColor = projected <= 0.0 ? Energy(DesignTokens.Colors.DangerStrong) : accent;
+            using (Pen dash = new Pen(DesignTokens.WithAlpha(projColor, 170), Math.Max(1.0f, S(1.2f))))
+            {
+                dash.DashStyle = DashStyle.Dash;
+                g.DrawLine(dash, last.X, last.Y, rect.Right - S(2), projY);
+            }
+        }
+
+        using (Pen resetLine = new Pen(DesignTokens.WithAlpha(Energy(DesignTokens.Colors.TextMuted), 120), 1.0f))
+        {
+            resetLine.DashStyle = DashStyle.Dot;
+            g.DrawLine(resetLine, rect.Right - S(2), rect.Y, rect.Right - S(2), rect.Bottom);
+        }
+
+        PointF endPoint = pts[pts.Length - 1];
+        float dot = Math.Max(2.0f, S(2.6f));
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(accent, 255)))
+        {
+            g.FillEllipse(brush, endPoint.X - dot, endPoint.Y - dot, dot * 2.0f, dot * 2.0f);
+        }
+    }
+
+    // ── Guard ────────────────────────────────────────────────────────────
+    // Four independent states, no series. The ground is four full-width bands — armed ones tinted
+    // with their own accent and given a bright leading edge, idle ones nearly empty — so "what is
+    // being held open" is scannable down the left side without reading any text.
+    private void DrawGuard(Graphics g, RectangleF content, Color accent)
+    {
+        List<MetricTileGuardEntry> guards = this.feed.Guards ?? new List<MetricTileGuardEntry>();
+        if (guards.Count == 0)
+        {
+            DrawFloatingHeader(g, content, accent, "守护", "--", null, "守护状态不可用");
+            return;
+        }
+
+        float rowH = content.Height / guards.Count;
+        for (int i = 0; i < guards.Count; i++)
+        {
+            MetricTileGuardEntry entry = guards[i];
+            RectangleF band = new RectangleF(content.X, content.Y + i * rowH, content.Width, rowH - S(2));
+            Color tint = Energy(entry.Accent);
+            using (GraphicsPath path = RoundedRectangle(band, Math.Max(1.0f, S(3))))
+            using (SolidBrush brush = new SolidBrush(entry.Active
+                ? DesignTokens.WithAlpha(tint, 46)
+                : DesignTokens.White(12)))
+            {
+                g.FillPath(brush, path);
+            }
+
+            if (entry.Active)
+            {
+                using (SolidBrush edge = new SolidBrush(DesignTokens.WithAlpha(tint, 235)))
+                {
+                    g.FillRectangle(edge, band.X, band.Y, S(3), band.Height);
+                }
+            }
+
+            float textY = band.Y + (band.Height - S(SubSize)) / 2.0f;
+            DrawText(g, entry.Label, band.X + S(10), textY, S(SubSize),
+                Energy(entry.Active ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.TextMuted), FontStyle.Bold);
+            DrawText(g, entry.Description, band.X + S(92), textY + S(1), S(SubSize) * 0.86f,
+                Energy(DesignTokens.Colors.GlyphMuted), FontStyle.Regular);
+
+            using (Font font = new Font("Segoe UI", S(SubSize) * 0.94f, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (SolidBrush brush = new SolidBrush(Energy(entry.Active ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted)))
+            using (StringFormat fmt = new StringFormat(StringFormatFlags.NoWrap))
+            {
+                fmt.Alignment = StringAlignment.Far;
+                g.DrawString(entry.Detail, font, brush, new RectangleF(band.X, textY, band.Width - S(10), band.Height), fmt);
+            }
+        }
+    }
+
+    private static double PeakOf(List<double> history)
+    {
+        if (history == null || history.Count == 0)
+        {
+            return 0.0;
+        }
+
+        double peak = 0.0;
+        for (int i = 0; i < history.Count; i++)
+        {
+            if (history[i] > peak)
+            {
+                peak = history[i];
+            }
+        }
+
+        return peak;
+    }
+
+    private static string FormatRate(double bytesPerSecond)
+    {
+        return NetworkRateFormatter.Format(bytesPerSecond);
+    }
+
+    internal void PrepareForRenderSample(MetricTileId id, MetricTileFeed sampleFeed)
+    {
+        this.metricId = id;
+        this.feed = sampleFeed ?? new MetricTileFeed();
+    }
+
+    internal static void RunSelfTest()
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.Normalize();
+        using (MetricTileExpandForm panel = new MetricTileExpandForm(settings))
+        {
+            // The migrated compact panel preserves the user's prior expanded-window size.
+            Size desired = panel.GetDesiredSize();
+            if (desired.Width != settings.MetricTileExpandWidth || desired.Height != settings.MetricTileExpandHeight)
+            {
+                throw new InvalidOperationException(
+                    "Compact expand panel must match its retained size (" +
+                    settings.MetricTileExpandWidth + "x" + settings.MetricTileExpandHeight + "); got " +
+                    desired.Width + "x" + desired.Height + ".");
+            }
+
+            // The panel opens to the LEFT of the column and must stay inside the work area even when
+            // the hovered tile sits at the very bottom of the screen.
+            Rectangle workArea = settings.GetWorkAreaForModule(WidgetSettings.ModuleMain);
+            Rectangle lowTile = new Rectangle(workArea.Right - 60, workArea.Bottom - 40, 60, 60);
+            panel.ShowForTileGeometryForTest(lowTile, workArea);
+            if (panel.Bottom > workArea.Bottom || panel.Top < workArea.Top)
+            {
+                throw new InvalidOperationException("Expand panel must slide up to stay inside the work area.");
+            }
+
+            if (panel.Right > lowTile.Left)
+            {
+                throw new InvalidOperationException("Expand panel must open to the left of the hovered tile.");
+            }
+        }
+
+        WidgetSettings large = WidgetSettings.CreateDefaults();
+        large.MainWidgetTileLargeModeEnabled = true;
+        large.Normalize();
+        using (MetricTileExpandForm panel = new MetricTileExpandForm(large))
+        {
+            Size desired = panel.GetDesiredSize();
+            if (desired.Width != large.MetricTileExpandWidth * 2 || desired.Height != large.MetricTileExpandHeight * 2)
+            {
+                throw new InvalidOperationException("Large mode must double the expanded-panel size.");
+            }
+        }
+
+        // Hidden mode: the panel keeps full brightness (no low-energy palette, no hover fade) but the
+        // burn-in bitmap inversion DOES run, so its coloured pixels invert while the widget is faded.
+        WidgetSettings hidden = WidgetSettings.CreateDefaults();
+        hidden.ForceHoverOpacityActive = true;
+        hidden.ManualHoverOpacityActive = true;
+        hidden.HoverOpacityEnabled = true;
+        hidden.BurnInHiddenModeColorProtectionEnabled = true;
+        hidden.Normalize();
+        using (MetricTileExpandForm panel = new MetricTileExpandForm(hidden))
+        {
+            panel.SetForceHoverOpacityActive(true);
+            if (panel.IsLowEnergyPaletteActiveForTest())
+            {
+                throw new InvalidOperationException("Expand panel must not switch to the low-energy hidden palette.");
+            }
+
+            if (panel.ApplyHoverAlphaForTest(255) != 255 || panel.ApplyHoverAlphaForTest(180) != 180)
+            {
+                throw new InvalidOperationException("Expand panel must not fade under hidden mode.");
+            }
+
+            if (!panel.IsLayeredBurnInColorProtectionActiveForTest())
+            {
+                throw new InvalidOperationException("Expand panel must run the bitmap inversion pass while faded in hidden mode.");
+            }
+        }
+
+        // With the color-protection setting off, hidden mode must not invert.
+        WidgetSettings hiddenNoProtection = WidgetSettings.CreateDefaults();
+        hiddenNoProtection.ForceHoverOpacityActive = true;
+        hiddenNoProtection.ManualHoverOpacityActive = true;
+        hiddenNoProtection.HoverOpacityEnabled = true;
+        hiddenNoProtection.BurnInHiddenModeColorProtectionEnabled = false;
+        hiddenNoProtection.Normalize();
+        using (MetricTileExpandForm panel = new MetricTileExpandForm(hiddenNoProtection))
+        {
+            panel.SetForceHoverOpacityActive(true);
+            if (panel.IsLayeredBurnInColorProtectionActiveForTest())
+            {
+                throw new InvalidOperationException("Expand panel must not invert when color protection is disabled.");
+            }
+        }
+
+        // Not faded: no inversion, even with the setting on.
+        WidgetSettings visible = WidgetSettings.CreateDefaults();
+        visible.BurnInHiddenModeColorProtectionEnabled = true;
+        visible.Normalize();
+        using (MetricTileExpandForm panel = new MetricTileExpandForm(visible))
+        {
+            if (panel.IsLayeredBurnInColorProtectionActiveForTest())
+            {
+                throw new InvalidOperationException("Expand panel must not invert while it is fully visible.");
+            }
+        }
+
+        Console.WriteLine("Metric tile expand: PASS Radar-module size, placement, large mode, hidden-mode inversion");
+    }
+
+    internal bool IsLowEnergyPaletteActiveForTest()
+    {
+        return IsLowEnergyPaletteActive();
+    }
+
+    internal int ApplyHoverAlphaForTest(int alpha)
+    {
+        return ApplyHoverAlpha(alpha);
+    }
+
+    internal bool IsLayeredBurnInColorProtectionActiveForTest()
+    {
+        return IsLayeredBurnInColorProtectionActive();
+    }
+
+    // Geometry-only half of ShowForTile, so the self test can assert placement without creating a
+    // window handle or touching the layered surface.
+    internal void ShowForTileGeometryForTest(Rectangle anchorTile, Rectangle workArea)
+    {
+        ApplyPanelSizeAndScale();
+        int left = anchorTile.Left - this.Width - S(GapToColumnDesignUnits);
+        left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
+        int top = anchorTile.Top;
+        top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
+        this.Location = new Point(left, top);
+    }
+}

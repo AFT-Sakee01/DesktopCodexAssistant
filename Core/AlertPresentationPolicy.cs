@@ -5,8 +5,7 @@ internal enum AlertPresentationCategory
     Quota,
     ResetProtection,
     ServiceHealth,
-    CodexTask,
-    DeepSeekBalance
+    CodexTask
 }
 
 internal static class AlertPresentationPolicy
@@ -31,8 +30,6 @@ internal static class AlertPresentationPolicy
                 return settings.AlertServiceHealthEnabled;
             case AlertPresentationCategory.CodexTask:
                 return settings.AlertCodexTaskEnabled;
-            case AlertPresentationCategory.DeepSeekBalance:
-                return settings.AlertDeepSeekBalanceEnabled;
             default:
                 return false;
         }
@@ -64,7 +61,7 @@ internal static class AlertPresentationPolicy
         Assert(!ShouldPresent(settings, AlertPresentationCategory.Quota, new DateTime(2026, 7, 17, 23, 30, 0)), "quiet hours should suppress enabled categories");
         Assert(ShouldPresent(settings, AlertPresentationCategory.Quota, daytime), "daytime should restore enabled categories without replay state");
 
-        Console.WriteLine("Alert presentation policy: PASS five categories + quiet-hours AND");
+        Console.WriteLine("Alert presentation policy: PASS four categories + quiet-hours AND");
     }
 
     private static void Assert(bool condition, string message)

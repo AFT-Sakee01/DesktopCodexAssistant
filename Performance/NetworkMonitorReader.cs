@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -20,6 +21,7 @@ internal sealed class NetworkMonitorReader : IDisposable
     private const int PingCount = 4;
     private const int PingTimeoutMs = 1000;
     private const int HttpTimeoutMs = 4000;
+    private const int CaptivePortalBodyLimitBytes = 4096;
     private const int DegradedPacketLossPercent = 15;
     private const double DegradedLatencyMs = 800.0;
     private const double DegradedJitterMs = 250.0;
@@ -178,6 +180,8 @@ internal sealed class NetworkMonitorReader : IDisposable
         string localNetworkDegradedReason;
         PingRollingSnapshot rollingForGfwGate;
         bool rollingLossConfirmedForGfwGate;
+        long probeNetworkGeneration;
+        string probeInterfaceId;
         lock (this.sync)
         {
             connected = this.snapshot.Connected;
@@ -192,6 +196,8 @@ internal sealed class NetworkMonitorReader : IDisposable
             localNetworkDegradedReason = this.snapshot.LocalNetworkDegradedReason;
             rollingForGfwGate = this.snapshot.PingRolling == null ? null : this.snapshot.PingRolling.Clone();
             rollingLossConfirmedForGfwGate = this.rollingLossConfirmed;
+            probeNetworkGeneration = this.networkGeneration;
+            probeInterfaceId = this.snapshot.InterfaceId;
         }
 
         int connectivityIntervalMs = WidgetSettings.GetNetworkConnectivityIntervalMs(mode, accessState);
@@ -229,8 +235,20 @@ internal sealed class NetworkMonitorReader : IDisposable
             rollingForGfwGate,
             rollingLossConfirmedForGfwGate,
             out gfwLocalNetworkGateReason);
-        GfwProbeSnapshot gfwProbe = this.gfwProbeReader.GetSnapshot(settings, accessState, gfwLocalNetworkGate, gfwLocalNetworkGateReason);
-        gfwProbe.CloudEndpoints = this.cloudEndpointProbeReader.GetSnapshot(settings, accessState, localNetworkDegraded, localNetworkDegradedReason);
+        GfwProbeSnapshot gfwProbe = this.gfwProbeReader.GetSnapshot(
+            settings,
+            accessState,
+            gfwLocalNetworkGate,
+            gfwLocalNetworkGateReason,
+            probeNetworkGeneration,
+            probeInterfaceId);
+        gfwProbe.CloudEndpoints = this.cloudEndpointProbeReader.GetSnapshot(
+            settings,
+            accessState,
+            localNetworkDegraded,
+            localNetworkDegradedReason,
+            probeNetworkGeneration,
+            probeInterfaceId);
         bool insideWall = IsExplicitGfwBlock(gfwProbe, accessState);
         AiRequestProtection.UpdateGfwSignal(
             insideWall,
@@ -323,13 +341,22 @@ internal sealed class NetworkMonitorReader : IDisposable
     {
         bool connected;
         bool samplingActive;
+        long generation;
+        string interfaceId;
         lock (this.sync)
         {
             connected = this.snapshot.Connected;
             samplingActive = this.pathPingSamplingActive;
+            generation = this.networkGeneration;
+            interfaceId = this.snapshot.InterfaceId;
         }
 
-        FixedPingSnapshot fixedPing = this.fixedPingProbeReader.Poll(settings, samplingActive, connected);
+        FixedPingSnapshot fixedPing = this.fixedPingProbeReader.Poll(
+            settings,
+            generation,
+            interfaceId,
+            samplingActive,
+            connected);
         lock (this.sync)
         {
             this.snapshot.FixedPing = fixedPing;
@@ -2096,10 +2123,11 @@ internal sealed class NetworkMonitorReader : IDisposable
 
     private static byte[] SendDnsTcp(IPAddress server, byte[] query, int timeoutMs)
     {
+        DateTime deadlineUtc = DateTime.UtcNow.AddMilliseconds(Math.Max(1, timeoutMs));
         using (TcpClient client = new TcpClient(server.AddressFamily))
         {
             IAsyncResult connect = client.BeginConnect(server, 53, null, null);
-            if (!connect.AsyncWaitHandle.WaitOne(timeoutMs))
+            if (!connect.AsyncWaitHandle.WaitOne(GetRemainingTimeoutMs(deadlineUtc)))
             {
                 throw new TimeoutException("DNS TCP connect timeout");
             }
@@ -2107,30 +2135,62 @@ internal sealed class NetworkMonitorReader : IDisposable
             client.EndConnect(connect);
             using (NetworkStream stream = client.GetStream())
             {
-                stream.ReadTimeout = timeoutMs;
-                stream.WriteTimeout = timeoutMs;
                 byte[] length = new byte[] { (byte)(query.Length >> 8), (byte)(query.Length & 0xFF) };
-                stream.Write(length, 0, length.Length);
-                stream.Write(query, 0, query.Length);
-                byte[] header = ReadExact(stream, 2);
+                WriteWithDeadline(stream, length, 0, length.Length, deadlineUtc);
+                WriteWithDeadline(stream, query, 0, query.Length, deadlineUtc);
+                byte[] header = ReadExactWithDeadline(stream, 2, deadlineUtc);
                 int responseLength = (header[0] << 8) | header[1];
                 if (responseLength <= 0 || responseLength > 4096)
                 {
                     throw new InvalidOperationException("Invalid DNS TCP response length");
                 }
 
-                return ReadExact(stream, responseLength);
+                return ReadExactWithDeadline(stream, responseLength, deadlineUtc);
             }
         }
     }
 
-    private static byte[] ReadExact(NetworkStream stream, int count)
+    private static void WriteWithDeadline(
+        Stream stream,
+        byte[] buffer,
+        int offset,
+        int count,
+        DateTime deadlineUtc)
     {
+        int remainingMs = GetRemainingTimeoutMs(deadlineUtc);
+        if (stream.CanTimeout)
+        {
+            stream.WriteTimeout = remainingMs;
+        }
+
+        stream.Write(buffer, offset, count);
+        GetRemainingTimeoutMs(deadlineUtc);
+    }
+
+    private static byte[] ReadExactWithDeadline(Stream stream, int count, DateTime deadlineUtc)
+    {
+        if (stream == null)
+        {
+            throw new ArgumentNullException("stream");
+        }
+
+        if (count < 0)
+        {
+            throw new ArgumentOutOfRangeException("count");
+        }
+
         byte[] buffer = new byte[count];
         int offset = 0;
         while (offset < count)
         {
+            int remainingMs = GetRemainingTimeoutMs(deadlineUtc);
+            if (stream.CanTimeout)
+            {
+                stream.ReadTimeout = remainingMs;
+            }
+
             int read = stream.Read(buffer, offset, count - offset);
+            GetRemainingTimeoutMs(deadlineUtc);
             if (read <= 0)
             {
                 throw new InvalidOperationException("Unexpected DNS TCP EOF");
@@ -2140,6 +2200,89 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
 
         return buffer;
+    }
+
+    private static string ReadBoundedTextWithDeadline(
+        Stream stream,
+        Encoding encoding,
+        int maxBytes,
+        DateTime deadlineUtc,
+        out bool exceeded)
+    {
+        if (stream == null)
+        {
+            throw new ArgumentNullException("stream");
+        }
+
+        if (maxBytes < 0)
+        {
+            throw new ArgumentOutOfRangeException("maxBytes");
+        }
+
+        encoding = encoding ?? Encoding.UTF8;
+        exceeded = false;
+        byte[] chunk = new byte[Math.Max(1, Math.Min(1024, maxBytes + 1))];
+        using (MemoryStream output = new MemoryStream(Math.Max(0, maxBytes)))
+        {
+            while (true)
+            {
+                int remainingMs = GetRemainingTimeoutMs(deadlineUtc);
+                if (stream.CanTimeout)
+                {
+                    stream.ReadTimeout = remainingMs;
+                }
+
+                int remainingCapacityWithSentinel = Math.Max(1, maxBytes + 1 - (int)output.Length);
+                int requested = Math.Min(chunk.Length, remainingCapacityWithSentinel);
+                int read = stream.Read(chunk, 0, requested);
+                GetRemainingTimeoutMs(deadlineUtc);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                int writable = Math.Min(read, Math.Max(0, maxBytes - (int)output.Length));
+                if (writable > 0)
+                {
+                    output.Write(chunk, 0, writable);
+                }
+
+                if (read > writable || output.Length >= maxBytes)
+                {
+                    if (read > writable)
+                    {
+                        exceeded = true;
+                        break;
+                    }
+
+                    // Read one sentinel byte so an exactly-at-limit response is not mistaken for
+                    // an oversized one.
+                    remainingMs = GetRemainingTimeoutMs(deadlineUtc);
+                    if (stream.CanTimeout)
+                    {
+                        stream.ReadTimeout = remainingMs;
+                    }
+
+                    int sentinel = stream.ReadByte();
+                    GetRemainingTimeoutMs(deadlineUtc);
+                    exceeded = sentinel >= 0;
+                    break;
+                }
+            }
+
+            return encoding.GetString(output.ToArray());
+        }
+    }
+
+    private static int GetRemainingTimeoutMs(DateTime deadlineUtc)
+    {
+        double remaining = (deadlineUtc - DateTime.UtcNow).TotalMilliseconds;
+        if (remaining <= 0.0)
+        {
+            throw new TimeoutException("Network read deadline exceeded");
+        }
+
+        return Math.Max(1, (int)Math.Min(int.MaxValue, Math.Ceiling(remaining)));
     }
 
     private static byte[] BuildDnsQuery(ushort id, string name, ushort queryType)
@@ -2727,12 +2870,17 @@ internal sealed class NetworkMonitorReader : IDisposable
         request.Timeout = HttpTimeoutMs;
         request.ReadWriteTimeout = HttpTimeoutMs;
         request.UserAgent = ProductIdentity.UserAgent;
-        using (WebResponse response = request.GetResponse())
-        using (System.IO.Stream stream = response.GetResponseStream())
-        using (System.IO.StreamReader reader = new System.IO.StreamReader(stream, Encoding.UTF8))
+        BoundedHttpTextResult response = BoundedHttpTextReader.Execute(
+            request,
+            BoundedHttpTextReader.TinyProbeMaxBytes,
+            HttpTimeoutMs,
+            CancellationToken.None);
+        if (!response.Success)
         {
-            return reader.ReadToEnd();
+            throw new InvalidOperationException("Public IP response failed: " + response.ErrorCode);
         }
+
+        return response.Content;
     }
 
     private static bool TryNormalizePublicIpv4Response(string response, out string ipv4)
@@ -2885,15 +3033,37 @@ internal sealed class NetworkMonitorReader : IDisposable
         return string.IsNullOrWhiteSpace(reason) ? "本地网络不稳定" : reason.Trim();
     }
 
+    internal static string BuildCaptivePortalRedirectReason(string location)
+    {
+        const string shortReason = "门户重定向";
+        Uri redirectUri;
+        if (string.IsNullOrWhiteSpace(location) ||
+            !Uri.TryCreate(location.Trim(), UriKind.Absolute, out redirectUri) ||
+            string.IsNullOrWhiteSpace(redirectUri.Host))
+        {
+            return shortReason;
+        }
+
+        string host = redirectUri.Host.Trim();
+        if (host.Length > 48)
+        {
+            host = host.Substring(0, 48);
+        }
+
+        return shortReason + " → " + host;
+    }
+
     private static CaptivePortalResult CheckCaptivePortal()
     {
         CaptivePortalResult result = new CaptivePortalResult();
+        DateTime deadlineUtc = DateTime.UtcNow.AddMilliseconds(HttpTimeoutMs);
         try
         {
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(CaptivePortalTestUrl);
             request.Method = "GET";
-            request.Timeout = HttpTimeoutMs;
-            request.ReadWriteTimeout = HttpTimeoutMs;
+            int remainingMs = GetRemainingTimeoutMs(deadlineUtc);
+            request.Timeout = remainingMs;
+            request.ReadWriteTimeout = remainingMs;
             request.AllowAutoRedirect = false;
             request.UserAgent = ProductIdentity.UserAgent;
             using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
@@ -2903,7 +3073,7 @@ internal sealed class NetworkMonitorReader : IDisposable
                 if (status >= 300 && status < 400)
                 {
                     result.NeedsValidation = true;
-                    result.Reason = string.IsNullOrEmpty(location) ? "门户重定向" : "门户重定向";
+                    result.Reason = BuildCaptivePortalRedirectReason(location);
                     return result;
                 }
 
@@ -2915,10 +3085,22 @@ internal sealed class NetworkMonitorReader : IDisposable
                 }
 
                 string text = string.Empty;
-                using (System.IO.Stream stream = response.GetResponseStream())
-                using (System.IO.StreamReader reader = new System.IO.StreamReader(stream, Encoding.UTF8))
+                bool bodyExceeded;
+                using (Stream stream = response.GetResponseStream())
                 {
-                    text = reader.ReadToEnd();
+                    text = ReadBoundedTextWithDeadline(
+                        stream,
+                        Encoding.UTF8,
+                        CaptivePortalBodyLimitBytes,
+                        deadlineUtc,
+                        out bodyExceeded);
+                }
+
+                if (bodyExceeded)
+                {
+                    result.NeedsValidation = true;
+                    result.Reason = "门户内容替换";
+                    return result;
                 }
 
                 if (status == 200 && string.Equals((text ?? string.Empty).Trim(), CaptivePortalExpectedText, StringComparison.Ordinal))
@@ -3044,6 +3226,66 @@ internal sealed class NetworkMonitorReader : IDisposable
 
     internal static void RunRollingPingSelfTest()
     {
+        byte[] oversizedBody = new byte[CaptivePortalBodyLimitBytes + 1];
+        for (int i = 0; i < oversizedBody.Length; i++)
+        {
+            oversizedBody[i] = (byte)'A';
+        }
+
+        bool bodyExceeded;
+        string boundedBody;
+        using (MemoryStream oversizedStream = new MemoryStream(oversizedBody, false))
+        {
+            boundedBody = ReadBoundedTextWithDeadline(
+                oversizedStream,
+                Encoding.UTF8,
+                CaptivePortalBodyLimitBytes,
+                DateTime.UtcNow.AddSeconds(1),
+                out bodyExceeded);
+        }
+
+        if (!bodyExceeded || Encoding.UTF8.GetByteCount(boundedBody) != CaptivePortalBodyLimitBytes)
+        {
+            throw new InvalidOperationException("Network read self-test: captive portal body limit failed.");
+        }
+
+        Stopwatch slowReadStopwatch = Stopwatch.StartNew();
+        bool slowReadTimedOut = false;
+        try
+        {
+            using (SlowChunkStream slowStream = new SlowChunkStream(new byte[] { 1, 2, 3, 4 }, 50))
+            {
+                ReadExactWithDeadline(slowStream, 4, DateTime.UtcNow.AddMilliseconds(25));
+            }
+        }
+        catch (TimeoutException)
+        {
+            slowReadTimedOut = true;
+        }
+        slowReadStopwatch.Stop();
+        if (!slowReadTimedOut || slowReadStopwatch.ElapsedMilliseconds >= 2000)
+        {
+            throw new InvalidOperationException("Network read self-test: slow chunk stream ignored the absolute deadline.");
+        }
+
+        string redirectReason = BuildCaptivePortalRedirectReason("https://login.example.com/connect");
+        if (!string.Equals(redirectReason, "门户重定向 → login.example.com", StringComparison.Ordinal) ||
+            !string.Equals(BuildCaptivePortalRedirectReason(string.Empty), "门户重定向", StringComparison.Ordinal) ||
+            !string.Equals(BuildCaptivePortalRedirectReason("/relative/login"), "门户重定向", StringComparison.Ordinal) ||
+            !string.Equals(BuildCaptivePortalRedirectReason("not a uri"), "门户重定向", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Captive portal self-test: redirect reason normalization failed.");
+        }
+
+        string longHostReason = BuildCaptivePortalRedirectReason(
+            "https://" + new string('a', 60) + ".example.com/login");
+        const string redirectPrefix = "门户重定向 → ";
+        if (!longHostReason.StartsWith(redirectPrefix, StringComparison.Ordinal) ||
+            longHostReason.Substring(redirectPrefix.Length).Length != 48)
+        {
+            throw new InvalidOperationException("Captive portal self-test: redirect host must be capped at 48 characters.");
+        }
+
         string publicIpv4;
         if (!TryNormalizePublicIpv4Response("203.0.113.10", out publicIpv4) ||
             !string.Equals(publicIpv4, "203.0.113.10", StringComparison.Ordinal))
@@ -3203,6 +3445,60 @@ internal sealed class NetworkMonitorReader : IDisposable
         finally
         {
             targetOwner.Dispose();
+        }
+    }
+
+    private sealed class SlowChunkStream : Stream
+    {
+        private readonly byte[] data;
+        private readonly int delayMs;
+        private int offset;
+
+        public SlowChunkStream(byte[] data, int delayMs)
+        {
+            this.data = data ?? new byte[0];
+            this.delayMs = Math.Max(0, delayMs);
+        }
+
+        public override bool CanRead { get { return true; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return false; } }
+        public override long Length { get { return this.data.Length; } }
+        public override long Position
+        {
+            get { return this.offset; }
+            set { throw new NotSupportedException(); }
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int bufferOffset, int count)
+        {
+            if (this.offset >= this.data.Length || count <= 0)
+            {
+                return 0;
+            }
+
+            Thread.Sleep(this.delayMs);
+            buffer[bufferOffset] = this.data[this.offset++];
+            return 1;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
         }
     }
 

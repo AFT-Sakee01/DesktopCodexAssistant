@@ -2,7 +2,7 @@
 
 The global `C:\Users\GengH\.codex\AGENTS.md` rules apply. This file only records project-specific constraints and overrides; do not duplicate global rules or maintenance history here.
 
-Current version: `1.0.6.03`
+Current version: `2.0.0.0`
 
 ## Project AI
 
@@ -25,12 +25,20 @@ Current version: `1.0.6.03`
 - Do not compile, publish, or validate x64 unless the user explicitly requests x64.
 - Keep the product identity `Desktop Codex Assistant UX3407N/UX3607O`, executable name `DesktopCodexAssistant.exe`, and storage root `%LOCALAPPDATA%\DesktopCodexAssistant`.
 - Dock, Launchpad, top bar, and the Direct2D project are intentionally disabled. Do not restore or depend on them.
+- The canonical visible topology is ten independent right-edge `MetricTileForm` tiles; five left-edge dock tabs/boards (Network, Spec Board, Codex Task, GUARD, Codex IQ); `OperationForm`; and the on-demand settings window.
+- Global layout editing exposes exactly 16 structural items: the ten tiles, the five dock tabs, and Operation. Boards, the settings window, hidden owners, and the hidden host are not editable layout items.
+- `WidgetForm` is a hidden coordination host. `CodexRadarForm` and `PowerThermalForm` are permanent headless data owners started and stopped explicitly; the runtime must not call `Show()` for them.
+- `NetworkMonitorForm` is Dock-only. Runtime Radar and Power/Thermal presentation belongs to the right tiles, and Clean IP presentation belongs to the Network board; do not create additional surfaces for those owners/readers.
+- `ClaudeRadarForm` and `ConnectionCheckForm` are removed; retain only the official `ClaudeCodeUsageReader`/`ClaudeCodeUsageScheduler` quota chain and the Clean IP reader through their current owners.
+- The supported render CLIs are `--render-networkmonitor`, `--render-tilecolumn`, `--render-operation`, and the board renderers. Do not add render entrypoints for hidden hosts or headless owners.
 - Do not describe this branch or its artifacts as a generic Windows hardware monitor.
 
 ## Runtime Invariants
 
-- `WidgetForm` owns coordination for settings, refresh, fullscreen visibility, suspend/resume, display recovery, and child-window lifetime.
-- Layered windows must reuse `NativeMethods.LayeredBitmapSurface`, `UiFontCache`, `DesignTokens`, and `BurnInProtection`; release and recreate rendering resources across display suspend/resume.
+- `WidgetForm` owns coordination for settings, refresh, fullscreen visibility, suspend/resume, display recovery, and visible-surface/headless-owner lifetime while remaining hidden itself.
+- Visible layered surfaces must reuse `NativeMethods.LayeredBitmapSurface`, `UiFontCache`, `DesignTokens`, and `BurnInProtection`; release and recreate rendering resources across display suspend/resume. Headless owners do not allocate presentation buffers or participate in hover, positioning, burn-in, or Z-order work.
+- `CodexRadarForm` keeps Codex public Radar state isolated from the Claude family, which owns only official Claude quota and service-health state; both publish cache-only snapshots. `PowerThermalForm.BuildStripSnapshot()` is also cache-only. Snapshot construction must not start I/O or sampling.
+- `PowerThermalIntegratedEnabled` is compatibility-only and hidden from the settings UI; it must not control visibility, lifetime, or sampling. Main display/work-area settings remain active as the right-tile layout baseline.
 - Background readers publish cloned snapshots. UI code must not mutate reader-owned state or synchronously block on network work.
 - GFW probing and cloud endpoint probing remain independently scheduled; a GFW result must not suppress or recolor cloud probe results.
 - New settings must cover defaults, clone, load, save, normalization, settings UI, migration version, and `--test-settings-bindings`.
@@ -42,6 +50,7 @@ Current version: `1.0.6.03`
 
 - Use the narrowest relevant checks first, then deploy by the default rule below whenever the change affects source code or runtime behavior.
 - Relevant executable checks include `--test`, `--test-logger`, `--test-layout`, `--test-settings-bindings`, and `--test-display-recovery`.
+- Formal builds must use the exact `Build-Sources.json` source set. Before a formal deployment, run `Build-Arm64.ps1 -RequireTrackedSources` from a local commit so untracked source cannot enter the executable.
 - For documentation-only changes, JSONL parsing, path/reference checks, version checks, and `git diff --check` are sufficient.
 - After completed source-code or runtime-affecting changes, build ARM64, back up the existing formal executable, overwrite the formal executable, and restart it by default unless the user explicitly says this turn should not compile, overwrite, deploy, or restart.
 - Never overwrite the formal executable merely to validate documentation or metadata.

@@ -121,7 +121,9 @@ internal static class ClaudeCodeUsageScheduler
 
         try
         {
-            result = ClaudeCodeUsageReader.Read(settings);
+            result = ClaudeCodeUsageReader.RequireCompleteQuotaSnapshot(
+                ClaudeCodeUsageReader.Read(settings),
+                DateTime.UtcNow);
             if (result != null && result.Success && result.Snapshot != null)
             {
                 ClaudeCodeUsageReader.TryWriteQuotaCache(result.Snapshot);
@@ -176,7 +178,7 @@ internal static class ClaudeCodeUsageScheduler
             Success = false,
             RateLimited = false,
             Snapshot = null,
-            State = ClaudeRadarServiceState.Unreachable,
+            State = ClaudeCodeUsageServiceState.Unreachable,
             ErrorCode = "ERROR",
             ErrorMessage = "请求失败"
         };
@@ -231,6 +233,34 @@ internal static class ClaudeCodeUsageScheduler
                 Success = true,
                 ErrorCode = string.Empty
             };
+
+            ClaudeCodeUsageReadResult rejectedPartial = ClaudeCodeUsageReader.RequireCompleteQuotaSnapshot(
+                new ClaudeCodeUsageReadResult
+                {
+                    TokenConfigured = true,
+                    Success = true,
+                    Snapshot = new ClaudeCodeUsageSnapshot
+                    {
+                        FiveHourPercent = 40,
+                        FiveHourPercentKnown = true,
+                        WeeklyPercent = 60,
+                        WeeklyPercentKnown = true,
+                        FiveHourResetKnown = true,
+                        FiveHourResetLocal = DateTime.Now.AddHours(1.0),
+                        WeeklyResetKnown = false,
+                        SourceUpdatedKnown = true,
+                        SourceUpdatedUtc = DateTime.UtcNow
+                    }
+                },
+                DateTime.UtcNow);
+
+            if (rejectedPartial == null ||
+                rejectedPartial.Success ||
+                rejectedPartial.Snapshot != null ||
+                !string.Equals(rejectedPartial.ErrorCode, "QUOTA_INCOMPLETE", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Claude Code usage scheduler partial publication gate self-test failed.");
+            }
 
             if (!ShouldLogCompletion(missingCache) ||
                 ShouldLogCompletion(missingCache) ||

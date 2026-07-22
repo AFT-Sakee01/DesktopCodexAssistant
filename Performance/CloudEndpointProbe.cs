@@ -22,7 +22,6 @@ internal static class CloudEndpointProbe
     private const int MaxConcurrentRequests = 3;
 
     private static readonly object CacheSync = new object();
-    private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
     private static readonly HttpClient Client = CreateHttpClient();
     private static readonly Dictionary<string, CloudEndpointCacheEntry> EndpointCache = new Dictionary<string, CloudEndpointCacheEntry>(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, HttpTextCacheEntry> TextCache = new Dictionary<string, HttpTextCacheEntry>(StringComparer.OrdinalIgnoreCase);
@@ -152,7 +151,7 @@ internal static class CloudEndpointProbe
             throw new InvalidOperationException("Cloud endpoint self-test: Azure global advisory mapping failed.");
         }
 
-        Dictionary<string, object> akamai = Json.DeserializeObject(
+        Dictionary<string, object> akamai = new JavaScriptSerializer().DeserializeObject(
             "{\"status\":{\"indicator\":\"minor\",\"description\":\"Partially Degraded Service\"},\"incidents\":[{\"name\":\"Akamai edge degraded performance\",\"status\":\"investigating\",\"impact\":\"minor\"}],\"components\":[{\"name\":\"Global Edge Network\",\"status\":\"degraded_performance\"}]}") as Dictionary<string, object>;
         CloudEndpointSample akamaiSample = PickStatuspageActiveItem("akamai", akamai, WidgetSettings.CloudStatusRegionJapan);
         if (akamaiSample == null || akamaiSample.Status != CloudEndpointStatus.Abnormal || akamaiSample.AlertReason != "性能下降")
@@ -441,7 +440,9 @@ internal static class CloudEndpointProbe
                 return statusSample;
             }
 
-            Dictionary<string, object> root = Json.DeserializeObject(response.Text) as Dictionary<string, object>;
+            Dictionary<string, object> root = BoundedHttpTextReader
+                .CreateJsonSerializer(BoundedHttpTextReader.PublicJsonMaxBytes)
+                .DeserializeObject(response.Text) as Dictionary<string, object>;
             Dictionary<string, object> status = GetDictionary(root, "status");
             string indicator = GetString(status, "indicator").ToLowerInvariant();
             string description = GetString(status, "description");
@@ -737,14 +738,16 @@ internal static class CloudEndpointProbe
                 return statusSample;
             }
 
-            object[] incidents = ToObjectArray(Json.DeserializeObject(response.Text));
+            object[] incidents = ToObjectArray(BoundedHttpTextReader
+                .CreateJsonSerializer(BoundedHttpTextReader.PublicJsonMaxBytes)
+                .DeserializeObject(response.Text));
             if (incidents == null || incidents.Length == 0)
             {
                 return CloudEndpointSample.CreateNormal(target.Key, ClampLatency(stopwatch.ElapsedMilliseconds), "GoogleHealth", response.FromCache ? "官方无事件 304缓存" : "官方无事件");
             }
 
             CloudEndpointSample worst = null;
-            for (int i = 0; i < incidents.Length; i++)
+            for (int i = 0; i < Math.Min(incidents.Length, 256); i++)
             {
                 Dictionary<string, object> incident = incidents[i] as Dictionary<string, object>;
                 if (incident == null || incident.ContainsKey("end"))
@@ -856,10 +859,22 @@ internal static class CloudEndpointProbe
                     }
                 }
 
-                string text = response.Content == null
-                    ? string.Empty
-                    : await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-                StoreTextCache(target, response, text);
+                BoundedHttpTextResult body = await BoundedHttpTextReader.ReadHttpContentAsync(
+                    response,
+                    BoundedHttpTextReader.PublicJsonMaxBytes,
+                    RequestTimeoutMs,
+                    cancellationToken).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(body.ErrorCode) &&
+                    !string.Equals(body.ErrorCode, "HTTP_STATUS", StringComparison.Ordinal))
+                {
+                    throw new HttpRequestException("Cloud status body rejected: " + body.ErrorCode);
+                }
+
+                string text = body.Content ?? string.Empty;
+                if (body.Success)
+                {
+                    StoreTextCache(target, response, text);
+                }
                 return new HttpTextResult
                 {
                     StatusCode = (int)response.StatusCode,

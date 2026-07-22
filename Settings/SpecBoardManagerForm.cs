@@ -6,6 +6,8 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 // Fully owner-drawn "workbench" manager window (approved proposal A). It deliberately does NOT
@@ -54,6 +56,7 @@ internal sealed class SpecBoardManagerForm : Form
     private readonly List<HitTarget> hitTargets = new List<HitTarget>();
     private readonly List<SpecBoardRow> viewRows = new List<SpecBoardRow>();
     private readonly List<string> selectedIds = new List<string>();
+    private readonly object snapshotLoadSync = new object();
     private readonly Font titleBarFont;
     private readonly Font headingFont;
     private readonly Font bodyFont;
@@ -81,6 +84,11 @@ internal sealed class SpecBoardManagerForm : Form
     private Rectangle closeBounds;
     private Point hitOffset = Point.Empty;
     private Rectangle hitClip = Rectangle.Empty;
+    private CancellationTokenSource snapshotLoadCancellation;
+    private int snapshotLoadGeneration;
+    private int snapshotAppliedGeneration;
+    private int lastSnapshotReaderThreadId;
+    private string snapshotLoadError = string.Empty;
 
     public SpecBoardManagerForm(WidgetSettings settings)
     {
@@ -129,7 +137,15 @@ internal sealed class SpecBoardManagerForm : Form
         Controls.Add(this.confirmBox);
 
         UpdateRegion();
-        LoadSnapshot(null);
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+        if (Volatile.Read(ref this.snapshotLoadGeneration) == 0)
+        {
+            LoadSnapshot(null);
+        }
     }
 
     public void ActivateOrShow()
@@ -176,15 +192,158 @@ internal sealed class SpecBoardManagerForm : Form
 
     private void LoadSnapshot(string reselectId)
     {
-        this.snapshot = SpecBoardReader.Read(this.settings.SpecBoardLedgerPath, true);
-        if (!string.IsNullOrEmpty(reselectId))
+        int generation = Interlocked.Increment(ref this.snapshotLoadGeneration);
+        CancellationTokenSource cancellation = new CancellationTokenSource();
+        CancellationToken token = cancellation.Token;
+        CancellationTokenSource previous;
+        lock (this.snapshotLoadSync)
         {
-            this.selectedIds.Clear();
-            this.selectedIds.Add(reselectId);
+            previous = this.snapshotLoadCancellation;
+            this.snapshotLoadCancellation = cancellation;
+            this.snapshotLoadError = string.Empty;
         }
 
-        BuildView(reselectId);
+        if (previous != null)
+        {
+            try { previous.Cancel(); } catch (ObjectDisposedException) { }
+        }
+
+        // A completed write immediately invalidates the selected rows' UpdatedUtc values. Clear the
+        // interactive view until the background reload publishes a complete snapshot so the user
+        // cannot submit a second mutation against stale conflict tokens.
+        this.selectedIds.Clear();
+        this.viewRows.Clear();
         Invalidate();
+
+        string ledgerPath = this.settings.SpecBoardLedgerPath;
+        Task.Run(delegate
+        {
+            Interlocked.Exchange(ref this.lastSnapshotReaderThreadId, Thread.CurrentThread.ManagedThreadId);
+            return SpecBoardReader.Read(ledgerPath, true, token);
+        }, token).ContinueWith(task =>
+        {
+            if (task.Status != TaskStatus.RanToCompletion ||
+                !ShouldApplySnapshotLoad(generation, Volatile.Read(ref this.snapshotLoadGeneration), token.IsCancellationRequested))
+            {
+                if (task.IsFaulted && task.Exception != null)
+                {
+                    lock (this.snapshotLoadSync)
+                    {
+                        this.snapshotLoadError = task.Exception.GetBaseException().Message;
+                    }
+
+                    Program.LogInfo("SpecBoard manager reload failed: " + task.Exception.GetBaseException().Message);
+                }
+
+                CompleteSnapshotLoad(cancellation);
+                return;
+            }
+
+            try
+            {
+                if (this.IsDisposed || !this.IsHandleCreated)
+                {
+                    CompleteSnapshotLoad(cancellation);
+                    return;
+                }
+
+                this.BeginInvoke((Action)delegate
+                {
+                    if (!this.IsDisposed && ShouldApplySnapshotLoad(
+                        generation,
+                        Volatile.Read(ref this.snapshotLoadGeneration),
+                        token.IsCancellationRequested))
+                    {
+                        this.snapshot = task.Result;
+                        if (!string.IsNullOrEmpty(reselectId))
+                        {
+                            this.selectedIds.Clear();
+                            this.selectedIds.Add(reselectId);
+                        }
+
+                        BuildView(reselectId);
+                        Volatile.Write(ref this.snapshotAppliedGeneration, generation);
+                        Invalidate();
+                    }
+                });
+                CompleteSnapshotLoad(cancellation);
+            }
+            catch (ObjectDisposedException)
+            {
+                CompleteSnapshotLoad(cancellation);
+            }
+            catch (InvalidOperationException)
+            {
+                CompleteSnapshotLoad(cancellation);
+            }
+        }, TaskScheduler.Default);
+    }
+
+    private static bool ShouldApplySnapshotLoad(int resultGeneration, int currentGeneration, bool canceled)
+    {
+        return !canceled && resultGeneration == currentGeneration;
+    }
+
+    private void CompleteSnapshotLoad(CancellationTokenSource cancellation)
+    {
+        lock (this.snapshotLoadSync)
+        {
+            if (object.ReferenceEquals(this.snapshotLoadCancellation, cancellation))
+            {
+                this.snapshotLoadCancellation = null;
+            }
+        }
+
+        cancellation.Dispose();
+    }
+
+    private void CancelSnapshotLoad()
+    {
+        Interlocked.Increment(ref this.snapshotLoadGeneration);
+        CancellationTokenSource cancellation;
+        lock (this.snapshotLoadSync)
+        {
+            cancellation = this.snapshotLoadCancellation;
+            this.snapshotLoadCancellation = null;
+        }
+
+        if (cancellation != null)
+        {
+            try { cancellation.Cancel(); } catch (ObjectDisposedException) { }
+        }
+    }
+
+    private void WaitForSnapshotLoadForTest(int timeoutMilliseconds)
+    {
+        Application.DoEvents();
+        if (Volatile.Read(ref this.snapshotLoadGeneration) == 0 && !this.IsDisposed)
+        {
+            LoadSnapshot(null);
+        }
+
+        int expectedGeneration = Volatile.Read(ref this.snapshotLoadGeneration);
+        Stopwatch elapsed = Stopwatch.StartNew();
+        while (Volatile.Read(ref this.snapshotAppliedGeneration) != expectedGeneration && elapsed.ElapsedMilliseconds < timeoutMilliseconds)
+        {
+            string error;
+            lock (this.snapshotLoadSync)
+            {
+                error = this.snapshotLoadError;
+            }
+
+            if (!string.IsNullOrEmpty(error))
+            {
+                throw new InvalidOperationException("Spec Board manager background load failed: " + error);
+            }
+
+            Application.DoEvents();
+            Thread.Sleep(5);
+        }
+
+        if (Volatile.Read(ref this.snapshotAppliedGeneration) != expectedGeneration)
+        {
+            throw new TimeoutException("Spec Board manager background load timed out.");
+        }
     }
 
     private void BuildView(string reselectId)
@@ -1418,9 +1577,12 @@ internal sealed class SpecBoardManagerForm : Form
     private void OpenSelectedFile()
     {
         SpecBoardRow row = SingleRow();
-        if (row != null && File.Exists(row.AbsolutePath))
+        string target = row == null
+            ? string.Empty
+            : SpecBoardPathPolicy.ResolveOpenTarget(row.ProjectRoot, row.SpecPath);
+        if (!string.IsNullOrEmpty(target))
         {
-            Process.Start(new ProcessStartInfo { FileName = row.AbsolutePath, UseShellExecute = true });
+            Process.Start(new ProcessStartInfo { FileName = target, UseShellExecute = true });
         }
     }
 
@@ -1432,14 +1594,14 @@ internal sealed class SpecBoardManagerForm : Form
             return;
         }
 
-        string path = row.AbsolutePath;
+        string path = SpecBoardPathPolicy.ResolveRevealTarget(row.ProjectRoot, row.SpecPath);
         if (File.Exists(path))
         {
             Process.Start(new ProcessStartInfo { FileName = "explorer.exe", Arguments = "/select,\"" + path + "\"", UseShellExecute = true });
         }
-        else if (Directory.Exists(row.ProjectRoot))
+        else if (Directory.Exists(path))
         {
-            Process.Start(new ProcessStartInfo { FileName = row.ProjectRoot, UseShellExecute = true });
+            Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true });
         }
     }
 
@@ -1449,10 +1611,17 @@ internal sealed class SpecBoardManagerForm : Form
         LoadSnapshot(null);
     }
 
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        CancelSnapshotLoad();
+        base.OnFormClosing(e);
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            CancelSnapshotLoad();
             this.titleBarFont.Dispose();
             this.headingFont.Dispose();
             this.smallFont.Dispose();
@@ -1522,7 +1691,7 @@ internal sealed class SpecBoardManagerForm : Form
             {
                 PositionForCapture(form);
                 form.Show();
-                Application.DoEvents();
+                form.WaitForSnapshotLoadForTest(5000);
                 form.SelectById("Fixture.quota_chain_hardening");
                 form.ToggleDanger();
                 Application.DoEvents();
@@ -1558,7 +1727,7 @@ internal sealed class SpecBoardManagerForm : Form
         {
             PositionForCapture(form);
             form.Show();
-            Application.DoEvents();
+            form.WaitForSnapshotLoadForTest(5000);
             SelectLongest(form, false);
             Application.DoEvents();
             form.Refresh();
@@ -1675,6 +1844,9 @@ internal sealed class SpecBoardManagerForm : Form
 
     internal static void RunSelfTest()
     {
+        // --test-specboard-manager enters through this method, so keep the bounded reader and
+        // cancellation fixtures on that acceptance path rather than relying on --test-layout.
+        SpecBoardReader.RunBoundedReadSelfTest();
         string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-specboard-manager-form-" + Guid.NewGuid().ToString("N"));
         try
         {
@@ -1689,7 +1861,17 @@ internal sealed class SpecBoardManagerForm : Form
                 // off-screen window, and the hit target table only exists after a real paint.
                 PositionForCapture(form);
                 form.Show();
-                Application.DoEvents();
+                int uiThreadId = Thread.CurrentThread.ManagedThreadId;
+                form.WaitForSnapshotLoadForTest(5000);
+                if (form.lastSnapshotReaderThreadId <= 0 || form.lastSnapshotReaderThreadId == uiThreadId ||
+                    !ShouldApplySnapshotLoad(4, 4, false) ||
+                    ShouldApplySnapshotLoad(3, 4, false) ||
+                    ShouldApplySnapshotLoad(4, 4, true))
+                {
+                    throw new InvalidOperationException(
+                        "Spec Board manager background-thread or stale-result guard self-test failed. UI=" +
+                        uiThreadId + ", Reader=" + form.lastSnapshotReaderThreadId + ".");
+                }
                 Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
                 int expectedWidth = Math.Min(form.S(811), Math.Max(form.S(WidgetSettings.MinSpecBoardManagerWidth), workArea.Width - form.S(48)));
                 int expectedHeight = Math.Min(form.S(633), Math.Max(form.S(WidgetSettings.MinSpecBoardManagerHeight), workArea.Height - form.S(48)));
@@ -1711,6 +1893,7 @@ internal sealed class SpecBoardManagerForm : Form
                 }
 
                 form.SetStatusForSelection(SpecBoardStatus.NeedsRevision);
+                form.WaitForSnapshotLoadForTest(5000);
                 SpecBoardRow revision = SpecBoardReader.Read(ledger, true).Rows.First(row => row.Id == "Fixture.quota_chain_hardening");
                 if (revision.Status != SpecBoardStatus.NeedsRevision || revision.UpdatedBy != "User (SpecBoardManager)")
                 {
@@ -1721,6 +1904,7 @@ internal sealed class SpecBoardManagerForm : Form
                 form.Refresh();
                 form.noteBox.Text = "manager form note";
                 form.SaveNote();
+                form.WaitForSnapshotLoadForTest(5000);
                 if (SpecBoardReader.Read(ledger, true).Rows.First(row => row.Id == "Fixture.quota_chain_hardening").Note != "manager form note")
                 {
                     throw new InvalidOperationException("Spec Board manager note path failed.");
@@ -1729,6 +1913,7 @@ internal sealed class SpecBoardManagerForm : Form
                 SpecBoardRow unregistered = form.snapshot.Rows.First(row => row.IsUnregistered);
                 form.SelectById(unregistered.Id);
                 form.RegisterSelected();
+                form.WaitForSnapshotLoadForTest(5000);
                 if (!SpecBoardReader.Read(ledger, true).Rows.Any(row => !row.IsUnregistered && row.SpecPath.EndsWith("Codex-Unregistered-Fixture-SPEC-v1.0.5.15-20260712-090000.md", StringComparison.OrdinalIgnoreCase)))
                 {
                     throw new InvalidOperationException("Spec Board manager registration path failed.");
@@ -1741,6 +1926,7 @@ internal sealed class SpecBoardManagerForm : Form
                 }
 
                 form.SetStatusForSelection(SpecBoardStatus.Done);
+                form.WaitForSnapshotLoadForTest(5000);
                 if (SpecBoardReader.Read(ledger, true).Rows.Where(row => !row.IsUnregistered).Any(row => row.Status != SpecBoardStatus.Done))
                 {
                     throw new InvalidOperationException("Spec Board manager batch status path failed.");

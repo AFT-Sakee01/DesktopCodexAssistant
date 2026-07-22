@@ -2,8 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
 using System.Management;
@@ -29,6 +27,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private const int HotkeyToggleAllWindowsId = 0x51A1;
     private const int HotkeyToggleHoverOpacityId = 0x51A2;
     private const int HotkeyOpenSettingsId = 0x51A3;
+    private const int ChinaEgressWarningCooldownSeconds = 60;
     private readonly PdhSampler sampler;
     private readonly EventWaitHandle stopEvent;
     private readonly bool useDesktopParent;
@@ -54,6 +53,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private Icon notifyIconImage;
     private Form settingsForm;
     private Form aiQuickMenuForm;
+    private ChinaEgressWarningForm chinaEgressWarningForm;
+    private DateTime chinaEgressWarningSuppressedUntilUtc;
+    private bool chinaEgressOutsideConfirmed;
     private WidgetSettings savedSettings;
     private PerfSnapshot snapshot;
     private int tickCount;
@@ -65,16 +67,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool diskAlertIconActive;
     private bool gpuAlertIconActive;
     private bool npuAlertIconActive;
-    private bool desktopAttached;
     private bool hiddenForFullscreen;
     private bool globalLayoutEditActive;
     private bool manualAllWindowsHidden;
     private bool childWindowLifecycleStarted;
     private CodexRadarForm codexRadarForm;
-    private ClaudeRadarForm claudeRadarForm;
     private PowerThermalForm powerThermalForm;
     private NetworkMonitorForm networkMonitorForm;
-    private ConnectionCheckForm connectionCheckForm;
     private OperationForm operationForm;
     private double hoverOpacityProgress;
     private DateTime hoverOpacityLastUtc;
@@ -94,11 +93,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private DateTime lastSampleDiagnosticUtc;
     private FileSystemWatcher settingsWatcher;
     private int settingsReloadRequested = 1;
-    private Point lastLoggedPosition;
-    private Size lastLoggedSize;
-    private bool lastLoggedDesktopAttached;
-    private bool positionLogInitialized;
-    private readonly Dictionary<string, Font> fontCache = new Dictionary<string, Font>(StringComparer.Ordinal);
     private readonly CodexQuotaGoalPlanner codexQuotaGoalPlanner;
     private bool formClosing;
     private IntPtr displayPowerNotificationHandle;
@@ -178,9 +172,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
         this.Opacity = 1.0;
-        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
-        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
-        this.Size = ScaleWindowSize(new Size(this.CurrentSettings.Width, this.CurrentSettings.Height));
+        this.MinimumSize = new Size(1, 1);
+        this.MaximumSize = new Size(1, 1);
+        this.Size = new Size(1, 1);
         ApplicationIcon.ApplyTo(this);
         this.ContextMenuStrip = BuildContextMenu();
         BuildNotifyIcon();
@@ -197,37 +191,34 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        StartChildWindowLifecycle();
+    }
+
+    private void StartChildWindowLifecycle()
+    {
+        // Form.Shown can be queued behind the first message-pump turn. Keep startup idempotent so
+        // bounded cold-start tests can invoke the exact production path without pumping timers.
+        if (this.childWindowLifecycleStarted || this.formClosing)
+        {
+            return;
+        }
+
         Program.LogInfo("Widget shown. Handle=0x" + this.Handle.ToInt64().ToString("X"));
         StartApplicationWindowStateTracking();
         ApplyRuntimeSettings(this.CurrentSettings);
         PositionWidget();
 
-        if (this.useDesktopParent)
-        {
-            AttachToDesktopLayer();
-            PositionWidget();
-        }
-        else
-        {
-            Program.LogInfo("Desktop parent mode disabled; using stable visible desktop mode.");
-        }
+        // The form is now a hidden message-loop, sampling and child-lifecycle host. Attaching its
+        // HWND to the desktop would add WS_VISIBLE/SWP_SHOWWINDOW and resurrect the retired panel.
+        Program.LogInfo("Main widget host remains hidden; desktop-parent presentation is retired.");
 
         this.childWindowLifecycleStarted = true;
         EnsureRadarChildWindows();
         this.powerThermalForm = new PowerThermalForm(this.CurrentSettings);
-        this.powerThermalForm.SetSharedInteractionPolling(true);
-        // Shown unconditionally so the form's timers start, then hidden immediately in integrated
-        // mode; it keeps sampling for the main widget's power strip while off-screen.
-        this.powerThermalForm.Show(this);
-        this.powerThermalForm.ApplyIntegratedVisibility();
+        this.powerThermalForm.StartHeadlessDataOwner();
         this.networkMonitorForm = new NetworkMonitorForm(this.CurrentSettings);
         this.networkMonitorForm.SetSharedInteractionPolling(true);
-        this.networkMonitorForm.Show(this);
-        // Clean IP is already presented in the docked network board. Do not create the old
-        // bottom-right standalone window; the shared reader remains alive and is refreshed by
-        // NetworkMonitorForm, while the null-safe lifecycle paths below preserve rollback safety.
-        this.connectionCheckForm = null;
-        Program.LogInfo("Standalone Clean IP window hidden; network dock owns Clean IP presentation.");
+        this.networkMonitorForm.StartDockedOwner(this);
         this.operationForm = new OperationForm(
             this.CurrentSettings,
             delegate { OpenSettings(); },
@@ -239,7 +230,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             delegate { return PromptToggleAiRequestBlockingFromOperationPanel(); },
             delegate(bool enabled) { return SetAiRequestBlockingFromOperationPanel(enabled); },
             delegate(bool enabled) { return SetCodexQuotaPlanFromOperationPanel(enabled); },
-            delegate(string propertyName, bool enabled) { return SetBooleanSettingFromOperationPanel(propertyName, enabled); });
+            delegate(string propertyName, bool enabled) { return SetBooleanSettingFromOperationPanel(propertyName, enabled); },
+            PersistGuardStateFromOperationPanel);
         this.operationForm.Show(this);
         // Left-dock mutual exclusion: the network panel and the two operation-owned boards live in
         // different forms, so WidgetForm (the coordination owner) ties the two directions together.
@@ -268,6 +260,22 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
             return this.networkMonitorForm.GetGuardOnlineState();
         };
+        // The IQ board consumes the existing Codex Radar cache. Keeping this provider read-only
+        // prevents a fifth dock surface from starting a second refresh cadence or bypassing Radar's
+        // validation/fallback chain.
+        this.operationForm.CodexIqSnapshotProvider = delegate
+        {
+            if (this.codexRadarForm == null || this.codexRadarForm.IsDisposed)
+            {
+                return CodexIqBoardSnapshot.CreateEmpty();
+            }
+
+            return this.codexRadarForm.BuildCodexIqBoardSnapshot();
+        };
+        // ApplyRuntimeSettings runs before childWindowLifecycleStarted so the hidden host can
+        // establish its own HWND safely. Build the canonical tile set only after every data owner
+        // and board provider is connected; otherwise a cold start has no later creation path.
+        ApplyMetricTilePresentation();
         this.timer.Start();
         UpdateSeelenDockPulseTimer();
         UpdateWinDRecoveryWatcher();
@@ -359,57 +367,19 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         EnsureCodexRadarWindow();
-        EnsureClaudeRadarWindow();
     }
 
     private void EnsureCodexRadarWindow()
     {
-        if (!this.CurrentSettings.CodexRadarEnabled)
-        {
-            CloseCodexRadarWindow();
-            return;
-        }
-
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
         {
             return;
         }
 
         this.codexRadarForm = new CodexRadarForm(this.CurrentSettings, ShowWindowsNotification);
-        this.codexRadarForm.SetSharedInteractionPolling(true);
-        this.codexRadarForm.Show(this);
-        this.codexRadarForm.ApplyRuntimeSettings(this.CurrentSettings);
-        if (ShouldHideFormForVisibilityMode(this.codexRadarForm))
-        {
-            this.codexRadarForm.SetHiddenForFullscreen(true);
-        }
+        this.codexRadarForm.StartHeadlessDataOwner();
 
-        Program.LogInfo("Codex Radar window created from enabled setting.");
-    }
-
-    private void EnsureClaudeRadarWindow()
-    {
-        if (!this.CurrentSettings.ClaudeRadarEnabled)
-        {
-            CloseClaudeRadarWindow();
-            return;
-        }
-
-        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
-        {
-            return;
-        }
-
-        this.claudeRadarForm = new ClaudeRadarForm(this.CurrentSettings, ShowWindowsNotification);
-        this.claudeRadarForm.SetSharedInteractionPolling(true);
-        this.claudeRadarForm.Show(this);
-        this.claudeRadarForm.ApplyRuntimeSettings(this.CurrentSettings);
-        if (ShouldHideFormForVisibilityMode(this.claudeRadarForm))
-        {
-            this.claudeRadarForm.SetHiddenForFullscreen(true);
-        }
-
-        Program.LogInfo("Claude Radar window created from enabled setting.");
+        Program.LogInfo("Codex/Claude Radar headless data owner started.");
     }
 
     private void CloseCodexRadarWindow()
@@ -423,27 +393,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.codexRadarForm = null;
         if (!form.IsDisposed)
         {
-            form.Close();
+            form.StopHeadlessDataOwner();
+            form.Dispose();
         }
 
-        Program.LogInfo("Codex Radar window closed from disabled setting.");
-    }
-
-    private void CloseClaudeRadarWindow()
-    {
-        if (this.claudeRadarForm == null)
-        {
-            return;
-        }
-
-        ClaudeRadarForm form = this.claudeRadarForm;
-        this.claudeRadarForm = null;
-        if (!form.IsDisposed)
-        {
-            form.Close();
-        }
-
-        Program.LogInfo("Claude Radar window closed from disabled setting.");
+        Program.LogInfo("Codex/Claude Radar headless data owner stopped.");
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -560,21 +514,19 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.aiQuickMenuForm = null;
         }
 
+        CloseChinaEgressWarningForm();
+
         if (this.codexRadarForm != null)
         {
-            this.codexRadarForm.Close();
+            this.codexRadarForm.StopHeadlessDataOwner();
+            this.codexRadarForm.Dispose();
             this.codexRadarForm = null;
-        }
-
-        if (this.claudeRadarForm != null)
-        {
-            this.claudeRadarForm.Close();
-            this.claudeRadarForm = null;
         }
 
         if (this.powerThermalForm != null)
         {
-            this.powerThermalForm.Close();
+            this.powerThermalForm.StopHeadlessDataOwner();
+            this.powerThermalForm.Dispose();
             this.powerThermalForm = null;
         }
 
@@ -584,17 +536,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.networkMonitorForm = null;
         }
 
-        if (this.connectionCheckForm != null)
-        {
-            this.connectionCheckForm.Close();
-            this.connectionCheckForm = null;
-        }
-
         if (this.operationForm != null)
         {
             this.operationForm.Close();
             this.operationForm = null;
         }
+
+        CloseMetricTileWindows();
 
         if (this.notifyIcon != null)
         {
@@ -610,26 +558,15 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         DisposeRenderBuffer();
-        DisposeFontCache();
         base.OnFormClosed(e);
     }
 
     protected override void OnSizeChanged(EventArgs e)
     {
         base.OnSizeChanged(e);
+        // The root form is a hidden lifetime/data host. Retained surfaces own their own geometry
+        // and rendering, so a host resize must not allocate a layered buffer or window region.
         DisposeRenderBuffer();
-        DisposeFontCache();
-        using (GraphicsPath path = RoundedRectangle(new RectangleF(0, 0, this.Width, this.Height), S(13)))
-        {
-            Region oldRegion = this.Region;
-            this.Region = new Region(path);
-            if (oldRegion != null)
-            {
-                oldRegion.Dispose();
-            }
-        }
-
-        RenderLayeredWindow();
     }
 
     protected override void WndProc(ref Message m)
@@ -847,27 +784,15 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        if (this.useDesktopParent)
-        {
-            DetachFromDesktopLayer("display recovery");
-            AttachToDesktopLayer();
-        }
-
         UpdateVisibilityForMode();
         ApplyClickThroughStyle();
         ApplyDisplayLayoutForCurrentWorkArea();
         PositionWidget();
         ResetDisplayRenderResources();
-        RenderLayeredWindow();
 
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
         {
             this.codexRadarForm.RecoverAfterDisplayResume();
-        }
-
-        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
-        {
-            this.claudeRadarForm.RecoverAfterDisplayResume();
         }
 
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
@@ -880,15 +805,12 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.networkMonitorForm.RecoverAfterDisplayResume();
         }
 
-        if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
-        {
-            this.connectionCheckForm.RecoverAfterDisplayResume();
-        }
-
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
             this.operationForm.RecoverAfterDisplayResume();
         }
+
+        RecoverMetricTilesAfterDisplayResume();
 
         Program.LogInfo(
             "Display recovery pass completed. Reason=" +
@@ -908,11 +830,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.codexRadarForm.PrepareForDisplaySuspend();
         }
 
-        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
-        {
-            this.claudeRadarForm.PrepareForDisplaySuspend();
-        }
-
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
         {
             this.powerThermalForm.PrepareForDisplaySuspend();
@@ -923,10 +840,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.networkMonitorForm.PrepareForDisplaySuspend();
         }
 
-        if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
-        {
-            this.connectionCheckForm.PrepareForDisplaySuspend();
-        }
+        SetMetricTileDisplaySuspended(true);
 
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
@@ -1269,6 +1183,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         {
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:reload_settings");
             ReloadSettingsIfChanged();
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:china_egress_guard");
+            UpdateChinaEgressProtection();
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:refresh_window_state");
             RefreshApplicationWindowState();
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:update_visibility");
@@ -1278,6 +1194,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             {
                 UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:position_burn_in_shift");
                 PositionWidget();
+                RefreshMetricTileBurnInPosition();
             }
 
             if (this.operationForm != null && !this.operationForm.IsDisposed)
@@ -1332,8 +1249,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             AddHistory(this.npuMemoryHistory, this.snapshot.NpuMemoryPercent);
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:update_alerts");
             UpdateAlertIconStates();
-            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:render");
-            RenderLayeredWindow();
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:metric_tiles");
+            PushMetricTileFeed();
 
             DateTime nowUtc = DateTime.UtcNow;
             if (this.lastSampleDiagnosticUtc == DateTime.MinValue ||
@@ -1437,138 +1354,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return Math.Min(this.snapshot.DiskWritePercent, this.snapshot.DiskReadPercent);
     }
 
-    private void AttachToDesktopLayer()
-    {
-        if (this.desktopAttached)
-        {
-            return;
-        }
-
-        IntPtr desktopHost = NativeMethods.FindDesktopHostWindow();
-        if (desktopHost == IntPtr.Zero)
-        {
-            Program.LogInfo("Desktop host window was not found; using normal window parent.");
-            return;
-        }
-
-        NativeMethods.SetParent(this.Handle, desktopHost);
-        int style = NativeMethods.GetWindowLong(this.Handle, NativeMethods.GWL_STYLE);
-        style = (style | NativeMethods.WS_CHILD | NativeMethods.WS_VISIBLE) & ~NativeMethods.WS_POPUP;
-        NativeMethods.SetWindowLong(this.Handle, NativeMethods.GWL_STYLE, style);
-        NativeMethods.SetWindowPos(
-            this.Handle,
-            NativeMethods.HWND_TOP,
-            0,
-            0,
-            0,
-            0,
-            NativeMethods.SWP_NOACTIVATE |
-            NativeMethods.SWP_NOMOVE |
-            NativeMethods.SWP_NOSIZE |
-            NativeMethods.SWP_NOOWNERZORDER |
-            NativeMethods.SWP_FRAMECHANGED |
-            NativeMethods.SWP_SHOWWINDOW);
-        this.desktopAttached = true;
-        Program.LogInfo("Attached to desktop host. Host=0x" + desktopHost.ToInt64().ToString("X"));
-    }
-
-    private void DetachFromDesktopLayer(string reason)
-    {
-        if (!this.IsHandleCreated)
-        {
-            return;
-        }
-
-        NativeMethods.SetParent(this.Handle, IntPtr.Zero);
-        int style = NativeMethods.GetWindowLong(this.Handle, NativeMethods.GWL_STYLE);
-        style = (style | NativeMethods.WS_POPUP | NativeMethods.WS_VISIBLE) & ~NativeMethods.WS_CHILD;
-        NativeMethods.SetWindowLong(this.Handle, NativeMethods.GWL_STYLE, style);
-        NativeMethods.SetWindowPos(
-            this.Handle,
-            NativeMethods.HWND_TOP,
-            0,
-            0,
-            0,
-            0,
-            NativeMethods.SWP_NOACTIVATE |
-            NativeMethods.SWP_NOMOVE |
-            NativeMethods.SWP_NOSIZE |
-            NativeMethods.SWP_FRAMECHANGED |
-            NativeMethods.SWP_SHOWWINDOW);
-
-        if (this.desktopAttached)
-        {
-            Program.LogInfo("Detached from desktop host. Reason=" + reason);
-        }
-
-        this.desktopAttached = false;
-    }
-
     private void PositionWidget()
     {
-        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleMain);
-        Point location = CalculateLocation(workArea);
-        int left = location.X;
-        int top = location.Y;
-        Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
-            new Point(left, top),
-            this.Size,
-            workArea,
-            BurnInProtection.MainWidgetSalt);
-        left = shiftedLocation.X;
-        top = shiftedLocation.Y;
-        this.Location = new Point(left, top);
-        uint flags =
-            NativeMethods.SWP_NOACTIVATE |
-            NativeMethods.SWP_NOOWNERZORDER |
-            NativeMethods.SWP_FRAMECHANGED;
-
-        if (!this.hiddenForFullscreen)
-        {
-            flags |= NativeMethods.SWP_SHOWWINDOW;
-        }
-
-        if (this.CurrentSettings.VisibilityMode == WidgetVisibilityMode.DesktopOnly && !this.useDesktopParent)
-        {
-            flags |= NativeMethods.SWP_NOZORDER;
-        }
-
-        NativeMethods.SetWindowPos(
-            this.Handle,
-            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
-            left,
-            top,
-            this.Width,
-            this.Height,
-            flags);
-
-        if (!this.positionLogInitialized ||
-            this.lastLoggedPosition != this.Location ||
-            this.lastLoggedSize != this.Size ||
-            this.lastLoggedDesktopAttached != this.desktopAttached)
-        {
-            this.positionLogInitialized = true;
-            this.lastLoggedPosition = this.Location;
-            this.lastLoggedSize = this.Size;
-            this.lastLoggedDesktopAttached = this.desktopAttached;
-            Program.LogInfo(string.Format(
-                "Positioned widget at {0},{1},{2},{3}. DesktopAttached={4}",
-                left,
-                top,
-                this.Width,
-                this.Height,
-                this.desktopAttached));
-        }
-    }
-
-    private Point CalculateLocation(Rectangle workArea)
-    {
-        int left = this.CurrentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleMain, workArea, this.CurrentSettings.LeftX);
-        int bottom = this.CurrentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleMain, workArea, this.CurrentSettings.BottomY);
-        int top = bottom - this.Height + 1;
-        left = Math.Max(workArea.Left, Math.Min(left, workArea.Right - this.Width));
-        top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
-        return new Point(left, top);
+        // The root form is a one-pixel hidden HWND used only for message-loop coordination.
     }
 
     internal void PreviewSettings(WidgetSettings settings)
@@ -1589,6 +1377,32 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         ApplyRuntimeSettings(this.savedSettings);
         this.lastSettingsWriteUtc = GetSettingsWriteUtc();
         Program.LogInfo("Settings saved.");
+    }
+
+    private void PersistGuardStateFromOperationPanel(WidgetSettings guardState)
+    {
+        WidgetSettings baseline = this.savedSettings == null
+            ? (this.CurrentSettings == null ? WidgetSettings.CreateDefaults() : this.CurrentSettings.Clone())
+            : this.savedSettings.Clone();
+        SaveSettings(MergeGuardRuntimeFields(baseline, guardState));
+    }
+
+    internal static WidgetSettings MergeGuardRuntimeFields(WidgetSettings committed, WidgetSettings guardState)
+    {
+        WidgetSettings merged = committed == null ? WidgetSettings.CreateDefaults() : committed.Clone();
+        if (guardState == null)
+        {
+            return merged;
+        }
+
+        merged.GuardSleepEnabled = guardState.GuardSleepEnabled;
+        merged.GuardSleepSinceUtcTicks = guardState.GuardSleepSinceUtcTicks;
+        merged.GuardDisplayMinutes = guardState.GuardDisplayMinutes;
+        merged.GuardOfflineThresholdMinutes = guardState.GuardOfflineThresholdMinutes;
+        merged.GuardDisplayUntilUtcTicks = guardState.GuardDisplayUntilUtcTicks;
+        merged.GuardBatteryCarePauseUntilUtcTicks = guardState.GuardBatteryCarePauseUntilUtcTicks;
+        merged.Normalize();
+        return merged;
     }
 
     internal bool TryEditGlobalLayout(WidgetSettings settings, out WidgetSettings editedSettings)
@@ -1673,11 +1487,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.codexRadarForm.ForceRefresh();
         }
 
-        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
-        {
-            this.claudeRadarForm.ForceRefresh("操作面板刷新");
-        }
-
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
         {
             this.powerThermalForm.ForceRefresh();
@@ -1688,10 +1497,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.networkMonitorForm.ForceRefresh();
         }
 
-        if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
-        {
-            this.connectionCheckForm.ForceRefresh();
-        }
     }
 
     internal bool ToggleForcedHoverOpacity()
@@ -2127,6 +1932,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private void ApplyRuntimeSettings(WidgetSettings settings)
     {
         UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:start");
+        bool chinaGuardWasEnabled = this.CurrentSettings != null &&
+            this.CurrentSettings.AiChinaEgressGuardEnabled;
         WidgetSettings nextSettings = settings.Clone();
         nextSettings.Normalize();
         if (!this.applyingAutomaticHoverOpacityState)
@@ -2152,17 +1959,22 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         nextSettings.ForceHoverOpacityActive = IsCombinedHoverOpacityActive();
         nextSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.CurrentSettings = nextSettings;
+        if (chinaGuardWasEnabled && !this.CurrentSettings.AiChinaEgressGuardEnabled)
+        {
+            this.chinaEgressOutsideConfirmed = false;
+            RequestSensitiveAiRefreshAfterEgressAuthorization("大陆出口保护已关闭");
+        }
         ApplyGlobalHotkeyConfiguration();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
-        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinWidth, WidgetSettings.MinHeight));
-        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxWidth, WidgetSettings.MaxHeight));
+        this.MinimumSize = new Size(1, 1);
+        this.MaximumSize = new Size(1, 1);
         Program.ApplyPerformanceMode(this.CurrentSettings.PerformanceMode);
         UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:timers");
         ApplyPerformanceTimerIntervals();
         UpdateSeelenDockPulseTimer();
         UpdateWinDRecoveryWatcher();
 
-        Size desiredSize = ScaleWindowSize(new Size(this.CurrentSettings.Width, this.CurrentSettings.Height));
+        Size desiredSize = new Size(1, 1);
         if (this.Size != desiredSize)
         {
             this.Size = desiredSize;
@@ -2203,18 +2015,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.codexRadarForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
-        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
-        {
-            UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_claude_radar");
-            this.claudeRadarForm.ApplyRuntimeSettings(this.CurrentSettings);
-        }
-
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
         {
             UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_power_thermal");
             this.powerThermalForm.ApplyRuntimeSettings(this.CurrentSettings);
-            // Standalone vs integrated: hide or restore the window after its own settings apply.
-            this.powerThermalForm.ApplyIntegratedVisibility();
         }
 
         if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
@@ -2223,20 +2027,22 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.networkMonitorForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
-        if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
-        {
-            UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_connection");
-            this.connectionCheckForm.ApplyRuntimeSettings(this.CurrentSettings);
-        }
-
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
             UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:child_operation");
             this.operationForm.ApplyRuntimeSettings(this.CurrentSettings);
         }
 
-        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:render");
-        RenderLayeredWindow();
+        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:metric_tiles");
+        ApplyMetricTilePresentation();
+        if (this.globalLayoutEditActive)
+        {
+            // Child ApplyRuntimeSettings calls occur after the first visibility pass and some child
+            // forms intentionally know nothing about their replacement presentation. Reapply the
+            // structural plan here so a just-switched classic Radar/network board cannot flash back
+            // above the editor mask.
+            ApplyGlobalLayoutEditStructuralVisibility();
+        }
         UiHangWatchdog.MarkUiHeartbeat("apply_runtime_settings:complete");
     }
 
@@ -2252,6 +2058,151 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         if (this.hoverTimer.Interval != hoverInterval)
         {
             this.hoverTimer.Interval = hoverInterval;
+        }
+    }
+
+    private void UpdateChinaEgressProtection()
+    {
+        if (this.CurrentSettings == null || !this.CurrentSettings.AiChinaEgressGuardEnabled)
+        {
+            this.chinaEgressOutsideConfirmed = false;
+            ClearChinaEgressWarning("guard disabled");
+            return;
+        }
+
+        CleanIpConnectionSnapshot snapshot = CleanIpConnectionReader.Shared.GetSnapshot(this.CurrentSettings);
+        string country = snapshot == null ? string.Empty : (snapshot.CountryRaw ?? string.Empty).Trim();
+        bool egressKnown = snapshot != null &&
+            snapshot.CheckedAtKnown &&
+            snapshot.Success &&
+            snapshot.EgressIdentityCurrent &&
+            !snapshot.TestMode &&
+            country.Length != 0;
+        bool mainlandChina = egressKnown && AiRequestProtection.IsMainlandChinaEgress(country);
+        DateTime observedUtc = snapshot == null || !snapshot.CheckedAtKnown
+            ? DateTime.MinValue
+            : snapshot.CheckedAtLocal;
+        AiRequestProtection.UpdateEgressSignal(
+            egressKnown,
+            mainlandChina,
+            country,
+            observedUtc);
+
+        bool outsideConfirmed = AiRequestProtection.HasConfirmedOutsideChinaEgress();
+        if (outsideConfirmed && !this.chinaEgressOutsideConfirmed)
+        {
+            RequestSensitiveAiRefreshAfterEgressAuthorization("出口确认境外");
+        }
+
+        this.chinaEgressOutsideConfirmed = outsideConfirmed;
+
+        string reason;
+        if (!AiRequestProtection.ShouldWarnChinaEgress(this.CurrentSettings, out reason))
+        {
+            ClearChinaEgressWarning("mainland signal cleared");
+            return;
+        }
+
+        DateTime nowUtc = DateTime.UtcNow;
+        if (nowUtc < this.chinaEgressWarningSuppressedUntilUtc)
+        {
+            if (this.chinaEgressWarningForm != null &&
+                !this.chinaEgressWarningForm.IsDisposed &&
+                this.chinaEgressWarningForm.Visible)
+            {
+                this.chinaEgressWarningForm.Hide();
+            }
+
+            return;
+        }
+
+        EnsureChinaEgressWarningForm();
+        bool wasVisible = this.chinaEgressWarningForm.Visible;
+        this.chinaEgressWarningForm.ShowReason(reason);
+        if (!wasVisible)
+        {
+            Program.LogInfo("China egress warning shown. Reason=" + reason);
+        }
+    }
+
+    private void EnsureChinaEgressWarningForm()
+    {
+        if (this.chinaEgressWarningForm != null && !this.chinaEgressWarningForm.IsDisposed)
+        {
+            return;
+        }
+
+        ChinaEgressWarningForm warning = new ChinaEgressWarningForm();
+        warning.HideForCooldownRequested += OnChinaEgressWarningHideRequested;
+        warning.FormClosed += OnChinaEgressWarningFormClosed;
+        this.chinaEgressWarningForm = warning;
+    }
+
+    private void RequestSensitiveAiRefreshAfterEgressAuthorization(string trigger)
+    {
+        if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
+        {
+            this.codexRadarForm.RequestSensitiveAiRefreshAfterEgressAuthorization(trigger);
+        }
+    }
+
+    private void OnChinaEgressWarningHideRequested(object sender, EventArgs e)
+    {
+        this.chinaEgressWarningSuppressedUntilUtc =
+            DateTime.UtcNow.AddSeconds(ChinaEgressWarningCooldownSeconds);
+        if (this.chinaEgressWarningForm != null &&
+            !this.chinaEgressWarningForm.IsDisposed)
+        {
+            this.chinaEgressWarningForm.Hide();
+        }
+
+        Program.LogInfo("China egress warning temporarily hidden for 60 seconds.");
+    }
+
+    private void OnChinaEgressWarningFormClosed(object sender, FormClosedEventArgs e)
+    {
+        ChinaEgressWarningForm warning = sender as ChinaEgressWarningForm;
+        if (warning != null)
+        {
+            warning.HideForCooldownRequested -= OnChinaEgressWarningHideRequested;
+            warning.FormClosed -= OnChinaEgressWarningFormClosed;
+        }
+
+        if (object.ReferenceEquals(this.chinaEgressWarningForm, warning))
+        {
+            this.chinaEgressWarningForm = null;
+        }
+    }
+
+    private void ClearChinaEgressWarning(string reason)
+    {
+        this.chinaEgressWarningSuppressedUntilUtc = DateTime.MinValue;
+        if (this.chinaEgressWarningForm == null ||
+            this.chinaEgressWarningForm.IsDisposed ||
+            !this.chinaEgressWarningForm.Visible)
+        {
+            return;
+        }
+
+        this.chinaEgressWarningForm.Hide();
+        Program.LogInfo("China egress warning hidden. Reason=" + reason);
+    }
+
+    private void CloseChinaEgressWarningForm()
+    {
+        ChinaEgressWarningForm warning = this.chinaEgressWarningForm;
+        this.chinaEgressWarningForm = null;
+        this.chinaEgressWarningSuppressedUntilUtc = DateTime.MinValue;
+        if (warning == null)
+        {
+            return;
+        }
+
+        warning.HideForCooldownRequested -= OnChinaEgressWarningHideRequested;
+        warning.FormClosed -= OnChinaEgressWarningFormClosed;
+        if (!warning.IsDisposed)
+        {
+            warning.CloseFromOwner();
         }
     }
 
@@ -2391,36 +2342,21 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:apply_click_through");
             ApplyClickThroughStyle();
             UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:update_animation");
-            bool opacityChanged = UpdateHoverOpacityAnimation();
+            UpdateHoverOpacityAnimation();
             bool hoverTarget = IsHoverOpacityTargetActive();
             bool animationActive =
                 automaticStateChanged ||
                 Math.Abs(this.hoverOpacityProgress - (hoverTarget ? 1.0 : 0.0)) > 0.001;
-            // All passive panels share this UI-thread timer so hover support costs one
-            // message-pump wakeup instead of one wakeup per window.
-            if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
-            {
-                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:codex_radar_shared_tick");
-                animationActive |= this.codexRadarForm.ProcessSharedInteractionTick();
-            }
-
-            if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
-            {
-                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:power_shared_tick");
-                animationActive |= this.powerThermalForm.ProcessSharedInteractionTick();
-            }
-
+            // Visible passive panels share this UI-thread timer. Headless Radar/Power owners are
+            // deliberately excluded from interaction polling.
             if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
             {
                 UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:network_shared_tick");
                 animationActive |= this.networkMonitorForm.ProcessSharedInteractionTick();
             }
 
-            if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
-            {
-                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:connection_shared_tick");
-                animationActive |= this.connectionCheckForm.ProcessSharedInteractionTick();
-            }
+            UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:metric_tile_shared_tick");
+            animationActive |= ProcessMetricTileInteractionTick();
 
             if (this.operationForm != null && !this.operationForm.IsDisposed)
             {
@@ -2436,11 +2372,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 this.hoverTimer.Interval = desiredInterval;
             }
 
-            if (opacityChanged)
-            {
-                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:render_opacity");
-                RenderLayeredWindow(false);
-            }
         }
         finally
         {
@@ -2532,24 +2463,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.operationRadialCoreAutoHideKeepAliveActive = active;
         SetAutoHideKeepAliveActive(active);
 
-        if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
-        {
-            this.codexRadarForm.SetAutoHideKeepAliveActive(active);
-        }
-
-        if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
-        {
-            this.powerThermalForm.SetAutoHideKeepAliveActive(active);
-        }
+        SetMetricTileAutoHideKeepAlive(active);
 
         if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
         {
             this.networkMonitorForm.SetAutoHideKeepAliveActive(active);
-        }
-
-        if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
-        {
-            this.connectionCheckForm.SetAutoHideKeepAliveActive(active);
         }
 
         return true;
@@ -2618,12 +2536,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private bool IsPointInAnyManagedWindowActivationRange(Point cursor)
     {
-        return IsPointInFormActivationRange(this.CurrentSettings, this, cursor) ||
-            IsPointInFormActivationRange(this.CurrentSettings, this.codexRadarForm, cursor) ||
-            IsPointInFormActivationRange(this.CurrentSettings, this.claudeRadarForm, cursor) ||
-            IsPointInFormActivationRange(this.CurrentSettings, this.powerThermalForm, cursor) ||
-            IsPointInFormActivationRange(this.CurrentSettings, this.networkMonitorForm, cursor) ||
-            IsPointInFormActivationRange(this.CurrentSettings, this.connectionCheckForm, cursor) ||
+        return IsPointInFormActivationRange(this.CurrentSettings, this.networkMonitorForm, cursor) ||
             IsPointInFormActivationRange(this.CurrentSettings, this.operationForm, cursor);
     }
 
@@ -2699,7 +2612,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         if (this.hoverOpacityProgress > 0.0)
         {
             this.hoverOpacityProgress = 0.0;
-            RenderLayeredWindow(false);
         }
     }
 
@@ -2804,10 +2716,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         {
             bool hiddenChanged = this.hiddenForFullscreen;
             this.hiddenForFullscreen = false;
-            if (!this.Visible)
-            {
-                this.Show();
-            }
+            ApplyGlobalLayoutEditStructuralVisibility();
 
             if (!this.TopMost)
             {
@@ -2816,7 +2725,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
             if (hiddenChanged)
             {
-                ApplyChildWindowsVisibilityMode();
                 ApplyPerformanceTimerIntervals();
                 UpdateHoverAnimationTimer();
             }
@@ -2825,7 +2733,14 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        bool hideForVisibilityMode = ShouldHideFormForVisibilityMode(this);
+        // hiddenForFullscreen means exactly one thing: the visibility policy says the retained tile
+        // surfaces are not allowed on screen. It still gates the control-tick rate, PDH sampling and
+        // shared interaction timer; the permanently hidden host itself must never set it merely to
+        // remain off screen.
+        // The retired host rectangle must not decide whether ten independently positioned tiles
+        // may sample. Only the explicit global hide pauses the shared runtime; fullscreen/overlap
+        // policy is evaluated per retained tile below.
+        bool hideForVisibilityMode = this.manualAllWindowsHidden && !this.globalLayoutEditActive;
 
         if (hideForVisibilityMode)
         {
@@ -2852,9 +2767,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         bool shownChanged = this.hiddenForFullscreen;
         this.hiddenForFullscreen = false;
-        if (!this.Visible)
+        if (this.Visible)
         {
-            this.Show();
+            this.Hide();
         }
 
         bool shouldBeTopMost = this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
@@ -2870,6 +2785,41 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         ApplyChildWindowsVisibilityMode();
+    }
+
+    private void ApplyGlobalLayoutEditStructuralVisibility()
+    {
+        // Layout editing may reveal retained visible surfaces, never the retired host panel or the
+        // two headless data owners. Their headless lifecycle keeps sampling independent of this
+        // visibility flag, while dock tabs remain live with their board bodies collapsed.
+        if (this.Visible)
+        {
+            this.Hide();
+        }
+
+        if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
+        {
+            this.codexRadarForm.SetHiddenForFullscreen(true);
+        }
+
+        if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
+        {
+            this.powerThermalForm.SetHiddenForFullscreen(true);
+        }
+
+        if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
+        {
+            this.networkMonitorForm.SetHiddenForFullscreen(false);
+            this.networkMonitorForm.HideDockedPanelIfVisible();
+        }
+
+        if (this.operationForm != null && !this.operationForm.IsDisposed)
+        {
+            this.operationForm.SetHiddenForFullscreen(false);
+            this.operationForm.HideLeftDockBoardsForPeerOverlay();
+        }
+
+        ApplyMetricTilesVisibilityMode();
     }
 
     private bool ShouldHideFormForVisibilityMode(Form form)
@@ -2911,19 +2861,15 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     private void ApplyChildWindowsVisibilityMode()
     {
+        // The retained Radar data owner remains alive and hidden; closing it would starve the tiles.
         if (this.codexRadarForm != null && !this.codexRadarForm.IsDisposed)
         {
-            this.codexRadarForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.codexRadarForm));
-        }
-
-        if (this.claudeRadarForm != null && !this.claudeRadarForm.IsDisposed)
-        {
-            this.claudeRadarForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.claudeRadarForm));
+            this.codexRadarForm.SetHiddenForFullscreen(true);
         }
 
         if (this.powerThermalForm != null && !this.powerThermalForm.IsDisposed)
         {
-            this.powerThermalForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.powerThermalForm));
+            this.powerThermalForm.SetHiddenForFullscreen(true);
         }
 
         if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
@@ -2931,15 +2877,12 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.networkMonitorForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.networkMonitorForm));
         }
 
-        if (this.connectionCheckForm != null && !this.connectionCheckForm.IsDisposed)
-        {
-            this.connectionCheckForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.connectionCheckForm));
-        }
-
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
             this.operationForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.operationForm));
         }
+
+        ApplyMetricTilesVisibilityMode();
     }
 
     private void OpenSettings()
@@ -3080,18 +3023,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.operationForm.ClearTransientInteractionState();
     }
 
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        base.OnPaint(e);
-        DrawWidget(e.Graphics);
-    }
-
-    private void DrawWidget(Graphics g)
-    {
-        DrawWidgetBackground(g);
-        DrawWidgetContentLayer(g);
-    }
-
     protected override string LayeredRenderTimingName
     {
         get { return "widget.render"; }
@@ -3099,90 +3030,19 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     protected override void DrawWindowContent(Graphics g)
     {
-        DrawWidget(g);
+        // Intentionally empty: the root form owns runtime orchestration only. The visible main
+        // presentation is the fixed MetricTileForm column.
+    }
+
+    protected override bool CanRenderLayeredWindow()
+    {
+        // Runtime presentation belongs exclusively to MetricTileForm.
+        return false;
     }
 
     protected override bool IsLayeredBurnInColorProtectionActive()
     {
-        return IsBurnInColorProtectionActive();
-    }
-
-    private void ConfigureWidgetGraphics(Graphics g)
-    {
-        BurnInProtection.ConfigureGraphics(g, IsBurnInColorProtectionActive());
-    }
-
-    private void DrawWidgetBackground(Graphics g)
-    {
-        ConfigureWidgetGraphics(g);
-        int backgroundAlpha = GetBackgroundOpacityAlpha();
-
-        using (GraphicsPath shell = RoundedRectangle(new RectangleF(0, 0, this.Width - 1, this.Height - 1), S(DesignTokens.Radius.Widget)))
-        using (SolidBrush background = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, backgroundAlpha)))
-        {
-            g.FillPath(background, shell);
-        }
-    }
-
-    private void DrawWidgetContentLayer(Graphics g)
-    {
-        int contentAlpha = GetContentOpacityAlpha();
-        if (contentAlpha <= 0)
-        {
-            return;
-        }
-
-        if (contentAlpha >= 255)
-        {
-            DrawWidgetContent(g);
-            return;
-        }
-
-        using (Bitmap contentBitmap = new Bitmap(this.Width, this.Height, PixelFormat.Format32bppPArgb))
-        using (Graphics contentGraphics = Graphics.FromImage(contentBitmap))
-        {
-            contentGraphics.Clear(Color.Transparent);
-            DrawWidgetContent(contentGraphics);
-            DrawingUtil.DrawImageWithAlpha(g, contentBitmap, contentAlpha);
-        }
-    }
-
-    // Render-variant dispatch (mirrors CodexRadarForm). Only Classic exists today; add a case and a
-    // sibling partial file (WidgetForm.<Name>.cs) to introduce an alternate main-window layout.
-    private void DrawWidgetContent(Graphics g)
-    {
-        DrawWidgetContentClassic(g);
-    }
-
-    private void DrawWidgetContentClassic(Graphics g)
-    {
-        ConfigureWidgetGraphics(g);
-
-        using (GraphicsPath shell = RoundedRectangle(new RectangleF(0, 0, this.Width - 1, this.Height - 1), S(DesignTokens.Radius.Widget)))
-        using (Pen outline = new Pen(DesignTokens.White(DesignTokens.Alpha.ShellOutline), Math.Max(1, S(1))))
-        {
-            g.DrawPath(outline, shell);
-        }
-
-        // 1.0.5.69: the dense grid replaces the graph-box cells (see Core/WidgetForm.DenseGrid.cs).
-        DrawDenseGrid(g);
-    }
-
-    private bool IsBurnInColorProtectionActive()
-    {
-        return BurnInProtection.ShouldApplyHiddenModeColorProtection(
-            this.CurrentSettings,
-            IsHoverOpacityTargetActive());
-    }
-
-    private int GetBackgroundOpacityAlpha()
-    {
-        return ComputeOpacityAlpha(this.CurrentSettings.BackgroundTransparencyPercent);
-    }
-
-    private int GetContentOpacityAlpha()
-    {
-        return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
+        return false;
     }
 
     protected override int WindowTransparencyOverridePercent
@@ -3215,164 +3075,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         double animated = alpha + (hoverAlpha - alpha) * this.hoverOpacityProgress;
         return Math.Max(0, Math.Min(255, (int)Math.Round(animated)));
-    }
-
-    private void DrawUsageAlertLayer(Graphics g, RectangleF rect, double alertPercent, bool alertIconVisible)
-    {
-        if (alertPercent < 80.0)
-        {
-            return;
-        }
-
-        double progress = Clamp((alertPercent - 80.0) / 20.0, 0.0, 1.0);
-        int redAlpha = (int)Math.Round(179.0 * progress);
-        using (SolidBrush redOverlay = new SolidBrush(DesignTokens.DangerStrong(redAlpha)))
-        {
-            g.FillRectangle(redOverlay, rect);
-        }
-
-        if (!alertIconVisible)
-        {
-            return;
-        }
-
-        float size = Math.Min(rect.Width, rect.Height) * 0.48f;
-        size = Math.Max(14.0f * this.LayerScale, Math.Min(size, 28.0f * this.LayerScale));
-        float centerX = rect.Left + rect.Width * 0.5f;
-        float centerY = rect.Top + rect.Height * 0.52f;
-        PointF[] triangle = new PointF[]
-        {
-            new PointF(centerX, centerY - size * 0.58f),
-            new PointF(centerX - size * 0.58f, centerY + size * 0.48f),
-            new PointF(centerX + size * 0.58f, centerY + size * 0.48f)
-        };
-
-        int warningAlpha = (this.tickCount % 2 == 0) ? 77 : 179;
-        using (Pen triangleBorder = new Pen(DesignTokens.Warning(warningAlpha), Math.Max(1.0f, 3.0f * this.LayerScale)))
-        {
-            triangleBorder.LineJoin = LineJoin.Round;
-            g.DrawPolygon(triangleBorder, triangle);
-        }
-
-        Font markFont = GetCachedFont(Math.Max(9.0f, size * 0.7f), FontStyle.Bold);
-        using (SolidBrush markBrush = new SolidBrush(DesignTokens.Warning(warningAlpha)))
-        using (StringFormat format = new StringFormat())
-        {
-            format.Alignment = StringAlignment.Center;
-            format.LineAlignment = StringAlignment.Center;
-            RectangleF markRect = new RectangleF(centerX - size * 0.5f, centerY - size * 0.36f, size, size * 0.92f);
-            g.DrawString("!", markFont, markBrush, markRect, format);
-        }
-    }
-
-    private Font GetCachedFont(float size, FontStyle style)
-    {
-        float normalizedSize = (float)Math.Round(Math.Max(1.0f, size), 2);
-        string key = normalizedSize.ToString("0.00", CultureInfo.InvariantCulture) + "|" + ((int)style).ToString(CultureInfo.InvariantCulture);
-        Font font;
-        if (!this.fontCache.TryGetValue(key, out font))
-        {
-            font = DesignTokens.CreateUIFont(normalizedSize, style, GraphicsUnit.Pixel);
-            this.fontCache[key] = font;
-        }
-
-        return font;
-    }
-
-    private void DisposeFontCache()
-    {
-        foreach (Font font in this.fontCache.Values)
-        {
-            font.Dispose();
-        }
-
-        this.fontCache.Clear();
-    }
-
-    private void DrawFittedText(Graphics g, string text, Font baseFont, Brush brush, RectangleF rect)
-    {
-        using (StringFormat format = new StringFormat())
-        {
-            format.Alignment = StringAlignment.Near;
-            format.LineAlignment = StringAlignment.Center;
-            format.Trimming = StringTrimming.EllipsisCharacter;
-            format.FormatFlags = StringFormatFlags.NoWrap;
-
-            Font drawFont = baseFont;
-            bool disposeFont = false;
-            float size = baseFont.Size;
-
-            while (size > 7.0f * this.LayerScale && g.MeasureString(text, drawFont).Width > rect.Width)
-            {
-                if (disposeFont)
-                {
-                    drawFont.Dispose();
-                }
-
-                size -= 0.7f * this.LayerScale;
-                drawFont = new Font(baseFont.FontFamily, size, baseFont.Style, GraphicsUnit.Pixel);
-                disposeFont = true;
-            }
-
-            g.DrawString(text, drawFont, brush, rect, format);
-
-            if (disposeFont)
-            {
-                drawFont.Dispose();
-            }
-        }
-    }
-
-    private static string FormatRate(double bytesPerSecond)
-    {
-        return NetworkRateFormatter.Format(bytesPerSecond);
-    }
-
-    private static string FormatWifiRssi(bool known, int rssiDbm)
-    {
-        return known
-            ? string.Format("RSSI {0}dBm", rssiDbm)
-            : "RSSI --dBm";
-    }
-
-    private static string FormatGbPair(double usedGb, double totalGb)
-    {
-        if (totalGb <= 0.0)
-        {
-            return string.Format("{0:0.0}/-- GB", usedGb);
-        }
-
-        return string.Format("{0:0.0}/{1:0.#} GB", usedGb, totalGb);
-    }
-
-    private static string FormatCpuFrequencyPair(double currentGhz, double baseGhz)
-    {
-        if (currentGhz <= 0.0 && baseGhz <= 0.0)
-        {
-            return string.Empty;
-        }
-
-        if (baseGhz <= 0.0)
-        {
-            return string.Format("{0:0.00}GHz/--GHz", currentGhz);
-        }
-
-        return string.Format("{0:0.00}GHz/{1:0.00}GHz", currentGhz, baseGhz);
-    }
-
-    private static double Clamp(double value, double min, double max)
-    {
-        if (value < min)
-        {
-            return min;
-        }
-
-        if (value > max)
-        {
-            return max;
-        }
-
-        return value;
     }
 
 }

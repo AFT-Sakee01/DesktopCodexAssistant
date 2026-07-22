@@ -20,6 +20,49 @@ internal sealed partial class OperationForm
 
     private OperationLauncherTrioForm launcherTrioForm;
 
+    // Companion windows anchor to the live operation core so all current overlays share the same
+    // radial/legacy placement fallback.
+    private RectangleF GetOperationAnchorScreenRect()
+    {
+        RectangleF anchor = RectangleF.Empty;
+        if (IsRadialDialActive())
+        {
+            anchor = ComputeRadialLayout().Core;
+        }
+        else
+        {
+            RectangleF[] rects = GetButtonRects();
+            if (StartButtonIndex >= 0 &&
+                StartButtonIndex < rects.Length &&
+                IsButtonVisible(StartButtonIndex) &&
+                !rects[StartButtonIndex].IsEmpty)
+            {
+                anchor = rects[StartButtonIndex];
+            }
+            else
+            {
+                for (int i = 0; i < rects.Length; i++)
+                {
+                    if (IsButtonVisible(i) && !rects[i].IsEmpty)
+                    {
+                        anchor = rects[i];
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (anchor.IsEmpty)
+        {
+            anchor = new RectangleF(0.0f, 0.0f, GetStartButtonSize(), GetStartButtonSize());
+        }
+
+        Point topLeft = PointToScreen(new Point(
+            (int)Math.Round(anchor.Left),
+            (int)Math.Round(anchor.Top)));
+        return new RectangleF(topLeft.X, topLeft.Y, anchor.Width, anchor.Height);
+    }
+
     private void ToggleLauncherTrioWindow()
     {
         OperationLauncherTrioForm form = EnsureLauncherTrioForm();
@@ -61,6 +104,31 @@ internal sealed partial class OperationForm
         finally
         {
             this.launcherTrioForm = null;
+        }
+    }
+
+    private static void RenderLauncherTrioSample(string outputDir)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.OperationRenderVariant = OperationRenderVariant.RadialDial;
+        settings.Normalize();
+        using (OperationForm form = new OperationForm(
+            settings,
+            delegate { },
+            delegate { },
+            delegate { },
+            delegate(string title, string message, ToolTipIcon icon) { },
+            delegate { return true; },
+            delegate { return true; },
+            delegate { return true; },
+            delegate(bool enabled) { return enabled; },
+            delegate(bool enabled) { return enabled; },
+            delegate(string propertyName, bool enabled) { return enabled; }))
+        using (OperationLauncherTrioForm trio = new OperationLauncherTrioForm(form))
+        {
+            string path = Path.Combine(outputDir, "operation-launcher-trio.png");
+            trio.SaveSample(path, 2.0f);
+            Console.WriteLine("LauncherTrio -> " + path);
         }
     }
 
@@ -289,7 +357,7 @@ internal sealed partial class OperationForm
         private void PositionAtSecondLevel()
         {
             Rectangle workArea = this.owner.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
-            RectangleF anchor = this.owner.GetQuickGridAnchorScreenRect();
+            RectangleF anchor = this.owner.GetOperationAnchorScreenRect();
             float coreCenterX = anchor.Left + anchor.Width / 2.0f;
             float coreCenterY = anchor.Top + anchor.Height / 2.0f;
 

@@ -2,10 +2,8 @@ using System;
 using System.Drawing;
 using System.Windows.Forms;
 
-// Left-edge dock behaviour for the network window: the blue top member of the four-tab queue,
-// alongside Spec, Codex task and GUARD. Docked, the window is hidden until its tab is
-// hovered and it renders the wide DrawContentDocked layout instead of the classic strip; undocked,
-// every code path here is inert and the window behaves exactly as before.
+// Left-edge dock behaviour for the network window: the blue member of the five-tab queue. The
+// window body is hidden until its tab is hovered and always renders DrawContentDocked.
 internal sealed partial class NetworkMonitorForm
 {
     private EdgeDockTabForm dockTab;
@@ -14,30 +12,20 @@ internal sealed partial class NetworkMonitorForm
     private DateTime dockOutsideClickCollapseUtc = DateTime.MinValue;
     private CleanIpConnectionSnapshot cleanIpSnapshot = new CleanIpConnectionSnapshot();
 
-    // Mutual exclusion with the other three left-dock boards. WidgetForm wires this to
+    // Mutual exclusion with the other left-dock boards. WidgetForm wires this to
     // OperationForm.HideLeftDockBoardsForPeerOverlay after both forms exist; expanding this panel
     // collapses its peers, and their PrepareFor*OverlayShow calls collapse this panel in return.
     internal Action CollapseOtherLeftDockOverlays;
 
-    private bool IsLeftDocked
-    {
-        get { return this.CurrentSettings != null && this.CurrentSettings.NetworkMonitorLeftDockEnabled; }
-    }
-
-    // Auto sentinel puts this tab at the top of the queue: Spec sits one slot below the middle
-    // marker and Codex one slot above it, so -3 offsets clear both without moving them.
     private int ResolveDockTabCenterY()
     {
-        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleNetworkMonitor);
-        if (this.CurrentSettings.NetworkMonitorLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY)
-        {
-            return this.CurrentSettings.NetworkMonitorLeftDockTabCenterY;
-        }
-
-        return workArea.Top + workArea.Height / 2 - S(WidgetSettings.LeftDockTabAutoOffsetY * 3);
+        return LeftDockLayout.ResolveTabCenterY(
+            this.CurrentSettings,
+            EdgeDockTabRole.Network,
+            this.LayerScale);
     }
 
-    // Docked size follows the Spec board so the four boards in the queue expand to the same
+    // Docked size follows the Spec board so the boards in the queue expand to the same
     // footprint; the classic min/max clamp is far too short for the docked layout and has to be
     // relaxed here or Size assignment would silently truncate the panel.
     private Size GetDockedSize()
@@ -49,33 +37,20 @@ internal sealed partial class NetworkMonitorForm
 
     private void ApplyDockedSizeBounds()
     {
-        // Docked: no bounds at all, exactly like SpecBoardForm. Size is computed as
+        // No bounds, exactly like SpecBoardForm. Size is computed as
         // SpecBoardWidth/Height * LayerScale, and any Min/MaximumSize derived from
         // ScaleWindowSize would fight that formula: ScaleWindowSize folds in the global window
         // scale factor but not the DPI component of LayerScale, so on a scaled desktop the clamp
         // lands below the intended size and silently shrinks the panel (observed as a 648x400
         // request clamped to 350x400 at 200% DPI with 50% window scale).
-        if (this.IsLeftDocked)
-        {
-            this.MinimumSize = Size.Empty;
-            this.MaximumSize = Size.Empty;
-            return;
-        }
-
-        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MinNetworkMonitorHeight));
-        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorHeight));
+        this.MinimumSize = Size.Empty;
+        this.MaximumSize = Size.Empty;
     }
 
     internal void SyncLeftDockTab()
     {
         if (this.IsDisposed)
         {
-            return;
-        }
-
-        if (!this.IsLeftDocked)
-        {
-            DisposeDockTab();
             return;
         }
 
@@ -86,7 +61,7 @@ internal sealed partial class NetworkMonitorForm
                 GetDockTabAccent(),
                 BurnInProtection.NetworkMonitorDockTabSalt,
                 "NetworkMonitorDockTab",
-                false);
+                EdgeDockTabRole.Network);
             this.dockTab.HoverEntered += OnDockTabHoverEntered;
             this.dockTab.HoverExited += OnDockTabHoverExited;
             this.dockTab.PollTick += OnDockTabPollTick;
@@ -96,7 +71,8 @@ internal sealed partial class NetworkMonitorForm
             this.dockTab.ApplyRuntimeSettings(this.CurrentSettings, GetDockTabAccent());
         }
 
-        this.dockTab.SetDisplaySuspended(this.hiddenForFullscreen);
+        this.dockTab.SetDisplaySuspended(this.displaySuspended);
+        this.dockTab.SetHiddenForFullscreen(this.hiddenForFullscreen);
         this.dockTab.SetBoardExpanded(this.Visible);
         this.dockTab.ShowTab(ResolveDockTabCenterY());
     }
@@ -111,7 +87,8 @@ internal sealed partial class NetworkMonitorForm
 
     private void OnDockTabHoverEntered(object sender, EventArgs e)
     {
-        if (this.IsDisposed || !this.IsLeftDocked || this.Visible || this.hiddenForFullscreen)
+        if (this.IsDisposed || this.Visible ||
+            LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
         {
             return;
         }
@@ -143,7 +120,6 @@ internal sealed partial class NetworkMonitorForm
     private bool UpdateDockOutsideClickDismissal(DateTime nowUtc)
     {
         bool enabled = this.Visible &&
-            this.IsLeftDocked &&
             this.CurrentSettings != null &&
             this.CurrentSettings.LeftDockOutsideClickCollapseEnabled;
         if (!enabled)
@@ -179,7 +155,7 @@ internal sealed partial class NetworkMonitorForm
 
     private bool UpdateDockCollapse(DateTime nowUtc)
     {
-        if (!this.IsLeftDocked || !this.Visible)
+        if (!this.Visible)
         {
             this.dockPointerLeftUtc = DateTime.MinValue;
             return false;
@@ -213,6 +189,11 @@ internal sealed partial class NetworkMonitorForm
 
     private void ShowDockedPanel()
     {
+        if (LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
+        {
+            return;
+        }
+
         Action collapseOthers = this.CollapseOtherLeftDockOverlays;
         if (collapseOthers != null)
         {
@@ -276,7 +257,7 @@ internal sealed partial class NetworkMonitorForm
     {
         base.OnMouseUp(e);
         if (ShouldHandleDockedFooterActionClick(
-            this.IsLeftDocked,
+            true,
             this.Visible,
             e.Button,
             e.Location,
@@ -288,7 +269,7 @@ internal sealed partial class NetworkMonitorForm
         }
 
         if (!ShouldHandleDockedFooterActionClick(
-            this.IsLeftDocked,
+            true,
             this.Visible,
             e.Button,
             e.Location,
@@ -318,7 +299,7 @@ internal sealed partial class NetworkMonitorForm
     // Called by OperationForm's PrepareFor*OverlayShow chain when a sibling overlay expands.
     internal void HideDockedPanelIfVisible()
     {
-        if (!this.IsDisposed && this.IsLeftDocked && this.Visible)
+        if (!this.IsDisposed && this.Visible)
         {
             HideDockedPanel();
         }
@@ -333,13 +314,14 @@ internal sealed partial class NetworkMonitorForm
             return;
         }
 
-        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleNetworkMonitor);
-        int left = workArea.Left + S(EdgeDockTabForm.LogicalWidth);
-        int top = ResolveDockTabCenterY() - this.Height / 2;
-        left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
-        top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
+        Rectangle workArea = LeftDockLayout.ResolveWorkArea(this.CurrentSettings);
+        Point baseLocation = LeftDockLayout.ResolveBoardBaseLocation(
+            this.CurrentSettings,
+            EdgeDockTabRole.Network,
+            this.LayerScale,
+            this.Size);
         this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
-            new Point(left, top),
+            baseLocation,
             this.Size,
             workArea,
             BurnInProtection.NetworkMonitorSalt);
@@ -352,14 +334,12 @@ internal sealed partial class NetworkMonitorForm
             return;
         }
 
+        this.dockTab.SetHiddenForFullscreen(hidden);
         if (hidden)
         {
-            this.dockTab.HideTab();
             HideDockedPanel();
-            return;
         }
-
-        if (this.IsLeftDocked)
+        else
         {
             this.dockTab.ShowTab(ResolveDockTabCenterY());
         }
@@ -392,13 +372,44 @@ internal sealed partial class NetworkMonitorForm
     // The docked network board is the runtime presentation owner for the outbound-IP profile.
     // It consumes the process-wide reader so hiding the retired standalone window cannot create
     // another request stream or change the cleanip.io quota boundary.
-    private void RefreshCleanIpSnapshot()
+    private bool RefreshCleanIpSnapshot()
     {
-        if (!this.IsLeftDocked)
+        CleanIpConnectionSnapshot next = CleanIpConnectionReader.Shared.GetSnapshot(this.CurrentSettings);
+        bool changed = !HasSameCleanIpDisplayData(this.cleanIpSnapshot, next);
+        this.cleanIpSnapshot = next;
+        return changed;
+    }
+
+    private static bool HasSameCleanIpDisplayData(
+        CleanIpConnectionSnapshot left,
+        CleanIpConnectionSnapshot right)
+    {
+        if (ReferenceEquals(left, right))
         {
-            return;
+            return true;
         }
 
-        this.cleanIpSnapshot = CleanIpConnectionReader.Shared.GetSnapshot(this.CurrentSettings);
+        if (left == null || right == null)
+        {
+            return false;
+        }
+
+        // CheckedAt is included because the dock visibly paints HH:mm. Internal trigger and
+        // latency fields are excluded because they do not affect this board's pixels.
+        return left.CheckedAtKnown == right.CheckedAtKnown &&
+            (!left.CheckedAtKnown || left.CheckedAtLocal == right.CheckedAtLocal) &&
+            left.Success == right.Success &&
+            left.Running == right.Running &&
+            left.ScoreKnown == right.ScoreKnown &&
+            left.Score == right.Score &&
+            string.Equals(left.Grade, right.Grade, StringComparison.Ordinal) &&
+            string.Equals(left.NativeLabel, right.NativeLabel, StringComparison.Ordinal) &&
+            string.Equals(left.IpTypeLabel, right.IpTypeLabel, StringComparison.Ordinal) &&
+            string.Equals(left.Ip, right.Ip, StringComparison.Ordinal) &&
+            string.Equals(left.Location, right.Location, StringComparison.Ordinal) &&
+            string.Equals(left.Asn, right.Asn, StringComparison.Ordinal) &&
+            string.Equals(left.Organization, right.Organization, StringComparison.Ordinal) &&
+            string.Equals(left.IpTypeReason, right.IpTypeReason, StringComparison.Ordinal) &&
+            string.Equals(left.Error, right.Error, StringComparison.Ordinal);
     }
 }

@@ -7,9 +7,9 @@ internal sealed partial class CodexRadarForm
     private readonly RadarFamilyRuntimeState codexRuntimeState = new RadarFamilyRuntimeState(CodexRadarSoftwareMode.Codex);
     private readonly RadarFamilyRuntimeState claudeRuntimeState = new RadarFamilyRuntimeState(CodexRadarSoftwareMode.Claude);
 
-    // Codex and Claude share the same rendered window, but their volatile data cannot share
-    // fields. Quota baselines, source-known flags, Radar health, request state, and debounce
-    // state live here per family so a late request or mode switch cannot poison the other side.
+    // Codex and Claude share one headless owner, but their volatile data cannot share fields.
+    // Quota baselines, source-known flags, Radar health and request state live here per family so
+    // a late request or mode switch cannot poison the other side.
     private sealed class RadarFamilyRuntimeState
     {
         public RadarFamilyRuntimeState(CodexRadarSoftwareMode family)
@@ -19,7 +19,6 @@ internal sealed partial class CodexRadarForm
             this.RadarSnapshot = CodexRadarSnapshot.CreateDefault();
             this.Quota = new QuotaRuntimeState();
             this.RadarSiteHealth = ServiceHealthState.Unknown;
-            this.ApiAlertDebounce = new ApiAlertDebounceRuntimeState();
             this.LastRadarStatusRefreshUtc = DateTime.MinValue;
             this.NextRadarStatusRefreshUtc = DateTime.MinValue;
             this.RadarStatusRefreshTrigger = "启动刷新";
@@ -30,7 +29,6 @@ internal sealed partial class CodexRadarForm
         public CodexRadarSnapshot RadarSnapshot { get; set; }
         public QuotaRuntimeState Quota { get; private set; }
         public ServiceHealthState RadarSiteHealth { get; set; }
-        public ApiAlertDebounceRuntimeState ApiAlertDebounce { get; private set; }
         public bool RadarStatusRequestRunning { get; set; }
         public DateTime LastRadarStatusRefreshUtc { get; set; }
         public DateTime LastRadarStatusAttemptLocal { get; set; }
@@ -68,7 +66,6 @@ internal sealed partial class CodexRadarForm
             this.WeeklyLastConsumingAcceptUtc = DateTime.MinValue;
             this.FiveHourLastNewbornAcceptUtc = DateTime.MinValue;
             this.WeeklyLastNewbornAcceptUtc = DateTime.MinValue;
-            this.WeeklyResetRainbowActive = false;
             this.WeeklyBurnSamples = new List<WeeklyBurnSample>();
             this.WeeklyBurnTrackedResetLocal = DateTime.MinValue;
             this.WeeklyBurnClockUtc = DateTime.MinValue;
@@ -92,11 +89,6 @@ internal sealed partial class CodexRadarForm
         public DateTime WeeklyLastConsumingAcceptUtc { get; set; }
         public DateTime FiveHourLastNewbornAcceptUtc { get; set; }
         public DateTime WeeklyLastNewbornAcceptUtc { get; set; }
-        // Latched true when the accepted weekly balance crosses up into the reset band (>=95) and
-        // held until it falls below the exit band (<90). Drives the rainbow quota-reset celebration.
-        // In-memory only: it can only be set by a live accepted upward crossing, so it never
-        // false-fires on startup/cache load.
-        public bool WeeklyResetRainbowActive { get; set; }
         // Accepted (post-interference-filter) weekly remaining-% readings observed by THIS machine,
         // oldest first, pruned to the burn-rate window. Feeds the measured-rate weekly budget ring;
         // in-memory only, so a restart honestly re-accumulates before showing a rate.
@@ -150,22 +142,6 @@ internal sealed partial class CodexRadarForm
         public DateTime LastRadarOpenEventUtc { get; set; }
     }
 
-    private sealed class ApiAlertDebounceRuntimeState
-    {
-        public ApiAlertDebounceRuntimeState()
-        {
-            this.Signature = string.Empty;
-            this.Index = 0;
-            this.NamePhase = true;
-            this.States = new Dictionary<string, ServiceAlertDebounceState>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        public string Signature { get; set; }
-        public int Index { get; set; }
-        public bool NamePhase { get; set; }
-        public Dictionary<string, ServiceAlertDebounceState> States { get; private set; }
-    }
-
     private RadarFamilyRuntimeState GetRadarFamilyState(CodexRadarSoftwareMode family)
     {
         return RadarSoftwareModeController.NormalizeEffectiveSoftwareMode(family) == CodexRadarSoftwareMode.Claude
@@ -186,6 +162,44 @@ internal sealed partial class CodexRadarForm
     private QuotaRuntimeState GetActiveQuotaRuntimeState()
     {
         return GetActiveRadarFamilyState().Quota;
+    }
+
+    private void HydrateAllRadarFamilyCaches()
+    {
+        HydrateRadarFamilyCache(CodexRadarSoftwareMode.Codex);
+        HydrateRadarFamilyCache(CodexRadarSoftwareMode.Claude);
+    }
+
+    private void HydrateRadarFamilyCache(CodexRadarSoftwareMode family)
+    {
+        family = RadarSoftwareModeController.NormalizeEffectiveSoftwareMode(family);
+        RadarFamilyRuntimeState state = GetRadarFamilyState(family);
+        string modelKey = GetSelectedRadarModelKeyForSoftwareMode(family);
+        state.ModelKey = modelKey ?? string.Empty;
+
+        // Claude is quota-only now. Its official ClaudeCodeUsage chain hydrates the quota cache,
+        // while community Radar snapshots are deliberately no longer loaded or retained.
+        CodexRadarSnapshot radar = family == CodexRadarSoftwareMode.Codex
+            ? LoadCodexRadarCache(family, modelKey)
+            : null;
+        state.RadarSnapshot = radar ?? CodexRadarSnapshot.CreateDefault();
+
+        CodexQuotaSnapshot quota;
+        bool quotaKnown = TryReadQuotaIniSnapshot(family, out quota);
+
+        state.Quota.Snapshot = quotaKnown
+            ? NormalizeQuotaSnapshot(quota)
+            : CodexQuotaSnapshot.CreateDefault();
+        state.Quota.SourceKnown = quotaKnown;
+        InitializeQuotaReadDeltaTracking(state.Quota, state.Quota.Snapshot, quotaKnown);
+        if (family == CodexRadarSoftwareMode.Claude && quotaKnown)
+        {
+            this.claudeQuotaSnapshot = state.Quota.Snapshot.Clone();
+            this.claudeQuotaSourceKnown = true;
+        }
+
+        state.Touch();
+        PublishProjectionStateFromOwner();
     }
 
     private QuotaProtectionState GetCodexQuotaProtectionState()
@@ -283,11 +297,6 @@ internal sealed partial class CodexRadarForm
         }
     }
 
-    private bool weeklyResetRainbowActive
-    {
-        get { return GetActiveQuotaRuntimeState().WeeklyResetRainbowActive; }
-    }
-
     private DateTime fiveHourQuotaProtectionUtc
     {
         get { return GetCodexQuotaProtectionState().FiveHourProtectionUtc; }
@@ -344,58 +353,39 @@ internal sealed partial class CodexRadarForm
 
     private ServiceHealthState radarServiceHealth
     {
-        get { return GetActiveRadarFamilyState().RadarSiteHealth; }
+        get { return this.codexRuntimeState.RadarSiteHealth; }
         set
         {
-            GetActiveRadarFamilyState().RadarSiteHealth = value;
-            GetActiveRadarFamilyState().Touch();
+            // Public Radar exists only for Codex. Keeping these compatibility properties pinned
+            // to Codex prevents a Claude-selected UI context from swallowing a Codex refresh or
+            // projecting a retired Claude community-site health state.
+            this.codexRuntimeState.RadarSiteHealth = value;
+            this.codexRuntimeState.Touch();
         }
     }
 
     private bool codexRadarStatusRequestRunning
     {
-        get { return GetActiveRadarFamilyState().RadarStatusRequestRunning; }
-        set { GetActiveRadarFamilyState().RadarStatusRequestRunning = value; }
+        get { return this.codexRuntimeState.RadarStatusRequestRunning; }
+        set { this.codexRuntimeState.RadarStatusRequestRunning = value; }
     }
 
     private DateTime nextCodexRadarStatusRefreshUtc
     {
-        get { return GetActiveRadarFamilyState().NextRadarStatusRefreshUtc; }
-        set { GetActiveRadarFamilyState().NextRadarStatusRefreshUtc = value; }
+        get { return this.codexRuntimeState.NextRadarStatusRefreshUtc; }
+        set { this.codexRuntimeState.NextRadarStatusRefreshUtc = value; }
     }
 
     private string codexRadarStatusRefreshTrigger
     {
-        get { return GetActiveRadarFamilyState().RadarStatusRefreshTrigger ?? string.Empty; }
-        set { GetActiveRadarFamilyState().RadarStatusRefreshTrigger = value ?? string.Empty; }
+        get { return this.codexRuntimeState.RadarStatusRefreshTrigger ?? string.Empty; }
+        set { this.codexRuntimeState.RadarStatusRefreshTrigger = value ?? string.Empty; }
     }
 
     private DateTime lastCodexRadarStatusAttemptLocal
     {
-        get { return GetActiveRadarFamilyState().LastRadarStatusAttemptLocal; }
-        set { GetActiveRadarFamilyState().LastRadarStatusAttemptLocal = value; }
+        get { return this.codexRuntimeState.LastRadarStatusAttemptLocal; }
+        set { this.codexRuntimeState.LastRadarStatusAttemptLocal = value; }
     }
 
-    private string codexApiServiceAlertSignature
-    {
-        get { return GetActiveRadarFamilyState().ApiAlertDebounce.Signature; }
-        set { GetActiveRadarFamilyState().ApiAlertDebounce.Signature = value ?? string.Empty; }
-    }
-
-    private int codexApiServiceAlertIndex
-    {
-        get { return GetActiveRadarFamilyState().ApiAlertDebounce.Index; }
-        set { GetActiveRadarFamilyState().ApiAlertDebounce.Index = value; }
-    }
-
-    private bool codexApiServiceAlertNamePhase
-    {
-        get { return GetActiveRadarFamilyState().ApiAlertDebounce.NamePhase; }
-        set { GetActiveRadarFamilyState().ApiAlertDebounce.NamePhase = value; }
-    }
-
-    private Dictionary<string, ServiceAlertDebounceState> codexApiServiceAlertDebounceStates
-    {
-        get { return GetActiveRadarFamilyState().ApiAlertDebounce.States; }
-    }
 }

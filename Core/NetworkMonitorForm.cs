@@ -4,7 +4,6 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Net;
-using System.Net.Sockets;
 using System.Windows.Forms;
 
 // UI-only projection of NetworkMonitorSnapshot. I/O stays in NetworkMonitorReader;
@@ -13,22 +12,15 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 {
     private const int RenderSecondBoundaryOffsetMs = 55;
     private readonly System.Windows.Forms.Timer timer;
-    private readonly System.Windows.Forms.Timer hoverTimer;
     private readonly NetworkMonitorReader reader;
     private NetworkMonitorSnapshot snapshot;
+    private bool dockedRuntimeStarted;
     private bool hiddenForFullscreen;
+    private bool displaySuspended;
     private bool cloudEndpointCheckingBlink;
     private string cloudEndpointAlertSignature = string.Empty;
     private int cloudEndpointAlertIndex;
     private bool cloudEndpointAlertNamePhase = true;
-    private double hoverOpacityProgress;
-    private DateTime hoverOpacityLastUtc;
-    private DateTime reverseHoverRevealUntilUtc;
-    private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
-    private bool autoHideKeepAliveActive;
-    private bool sharedInteractionPolling;
-    private Bitmap contentBitmap;
-    private Graphics contentGraphics;
     private readonly Dictionary<string, Font> fontCache = new Dictionary<string, Font>(StringComparer.Ordinal);
 
     public NetworkMonitorForm(WidgetSettings settings)
@@ -54,48 +46,63 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         this.BackColor = DesignTokens.Colors.AppBackground;
-        this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MinNetworkMonitorHeight));
-        this.MaximumSize = ScaleWindowSize(new Size(WidgetSettings.MaxNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorHeight));
+        this.MinimumSize = Size.Empty;
+        this.MaximumSize = Size.Empty;
         this.Size = GetDesiredSize();
 
         this.timer = new System.Windows.Forms.Timer();
         this.timer.Interval = GetNextRenderTickIntervalMs();
         this.timer.Tick += OnTimerTick;
-        this.hoverTimer = new System.Windows.Forms.Timer();
-        this.hoverTimer.Interval = WidgetSettings.GetNetworkIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
-        this.hoverTimer.Tick += OnHoverTimerTick;
     }
 
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
-        ApplyRuntimeSettings(this.CurrentSettings);
-        this.snapshot = this.reader.GetSnapshot(this.CurrentSettings);
-        if (this.IsLeftDocked)
+        StartDockedOwner(this.Owner);
+    }
+
+    internal void StartDockedOwner(Form owner)
+    {
+        if (this.IsDisposed)
         {
-            // Docked, the panel is a transient surface owned by its tab: start collapsed and let
-            // the hover handler bring it up.
-            HideDockedPanel();
-        }
-        else
-        {
-            PositionNetworkMonitorWindow();
+            throw new ObjectDisposedException(nameof(NetworkMonitorForm));
         }
 
+        if (this.dockedRuntimeStarted)
+        {
+            return;
+        }
+
+        this.dockedRuntimeStarted = true;
+        if (owner != null && this.Owner != owner)
+        {
+            this.Owner = owner;
+        }
+
+        // Create the hidden message target and the always-visible dock tab without showing the
+        // 648x400 board first. The old Show-then-Hide startup could flash the full panel for a frame.
+        IntPtr ignoredHandle = this.Handle;
+        ApplyRuntimeSettings(this.CurrentSettings);
+        this.snapshot = this.reader.GetSnapshot(this.CurrentSettings);
+        this.reader.SetPathPingSamplingActive(false);
         this.timer.Start();
+
+        // A stale direct Show call is treated as a request to initialize the canonical dock owner,
+        // not as permission to restore the retired always-visible network window.
+        if (this.Visible)
+        {
+            HideDockedPanel();
+        }
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        this.dockedRuntimeStarted = false;
         this.timer.Stop();
         this.timer.Tick -= OnTimerTick;
         this.timer.Dispose();
-        this.hoverTimer.Stop();
-        this.hoverTimer.Tick -= OnHoverTimerTick;
-        this.hoverTimer.Dispose();
         DisposeDockTab();
         this.reader.Dispose();
-        DisposeRenderBuffer();
         DisposeFontCache();
         base.OnFormClosed(e);
     }
@@ -105,12 +112,10 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         base.OnSizeChanged(e);
         // Font sizes and bitmap dimensions are layout-dependent; clearing both caches
         // prevents stale dimensions and unbounded font growth during repeated resizing.
-        DisposeRenderBuffer();
         DisposeFontCache();
-        // Docked corners match SpecBoardForm.OnSizeChanged; the floating strip keeps its own S(12).
         using (GraphicsPath path = RoundedRectangle(
             new RectangleF(0, 0, this.Width, this.Height),
-            this.IsLeftDocked ? Math.Max(3, S(10)) : S(12)))
+            Math.Max(3, S(10))))
         {
             Region oldRegion = this.Region;
             this.Region = new Region(path);
@@ -138,7 +143,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     public void ApplyRuntimeSettings(WidgetSettings settings)
     {
-        bool wasDocked = this.dockTab != null;
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
@@ -146,27 +150,14 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         ApplyPerformanceTimerIntervals();
         this.snapshot = this.reader.GetSnapshot(this.CurrentSettings);
         SyncLeftDockTab();
-        // The docked panel is a board, not the legacy always-visible network strip. Clear any
-        // transparent-window style left behind by floating mode and stop its hover state before a
-        // collapsed-board early return can preserve those stale policies.
+        // The dock board must always receive pointer input.
         ApplyClickThroughStyle();
-        UpdateHoverAnimationTimer();
-        if (this.IsLeftDocked && !this.Visible)
+        if (!this.Visible)
         {
             // Collapsed docked panels have nothing to reposition or repaint; the tab owns display.
             this.reader.SetPathPingSamplingActive(false);
             InvalidateLayeredRenderBuffer();
             return;
-        }
-
-        if (!this.IsLeftDocked && wasDocked)
-        {
-            // Leaving dock mode: the window becomes permanently visible again at its own anchor.
-            this.reader.SetPathPingSamplingActive(true);
-            if (!this.Visible && !this.hiddenForFullscreen)
-            {
-                Show();
-            }
         }
 
         Size desiredSize = GetDesiredSize();
@@ -198,48 +189,15 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     public void SetHiddenForFullscreen(bool hidden)
     {
-        // Docked, the window's own visibility is driven by tab hover, so the early-out below
-        // (which assumes visible == not hidden) does not describe a valid state; the tab is what
-        // has to disappear for fullscreen.
-        if (this.IsLeftDocked)
-        {
-            if (this.hiddenForFullscreen == hidden)
-            {
-                return;
-            }
-
-            this.hiddenForFullscreen = hidden;
-            SetDockTabHiddenForFullscreen(hidden);
-            UpdateHoverAnimationTimer();
-            return;
-        }
-
-        if (this.hiddenForFullscreen == hidden &&
-            ((hidden && !this.Visible) || (!hidden && this.Visible)))
+        // The window body's visibility is driven by tab hover; environmental visibility hides the
+        // tab and collapses any expanded board.
+        if (this.hiddenForFullscreen == hidden)
         {
             return;
         }
 
         this.hiddenForFullscreen = hidden;
-        if (hidden)
-        {
-            if (this.Visible)
-            {
-                this.Hide();
-            }
-
-            UpdateHoverAnimationTimer();
-            return;
-        }
-
-        if (!this.Visible)
-        {
-            this.Show();
-        }
-
-        PositionNetworkMonitorWindow();
-        RenderLayeredWindow();
-        UpdateHoverAnimationTimer();
+        SetDockTabHiddenForFullscreen(hidden);
     }
 
     public void ForceRefresh()
@@ -254,15 +212,37 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     public void RecoverAfterDisplayResume()
     {
+        this.displaySuspended = false;
         ResetDisplayRenderResources();
-        PositionNetworkMonitorWindow();
-        RenderLayeredWindow();
+        if (this.dockTab != null && !this.dockTab.IsDisposed)
+        {
+            this.dockTab.SetDisplaySuspended(false);
+        }
+
+        SyncLeftDockTab();
+        if (!this.hiddenForFullscreen && this.Visible)
+        {
+            PositionNetworkMonitorWindow();
+            RenderLayeredWindow();
+        }
+
         this.reader.RequestRefresh();
         ScheduleNextRenderTick();
     }
 
     public void PrepareForDisplaySuspend()
     {
+        this.displaySuspended = true;
+        if (this.dockTab != null && !this.dockTab.IsDisposed)
+        {
+            this.dockTab.SetDisplaySuspended(true);
+        }
+
+        if (this.Visible)
+        {
+            HideDockedPanel();
+        }
+
         ResetDisplayRenderResources();
     }
 
@@ -282,7 +262,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             }
 
             this.snapshot = nextSnapshot;
-            RefreshCleanIpSnapshot();
+            bool cleanIpChanged = RefreshCleanIpSnapshot();
             bool alertChanged = AdvanceCloudEndpointAlertRotation();
             Size desiredSize = GetDesiredSize();
             bool sizeChanged = false;
@@ -302,7 +282,8 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
                 positionChanged = true;
             }
 
-            if (!this.hiddenForFullscreen && this.Visible && (displayChanged || sizeChanged || positionChanged || blinkChanged || alertChanged))
+            if (!this.hiddenForFullscreen && this.Visible &&
+                (displayChanged || cleanIpChanged || sizeChanged || positionChanged || blinkChanged || alertChanged))
             {
                 RenderLayeredWindow();
             }
@@ -317,11 +298,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
     {
         ScheduleNextRenderTick();
 
-        int hoverInterval = WidgetSettings.GetNetworkIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
-        if (this.hoverTimer.Interval != hoverInterval)
-        {
-            this.hoverTimer.Interval = hoverInterval;
-        }
     }
 
     private void ScheduleNextRenderTick()
@@ -348,179 +324,19 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return Math.Max(50, Math.Min(targetInterval + 100, interval));
     }
 
-    private void OnHoverTimerTick(object sender, EventArgs e)
-    {
-        if (this.IsLeftDocked)
-        {
-            // Defensive guard for a mode change delivered between timer messages. Docked boards
-            // never run the floating window's hover/click-through polling loop.
-            UpdateHoverAnimationTimer();
-            return;
-        }
-
-        bool animationActive = ProcessInteractionTick();
-        int desiredInterval = animationActive
-            ? WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode)
-            : WidgetSettings.GetNetworkIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
-        if (this.hoverTimer.Interval != desiredInterval)
-        {
-            this.hoverTimer.Interval = desiredInterval;
-        }
-    }
-
-    private bool ProcessInteractionTick()
-    {
-        if (this.IsLeftDocked)
-        {
-            return false;
-        }
-
-        ApplyClickThroughStyle();
-        bool opacityChanged = UpdateHoverOpacityAnimation();
-        bool hoverTarget = IsHoverOpacityTargetActive();
-        bool animationActive = Math.Abs(this.hoverOpacityProgress - (hoverTarget ? 1.0 : 0.0)) > 0.001;
-        if (opacityChanged && !this.hiddenForFullscreen && this.Visible)
-        {
-            RenderLayeredWindow(false);
-        }
-
-        return animationActive;
-    }
-
+    // Compatibility hooks retained until the host traversal is cleaned in phase 5. Dock boards do
+    // not participate in floating-window hover opacity or shared click-through polling.
     public void SetSharedInteractionPolling(bool shared)
     {
-        this.sharedInteractionPolling = shared;
-        this.hoverOpacityLastUtc = DateTime.UtcNow;
-        UpdateHoverAnimationTimer();
     }
 
     public void SetAutoHideKeepAliveActive(bool active)
     {
-        if (this.autoHideKeepAliveActive == active)
-        {
-            return;
-        }
-
-        this.autoHideKeepAliveActive = active;
-        if (active)
-        {
-            this.hoverOpacityDelayState.Reset();
-            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
-        }
     }
 
     public bool ProcessSharedInteractionTick()
     {
-        if (this.IsLeftDocked ||
-            !this.sharedInteractionPolling ||
-            this.hiddenForFullscreen ||
-            (!IsHoverOpacityRuntimeEnabled() && !NeedsClickThroughPolling()))
-        {
-            return false;
-        }
-
-        return ProcessInteractionTick();
-    }
-
-    private void UpdateHoverAnimationTimer()
-    {
-        if (this.IsLeftDocked)
-        {
-            // SpecBoard and CodexTask own no floating hover state. Reset all legacy state together
-            // so switching modes cannot leave the docked bitmap inverted, faded or timer-driven.
-            if (this.hoverTimer.Enabled)
-            {
-                this.hoverTimer.Stop();
-            }
-
-            bool needsNormalRepaint = this.hoverOpacityProgress > 0.0;
-            this.hoverOpacityProgress = 0.0;
-            this.hoverOpacityLastUtc = DateTime.UtcNow;
-            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
-            this.hoverOpacityDelayState.Reset();
-            if (needsNormalRepaint && this.Visible)
-            {
-                InvalidateLayeredRenderBuffer();
-                RenderLayeredWindow();
-            }
-
-            return;
-        }
-
-        if (!this.hiddenForFullscreen &&
-            (IsHoverOpacityRuntimeEnabled() || NeedsClickThroughPolling()))
-        {
-            if (this.sharedInteractionPolling)
-            {
-                this.hoverTimer.Stop();
-                return;
-            }
-
-            if (!this.hoverTimer.Enabled)
-            {
-                this.hoverOpacityLastUtc = DateTime.UtcNow;
-                this.hoverTimer.Start();
-            }
-
-            return;
-        }
-
-        if (this.hoverTimer.Enabled)
-        {
-            this.hoverTimer.Stop();
-        }
-
-        if (this.hoverOpacityProgress > 0.0)
-        {
-            this.hoverOpacityProgress = 0.0;
-            RenderLayeredWindow();
-        }
-    }
-
-    private bool UpdateHoverOpacityAnimation()
-    {
-        DateTime now = DateTime.UtcNow;
-        double elapsed = this.hoverOpacityLastUtc == DateTime.MinValue ? 0.03 : (now - this.hoverOpacityLastUtc).TotalSeconds;
-        this.hoverOpacityLastUtc = now;
-
-        bool hovered = IsHoverOpacityTargetActive();
-
-        double target = hovered ? 1.0 : 0.0;
-        double old = this.hoverOpacityProgress;
-        double step = Math.Max(0.0, Math.Min(1.0, elapsed / 0.15));
-        if (this.hoverOpacityProgress < target)
-        {
-            this.hoverOpacityProgress = Math.Min(target, this.hoverOpacityProgress + step);
-        }
-        else if (this.hoverOpacityProgress > target)
-        {
-            this.hoverOpacityProgress = Math.Max(target, this.hoverOpacityProgress - step);
-        }
-
-        return Math.Abs(old - this.hoverOpacityProgress) > 0.001;
-    }
-
-    private bool IsHoverOpacityTargetActive()
-    {
-        if (this.IsLeftDocked)
-        {
-            return false;
-        }
-
-        return HoverInteractionPolicy.IsHoverOpacityTargetActive(
-            this.CurrentSettings,
-            this.Bounds,
-            this.hiddenForFullscreen,
-            this.Visible,
-            ref this.reverseHoverRevealUntilUtc,
-            this.hoverOpacityDelayState,
-            this.autoHideKeepAliveActive);
-    }
-
-    private bool IsHoverOpacityRuntimeEnabled()
-    {
-        return !this.IsLeftDocked &&
-            (this.CurrentSettings.HoverOpacityEnabled || this.CurrentSettings.ForceHoverOpacityActive);
+        return false;
     }
 
     private void ApplyClickThroughStyle()
@@ -530,12 +346,8 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             return;
         }
 
-        bool clickThrough = ShouldClickThroughNow();
         int exStyle = NativeMethods.GetWindowLong(this.Handle, NativeMethods.GWL_EXSTYLE);
-        int desired = clickThrough ?
-            (exStyle | NativeMethods.WS_EX_TRANSPARENT | NativeMethods.WS_EX_LAYERED) :
-            ((exStyle & ~NativeMethods.WS_EX_TRANSPARENT) | NativeMethods.WS_EX_LAYERED);
-
+        int desired = (exStyle & ~NativeMethods.WS_EX_TRANSPARENT) | NativeMethods.WS_EX_LAYERED;
         if (desired == exStyle)
         {
             return;
@@ -556,37 +368,9 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             NativeMethods.SWP_FRAMECHANGED);
     }
 
-    private bool ShouldClickThroughNow()
-    {
-        if (this.IsLeftDocked)
-        {
-            // The board must receive the same mouse input as SpecBoard/CodexTask regardless of the
-            // global floating-widget click-through setting.
-            return false;
-        }
-
-        if (NativeMethods.IsClickThroughModifierDown())
-        {
-            return false;
-        }
-
-        return WidgetSettings.ShouldEnableClickThrough(
-            this.CurrentSettings.ClickThroughMode,
-            this.CurrentSettings.VisibilityMode);
-    }
-
-    private bool NeedsClickThroughPolling()
-    {
-        return !this.IsLeftDocked && WidgetSettings.ShouldEnableClickThrough(
-            this.CurrentSettings.ClickThroughMode,
-            this.CurrentSettings.VisibilityMode);
-    }
-
     private bool ShouldUseTopMostPlacement()
     {
-        // Both sibling boards are shown in the protected topmost group. DesktopOnly remains a
-        // floating-strip policy and must not make a hover-expanded dock board appear behind apps.
-        return this.IsLeftDocked || this.CurrentSettings.VisibilityMode != WidgetVisibilityMode.DesktopOnly;
+        return true;
     }
 
     private void PositionNetworkMonitorWindow()
@@ -596,176 +380,18 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             return;
         }
 
-        if (this.IsLeftDocked)
+        Size dockedSize = GetDockedSize();
+        if (this.Size != dockedSize)
         {
-            Size dockedSize = GetDockedSize();
-            if (this.Size != dockedSize)
-            {
-                this.Size = dockedSize;
-            }
-
-            PositionAtLeftDock();
-            return;
+            this.Size = dockedSize;
         }
 
-        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleNetworkMonitor);
-        Size desiredSize = GetDesiredSize();
-        if (this.Size != desiredSize)
-        {
-            this.Size = desiredSize;
-        }
-
-        int baseWidth = GetNetworkMonitorAnchorWidth();
-        int mappedLeft = this.CurrentSettings.MapResolutionCompatibilityLeft(WidgetSettings.ModuleNetworkMonitor, workArea, this.CurrentSettings.NetworkMonitorLeftX);
-        int baseRight = mappedLeft + this.CurrentSettings.ScaleResolutionCompatibilityPixels(baseWidth);
-        baseRight = Math.Max(workArea.Left + this.Width, Math.Min(baseRight, workArea.Right));
-        int left = Math.Max(workArea.Left, Math.Min(baseRight - this.Width, workArea.Right - this.Width));
-        int baseHeight = Math.Max(WidgetSettings.MinNetworkMonitorHeight, this.CurrentSettings.NetworkMonitorHeight);
-        int mappedBottom = this.CurrentSettings.MapResolutionCompatibilityBottom(WidgetSettings.ModuleNetworkMonitor, workArea, this.CurrentSettings.NetworkMonitorBottomY);
-        int top = mappedBottom - this.CurrentSettings.ScaleResolutionCompatibilityPixels(baseHeight) + 1;
-        top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - this.Height));
-        Point shiftedLocation = BurnInProtection.ApplyRuntimeOffset(
-            new Point(left, top),
-            this.Size,
-            workArea,
-            BurnInProtection.NetworkMonitorSalt);
-        left = shiftedLocation.X;
-        top = shiftedLocation.Y;
-        this.Location = new Point(left, top);
-
-        NativeMethods.SetWindowPos(
-            this.Handle,
-            GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
-            left,
-            top,
-            this.Width,
-            this.Height,
-            NativeMethods.SWP_NOACTIVATE |
-            NativeMethods.SWP_NOOWNERZORDER |
-            NativeMethods.SWP_FRAMECHANGED |
-            NativeMethods.SWP_SHOWWINDOW);
+        PositionAtLeftDock();
     }
 
     private Size GetDesiredSize()
     {
-        if (this.IsLeftDocked)
-        {
-            return GetDockedSize();
-        }
-
-        int width = GetEffectiveNetworkMonitorWidth();
-        return ScaleWindowSize(new Size(width, this.CurrentSettings.NetworkMonitorHeight));
-    }
-
-    private int GetNetworkMonitorAnchorWidth()
-    {
-        if (this.CurrentSettings.NetworkMonitorRenderVariant != NetworkMonitorRenderVariant.Classic)
-        {
-            return Math.Max(WidgetSettings.MinNetworkMonitorWidth, this.CurrentSettings.NetworkMonitorWidth);
-        }
-
-        return Math.Min(
-            ClassicStripLayout.WidthMaximum,
-            Math.Max(ClassicStripLayout.WidthCompact, this.CurrentSettings.NetworkMonitorWidth));
-    }
-
-    private int GetEffectiveNetworkMonitorWidth()
-    {
-        if (this.CurrentSettings.NetworkMonitorRenderVariant != NetworkMonitorRenderVariant.Classic)
-        {
-            return this.CurrentSettings.NetworkMonitorWidth;
-        }
-
-        int baseWidth = Math.Max(ClassicStripLayout.WidthCompact, this.CurrentSettings.NetworkMonitorWidth);
-        int targetWidth = Math.Max(baseWidth, GetClassicStripContentWidthPreset());
-        return Math.Min(ClassicStripLayout.WidthMaximum, targetWidth);
-    }
-
-    private int GetClassicStripContentWidthPreset()
-    {
-        // The strip can grow only through these preset levels. This keeps the hot UI path cheap
-        // and deterministic: no network/disk work and no per-frame pixel probing, just snapshot
-        // strings that are already needed for painting. The hard cap preserves the approved 628px
-        // maximum while keeping the 520px compact shape for normal content.
-        int targetWidth = ClassicStripLayout.WidthCompact;
-        RaiseClassicStripAutoWidth(ref targetWidth, BuildClassicStripLinkSummary(), 42, 49, 56);
-        RaiseClassicStripAutoWidth(ref targetWidth, GetHeaderStatusText(GetDisplayAccessState()), 12, 14, 16);
-        RaiseClassicStripAutoWidth(ref targetWidth, BuildSingleAddressRowText(this.snapshot == null ? null : this.snapshot.IPv4, int.MaxValue), 30, 36, 42);
-        RaiseClassicStripAutoWidth(ref targetWidth, BuildSingleAddressRowText(this.snapshot == null ? null : this.snapshot.IPv6, int.MaxValue), 50, 56, 62);
-        RaiseClassicStripAutoWidth(ref targetWidth, "公网 " + BuildClassicStripPublicAddressValue(), 22, 25, 28);
-        RaiseClassicStripAutoWidth(ref targetWidth, BuildClassicStripDnsSummaryForAutoWidth(), 32, 38, 44);
-
-        DnsAlertCandidate dnsAlert = GetClassicStripDnsAlert();
-        if (dnsAlert != null)
-        {
-            RaiseClassicStripAutoWidth(ref targetWidth, dnsAlert.Text, 15, 18, 21);
-        }
-
-        RaiseClassicStripAutoWidth(ref targetWidth, BuildClassicStripPingText(), 13, 16, 19);
-        RaiseClassicStripAutoWidth(ref targetWidth, BuildClassicStripGfwText(), 16, 19, 22);
-        return targetWidth;
-    }
-
-    private static void RaiseClassicStripAutoWidth(ref int targetWidth, string text, int width560Score, int width600Score, int width628Score)
-    {
-        int score = GetClassicStripAutoWidthScore(text);
-        if (score > width628Score)
-        {
-            targetWidth = Math.Max(targetWidth, ClassicStripLayout.WidthMaximum);
-            return;
-        }
-
-        if (score > width600Score)
-        {
-            targetWidth = Math.Max(targetWidth, ClassicStripLayout.WidthExpanded);
-            return;
-        }
-
-        if (score > width560Score)
-        {
-            targetWidth = Math.Max(targetWidth, ClassicStripLayout.WidthMedium);
-        }
-    }
-
-    private static int GetClassicStripAutoWidthScore(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-        {
-            return 0;
-        }
-
-        int score = 0;
-        for (int i = 0; i < text.Length; i++)
-        {
-            char c = text[i];
-            score += c > 0x7F ? 2 : 1;
-        }
-
-        return score;
-    }
-
-    private string BuildClassicStripDnsSummaryForAutoWidth()
-    {
-        DnsDisplayItem[] items = BuildDnsDisplayItems();
-        if (items.Length == 0)
-        {
-            return "--";
-        }
-
-        int visibleCount = Math.Min(2, items.Length);
-        List<string> parts = new List<string>();
-        for (int i = 0; i < visibleCount; i++)
-        {
-            parts.Add(EmptyToDash(items[i].Address));
-        }
-
-        int hiddenCount = items.Length - visibleCount;
-        if (hiddenCount > 0)
-        {
-            parts.Add("+" + hiddenCount.ToString(CultureInfo.InvariantCulture));
-        }
-
-        return string.Join(" , ", parts.ToArray());
+        return GetDockedSize();
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -776,350 +402,20 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private void DrawNetworkMonitorWindow(Graphics g)
     {
-        // Docked mode paints the SpecBoard-family panel directly: no classic background wash, no
-        // fullscreen red cross (the dock tab's colour carries that state) and no hover opacity
-        // layer — the other two docked boards have none of those either.
-        if (this.IsLeftDocked)
-        {
-            DrawContentDocked(g);
-            return;
-        }
-
-        DrawBackground(g);
-        DrawNetworkProblemMark(g);
-        DrawContentLayer(g);
+        DrawContentDocked(g);
     }
 
     protected override void DrawWindowContent(Graphics g)
     {
-        DrawNetworkMonitorWindow(g);
+        DrawContentDocked(g);
     }
 
     protected override bool IsLayeredBurnInColorProtectionActive()
     {
-        return IsBurnInColorProtectionActive();
+        return false;
     }
 
-    private void ConfigureGraphics(Graphics g)
-    {
-        BurnInProtection.ConfigureGraphics(g, IsBurnInColorProtectionActive());
-    }
-
-    private void DrawBackground(Graphics g)
-    {
-        ConfigureGraphics(g);
-
-        int alpha = GetBackgroundOpacityAlpha();
-        Color backgroundColor = Color.FromArgb(15, 15, 19);
-        using (GraphicsPath shell = RoundedRectangle(new RectangleF(0, 0, this.Width - 1, this.Height - 1), S(DesignTokens.Radius.Panel)))
-        using (SolidBrush background = new SolidBrush(DesignTokens.WithAlpha(backgroundColor, alpha)))
-        {
-            g.FillPath(background, shell);
-        }
-    }
-
-    private void DrawNetworkProblemMark(Graphics g)
-    {
-        NetworkAccessState state = GetDisplayAccessState();
-        if (state != NetworkAccessState.Offline && state != NetworkAccessState.AdapterMissing)
-        {
-            return;
-        }
-
-        // The mark belongs to the background layer, so its alpha follows background
-        // transparency rather than the independently configurable content transparency.
-        int alpha = GetBackgroundOpacityAlpha();
-        if (alpha <= 0)
-        {
-            return;
-        }
-
-        ConfigureGraphics(g);
-        float insetX = this.Width * 0.20f;
-        float insetY = this.Height * 0.20f;
-        RectangleF mark = new RectangleF(insetX, insetY, this.Width - insetX * 2.0f, this.Height - insetY * 2.0f);
-        using (Pen cross = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.DangerGlyph, alpha), Math.Max(1.0f, S(20))))
-        {
-            cross.StartCap = LineCap.Round;
-            cross.EndCap = LineCap.Round;
-            g.DrawLine(cross, mark.Left, mark.Top, mark.Right, mark.Bottom);
-            g.DrawLine(cross, mark.Right, mark.Top, mark.Left, mark.Bottom);
-        }
-    }
-
-    private void DrawContentLayer(Graphics g)
-    {
-        int contentAlpha = GetContentOpacityAlpha();
-        if (contentAlpha <= 0)
-        {
-            return;
-        }
-
-        if (contentAlpha >= 255)
-        {
-            DrawContent(g);
-            return;
-        }
-
-        // Partial content opacity needs an isolated premultiplied-alpha layer.
-        EnsureContentBuffer();
-        this.contentGraphics.Clear(Color.Transparent);
-        DrawContent(this.contentGraphics);
-        DrawingUtil.DrawImageWithAlpha(g, this.contentBitmap, contentAlpha);
-    }
-
-    // Render-variant dispatch (mirrors CodexRadarForm). Paint-only variants share the same snapshot
-    // and reader; adding a layout must not add network or disk I/O to the draw path.
-    private void DrawContent(Graphics g)
-    {
-        DrawContentClassic(g);
-    }
-
-    // Flat reference layout promoted to NetworkMonitorRenderVariant.Classic. Horizontal coordinates
-    // are normalized from the compact 520px runtime width; vertical coordinates keep the original
-    // 294px reference so width compression never changes row height, font size or vertical spacing.
-    private static class ClassicStripLayout
-    {
-        public const int WidthCompact = 520;
-        public const int WidthMedium = 560;
-        public const int WidthExpanded = 600;
-        public const int WidthMaximum = 628;
-        public const float ReferenceWidth = WidthCompact;
-        public const float Left = 12.0f / ReferenceWidth;
-        public const float Right = 510.0f / ReferenceWidth;
-        public const float TitleLeft = 12.0f / ReferenceWidth;
-        public const float TitleRight = 88.0f / ReferenceWidth;
-        public const float StatusLeft = 92.0f / ReferenceWidth;
-        public const float StatusRight = 168.0f / ReferenceWidth;
-        public const float LinkSummaryLeft = 172.0f / ReferenceWidth;
-        public const float HeaderTop = 10.0f / 294.0f;
-        public const float HeaderHeight = 42.0f / 294.0f;
-        public const float DividerTop = 64.0f / 294.0f;
-        public const float LabelLeft = 12.0f / ReferenceWidth;
-        public const float ValueLeft = 52.0f / ReferenceWidth;
-        public const float Ip4Top = 78.0f / 294.0f;
-        public const float Ip6Top = 126.0f / 294.0f;
-        public const float DnsTop = 174.0f / 294.0f;
-        public const float InfoRowHeight = 36.0f / 294.0f;
-        public const float RightModuleLeft = 334.0f / ReferenceWidth;
-        public const float BottomDividerTop = 227.0f / 294.0f;
-        public const float FooterTop = 239.0f / 294.0f;
-        public const float FooterHeight = 40.0f / 294.0f;
-        public const float PingLabelLeft = 10.0f / ReferenceWidth;
-        public const float PingValueLeft = 54.0f / ReferenceWidth;
-        public const float GfwLabelLeft = 160.0f / ReferenceWidth;
-        public const float GfwValueLeft = 208.0f / ReferenceWidth;
-        public const float CloudTilesLeft = 352.0f / ReferenceWidth;
-        public const float CloudTilesRight = 510.0f / ReferenceWidth;
-    }
-
-
-    private void DrawContentClassic(Graphics g)
-    {
-        ConfigureGraphics(g);
-
-        float w = this.Width;
-        float h = this.Height;
-        DrawClassicStripDividers(g, w, h);
-        DrawClassicStripHeader(g, w, h);
-        DrawClassicStripAddressRows(g, w, h);
-        DrawClassicStripFooter(g, w, h);
-        DrawClassicShellOutline(g);
-    }
-
-    private void DrawClassicStripDividers(Graphics g, float w, float h)
-    {
-        float left = ClassicStripLayout.Left * w;
-        float right = ClassicStripLayout.Right * w;
-        using (Pen divider = new Pen(Color.FromArgb(52, 52, 60), Math.Max(1.0f, S(1))))
-        {
-            g.DrawLine(divider, left, ClassicStripLayout.DividerTop * h, right, ClassicStripLayout.DividerTop * h);
-            g.DrawLine(divider, left, ClassicStripLayout.BottomDividerTop * h, right, ClassicStripLayout.BottomDividerTop * h);
-        }
-    }
-
-    private void DrawClassicStripHeader(Graphics g, float w, float h)
-    {
-        NetworkAccessState accessState = GetDisplayAccessState();
-        string statusText = GetHeaderStatusText(accessState);
-        Color statusColor = GetHeaderStatusColor(accessState);
-        RectangleF titleRect = new RectangleF(
-            ClassicStripLayout.TitleLeft * w,
-            ClassicStripLayout.HeaderTop * h,
-            (ClassicStripLayout.TitleRight - ClassicStripLayout.TitleLeft) * w,
-            ClassicStripLayout.HeaderHeight * h);
-        RectangleF statusRect = new RectangleF(
-            ClassicStripLayout.StatusLeft * w,
-            ClassicStripLayout.HeaderTop * h,
-            (ClassicStripLayout.StatusRight - ClassicStripLayout.StatusLeft) * w,
-            ClassicStripLayout.HeaderHeight * h);
-        RectangleF summaryRect = new RectangleF(
-            ClassicStripLayout.LinkSummaryLeft * w,
-            ClassicStripLayout.HeaderTop * h,
-            ClassicStripLayout.Right * w - ClassicStripLayout.LinkSummaryLeft * w,
-            ClassicStripLayout.HeaderHeight * h);
-
-        using (SolidBrush titleBrush = new SolidBrush(GetClassicStripNeutralTextColor()))
-        using (SolidBrush statusBrush = new SolidBrush(statusColor))
-        using (SolidBrush summaryBrush = new SolidBrush(GetClassicStripNeutralTextColor()))
-        {
-            DrawFittedText(g, "NETWORK", GetClassicStripTitleFont(), titleBrush, titleRect, StringAlignment.Near);
-            DrawFittedText(g, statusText, GetClassicStripHeaderStatusFont(), statusBrush, statusRect, StringAlignment.Near);
-            DrawFittedText(g, BuildClassicStripLinkSummary(), GetClassicStripSubtleFont(), summaryBrush, summaryRect, StringAlignment.Far);
-        }
-    }
-
-    private void DrawClassicStripAddressRows(Graphics g, float w, float h)
-    {
-        Font labelFont = GetClassicStripLabelFont();
-        Font valueFont = GetClassicStripValueFont();
-        float left = ClassicStripLayout.LabelLeft * w;
-        float valueLeft = ClassicStripLayout.ValueLeft * w;
-        float right = ClassicStripLayout.Right * w;
-        float rightModuleLeft = ClassicStripLayout.RightModuleLeft * w;
-        float rowHeight = ClassicStripLayout.InfoRowHeight * h;
-        float labelWidth = Math.Max(28.0f, valueLeft - left - 4.0f);
-        float rightGap = Math.Max(5.0f, w * (10.0f / ClassicStripLayout.ReferenceWidth));
-
-        RectangleF publicRect = new RectangleF(
-            rightModuleLeft,
-            ClassicStripLayout.Ip4Top * h,
-            Math.Max(50.0f, right - rightModuleLeft),
-            rowHeight);
-        RectangleF ip4ValueRect = new RectangleF(
-            valueLeft,
-            ClassicStripLayout.Ip4Top * h,
-            Math.Max(40.0f, publicRect.Left - valueLeft - rightGap),
-            rowHeight);
-        RectangleF ip6ValueRect = new RectangleF(
-            valueLeft,
-            ClassicStripLayout.Ip6Top * h,
-            Math.Max(40.0f, right - valueLeft),
-            rowHeight);
-        RectangleF dnsAlertRect = new RectangleF(
-            rightModuleLeft,
-            ClassicStripLayout.DnsTop * h,
-            Math.Max(50.0f, right - rightModuleLeft),
-            rowHeight);
-        RectangleF dnsValueRect = new RectangleF(
-            valueLeft,
-            ClassicStripLayout.DnsTop * h,
-            Math.Max(40.0f, dnsAlertRect.Left - valueLeft - rightGap),
-            rowHeight);
-
-        DrawClassicStripLabel(g, "IP4", labelFont, new RectangleF(left, ClassicStripLayout.Ip4Top * h, labelWidth, rowHeight));
-        DrawClassicStripLabel(g, "IP6", labelFont, new RectangleF(left, ClassicStripLayout.Ip6Top * h, labelWidth, rowHeight));
-        DrawClassicStripLabel(g, "DNS", labelFont, new RectangleF(left, ClassicStripLayout.DnsTop * h, labelWidth, rowHeight));
-
-        string ip4 = BuildMeasuredAddressRowText(g, this.snapshot == null ? null : this.snapshot.IPv4, valueFont, ip4ValueRect.Width, 15);
-        string ip6 = BuildMeasuredAddressRowText(g, this.snapshot == null ? null : this.snapshot.IPv6, valueFont, ip6ValueRect.Width, 24);
-        using (SolidBrush valueBrush = new SolidBrush(GetClassicStripNeutralTextColor()))
-        using (SolidBrush publicBrush = new SolidBrush(HasClassicStripPublicAddressValue() ? GetClassicStripNeutralTextColor() : DesignTokens.Colors.GlyphMuted))
-        {
-            DrawFittedText(g, ip4, valueFont, valueBrush, ip4ValueRect, StringAlignment.Near);
-            DrawFittedText(g, ip6, valueFont, valueBrush, ip6ValueRect, StringAlignment.Near);
-            DrawFittedText(g, "公网 " + BuildClassicStripPublicAddressValue(), valueFont, publicBrush, publicRect, StringAlignment.Far);
-        }
-
-        DrawClassicStripDnsSegments(g, valueFont, dnsValueRect);
-        DnsAlertCandidate alert = GetClassicStripDnsAlert();
-        if (alert != null)
-        {
-            using (SolidBrush alertBrush = new SolidBrush(GetClassicStripDnsStatusColor(alert.Status)))
-            {
-                DrawFittedText(g, alert.Text, valueFont, alertBrush, dnsAlertRect, StringAlignment.Far);
-            }
-        }
-    }
-
-    private void DrawClassicStripFooter(Graphics g, float w, float h)
-    {
-        NetworkAccessState accessState = GetDisplayAccessState();
-        Font labelFont = GetClassicStripFooterFont();
-        Font valueFont = GetClassicStripFooterFont();
-        float y = ClassicStripLayout.FooterTop * h;
-        float rowHeight = ClassicStripLayout.FooterHeight * h;
-        float cloudLeft = ClassicStripLayout.CloudTilesLeft * w;
-        float cloudRight = ClassicStripLayout.CloudTilesRight * w;
-        RectangleF pingLabelRect = new RectangleF(
-            ClassicStripLayout.PingLabelLeft * w,
-            y,
-            ClassicStripLayout.PingValueLeft * w - ClassicStripLayout.PingLabelLeft * w - 4.0f,
-            rowHeight);
-        RectangleF pingValueRect = new RectangleF(
-            ClassicStripLayout.PingValueLeft * w,
-            y,
-            ClassicStripLayout.GfwLabelLeft * w - ClassicStripLayout.PingValueLeft * w - 4.0f,
-            rowHeight);
-        RectangleF gfwLabelRect = new RectangleF(
-            ClassicStripLayout.GfwLabelLeft * w,
-            y,
-            ClassicStripLayout.GfwValueLeft * w - ClassicStripLayout.GfwLabelLeft * w - 4.0f,
-            rowHeight);
-        RectangleF gfwValueRect = new RectangleF(
-            ClassicStripLayout.GfwValueLeft * w,
-            y,
-            cloudLeft - ClassicStripLayout.GfwValueLeft * w - 4.0f,
-            rowHeight);
-        RectangleF tilesRect = new RectangleF(cloudLeft, y + Math.Max(0.0f, rowHeight * 0.07f), Math.Max(0.0f, cloudRight - cloudLeft), Math.Max(10.0f, rowHeight * 0.86f));
-
-        using (SolidBrush labelBrush = new SolidBrush(GetClassicStripNeutralTextColor()))
-        using (SolidBrush pingBrush = new SolidBrush(GetConnectivityColor()))
-        using (SolidBrush gfwBrush = new SolidBrush(GetGfwProbeColor()))
-        {
-            DrawFittedText(g, "PING", labelFont, labelBrush, pingLabelRect, StringAlignment.Near);
-            DrawFittedText(g, BuildClassicStripPingText(), valueFont, pingBrush, pingValueRect, StringAlignment.Near);
-            DrawFittedText(g, "GFW", labelFont, labelBrush, gfwLabelRect, StringAlignment.Near);
-            DrawFittedText(g, BuildClassicStripGfwText(), valueFont, gfwBrush, gfwValueRect, StringAlignment.Near);
-        }
-
-        DrawCloudEndpointTiles(g, tilesRect, accessState);
-    }
-
-    private void DrawClassicStripLabel(Graphics g, string text, Font font, RectangleF rect)
-    {
-        using (SolidBrush brush = new SolidBrush(GetClassicStripNeutralTextColor()))
-        {
-            DrawFittedText(g, text, font, brush, rect, StringAlignment.Near);
-        }
-    }
-
-    private static Color GetClassicStripNeutralTextColor()
-    {
-        return DesignTokens.White(206);
-    }
-
-    private Font GetClassicStripTitleFont()
-    {
-        return GetCachedUiFont(Math.Max(22.0f, S(12.0f)), FontStyle.Bold);
-    }
-
-    private Font GetClassicStripHeaderStatusFont()
-    {
-        return GetCachedUiFont(Math.Max(16.0f, S(8.8f)), FontStyle.Bold);
-    }
-
-    private Font GetClassicStripSubtleFont()
-    {
-        return GetCachedUiFont(Math.Max(13.0f, S(6.8f)), FontStyle.Bold);
-    }
-
-    private Font GetClassicStripLabelFont()
-    {
-        return GetCachedUiFont(Math.Max(15.0f, S(7.6f)), FontStyle.Bold);
-    }
-
-    private Font GetClassicStripValueFont()
-    {
-        return GetCachedUiFont(Math.Max(16.0f, S(8.2f)), FontStyle.Bold);
-    }
-
-    private Font GetClassicStripFooterFont()
-    {
-        return GetCachedUiFont(Math.Max(16.0f, S(8.4f)), FontStyle.Bold);
-    }
-
-    private string BuildClassicStripLinkSummary()
+    private string BuildNetworkLinkSummary()
     {
         if (this.snapshot == null || !this.snapshot.InterfaceKnown)
         {
@@ -1137,102 +433,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return EmptyToDash(this.snapshot.InterfaceName) + " · " + EmptyToDash(this.snapshot.InterfaceType) + " · " + FormatLinkSpeed(this.snapshot.LinkSpeedBps);
     }
 
-    private string BuildClassicStripPublicAddressValue()
-    {
-        if (this.snapshot != null && this.snapshot.PublicIpRefreshing && !this.snapshot.PublicIpKnown)
-        {
-            return "...";
-        }
-
-        if (this.snapshot != null && this.snapshot.PublicIpKnown)
-        {
-            return EmptyToDash(this.snapshot.PublicIp);
-        }
-
-        return BuildPublicAddressValue();
-    }
-
-    private bool HasClassicStripPublicAddressValue()
-    {
-        return (this.snapshot != null && this.snapshot.PublicIpKnown) || HasPublicAddressDisplayValue();
-    }
-
-    private void DrawClassicStripDnsSegments(Graphics g, Font baseFont, RectangleF rect)
-    {
-        DnsDisplayItem[] items = BuildDnsDisplayItems();
-        if (items.Length == 0)
-        {
-            using (SolidBrush brush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
-            {
-                DrawFittedText(g, "--", baseFont, brush, rect, StringAlignment.Near);
-            }
-
-            return;
-        }
-
-        int visibleCount = Math.Min(2, items.Length);
-        List<DnsDisplaySegment> segments = new List<DnsDisplaySegment>();
-        for (int i = 0; i < visibleCount; i++)
-        {
-            if (i > 0)
-            {
-                segments.Add(new DnsDisplaySegment { Text = " , ", Color = GetClassicStripNeutralTextColor() });
-            }
-
-            segments.Add(new DnsDisplaySegment
-            {
-                Text = EmptyToDash(items[i].Address),
-                Color = GetClassicStripDnsStatusColor(items[i].Status)
-            });
-        }
-
-        int hiddenCount = items.Length - visibleCount;
-        if (hiddenCount > 0)
-        {
-            DnsServerStatus worstHidden = DnsServerStatus.Normal;
-            for (int i = visibleCount; i < items.Length; i++)
-            {
-                if (GetDnsStatusPriority(items[i].Status) > GetDnsStatusPriority(worstHidden))
-                {
-                    worstHidden = items[i].Status;
-                }
-            }
-
-            segments.Add(new DnsDisplaySegment
-            {
-                Text = " +" + hiddenCount.ToString(CultureInfo.InvariantCulture),
-                Color = GetClassicStripDnsStatusColor(worstHidden)
-            });
-        }
-
-        DrawDnsSegments(g, segments.ToArray(), baseFont, rect);
-    }
-
-    private DnsAlertCandidate GetClassicStripDnsAlert()
-    {
-        DnsDisplayItem[] items = BuildDnsDisplayItems();
-        for (int i = 0; i < items.Length; i++)
-        {
-            DnsDisplayItem item = items[i];
-            if (item == null || item.Detail == null || item.Status == DnsServerStatus.Normal)
-            {
-                continue;
-            }
-
-            return new DnsAlertCandidate
-            {
-                Key = GetDnsAlertCandidateKey(item.Detail, i),
-                Address = item.Address,
-                Text = "DNS" + GetDnsAlertReasonText(item.Detail),
-                Status = item.Status,
-                Color = GetClassicStripDnsStatusColor(item.Status)
-            };
-        }
-
-        return null;
-    }
-
-    private static Color GetClassicStripDnsStatusColor(DnsServerStatus status)
+    private static Color GetDockedDnsStatusColor(DnsServerStatus status)
     {
         if (status == DnsServerStatus.Normal)
         {
@@ -1247,35 +448,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return DesignTokens.Colors.Danger;
     }
 
-    private string BuildClassicStripPingText()
-    {
-        NetworkAccessState accessState = GetDisplayAccessState();
-        if (accessState == NetworkAccessState.Online)
-        {
-            return this.snapshot != null && this.snapshot.LatencyMs > 0.0
-                ? "OK PUB " + ((int)Math.Round(this.snapshot.LatencyMs)).ToString(CultureInfo.InvariantCulture) + "ms"
-                : "OK PUB";
-        }
-
-        if (accessState == NetworkAccessState.NeedsValidation)
-        {
-            return "需要验证";
-        }
-
-        if (accessState == NetworkAccessState.Offline)
-        {
-            return "OFFLINE";
-        }
-
-        if (accessState == NetworkAccessState.AdapterMissing)
-        {
-            return "无网卡";
-        }
-
-        return "检测中";
-    }
-
-    private string BuildClassicStripGfwText()
+    private string BuildDockedGfwText()
     {
         string text = BuildCompactGfwText();
         GfwProbeSnapshot gfw = this.snapshot == null ? null : this.snapshot.GfwProbe;
@@ -1286,16 +459,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
         return text;
     }
-
-    private void DrawClassicShellOutline(Graphics g)
-    {
-        using (GraphicsPath shell = RoundedRectangle(new RectangleF(0, 0, this.Width - 1, this.Height - 1), S(DesignTokens.Radius.Panel)))
-        using (Pen outline = new Pen(DesignTokens.White(DesignTokens.Alpha.ShellOutline), Math.Max(1, S(1))))
-        {
-            g.DrawPath(outline, shell);
-        }
-    }
-
 
     private string BuildCompactGfwText()
     {
@@ -1798,17 +961,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return Math.Min(desired, maxWidth);
     }
 
-    private string GetPingDiagnosisTextSuffix()
-    {
-        PingRollingSnapshot rolling = this.snapshot == null ? null : this.snapshot.PingRolling;
-        if (rolling == null || rolling.Diagnosis == PingPathDiagnosis.None || string.IsNullOrWhiteSpace(rolling.DiagnosisText))
-        {
-            return string.Empty;
-        }
-
-        return " | " + rolling.DiagnosisText.Trim();
-    }
-
     private DnsAlertCandidate[] GetDnsAlertCandidates()
     {
         return BuildDnsAlertCandidates(this.snapshot == null ? null : this.snapshot.DnsServerDetails);
@@ -2045,231 +1197,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return compact.ToString(0, maxLength - 1) + "…";
     }
 
-    private void DrawInfoRow(Graphics g, int row, string label, string value, float rowTop, float rowHeight, Color valueColor)
-    {
-        float y = rowTop + row * rowHeight;
-        float labelLeft = S(10);
-        Font labelFont = GetCachedUiFont(Math.Max(8.0f, rowHeight * 0.52f), FontStyle.Bold);
-        Font valueFont = GetCachedUiFont(Math.Max(8.5f, rowHeight * 0.58f), FontStyle.Bold);
-        float labelWidth = GetInfoRowLabelWidth(g, label, labelFont);
-        float valueGap = GetInfoRowValueGap();
-        RectangleF labelRect = new RectangleF(labelLeft, y, labelWidth, rowHeight);
-        bool drawPublicAddress = string.Equals(label, "IP4", StringComparison.Ordinal);
-        float rightWidth = GetInfoRowReservedRightWidth(g, label, valueFont, rowHeight);
-        float rightGap = rightWidth > 0.0f ? S(4) : 0.0f;
-        float valueWidth = Math.Max(S(28), this.Width - labelRect.Right - valueGap - S(10) - rightWidth - rightGap);
-        RectangleF valueRect = new RectangleF(labelRect.Right + valueGap, y, valueWidth, rowHeight);
-        if (string.Equals(label, "IP4", StringComparison.Ordinal))
-        {
-            value = BuildMeasuredAddressRowText(g, value, valueFont, valueRect.Width, 15);
-        }
-        else if (string.Equals(label, "IP6", StringComparison.Ordinal))
-        {
-            value = BuildMeasuredAddressRowText(g, value, valueFont, valueRect.Width, 24);
-        }
-
-        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
-        using (SolidBrush valueBrush = new SolidBrush(valueColor))
-        {
-            DrawFittedText(g, label, labelFont, labelBrush, labelRect, StringAlignment.Near);
-            DrawFittedText(g, value, valueFont, valueBrush, valueRect, StringAlignment.Near);
-        }
-
-        if (drawPublicAddress && rightWidth > 0.0f)
-        {
-            RectangleF publicRect = new RectangleF(Math.Max(S(10), this.Width - S(10) - rightWidth), y, rightWidth, rowHeight);
-            DrawPublicAddressModule(g, publicRect, valueFont);
-        }
-    }
-
-    private float GetInfoRowLabelWidth(Graphics g, string label, Font labelFont)
-    {
-        float measured = g == null || labelFont == null
-            ? S(18)
-            : g.MeasureString(EmptyToDash(label), labelFont).Width + S(2);
-        return Math.Min(S(34), Math.Max(S(18), measured));
-    }
-
-    private float GetInfoRowValueGap()
-    {
-        return S(2);
-    }
-
-    private float GetInfoRowReservedRightWidth(Graphics g, string label, Font valueFont, float rowHeight)
-    {
-        if (string.Equals(label, "IP4", StringComparison.Ordinal))
-        {
-            return GetPublicAddressStripWidth(g, valueFont, rowHeight);
-        }
-
-        return 0.0f;
-    }
-
-    private float GetPublicAddressStripWidth(Graphics g, Font font, float rowHeight)
-    {
-        Font drawFont = font ?? GetCachedUiFont(Math.Max(8.5f, rowHeight * 0.58f), FontStyle.Bold);
-        float measured = g == null
-            ? S(68)
-            : g.MeasureString(BuildPublicAddressText("公网"), drawFont).Width + S(4);
-        float minWidth = S(58);
-        float maxWidth = Math.Max(minWidth, this.Width * 0.38f);
-        return Math.Min(maxWidth, Math.Max(minWidth, measured));
-    }
-
-    private void DrawPublicAddressModule(Graphics g, RectangleF rect, Font font)
-    {
-        using (SolidBrush brush = new SolidBrush(HasPublicAddressDisplayValue() ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted))
-        {
-            DrawFittedText(g, BuildPublicAddressText("公网"), font, brush, rect, StringAlignment.Far);
-        }
-    }
-
-    private void DrawDnsRow(Graphics g, int row, float rowTop, float rowHeight)
-    {
-        float y = rowTop + row * rowHeight;
-        float labelLeft = S(10);
-        Font labelFont = GetCachedUiFont(Math.Max(8.0f, rowHeight * 0.52f), FontStyle.Bold);
-        Font valueFont = GetCachedUiFont(Math.Max(8.5f, rowHeight * 0.58f), FontStyle.Bold);
-        float labelWidth = GetInfoRowLabelWidth(g, "DNS", labelFont);
-        float valueGap = GetInfoRowValueGap();
-        RectangleF labelRect = new RectangleF(labelLeft, y, labelWidth, rowHeight);
-        RectangleF valueRect = new RectangleF(labelRect.Right + valueGap, y, this.Width - labelRect.Right - valueGap - S(10), rowHeight);
-        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
-        {
-            DrawFittedText(g, "DNS", labelFont, labelBrush, labelRect, StringAlignment.Near);
-        }
-
-        DnsDisplaySegment[] segments = BuildDnsDisplaySegments();
-        DrawDnsSegments(g, segments, valueFont, valueRect);
-    }
-
-    private void DrawDnsSegments(Graphics g, DnsDisplaySegment[] segments, Font baseFont, RectangleF rect)
-    {
-        if (segments == null || segments.Length == 0)
-        {
-            using (SolidBrush brush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
-            {
-                DrawFittedText(g, "--", baseFont, brush, rect, StringAlignment.Near);
-            }
-
-            return;
-        }
-
-        Font drawFont = baseFont;
-        float size = baseFont.Size;
-        float totalWidth = MeasureDnsSegments(g, segments, drawFont);
-        while (size > 7.0f * this.LayerScale && totalWidth > rect.Width)
-        {
-            size -= 0.7f * this.LayerScale;
-            drawFont = GetCachedUiFont(size, baseFont.Style);
-            totalWidth = MeasureDnsSegments(g, segments, drawFont);
-        }
-
-        RectangleF clip = rect;
-        Region oldClip = g.Clip;
-        try
-        {
-            g.SetClip(clip);
-            float x = rect.Left;
-            using (StringFormat format = new StringFormat())
-            {
-                format.Alignment = StringAlignment.Near;
-                format.LineAlignment = StringAlignment.Center;
-                format.Trimming = StringTrimming.None;
-                format.FormatFlags = StringFormatFlags.NoWrap;
-                for (int i = 0; i < segments.Length; i++)
-                {
-                    DnsDisplaySegment segment = segments[i];
-                    if (segment == null || string.IsNullOrEmpty(segment.Text))
-                    {
-                        continue;
-                    }
-
-                    float width = g.MeasureString(segment.Text, drawFont).Width;
-                    using (SolidBrush brush = new SolidBrush(segment.Color))
-                    {
-                        g.DrawString(segment.Text, drawFont, brush, new RectangleF(x, rect.Top, width + S(2), rect.Height), format);
-                    }
-
-                    x += width;
-                    if (x >= rect.Right)
-                    {
-                        break;
-                    }
-                }
-            }
-        }
-        finally
-        {
-            g.Clip = oldClip;
-            oldClip.Dispose();
-        }
-    }
-
-    private float MeasureDnsSegments(Graphics g, DnsDisplaySegment[] segments, Font font)
-    {
-        float width = 0.0f;
-        for (int i = 0; i < segments.Length; i++)
-        {
-            if (segments[i] != null && !string.IsNullOrEmpty(segments[i].Text))
-            {
-                width += g.MeasureString(segments[i].Text, font).Width;
-            }
-        }
-
-        return width;
-    }
-
-    private DnsDisplaySegment[] BuildDnsDisplaySegments()
-    {
-        DnsDisplayItem[] items = BuildDnsDisplayItems();
-        if (items.Length == 0)
-        {
-            return new DnsDisplaySegment[]
-            {
-                new DnsDisplaySegment { Text = "--", Color = DesignTokens.Colors.GlyphMuted }
-            };
-        }
-
-        int visibleCount = Math.Min(3, items.Length);
-        List<DnsDisplaySegment> segments = new List<DnsDisplaySegment>();
-        for (int i = 0; i < visibleCount; i++)
-        {
-            segments.Add(new DnsDisplaySegment
-            {
-                Text = (i == 0 ? string.Empty : ", ") + EmptyToDash(items[i].Address),
-                Color = GetDnsStatusColor(items[i].Status)
-            });
-        }
-
-        int hiddenCount = items.Length - visibleCount;
-        if (hiddenCount > 0)
-        {
-            DnsServerStatus worstHidden = DnsServerStatus.Normal;
-            for (int i = visibleCount; i < items.Length; i++)
-            {
-                if (GetDnsStatusPriority(items[i].Status) > GetDnsStatusPriority(worstHidden))
-                {
-                    worstHidden = items[i].Status;
-                }
-            }
-
-            segments.Add(new DnsDisplaySegment
-            {
-                Text = " +" + hiddenCount.ToString(CultureInfo.InvariantCulture),
-                Color = GetDnsStatusColor(worstHidden)
-            });
-        }
-
-        return segments.ToArray();
-    }
-
-    private DnsDisplayItem[] BuildDnsDisplayItems()
-    {
-        DnsServerSnapshot[] details = this.snapshot == null ? null : this.snapshot.DnsServerDetails;
-        return BuildDnsDisplayItems(details);
-    }
-
     private static DnsDisplayItem[] BuildDnsDisplayItems(DnsServerSnapshot[] details)
     {
         if (details == null || details.Length == 0)
@@ -2298,31 +1225,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return items.ToArray();
     }
 
-    private static int GetDnsStatusPriority(DnsServerStatus status)
-    {
-        if (status == DnsServerStatus.Hijacked)
-        {
-            return 400;
-        }
-
-        if (status == DnsServerStatus.Problem)
-        {
-            return 300;
-        }
-
-        if (status == DnsServerStatus.Unavailable)
-        {
-            return 200;
-        }
-
-        if (status == DnsServerStatus.Unknown)
-        {
-            return 100;
-        }
-
-        return 0;
-    }
-
     private static Color GetDnsStatusColor(DnsServerStatus status)
     {
         if (status == DnsServerStatus.Normal)
@@ -2343,131 +1245,9 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return DesignTokens.Colors.GlyphMuted;
     }
 
-    private string BuildInterfaceText()
+    private NetworkAccessState GetDisplayAccessState()
     {
-        if (this.snapshot == null || !this.snapshot.InterfaceKnown)
-        {
-            return "--";
-        }
-
-        return string.Format(
-            CultureInfo.InvariantCulture,
-            "{0} | {1} | {2}",
-            EmptyToDash(this.snapshot.InterfaceName),
-            EmptyToDash(this.snapshot.InterfaceType),
-            FormatLinkSpeed(this.snapshot.LinkSpeedBps));
-    }
-
-    private string BuildWifiText()
-    {
-        if (this.snapshot == null || !this.snapshot.IsWifi)
-        {
-            return "--";
-        }
-
-        WifiConnectionDetails wifi = this.snapshot.WifiDetails ?? new WifiConnectionDetails();
-        string ssid = EmptyToDash(wifi.Ssid);
-        string auth = EmptyToDash(wifi.AuthAlgorithm);
-        string cipher = EmptyToDash(wifi.CipherAlgorithm);
-        string phy = EmptyToDash(wifi.PhyType);
-        string signal = wifi.SignalQuality > 0 ? wifi.SignalQuality.ToString(CultureInfo.InvariantCulture) + "%" : "--";
-        string rate = FormatRateMbps(wifi.RxRateKbps) + "/" + FormatRateMbps(wifi.TxRateKbps);
-        return ssid + " | " + auth + "/" + cipher + " | PHY " + phy + " | " + signal + " | " + rate;
-    }
-
-    private string BuildConnectivityText()
-    {
-        if (this.snapshot == null || !this.snapshot.ConnectivityKnown)
-        {
-            return "checking " + NetworkMonitorTarget();
-        }
-
-        NetworkAccessState accessState = GetDisplayAccessState();
-        if (accessState == NetworkAccessState.NeedsValidation)
-        {
-            return "需要验证 | " + EmptyToDash(this.snapshot.AccessReason) + GetPingDiagnosisTextSuffix();
-        }
-
-        if (accessState == NetworkAccessState.Offline)
-        {
-            string reason = EmptyToDash(this.snapshot.AccessReason);
-            if (reason == "--")
-            {
-                reason = "loss " + Math.Max(0, this.snapshot.PacketLossPercent).ToString(CultureInfo.InvariantCulture) + "%";
-            }
-
-            return "FAIL " + NetworkMonitorTarget() + " | " + reason + GetPingDiagnosisTextSuffix();
-        }
-
-        if (accessState == NetworkAccessState.AdapterMissing)
-        {
-            return "网卡未识别 | " + EmptyToDash(this.snapshot.AccessReason) + GetPingDiagnosisTextSuffix();
-        }
-
-        PingRollingSnapshot rolling = this.snapshot.PingRolling;
-        if (rolling != null)
-        {
-            string profile = EmptyToDash(rolling.ActiveProfile);
-            if (profile == "--")
-            {
-                profile = NetworkMonitorTarget();
-            }
-
-            if (rolling.IcmpBlocked)
-            {
-                return "FAIL " + profile + " | ICMP不可用" + GetPingDiagnosisTextSuffix();
-            }
-
-            if (!rolling.StatsReady)
-            {
-                return string.Format(
-                    CultureInfo.InvariantCulture,
-                    "{0} {1} | 采样中 ({2}/{3})",
-                    this.snapshot.ConnectivityOnline ? "OK" : "FAIL",
-                    profile,
-                    Math.Max(0, rolling.SampleCount),
-                    RollingPingMinSamplesForDisplay()) + GetPingDiagnosisTextSuffix();
-            }
-
-            string jitter = rolling.JitterKnown
-                ? Math.Max(0.0, rolling.JitterMs).ToString("0", CultureInfo.InvariantCulture) + "ms"
-                : "--";
-            return string.Format(
-                CultureInfo.InvariantCulture,
-                "{0} {1} | {2:0}ms | jitter {3} | loss {4:0.0}% ({5}/{6})",
-                this.snapshot.ConnectivityOnline ? "OK" : "FAIL",
-                profile,
-                Math.Max(0.0, rolling.LatencyMs),
-                jitter,
-                Math.Max(0.0, Math.Min(100.0, rolling.LossPercent)),
-                Math.Max(0, rolling.LostCount),
-                Math.Max(0, rolling.SampleCount)) + GetPingDiagnosisTextSuffix();
-        }
-
-        string state = this.snapshot.ConnectivityOnline ? "OK" : "FAIL";
-        return string.Format(
-            CultureInfo.InvariantCulture,
-            "{0} {1} | {2:0}ms | jitter {3:0}ms | loss {4}%",
-            state,
-            NetworkMonitorTarget(),
-            Math.Max(0.0, this.snapshot.LatencyMs),
-            Math.Max(0.0, this.snapshot.JitterMs),
-            Math.Max(0, this.snapshot.PacketLossPercent));
-    }
-
-    private string NetworkMonitorTarget()
-    {
-        if (this.snapshot != null && this.snapshot.PingRolling != null && !string.IsNullOrWhiteSpace(this.snapshot.PingRolling.ActiveProfile))
-        {
-            return this.snapshot.PingRolling.ActiveProfile.Trim();
-        }
-
-        return this.snapshot == null ? "1.1.1.1" : EmptyToDash(this.snapshot.ConnectivityTarget);
-    }
-
-    private static int RollingPingMinSamplesForDisplay()
-    {
-        return 10;
+        return GetDisplayAccessState(this.snapshot);
     }
 
     private Color GetConnectivityColor()
@@ -2479,11 +1259,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         }
 
         return GetAccessStateColor(accessState);
-    }
-
-    private NetworkAccessState GetDisplayAccessState()
-    {
-        return GetDisplayAccessState(this.snapshot);
     }
 
     // Connectivity as the guard board's offline auto-sleep needs it: a definite true/false only when
@@ -2619,47 +1394,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return DesignTokens.Colors.GlyphMuted;
     }
 
-    private string BuildGfwProbeText()
-    {
-        GfwProbeSnapshot gfw = this.snapshot == null ? null : this.snapshot.GfwProbe;
-        if (gfw == null || !gfw.Enabled || gfw.Status == GfwProbeStatus.Disabled)
-        {
-            return "关闭";
-        }
-
-        string text;
-        if (gfw.Running && !gfw.CheckedAtKnown)
-        {
-            text = "检测中";
-        }
-        else if (gfw.Status == GfwProbeStatus.Unknown || gfw.Status == GfwProbeStatus.Checking)
-        {
-            text = "等待检测";
-        }
-        else
-        {
-            text = EmptyToDash(gfw.Detail);
-        }
-
-        string reason = EmptyToDash(gfw.Reason);
-        if (reason != "--")
-        {
-            text += " | " + reason;
-        }
-
-        if (gfw.CheckedAtKnown)
-        {
-            text += " | " + gfw.CheckedAtLocal.ToString("HH:mm", CultureInfo.InvariantCulture);
-        }
-
-        if (gfw.Running && gfw.CheckedAtKnown)
-        {
-            text += " | 更新中";
-        }
-
-        return text;
-    }
-
     private Color GetGfwProbeColor()
     {
         GfwProbeSnapshot gfw = this.snapshot == null ? null : this.snapshot.GfwProbe;
@@ -2718,74 +1452,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return string.IsNullOrWhiteSpace(value) ? "--" : value.Trim();
     }
 
-    private string BuildPublicAddressText(string prefix)
-    {
-        return EmptyToDash(prefix) + " " + BuildPublicAddressValue();
-    }
-
-    private string BuildPublicAddressValue()
-    {
-        string publicIpv6;
-        if (TryGetPrimaryPublicIpv6(this.snapshot == null ? null : this.snapshot.IPv6, out publicIpv6))
-        {
-            return CompactIpAddressForDisplay(publicIpv6, 16);
-        }
-
-        if (this.snapshot != null && this.snapshot.PublicIpRefreshing && !this.snapshot.PublicIpKnown)
-        {
-            return "...";
-        }
-
-        return EmptyToDash(this.snapshot == null ? null : this.snapshot.PublicIp);
-    }
-
-    private bool HasPublicAddressDisplayValue()
-    {
-        string publicIpv6;
-        if (TryGetPrimaryPublicIpv6(this.snapshot == null ? null : this.snapshot.IPv6, out publicIpv6))
-        {
-            return true;
-        }
-
-        return this.snapshot != null && this.snapshot.PublicIpKnown;
-    }
-
-    private string BuildMeasuredAddressRowText(Graphics g, string value, Font font, float maxWidth, int maxAddressLength)
-    {
-        string text = BuildSingleAddressRowText(value, int.MaxValue);
-        if (DoesTextFit(g, text, font, maxWidth))
-        {
-            return text;
-        }
-
-        text = BuildSingleAddressRowText(value, maxAddressLength);
-        if (DoesTextFit(g, text, font, maxWidth))
-        {
-            return text;
-        }
-
-        for (int length = Math.Max(8, maxAddressLength - 2); length >= 8; length -= 2)
-        {
-            text = BuildSingleAddressRowText(value, length);
-            if (DoesTextFit(g, text, font, maxWidth))
-            {
-                return text;
-            }
-        }
-
-        return text;
-    }
-
-    private static bool DoesTextFit(Graphics g, string text, Font font, float maxWidth)
-    {
-        if (g == null || font == null || maxWidth <= 0.0f)
-        {
-            return false;
-        }
-
-        return g.MeasureString(text ?? string.Empty, font).Width <= maxWidth;
-    }
-
     private static string BuildSingleAddressRowText(string value, int maxAddressLength)
     {
         List<string> addresses = ExtractAddressList(value);
@@ -2816,46 +1482,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
         IPAddress address;
         return IPAddress.TryParse(text, out address) ? address.ToString() : text;
-    }
-
-    private static bool TryGetPrimaryPublicIpv6(string value, out string publicIpv6)
-    {
-        publicIpv6 = string.Empty;
-        List<string> addresses = ExtractAddressList(value);
-        for (int i = 0; i < addresses.Count; i++)
-        {
-            IPAddress address;
-            if (IPAddress.TryParse(addresses[i], out address) && IsPublicRoutableIpv6(address))
-            {
-                publicIpv6 = address.ToString();
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool IsPublicRoutableIpv6(IPAddress address)
-    {
-        if (address == null || address.AddressFamily != AddressFamily.InterNetworkV6)
-        {
-            return false;
-        }
-
-        if (address.IsIPv6LinkLocal || address.IsIPv6Multicast || address.IsIPv6SiteLocal)
-        {
-            return false;
-        }
-
-        byte[] bytes = address.GetAddressBytes();
-        if (bytes == null || bytes.Length == 0 || bytes[0] == 0)
-        {
-            return false;
-        }
-
-        // fc00::/7 is ULA. It is valid on a local network but should not be
-        // shown as the public address in the compact header.
-        return (bytes[0] & 0xFE) != 0xFC;
     }
 
     private static List<string> ExtractAddressList(string value)
@@ -3296,51 +1922,7 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
     private bool IsBurnInColorProtectionActive()
     {
-        // Hidden-mode colour inversion belongs to the floating hover-opacity feature. Applying it
-        // to a hover-summoned board produces the reported inverted/vanishing panel and differs from
-        // both SpecBoard and CodexTask.
-        return !this.IsLeftDocked && BurnInProtection.ShouldApplyHiddenModeColorProtection(
-            this.CurrentSettings,
-            IsHoverOpacityTargetActive());
-    }
-
-    private void EnsureContentBuffer()
-    {
-        if (this.contentBitmap != null &&
-            this.contentGraphics != null &&
-            this.contentBitmap.Width == this.Width &&
-            this.contentBitmap.Height == this.Height)
-        {
-            return;
-        }
-
-        if (this.contentGraphics != null)
-        {
-            this.contentGraphics.Dispose();
-        }
-
-        if (this.contentBitmap != null)
-        {
-            this.contentBitmap.Dispose();
-        }
-
-        this.contentBitmap = new Bitmap(this.Width, this.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-        this.contentGraphics = Graphics.FromImage(this.contentBitmap);
-    }
-
-    protected override void DisposeAdditionalRenderBuffers()
-    {
-        if (this.contentGraphics != null)
-        {
-            this.contentGraphics.Dispose();
-            this.contentGraphics = null;
-        }
-
-        if (this.contentBitmap != null)
-        {
-            this.contentBitmap.Dispose();
-            this.contentBitmap = null;
-        }
+        return false;
     }
 
     private Font GetCachedUiFont(float size, FontStyle style)
@@ -3372,65 +1954,74 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         this.dockFonts.Dispose();
     }
 
-    private int GetBackgroundOpacityAlpha()
-    {
-        return ComputeOpacityAlpha(this.CurrentSettings.NetworkMonitorTransparencyPercent);
-    }
-
-    private int GetContentOpacityAlpha()
-    {
-        return ComputeOpacityAlpha(this.CurrentSettings.ApplicationTransparencyPercent);
-    }
-
-    // Docked, the panel is a member of the left-dock board family and must present exactly like
-    // its two siblings, so it follows the Spec board's transparency/scale overrides (the dock tab
-    // already does) instead of the network window's own knobs.
+    // The docked network role keeps its own transparency/scale slots; sibling board style must not
+    // leak into it.
     protected override int WindowTransparencyOverridePercent
     {
-        get
-        {
-            return this.IsLeftDocked
-                ? this.CurrentSettings.SpecBoardTransparencyOverridePercent
-                : this.CurrentSettings.NetworkMonitorTransparencyOverridePercent;
-        }
+        get { return this.CurrentSettings.NetworkMonitorTransparencyOverridePercent; }
     }
 
     protected override int WindowScaleOverridePercent
     {
-        get
-        {
-            return this.IsLeftDocked
-                ? this.CurrentSettings.SpecBoardScaleOverridePercent
-                : this.CurrentSettings.NetworkMonitorScaleOverridePercent;
-        }
+        get { return this.CurrentSettings.NetworkMonitorScaleOverridePercent; }
+    }
+
+    protected override bool CanRenderLayeredWindow()
+    {
+        return !this.displaySuspended;
     }
 
     protected override int ApplyHoverAlpha(int alpha)
     {
-        // The hover fade belongs to the always-visible floating strip; a hover-summoned docked
-        // panel fading because it is being hovered would be self-defeating.
-        return this.IsLeftDocked ? alpha : ApplyHoverTransparencyTarget(alpha);
-    }
-
-    private int ApplyHoverTransparencyTarget(int alpha)
-    {
-        if (!IsHoverOpacityRuntimeEnabled() || this.hoverOpacityProgress <= 0.0)
-        {
-            return alpha;
-        }
-
-        int hoverAlpha = (int)Math.Round(255.0 * 0.05);
-        if (alpha <= hoverAlpha)
-        {
-            return alpha;
-        }
-
-        double animated = alpha + (hoverAlpha - alpha) * this.hoverOpacityProgress;
-        return Math.Max(0, Math.Min(255, (int)Math.Round(animated)));
+        return alpha;
     }
 
     internal static void RunNetworkMonitorDisplaySelfTest()
     {
+        CleanIpConnectionSnapshot cleanIp = new CleanIpConnectionSnapshot
+        {
+            CheckedAtKnown = true,
+            CheckedAtLocal = new DateTime(2026, 7, 22, 12, 30, 0),
+            Success = true,
+            ScoreKnown = true,
+            Score = 92,
+            Grade = "A",
+            NativeLabel = "原生",
+            IpTypeLabel = "住宅",
+            Ip = "203.0.113.10",
+            Location = "Tokyo",
+            Asn = "AS64500",
+            Organization = "Example",
+            IpTypeReason = "可信",
+            Error = string.Empty
+        };
+        if (!HasSameCleanIpDisplayData(cleanIp, cleanIp.Clone()))
+        {
+            throw new InvalidOperationException("Network monitor display self-test: identical Clean IP snapshots must not redraw.");
+        }
+
+        CleanIpConnectionSnapshot changedCleanIp = cleanIp.Clone();
+        changedCleanIp.Score = 91;
+        if (HasSameCleanIpDisplayData(cleanIp, changedCleanIp))
+        {
+            throw new InvalidOperationException("Network monitor display self-test: Clean IP score changes must redraw.");
+        }
+
+        changedCleanIp = cleanIp.Clone();
+        changedCleanIp.NativeLabel = "广播";
+        if (HasSameCleanIpDisplayData(cleanIp, changedCleanIp))
+        {
+            throw new InvalidOperationException("Network monitor display self-test: Clean IP native-label changes must redraw.");
+        }
+
+        changedCleanIp = cleanIp.Clone();
+        changedCleanIp.Error = "lookup failed";
+        changedCleanIp.IpTypeReason = string.Empty;
+        if (HasSameCleanIpDisplayData(cleanIp, changedCleanIp))
+        {
+            throw new InvalidOperationException("Network monitor display self-test: Clean IP error changes must redraw.");
+        }
+
         CloudEndpointSnapshot[] endpoints = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Normal);
         string order = string.Empty;
         for (int i = 0; i < endpoints.Length; i++)
@@ -3474,13 +2065,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             compactIpv6.IndexOf("+2", StringComparison.Ordinal) < 0)
         {
             throw new InvalidOperationException("Network monitor display self-test: IPv6 compact row must keep one address and hidden count.");
-        }
-
-        string publicIpv6;
-        if (!TryGetPrimaryPublicIpv6("fd00::1234, 2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890", out publicIpv6) ||
-            publicIpv6.IndexOf("2406:da18", StringComparison.Ordinal) < 0)
-        {
-            throw new InvalidOperationException("Network monitor display self-test: public IPv6 priority failed.");
         }
 
         DnsServerSnapshot[] dns = new DnsServerSnapshot[]
@@ -3546,20 +2130,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
         using (NetworkMonitorForm form = new NetworkMonitorForm(WidgetSettings.CreateDefaults()))
         {
-            form.snapshot = new NetworkMonitorSnapshot
-            {
-                IPv6 = "fd00::1234, 2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890",
-                PublicIp = "203.0.113.10",
-                PublicIpKnown = true
-            };
-            string publicText = form.BuildPublicAddressText("公网");
-            if (publicText.IndexOf("203.0.113.10", StringComparison.Ordinal) >= 0 ||
-                publicText.IndexOf("2406:", StringComparison.Ordinal) < 0 ||
-                publicText.Length > 22)
-            {
-                throw new InvalidOperationException("Network monitor display self-test: compact public IPv6 must override IPv4.");
-            }
-
             form.Width = 360;
             form.snapshot = new NetworkMonitorSnapshot
             {
@@ -3574,88 +2144,36 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
                     CloudEndpoints = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Normal)
                 }
             };
-            float testRowHeight = 18.0f;
-            using (Bitmap testBitmap = new Bitmap(form.Width, 120))
-            using (Graphics testGraphics = Graphics.FromImage(testBitmap))
+
+            CloudEndpointAlertCandidate[] headerCandidates = form.GetCloudEndpointAlertCandidates(NetworkAccessState.Online);
+            if (headerCandidates.Length != 2 ||
+                !string.Equals(headerCandidates[0].Key, "dns:1.1.1.1", StringComparison.Ordinal) ||
+                !string.Equals(headerCandidates[0].Name, "DNS", StringComparison.Ordinal) ||
+                headerCandidates[0].Reason.IndexOf("仅TCP@1.1.1.1", StringComparison.Ordinal) < 0)
             {
-                Font labelFont = form.GetCachedUiFont(Math.Max(8.0f, testRowHeight * 0.52f), FontStyle.Bold);
-                float oldFixedLabelWidth = form.S(42);
-                float ip4LabelWidth = form.GetInfoRowLabelWidth(testGraphics, "IP4", labelFont);
-                if (ip4LabelWidth > oldFixedLabelWidth * 0.65f)
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: IP row label gap must be tightened.");
-                }
+                throw new InvalidOperationException("Network monitor display self-test: DNS errors must join the cloud header alert candidates.");
+            }
 
-                Font addressFont = form.GetCachedUiFont(10.0f, FontStyle.Bold);
-                if (form.GetInfoRowReservedRightWidth(testGraphics, "GFW", addressFont, testRowHeight) != 0.0f ||
-                    form.GetInfoRowReservedRightWidth(testGraphics, "IP6", addressFont, testRowHeight) != 0.0f)
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: only IP4 row may reserve a right-side module.");
-                }
+            if (!form.AdvanceCloudEndpointAlertRotation())
+            {
+                throw new InvalidOperationException("Network monitor display self-test: combined header alert rotation initial state failed.");
+            }
 
-                float ip4ReservedWidth = form.GetInfoRowReservedRightWidth(testGraphics, "IP4", addressFont, testRowHeight);
-                if (ip4ReservedWidth <= 0.0f)
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: IP4 row must reserve public address module width.");
-                }
+            CloudEndpointAlert headerAlert = form.GetCloudEndpointAlert(NetworkAccessState.Online);
+            if (!headerAlert.Active || !string.Equals(headerAlert.Text, "DNS!", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Network monitor display self-test: DNS header alert must show source name first.");
+            }
 
-                CloudEndpointAlertCandidate[] headerCandidates = form.GetCloudEndpointAlertCandidates(NetworkAccessState.Online);
-                if (headerCandidates.Length != 2 ||
-                    !string.Equals(headerCandidates[0].Key, "dns:1.1.1.1", StringComparison.Ordinal) ||
-                    !string.Equals(headerCandidates[0].Name, "DNS", StringComparison.Ordinal) ||
-                    headerCandidates[0].Reason.IndexOf("仅TCP@1.1.1.1", StringComparison.Ordinal) < 0)
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: DNS errors must join the cloud header alert candidates.");
-                }
+            if (!form.AdvanceCloudEndpointAlertRotation())
+            {
+                throw new InvalidOperationException("Network monitor display self-test: combined header alert rotation reason phase failed.");
+            }
 
-                if (!form.AdvanceCloudEndpointAlertRotation())
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: combined header alert rotation initial state failed.");
-                }
-
-                CloudEndpointAlert headerAlert = form.GetCloudEndpointAlert(NetworkAccessState.Online);
-                if (!headerAlert.Active || !string.Equals(headerAlert.Text, "DNS!", StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: DNS header alert must show source name first.");
-                }
-
-                if (!form.AdvanceCloudEndpointAlertRotation())
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: combined header alert rotation reason phase failed.");
-                }
-
-                headerAlert = form.GetCloudEndpointAlert(NetworkAccessState.Online);
-                if (!headerAlert.Active || headerAlert.Text.IndexOf("仅TCP@1.1.1.1!", StringComparison.Ordinal) < 0)
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: DNS header alert must rotate to the concrete reason.");
-                }
-
-                string measuredFullIpv6 = form.BuildMeasuredAddressRowText(
-                    testGraphics,
-                    "2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890, fd00::1",
-                    addressFont,
-                    1000.0f,
-                    24);
-                if (measuredFullIpv6.IndexOf("2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890", StringComparison.Ordinal) < 0 ||
-                    measuredFullIpv6.IndexOf("+1", StringComparison.Ordinal) < 0 ||
-                    measuredFullIpv6.IndexOf(",", StringComparison.Ordinal) >= 0)
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: measured IPv6 row must keep one full address when it fits.");
-                }
-
-                string measuredCompactIpv6 = form.BuildMeasuredAddressRowText(
-                    testGraphics,
-                    "2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890, fd00::1",
-                    addressFont,
-                    90.0f,
-                    24);
-                if (measuredCompactIpv6.IndexOf("2406:da18:7c3:8f00", StringComparison.Ordinal) >= 0 ||
-                    measuredCompactIpv6.IndexOf("…", StringComparison.Ordinal) < 0 ||
-                    measuredCompactIpv6.IndexOf("+1", StringComparison.Ordinal) < 0 ||
-                    measuredCompactIpv6.IndexOf(",", StringComparison.Ordinal) >= 0)
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: measured IPv6 row must compact only the first address when width is tight.");
-                }
+            headerAlert = form.GetCloudEndpointAlert(NetworkAccessState.Online);
+            if (!headerAlert.Active || headerAlert.Text.IndexOf("仅TCP@1.1.1.1!", StringComparison.Ordinal) < 0)
+            {
+                throw new InvalidOperationException("Network monitor display self-test: DNS header alert must rotate to the concrete reason.");
             }
         }
 
@@ -3671,7 +2189,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Network monitor display self-test: DNS normal alert mapping failed.");
         }
 
-        RunClassicStripLayoutSelfTest();
         RunDockedLayoutSelfTest();
     }
 
@@ -3719,7 +2236,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         }
 
         WidgetSettings settings = WidgetSettings.CreateDefaults();
-        settings.NetworkMonitorLeftDockEnabled = true;
         settings.SpecBoardWidth = 648;
         settings.SpecBoardHeight = 400;
         // Reproduce the user's 200%-DPI + 50%-compatibility combination: LayerScale is 1.0,
@@ -3754,10 +2270,9 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
                 throw new InvalidOperationException("Network monitor docked self-test: the default width must keep two columns.");
             }
 
-            // Style contract: docked presentation follows the Spec board's overrides, not the
-            // network window's own transparency/scale/hover knobs. This is what keeps the three
-            // left-dock boards visually interchangeable. Settings are assigned directly instead of
-            // via ApplyRuntimeSettings so the self-test never materialises a real dock tab window.
+            // Style contract: the board keeps the Network role's transparency/scale slots and has
+            // no floating hover/click-through state. Settings are assigned directly so the test
+            // never materialises a real dock tab window.
             WidgetSettings overrides = settings.Clone();
             overrides.SpecBoardTransparencyOverridePercent = 40;
             overrides.NetworkMonitorTransparencyOverridePercent = 90;
@@ -3769,27 +2284,18 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             overrides.BurnInHiddenModeColorProtectionEnabled = true;
             overrides.Normalize();
             form.CurrentSettings = overrides;
-            if (form.WindowTransparencyOverridePercent != overrides.SpecBoardTransparencyOverridePercent ||
-                form.WindowScaleOverridePercent != overrides.SpecBoardScaleOverridePercent)
+            if (form.WindowTransparencyOverridePercent != overrides.NetworkMonitorTransparencyOverridePercent ||
+                form.WindowScaleOverridePercent != overrides.NetworkMonitorScaleOverridePercent)
             {
-                throw new InvalidOperationException("Network monitor docked self-test: docked overrides must follow the Spec board.");
+                throw new InvalidOperationException("Network monitor docked self-test: docked overrides must use the Network role slots.");
             }
 
-            form.hoverOpacityProgress = 1.0;
             if (form.ApplyHoverAlpha(255) != 255)
             {
                 throw new InvalidOperationException("Network monitor docked self-test: hover fade must not apply to the docked panel.");
             }
 
-            form.reverseHoverRevealUntilUtc = DateTime.UtcNow.AddMinutes(1.0);
-            form.UpdateHoverAnimationTimer();
-            if (form.hoverOpacityProgress != 0.0 ||
-                form.reverseHoverRevealUntilUtc != DateTime.MinValue ||
-                form.IsHoverOpacityRuntimeEnabled() ||
-                form.IsHoverOpacityTargetActive() ||
-                form.ShouldClickThroughNow() ||
-                form.NeedsClickThroughPolling() ||
-                form.IsBurnInColorProtectionActive() ||
+            if (form.IsBurnInColorProtectionActive() ||
                 form.ProcessSharedInteractionTick() ||
                 !form.ShouldUseTopMostPlacement())
             {
@@ -3808,143 +2314,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
 
         Console.WriteLine("Network monitor docked layout: PASS spec-board-size dpi-scale-unclamped spec-overrides board-interaction-isolation footer-refresh-close-hit single-column-degrade");
     }
-
-    // The network layout is a fixed-canvas flat strip. These checks keep the reference
-    // geometry and sample content from regressing.
-    private static void RunClassicStripLayoutSelfTest()
-    {
-
-        WidgetSettings settings = WidgetSettings.CreateDefaults();
-        settings.NetworkMonitorRenderVariant = NetworkMonitorRenderVariant.Classic;
-        // This block covers the floating strip geometry; docked mode has its own size contract
-        // (it follows the Spec board) and is asserted by RunDockedLayoutSelfTest.
-        settings.NetworkMonitorLeftDockEnabled = false;
-        settings.NetworkMonitorWidth = 520;
-        settings.NetworkMonitorHeight = 250;
-        settings.NetworkMonitorTransparencyPercent = 0;
-        settings.Normalize();
-        using (NetworkMonitorForm form = new NetworkMonitorForm(settings))
-        {
-            form.SetLayerScale(2.0f);
-            form.Width = 520;
-            form.Height = 250;
-            form.snapshot = BuildSampleSnapshot();
-
-            if (form.GetEffectiveNetworkMonitorWidth() != ClassicStripLayout.WidthCompact ||
-                form.GetDesiredSize().Width != ClassicStripLayout.WidthCompact)
-            {
-                throw new InvalidOperationException("Network monitor display self-test: normal Classic strip content must stay at the compact width.");
-            }
-
-            NetworkMonitorSnapshot wideSnapshot = BuildSampleSnapshot();
-            wideSnapshot.WifiDetails.Ssid = "VeryLongNetworkNameForClassicAutoWidthExpansion";
-            wideSnapshot.IPv6 = "2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890, 2606:4700:4700::1111";
-            wideSnapshot.DnsServerDetails = new DnsServerSnapshot[]
-            {
-                new DnsServerSnapshot { Address = "2001:4860:4860::8888", Status = DnsServerStatus.Problem, Reason = "UDP失败/TCP可用" },
-                new DnsServerSnapshot { Address = "2606:4700:4700::1111", Status = DnsServerStatus.Normal, Reason = "正常" },
-                new DnsServerSnapshot { Address = "2620:fe::fe", Status = DnsServerStatus.Normal, Reason = "正常" }
-            };
-            wideSnapshot.GfwProbe = new GfwProbeSnapshot
-            {
-                Enabled = true,
-                Status = GfwProbeStatus.SuspectedTlsSni,
-                CheckedAtKnown = true,
-                CheckedAtLocal = new DateTime(2026, 7, 8, 1, 23, 0),
-                CloudEndpoints = CloudEndpointSnapshot.CreateDefaults(CloudEndpointStatus.Normal)
-            };
-            form.snapshot = wideSnapshot;
-            if (form.GetEffectiveNetworkMonitorWidth() != ClassicStripLayout.WidthMaximum ||
-                form.GetDesiredSize().Width > ClassicStripLayout.WidthMaximum)
-            {
-                throw new InvalidOperationException("Network monitor display self-test: long Classic strip content must auto-expand to the 628px cap.");
-            }
-
-            form.snapshot = BuildSampleSnapshot();
-
-            if (!string.Equals(form.BuildClassicStripLinkSummary(), "HomeNet-5G · WPA3 · 88% · 866M/433M", StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("Network monitor display self-test: Classic strip link summary changed.");
-            }
-
-            if (!string.Equals(form.BuildClassicStripPublicAddressValue(), "203.0.113.10", StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("Network monitor display self-test: Classic strip public module must use compact public IPv4 text.");
-            }
-
-            if (!string.Equals(form.BuildClassicStripPingText(), "OK PUB 18ms", StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("Network monitor display self-test: Classic strip PING text changed.");
-            }
-
-            if (!string.Equals(form.BuildClassicStripGfwText(), "正常 00:00", StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("Network monitor display self-test: Classic strip GFW text changed.");
-            }
-
-            DnsAlertCandidate dnsAlert = form.GetClassicStripDnsAlert();
-            if (dnsAlert == null || !string.Equals(dnsAlert.Text, "DNS返回SERVFAIL", StringComparison.Ordinal))
-            {
-                throw new InvalidOperationException("Network monitor display self-test: Classic strip DNS alert changed.");
-            }
-
-            float w = form.Width;
-            float h = form.Height;
-            RectangleF ip4Value = new RectangleF(
-                ClassicStripLayout.ValueLeft * w,
-                ClassicStripLayout.Ip4Top * h,
-                ClassicStripLayout.RightModuleLeft * w - ClassicStripLayout.ValueLeft * w - Math.Max(5.0f, w * (10.0f / ClassicStripLayout.ReferenceWidth)),
-                ClassicStripLayout.InfoRowHeight * h);
-            RectangleF ip6Value = new RectangleF(
-                ClassicStripLayout.ValueLeft * w,
-                ClassicStripLayout.Ip6Top * h,
-                ClassicStripLayout.Right * w - ClassicStripLayout.ValueLeft * w,
-                ClassicStripLayout.InfoRowHeight * h);
-            RectangleF publicModule = new RectangleF(
-                ClassicStripLayout.RightModuleLeft * w,
-                ClassicStripLayout.Ip4Top * h,
-                ClassicStripLayout.Right * w - ClassicStripLayout.RightModuleLeft * w,
-                ClassicStripLayout.InfoRowHeight * h);
-            RectangleF tiles = new RectangleF(
-                ClassicStripLayout.CloudTilesLeft * w,
-                ClassicStripLayout.FooterTop * h,
-                (ClassicStripLayout.CloudTilesRight - ClassicStripLayout.CloudTilesLeft) * w,
-                ClassicStripLayout.FooterHeight * h);
-            if (ip4Value.IntersectsWith(publicModule) || tiles.Right > form.Width + 0.5f || tiles.Left <= 0.0f)
-            {
-                throw new InvalidOperationException("Network monitor display self-test: Classic strip modules must not collide.");
-            }
-
-            using (Bitmap bitmap = new Bitmap(form.Width, form.Height))
-            using (Graphics g = Graphics.FromImage(bitmap))
-            {
-                Font labelFont = form.GetClassicStripLabelFont();
-                Font valueFont = form.GetClassicStripValueFont();
-                if (labelFont.Size < 15.0f)
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: Classic strip labels must stay readable.");
-                }
-
-                string fullIpv6 = form.BuildMeasuredAddressRowText(
-                    g,
-                    "2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890, fd00::1",
-                    valueFont,
-                    ip6Value.Width,
-                    24);
-                if (fullIpv6.IndexOf("2406:da18:7c3:8f00:1a2b:3c4d:5e6f:7890", StringComparison.Ordinal) < 0 ||
-                    fullIpv6.IndexOf("+1", StringComparison.Ordinal) < 0 ||
-                    fullIpv6.IndexOf("…", StringComparison.Ordinal) >= 0 ||
-                    !DoesTextFit(g, fullIpv6, valueFont, ip6Value.Width))
-                {
-                    throw new InvalidOperationException("Network monitor display self-test: compact Classic strip must keep a full IPv6 address at 520px width.");
-                }
-
-                g.Clear(Color.FromArgb(15, 15, 19));
-                form.DrawContent(g);
-            }
-        }
-    }
-
 
     private sealed class CloudEndpointAlert
     {
@@ -3968,12 +2337,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         public string Address;
         public string Text;
         public DnsServerStatus Status;
-        public Color Color;
-    }
-
-    private sealed class DnsDisplaySegment
-    {
-        public string Text;
         public Color Color;
     }
 

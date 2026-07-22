@@ -8,7 +8,8 @@ internal enum EdgeDockTabRole
     Network,
     SpecBoard,
     CodexTask,
-    Guard
+    Guard,
+    CodexIq
 }
 
 // A 5x30 logical right-pointing trapezoid parked against the left screen edge. It is the only
@@ -42,12 +43,13 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     private readonly System.Windows.Forms.Timer hoverTimer;
     private readonly int burnInSalt;
     private readonly string logName;
-    private readonly bool followsCodexTaskBoardTransparency;
+    private readonly EdgeDockTabRole settingsRole;
     private Func<Point> cursorPositionProvider;
     private Color accent;
     private bool hovered;
     private bool boardExpanded;
     private bool displaySuspended;
+    private bool hiddenForFullscreen;
     private long burnInSlot = long.MinValue;
     private int anchorCenterY;
 
@@ -55,12 +57,12 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     public event EventHandler HoverExited;
     public event EventHandler PollTick;
 
-    public EdgeDockTabForm(WidgetSettings settings, Color accent, int burnInSalt, string logName, bool followsCodexTaskBoardTransparency)
+    public EdgeDockTabForm(WidgetSettings settings, Color accent, int burnInSalt, string logName, EdgeDockTabRole settingsRole)
     {
         this.accent = accent;
         this.burnInSalt = burnInSalt;
         this.logName = string.IsNullOrEmpty(logName) ? "EdgeDockTab" : logName;
-        this.followsCodexTaskBoardTransparency = followsCodexTaskBoardTransparency;
+        this.settingsRole = settingsRole;
         this.cursorPositionProvider = delegate { return Cursor.Position; };
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
@@ -72,7 +74,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
         // The title remains visually hidden on this borderless tool window, but gives accessibility
-        // and test clients a stable way to distinguish the four otherwise anonymous 5x30 tabs.
+        // and test clients a stable way to distinguish the otherwise anonymous 5x30 tabs.
         this.Text = this.logName;
         this.AccessibleName = this.logName;
         this.BackColor = Color.Black;
@@ -92,9 +94,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     {
         get
         {
-            return this.followsCodexTaskBoardTransparency
-                ? this.CurrentSettings.CodexTaskBoardTransparencyOverridePercent
-                : this.CurrentSettings.SpecBoardTransparencyOverridePercent;
+            return ResolveTransparencyOverride(this.CurrentSettings, this.settingsRole);
         }
     }
 
@@ -102,15 +102,23 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     {
         get
         {
-            return this.followsCodexTaskBoardTransparency
-                ? this.CurrentSettings.CodexTaskBoardScaleOverridePercent
-                : this.CurrentSettings.SpecBoardScaleOverridePercent;
+            return ResolveScaleOverride(this.CurrentSettings, this.settingsRole);
         }
+    }
+
+    internal static int ResolveTransparencyOverride(WidgetSettings settings, EdgeDockTabRole role)
+    {
+        return LeftDockLayout.ResolveTransparencyOverride(settings, role);
+    }
+
+    internal static int ResolveScaleOverride(WidgetSettings settings, EdgeDockTabRole role)
+    {
+        return LeftDockLayout.ResolveScaleOverride(settings, role);
     }
 
     protected override bool CanRenderLayeredWindow()
     {
-        return !this.displaySuspended;
+        return !LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen);
     }
 
     protected override bool IsLayeredBurnInColorProtectionActive()
@@ -128,7 +136,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
 
     private Size GetDesiredSize()
     {
-        return new Size(S(LogicalWidth), S(LogicalHeight));
+        return LeftDockLayout.ResolveTabSize(this.CurrentSettings, this.settingsRole, this.LayerScale);
     }
 
     internal static Color ResolveQueueAccent(EdgeDockTabRole role)
@@ -143,6 +151,8 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
                 return DesignTokens.Colors.Success;
             case EdgeDockTabRole.Guard:
                 return DesignTokens.Colors.AccentAlt;
+            case EdgeDockTabRole.CodexIq:
+                return DesignTokens.Colors.Accent;
             default:
                 return DesignTokens.Colors.GlyphMuted;
         }
@@ -192,7 +202,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             this.Size = desired;
         }
 
-        if (this.Visible)
+        if (this.Visible && !LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
         {
             PositionAtLeftEdge(this.anchorCenterY);
             RenderLayeredWindow();
@@ -228,6 +238,18 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         this.anchorCenterY = centerY;
         this.Size = GetDesiredSize();
         PositionAtLeftEdge(centerY);
+        if (LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
+        {
+            this.hoverTimer.Stop();
+            this.hovered = false;
+            if (this.Visible)
+            {
+                Hide();
+            }
+
+            return;
+        }
+
         if (!this.Visible)
         {
             Show();
@@ -268,25 +290,40 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         this.displaySuspended = suspended;
         if (suspended)
         {
-            this.hoverTimer.Stop();
+            HideTab();
         }
-        else if (this.Visible)
+
+        ResetDisplayRenderResources();
+    }
+
+    public void SetHiddenForFullscreen(bool hidden)
+    {
+        if (this.hiddenForFullscreen == hidden)
         {
-            this.hoverTimer.Start();
-            RenderLayeredWindow();
+            return;
+        }
+
+        this.hiddenForFullscreen = hidden;
+        if (hidden)
+        {
+            HideTab();
         }
     }
 
     private void PositionAtLeftEdge(int centerY)
     {
-        Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
-        int top = centerY - this.Height / 2;
-        top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
-        Point baseLocation = new Point(workArea.Left, top);
-        // The tab is on screen permanently, so it still needs burn-in movement. Horizontal drift is
-        // intentionally discarded: a positive runtime offset would move the 5px target away from
-        // the physical edge, making a cursor parked at the leftmost pixel miss both dock tabs.
-        Point runtimeLocation = BurnInProtection.ApplyRuntimeOffset(baseLocation, this.Size, workArea, this.burnInSalt);
+        Rectangle workArea = LeftDockLayout.ResolveWorkArea(this.CurrentSettings);
+        // Automatic layout treats all enabled tabs as one column for burn-in movement, preserving
+        // its custom order and exact gaps. Manual layout deliberately keeps the legacy per-tab salt.
+        Point runtimeLocation = LeftDockLayout.ResolveTabRuntimeLocation(
+            this.CurrentSettings,
+            this.settingsRole,
+            this.LayerScale,
+            centerY,
+            this.Size,
+            this.burnInSalt);
+        // Horizontal drift is always discarded: a positive runtime offset would move the 5px target
+        // away from the physical edge, making a cursor at the leftmost pixel miss the dock tabs.
         this.Location = PinToLeftEdge(runtimeLocation, workArea);
     }
 
@@ -297,7 +334,9 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
 
     public void RefreshBurnInPosition()
     {
-        if (this.Visible && BurnInProtection.ShouldRefreshPosition(ref this.burnInSlot))
+        if (this.Visible &&
+            !LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen) &&
+            BurnInProtection.ShouldRefreshPosition(ref this.burnInSlot))
         {
             PositionAtLeftEdge(this.anchorCenterY);
         }
@@ -306,7 +345,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     private void OnHoverTick(object sender, EventArgs e)
     {
         RefreshNightScheduleAtExistingTick();
-        if (!this.Visible || this.displaySuspended)
+        if (!this.Visible || LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
         {
             return;
         }
@@ -473,6 +512,32 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
 
     internal static void RunSelfTest()
     {
+        LeftDockLayout.RunSelfTest();
+        WidgetSettings roleSettings = WidgetSettings.CreateDefaults();
+        roleSettings.NetworkMonitorTransparencyOverridePercent = 11;
+        roleSettings.SpecBoardTransparencyOverridePercent = 22;
+        roleSettings.CodexTaskBoardTransparencyOverridePercent = 33;
+        roleSettings.GuardBoardTransparencyOverridePercent = 44;
+        roleSettings.CodexIqBoardTransparencyOverridePercent = 55;
+        roleSettings.NetworkMonitorScaleOverridePercent = 51;
+        roleSettings.SpecBoardScaleOverridePercent = 62;
+        roleSettings.CodexTaskBoardScaleOverridePercent = 73;
+        roleSettings.GuardBoardScaleOverridePercent = 84;
+        roleSettings.CodexIqBoardScaleOverridePercent = 95;
+        if (ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.Network) != 11 ||
+            ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.SpecBoard) != 22 ||
+            ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.CodexTask) != 33 ||
+            ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.Guard) != 44 ||
+            ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.CodexIq) != 55 ||
+            ResolveScaleOverride(roleSettings, EdgeDockTabRole.Network) != 51 ||
+            ResolveScaleOverride(roleSettings, EdgeDockTabRole.SpecBoard) != 62 ||
+            ResolveScaleOverride(roleSettings, EdgeDockTabRole.CodexTask) != 73 ||
+            ResolveScaleOverride(roleSettings, EdgeDockTabRole.Guard) != 84 ||
+            ResolveScaleOverride(roleSettings, EdgeDockTabRole.CodexIq) != 95)
+        {
+            throw new InvalidOperationException("Edge dock tabs must use the visual override slots owned by their roles.");
+        }
+
         // Shape contract: 5x30 logical, full-height edge on the screen border, narrowing to the
         // right. If this ever inverts, the tab stops reading as a pull-handle.
         using (GraphicsPath path = CreateTrapezoidPath(new RectangleF(0.0f, 0.0f, LogicalWidth, LogicalHeight)))
@@ -522,37 +587,8 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             }
         }
 
-        // Auto tab slots must not overlap. Reading down the edge: Network, Spec, Codex, Guard,
-        // each 30px tall. Adding a fifth member means extending this check, not eyeballing it.
+        // Mixed-scale auto queue geometry is covered by LeftDockLayout.RunSelfTest above.
         Rectangle workArea = new Rectangle(0, 0, 1440, 900);
-        int middle = workArea.Top + workArea.Height / 2;
-        int networkCenter = middle - WidgetSettings.LeftDockTabAutoOffsetY * 3;
-        int specCenter = middle - WidgetSettings.LeftDockTabAutoOffsetY;
-        int codexCenter = middle + WidgetSettings.LeftDockTabAutoOffsetY;
-        int guardCenter = middle + WidgetSettings.LeftDockTabAutoOffsetY * 3;
-        Rectangle[] tabs = new Rectangle[]
-        {
-            new Rectangle(workArea.Left, networkCenter - LogicalHeight / 2, LogicalWidth, LogicalHeight),
-            new Rectangle(workArea.Left, specCenter - LogicalHeight / 2, LogicalWidth, LogicalHeight),
-            new Rectangle(workArea.Left, codexCenter - LogicalHeight / 2, LogicalWidth, LogicalHeight),
-            new Rectangle(workArea.Left, guardCenter - LogicalHeight / 2, LogicalWidth, LogicalHeight)
-        };
-
-        for (int i = 0; i < tabs.Length; i++)
-        {
-            if (!workArea.Contains(tabs[i]))
-            {
-                throw new InvalidOperationException("Auto-placed dock tabs must stay inside the work area.");
-            }
-
-            for (int j = i + 1; j < tabs.Length; j++)
-            {
-                if (tabs[i].IntersectsWith(tabs[j]))
-                {
-                    throw new InvalidOperationException("Auto-placed dock tabs must not overlap.");
-                }
-            }
-        }
 
         // Burn-in offsets include positive X values. Both primary and negative-coordinate monitor
         // work areas must discard that horizontal drift so their absolute leftmost pixel remains a
@@ -580,7 +616,8 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             BurnInProtection.NetworkMonitorSalt,
             BurnInProtection.SpecBoardSalt,
             BurnInProtection.CodexTaskBoardSalt,
-            BurnInProtection.GuardBoardSalt
+            BurnInProtection.GuardBoardSalt,
+            BurnInProtection.CodexIqBoardSalt
         };
         for (int i = 0; i < boardSalts.Length; i++)
         {
@@ -639,20 +676,22 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             ResolveQueueAccent(EdgeDockTabRole.Network),
             ResolveQueueAccent(EdgeDockTabRole.SpecBoard),
             ResolveQueueAccent(EdgeDockTabRole.CodexTask),
-            ResolveQueueAccent(EdgeDockTabRole.Guard)
+            ResolveQueueAccent(EdgeDockTabRole.Guard),
+            ResolveQueueAccent(EdgeDockTabRole.CodexIq)
         };
         Color[] expectedAccents = new Color[]
         {
             DesignTokens.Colors.AccentAction,
             DesignTokens.Colors.WarningDeep,
             DesignTokens.Colors.Success,
-            DesignTokens.Colors.AccentAlt
+            DesignTokens.Colors.AccentAlt,
+            DesignTokens.Colors.Accent
         };
         for (int i = 0; i < queueAccents.Length; i++)
         {
             if (queueAccents[i].ToArgb() != expectedAccents[i].ToArgb())
             {
-                throw new InvalidOperationException("Edge dock queue colours must remain blue, orange, green and purple from top to bottom.");
+                throw new InvalidOperationException("Edge dock queue colours must remain blue, orange, green, purple and cyan from top to bottom.");
             }
         }
 
@@ -669,7 +708,75 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Left-dock board accent borders must stay as a clipped-safe 3px inner stroke.");
         }
 
-        Console.WriteLine("Edge dock tab: PASS 5x30 trapezoid arrow blue-orange-green-purple board-border-3px auto-slots-4 shared-pixel-shift protected-gray-expanded-color");
+        Console.WriteLine("Edge dock tab: PASS 5x30 trapezoid arrow blue-orange-green-purple-cyan board-border-3px auto-slots-5 shared-pixel-shift protected-gray-expanded-color");
+    }
+
+    internal static void RunDisplayLifecycleSelfTest()
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        EdgeDockTabRole[] roles =
+        {
+            EdgeDockTabRole.Network,
+            EdgeDockTabRole.SpecBoard,
+            EdgeDockTabRole.CodexTask,
+            EdgeDockTabRole.Guard,
+            EdgeDockTabRole.CodexIq
+        };
+        for (int i = 0; i < roles.Length; i++)
+        {
+            using (EdgeDockTabForm tab = new EdgeDockTabForm(
+                settings,
+                ResolveQueueAccent(roles[i]),
+                BurnInProtection.NetworkMonitorDockTabSalt + i,
+                "EdgeDockLifecycleTest" + i.ToString(),
+                roles[i]))
+            {
+                int center = LeftDockLayout.ResolveTabCenterY(settings, roles[i], tab.LayerScale);
+                tab.ShowTab(center);
+                Application.DoEvents();
+                if (!tab.Visible || !tab.hoverTimer.Enabled)
+                {
+                    throw new InvalidOperationException("Edge dock lifecycle initial show failed.");
+                }
+
+                tab.SetDisplaySuspended(true);
+                tab.ShowTab(center);
+                Application.DoEvents();
+                if (tab.Visible || tab.hoverTimer.Enabled)
+                {
+                    throw new InvalidOperationException("Edge dock lifecycle suspend guard failed.");
+                }
+
+                tab.SetDisplaySuspended(false);
+                if (tab.Visible || tab.hoverTimer.Enabled)
+                {
+                    throw new InvalidOperationException("Edge dock lifecycle resume must require an explicit show.");
+                }
+
+                tab.ShowTab(center);
+                tab.SetHiddenForFullscreen(true);
+                tab.ShowTab(center);
+                Application.DoEvents();
+                if (tab.Visible || tab.hoverTimer.Enabled)
+                {
+                    throw new InvalidOperationException("Edge dock lifecycle fullscreen guard failed.");
+                }
+
+                tab.SetHiddenForFullscreen(false);
+                if (tab.Visible || tab.hoverTimer.Enabled)
+                {
+                    throw new InvalidOperationException("Edge dock fullscreen exit must require an explicit show.");
+                }
+
+                tab.ShowTab(center);
+                if (!tab.Visible || !tab.hoverTimer.Enabled)
+                {
+                    throw new InvalidOperationException("Edge dock lifecycle explicit recovery show failed.");
+                }
+
+                tab.HideTab();
+            }
+        }
     }
 
     internal void SaveSample(string path, float scale)

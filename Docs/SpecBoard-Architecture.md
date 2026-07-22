@@ -1,14 +1,16 @@
 # Spec Board 架构
 
-适用版本：1.0.6.03
+适用版本：2.0.0.0
 
 本文负责跨项目 spec 账本读取、对账、看板窗口、交互和只读边界。
 
 ## 数据流
 
-`OperationForm.ToggleSpecBoardWindow` 按需创建 `SpecBoardForm`。窗口通过后台任务调用 `SpecBoardReader.Read`，逐行读取 `SpecBoardLedgerPath` 指向的 `SPEC_BOARD.jsonl`，并从同目录读取 `PROJECTS.json`。reader 只向 UI 发布完整 `SpecBoardSnapshot`；绘制路径只消费快照，不执行磁盘 IO。
+`OperationForm` 在启动期创建由自身持有的 `SpecBoardForm`，`ToggleSpecBoardWindow` 只负责展开或收回固定 Dock 看板。窗口通过后台任务调用 `SpecBoardReader.Read`，逐行读取 `SpecBoardLedgerPath` 指向的 `SPEC_BOARD.jsonl`，并从同目录读取 `PROJECTS.json`。reader 只向 UI 发布完整 `SpecBoardSnapshot`；绘制路径只消费快照，不执行磁盘 IO。
 
 账本状态封闭为 `pending`、`needs_revision`、`awaiting_verify`、`done`、`abandoned`。`needs_revision` 使用 `revision_requested_utc` 作为事件时间，缺失时回退 `updated_utc`；所有账本行解析 `UpdatedUtc` 供新鲜度判定。对账阶段另外合成只存在于磁盘的 `unregistered` 行，并把仍需处理但文件不存在的账本行标记为 `FileMissing`。坏 JSON、未知状态或缺字段行按行跳过并累计 `MalformedLines`；账本缺失或 IO 失败生成 `LedgerMissing` 空态，不创建文件。
+
+`SpecBoardReader` 的输入边界固定为：单个 `PROJECTS.json`/账本不超过 2 MiB、单行不超过 64 KiB、账本最多 5000 行、快照最多 64 个项目、单轮目录对账最多枚举 512 个文件。超限输入只发布界限内的完整数据，将截断计入 `MalformedLines`，并为同一轮读取聚合一条不含正文的诊断日志。`CancellationToken` 贯穿文件读取、项目遍历和目录枚举；紧凑窗口的 3 秒对账超时会取消底层读取并用本轮已完成的基础账本快照回退，迟到结果由 generation 拒绝。
 
 项目注册表不可用时，账本 `project` 仍直接形成项目栏，对账停用并在 footer 显示警告。注册项目的 `root` 不可达时跳过该项目，不把全部 spec 误报为未登记。`GoalSpec` 文件不进入对账结果。
 
@@ -32,7 +34,7 @@
 
 ## 管理窗口
 
-主看板 footer 的“管理”按钮或双击启动器的“Spec 管理”按钮通过 `SpecBoardForm.ShowManagerWindow` 直接打开非模态的全自绘工作台 `SpecBoardManagerForm`。启动器入口不会先显示小看板。窗体 `FormBorderStyle.None` + 圆角 `Region` + 自绘标题栏（`WM_NCHITTEST` 返回 `HTCAPTION` 实现拖动、四边 `S(6)` 热区实现缩放、自绘关闭按钮），**刻意不继承 `LayeredWidgetFormBase`**——分层管线不合成子窗口，而备注/搜索/删除确认必须是可聚焦的原生 `TextBox`（全窗仅这 3 个原生子控件，无边框深色嵌入自绘卡片）。其余全部 OnPaint 自绘 + 命中矩形表（沿用主看板 hitTargets 模式）。管理窗与主看板生命周期独立，主看板自动收回不会关闭管理窗。
+主看板 footer 的“管理”按钮或双击启动器的“Spec 管理”按钮通过 `SpecBoardForm.ShowManagerWindow` 直接打开非模态的全自绘工作台 `SpecBoardManagerForm`。启动器入口不会先显示小看板。窗体 `FormBorderStyle.None` + 圆角 `Region` + 自绘标题栏（`WM_NCHITTEST` 返回 `HTCAPTION` 实现拖动、四边 `S(6)` 热区实现缩放、自绘关闭按钮），**刻意不继承 `LayeredWidgetFormBase`**——分层管线不合成子窗口，而备注/搜索/删除确认必须是可聚焦的原生 `TextBox`（全窗仅这 3 个原生子控件，无边框深色嵌入自绘卡片）。其余全部 OnPaint 自绘 + 命中矩形表（沿用主看板 hitTargets 模式）。管理窗与主看板生命周期独立，主看板自动收回不会关闭管理窗。管理窗的初始加载和每次写后刷新都在后台任务中调用有界 reader；新加载会取消旧 token，并以 generation 阻止旧结果覆盖，关闭窗口时取消在途读取。UI 线程只应用完整快照和更新控件。
 
 交互：顶部为项目筛选（深色 `ContextMenuStrip`）、七枚互斥状态筛选胶囊、搜索框与"批量登记未登记项"；左列表（44% 宽）为色点+标题+项目行，Ctrl/Shift 多选；右详情为粗体标题（≤2 行省略）、"项目 · 文件名 ✓"元信息、`PathEllipsis` 全路径、时间线、**五枚状态胶囊（当前实心、其余描边，单击立即写账本）**、备注卡（脏时保存钮点亮、切换选择前弹未保存确认）、打开/定位/危险按钮。未登记行胶囊替换为"登记为未执行"；多选 N≥2 时右侧变批量模式（胶囊批量应用，含未登记项则登记为该状态；批量删除仅账本条目）。列表有焦点时数字键 1-5 直接应用五态，Esc 关窗。排序固定为状态优先级内按最近更新倒序。
 
@@ -40,33 +42,35 @@
 
 危险区默认折叠并与安全操作分离。“删除账本条目”只删除账本行；“删除条目并删除源文件”默认要求区分大小写输入完整文件名，先检查项目 `Docs/Technical/INDEX.jsonl` 引用并要求显式强制确认，再通过 Windows 回收站删除文件。文件删除失败时不删除账本行。
 
-`SpecBoardLedgerStore` 是程序内唯一账本写入口。每次操作都重新整份读取并用 `id + 旧 UpdatedUtc` 校验，冲突即拒绝覆盖并刷新；成功写入前滚动覆盖 `SPEC_BOARD.jsonl.bak`，同目录写 `.tmp` 后用 `File.Replace` 原子替换。状态、备注、登记、批量和删除共享该路径，人工修改固定写 `updated_by="User (SpecBoardManager)"`。AI 会话仍使用外部 `spec-board` skill，不调用管理服务。
+`1.0.6.05` 起，来自跨项目账本的 `project root + spec_path` 一律先经过共享 `SpecBoardPathPolicy`：项目根必须是现有目录；拒绝绝对路径、UNC/设备路径、`..` 遍历与现有重解析点；规范化后的完整路径必须位于项目根内。紧凑看板、管理窗口的打开/定位和回收站删除复用同一策略，删除动作在实际回收前再次校验。只有 `.md`、`.markdown`、`.txt`、`.json`、`.jsonl` 可由 shell 直接打开，其他类型和缺失文件只回退到项目内现有目录，绝不把账本提供的任意文件当可执行目标。
 
-RadialDial 核心圆圈或经典 Start 按钮双击调用 `ToggleLauncherTrioWindow`；这两个入口的单击动作等待 `SystemInformation.DoubleClickTime` 后才提交，双击到达会取消待执行单击并吞掉第二次 MouseUp，避免一次双击同时开关 Radial 菜单或 Windows 开始菜单。Radial 单击菜单、双击启动器和 Spec 小看板三者互斥：每个入口在显示前关闭另外两个，后打开者覆盖先打开者；管理窗不参与互斥。默认位置与操作面板左对齐，底边位于操作面板顶边上方 10 px；`SpecBoardLeftX`、`SpecBoardBottomY` 为 `-1` 时每次呼出重新自动锚定，具体坐标则由全局布局编辑器维护。
+`SpecBoardLedgerStore` 是程序内唯一账本写入口。每次操作都通过同一有界 reader 重新整份读取并用 `id + 旧 UpdatedUtc` 校验，冲突即拒绝覆盖并刷新；序列化结果若超过 2 MiB、64 KiB/行或 5000 行，会在接触 `.bak` 和正式账本前拒绝。合法写入才滚动覆盖 `SPEC_BOARD.jsonl.bak`，同目录写 `.tmp` 后用 `File.Replace` 原子替换。状态、备注、登记、批量和删除共享该路径，人工修改固定写 `updated_by="User (SpecBoardManager)"`。AI 会话仍使用外部 `spec-board` skill，不调用管理服务。
+
+RadialDial 核心圆圈或 Start 按钮双击调用 `ToggleLauncherTrioWindow`；这两个入口的单击动作等待 `SystemInformation.DoubleClickTime` 后才提交，双击到达会取消待执行单击并吞掉第二次 MouseUp，避免一次双击同时开关 Radial 菜单或 Windows 开始菜单。Radial 单击菜单、双击启动器和 Spec 小看板三者互斥：每个入口在显示前关闭另外两个，后打开者覆盖先打开者；管理窗不参与互斥。生产路径中的 Spec 小看板始终有 `OperationForm` owner，并由固定左 Dock 的 `LeftDockLayout` 定位；`SpecBoardLeftX`、`SpecBoardBottomY` 仅保留为旧版 owner-null/未停靠回退坐标，当前设置 UI、全局布局编辑器和正常运行路径都不提供入口。
 
 ## 左缘停靠（EdgeDockTab）
 
-Spec、Codex Task、Network 与 GUARD 四个停靠看板共用 `EdgeDockTabForm`（`Core/EdgeDockTabForm.cs`）——`5×30` 逻辑尺寸、左边全高向右收窄的梯形，中央有同角色色、较低不透明度的向右三角箭头，整体贴在工作区左缘。队列从上到下固定为 Network 蓝、Spec 橙、Codex Task 绿、GUARD 紫；展开看板也继承对应角色色的共享圆角内描边，精确线宽与绘制契约见 `Docs/Performance-And-Window-Runtime.md` §6.1。鼠标移上 tab 即展开对应看板；指针离开看板与 tab 后经 `LeftDockCollapseSeconds`（默认 1 s，范围 0–30）自动收起。**一个看板一枚 tab**，互不影响。
+Network、Spec、Codex Task、GUARD 与 Codex IQ 五个固定停靠角色共用 `EdgeDockTabForm`（`Core/EdgeDockTabForm.cs`）——`5×30` 逻辑尺寸、左边全高向右收窄的梯形，中央有同角色色、较低不透明度的向右三角箭头，整体贴在工作区左缘。默认队列从上到下为 Network 蓝、Spec 橙、Codex Task 绿、GUARD 紫、Codex IQ 青；用户可调整五角色顺序，但不可禁用或删除角色。展开看板也继承对应角色色的共享圆角内描边，精确线宽与绘制契约见 `Docs/Performance-And-Window-Runtime.md` §6.1。鼠标移上 tab 即展开对应看板；指针离开看板与 tab 后经 `LeftDockCollapseSeconds`（默认 1 s，范围 0–30）自动收起。**一个角色一枚 tab**，互不影响。
 
-tab 自身用 120 ms 计时器轮询 `Cursor.Position` 判定 hover（不依赖分层窗 alpha 命中测试，整个 `5×30` 矩形都是可命中区）。边框和任务栏仍隐藏，`Text`/`AccessibleName` 使用各自稳定名称，让辅助功能和 UI 验收工具能区分四枚微型窗口。展开时看板左缘落在 `工作区左缘 + tab 宽`，tab 保持可见，指针可以从 tab 连续滑入看板而不触发收起倒计时。tab 是**永久可见**元素，因此四枚都使用独立防烧屏 salt；梯形与箭头绘制在同一分层位图内，`EdgeDockTabForm.PositionAtLeftEdge` 先取得 `ApplyRuntimeOffset`，再由 `PinToLeftEdge` 丢弃水平分量并固定到 `workArea.Left`，所以两者共同承受 Y 轴微位移，鼠标贴住主屏或负坐标副屏的绝对最左像素时仍能命中。四块展开看板同样固定水平锚点：各自 `PositionAtLeftDock` 调用 `ApplyRuntimeOffsetWithPinnedX`，统一停在 `工作区左缘 + tab 宽度`，仅保留独立 salt 的 Y 轴微位移。隐藏模式与防烧屏配色保护的共享视觉契约以 `Docs/Performance-And-Window-Runtime.md` §6.1 为单一事实源。
+tab 自身用 120 ms 计时器轮询 `Cursor.Position` 判定 hover（不依赖分层窗 alpha 命中测试，整个 `5×30` 矩形都是可命中区）。边框和任务栏仍隐藏，`Text`/`AccessibleName` 使用各自稳定名称，让辅助功能和 UI 验收工具能区分五枚微型窗口。展开时看板左缘落在 `工作区左缘 + tab 宽`，tab 保持可见，指针可以从 tab 连续滑入看板而不触发收起倒计时。tab 是**永久可见**元素，因此五枚都使用独立防烧屏 salt；梯形与箭头绘制在同一分层位图内，`EdgeDockTabForm.PositionAtLeftEdge` 先取得 `ApplyRuntimeOffset`，再由 `PinToLeftEdge` 丢弃水平分量并固定到 `workArea.Left`，所以两者共同承受 Y 轴微位移，鼠标贴住主屏或负坐标副屏的绝对最左像素时仍能命中。五个角色的展开面板同样固定水平锚点：各自 `PositionAtLeftDock` 调用 `ApplyRuntimeOffsetWithPinnedX`，统一停在 `工作区左缘 + tab 宽度`，仅保留独立 salt 的 Y 轴微位移。隐藏模式与防烧屏配色保护的共享视觉契约以 `Docs/Performance-And-Window-Runtime.md` §6.1 为单一事实源。
 
-`LeftDockOutsideClickCollapseEnabled` 默认开启。停靠展开的 Spec/Codex Task 看板，以及 Spec 的自动弹窗态，在用户点击看板外部（桌面、其他窗口或另一块看板）时收回；自身窗口、自己的 tab 与 Spec 管理窗属于排除区，手动打开且未停靠的常驻 Spec 看板不受影响。板内空白区域原有的 `HideBoard()` 语义继续保留，两条关闭路径互补。
+`LeftDockOutsideClickCollapseEnabled` 默认开启。停靠展开的 Spec、Codex Task、GUARD、Codex IQ 看板，以及 Spec 的自动弹窗态，在用户点击看板外部（桌面、其他窗口或另一块看板）时收回；自身窗口、自己的 tab 与 Spec 管理窗属于排除区。生产路径不存在手动打开且未停靠的常驻 Spec 看板。板内空白区域原有的 `HideBoard()` 语义继续保留，两条关闭路径互补。
 
-外部点击由共享 `OutsideClickDismissalMonitor` 处理，不使用失焦事件、长期鼠标捕获或全局鼠标钩子，也不新增计时器。`EdgeDockTabForm` 的既有 120 ms hover tick 读取 `GetAsyncKeyState(VK_LBUTTON)` 的当前按下位与“上次查询后按过”位，并把单调递增的点击序号分别交给两块看板消费；Spec 的 500 ms 维护 tick 为无 tab 的自动弹窗补兜底。进程内所有左键异步状态读取必须经该监测器，避免某个调用方提前消耗低位。外部点击收回后，tab 在 800 ms 内且光标尚未离开 tab 区时禁止重新展开，避免左缘点击造成“收回后秒开”；一旦离开 tab 即解除抑制。
+外部点击由共享 `OutsideClickDismissalMonitor` 处理，不使用失焦事件、长期鼠标捕获或全局鼠标钩子，也不新增计时器。`EdgeDockTabForm` 的既有 120 ms hover tick 读取 `GetAsyncKeyState(VK_LBUTTON)` 的当前按下位与“上次查询后按过”位，并把单调递增的点击序号交给四个 owned board 消费；Spec 的 500 ms 维护 tick 为自动弹窗补兜底。进程内所有左键异步状态读取必须经该监测器，避免某个调用方提前消耗低位。外部点击收回后，tab 在 800 ms 内且光标尚未离开 tab 区时禁止重新展开，避免左缘点击造成“收回后秒开”；一旦离开 tab 即解除抑制。
 
-tab 中心 Y 由各自 `*LeftDockTabCenterY` 指定，`-1`（`AutoLeftDockTabCenterY`）表示自动：从上到下为 Network `-3`、Spec `-1`、Codex `+1`、GUARD `+3` 个 `LeftDockTabAutoOffsetY=20`，四枚 30 px 高的 tab 相邻而不重叠。停靠开启时看板必须在启动时就构造（即使收起）——tab 是它唯一的常驻表面，由所属宿主的运行时设置链路负责建立。收起状态下看板维护继续驱动 tab 的防烧屏漂移与收起倒计时；全屏隐藏与显示挂起会一并停掉 tab。
+tab 中心 Y 由各自 `*LeftDockTabCenterY` 指定，`-1`（`AutoLeftDockTabCenterY`）表示交给 `LeftDockLayout`：按 `LeftDockButtonOrder` 对 Network、Spec、Codex Task、GUARD、Codex IQ 五个角色的实际缩放后高度累计排队，并在相邻项间保留 10 个 DPI 逻辑像素。五枚 tab 与对应看板统一使用 `ModuleOperation` 工作区和所属角色的透明度/缩放槽位。五个角色始终在启动时构造（即使收起）——tab 是其唯一常驻表面，由所属宿主的运行时设置链路负责建立；四个历史 `*LeftDockEnabled` 键只作兼容持久化，`Normalize` 强制为 `true`，设置 UI 不显示。挂起或全屏隐藏时 `ShowTab`/`ShowBoard` 不得重现窗口，恢复必须由 owner 显式重新显示。
 
-几何、自动槽位、边缘命中和隐藏/保护态视觉层级有独立自测（`EdgeDockTabForm.RunSelfTest`：`5×30` 梯形方向、中央右箭头、蓝橙绿紫角色映射、四枚自动 tab 不重叠、主屏与负坐标副屏左缘可命中、收起保护态灰色、展开态恢复角色色）；外部点击的边沿、双消费者、命中排除与回弹抑制由 `OutsideClickDismissalMonitor.RunSelfTest` 覆盖。两者都随 `--test-operation-panel` 运行；`--render-operation` 为 Network、Spec、Codex、GUARD 各产出一张 8× 状态条，顺序为普通静止/悬停、隐藏静止、保护收起、保护展开/展开悬停。
+几何、自动槽位、边缘命中和隐藏/保护态视觉层级有独立自测（`EdgeDockTabForm.RunSelfTest`：`5×30` 梯形方向、中央右箭头、蓝橙绿紫青角色映射、五枚自动 tab 不重叠、主屏与负坐标副屏左缘可命中、收起保护态灰色、展开态恢复角色色）；显示生命周期自测也逐一覆盖五角色。外部点击的边沿、多消费者、命中排除与回弹抑制由 `OutsideClickDismissalMonitor.RunSelfTest` 覆盖。两者都随 `--test-operation-panel` 运行；`--render-operation` 为 Network、Spec、Codex Task、GUARD、Codex IQ 各产出一张 8× 状态条，顺序为普通静止/悬停、隐藏静止、保护收起、保护展开/展开悬停。
 
 ## 操作面板双击启动器（LauncherTrio）
 
-双击操作核心弹出 `OperationLauncherTrioForm`（`Core/OperationForm.LauncherTrio.cs`）：三个圆形按钮沿星座面板同款弧线排布在第二层级位置。按钮直径为主 Start 按钮的 0.80×；弧半径复用 RadialDial 的 8°–82° 稀疏弧与第二层半径公式。美术继续使用低透明度暗调圆盘、分类色外光环、极淡白内环、柔和字形和细灰连接线。自上而下：① Spec 管理（`OpenSpecBoardManagerWindow`，直接显示管理窗）② Codex 任务（`ToggleCodexTaskBoard`，见 `Docs/CodexRadar-Architecture.md` §5.2）③ 睡眠防护（`LaunchSleepGuard`，优先运行 E: 的 `Start-CodexSleepGuard.cmd`，再回退 D: 镜像）。`LauncherTrioAction`、`TrioLabels`、`TrioTints` 三者的下标顺序必须一致，索引 0 位于弧顶。旧版 QuickGrid/12 格入口已从此启动器删除；QuickGrid 实现保留为兼容代码，但不再由双击菜单暴露。窗体继承 `LayeredWidgetFormBase`，点按钮外或选完即隐藏；`--render-operation` 产出 `operation-launcher-trio.png` 供美术验收。
+双击操作核心弹出 `OperationLauncherTrioForm`（`Core/OperationForm.LauncherTrio.cs`）：三个圆形按钮沿星座面板同款弧线排布在第二层级位置。按钮直径为主 Start 按钮的 0.80×；弧半径复用 RadialDial 的 8°–82° 稀疏弧与第二层半径公式。美术继续使用低透明度暗调圆盘、分类色外光环、极淡白内环、柔和字形和细灰连接线。自上而下：① Spec 管理（`OpenSpecBoardManagerWindow`，直接显示管理窗）② Codex 任务（`ToggleCodexTaskBoard`，见 `Docs/CodexRadar-Architecture.md` §5.2）③ 睡眠防护（`LaunchSleepGuard`，优先运行 E: 的 `Start-CodexSleepGuard.cmd`，再回退 D: 镜像）。`LauncherTrioAction`、`TrioLabels`、`TrioTints` 三者的下标顺序必须一致，索引 0 位于弧顶。旧版 QuickGrid/12 格窗体、renderer、样张和自测已在 2.0.0.0 物理删除；双击入口只使用 LauncherTrio。窗体继承 `LayeredWidgetFormBase`，点按钮外或选完即隐藏；`--render-operation` 产出 `operation-launcher-trio.png` 供美术验收。
 
 OLED Typographic、AmberHud、WarmCard、Phosphor 变体复用现有语义色，且使用灰度文字抗锯齿，避免 ClearType 在分层位图中生成蓝色子像素。
 
 ## 刷新与生命周期
 
-全部间隔、单飞、防抖、隐藏、挂起和恢复规则由 `Docs/Component-Refresh-Rules.md` 的 Spec Board 表负责。`OperationForm` 转发设置、全屏隐藏、显示挂起和恢复；普通隐藏且自动弹窗开启时 watcher 与 500 ms 维护计时器继续运行，显示挂起、全屏隐藏、关闭自动弹窗或应用退出时全部停止。
+全部间隔、单飞、防抖、隐藏、挂起和恢复规则由 `Docs/Component-Refresh-Rules.md` 的 Spec Board 表负责。`OperationForm` 转发设置、全屏隐藏、显示挂起和恢复；普通隐藏且自动弹窗开启时 watcher 与 500 ms 维护计时器继续运行，显示挂起、全屏隐藏、关闭自动弹窗或应用退出时全部停止并取消 reader。所有后台读取只允许当前 generation 发布完整快照。
 
 ## 存储边界
 

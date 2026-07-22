@@ -370,46 +370,43 @@ internal static class StatuspageMonitor
         request.Headers["Cache-Control"] = "no-store, no-cache";
         request.Headers["Pragma"] = "no-cache";
 
+        BoundedHttpTextResult response = BoundedHttpTextReader.Execute(
+            request,
+            BoundedHttpTextReader.PublicJsonMaxBytes,
+            TimeoutMs,
+            CancellationToken.None);
+        if (response.StatusCode <= 0)
+        {
+            return BuildErrorSnapshot(
+                serviceKey,
+                IsNetworkAvailable() ? StatuspageHealthState.Unreachable : StatuspageHealthState.Offline,
+                response.ErrorCode,
+                "无法连接");
+        }
+
+        if (!response.Success)
+        {
+            string code = response.StatusCode >= 400
+                ? response.StatusCode.ToString(CultureInfo.InvariantCulture)
+                : response.ErrorCode;
+            return BuildErrorSnapshot(serviceKey, StatuspageHealthState.Unavailable, code, "响应不可用");
+        }
+
+        if (string.IsNullOrEmpty(response.Content))
+        {
+            return BuildErrorSnapshot(serviceKey, StatuspageHealthState.Incomplete, "EMPTY", "空响应");
+        }
+
         try
         {
-            using (WebResponse response = request.GetResponse())
-            {
-                HttpWebResponse http = response as HttpWebResponse;
-                if (http != null && ((int)http.StatusCode < 200 || (int)http.StatusCode >= 300))
-                {
-                    return BuildErrorSnapshot(serviceKey, StatuspageHealthState.Unavailable, ((int)http.StatusCode).ToString(CultureInfo.InvariantCulture), "HTTP " + ((int)http.StatusCode).ToString(CultureInfo.InvariantCulture));
-                }
-
-                using (Stream stream = response.GetResponseStream())
-                {
-                    if (stream == null)
-                    {
-                        return BuildErrorSnapshot(serviceKey, StatuspageHealthState.Incomplete, "EMPTY", "空响应");
-                    }
-
-                    using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        string content = reader.ReadToEnd();
-                        Dictionary<string, object> root = new JavaScriptSerializer().DeserializeObject(content) as Dictionary<string, object>;
-                        return ParseStatuspageSummary(serviceKey, root);
-                    }
-                }
-            }
-        }
-        catch (WebException ex)
-        {
-            HttpWebResponse response = ex.Response as HttpWebResponse;
-            if (response != null)
-            {
-                int code = (int)response.StatusCode;
-                return BuildErrorSnapshot(serviceKey, StatuspageHealthState.Unavailable, code.ToString(CultureInfo.InvariantCulture), "HTTP " + code.ToString(CultureInfo.InvariantCulture));
-            }
-
-            return BuildErrorSnapshot(serviceKey, IsNetworkAvailable() ? StatuspageHealthState.Unreachable : StatuspageHealthState.Offline, "NET", "无法连接");
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            serializer.MaxJsonLength = BoundedHttpTextReader.PublicJsonMaxBytes;
+            Dictionary<string, object> root = serializer.DeserializeObject(response.Content) as Dictionary<string, object>;
+            return ParseStatuspageSummary(serviceKey, root);
         }
         catch
         {
-            return BuildErrorSnapshot(serviceKey, StatuspageHealthState.Unreachable, "ERROR", "请求失败");
+            return BuildErrorSnapshot(serviceKey, StatuspageHealthState.Incomplete, "PARSE", "响应格式无效");
         }
     }
 

@@ -3,6 +3,10 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
@@ -359,6 +363,7 @@ internal sealed class CodexQuotaGoalPlanner
         settings.CodexQuotaPlanEnabled = false;
         AssertSelfTest(!ShouldTrigger(settings, 1, 1), "disabled quota plan should not trigger");
         AssertSelfTest(!ShouldResume(settings, 100, 100), "disabled quota plan should not resume");
+        CodexAppServerGoalController.RunExecutablePathPolicySelfTest();
     }
 
     private void EvaluateAndApply(WidgetSettings settings, Action<string, string, ToolTipIcon> notificationAction)
@@ -669,9 +674,449 @@ internal sealed class CodexQuotaGoalPlanner
     }
 }
 
+internal sealed class CodexExecutablePathPolicyContext
+{
+    public string CurrentDirectory { get; set; }
+    public string[] TemporaryDirectories { get; set; }
+    public string[] OfficialInstallRoots { get; set; }
+}
+
+internal sealed class CodexExecutablePathEvidence
+{
+    public string CandidatePath { get; set; }
+    public bool FileExists { get; set; }
+    public bool HasReparsePoint { get; set; }
+    public bool AuthenticodeSignatureValid { get; set; }
+    public string PublisherName { get; set; }
+    public bool LocationWriteabilityKnown { get; set; }
+    public bool LocationWritable { get; set; }
+}
+
+internal sealed class CodexExecutablePathDecision
+{
+    public bool Allowed { get; set; }
+    public string CanonicalPath { get; set; }
+    public string ErrorCode { get; set; }
+    public bool IsOfficialInstall { get; set; }
+}
+
+// This policy is intentionally pure: callers must collect filesystem and signature evidence first.
+// Keeping the decision free of I/O lets security failures be tested without starting or inspecting a real Codex process.
+internal static class CodexExecutablePathPolicy
+{
+    private static readonly string[] TrustedPublisherNames = new string[]
+    {
+        "OpenAI OpCo, LLC",
+        "OpenAI, L.L.C.",
+        "OpenAI, LLC"
+    };
+
+    public static CodexExecutablePathDecision Evaluate(
+        CodexExecutablePathEvidence evidence,
+        CodexExecutablePathPolicyContext context)
+    {
+        if (evidence == null || context == null)
+        {
+            return Deny("INVALID_POLICY_INPUT", null);
+        }
+
+        string canonicalPath;
+        string pathError;
+        if (!TryCanonicalizeAbsoluteExecutablePath(evidence.CandidatePath, out canonicalPath, out pathError))
+        {
+            return Deny(pathError, null);
+        }
+
+        if (!evidence.FileExists)
+        {
+            return Deny("EXECUTABLE_NOT_FOUND", canonicalPath);
+        }
+
+        if (IsSameOrDescendant(canonicalPath, context.CurrentDirectory))
+        {
+            return Deny("CURRENT_DIRECTORY_FORBIDDEN", canonicalPath);
+        }
+
+        string[] temporaryDirectories = context.TemporaryDirectories ?? new string[0];
+        for (int i = 0; i < temporaryDirectories.Length; i++)
+        {
+            if (IsSameOrDescendant(canonicalPath, temporaryDirectories[i]))
+            {
+                return Deny("TEMP_DIRECTORY_FORBIDDEN", canonicalPath);
+            }
+        }
+
+        if (evidence.HasReparsePoint)
+        {
+            return Deny("REPARSE_POINT_FORBIDDEN", canonicalPath);
+        }
+
+        bool officialInstall = IsWithinAnyRoot(canonicalPath, context.OfficialInstallRoots);
+        if (!officialInstall)
+        {
+            if (!evidence.LocationWriteabilityKnown)
+            {
+                return Deny("LOCATION_TRUST_UNVERIFIED", canonicalPath);
+            }
+
+            if (evidence.LocationWritable)
+            {
+                return Deny("UNTRUSTED_WRITABLE_LOCATION", canonicalPath);
+            }
+        }
+
+        if (!evidence.AuthenticodeSignatureValid)
+        {
+            return Deny("AUTHENTICODE_UNVERIFIED", canonicalPath);
+        }
+
+        if (!IsTrustedPublisherName(evidence.PublisherName))
+        {
+            return Deny("PUBLISHER_UNTRUSTED", canonicalPath);
+        }
+
+        return new CodexExecutablePathDecision
+        {
+            Allowed = true,
+            CanonicalPath = canonicalPath,
+            ErrorCode = null,
+            IsOfficialInstall = officialInstall
+        };
+    }
+
+    public static bool TryCanonicalizeAbsoluteExecutablePath(string candidatePath, out string canonicalPath, out string errorCode)
+    {
+        canonicalPath = null;
+        errorCode = null;
+        if (string.IsNullOrWhiteSpace(candidatePath))
+        {
+            errorCode = "EMPTY_PATH";
+            return false;
+        }
+
+        string value = candidatePath.Trim();
+        if (value.Length >= 2 && value[0] == '"' && value[value.Length - 1] == '"')
+        {
+            value = value.Substring(1, value.Length - 2).Trim();
+        }
+
+        if (value.Length == 0 || value.IndexOf('"') >= 0)
+        {
+            errorCode = "INVALID_PATH_SYNTAX";
+            return false;
+        }
+
+        bool isRooted;
+        try
+        {
+            isRooted = Path.IsPathRooted(value);
+        }
+        catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException)
+        {
+            // Path APIs throw for embedded NUL and other malformed inputs. This method is a
+            // security boundary, so malformed overrides are rejected instead of escaping policy.
+            errorCode = "INVALID_PATH_SYNTAX";
+            return false;
+        }
+
+        if (!isRooted)
+        {
+            errorCode = "RELATIVE_PATH_FORBIDDEN";
+            return false;
+        }
+
+        if (value.StartsWith("\\\\", StringComparison.Ordinal))
+        {
+            errorCode = "NETWORK_PATH_FORBIDDEN";
+            return false;
+        }
+
+        try
+        {
+            canonicalPath = Path.GetFullPath(value);
+        }
+        catch
+        {
+            errorCode = "INVALID_PATH_SYNTAX";
+            return false;
+        }
+
+        if (!string.Equals(Path.GetFileName(canonicalPath), "codex.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            errorCode = "EXECUTABLE_NAME_INVALID";
+            canonicalPath = null;
+            return false;
+        }
+
+        return true;
+    }
+
+    public static bool IsTrustedPublisherName(string publisherName)
+    {
+        if (string.IsNullOrWhiteSpace(publisherName))
+        {
+            return false;
+        }
+
+        string value = publisherName.Trim();
+        for (int i = 0; i < TrustedPublisherNames.Length; i++)
+        {
+            if (string.Equals(value, TrustedPublisherNames[i], StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static bool IsSameOrDescendant(string candidatePath, string directoryPath)
+    {
+        string candidate = TryNormalizeForComparison(candidatePath);
+        string directory = TryNormalizeForComparison(directoryPath);
+        if (candidate == null || directory == null)
+        {
+            return false;
+        }
+
+        if (string.Equals(candidate, directory, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        string prefix = directory.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
+            ? directory
+            : directory + Path.DirectorySeparatorChar;
+        return candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsWithinAnyRoot(string candidatePath, string[] roots)
+    {
+        if (roots == null)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < roots.Length; i++)
+        {
+            if (IsSameOrDescendant(candidatePath, roots[i]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string TryNormalizeForComparison(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            string fullPath = Path.GetFullPath(path.Trim());
+            string root = Path.GetPathRoot(fullPath);
+            if (!string.IsNullOrEmpty(root) && string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase))
+            {
+                return root;
+            }
+
+            return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static CodexExecutablePathDecision Deny(string errorCode, string canonicalPath)
+    {
+        return new CodexExecutablePathDecision
+        {
+            Allowed = false,
+            CanonicalPath = canonicalPath,
+            ErrorCode = errorCode ?? "POLICY_REJECTED",
+            IsOfficialInstall = false
+        };
+    }
+}
+
 internal static class CodexAppServerGoalController
 {
     private const int MaxThreadListCount = 100;
+
+    internal static void RunExecutablePathPolicySelfTest()
+    {
+        string fixtureRoot = Path.Combine(
+            Path.GetTempPath(),
+            "DesktopCodexAssistant-CodexPathPolicy-" + Guid.NewGuid().ToString("N"));
+        string currentDirectory = Path.Combine(fixtureRoot, "cwd");
+        string temporaryDirectory = Path.Combine(fixtureRoot, "temp");
+        string officialDirectory = Path.Combine(fixtureRoot, "official", "bin", "version-1");
+        string protectedDirectory = Path.Combine(fixtureRoot, "protected");
+        string writableDirectory = Path.Combine(fixtureRoot, "writable");
+        string unknownDirectory = Path.Combine(fixtureRoot, "unknown");
+
+        try
+        {
+            Directory.CreateDirectory(currentDirectory);
+            Directory.CreateDirectory(temporaryDirectory);
+            Directory.CreateDirectory(officialDirectory);
+            Directory.CreateDirectory(protectedDirectory);
+            Directory.CreateDirectory(writableDirectory);
+            Directory.CreateDirectory(unknownDirectory);
+
+            string currentExecutable = CreatePathPolicyFixtureExecutable(currentDirectory);
+            string temporaryExecutable = CreatePathPolicyFixtureExecutable(temporaryDirectory);
+            string officialExecutable = CreatePathPolicyFixtureExecutable(officialDirectory);
+            string protectedExecutable = CreatePathPolicyFixtureExecutable(protectedDirectory);
+            string writableExecutable = CreatePathPolicyFixtureExecutable(writableDirectory);
+            string unknownExecutable = CreatePathPolicyFixtureExecutable(unknownDirectory);
+
+            CodexExecutablePathPolicyContext context = new CodexExecutablePathPolicyContext
+            {
+                CurrentDirectory = currentDirectory,
+                // The roots are injected so this fixture is independent of the machine running the test.
+                TemporaryDirectories = new string[] { temporaryDirectory },
+                OfficialInstallRoots = new string[] { Path.Combine(fixtureRoot, "official") }
+            };
+
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture(officialExecutable, true, "OpenAI OpCo, LLC", true, true, true, context),
+                true,
+                null,
+                "signed official install should be allowed even when its updater-owned location is writable");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture(protectedExecutable, true, "OpenAI OpCo, LLC", true, true, false, context),
+                true,
+                null,
+                "signed non-writable absolute install should be allowed");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture("codex.exe", true, "OpenAI OpCo, LLC", true, true, false, context),
+                false,
+                "RELATIVE_PATH_FORBIDDEN",
+                "relative path should be rejected");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture(currentExecutable, true, "OpenAI OpCo, LLC", true, true, false, context),
+                false,
+                "CURRENT_DIRECTORY_FORBIDDEN",
+                "current-directory executable should be rejected");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture(temporaryExecutable, true, "OpenAI OpCo, LLC", true, true, false, context),
+                false,
+                "TEMP_DIRECTORY_FORBIDDEN",
+                "temporary-directory executable should be rejected");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture(writableExecutable, true, "OpenAI OpCo, LLC", true, true, true, context),
+                false,
+                "UNTRUSTED_WRITABLE_LOCATION",
+                "untrusted writable executable should be rejected");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture(unknownExecutable, true, "OpenAI OpCo, LLC", false, true, false, context),
+                false,
+                "LOCATION_TRUST_UNVERIFIED",
+                "unverifiable location should fail closed");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture(officialExecutable, false, null, true, true, false, context),
+                false,
+                "AUTHENTICODE_UNVERIFIED",
+                "unsigned official executable should be rejected");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture(officialExecutable, true, "Example Publisher", true, true, false, context),
+                false,
+                "PUBLISHER_UNTRUSTED",
+                "unexpected Authenticode publisher should be rejected");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture(officialExecutable, true, "OpenAI OpCo, LLC", true, true, false, context, true),
+                false,
+                "REPARSE_POINT_FORBIDDEN",
+                "reparse-point executable should be rejected");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture(Path.Combine(protectedDirectory, "missing", "codex.exe"), true, "OpenAI OpCo, LLC", true, true, false, context),
+                false,
+                "EXECUTABLE_NOT_FOUND",
+                "missing executable should be rejected");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture("\"" + officialExecutable + "\" app-server", true, "OpenAI OpCo, LLC", true, true, false, context),
+                false,
+                "INVALID_PATH_SYNTAX",
+                "path override must not contain arguments");
+            AssertPathPolicyDecision(
+                EvaluatePathPolicyFixture(officialExecutable + "\0suffix", true, "OpenAI OpCo, LLC", true, true, false, context),
+                false,
+                "INVALID_PATH_SYNTAX",
+                "path override with an embedded NUL must fail closed");
+        }
+        finally
+        {
+            if (Directory.Exists(fixtureRoot))
+            {
+                Directory.Delete(fixtureRoot, true);
+            }
+        }
+    }
+
+    private static string CreatePathPolicyFixtureExecutable(string directory)
+    {
+        string path = Path.Combine(directory, "codex.exe");
+        File.WriteAllText(path, "SEC-08 path policy fixture; never execute.", SharedEncoding.Utf8NoBom);
+        return path;
+    }
+
+    private static CodexExecutablePathDecision EvaluatePathPolicyFixture(
+        string candidatePath,
+        bool signatureValid,
+        string publisherName,
+        bool writeabilityKnown,
+        bool fileExistsExpected,
+        bool locationWritable,
+        CodexExecutablePathPolicyContext context,
+        bool hasReparsePoint = false)
+    {
+        return CodexExecutablePathPolicy.Evaluate(
+            new CodexExecutablePathEvidence
+            {
+                CandidatePath = candidatePath,
+                FileExists = fileExistsExpected && IsExistingRootedPathFixture(candidatePath),
+                HasReparsePoint = hasReparsePoint,
+                AuthenticodeSignatureValid = signatureValid,
+                PublisherName = publisherName,
+                LocationWriteabilityKnown = writeabilityKnown,
+                LocationWritable = locationWritable
+            },
+            context);
+    }
+
+    private static bool IsExistingRootedPathFixture(string candidatePath)
+    {
+        try
+        {
+            return Path.IsPathRooted(candidatePath) && File.Exists(candidatePath);
+        }
+        catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    private static void AssertPathPolicyDecision(
+        CodexExecutablePathDecision decision,
+        bool expectedAllowed,
+        string expectedErrorCode,
+        string message)
+    {
+        if (decision == null ||
+            decision.Allowed != expectedAllowed ||
+            !string.Equals(decision.ErrorCode, expectedErrorCode, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                message + "; actual=" +
+                (decision == null ? "null" : (decision.Allowed ? "allowed" : decision.ErrorCode)));
+        }
+    }
 
     public static List<CodexGoalInfo> ListGoals(out string error)
     {
@@ -884,22 +1329,37 @@ internal static class CodexAppServerGoalController
             error = null;
             try
             {
-                ProcessStartInfo startInfo = new ProcessStartInfo();
-                startInfo.FileName = ResolveCodexExecutable();
-                startInfo.Arguments = "app-server";
-                startInfo.UseShellExecute = false;
-                startInfo.CreateNoWindow = true;
-                startInfo.RedirectStandardInput = true;
-                startInfo.RedirectStandardOutput = true;
-                startInfo.RedirectStandardError = true;
-                Process process = Process.Start(startInfo);
-                if (process == null)
+                string resolutionError;
+                using (CodexExecutableLease executable = ResolveCodexExecutable(out resolutionError))
                 {
-                    error = "codex app-server failed to start.";
-                    return null;
-                }
+                    if (executable == null)
+                    {
+                        error = "Codex app-server executable failed security validation (" +
+                            (resolutionError ?? "NO_APPROVED_EXECUTABLE") + ").";
+                        Program.LogInfo(
+                            "security_error module=CodexQuotaGoalPlanner event=codex_app_server_executable_rejected code=" +
+                            (resolutionError ?? "NO_APPROVED_EXECUTABLE"));
+                        return null;
+                    }
 
-                return new CodexAppServerClient(process);
+                    ProcessStartInfo startInfo = new ProcessStartInfo();
+                    startInfo.FileName = executable.CanonicalPath;
+                    startInfo.Arguments = "app-server";
+                    startInfo.WorkingDirectory = Path.GetDirectoryName(executable.CanonicalPath);
+                    startInfo.UseShellExecute = false;
+                    startInfo.CreateNoWindow = true;
+                    startInfo.RedirectStandardInput = true;
+                    startInfo.RedirectStandardOutput = true;
+                    startInfo.RedirectStandardError = true;
+                    Process process = Process.Start(startInfo);
+                    if (process == null)
+                    {
+                        error = "codex app-server failed to start.";
+                        return null;
+                    }
+
+                    return new CodexAppServerClient(process);
+                }
             }
             catch (Exception ex)
             {
@@ -909,52 +1369,670 @@ internal static class CodexAppServerGoalController
             }
         }
 
-        private static string ResolveCodexExecutable()
+        private static CodexExecutableLease ResolveCodexExecutable(out string errorCode)
         {
-            string overridePath = Environment.GetEnvironmentVariable("DESKTOP_CODEX_APP_SERVER_COMMAND");
-            if (!string.IsNullOrWhiteSpace(overridePath))
+            errorCode = null;
+            CodexExecutablePathPolicyContext context = BuildRuntimePathPolicyContext();
+            List<string> candidates = DiscoverCodexExecutableCandidates(context.OfficialInstallRoots);
+            if (candidates.Count == 0)
             {
-                return overridePath.Trim().Trim('"');
+                errorCode = "NO_EXECUTABLE_CANDIDATE";
+                return null;
             }
 
-            string cliPath = Environment.GetEnvironmentVariable("CODEX_CLI_PATH");
-            if (!string.IsNullOrWhiteSpace(cliPath))
+            List<string> rejectionCodes = new List<string>();
+            for (int i = 0; i < candidates.Count; i++)
             {
-                return cliPath.Trim().Trim('"');
+                string candidateError;
+                CodexExecutableLease executable = TryAcquireApprovedExecutable(candidates[i], context, out candidateError);
+                if (executable != null)
+                {
+                    return executable;
+                }
+
+                if (!string.IsNullOrWhiteSpace(candidateError) && !rejectionCodes.Contains(candidateError))
+                {
+                    rejectionCodes.Add(candidateError);
+                }
+            }
+
+            errorCode = rejectionCodes.Count == 0
+                ? "NO_APPROVED_EXECUTABLE"
+                : string.Join(",", rejectionCodes.ToArray());
+            return null;
+        }
+
+        private static CodexExecutablePathPolicyContext BuildRuntimePathPolicyContext()
+        {
+            List<string> temporaryDirectories = new List<string>();
+            AddUniqueDirectory(temporaryDirectories, Path.GetTempPath());
+            AddUniqueDirectory(temporaryDirectories, Environment.GetEnvironmentVariable("TEMP"));
+            AddUniqueDirectory(temporaryDirectories, Environment.GetEnvironmentVariable("TMP"));
+            string windowsDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (!string.IsNullOrWhiteSpace(windowsDirectory))
+            {
+                AddUniqueDirectory(temporaryDirectories, Path.Combine(windowsDirectory, "Temp"));
+            }
+
+            return new CodexExecutablePathPolicyContext
+            {
+                CurrentDirectory = Environment.CurrentDirectory,
+                TemporaryDirectories = temporaryDirectories.ToArray(),
+                OfficialInstallRoots = GetOfficialInstallRoots()
+            };
+        }
+
+        private static string[] GetOfficialInstallRoots()
+        {
+            List<string> roots = new List<string>();
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (!string.IsNullOrWhiteSpace(localAppData))
+            {
+                AddUniqueDirectory(roots, Path.Combine(localAppData, "OpenAI", "Codex", "bin"));
+                AddUniqueDirectory(roots, Path.Combine(localAppData, "Programs", "OpenAI", "Codex"));
+            }
+
+            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            if (!string.IsNullOrWhiteSpace(programFiles))
+            {
+                AddUniqueDirectory(roots, Path.Combine(programFiles, "OpenAI", "Codex"));
+                AddUniqueDirectory(roots, Path.Combine(programFiles, "WindowsApps"));
+            }
+
+            string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            if (!string.IsNullOrWhiteSpace(programFilesX86))
+            {
+                AddUniqueDirectory(roots, Path.Combine(programFilesX86, "OpenAI", "Codex"));
+            }
+
+            string programW6432 = Environment.GetEnvironmentVariable("ProgramW6432");
+            if (!string.IsNullOrWhiteSpace(programW6432))
+            {
+                AddUniqueDirectory(roots, Path.Combine(programW6432, "OpenAI", "Codex"));
+            }
+
+            return roots.ToArray();
+        }
+
+        private static List<string> DiscoverCodexExecutableCandidates(string[] officialInstallRoots)
+        {
+            List<string> officialCandidates = new List<string>();
+            if (officialInstallRoots != null)
+            {
+                for (int i = 0; i < officialInstallRoots.Length; i++)
+                {
+                    string root = officialInstallRoots[i];
+                    if (string.IsNullOrWhiteSpace(root) ||
+                        root.EndsWith(Path.DirectorySeparatorChar + "WindowsApps", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    CollectOfficialCodexCandidates(root, 0, 3, officialCandidates);
+                }
+            }
+
+            officialCandidates.Sort(delegate(string left, string right)
+            {
+                int newestFirst = GetLastWriteTimeUtcSafe(right).CompareTo(GetLastWriteTimeUtcSafe(left));
+                return newestFirst != 0
+                    ? newestFirst
+                    : StringComparer.OrdinalIgnoreCase.Compare(left, right);
+            });
+
+            List<string> result = new List<string>();
+            for (int i = 0; i < officialCandidates.Count; i++)
+            {
+                AddUniqueCandidate(result, officialCandidates[i]);
+            }
+
+            // Explicit overrides remain supported, but they are lower priority and pass the same fail-closed policy.
+            AddUniqueCandidate(result, Environment.GetEnvironmentVariable("DESKTOP_CODEX_APP_SERVER_COMMAND"));
+            AddUniqueCandidate(result, Environment.GetEnvironmentVariable("CODEX_CLI_PATH"));
+            return result;
+        }
+
+        private static void CollectOfficialCodexCandidates(string directory, int depth, int maxDepth, List<string> result)
+        {
+            if (depth > maxDepth || string.IsNullOrWhiteSpace(directory) || result == null)
+            {
+                return;
             }
 
             try
             {
-                string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-                string binRoot = Path.Combine(Path.Combine(Path.Combine(localAppData, "OpenAI"), "Codex"), "bin");
-                if (Directory.Exists(binRoot))
+                if (!Directory.Exists(directory) ||
+                    (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
                 {
-                    string[] candidates = Directory.GetFiles(binRoot, "codex.exe", SearchOption.AllDirectories);
-                    string newestPath = null;
-                    DateTime newestWriteUtc = DateTime.MinValue;
-                    for (int i = 0; i < candidates.Length; i++)
-                    {
-                        DateTime writeUtc = File.GetLastWriteTimeUtc(candidates[i]);
-                        if (newestPath == null || writeUtc > newestWriteUtc)
-                        {
-                            newestPath = candidates[i];
-                            newestWriteUtc = writeUtc;
-                        }
-                    }
+                    return;
+                }
 
-                    if (!string.IsNullOrEmpty(newestPath))
-                    {
-                        return newestPath;
-                    }
+                string directCandidate = Path.Combine(directory, "codex.exe");
+                if (File.Exists(directCandidate))
+                {
+                    AddUniqueCandidate(result, directCandidate);
+                }
+
+                if (depth == maxDepth)
+                {
+                    return;
+                }
+
+                string[] children = Directory.GetDirectories(directory, "*", SearchOption.TopDirectoryOnly);
+                Array.Sort(children, StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < children.Length; i++)
+                {
+                    CollectOfficialCodexCandidates(children[i], depth + 1, maxDepth, result);
                 }
             }
-            catch (Exception ex)
+            catch (UnauthorizedAccessException)
             {
-                Program.LogException(ex);
+            }
+            catch (IOException)
+            {
+            }
+        }
+
+        private static CodexExecutableLease TryAcquireApprovedExecutable(
+            string candidatePath,
+            CodexExecutablePathPolicyContext context,
+            out string errorCode)
+        {
+            errorCode = null;
+            string lexicalPath;
+            if (!CodexExecutablePathPolicy.TryCanonicalizeAbsoluteExecutablePath(candidatePath, out lexicalPath, out errorCode))
+            {
+                return null;
             }
 
-            return "codex";
+            FileStream leaseStream = null;
+            try
+            {
+                // Excluding write/delete sharing prevents replacement between validation and Process.Start.
+                leaseStream = new FileStream(
+                    lexicalPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    4096,
+                    FileOptions.SequentialScan);
+
+                string finalPath;
+                if (!TryGetFinalCanonicalPath(leaseStream, out finalPath))
+                {
+                    errorCode = "CANONICAL_PATH_UNVERIFIED";
+                    return null;
+                }
+
+                bool hasReparsePoint;
+                if (!TryDetectReparsePoint(lexicalPath, out hasReparsePoint))
+                {
+                    errorCode = "REPARSE_CHECK_FAILED";
+                    return null;
+                }
+
+                bool writeabilityKnown;
+                bool locationWritable;
+                TryDetermineLocationWriteability(finalPath, out writeabilityKnown, out locationWritable);
+
+                bool signatureValid;
+                string publisherName;
+                ReadAuthenticodeEvidence(finalPath, out signatureValid, out publisherName);
+
+                CodexExecutablePathDecision decision = CodexExecutablePathPolicy.Evaluate(
+                    new CodexExecutablePathEvidence
+                    {
+                        CandidatePath = finalPath,
+                        FileExists = true,
+                        HasReparsePoint = hasReparsePoint,
+                        AuthenticodeSignatureValid = signatureValid,
+                        PublisherName = publisherName,
+                        LocationWriteabilityKnown = writeabilityKnown,
+                        LocationWritable = locationWritable
+                    },
+                    context);
+                if (!decision.Allowed)
+                {
+                    errorCode = decision.ErrorCode;
+                    return null;
+                }
+
+                CodexExecutableLease approved = new CodexExecutableLease(decision.CanonicalPath, leaseStream);
+                leaseStream = null;
+                return approved;
+            }
+            catch (FileNotFoundException)
+            {
+                errorCode = "EXECUTABLE_NOT_FOUND";
+                return null;
+            }
+            catch (DirectoryNotFoundException)
+            {
+                errorCode = "EXECUTABLE_NOT_FOUND";
+                return null;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                errorCode = "EXECUTABLE_ACCESS_DENIED";
+                return null;
+            }
+            catch (IOException)
+            {
+                errorCode = "EXECUTABLE_OPEN_FAILED";
+                return null;
+            }
+            catch
+            {
+                errorCode = "EXECUTABLE_VALIDATION_FAILED";
+                return null;
+            }
+            finally
+            {
+                if (leaseStream != null)
+                {
+                    leaseStream.Dispose();
+                }
+            }
         }
+
+        private static bool TryGetFinalCanonicalPath(FileStream stream, out string finalPath)
+        {
+            finalPath = null;
+            if (stream == null || stream.SafeFileHandle == null || stream.SafeFileHandle.IsInvalid)
+            {
+                return false;
+            }
+
+            StringBuilder buffer = new StringBuilder(1024);
+            uint length = GetFinalPathNameByHandle(stream.SafeFileHandle.DangerousGetHandle(), buffer, (uint)buffer.Capacity, 0);
+            if (length == 0)
+            {
+                return false;
+            }
+
+            if (length >= (uint)buffer.Capacity)
+            {
+                buffer = new StringBuilder(checked((int)length + 1));
+                length = GetFinalPathNameByHandle(stream.SafeFileHandle.DangerousGetHandle(), buffer, (uint)buffer.Capacity, 0);
+                if (length == 0 || length >= (uint)buffer.Capacity)
+                {
+                    return false;
+                }
+            }
+
+            string value = buffer.ToString();
+            if (value.StartsWith("\\\\?\\UNC\\", StringComparison.OrdinalIgnoreCase))
+            {
+                value = "\\\\" + value.Substring(8);
+            }
+            else if (value.StartsWith("\\\\?\\", StringComparison.OrdinalIgnoreCase))
+            {
+                value = value.Substring(4);
+            }
+
+            string ignored;
+            return CodexExecutablePathPolicy.TryCanonicalizeAbsoluteExecutablePath(value, out finalPath, out ignored);
+        }
+
+        private static bool TryDetectReparsePoint(string path, out bool hasReparsePoint)
+        {
+            hasReparsePoint = false;
+            try
+            {
+                string fullPath = Path.GetFullPath(path);
+                string root = Path.GetPathRoot(fullPath);
+                if (string.IsNullOrWhiteSpace(root))
+                {
+                    return false;
+                }
+
+                string current = root;
+                string remainder = fullPath.Substring(root.Length);
+                string[] segments = remainder.Split(new char[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
+                for (int i = 0; i < segments.Length; i++)
+                {
+                    current = Path.Combine(current, segments[i]);
+                    if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    {
+                        hasReparsePoint = true;
+                        return true;
+                    }
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void TryDetermineLocationWriteability(
+            string executablePath,
+            out bool writeabilityKnown,
+            out bool locationWritable)
+        {
+            writeabilityKnown = false;
+            locationWritable = false;
+            try
+            {
+                string directory = Path.GetDirectoryName(executablePath);
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    return;
+                }
+
+                using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+                {
+                    HashSet<string> principalSids = GetEffectivePrincipalSids(identity);
+                    DirectorySecurity directorySecurity = Directory.GetAccessControl(directory, AccessControlSections.Access | AccessControlSections.Owner);
+                    FileSecurity fileSecurity = File.GetAccessControl(executablePath, AccessControlSections.Access | AccessControlSections.Owner);
+                    locationWritable = HasMutationAccess(directorySecurity, principalSids) ||
+                        HasMutationAccess(fileSecurity, principalSids);
+                    writeabilityKnown = true;
+                }
+            }
+            catch
+            {
+                writeabilityKnown = false;
+                locationWritable = false;
+            }
+        }
+
+        private static HashSet<string> GetEffectivePrincipalSids(WindowsIdentity identity)
+        {
+            HashSet<string> result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (identity == null)
+            {
+                return result;
+            }
+
+            if (identity.User != null)
+            {
+                result.Add(identity.User.Value);
+            }
+
+            bool administratorEnabled = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+            SecurityIdentifier administratorsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            IdentityReferenceCollection groups = identity.Groups;
+            if (groups != null)
+            {
+                for (int i = 0; i < groups.Count; i++)
+                {
+                    SecurityIdentifier sid = groups[i] as SecurityIdentifier;
+                    if (sid == null || (!administratorEnabled && sid.Equals(administratorsSid)))
+                    {
+                        continue;
+                    }
+
+                    result.Add(sid.Value);
+                }
+            }
+
+            return result;
+        }
+
+        private static bool HasMutationAccess(FileSystemSecurity security, HashSet<string> principalSids)
+        {
+            if (security == null || principalSids == null || principalSids.Count == 0)
+            {
+                return false;
+            }
+
+            SecurityIdentifier owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+            if (owner != null && principalSids.Contains(owner.Value))
+            {
+                // Owners can rewrite the DACL even if the current rules appear read-only.
+                return true;
+            }
+
+            const FileSystemRights mutationRights =
+                FileSystemRights.WriteData |
+                FileSystemRights.AppendData |
+                FileSystemRights.WriteAttributes |
+                FileSystemRights.WriteExtendedAttributes |
+                FileSystemRights.Delete |
+                FileSystemRights.DeleteSubdirectoriesAndFiles |
+                FileSystemRights.ChangePermissions |
+                FileSystemRights.TakeOwnership;
+            FileSystemRights allowed = 0;
+            FileSystemRights denied = 0;
+            AuthorizationRuleCollection rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier));
+            for (int i = 0; i < rules.Count; i++)
+            {
+                FileSystemAccessRule rule = rules[i] as FileSystemAccessRule;
+                SecurityIdentifier sid = rule == null ? null : rule.IdentityReference as SecurityIdentifier;
+                if (rule == null || sid == null || !principalSids.Contains(sid.Value))
+                {
+                    continue;
+                }
+
+                if (rule.AccessControlType == AccessControlType.Deny)
+                {
+                    denied |= rule.FileSystemRights;
+                }
+                else
+                {
+                    allowed |= rule.FileSystemRights;
+                }
+            }
+
+            FileSystemRights effective = allowed & ~denied;
+            return (effective & mutationRights) != 0;
+        }
+
+        private static void ReadAuthenticodeEvidence(string executablePath, out bool signatureValid, out string publisherName)
+        {
+            signatureValid = false;
+            publisherName = null;
+            try
+            {
+                if (VerifyEmbeddedAuthenticodeSignature(executablePath) != 0)
+                {
+                    return;
+                }
+
+                using (X509Certificate2 certificate = new X509Certificate2(X509Certificate.CreateFromSignedFile(executablePath)))
+                {
+                    publisherName = certificate.GetNameInfo(X509NameType.SimpleName, false);
+                    signatureValid = true;
+                }
+            }
+            catch
+            {
+                signatureValid = false;
+                publisherName = null;
+            }
+        }
+
+        private static int VerifyEmbeddedAuthenticodeSignature(string executablePath)
+        {
+            Guid action = new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
+            IntPtr pathPointer = IntPtr.Zero;
+            IntPtr fileInfoPointer = IntPtr.Zero;
+            IntPtr trustDataPointer = IntPtr.Zero;
+            IntPtr actionPointer = IntPtr.Zero;
+            WinTrustData trustData = new WinTrustData();
+            try
+            {
+                pathPointer = Marshal.StringToCoTaskMemUni(executablePath);
+                WinTrustFileInfo fileInfo = new WinTrustFileInfo
+                {
+                    StructureSize = (uint)Marshal.SizeOf(typeof(WinTrustFileInfo)),
+                    FilePath = pathPointer,
+                    FileHandle = IntPtr.Zero,
+                    KnownSubject = IntPtr.Zero
+                };
+                fileInfoPointer = Marshal.AllocCoTaskMem(Marshal.SizeOf(typeof(WinTrustFileInfo)));
+                Marshal.StructureToPtr(fileInfo, fileInfoPointer, false);
+
+                trustData = new WinTrustData
+                {
+                    StructureSize = (uint)Marshal.SizeOf(typeof(WinTrustData)),
+                    PolicyCallbackData = IntPtr.Zero,
+                    SipClientData = IntPtr.Zero,
+                    UiChoice = 2,
+                    RevocationChecks = 0,
+                    UnionChoice = 1,
+                    FileInfo = fileInfoPointer,
+                    StateAction = 1,
+                    StateData = IntPtr.Zero,
+                    UrlReference = IntPtr.Zero,
+                    ProviderFlags = 0x00000010 | 0x00001000,
+                    UiContext = 0,
+                    SignatureSettings = IntPtr.Zero
+                };
+                trustDataPointer = Marshal.AllocCoTaskMem(Marshal.SizeOf(typeof(WinTrustData)));
+                Marshal.StructureToPtr(trustData, trustDataPointer, false);
+
+                actionPointer = Marshal.AllocCoTaskMem(Marshal.SizeOf(typeof(Guid)));
+                Marshal.StructureToPtr(action, actionPointer, false);
+                int status = WinVerifyTrust(IntPtr.Zero, actionPointer, trustDataPointer);
+
+                trustData = (WinTrustData)Marshal.PtrToStructure(trustDataPointer, typeof(WinTrustData));
+                trustData.StateAction = 2;
+                Marshal.StructureToPtr(trustData, trustDataPointer, false);
+                WinVerifyTrust(IntPtr.Zero, actionPointer, trustDataPointer);
+                return status;
+            }
+            finally
+            {
+                if (actionPointer != IntPtr.Zero)
+                {
+                    Marshal.FreeCoTaskMem(actionPointer);
+                }
+
+                if (trustDataPointer != IntPtr.Zero)
+                {
+                    Marshal.FreeCoTaskMem(trustDataPointer);
+                }
+
+                if (fileInfoPointer != IntPtr.Zero)
+                {
+                    Marshal.FreeCoTaskMem(fileInfoPointer);
+                }
+
+                if (pathPointer != IntPtr.Zero)
+                {
+                    Marshal.FreeCoTaskMem(pathPointer);
+                }
+            }
+        }
+
+        private static void AddUniqueDirectory(List<string> directories, string path)
+        {
+            if (directories == null || string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            try
+            {
+                string canonical = Path.GetFullPath(path.Trim());
+                for (int i = 0; i < directories.Count; i++)
+                {
+                    if (string.Equals(directories[i], canonical, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+                }
+
+                directories.Add(canonical);
+            }
+            catch
+            {
+            }
+        }
+
+        private static void AddUniqueCandidate(List<string> candidates, string path)
+        {
+            if (candidates == null || string.IsNullOrWhiteSpace(path))
+            {
+                return;
+            }
+
+            string value = path.Trim();
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (string.Equals(candidates[i], value, StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+            }
+
+            candidates.Add(value);
+        }
+
+        private static DateTime GetLastWriteTimeUtcSafe(string path)
+        {
+            try
+            {
+                return File.GetLastWriteTimeUtc(path);
+            }
+            catch
+            {
+                return DateTime.MinValue;
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct WinTrustFileInfo
+        {
+            public uint StructureSize;
+            public IntPtr FilePath;
+            public IntPtr FileHandle;
+            public IntPtr KnownSubject;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct WinTrustData
+        {
+            public uint StructureSize;
+            public IntPtr PolicyCallbackData;
+            public IntPtr SipClientData;
+            public uint UiChoice;
+            public uint RevocationChecks;
+            public uint UnionChoice;
+            public IntPtr FileInfo;
+            public uint StateAction;
+            public IntPtr StateData;
+            public IntPtr UrlReference;
+            public uint ProviderFlags;
+            public uint UiContext;
+            public IntPtr SignatureSettings;
+        }
+
+        private sealed class CodexExecutableLease : IDisposable
+        {
+            private FileStream stream;
+
+            public CodexExecutableLease(string canonicalPath, FileStream stream)
+            {
+                this.CanonicalPath = canonicalPath;
+                this.stream = stream;
+            }
+
+            public string CanonicalPath { get; private set; }
+
+            public void Dispose()
+            {
+                if (this.stream != null)
+                {
+                    this.stream.Dispose();
+                    this.stream = null;
+                }
+            }
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandle(
+            IntPtr fileHandle,
+            StringBuilder filePath,
+            uint filePathLength,
+            uint flags);
+
+        [DllImport("wintrust.dll", ExactSpelling = true, SetLastError = false)]
+        private static extern int WinVerifyTrust(IntPtr windowHandle, IntPtr actionId, IntPtr trustData);
 
         public bool Initialize(out string error)
         {

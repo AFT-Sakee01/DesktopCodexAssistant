@@ -116,29 +116,10 @@ internal static class NativeMethods
     private const ushort IMAGE_FILE_MACHINE_ARMNT = 0x01C4;
     private const ushort IMAGE_FILE_MACHINE_AMD64 = 0x8664;
     private const ushort IMAGE_FILE_MACHINE_I386 = 0x014C;
-    private const int DWM_TNP_RECTDESTINATION = 0x00000001;
-    private const int DWM_TNP_OPACITY = 0x00000004;
-    private const int DWM_TNP_VISIBLE = 0x00000008;
-    private const int DWM_TNP_SOURCECLIENTAREAONLY = 0x00000010;
-    private const uint SHGFI_SYSICONINDEX = 0x00004000;
-    private const int SHIL_LARGE = 0;
-    private const int SHIL_EXTRALARGE = 2;
-    private const int SHIL_JUMBO = 4;
-    private const int ILD_TRANSPARENT = 0x00000001;
-    private const int SIIGBF_BIGGERSIZEOK = 0x00000001;
-    private const int SIIGBF_ICONONLY = 0x00000004;
-    private const int MAX_PATH = 260;
-    private const int INFOTIPSIZE = 1024;
     private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
     private const int OBJID_WINDOW = 0;
     private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
-    private const uint ABM_NEW = 0x00000000;
-    private const uint ABM_REMOVE = 0x00000001;
-    private const uint ABM_QUERYPOS = 0x00000002;
-    private const uint ABM_SETPOS = 0x00000003;
-    private const uint ABM_WINDOWPOSCHANGED = 0x00000009;
-    private const uint ABE_TOP = 1;
     private const uint WM_IME_CONTROL = 0x0283;
     private const int IMC_GETCONVERSIONMODE = 0x0001;
     private const int IME_CMODE_NATIVE = 0x0001;
@@ -402,6 +383,40 @@ internal static class NativeMethods
         [MarshalAs(UnmanagedType.Bool)] bool forceCritical,
         [MarshalAs(UnmanagedType.Bool)] bool disableWakeEvent);
 
+    // Modern Standby (S0) power requests. On this class of machine SetThreadExecutionState with
+    // ES_SYSTEM_REQUIRED alone is suspended together with other desktop apps once the display powers
+    // off, so a guard that relied on it silently lapsed exactly when a long unattended run needed it.
+    // A persistent Win32 power request object holding SystemRequired + ExecutionRequired blocks the
+    // Modern Standby transition on AC power. This mirrors the CodexSleepGuard utility's 1.0.0.2 fix.
+    public enum PowerRequestType
+    {
+        DisplayRequired = 0,
+        SystemRequired = 1,
+        AwayModeRequired = 2,
+        ExecutionRequired = 3
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct POWER_REQUEST_CONTEXT
+    {
+        public uint Version;
+        public uint Flags;
+
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string SimpleReasonString;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr PowerCreateRequest(ref POWER_REQUEST_CONTEXT context);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PowerSetRequest(IntPtr powerRequest, PowerRequestType requestType);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PowerClearRequest(IntPtr powerRequest, PowerRequestType requestType);
+
     // The execution-state flags are thread affine: Windows drops them when the calling thread
     // exits, so every call must originate from the same long-lived thread (the UI thread) or the
     // guard silently lapses. GuardRuntime enforces that; do not call this from a Task.Run body.
@@ -426,6 +441,203 @@ internal static class NativeMethods
         }
     }
 
+    // Owns one persistent power-request object for the guard's lifetime. Created and released on the
+    // UI thread alongside the execution-state flags; the object itself is not thread affine, but
+    // keeping every call on one thread keeps the ordering with SetThreadExecutionState simple. Every
+    // method is best-effort and never throws: a failed power API must degrade to the legacy flags,
+    // not take down the maintenance tick that owns display expiry and offline auto-sleep.
+    internal sealed class PowerRequestGuard
+    {
+        private const uint PowerRequestContextSimpleString = 0x00000001;
+        private const string ReasonString = "Desktop Codex Assistant Guard keeps Codex, Claude, and Grok CLI work active.";
+
+        private IntPtr handle = IntPtr.Zero;
+        private bool systemActive;
+        private bool executionActive;
+        private bool displayActive;
+
+        internal bool SystemActive
+        {
+            get { return this.systemActive; }
+        }
+
+        internal bool ExecutionActive
+        {
+            get { return this.executionActive; }
+        }
+
+        internal bool DisplayActive
+        {
+            get { return this.displayActive; }
+        }
+
+        // Reconciles the three requests to the desired state. Sets the wanted requests before
+        // clearing the unwanted ones so a transition that only tightens the guard never leaves the
+        // machine briefly unprotected. Returns false with a detail string on the first failure but
+        // still attempts the remaining transitions.
+        internal bool Sync(bool wantSystem, bool wantExecution, bool wantDisplay, out string detail)
+        {
+            detail = string.Empty;
+            bool ok = true;
+            if (wantSystem)
+            {
+                ok &= Transition(PowerRequestType.SystemRequired, true, ref this.systemActive, ref detail);
+            }
+
+            if (wantExecution)
+            {
+                ok &= Transition(PowerRequestType.ExecutionRequired, true, ref this.executionActive, ref detail);
+            }
+
+            if (wantDisplay)
+            {
+                ok &= Transition(PowerRequestType.DisplayRequired, true, ref this.displayActive, ref detail);
+            }
+
+            if (!wantDisplay)
+            {
+                ok &= Transition(PowerRequestType.DisplayRequired, false, ref this.displayActive, ref detail);
+            }
+
+            if (!wantExecution)
+            {
+                ok &= Transition(PowerRequestType.ExecutionRequired, false, ref this.executionActive, ref detail);
+            }
+
+            if (!wantSystem)
+            {
+                ok &= Transition(PowerRequestType.SystemRequired, false, ref this.systemActive, ref detail);
+            }
+
+            return ok;
+        }
+
+        // Best-effort release: clear whatever is still held, then close the request object as the
+        // final fail-safe for any clear that failed. Called from GuardRuntime.ReleaseAll on dispose.
+        internal void Release()
+        {
+            if (this.handle != IntPtr.Zero)
+            {
+                if (this.systemActive)
+                {
+                    TryClear(PowerRequestType.SystemRequired);
+                }
+
+                if (this.executionActive)
+                {
+                    TryClear(PowerRequestType.ExecutionRequired);
+                }
+
+                if (this.displayActive)
+                {
+                    TryClear(PowerRequestType.DisplayRequired);
+                }
+
+                try
+                {
+                    CloseHandle(this.handle);
+                }
+                catch
+                {
+                }
+
+                this.handle = IntPtr.Zero;
+            }
+
+            this.systemActive = false;
+            this.executionActive = false;
+            this.displayActive = false;
+        }
+
+        private bool Transition(PowerRequestType type, bool enable, ref bool state, ref string detail)
+        {
+            if (enable == state)
+            {
+                return true;
+            }
+
+            try
+            {
+                if (enable)
+                {
+                    if (!EnsureHandle(ref detail))
+                    {
+                        return false;
+                    }
+
+                    if (!PowerSetRequest(this.handle, type))
+                    {
+                        detail = "PowerSetRequest(" + type + ") win32=" + Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture);
+                        return false;
+                    }
+                }
+                else
+                {
+                    if (this.handle == IntPtr.Zero)
+                    {
+                        state = false;
+                        return true;
+                    }
+
+                    if (!PowerClearRequest(this.handle, type))
+                    {
+                        detail = "PowerClearRequest(" + type + ") win32=" + Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture);
+                        return false;
+                    }
+                }
+
+                state = enable;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                detail = ex.GetType().Name + ": " + ex.Message;
+                return false;
+            }
+        }
+
+        private void TryClear(PowerRequestType type)
+        {
+            try
+            {
+                PowerClearRequest(this.handle, type);
+            }
+            catch
+            {
+            }
+        }
+
+        private bool EnsureHandle(ref string detail)
+        {
+            if (this.handle != IntPtr.Zero)
+            {
+                return true;
+            }
+
+            try
+            {
+                POWER_REQUEST_CONTEXT context = new POWER_REQUEST_CONTEXT();
+                context.Version = 0;
+                context.Flags = PowerRequestContextSimpleString;
+                context.SimpleReasonString = ReasonString;
+                IntPtr created = PowerCreateRequest(ref context);
+                if (created == IntPtr.Zero || created == new IntPtr(-1))
+                {
+                    detail = "PowerCreateRequest win32=" + Marshal.GetLastWin32Error().ToString(CultureInfo.InvariantCulture);
+                    return false;
+                }
+
+                this.handle = created;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                detail = ex.GetType().Name + ": " + ex.Message;
+                return false;
+            }
+        }
+    }
+
     // Requests a normal (S3/Modern Standby) sleep. hibernate=false keeps this a sleep rather than
     // a hibernate, and forceCritical=false lets applications veto, which is the polite behaviour
     // the sleep guard wants when it gives up after a sustained outage.
@@ -445,6 +657,42 @@ internal static class NativeMethods
         catch (Exception ex)
         {
             detail = ex.GetType().Name + ": " + ex.Message;
+            return false;
+        }
+    }
+
+    // AC vs battery. Modern Standby machines can drop the guard's power requests on battery after the
+    // sleep timeout elapses, so the guard board warns when a guard is armed while unplugged.
+    // ACLineStatus 255 is "unknown"; it is reported as such rather than guessed, matching the
+    // connectivity policy that never turns an unknown reading into a state that could put the machine
+    // to sleep or claim protection it cannot vouch for.
+    public static bool TryGetOnAcPower(out bool onAcPower)
+    {
+        onAcPower = false;
+        try
+        {
+            SYSTEM_POWER_STATUS status;
+            if (!GetSystemPowerStatus(out status))
+            {
+                return false;
+            }
+
+            if (status.ACLineStatus == 1)
+            {
+                onAcPower = true;
+                return true;
+            }
+
+            if (status.ACLineStatus == 0)
+            {
+                onAcPower = false;
+                return true;
+            }
+
+            return false;
+        }
+        catch
+        {
             return false;
         }
     }
@@ -576,9 +824,6 @@ internal static class NativeMethods
         int cy,
         uint flags);
 
-    [DllImport("shell32.dll", SetLastError = true)]
-    private static extern IntPtr SHAppBarMessage(uint message, ref APPBARDATA data);
-
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UpdateLayeredWindow(
         IntPtr hWnd,
@@ -590,18 +835,6 @@ internal static class NativeMethods
         int crKey,
         ref BLENDFUNCTION pblend,
         int dwFlags);
-
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmRegisterThumbnail(IntPtr destinationWindow, IntPtr sourceWindow, out IntPtr thumbnailId);
-
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmUnregisterThumbnail(IntPtr thumbnailId);
-
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmQueryThumbnailSourceSize(IntPtr thumbnailId, out SIZE size);
-
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmUpdateThumbnailProperties(IntPtr thumbnailId, ref DWM_THUMBNAIL_PROPERTIES properties);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool GlobalMemoryStatusEx([In, Out] MEMORYSTATUSEX buffer);
@@ -655,46 +888,6 @@ internal static class NativeMethods
         uint size,
         string fileName);
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern uint PrivateExtractIcons(
-        string fileName,
-        int iconIndex,
-        int iconWidth,
-        int iconHeight,
-        IntPtr[] iconHandles,
-        int[] iconIds,
-        uint iconCount,
-        uint flags);
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern uint ExtractIconEx(
-        string fileName,
-        int iconIndex,
-        IntPtr[] largeIcons,
-        IntPtr[] smallIcons,
-        uint icons);
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern IntPtr SHGetFileInfo(
-        string path,
-        uint fileAttributes,
-        ref SHFILEINFO fileInfo,
-        uint fileInfoSize,
-        uint flags);
-
-    [DllImport("shell32.dll")]
-    private static extern int SHGetImageList(
-        int imageList,
-        ref Guid interfaceId,
-        out IImageList imageListInterface);
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern int SHCreateItemFromParsingName(
-        string parsingName,
-        IntPtr bindContext,
-        ref Guid interfaceId,
-        out IShellItemImageFactory imageFactory);
-
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT
     {
@@ -716,17 +909,6 @@ internal static class NativeMethods
         public IntPtr hwndMoveSize;
         public IntPtr hwndCaret;
         public RECT rcCaret;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct APPBARDATA
-    {
-        public int cbSize;
-        public IntPtr hWnd;
-        public uint uCallbackMessage;
-        public uint uEdge;
-        public RECT rc;
-        public IntPtr lParam;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -762,19 +944,6 @@ internal static class NativeMethods
         public byte BlendFlags;
         public byte SourceConstantAlpha;
         public byte AlphaFormat;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct DWM_THUMBNAIL_PROPERTIES
-    {
-        public int dwFlags;
-        public RECT rcDestination;
-        public RECT rcSource;
-        public byte opacity;
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool fVisible;
-        [MarshalAs(UnmanagedType.Bool)]
-        public bool fSourceClientAreaOnly;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
@@ -1020,137 +1189,6 @@ internal static class NativeMethods
         public uint StateMask;
     }
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct SHFILEINFO
-    {
-        public IntPtr hIcon;
-        public int iIcon;
-        public uint dwAttributes;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = MAX_PATH)]
-        public string szDisplayName;
-
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
-        public string szTypeName;
-    }
-
-    [ComImport]
-    [Guid("46EB5926-582E-4017-9FDF-E8998DAA0950")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IImageList
-    {
-        [PreserveSig]
-        int Add(IntPtr imageBitmap, IntPtr maskBitmap, ref int index);
-
-        [PreserveSig]
-        int ReplaceIcon(int index, IntPtr icon, ref int newIndex);
-
-        [PreserveSig]
-        int SetOverlayImage(int imageIndex, int overlayIndex);
-
-        [PreserveSig]
-        int Replace(int index, IntPtr imageBitmap, IntPtr maskBitmap);
-
-        [PreserveSig]
-        int AddMasked(IntPtr imageBitmap, int maskColor, ref int index);
-
-        [PreserveSig]
-        int Draw(IntPtr drawParameters);
-
-        [PreserveSig]
-        int Remove(int index);
-
-        [PreserveSig]
-        int GetIcon(int index, int flags, out IntPtr icon);
-    }
-
-    [ComImport]
-    [Guid("BCC18B79-BA16-442F-80C4-8A59C30C463B")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IShellItemImageFactory
-    {
-        [PreserveSig]
-        int GetImage(SIZE size, int flags, out IntPtr bitmap);
-    }
-
-    [ComImport]
-    [Guid("00021401-0000-0000-C000-000000000046")]
-    private class ShellLink
-    {
-    }
-
-    [ComImport]
-    [Guid("000214F9-0000-0000-C000-000000000046")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IShellLinkW
-    {
-        [PreserveSig]
-        int GetPath(
-            [Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file,
-            int maxFile,
-            IntPtr findData,
-            uint flags);
-
-        [PreserveSig]
-        int GetIDList(out IntPtr idList);
-
-        [PreserveSig]
-        int SetIDList(IntPtr idList);
-
-        [PreserveSig]
-        int GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder name, int maxName);
-
-        [PreserveSig]
-        int SetDescription([MarshalAs(UnmanagedType.LPWStr)] string name);
-
-        [PreserveSig]
-        int GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder directory, int maxDirectory);
-
-        [PreserveSig]
-        int SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string directory);
-
-        [PreserveSig]
-        int GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder arguments, int maxArguments);
-
-        [PreserveSig]
-        int SetArguments([MarshalAs(UnmanagedType.LPWStr)] string arguments);
-
-        [PreserveSig]
-        int GetHotkey(out short hotkey);
-
-        [PreserveSig]
-        int SetHotkey(short hotkey);
-
-        [PreserveSig]
-        int GetShowCmd(out int showCommand);
-
-        [PreserveSig]
-        int SetShowCmd(int showCommand);
-
-        [PreserveSig]
-        int GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder iconPath, int maxIconPath, out int iconIndex);
-
-        [PreserveSig]
-        int SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string iconPath, int iconIndex);
-
-        [PreserveSig]
-        int SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string path, uint reserved);
-
-        [PreserveSig]
-        int Resolve(IntPtr ownerHandle, uint flags);
-
-        [PreserveSig]
-        int SetPath([MarshalAs(UnmanagedType.LPWStr)] string file);
-    }
-
-    public sealed class ShellLinkInfo
-    {
-        public string TargetPath { get; set; }
-        public string Arguments { get; set; }
-        public string IconPath { get; set; }
-        public int IconIndex { get; set; }
-    }
-
     public sealed class WindowEventHook : IDisposable
     {
         private readonly List<IntPtr> hookHandles;
@@ -1273,69 +1311,6 @@ internal static class NativeMethods
         {
             return false;
         }
-    }
-
-    public static bool RegisterTopAppBar(IntPtr handle, int callbackMessage)
-    {
-        if (handle == IntPtr.Zero)
-        {
-            return false;
-        }
-
-        APPBARDATA data = CreateAppBarData(handle);
-        data.uCallbackMessage = (uint)callbackMessage;
-        return SHAppBarMessage(ABM_NEW, ref data) != IntPtr.Zero;
-    }
-
-    public static void RemoveAppBar(IntPtr handle)
-    {
-        if (handle == IntPtr.Zero)
-        {
-            return;
-        }
-
-        APPBARDATA data = CreateAppBarData(handle);
-        SHAppBarMessage(ABM_REMOVE, ref data);
-    }
-
-    public static Rectangle SetTopAppBarPosition(IntPtr handle, Rectangle screenBounds, int height)
-    {
-        if (handle == IntPtr.Zero)
-        {
-            return Rectangle.Empty;
-        }
-
-        height = Math.Max(1, height);
-        APPBARDATA data = CreateAppBarData(handle);
-        data.uEdge = ABE_TOP;
-        data.rc.Left = screenBounds.Left;
-        data.rc.Top = screenBounds.Top;
-        data.rc.Right = screenBounds.Right;
-        data.rc.Bottom = screenBounds.Top + height;
-
-        SHAppBarMessage(ABM_QUERYPOS, ref data);
-        data.rc.Bottom = data.rc.Top + height;
-        SHAppBarMessage(ABM_SETPOS, ref data);
-        return Rectangle.FromLTRB(data.rc.Left, data.rc.Top, data.rc.Right, data.rc.Bottom);
-    }
-
-    public static void NotifyAppBarWindowPositionChanged(IntPtr handle)
-    {
-        if (handle == IntPtr.Zero)
-        {
-            return;
-        }
-
-        APPBARDATA data = CreateAppBarData(handle);
-        SHAppBarMessage(ABM_WINDOWPOSCHANGED, ref data);
-    }
-
-    private static APPBARDATA CreateAppBarData(IntPtr handle)
-    {
-        APPBARDATA data = new APPBARDATA();
-        data.cbSize = Marshal.SizeOf(typeof(APPBARDATA));
-        data.hWnd = handle;
-        return data;
     }
 
     public static bool UpdateLayeredWindowFromBitmap(IntPtr handle, Point location, Bitmap bitmap)
@@ -1885,279 +1860,6 @@ internal static class NativeMethods
         }
     }
 
-    public static bool TryResolveShortcut(string fileName, out ShellLinkInfo linkInfo)
-    {
-        linkInfo = null;
-        if (string.IsNullOrEmpty(fileName))
-        {
-            return false;
-        }
-
-        object linkObject = null;
-        try
-        {
-            linkObject = new ShellLink();
-            System.Runtime.InteropServices.ComTypes.IPersistFile persistFile =
-                (System.Runtime.InteropServices.ComTypes.IPersistFile)linkObject;
-            persistFile.Load(fileName, 0);
-
-            IShellLinkW shellLink = (IShellLinkW)linkObject;
-            StringBuilder target = new StringBuilder(MAX_PATH);
-            StringBuilder arguments = new StringBuilder(INFOTIPSIZE);
-            StringBuilder iconPath = new StringBuilder(MAX_PATH);
-            int iconIndex;
-
-            shellLink.GetPath(target, target.Capacity, IntPtr.Zero, 0);
-            shellLink.GetArguments(arguments, arguments.Capacity);
-            shellLink.GetIconLocation(iconPath, iconPath.Capacity, out iconIndex);
-
-            linkInfo = new ShellLinkInfo
-            {
-                TargetPath = target.ToString().Trim(),
-                Arguments = arguments.ToString().Trim(),
-                IconPath = iconPath.ToString().Trim(),
-                IconIndex = iconIndex
-            };
-            return !string.IsNullOrEmpty(linkInfo.TargetPath) || !string.IsNullOrEmpty(linkInfo.IconPath);
-        }
-        catch
-        {
-            linkInfo = null;
-            return false;
-        }
-        finally
-        {
-            if (linkObject != null && Marshal.IsComObject(linkObject))
-            {
-                try
-                {
-                    Marshal.FinalReleaseComObject(linkObject);
-                }
-                catch
-                {
-                }
-            }
-        }
-    }
-
-    public static Bitmap TryExtractIconBitmap(string fileName, int iconIndex)
-    {
-        if (string.IsNullOrEmpty(fileName) || !File.Exists(fileName))
-        {
-            return null;
-        }
-
-        Bitmap bitmap = TryExtractPrivateIconBitmap(fileName, iconIndex);
-        if (bitmap != null)
-        {
-            return bitmap;
-        }
-
-        return TryExtractAssociatedIconBitmap(fileName, iconIndex);
-    }
-
-    public static Bitmap TryLoadShellItemBitmap(string parsingName)
-    {
-        if (string.IsNullOrEmpty(parsingName))
-        {
-            return null;
-        }
-
-        IShellItemImageFactory imageFactory = null;
-        IntPtr bitmapHandle = IntPtr.Zero;
-        try
-        {
-            Guid factoryGuid = new Guid("BCC18B79-BA16-442F-80C4-8A59C30C463B");
-            int hresult = SHCreateItemFromParsingName(parsingName, IntPtr.Zero, ref factoryGuid, out imageFactory);
-            if (hresult != 0 || imageFactory == null)
-            {
-                return null;
-            }
-
-            SIZE size = new SIZE(256, 256);
-            hresult = imageFactory.GetImage(size, SIIGBF_BIGGERSIZEOK | SIIGBF_ICONONLY, out bitmapHandle);
-            if (hresult != 0 || bitmapHandle == IntPtr.Zero)
-            {
-                return null;
-            }
-
-            using (Bitmap bitmap = Image.FromHbitmap(bitmapHandle))
-            {
-                return new Bitmap(bitmap);
-            }
-        }
-        catch
-        {
-            return null;
-        }
-        finally
-        {
-            if (bitmapHandle != IntPtr.Zero)
-            {
-                DeleteObject(bitmapHandle);
-            }
-
-            if (imageFactory != null && Marshal.IsComObject(imageFactory))
-            {
-                try
-                {
-                    Marshal.ReleaseComObject(imageFactory);
-                }
-                catch
-                {
-                }
-            }
-        }
-    }
-
-    public static Bitmap TryLoadShellIconBitmap(string fileName)
-    {
-        if (string.IsNullOrEmpty(fileName) || !File.Exists(fileName))
-        {
-            return null;
-        }
-
-        try
-        {
-            SHFILEINFO fileInfo = new SHFILEINFO();
-            IntPtr result = SHGetFileInfo(
-                fileName,
-                0,
-                ref fileInfo,
-                (uint)Marshal.SizeOf(typeof(SHFILEINFO)),
-                SHGFI_SYSICONINDEX);
-            if (result == IntPtr.Zero || fileInfo.iIcon < 0)
-            {
-                return null;
-            }
-
-            int[] imageLists = new int[] { SHIL_JUMBO, SHIL_EXTRALARGE, SHIL_LARGE };
-            for (int i = 0; i < imageLists.Length; i++)
-            {
-                Bitmap bitmap = TryGetShellImageListBitmap(fileInfo.iIcon, imageLists[i]);
-                if (bitmap != null)
-                {
-                    return bitmap;
-                }
-            }
-        }
-        catch
-        {
-        }
-
-        return null;
-    }
-
-    private static Bitmap TryExtractPrivateIconBitmap(string fileName, int iconIndex)
-    {
-        IntPtr[] icons = new IntPtr[1];
-        int[] iconIds = new int[1];
-        try
-        {
-            uint extracted = PrivateExtractIcons(fileName, iconIndex, 256, 256, icons, iconIds, 1, 0);
-            if (extracted == 0 || extracted == uint.MaxValue || icons[0] == IntPtr.Zero)
-            {
-                return null;
-            }
-
-            return BitmapFromIconHandle(icons[0]);
-        }
-        catch
-        {
-            return null;
-        }
-        finally
-        {
-            if (icons[0] != IntPtr.Zero)
-            {
-                DestroyIcon(icons[0]);
-            }
-        }
-    }
-
-    private static Bitmap TryExtractAssociatedIconBitmap(string fileName, int iconIndex)
-    {
-        IntPtr[] icons = new IntPtr[1];
-        try
-        {
-            uint extracted = ExtractIconEx(fileName, iconIndex, icons, null, 1);
-            if (extracted == 0 || icons[0] == IntPtr.Zero)
-            {
-                return null;
-            }
-
-            return BitmapFromIconHandle(icons[0]);
-        }
-        catch
-        {
-            return null;
-        }
-        finally
-        {
-            if (icons[0] != IntPtr.Zero)
-            {
-                DestroyIcon(icons[0]);
-            }
-        }
-    }
-
-    private static Bitmap TryGetShellImageListBitmap(int iconIndex, int imageListId)
-    {
-        IImageList imageList = null;
-        IntPtr iconHandle = IntPtr.Zero;
-        try
-        {
-            Guid imageListGuid = new Guid("46EB5926-582E-4017-9FDF-E8998DAA0950");
-            int hresult = SHGetImageList(imageListId, ref imageListGuid, out imageList);
-            if (hresult != 0 || imageList == null)
-            {
-                return null;
-            }
-
-            if (imageList.GetIcon(iconIndex, ILD_TRANSPARENT, out iconHandle) != 0 || iconHandle == IntPtr.Zero)
-            {
-                return null;
-            }
-
-            return BitmapFromIconHandle(iconHandle);
-        }
-        catch
-        {
-            return null;
-        }
-        finally
-        {
-            if (iconHandle != IntPtr.Zero)
-            {
-                DestroyIcon(iconHandle);
-            }
-
-            if (imageList != null && Marshal.IsComObject(imageList))
-            {
-                try
-                {
-                    Marshal.ReleaseComObject(imageList);
-                }
-                catch
-                {
-                }
-            }
-        }
-    }
-
-    private static Bitmap BitmapFromIconHandle(IntPtr iconHandle)
-    {
-        if (iconHandle == IntPtr.Zero)
-        {
-            return null;
-        }
-
-        using (Icon icon = (Icon)Icon.FromHandle(iconHandle).Clone())
-        {
-            return icon.ToBitmap();
-        }
-    }
-
     public static void TrySetDpiAware()
     {
         try
@@ -2417,91 +2119,6 @@ internal static class NativeMethods
             return GetWindowRect(handle, out rect) &&
                 rect.Right > rect.Left &&
                 rect.Bottom > rect.Top;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    public static bool RegisterDwmThumbnail(IntPtr destinationWindow, IntPtr sourceWindow, out IntPtr thumbnailId)
-    {
-        thumbnailId = IntPtr.Zero;
-        if (destinationWindow == IntPtr.Zero || sourceWindow == IntPtr.Zero)
-        {
-            return false;
-        }
-
-        try
-        {
-            return DwmRegisterThumbnail(destinationWindow, sourceWindow, out thumbnailId) == 0 &&
-                thumbnailId != IntPtr.Zero;
-        }
-        catch
-        {
-            thumbnailId = IntPtr.Zero;
-            return false;
-        }
-    }
-
-    public static void UnregisterDwmThumbnail(IntPtr thumbnailId)
-    {
-        if (thumbnailId == IntPtr.Zero)
-        {
-            return;
-        }
-
-        try
-        {
-            DwmUnregisterThumbnail(thumbnailId);
-        }
-        catch
-        {
-        }
-    }
-
-    public static Size QueryThumbnailSourceSize(IntPtr thumbnailId)
-    {
-        if (thumbnailId == IntPtr.Zero)
-        {
-            return Size.Empty;
-        }
-
-        try
-        {
-            SIZE size;
-            if (DwmQueryThumbnailSourceSize(thumbnailId, out size) == 0)
-            {
-                return new Size(Math.Max(0, size.CX), Math.Max(0, size.CY));
-            }
-        }
-        catch
-        {
-        }
-
-        return Size.Empty;
-    }
-
-    public static bool UpdateDwmThumbnail(IntPtr thumbnailId, Rectangle destination, byte opacity)
-    {
-        if (thumbnailId == IntPtr.Zero || destination.Width <= 0 || destination.Height <= 0)
-        {
-            return false;
-        }
-
-        try
-        {
-            DWM_THUMBNAIL_PROPERTIES properties = new DWM_THUMBNAIL_PROPERTIES();
-            properties.dwFlags =
-                DWM_TNP_RECTDESTINATION |
-                DWM_TNP_OPACITY |
-                DWM_TNP_VISIBLE |
-                DWM_TNP_SOURCECLIENTAREAONLY;
-            properties.rcDestination = ToRect(destination);
-            properties.opacity = opacity;
-            properties.fVisible = true;
-            properties.fSourceClientAreaOnly = false;
-            return DwmUpdateThumbnailProperties(thumbnailId, ref properties) == 0;
         }
         catch
         {
@@ -4636,16 +4253,6 @@ internal static class NativeMethods
                nativeName.IndexOf("臺", StringComparison.OrdinalIgnoreCase) >= 0 ||
                nativeName.IndexOf("台", StringComparison.OrdinalIgnoreCase) >= 0 ||
                nativeName.IndexOf("香港", StringComparison.OrdinalIgnoreCase) >= 0;
-    }
-
-    private static RECT ToRect(Rectangle rectangle)
-    {
-        RECT rect = new RECT();
-        rect.Left = rectangle.Left;
-        rect.Top = rectangle.Top;
-        rect.Right = rectangle.Right;
-        rect.Bottom = rectangle.Bottom;
-        return rect;
     }
 
     private static string GetWindowTitle(IntPtr handle)

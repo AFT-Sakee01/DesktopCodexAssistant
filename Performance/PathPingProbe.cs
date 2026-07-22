@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Threading;
@@ -37,7 +38,12 @@ internal sealed class PathPingProbeReader : IDisposable
     private DateTime lastRoundUtc = DateTime.MinValue;
     private long pathGeneration = long.MinValue;
     private string pathInterfaceId = string.Empty;
-    private string pathTarget = string.Empty;
+    private string pathTargetSignature = string.Empty;
+    private long currentRequestGeneration = long.MinValue;
+    private string currentRequestInterfaceId = string.Empty;
+    private string currentRequestTargetSignature = string.Empty;
+    private long requestEpoch;
+    private bool currentRequestUsable;
     private int consecutiveTargetFailures;
     private bool requestRunning;
     private bool rediscoverRequested = true;
@@ -79,6 +85,9 @@ internal sealed class PathPingProbeReader : IDisposable
         string requestTarget = string.IsNullOrWhiteSpace(target) ? string.Empty : target.Trim();
         string requestGateway = string.IsNullOrWhiteSpace(gateway) ? string.Empty : gateway.Trim();
         string requestInterfaceId = interfaceId ?? string.Empty;
+        string requestTargetSignature = BuildRequestTargetSignature(requestTarget, requestGateway);
+        bool requestUsable = connected && !icmpBlocked && requestTarget.Length > 0;
+        long requestEpochAtStart = 0;
 
         lock (this.sync)
         {
@@ -87,7 +96,28 @@ internal sealed class PathPingProbeReader : IDisposable
                 return this.snapshot.Clone();
             }
 
-            if (icmpBlocked || !connected || requestTarget.Length == 0)
+            if (!IsRequestIdentityCurrent(
+                    this.currentRequestGeneration,
+                    this.currentRequestInterfaceId,
+                    this.currentRequestTargetSignature,
+                    this.currentRequestUsable,
+                    generation,
+                    requestInterfaceId,
+                    requestTargetSignature,
+                    requestUsable))
+            {
+                // Relinquish ownership immediately. The old task may still finish, but every
+                // mutation and its finally block validates this epoch before touching live state.
+                this.currentRequestGeneration = generation;
+                this.currentRequestInterfaceId = requestInterfaceId;
+                this.currentRequestTargetSignature = requestTargetSignature;
+                this.currentRequestUsable = requestUsable;
+                this.requestEpoch++;
+                this.requestRunning = false;
+                this.rediscoverRequested = true;
+            }
+
+            if (!requestUsable)
             {
                 // No usable ICMP: publish the degraded verdict and drop the path so a later
                 // recovery re-discovers instead of resuming a route that may no longer exist.
@@ -108,7 +138,7 @@ internal sealed class PathPingProbeReader : IDisposable
                 this.path.Count == 0 ||
                 this.pathGeneration != generation ||
                 !string.Equals(this.pathInterfaceId, requestInterfaceId, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(this.pathTarget, requestTarget, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(this.pathTargetSignature, requestTargetSignature, StringComparison.OrdinalIgnoreCase) ||
                 this.consecutiveTargetFailures >= PathFailureRediscoverRounds ||
                 (this.lastTraceUtc != DateTime.MinValue &&
                  (nowUtc - this.lastTraceUtc).TotalMinutes >= PathRediscoverIntervalMinutes);
@@ -133,6 +163,7 @@ internal sealed class PathPingProbeReader : IDisposable
                     this.snapshot.DiscoveryMaxHops = MaxHops;
                 }
 
+                requestEpochAtStart = this.requestEpoch;
                 shouldStart = true;
             }
 
@@ -147,21 +178,43 @@ internal sealed class PathPingProbeReader : IDisposable
         {
             try
             {
-                RunRound(runTrace, requestTarget, requestGateway, generation, requestInterfaceId, samplingActive);
+                RunRound(
+                    runTrace,
+                    requestTarget,
+                    requestGateway,
+                    generation,
+                    requestInterfaceId,
+                    requestTargetSignature,
+                    requestEpochAtStart,
+                    samplingActive);
             }
             catch (Exception ex)
             {
                 Program.LogInfo("PathPing round failed: " + ex.Message);
                 lock (this.sync)
                 {
-                    this.snapshot.DiscoveryInProgress = false;
+                    if (IsRequestIdentityCurrentLocked(
+                        generation,
+                        requestInterfaceId,
+                        requestTargetSignature,
+                        requestEpochAtStart))
+                    {
+                        this.snapshot.DiscoveryInProgress = false;
+                    }
                 }
             }
             finally
             {
                 lock (this.sync)
                 {
-                    this.requestRunning = false;
+                    if (IsRequestIdentityCurrentLocked(
+                        generation,
+                        requestInterfaceId,
+                        requestTargetSignature,
+                        requestEpochAtStart))
+                    {
+                        this.requestRunning = false;
+                    }
                 }
             }
         });
@@ -190,16 +243,28 @@ internal sealed class PathPingProbeReader : IDisposable
         string gateway,
         long generation,
         string interfaceId,
+        string targetSignature,
+        long requestEpochAtStart,
         bool samplingActive)
     {
         List<DiscoveredHop> activePath;
         if (runTrace)
         {
             DateTime traceStartedUtc = DateTime.UtcNow;
-            List<DiscoveredHop> discovered = DiscoverPath(target, gateway);
+            List<DiscoveredHop> discovered = DiscoverPath(
+                target,
+                gateway,
+                generation,
+                interfaceId,
+                targetSignature,
+                requestEpochAtStart);
             lock (this.sync)
             {
-                if (this.disposed)
+                if (!IsRequestIdentityCurrentLocked(
+                    generation,
+                    interfaceId,
+                    targetSignature,
+                    requestEpochAtStart))
                 {
                     return;
                 }
@@ -217,7 +282,7 @@ internal sealed class PathPingProbeReader : IDisposable
                 this.path = discovered;
                 this.pathGeneration = generation;
                 this.pathInterfaceId = interfaceId;
-                this.pathTarget = target;
+                this.pathTargetSignature = targetSignature;
                 this.lastTraceUtc = DateTime.UtcNow;
                 this.rediscoverRequested = false;
                 this.consecutiveTargetFailures = 0;
@@ -232,7 +297,11 @@ internal sealed class PathPingProbeReader : IDisposable
 
         lock (this.sync)
         {
-            if (this.disposed)
+            if (!IsRequestIdentityCurrentLocked(
+                generation,
+                interfaceId,
+                targetSignature,
+                requestEpochAtStart))
             {
                 return;
             }
@@ -247,13 +316,18 @@ internal sealed class PathPingProbeReader : IDisposable
 
         if (samplingActive)
         {
-            SampleHops(activePath);
+            SampleHops(activePath, generation, interfaceId, targetSignature, requestEpochAtStart);
         }
 
-        PublishSnapshot(target, activePath, runTrace);
+        PublishSnapshot(target, activePath, runTrace, generation, interfaceId, targetSignature, requestEpochAtStart);
     }
 
-    private void SampleHops(List<DiscoveredHop> activePath)
+    private void SampleHops(
+        List<DiscoveredHop> activePath,
+        long generation,
+        string interfaceId,
+        string targetSignature,
+        long requestEpochAtStart)
     {
         DateTime nowUtc = DateTime.UtcNow;
         for (int i = 0; i < activePath.Count; i++)
@@ -269,7 +343,11 @@ internal sealed class PathPingProbeReader : IDisposable
             SendEcho(hop.Address, HopTimeoutMs, out success, out latencyMs);
             lock (this.sync)
             {
-                if (this.disposed)
+                if (!IsRequestIdentityCurrentLocked(
+                    generation,
+                    interfaceId,
+                    targetSignature,
+                    requestEpochAtStart))
                 {
                     return;
                 }
@@ -297,13 +375,24 @@ internal sealed class PathPingProbeReader : IDisposable
         }
     }
 
-    private void PublishSnapshot(string target, List<DiscoveredHop> activePath, bool traced)
+    private void PublishSnapshot(
+        string target,
+        List<DiscoveredHop> activePath,
+        bool traced,
+        long generation,
+        string interfaceId,
+        string targetSignature,
+        long requestEpochAtStart)
     {
         DateTime nowUtc = DateTime.UtcNow;
         List<PathPingHopSnapshot> raw = new List<PathPingHopSnapshot>();
         lock (this.sync)
         {
-            if (this.disposed)
+            if (!IsRequestIdentityCurrentLocked(
+                generation,
+                interfaceId,
+                targetSignature,
+                requestEpochAtStart))
             {
                 return;
             }
@@ -569,12 +658,38 @@ internal sealed class PathPingProbeReader : IDisposable
         };
     }
 
-    private List<DiscoveredHop> DiscoverPath(string target, string gateway)
+    private List<DiscoveredHop> DiscoverPath(
+        string target,
+        string gateway,
+        long generation,
+        string interfaceId,
+        string targetSignature,
+        long requestEpochAtStart)
     {
         List<DiscoveredHop> discovered = new List<DiscoveredHop>();
+        // Ping.Send(string, ...) may resolve the host for every TTL. Keep one concrete address for
+        // the whole trace so discovery cost is bounded and every hop follows the same address path.
+        IPAddress targetAddress;
+        if (!TryResolveTraceTarget(target, out targetAddress))
+        {
+            return discovered;
+        }
+
         byte[] payload = new byte[ProbePayloadSize];
         for (int ttl = 1; ttl <= MaxHops; ttl++)
         {
+            lock (this.sync)
+            {
+                if (!IsRequestIdentityCurrentLocked(
+                    generation,
+                    interfaceId,
+                    targetSignature,
+                    requestEpochAtStart))
+                {
+                    return new List<DiscoveredHop>();
+                }
+            }
+
             string address = string.Empty;
             bool responding = false;
             bool reachedTarget = false;
@@ -583,7 +698,7 @@ internal sealed class PathPingProbeReader : IDisposable
                 using (Ping ping = new Ping())
                 {
                     PingOptions options = new PingOptions(ttl, true);
-                    PingReply reply = ping.Send(target, TraceTimeoutMs, payload, options);
+                    PingReply reply = ping.Send(targetAddress, TraceTimeoutMs, payload, options);
                     if (reply != null &&
                         (reply.Status == IPStatus.TtlExpired || reply.Status == IPStatus.Success) &&
                         reply.Address != null)
@@ -611,7 +726,13 @@ internal sealed class PathPingProbeReader : IDisposable
                 IsTarget = reachedTarget
             });
 
-            UpdateDiscoveryProgress(target, ttl);
+            UpdateDiscoveryProgress(
+                target,
+                ttl,
+                generation,
+                interfaceId,
+                targetSignature,
+                requestEpochAtStart);
 
             if (reachedTarget)
             {
@@ -656,11 +777,73 @@ internal sealed class PathPingProbeReader : IDisposable
         return discovered;
     }
 
-    private void UpdateDiscoveryProgress(string target, int currentHop)
+    private static bool TryResolveTraceTarget(string target, out IPAddress targetAddress)
+    {
+        targetAddress = null;
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return false;
+        }
+
+        string normalizedTarget = target.Trim();
+        IPAddress parsed;
+        if (IPAddress.TryParse(normalizedTarget, out parsed))
+        {
+            targetAddress = SelectFirstUsableAddress(new IPAddress[] { parsed });
+            return targetAddress != null;
+        }
+
+        try
+        {
+            targetAddress = SelectFirstUsableAddress(Dns.GetHostAddresses(normalizedTarget));
+            return targetAddress != null;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    }
+
+    private static IPAddress SelectFirstUsableAddress(IPAddress[] addresses)
+    {
+        if (addresses == null)
+        {
+            return null;
+        }
+
+        for (int i = 0; i < addresses.Length; i++)
+        {
+            IPAddress candidate = addresses[i];
+            if (candidate != null &&
+                (candidate.AddressFamily == AddressFamily.InterNetwork ||
+                 candidate.AddressFamily == AddressFamily.InterNetworkV6))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private void UpdateDiscoveryProgress(
+        string target,
+        int currentHop,
+        long generation,
+        string interfaceId,
+        string targetSignature,
+        long requestEpochAtStart)
     {
         lock (this.sync)
         {
-            if (this.disposed)
+            if (!IsRequestIdentityCurrentLocked(
+                generation,
+                interfaceId,
+                targetSignature,
+                requestEpochAtStart))
             {
                 return;
             }
@@ -670,6 +853,47 @@ internal sealed class PathPingProbeReader : IDisposable
             this.snapshot.DiscoveryCurrentHop = Math.Max(0, Math.Min(MaxHops, currentHop));
             this.snapshot.DiscoveryMaxHops = MaxHops;
         }
+    }
+
+    private bool IsRequestIdentityCurrentLocked(
+        long generation,
+        string interfaceId,
+        string targetSignature,
+        long requestEpochAtStart)
+    {
+        return !this.disposed &&
+            this.requestEpoch == requestEpochAtStart &&
+            IsRequestIdentityCurrent(
+                this.currentRequestGeneration,
+                this.currentRequestInterfaceId,
+                this.currentRequestTargetSignature,
+                this.currentRequestUsable,
+                generation,
+                interfaceId,
+                targetSignature,
+                true);
+    }
+
+    private static bool IsRequestIdentityCurrent(
+        long currentGeneration,
+        string currentInterfaceId,
+        string currentTargetSignature,
+        bool currentUsable,
+        long requestGeneration,
+        string requestInterfaceId,
+        string requestTargetSignature,
+        bool requestUsable)
+    {
+        return currentGeneration == requestGeneration &&
+            currentUsable == requestUsable &&
+            string.Equals(currentInterfaceId, requestInterfaceId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(currentTargetSignature, requestTargetSignature, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildRequestTargetSignature(string target, string gateway)
+    {
+        return (target ?? string.Empty).Trim().ToUpperInvariant() + "|" +
+            (gateway ?? string.Empty).Trim().ToUpperInvariant();
     }
 
     internal static int GetDiscoveryPercent(int currentHop, int maxHops)
@@ -819,6 +1043,26 @@ internal sealed class PathPingProbeReader : IDisposable
             throw new InvalidOperationException("PathPing self-test: discovery progress must clamp to 0..100.");
         }
 
+        IPAddress literalTarget;
+        if (!TryResolveTraceTarget("203.0.113.10", out literalTarget) ||
+            literalTarget == null ||
+            !string.Equals(literalTarget.ToString(), "203.0.113.10", StringComparison.Ordinal) ||
+            TryResolveTraceTarget(" ", out literalTarget))
+        {
+            throw new InvalidOperationException("PathPing self-test: trace target resolution failed.");
+        }
+
+        IPAddress firstResolved = SelectFirstUsableAddress(new IPAddress[]
+        {
+            null,
+            IPAddress.Parse("2001:db8::1"),
+            IPAddress.Parse("203.0.113.20")
+        });
+        if (firstResolved == null || !string.Equals(firstResolved.ToString(), "2001:db8::1", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("PathPing self-test: resolver must keep the first usable address.");
+        }
+
         // Battery saver must slow the round cadence rather than keep the balanced rate. Comparing
         // resolved modes directly keeps this independent of the machine's current power state.
         if (GetRoundIntervalMsForMode(WidgetPerformanceMode.BatterySaver) <=
@@ -838,7 +1082,17 @@ internal sealed class PathPingProbeReader : IDisposable
             throw new InvalidOperationException("PathPing self-test: follow-Windows mode must resolve to a known cadence.");
         }
 
-        Console.WriteLine("PathPing probe: PASS rate-limit-vs-link-loss unreachable silent-merge icmp-degrade interval progress");
+        string targetSignature = BuildRequestTargetSignature("1.1.1.1", "192.168.1.1");
+        if (!IsRequestIdentityCurrent(4, "if-a", targetSignature, true, 4, "IF-A", targetSignature, true) ||
+            IsRequestIdentityCurrent(4, "if-a", targetSignature, true, 3, "if-a", targetSignature, true) ||
+            IsRequestIdentityCurrent(4, "if-a", targetSignature, true, 4, "if-b", targetSignature, true) ||
+            IsRequestIdentityCurrent(4, "if-a", targetSignature, true, 4, "if-a", BuildRequestTargetSignature("8.8.8.8", "192.168.1.1"), true) ||
+            IsRequestIdentityCurrent(4, "if-a", targetSignature, false, 4, "if-a", targetSignature, true))
+        {
+            throw new InvalidOperationException("PathPing self-test: stale request identity must reject all mutations.");
+        }
+
+        Console.WriteLine("PathPing probe: PASS rate-limit-vs-link-loss unreachable silent-merge icmp-degrade interval progress single-resolution request-identity");
     }
 
     private static List<PathPingHopSnapshot> BuildTestHops(int[] numbers, bool[] responding, double[] loss)

@@ -26,12 +26,22 @@ internal static class HoverInteractionPolicy
 
     internal static bool IsPointInActivationRange(WidgetSettings settings, Point cursor, Rectangle windowBounds)
     {
+        return IsPointInActivationRange(settings, cursor, windowBounds, false);
+    }
+
+    // exactBounds forces plain containment even when sensitive-mouse mode is on. Sensitive mode
+    // grows the cursor into a ~100 px square so a small scattered panel is easy to reach, which is
+    // right for a handful of separated windows — but wrong for a tight grid: the metric tiles sit
+    // 68 px apart, so one cursor position lands inside several tiles' activation squares at once and
+    // hovering any tile would fade its neighbours too.
+    internal static bool IsPointInActivationRange(WidgetSettings settings, Point cursor, Rectangle windowBounds, bool exactBounds)
+    {
         if (windowBounds.Width <= 0 || windowBounds.Height <= 0)
         {
             return false;
         }
 
-        if (settings == null || !settings.SensitiveMouseModeEnabled)
+        if (exactBounds || settings == null || !settings.SensitiveMouseModeEnabled)
         {
             return windowBounds.Contains(cursor);
         }
@@ -72,6 +82,27 @@ internal static class HoverInteractionPolicy
         HoverOpacityDelayState delayState,
         bool autoHideKeepAliveActive)
     {
+        return IsHoverOpacityTargetActive(
+            settings,
+            windowBounds,
+            hiddenForFullscreen,
+            visible,
+            ref revealUntilUtc,
+            delayState,
+            autoHideKeepAliveActive,
+            false);
+    }
+
+    public static bool IsHoverOpacityTargetActive(
+        WidgetSettings settings,
+        Rectangle windowBounds,
+        bool hiddenForFullscreen,
+        bool visible,
+        ref DateTime revealUntilUtc,
+        HoverOpacityDelayState delayState,
+        bool autoHideKeepAliveActive,
+        bool exactBounds)
+    {
         return IsHoverOpacityTargetActiveAt(
             settings,
             CursorPosition(),
@@ -81,7 +112,8 @@ internal static class HoverInteractionPolicy
             DateTime.UtcNow,
             ref revealUntilUtc,
             delayState,
-            autoHideKeepAliveActive);
+            autoHideKeepAliveActive,
+            exactBounds);
     }
 
     internal static bool IsHoverOpacityTargetActiveAt(
@@ -117,6 +149,31 @@ internal static class HoverInteractionPolicy
         HoverOpacityDelayState delayState,
         bool autoHideKeepAliveActive)
     {
+        return IsHoverOpacityTargetActiveAt(
+            settings,
+            cursor,
+            windowBounds,
+            hiddenForFullscreen,
+            visible,
+            nowUtc,
+            ref revealUntilUtc,
+            delayState,
+            autoHideKeepAliveActive,
+            false);
+    }
+
+    internal static bool IsHoverOpacityTargetActiveAt(
+        WidgetSettings settings,
+        Point cursor,
+        Rectangle windowBounds,
+        bool hiddenForFullscreen,
+        bool visible,
+        DateTime nowUtc,
+        ref DateTime revealUntilUtc,
+        HoverOpacityDelayState delayState,
+        bool autoHideKeepAliveActive,
+        bool exactBounds)
+    {
         if (settings == null || hiddenForFullscreen || !visible)
         {
             ResetDelayState(delayState);
@@ -140,7 +197,7 @@ internal static class HoverInteractionPolicy
             return false;
         }
 
-        if (IsReverseRevealActiveAt(settings, cursor, windowBounds, nowUtc, ref revealUntilUtc))
+        if (IsReverseRevealActiveAt(settings, cursor, windowBounds, nowUtc, ref revealUntilUtc, exactBounds))
         {
             ResetDelayState(delayState);
             return false;
@@ -152,7 +209,7 @@ internal static class HoverInteractionPolicy
             return true;
         }
 
-        bool rawHoverActive = IsPointInActivationRange(settings, cursor, windowBounds);
+        bool rawHoverActive = IsPointInActivationRange(settings, cursor, windowBounds, exactBounds);
         return IsDelayedHoverOpacityActiveAt(settings, rawHoverActive, nowUtc, delayState);
     }
 
@@ -163,6 +220,17 @@ internal static class HoverInteractionPolicy
         DateTime nowUtc,
         ref DateTime revealUntilUtc)
     {
+        return IsReverseRevealActiveAt(settings, cursor, windowBounds, nowUtc, ref revealUntilUtc, false);
+    }
+
+    internal static bool IsReverseRevealActiveAt(
+        WidgetSettings settings,
+        Point cursor,
+        Rectangle windowBounds,
+        DateTime nowUtc,
+        ref DateTime revealUntilUtc,
+        bool exactBounds)
+    {
         if (settings == null ||
             !settings.ReverseHoverOpacityRevealEnabled ||
             !settings.ManualHoverOpacityActive ||
@@ -172,7 +240,7 @@ internal static class HoverInteractionPolicy
             return false;
         }
 
-        if (IsPointInActivationRange(settings, cursor, windowBounds))
+        if (IsPointInActivationRange(settings, cursor, windowBounds, exactBounds))
         {
             revealUntilUtc = nowUtc.AddSeconds(GetReverseRevealDelaySeconds(settings));
             return true;

@@ -22,7 +22,11 @@ internal sealed class CloudEndpointProbeReader
     private string lastTargetConfigurationSignature = string.Empty;
     private string pendingStateSignature = string.Empty;
     private string pendingForcedTrigger = string.Empty;
+    private string currentNetworkBaseSignature = string.Empty;
+    private string currentNetworkIdentitySignature = string.Empty;
     private CancellationTokenSource requestCancellation;
+    private long requestEpoch;
+    private bool pendingForceRefresh;
     private bool requestRunning;
 
     public void RequestRefresh()
@@ -38,6 +42,10 @@ internal sealed class CloudEndpointProbeReader
             this.lastProbeStartedUtc = DateTime.MinValue;
             this.nextProbeDueUtc = DateTime.MinValue;
             this.pendingForcedTrigger = NormalizeRefreshTrigger(trigger, "云服务强制刷新");
+            // A refresh request invalidates the old result and must bypass the endpoint cache
+            // exactly once. The flag is consumed only after the next single-flight slot is owned.
+            this.pendingForceRefresh = true;
+            this.requestEpoch++;
             cancellation = this.requestCancellation;
         }
 
@@ -51,25 +59,54 @@ internal sealed class CloudEndpointProbeReader
         WidgetSettings settings,
         NetworkAccessState networkState,
         bool localNetworkDegraded,
-        string localNetworkDegradedReason)
+        string localNetworkDegradedReason,
+        long networkGeneration,
+        string interfaceId)
     {
         string[] targetConfiguration = NetworkProbeTargetSettings.NormalizeCloudTargets(
             settings == null ? NetworkProbeTargetSettings.DefaultCloudEndpointTargets : settings.CloudEndpointTargets);
         string targetSignature = NetworkProbeTargetSettings.BuildSignature(targetConfiguration);
+        string networkBaseSignature = BuildNetworkBaseSignature(networkGeneration, interfaceId);
+        string networkIdentitySignature = networkBaseSignature + "|" + networkState.ToString();
+        CancellationTokenSource identityCancellation = null;
+        lock (this.sync)
+        {
+            if (!string.Equals(this.currentNetworkIdentitySignature, networkIdentitySignature, StringComparison.Ordinal))
+            {
+                bool networkBaseChanged = !string.Equals(
+                    this.currentNetworkBaseSignature,
+                    networkBaseSignature,
+                    StringComparison.Ordinal);
+                this.currentNetworkBaseSignature = networkBaseSignature;
+                this.currentNetworkIdentitySignature = networkIdentitySignature;
+                this.requestEpoch++;
+                if (networkBaseChanged)
+                {
+                    this.pendingForceRefresh = true;
+                    this.pendingForcedTrigger = "云服务网络身份变化";
+                    this.lastProbeStartedUtc = DateTime.MinValue;
+                    this.nextProbeDueUtc = DateTime.MinValue;
+                }
+                identityCancellation = this.requestCancellation;
+                this.requestCancellation = null;
+                this.requestRunning = false;
+                ClearPendingStateLocked();
+            }
+        }
+
+        CancelRequest(identityCancellation);
         if (networkState != NetworkAccessState.Online)
         {
             CloudEndpointSnapshot[] unavailable = CreateUnavailableSnapshots(GetUnavailableNetworkReason(networkState), targetConfiguration);
-            CancellationTokenSource cancellation;
             lock (this.sync)
             {
-                cancellation = this.requestCancellation;
-                this.snapshots = CloneSnapshots(unavailable);
-                this.requestRunning = false;
-                this.requestCancellation = null;
-                ClearPendingStateLocked();
+                if (string.Equals(this.currentNetworkIdentitySignature, networkIdentitySignature, StringComparison.Ordinal))
+                {
+                    this.snapshots = CloneSnapshots(unavailable);
+                    ClearPendingStateLocked();
+                }
             }
 
-            CancelRequest(cancellation);
             return unavailable;
         }
 
@@ -79,18 +116,16 @@ internal sealed class CloudEndpointProbeReader
             : Math.Max(WidgetSettings.MinGfwProbeIntervalMinutes, settings.GfwProbeIntervalMinutes);
         int manualToken = settings == null ? 0 : settings.GfwProbeManualRefreshToken;
         int regionMask = settings == null ? WidgetSettings.DefaultCloudStatusRegionMask : settings.CloudStatusRegionMask;
-        bool manualRefresh;
         bool manualAccepted = false;
         bool regionChanged;
         bool targetsChanged;
         bool due;
-        string trigger = string.Empty;
         bool shouldStart = false;
         CancellationTokenSource configurationCancellation = null;
 
         lock (this.sync)
         {
-            manualRefresh = manualToken != this.lastManualRefreshToken;
+            bool manualRefresh = manualToken != this.lastManualRefreshToken;
             regionChanged = regionMask != this.lastCloudStatusRegionMask;
             targetsChanged = !string.Equals(targetSignature, this.lastTargetConfigurationSignature, StringComparison.Ordinal);
             if (targetsChanged)
@@ -99,7 +134,11 @@ internal sealed class CloudEndpointProbeReader
                 this.lastProbeStartedUtc = DateTime.MinValue;
                 this.nextProbeDueUtc = DateTime.MinValue;
                 this.pendingForcedTrigger = "云服务检测列表变化";
+                this.pendingForceRefresh = true;
+                this.requestEpoch++;
                 configurationCancellation = this.requestCancellation;
+                this.requestCancellation = null;
+                this.requestRunning = false;
             }
             DateTime dueUtc = this.nextProbeDueUtc == DateTime.MinValue && this.lastProbeStartedUtc != DateTime.MinValue
                 ? this.lastProbeStartedUtc.AddMinutes(intervalMinutes)
@@ -110,23 +149,21 @@ internal sealed class CloudEndpointProbeReader
 
             if (manualRefresh)
             {
-                this.lastManualRefreshToken = manualToken;
                 if (this.lastManualRefreshAcceptedUtc == DateTime.MinValue ||
                     (now - this.lastManualRefreshAcceptedUtc) >= ManualRefreshCooldown)
                 {
-                    this.lastManualRefreshAcceptedUtc = now;
                     manualAccepted = true;
                 }
+                else
+                {
+                    // A token rejected by the explicit cooldown is intentionally consumed. A
+                    // token blocked only by single-flight remains pending until a slot is owned.
+                    this.lastManualRefreshToken = manualToken;
+                }
             }
-            if (manualAccepted || regionChanged || targetsChanged || due)
+            if (manualAccepted || regionChanged || targetsChanged || due || this.pendingForceRefresh)
             {
                 shouldStart = true;
-                trigger = manualAccepted
-                    ? "云服务手动刷新"
-                    : (regionChanged
-                        ? "云服务地区设置变化"
-                        : (targetsChanged ? "云服务检测列表变化" : SelectAutomaticTrigger(this.pendingForcedTrigger)));
-                this.pendingForcedTrigger = string.Empty;
             }
         }
 
@@ -134,7 +171,19 @@ internal sealed class CloudEndpointProbeReader
 
         if (shouldStart)
         {
-            StartProbe(now, trigger, regionMask, intervalMinutes, manualAccepted || targetsChanged, regionChanged, localNetworkDegraded, localNetworkDegradedReason, targetConfiguration);
+            StartProbe(
+                now,
+                regionMask,
+                intervalMinutes,
+                manualToken,
+                manualAccepted,
+                regionChanged,
+                targetsChanged,
+                localNetworkDegraded,
+                localNetworkDegradedReason,
+                targetConfiguration,
+                targetSignature,
+                networkIdentitySignature);
         }
 
         lock (this.sync)
@@ -145,30 +194,55 @@ internal sealed class CloudEndpointProbeReader
 
     private void StartProbe(
         DateTime now,
-        string trigger,
         int regionMask,
         int intervalMinutes,
-        bool forceRefresh,
+        int manualToken,
+        bool manualAccepted,
         bool regionChanged,
+        bool targetsChanged,
         bool localNetworkDegraded,
         string localNetworkDegradedReason,
-        string[] targetConfiguration)
+        string[] targetConfiguration,
+        string targetSignature,
+        string networkIdentitySignature)
     {
         CloudEndpointSnapshot[] previous;
         CancellationTokenSource cancellation = new CancellationTokenSource();
+        bool forceRefresh;
+        string trigger;
+        long requestEpochAtStart;
         lock (this.sync)
         {
-            if (this.requestRunning)
+            if (!string.Equals(this.currentNetworkIdentitySignature, networkIdentitySignature, StringComparison.Ordinal) ||
+                !string.Equals(this.lastTargetConfigurationSignature, targetSignature, StringComparison.Ordinal) ||
+                !TryAcquireProbeStart(
+                    ref this.requestRunning,
+                    ref this.pendingForceRefresh,
+                    manualAccepted,
+                    manualToken,
+                    ref this.lastManualRefreshToken,
+                    out forceRefresh))
             {
                 cancellation.Dispose();
                 return;
             }
 
-            this.requestRunning = true;
+            trigger = manualAccepted
+                ? "云服务手动刷新"
+                : (regionChanged
+                    ? "云服务地区设置变化"
+                    : (targetsChanged ? "云服务检测列表变化" : SelectAutomaticTrigger(this.pendingForcedTrigger)));
+            this.pendingForcedTrigger = string.Empty;
+            if (manualAccepted)
+            {
+                this.lastManualRefreshAcceptedUtc = now;
+            }
+
             this.lastProbeStartedUtc = now;
             this.nextProbeDueUtc = now.AddMinutes(intervalMinutes);
             this.lastCloudStatusRegionMask = regionMask;
             this.requestCancellation = cancellation;
+            requestEpochAtStart = this.requestEpoch;
             previous = CloneSnapshots(this.snapshots);
             this.snapshots = CloudEndpointProbe.CreateCheckingSnapshots(previous, targetConfiguration);
         }
@@ -210,16 +284,27 @@ internal sealed class CloudEndpointProbeReader
             string historyTrigger = trigger ?? "自动检测";
             lock (this.sync)
             {
-                if (!object.ReferenceEquals(this.requestCancellation, cancellation))
+                bool ownsRequestSlot = object.ReferenceEquals(this.requestCancellation, cancellation);
+                if (ownsRequestSlot)
+                {
+                    this.requestRunning = false;
+                    this.requestCancellation = null;
+                }
+
+                if (!ownsRequestSlot ||
+                    !IsRequestIdentityCurrent(
+                        this.requestEpoch,
+                        this.currentNetworkIdentitySignature,
+                        this.lastTargetConfigurationSignature,
+                        requestEpochAtStart,
+                        networkIdentitySignature,
+                        targetSignature))
                 {
                     staleResult = true;
                 }
                 else
                 {
                     DateTime completedUtc = DateTime.UtcNow;
-                    this.requestRunning = false;
-                    this.requestCancellation = null;
-
                     if (cancelled)
                     {
                         if (!HasUnavailableSnapshots(this.snapshots))
@@ -281,6 +366,87 @@ internal sealed class CloudEndpointProbeReader
                 Logger.CloudEndpointProbe(trigger, logLines);
             }
         });
+    }
+
+    // Single-flight ownership is the commit point for refresh intent. Keeping this as a small
+    // state transition makes token/force semantics testable without real network traffic.
+    private static bool TryAcquireProbeStart(
+        ref bool requestRunning,
+        ref bool pendingForceRefresh,
+        bool manualAccepted,
+        int manualToken,
+        ref int lastManualRefreshToken,
+        out bool forceRefresh)
+    {
+        forceRefresh = false;
+        if (requestRunning)
+        {
+            return false;
+        }
+
+        requestRunning = true;
+        forceRefresh = pendingForceRefresh || manualAccepted;
+        pendingForceRefresh = false;
+        if (manualAccepted)
+        {
+            lastManualRefreshToken = manualToken;
+        }
+
+        return true;
+    }
+
+    private static bool IsRequestIdentityCurrent(
+        long currentEpoch,
+        string currentNetworkIdentitySignature,
+        string currentTargetSignature,
+        long requestEpoch,
+        string requestNetworkIdentitySignature,
+        string requestTargetSignature)
+    {
+        return currentEpoch == requestEpoch &&
+            string.Equals(currentNetworkIdentitySignature, requestNetworkIdentitySignature, StringComparison.Ordinal) &&
+            string.Equals(currentTargetSignature, requestTargetSignature, StringComparison.Ordinal);
+    }
+
+    private static string BuildNetworkBaseSignature(long networkGeneration, string interfaceId)
+    {
+        return networkGeneration.ToString(CultureInfo.InvariantCulture) + "|" +
+            (interfaceId ?? string.Empty).Trim().ToUpperInvariant();
+    }
+
+    internal static void RunSelfTest()
+    {
+        bool running = true;
+        bool pendingForce = true;
+        int consumedToken = 10;
+        bool force;
+        if (TryAcquireProbeStart(ref running, ref pendingForce, true, 11, ref consumedToken, out force) ||
+            !pendingForce || consumedToken != 10)
+        {
+            throw new InvalidOperationException("Cloud reader self-test: occupied single-flight consumed pending refresh state.");
+        }
+
+        running = false;
+        if (!TryAcquireProbeStart(ref running, ref pendingForce, true, 11, ref consumedToken, out force) ||
+            !force || pendingForce || consumedToken != 11)
+        {
+            throw new InvalidOperationException("Cloud reader self-test: pending force/token was not consumed exactly once.");
+        }
+
+        running = false;
+        if (!TryAcquireProbeStart(ref running, ref pendingForce, false, 11, ref consumedToken, out force) || force)
+        {
+            throw new InvalidOperationException("Cloud reader self-test: consumed force flag was reused.");
+        }
+
+        if (IsRequestIdentityCurrent(3, "net-b", "targets", 2, "net-a", "targets") ||
+            IsRequestIdentityCurrent(3, "net-b", "targets", 3, "net-b", "old-targets") ||
+            !IsRequestIdentityCurrent(3, "net-b", "targets", 3, "net-b", "targets"))
+        {
+            throw new InvalidOperationException("Cloud reader self-test: stale request identity validation failed.");
+        }
+
+        Console.WriteLine("Cloud endpoint reader: PASS single-flight-token force-once request-identity");
     }
 
     private CloudEndpointSnapshot[] ApplyStateHysteresisLocked(

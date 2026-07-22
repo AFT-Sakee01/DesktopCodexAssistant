@@ -25,10 +25,13 @@ internal static class Program
     private const string CtfmonRestartHelperArgument = "--ctfmon-restart-helper";
     private const string CtfmonRestartCorrelationArgument = "--correlation-id";
     private const int CtfmonRestartHelperWaitMs = 30000;
+    private const int FatalRestartSuppressionMinutes = 15;
     internal const string RunValueName = ProductIdentity.MachineName;
     internal const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private static bool performanceModeKnown;
     private static WidgetPerformanceMode activePerformanceMode;
+    private static bool fatalRestartUseDesktopParent;
+    private static int globalExceptionHandlersRegistered;
 
     [STAThread]
     private static int Main(string[] args)
@@ -139,34 +142,14 @@ internal static class Program
             return TestOperationPanelPolicy();
         }
 
-        if (HasArg(args, "--render-codexradar"))
-        {
-            return RenderCodexRadarSamples(args);
-        }
-
-        if (HasArg(args, "--render-clauderadar"))
-        {
-            return RenderClaudeRadarSamples(args);
-        }
-
-        if (HasArg(args, "--render-connectioncheck"))
-        {
-            return RenderConnectionCheckSamples(args);
-        }
-
         if (HasArg(args, "--render-networkmonitor"))
         {
             return RenderNetworkMonitorSamples(args);
         }
 
-        if (HasArg(args, "--render-powerthermal"))
+        if (HasArg(args, "--render-tilecolumn"))
         {
-            return RenderPowerThermalSamples(args);
-        }
-
-        if (HasArg(args, "--render-widget"))
-        {
-            return RenderWidgetSamples(args);
+            return RenderTileColumnSamples(args);
         }
 
         if (HasArg(args, "--render-operation"))
@@ -217,6 +200,7 @@ internal static class Program
         {
             stopEvent = new EventWaitHandle(false, EventResetMode.AutoReset, StopEventName);
             NativeMethods.TrySetDpiAware();
+            RegisterGlobalExceptionHandlers(useDesktopParent);
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
@@ -290,7 +274,8 @@ internal static class Program
         value = string.Empty;
         for (int i = 0; i + 1 < args.Length; i++)
         {
-            if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase) &&
+                IsArgumentValue(args[i + 1]))
             {
                 value = args[i + 1] ?? string.Empty;
                 return value.Length > 0;
@@ -306,6 +291,7 @@ internal static class Program
         for (int i = 0; i + 1 < args.Length; i++)
         {
             if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase) &&
+                IsArgumentValue(args[i + 1]) &&
                 int.TryParse(args[i + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
             {
                 return value > 0;
@@ -313,6 +299,12 @@ internal static class Program
         }
 
         return false;
+    }
+
+    private static bool IsArgumentValue(string value)
+    {
+        return !string.IsNullOrEmpty(value) &&
+            !value.StartsWith("--", StringComparison.Ordinal);
     }
 
     internal static bool RunElevatedCtfmonRestartHelper(string correlationId, out string detail)
@@ -508,8 +500,22 @@ internal static class Program
         {
             using (Process process = Process.GetProcessById(processId))
             {
+                string expectedPath = Application.ExecutablePath;
+                if (!IsRestartTargetIdentityMatch(process, expectedPath))
+                {
+                    LogInfo("Restart target identity mismatch before wait. Pid=" + processId.ToString(CultureInfo.InvariantCulture));
+                    return;
+                }
+
                 if (!process.WaitForExit(10000))
                 {
+                    process.Refresh();
+                    if (!IsRestartTargetIdentityMatch(process, expectedPath))
+                    {
+                        LogInfo("Restart target identity mismatch before termination. Pid=" + processId.ToString(CultureInfo.InvariantCulture));
+                        return;
+                    }
+
                     process.Kill();
                     process.WaitForExit(5000);
                 }
@@ -595,11 +601,82 @@ internal static class Program
         ProcessStartInfo startInfo = new ProcessStartInfo();
         startInfo.FileName = Application.ExecutablePath;
         startInfo.UseShellExecute = true;
-        startInfo.Arguments =
-            "--restart-after-pid " +
-            Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) +
-            (useDesktopParent ? " --desktop-parent" : string.Empty);
+        startInfo.Arguments = BuildRestartArguments(Process.GetCurrentProcess().Id, useDesktopParent);
         Process.Start(startInfo);
+    }
+
+    internal static string BuildRestartArguments(int processId, bool useDesktopParent)
+    {
+        return "--restart-after-pid " +
+            processId.ToString(CultureInfo.InvariantCulture) +
+            (useDesktopParent ? " --desktop-parent" : string.Empty);
+    }
+
+    internal static bool ShouldRestartAfterFatalException(DateTime lastFatalUtc, DateTime nowUtc)
+    {
+        if (lastFatalUtc == DateTime.MinValue)
+        {
+            return true;
+        }
+
+        return nowUtc >= lastFatalUtc &&
+            nowUtc - lastFatalUtc >= TimeSpan.FromMinutes(FatalRestartSuppressionMinutes);
+    }
+
+    private static void RegisterGlobalExceptionHandlers(bool useDesktopParent)
+    {
+        fatalRestartUseDesktopParent = useDesktopParent;
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        if (Interlocked.Exchange(ref globalExceptionHandlersRegistered, 1) != 0)
+        {
+            return;
+        }
+
+        Application.ThreadException += OnApplicationThreadException;
+        AppDomain.CurrentDomain.UnhandledException += OnCurrentDomainUnhandledException;
+    }
+
+    private static void OnApplicationThreadException(object sender, ThreadExceptionEventArgs e)
+    {
+        Logger.Error(e == null || e.Exception == null
+            ? new InvalidOperationException("UI thread raised an unhandled exception without an exception object.")
+            : e.Exception);
+    }
+
+    private static void OnCurrentDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        Exception exception = e == null ? null : e.ExceptionObject as Exception;
+        if (exception == null)
+        {
+            exception = new InvalidOperationException("AppDomain raised an unhandled non-Exception object.");
+        }
+
+        Logger.Error(exception);
+        DateTime nowUtc = DateTime.UtcNow;
+        string restartDiagnostic;
+        bool restart = FatalRestartBudget.TryAcquire(
+            FatalRestartBudget.StatePath,
+            nowUtc,
+            TimeSpan.FromMinutes(FatalRestartSuppressionMinutes),
+            out restartDiagnostic);
+        if (!string.IsNullOrEmpty(restartDiagnostic))
+        {
+            LogInfo(restartDiagnostic);
+        }
+
+        if (restart)
+        {
+            try
+            {
+                RestartApplication(fatalRestartUseDesktopParent);
+            }
+            catch (Exception restartException)
+            {
+                Logger.Error(restartException);
+            }
+        }
+
+        Environment.Exit(1);
     }
 
     internal static void ApplyPerformanceMode(WidgetPerformanceMode mode)
@@ -731,25 +808,34 @@ internal static class Program
                 Console.WriteLine("Process: {0}", NativeMethods.DescribeProcessMachine());
             }
 
-            NetworkMonitorReader.RunRollingPingSelfTest();
-            PathPingProbeReader.RunSelfTest();
-            FixedPingProbeReader.RunSelfTest();
-            CloudEndpointProbe.RunSelfTest();
-            ClaudeRadarReader.RunSelfTest();
-            ClaudeRadarSnapshotScheduler.RunSelfTest();
-            StatuspageMonitor.RunSelfTest();
-            DeepSeekBalanceMonitor.RunSelfTest();
-            ServiceAlertDebouncer.RunSelfTest();
-            ClaudeCodeUsageReader.RunSelfTest();
-            ClaudeCodeUsageScheduler.RunSelfTest();
-            CodexRadarForm.RunSoftwareModeGateSelfTest();
-            CodexQuotaGoalPlanner.RunSelfTest();
-            RadarRuntimeDiagnostics.RunSelfTest();
-            CodexTaskMonitorReader.RunSelfTest();
-            CodexTaskPresentation.RunSelfTest();
-            GuardRuntime.RunSelfTest();
-            GuardBoardForm.RunSelfTest();
-            OperationForm.RunLeftDockMutualExclusionSelfTest();
+            RunNamedSelfTest("NetworkMonitorReader.RollingPing", NetworkMonitorReader.RunRollingPingSelfTest);
+            RunNamedSelfTest("PathPingProbeReader", PathPingProbeReader.RunSelfTest);
+            RunNamedSelfTest("FixedPingProbeReader", FixedPingProbeReader.RunSelfTest);
+            RunNamedSelfTest("CloudEndpointProbe", CloudEndpointProbe.RunSelfTest);
+            RunNamedSelfTest("BoundedHttpTextReader", BoundedHttpTextReader.RunSelfTest);
+            RunNamedSelfTest("OwnerOperationGeneration", OwnerOperationGeneration.RunSelfTest);
+            RunNamedSelfTest("CodexRadarUrlPolicy", CodexRadarUrlPolicy.RunSelfTest);
+            RunNamedSelfTest("CloudEndpointProbeReader", CloudEndpointProbeReader.RunSelfTest);
+            RunNamedSelfTest("GfwProbeReader", GfwProbeReader.RunSelfTest);
+            RunNamedSelfTest("StatuspageMonitor", StatuspageMonitor.RunSelfTest);
+            RunNamedSelfTest("DeepSeekServiceMonitor", DeepSeekServiceMonitor.RunSelfTest);
+            RunNamedSelfTest("ServiceAlertDebouncer", ServiceAlertDebouncer.RunSelfTest);
+            RunNamedSelfTest("ClaudeCodeUsageReader", ClaudeCodeUsageReader.RunSelfTest);
+            RunNamedSelfTest("ClaudeCodeUsageScheduler", ClaudeCodeUsageScheduler.RunSelfTest);
+            RunNamedSelfTest("CodexRadarForm.SoftwareModeGate", CodexRadarForm.RunSoftwareModeGateSelfTest);
+            RunNamedSelfTest("CodexRadarForm.TileSnapshotFamily", CodexRadarForm.RunTileSnapshotFamilySelfTest);
+            RunNamedSelfTest("CodexQuotaGoalPlanner", CodexQuotaGoalPlanner.RunSelfTest);
+            RunNamedSelfTest("RadarRuntimeDiagnostics", RadarRuntimeDiagnostics.RunSelfTest);
+            RunNamedSelfTest("CodexTaskMonitorReader", CodexTaskMonitorReader.RunSelfTest);
+            RunNamedSelfTest("CodexTaskPresentation", CodexTaskPresentation.RunSelfTest);
+            RunNamedSelfTest("GuardRuntime", GuardRuntime.RunSelfTest);
+            RunNamedSelfTest("GuardBoardForm", GuardBoardForm.RunSelfTest);
+            RunNamedSelfTest("OperationForm.LeftDockMutualExclusion", OperationForm.RunLeftDockMutualExclusionSelfTest);
+            RunNamedSelfTest("MetricTileModel", MetricTileModel.RunSelfTest);
+            RunNamedSelfTest("MetricTileForm", MetricTileForm.RunSelfTest);
+            RunNamedSelfTest("MetricTileExpandForm", MetricTileExpandForm.RunSelfTest);
+            RunNamedSelfTest("WidgetForm.TileColumnRuntime", WidgetForm.RunTileColumnRuntimeSelfTest);
+            RunNamedSelfTest("TimingStats", TimingStats.RunSelfTest);
             return 0;
         }
         catch (Exception ex)
@@ -758,6 +844,21 @@ internal static class Program
             LogException(ex);
             return 1;
         }
+    }
+
+    private static void RunNamedSelfTest(string name, Action test)
+    {
+        if (test == null)
+        {
+            throw new ArgumentNullException("test");
+        }
+
+        long started = Stopwatch.GetTimestamp();
+        LogInfo("Self-test begin. Name=" + name);
+        test();
+        long elapsedTicks = Stopwatch.GetTimestamp() - started;
+        double elapsedMs = elapsedTicks * 1000.0 / Stopwatch.Frequency;
+        LogInfo("Self-test passed. Name=" + name + ", ElapsedMs=" + elapsedMs.ToString("0.00", CultureInfo.InvariantCulture));
     }
 
     private static int TestCodexTaskMonitor()
@@ -814,6 +915,7 @@ internal static class Program
         try
         {
             Logger.RunStoragePolicySelfTest();
+            BoundedHttpTextReader.RunSelfTest();
             UiHangWatchdog.RunSelfTest();
             NetworkCheckHistoryLogger.RunSelfTest();
             QuotaDecisionHistoryLogger.RunSelfTest();
@@ -834,14 +936,14 @@ internal static class Program
         try
         {
             WidgetSettings.RunLayoutScalingSelfTest();
+            LeftDockLayout.RunSelfTest();
+            GlobalLayoutEditorForm.RunSelfTest();
             LayeredWidgetFormBase.RunOpacityPolicySelfTest();
             LayeredWidgetFormBase.RunScalePolicySelfTest();
             NightScheduleController.RunSelfTest();
             AlertPresentationPolicy.RunSelfTest();
             ApplicationWindowStateTracker.RunSelfTest();
             CodexRadarForm.RunStatusAndQuotaSelfTest();
-            ClaudeRadarForm.RunRenderResourceSelfTest();
-            ConnectionCheckForm.RunHiddenModeBadgeRenderingSelfTest();
             NetworkMonitorForm.RunNetworkMonitorDisplaySelfTest();
             SpecBoardForm.RunSelfTest();
             Console.WriteLine("Layout scaling policy: PASS");
@@ -941,89 +1043,6 @@ internal static class Program
         }
     }
 
-    private static int RenderCodexRadarSamples(string[] args)
-    {
-        NativeMethods.AttachToParentConsole();
-        try
-        {
-            NativeMethods.TrySetDpiAware();
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            string outputDir = GetStringArg(args, "--out");
-            if (string.IsNullOrEmpty(outputDir))
-            {
-                outputDir = ".";
-            }
-
-            CodexRadarForm.RenderVariantSamples(outputDir);
-            CodexRadarForm.RenderRadarSolo(outputDir);
-            CodexRadarForm.RenderCurrentSample(outputDir);
-            Console.WriteLine("Rendered CodexRadar variant samples to " + Path.GetFullPath(outputDir));
-            return 0;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(ex.ToString());
-            LogException(ex);
-            return 1;
-        }
-    }
-
-    private static int RenderClaudeRadarSamples(string[] args)
-    {
-        NativeMethods.AttachToParentConsole();
-        try
-        {
-            NativeMethods.TrySetDpiAware();
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            string outputDir = GetStringArg(args, "--out");
-            if (string.IsNullOrEmpty(outputDir))
-            {
-                outputDir = ".";
-            }
-
-            ClaudeRadarForm.RenderVariantSamples(outputDir);
-            ClaudeRadarForm.RenderCurrentSample(outputDir);
-            Console.WriteLine("Rendered ClaudeRadar variant samples to " + Path.GetFullPath(outputDir));
-            return 0;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(ex.ToString());
-            LogException(ex);
-            return 1;
-        }
-    }
-
-    private static int RenderConnectionCheckSamples(string[] args)
-    {
-        NativeMethods.AttachToParentConsole();
-        try
-        {
-            NativeMethods.TrySetDpiAware();
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            string outputDir = GetStringArg(args, "--out");
-            if (string.IsNullOrEmpty(outputDir))
-            {
-                outputDir = ".";
-            }
-
-            ConnectionCheckForm.RenderCleanIpIconSamples(outputDir);
-            ConnectionCheckForm.RenderRestyleVariantSamples(outputDir);
-            ConnectionCheckForm.RenderCurrentSample(outputDir);
-            Console.WriteLine("Rendered CleanIP badge icon and restyle variant samples to " + Path.GetFullPath(outputDir));
-            return 0;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(ex.ToString());
-            LogException(ex);
-            return 1;
-        }
-    }
-
     private static int RenderNetworkMonitorSamples(string[] args)
     {
         NativeMethods.AttachToParentConsole();
@@ -1038,7 +1057,6 @@ internal static class Program
                 outputDir = ".";
             }
 
-            NetworkMonitorForm.RenderVariantSamples(outputDir);
             NetworkMonitorForm.RenderCurrentSample(outputDir);
             NetworkMonitorForm.RenderDockedSamples(outputDir);
             if (HasArg(args, "--scale-proof"))
@@ -1050,7 +1068,7 @@ internal static class Program
                     SharedEncoding.Utf8NoBom);
                 Console.WriteLine(summary);
             }
-            Console.WriteLine("Rendered NetworkMonitor variant samples to " + Path.GetFullPath(outputDir));
+            Console.WriteLine("Rendered NetworkMonitor dock samples to " + Path.GetFullPath(outputDir));
             return 0;
         }
         catch (Exception ex)
@@ -1061,7 +1079,7 @@ internal static class Program
         }
     }
 
-    private static int RenderPowerThermalSamples(string[] args)
+    private static int RenderTileColumnSamples(string[] args)
     {
         NativeMethods.AttachToParentConsole();
         try
@@ -1075,69 +1093,8 @@ internal static class Program
                 outputDir = ".";
             }
 
-            if (HasArg(args, "--scenarios"))
-            {
-                PowerThermalForm.RenderWideBarScenarioSamples(outputDir);
-                Console.WriteLine("Rendered PowerThermal alert-scenario samples to " + Path.GetFullPath(outputDir));
-                return 0;
-            }
-
-            PowerThermalForm.RenderVariantSamples(outputDir);
-            PowerThermalForm.RenderCurrentSample(outputDir);
-            Console.WriteLine("Rendered PowerThermal variant samples to " + Path.GetFullPath(outputDir));
-            return 0;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(ex.ToString());
-            LogException(ex);
-            return 1;
-        }
-    }
-
-    private static int RenderWidgetSamples(string[] args)
-    {
-        NativeMethods.AttachToParentConsole();
-        try
-        {
-            NativeMethods.TrySetDpiAware();
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            string outputDir = GetStringArg(args, "--out");
-            if (string.IsNullOrEmpty(outputDir))
-            {
-                outputDir = ".";
-            }
-
-            if (HasArg(args, "--alert-proof"))
-            {
-                WidgetForm.RenderAlertPolicySamples(outputDir);
-            }
-            else
-            {
-                if (HasArg(args, "--integrated"))
-            {
-                WidgetForm.RenderHiddenModeProof = HasArg(args, "--hidden");
-                int previewHeight = 408;
-                string heightArg = GetStringArg(args, "--height");
-                if (!string.IsNullOrEmpty(heightArg))
-                {
-                    int parsed;
-                    if (int.TryParse(heightArg, out parsed) && parsed > 0)
-                    {
-                        previewHeight = parsed;
-                    }
-                }
-
-                WidgetForm.RenderIntegratedPreview(outputDir, previewHeight);
-                Console.WriteLine("Rendered integrated widget preview to " + Path.GetFullPath(outputDir));
-                return 0;
-            }
-
-            WidgetForm.RenderVariantSamples(outputDir);
-                WidgetForm.RenderCurrentSample(outputDir);
-            }
-            Console.WriteLine("Rendered main widget variant samples to " + Path.GetFullPath(outputDir));
+            MetricTileForm.RenderSamples(outputDir);
+            Console.WriteLine("Rendered metric tile column samples to " + Path.GetFullPath(outputDir));
             return 0;
         }
         catch (Exception ex)
@@ -1281,7 +1238,8 @@ internal static class Program
     {
         for (int i = 0; i + 1 < args.Length; i++)
         {
-            if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase) &&
+                IsArgumentValue(args[i + 1]))
             {
                 return args[i + 1];
             }
@@ -1397,7 +1355,36 @@ internal static class Program
 
             GlobalWinDWatcher.RunGestureSelfTest();
 
-            Console.WriteLine("Display recovery layered surface policy: PASS");
+            DateTime nowUtc = new DateTime(2026, 7, 19, 12, 0, 0, DateTimeKind.Utc);
+            if (!ShouldRestartAfterFatalException(DateTime.MinValue, nowUtc) ||
+                ShouldRestartAfterFatalException(nowUtc.AddMinutes(-5), nowUtc) ||
+                !ShouldRestartAfterFatalException(nowUtc.AddMinutes(-16), nowUtc))
+            {
+                throw new InvalidOperationException("Fatal exception restart suppression policy failed.");
+            }
+
+            FatalRestartBudget.RunSelfTest();
+            EdgeDockTabForm.RunDisplayLifecycleSelfTest();
+            using (Process currentProcess = Process.GetCurrentProcess())
+            {
+                if (!IsRestartTargetIdentityMatch(currentProcess, Application.ExecutablePath) ||
+                    IsRestartTargetIdentityMatch(currentProcess, Path.Combine(Path.GetTempPath(), "fake-desktopcodex.exe")))
+                {
+                    throw new InvalidOperationException("Fatal restart process identity policy failed.");
+                }
+            }
+
+            int currentPid = Process.GetCurrentProcess().Id;
+            string restartArguments = BuildRestartArguments(currentPid, true);
+            if (restartArguments.IndexOf(
+                    "--restart-after-pid " + currentPid.ToString(CultureInfo.InvariantCulture),
+                    StringComparison.Ordinal) < 0 ||
+                restartArguments.IndexOf("--desktop-parent", StringComparison.Ordinal) < 0)
+            {
+                throw new InvalidOperationException("Fatal exception restart argument policy failed.");
+            }
+
+            Console.WriteLine("Display recovery layered surface and fatal restart policy: PASS");
             return 0;
         }
         catch (Exception ex)
@@ -1424,73 +1411,132 @@ internal static class Program
 
             iterations = Math.Max(1, Math.Min(500, iterations));
             WidgetSettings settings = WidgetSettings.CreateDefaults();
-            settings.CodexRadarEnabled = true;
-            settings.ClaudeRadarEnabled = true;
             settings.CodexRadarPublicJsonEnabled = false;
             settings.CodexRadarHtmlFallbackEnabled = false;
             settings.CodexRadarRssFallbackEnabled = false;
-            settings.ClaudeRadarJsonEnabled = false;
-            settings.ClaudeRadarHomepageFallbackEnabled = false;
-            settings.ClaudeRadarCommunityRatingsEnabled = false;
-            settings.ClaudeRadarLocalQuotaFallbackEnabled = false;
             settings.CodexRadarRandomTestEnabled = true;
-            settings.ClaudeRadarRandomTestEnabled = true;
             settings.Normalize();
 
             using (CodexRadarForm codex = new CodexRadarForm(settings, null))
-            using (ClaudeRadarForm claude = new ClaudeRadarForm(settings, null))
+            using (PowerThermalForm power = new PowerThermalForm(settings))
             {
-                codex.StartPosition = FormStartPosition.Manual;
-                claude.StartPosition = FormStartPosition.Manual;
-                codex.Location = new Point(-30000, -30000);
-                claude.Location = new Point(-30000, -29800);
-                codex.Size = new Size(settings.CodexRadarWidth, settings.CodexRadarHeight);
-                claude.Size = new Size(settings.ClaudeRadarWidth, settings.ClaudeRadarHeight);
-
+                EdgeDockTabRole[] dockRoles =
+                {
+                    EdgeDockTabRole.Network,
+                    EdgeDockTabRole.SpecBoard,
+                    EdgeDockTabRole.CodexTask,
+                    EdgeDockTabRole.Guard,
+                    EdgeDockTabRole.CodexIq
+                };
+                EdgeDockTabForm[] dockTabs = new EdgeDockTabForm[dockRoles.Length];
+                codex.StartHeadlessDataOwner();
+                power.StartHeadlessDataOwner();
                 IntPtr codexHandle = codex.Handle;
-                IntPtr claudeHandle = claude.Handle;
-                if (codexHandle == IntPtr.Zero || claudeHandle == IntPtr.Zero)
+                if (codexHandle == IntPtr.Zero || codex.Visible || !codex.IsHeadlessDataOwner || !codex.IsBackendSchedulerRunning)
                 {
-                    throw new InvalidOperationException("Radar display lifecycle self-test failed to create window handles.");
+                    throw new InvalidOperationException("Radar display lifecycle self-test failed to start the hidden data owner.");
+                }
+                if (!power.IsHeadlessDataOwnerRunningForSelfTest() || power.BuildStripSnapshot() == null)
+                {
+                    throw new InvalidOperationException("Power display lifecycle self-test failed to start the hidden data owner or publish a cache-only snapshot.");
                 }
 
-                Application.DoEvents();
-                ForceResourceCleanup();
-                RadarRuntimeDiagnostics.ResourceCounters before = RadarRuntimeDiagnostics.CaptureCurrentProcessResources();
-                for (int i = 0; i < iterations; i++)
+                try
                 {
-                    codex.PrepareForDisplaySuspend();
-                    claude.PrepareForDisplaySuspend();
+                    Rectangle workArea = LeftDockLayout.ResolveWorkArea(settings);
+                    for (int roleIndex = 0; roleIndex < dockRoles.Length; roleIndex++)
+                    {
+                        dockTabs[roleIndex] = new EdgeDockTabForm(
+                            settings,
+                            EdgeDockTabForm.ResolveQueueAccent(dockRoles[roleIndex]),
+                            BurnInProtection.NetworkMonitorDockTabSalt + roleIndex,
+                            "EdgeDockResourceLifecycle" + roleIndex.ToString(CultureInfo.InvariantCulture),
+                            dockRoles[roleIndex]);
+                        dockTabs[roleIndex].ShowTab(workArea.Top + workArea.Height / 2);
+                    }
+
                     Application.DoEvents();
-                    codex.RecoverAfterDisplayResume();
-                    claude.RecoverAfterDisplayResume();
-                    Application.DoEvents();
-                }
+                    ForceResourceCleanup();
+                    RadarRuntimeDiagnostics.ResourceCounters before = RadarRuntimeDiagnostics.CaptureCurrentProcessResources();
+                    for (int i = 0; i < iterations; i++)
+                    {
+                        int codexResumeCount = codex.ResumePrimeCountForSelfTest;
+                        int powerResumeCount = power.ResumePrimeCountForSelfTest;
+                        codex.PrepareForDisplaySuspend();
+                        power.PrepareForDisplaySuspend();
+                        codex.PrepareForDisplaySuspend();
+                        power.PrepareForDisplaySuspend();
+                        if (codex.IsPollingAllowedForSelfTest() || power.IsSamplingAllowedForSelfTest())
+                        {
+                            throw new InvalidOperationException("Headless owner suspend gate remained open.");
+                        }
+                        for (int roleIndex = 0; roleIndex < dockTabs.Length; roleIndex++)
+                        {
+                            dockTabs[roleIndex].SetDisplaySuspended(true);
+                            dockTabs[roleIndex].ShowTab(workArea.Top + workArea.Height / 2);
+                        }
 
-                ForceResourceCleanup();
-                RadarRuntimeDiagnostics.ResourceCounters after = RadarRuntimeDiagnostics.CaptureCurrentProcessResources();
-                int handleDelta = after.HandleCount - before.HandleCount;
-                int gdiDelta = after.GdiObjects - before.GdiObjects;
-                int userDelta = after.UserObjects - before.UserObjects;
-                if (handleDelta > 100 || gdiDelta > 10 || userDelta > 20)
+                        Application.DoEvents();
+                        codex.RecoverAfterDisplayResume();
+                        power.RecoverAfterDisplayResume();
+                        codex.RecoverAfterDisplayResume();
+                        power.RecoverAfterDisplayResume();
+                        if (!codex.IsPollingAllowedForSelfTest() || !power.IsSamplingAllowedForSelfTest() ||
+                            codex.ResumePrimeCountForSelfTest != codexResumeCount + 1 ||
+                            power.ResumePrimeCountForSelfTest != powerResumeCount + 1)
+                        {
+                            throw new InvalidOperationException("Headless owner resume was not idempotent.");
+                        }
+                        for (int roleIndex = 0; roleIndex < dockTabs.Length; roleIndex++)
+                        {
+                            dockTabs[roleIndex].SetDisplaySuspended(false);
+                            dockTabs[roleIndex].ShowTab(workArea.Top + workArea.Height / 2);
+                        }
+
+                        Application.DoEvents();
+                    }
+
+                    ForceResourceCleanup();
+                    RadarRuntimeDiagnostics.ResourceCounters after = RadarRuntimeDiagnostics.CaptureCurrentProcessResources();
+                    int handleDelta = after.HandleCount - before.HandleCount;
+                    int gdiDelta = after.GdiObjects - before.GdiObjects;
+                    int userDelta = after.UserObjects - before.UserObjects;
+                    if (handleDelta > 100 || gdiDelta > 10 || userDelta > 20)
+                    {
+                        throw new InvalidOperationException(
+                            "Radar/EdgeDock display lifecycle resource growth exceeded threshold. Iterations=" +
+                            iterations.ToString(CultureInfo.InvariantCulture) +
+                            ", HandlesDelta=" +
+                            handleDelta.ToString(CultureInfo.InvariantCulture) +
+                            ", GdiDelta=" +
+                            gdiDelta.ToString(CultureInfo.InvariantCulture) +
+                            ", UserDelta=" +
+                            userDelta.ToString(CultureInfo.InvariantCulture));
+                    }
+
+                    Console.WriteLine(
+                        "Radar/EdgeDock display lifecycle policy: PASS iterations={0} handles_delta={1} gdi_delta={2} user_delta={3}",
+                        iterations,
+                        handleDelta,
+                        gdiDelta,
+                        userDelta);
+                }
+                finally
                 {
-                    throw new InvalidOperationException(
-                        "Radar display lifecycle resource growth exceeded threshold. Iterations=" +
-                        iterations.ToString(CultureInfo.InvariantCulture) +
-                        ", HandlesDelta=" +
-                        handleDelta.ToString(CultureInfo.InvariantCulture) +
-                        ", GdiDelta=" +
-                        gdiDelta.ToString(CultureInfo.InvariantCulture) +
-                        ", UserDelta=" +
-                        userDelta.ToString(CultureInfo.InvariantCulture));
+                    codex.StopHeadlessDataOwner();
+                    power.StopHeadlessDataOwner();
+                    if (!power.IsHeadlessDataOwnerStoppedForSelfTest())
+                    {
+                        throw new InvalidOperationException("Power display lifecycle self-test failed to stop the hidden data owner idempotently.");
+                    }
+                    for (int i = 0; i < dockTabs.Length; i++)
+                    {
+                        if (dockTabs[i] != null)
+                        {
+                            dockTabs[i].Dispose();
+                        }
+                    }
                 }
-
-                Console.WriteLine(
-                    "Radar display lifecycle policy: PASS iterations={0} handles_delta={1} gdi_delta={2} user_delta={3}",
-                    iterations,
-                    handleDelta,
-                    gdiDelta,
-                    userDelta);
             }
 
             return 0;
@@ -1517,7 +1563,9 @@ internal static class Program
         try
         {
             OperationForm.RunSelfTest();
+            CodexIqBoardForm.RunSelfTest();
             RunCtfmonRestartHelperArgumentSelfTest();
+            RunCommandLineArgumentParserSelfTest();
             Console.WriteLine("Operation panel interaction and performance policy: PASS");
             return 0;
         }
@@ -1547,6 +1595,52 @@ internal static class Program
             !string.Equals(value, "abcDEFbad", StringComparison.Ordinal))
         {
             throw new InvalidOperationException("CTF helper argument parser failed.");
+        }
+    }
+
+    internal static bool IsRestartTargetIdentityMatch(Process process, string expectedExecutablePath)
+    {
+        if (process == null || string.IsNullOrWhiteSpace(expectedExecutablePath))
+        {
+            return false;
+        }
+
+        try
+        {
+            string actual = process.MainModule == null ? string.Empty : process.MainModule.FileName;
+            return string.Equals(
+                Path.GetFullPath(actual),
+                Path.GetFullPath(expectedExecutablePath),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void RunCommandLineArgumentParserSelfTest()
+    {
+        string[] guardWithoutMode = new string[] { "--render-guard", "--out", "X" };
+        string[] guardWithMode = new string[] { "--render-guard", "sample", "--out", "X" };
+        string[] specWithoutMode = new string[] { "--render-specboard", "--out", "X" };
+        string[] managerWithoutMode = new string[] { "--render-specboardmanager", "--out", "X" };
+        if (GetStringArg(guardWithoutMode, "--render-guard") != null ||
+            !string.Equals(GetStringArg(guardWithMode, "--render-guard"), "sample", StringComparison.Ordinal) ||
+            GetStringArg(specWithoutMode, "--render-specboard") != null ||
+            GetStringArg(managerWithoutMode, "--render-specboardmanager") != null)
+        {
+            throw new InvalidOperationException("Render mode argument boundary self-test failed.");
+        }
+
+        string value;
+        int integerValue;
+        if (!TryGetStringArg(new string[] { "--correlation-id", "abc" }, "--correlation-id", out value) ||
+            !string.Equals(value, "abc", StringComparison.Ordinal) ||
+            TryGetStringArg(new string[] { "--correlation-id", "--out" }, "--correlation-id", out value) ||
+            TryGetIntArg(new string[] { "--iterations", "--out" }, "--iterations", out integerValue))
+        {
+            throw new InvalidOperationException("Command-line value boundary self-test failed.");
         }
     }
 

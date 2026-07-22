@@ -113,6 +113,8 @@ internal static class TimingStats
             builder.Append(summary.AverageMs.ToString("0.00", CultureInfo.InvariantCulture));
             builder.Append("ms p95=");
             builder.Append(summary.P95Ms.ToString("0.00", CultureInfo.InvariantCulture));
+            builder.Append("ms p99=");
+            builder.Append(summary.P99Ms.ToString("0.00", CultureInfo.InvariantCulture));
             builder.Append("ms max=");
             builder.Append(summary.MaxMs.ToString("0.00", CultureInfo.InvariantCulture));
             builder.Append("ms");
@@ -137,6 +139,7 @@ internal static class TimingStats
         public int Count;
         public double AverageMs;
         public double P95Ms;
+        public double P99Ms;
         public double MaxMs;
     }
 
@@ -198,13 +201,56 @@ internal static class TimingStats
             int p95Index = durations.Count == 0
                 ? 0
                 : Math.Max(0, (int)Math.Ceiling(durations.Count * 0.95) - 1);
+            int p99Index = durations.Count == 0
+                ? 0
+                : Math.Max(0, (int)Math.Ceiling(durations.Count * 0.99) - 1);
 
             MetricSummary summary = new MetricSummary();
             summary.Count = durations.Count;
             summary.AverageMs = durations.Count == 0 ? 0.0 : this.sumMs / durations.Count;
             summary.P95Ms = durations.Count == 0 ? 0.0 : durations[p95Index];
+            summary.P99Ms = durations.Count == 0 ? 0.0 : durations[p99Index];
             summary.MaxMs = maxMs;
             return summary;
+        }
+    }
+
+    internal static void RunSelfTest()
+    {
+        const string MetricName = "selftest.percentiles";
+        DateTime nowUtc = new DateTime(2026, 7, 22, 0, 0, 0, DateTimeKind.Utc);
+        lock (SyncRoot)
+        {
+            Metrics.Remove(MetricName);
+        }
+
+        try
+        {
+            for (int durationMs = 1; durationMs <= 100; durationMs++)
+            {
+                Record(MetricName, durationMs, nowUtc);
+            }
+
+            MetricSummary summary;
+            lock (SyncRoot)
+            {
+                summary = Metrics[MetricName].CreateSummary();
+            }
+
+            if (summary.Count != 100 ||
+                Math.Abs(summary.P95Ms - 95.0) > 0.001 ||
+                Math.Abs(summary.P99Ms - 99.0) > 0.001 ||
+                Math.Abs(summary.MaxMs - 100.0) > 0.001)
+            {
+                throw new InvalidOperationException("TimingStats percentile self-test failed.");
+            }
+        }
+        finally
+        {
+            lock (SyncRoot)
+            {
+                Metrics.Remove(MetricName);
+            }
         }
     }
 }

@@ -8,7 +8,10 @@ using System.Windows.Forms;
 internal sealed class GlobalLayoutEditorForm : Form
 {
     private const int WindowConnectDistanceLimit = 500;
-    private const string SpecBoardModuleId = "SpecBoard";
+    private const string LeftDockTabModuleIdPrefix = "LeftDockTab.";
+    // Each metric tile is its own draggable item. The suffix after the prefix is the tile id from
+    // WidgetSettings.MetricTileIds, so the editor can map an item back to its tile index.
+    private const string MetricTileModuleIdPrefix = "MetricTile.";
     private static readonly Color TransparentKeyColor = Color.FromArgb(7, 3, 11);
 
     private readonly Action<WidgetSettings> previewAction;
@@ -172,7 +175,7 @@ internal sealed class GlobalLayoutEditorForm : Form
         ApplyItemBoundsToSettings(item);
         RebuildItemsFromSettings();
         this.activeIndex = IndexOfModule(item.ModuleId);
-        PreviewDraggingSettings();
+        ApplyDragDelta();
 
         Invalidate();
     }
@@ -205,41 +208,169 @@ internal sealed class GlobalLayoutEditorForm : Form
     private void RebuildItemsFromSettings()
     {
         this.items.Clear();
-        this.items.Add(new LayoutItem(WidgetSettings.ModuleMain, "主窗口", GetPanelBounds(
-            this.workingSettings.LeftX,
-            this.workingSettings.BottomY,
-            this.workingSettings.Width,
-            this.workingSettings.Height)));
-        this.items.Add(new LayoutItem(WidgetSettings.ModuleCodexRadar, "Codex Radar", GetPanelBounds(
-            this.workingSettings.CodexRadarLeftX,
-            this.workingSettings.CodexRadarBottomY,
-            this.workingSettings.CodexRadarWidth,
-            this.workingSettings.CodexRadarHeight)));
-        this.items.Add(new LayoutItem(WidgetSettings.ModuleClaudeRadar, "Claude Radar", GetPanelBounds(
-            this.workingSettings.ClaudeRadarLeftX,
-            this.workingSettings.ClaudeRadarBottomY,
-            this.workingSettings.ClaudeRadarWidth,
-            this.workingSettings.ClaudeRadarHeight)));
-        this.items.Add(new LayoutItem(WidgetSettings.ModulePowerThermal, "功耗温度", GetPanelBounds(
-            this.workingSettings.PowerThermalLeftX,
-            this.workingSettings.PowerThermalBottomY,
-            this.workingSettings.PowerThermalWidth,
-            this.workingSettings.PowerThermalHeight)));
-        this.items.Add(new LayoutItem(WidgetSettings.ModuleNetworkMonitor, "网络监控", GetPanelBounds(
-            this.workingSettings.NetworkMonitorLeftX,
-            this.workingSettings.NetworkMonitorBottomY,
-            this.workingSettings.NetworkMonitorWidth,
-            this.workingSettings.NetworkMonitorHeight)));
-        this.items.Add(new LayoutItem(WidgetSettings.ModuleConnectionCheck, "连接检测", GetPanelBounds(
-            this.workingSettings.ConnectionCheckLeftX,
-            this.workingSettings.ConnectionCheckBottomY,
-            this.workingSettings.ConnectionCheckWidth,
-            this.workingSettings.ConnectionCheckHeight)));
-        this.items.Add(new LayoutItem(WidgetSettings.ModuleOperation, "操作面板", GetOperationBounds()));
-        this.items.Add(new LayoutItem(SpecBoardModuleId, "Spec Board", GetSpecBoardBounds()));
+        List<string> surfaceIds = BuildEditableSurfaceIds(this.workingSettings);
+        for (int i = 0; i < surfaceIds.Count; i++)
+        {
+            AddLayoutItem(surfaceIds[i]);
+        }
     }
 
-    private void PreviewDraggingSettings()
+    // The converged editor exposes only real on-screen surfaces: Operation, five left-dock tabs,
+    // and ten right-side tiles. Headless owners and retired classic windows must never reappear
+    // merely because layout editing bypasses environmental hiding.
+    private static List<string> BuildEditableSurfaceIds(WidgetSettings settings)
+    {
+        List<string> result = new List<string>();
+        if (settings == null)
+        {
+            return result;
+        }
+
+        result.Add(WidgetSettings.ModuleOperation);
+
+        string[] leftOrder = WidgetSettings.NormalizeLeftDockButtonOrder(settings.LeftDockButtonOrder);
+        for (int i = 0; i < leftOrder.Length; i++)
+        {
+            EdgeDockTabRole role;
+            if (TryGetLeftDockRole(LeftDockTabModuleIdPrefix + leftOrder[i], out role))
+            {
+                result.Add(LeftDockTabModuleIdPrefix + leftOrder[i]);
+            }
+        }
+
+        string[] rightOrder = WidgetSettings.NormalizeRightTileButtonOrder(settings.RightTileButtonOrder);
+        for (int i = 0; i < rightOrder.Length; i++)
+        {
+            int tileIndex = WidgetSettings.IndexOfMetricTile(rightOrder[i]);
+            if (tileIndex >= 0 && MetricTileForm.IsTileEnabled(settings, tileIndex))
+            {
+                result.Add(MetricTileModuleIdPrefix + WidgetSettings.MetricTileIds[tileIndex]);
+            }
+        }
+
+        return result;
+    }
+
+    private void AddLayoutItem(string moduleId)
+    {
+        if (string.Equals(moduleId, WidgetSettings.ModuleOperation, StringComparison.Ordinal))
+        {
+            this.items.Add(new LayoutItem(moduleId, "操作面板", GetOperationBounds()));
+            return;
+        }
+
+        EdgeDockTabRole role;
+        if (TryGetLeftDockRole(moduleId, out role))
+        {
+            this.items.Add(new LayoutItem(moduleId, GetLeftDockRoleLabel(role), GetLeftDockTabBounds(role)));
+            return;
+        }
+
+        int tileIndex = MetricTileIndexOf(moduleId);
+        if (tileIndex >= 0)
+        {
+            this.items.Add(new LayoutItem(
+                moduleId,
+                "方块 " + MetricTileModel.GetLabel(MetricTileModel.AllOrder[tileIndex]),
+                MetricTileForm.GetTileBounds(this.workingSettings, tileIndex)));
+        }
+    }
+
+    // -1 when the item is not a metric tile.
+    private static int MetricTileIndexOf(string moduleId)
+    {
+        if (moduleId == null || !moduleId.StartsWith(MetricTileModuleIdPrefix, StringComparison.Ordinal))
+        {
+            return -1;
+        }
+
+        return WidgetSettings.IndexOfMetricTile(moduleId.Substring(MetricTileModuleIdPrefix.Length));
+    }
+
+    private static bool TryGetLeftDockRole(string moduleId, out EdgeDockTabRole role)
+    {
+        role = EdgeDockTabRole.Network;
+        if (moduleId == null || !moduleId.StartsWith(LeftDockTabModuleIdPrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string id = moduleId.Substring(LeftDockTabModuleIdPrefix.Length);
+        if (string.Equals(id, "Network", StringComparison.OrdinalIgnoreCase))
+        {
+            role = EdgeDockTabRole.Network;
+            return true;
+        }
+
+        if (string.Equals(id, "SpecBoard", StringComparison.OrdinalIgnoreCase))
+        {
+            role = EdgeDockTabRole.SpecBoard;
+            return true;
+        }
+
+        if (string.Equals(id, "CodexTask", StringComparison.OrdinalIgnoreCase))
+        {
+            role = EdgeDockTabRole.CodexTask;
+            return true;
+        }
+
+        if (string.Equals(id, "Guard", StringComparison.OrdinalIgnoreCase))
+        {
+            role = EdgeDockTabRole.Guard;
+            return true;
+        }
+
+        if (string.Equals(id, "CodexIq", StringComparison.OrdinalIgnoreCase))
+        {
+            role = EdgeDockTabRole.CodexIq;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string GetLeftDockRoleLabel(EdgeDockTabRole role)
+    {
+        switch (role)
+        {
+            case EdgeDockTabRole.Network:
+                return "左侧 网络";
+            case EdgeDockTabRole.SpecBoard:
+                return "左侧 Spec";
+            case EdgeDockTabRole.CodexTask:
+                return "左侧 Task";
+            case EdgeDockTabRole.Guard:
+                return "左侧 Guard";
+            case EdgeDockTabRole.CodexIq:
+                return "左侧 IQ";
+            default:
+                return "左侧按钮";
+        }
+    }
+
+    private Rectangle GetLeftDockTabBounds(EdgeDockTabRole role)
+    {
+        Rectangle workArea = LeftDockLayout.ResolveWorkArea(this.workingSettings);
+        float layerScale = GetLeftDockRoleLayerScale(role);
+        Size size = LeftDockLayout.ResolveTabSize(this.workingSettings, role, layerScale);
+        int centerY = LeftDockLayout.ResolveTabCenterY(this.workingSettings, role, layerScale);
+        int top = centerY - size.Height / 2;
+        top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - size.Height)));
+        return new Rectangle(workArea.Left, top, size.Width, size.Height);
+    }
+
+    private float GetLeftDockRoleLayerScale(EdgeDockTabRole role)
+    {
+        int scaleOverride = LeftDockLayout.ResolveScaleOverride(this.workingSettings, role);
+        float windowScale = scaleOverride >= WidgetSettings.MinResolutionCompatibilityScalePercent
+            ? Math.Min(WidgetSettings.MaxWindowScaleOverridePercent, scaleOverride) / 100.0f
+            // Global layout edit deliberately disables resolution-compatibility projection before
+            // showing the real tabs, so an inherited role scale is 100% for the edit preview too.
+            : 1.0f;
+        return Math.Max(0.25f, GetDesktopScale() * windowScale);
+    }
+
+    private void ApplyDragDelta()
     {
         if (this.processingPreview)
         {
@@ -283,11 +414,6 @@ internal sealed class GlobalLayoutEditorForm : Form
         }
     }
 
-    private Rectangle GetPanelBounds(int leftX, int bottomY, int width, int height)
-    {
-        return new Rectangle(leftX, bottomY - height + 1, Math.Max(1, width), Math.Max(1, height));
-    }
-
     private Rectangle GetOperationBounds()
     {
         Rectangle workArea = this.workingSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
@@ -299,16 +425,25 @@ internal sealed class GlobalLayoutEditorForm : Form
         return new Rectangle(left, top, Math.Max(1, width), Math.Max(1, height));
     }
 
-    private Rectangle GetSpecBoardBounds()
-    {
-        Rectangle operation = GetOperationBounds();
-        int left = this.workingSettings.SpecBoardLeftX >= 0 ? this.workingSettings.SpecBoardLeftX : operation.Left;
-        int bottom = this.workingSettings.SpecBoardBottomY >= 0 ? this.workingSettings.SpecBoardBottomY : operation.Top - 10;
-        return GetPanelBounds(left, bottom, this.workingSettings.SpecBoardWidth, this.workingSettings.SpecBoardHeight);
-    }
-
     private void ApplyItemBoundsToSettings(LayoutItem item)
     {
+        EdgeDockTabRole leftDockRole;
+        if (TryGetLeftDockRole(item.ModuleId, out leftDockRole))
+        {
+            ApplyLeftDockTabBoundsToSettings(leftDockRole, item.Bounds);
+            this.workingSettings.Normalize();
+            return;
+        }
+
+        int tileIndex = MetricTileIndexOf(item.ModuleId);
+        if (tileIndex >= 0 && this.workingSettings.RightTileAutoArrangeEnabled)
+        {
+            Rectangle currentBounds = MetricTileForm.GetTileBounds(this.workingSettings, tileIndex);
+            ShiftColumnGroupOffset(this.workingSettings, false, item.Bounds.Top - currentBounds.Top);
+            this.workingSettings.Normalize();
+            return;
+        }
+
         Screen screen = FindBestScreen(item.Bounds);
         if (screen == null)
         {
@@ -316,86 +451,98 @@ internal sealed class GlobalLayoutEditorForm : Form
         }
 
         SetModuleDisplayDeviceName(item.ModuleId, screen == null || screen.Primary ? string.Empty : screen.DeviceName);
-        string workAreaModule = string.Equals(item.ModuleId, SpecBoardModuleId, StringComparison.Ordinal) ? WidgetSettings.ModuleOperation : item.ModuleId;
+        // Tiles share the main widget work-area baseline; Operation has its own visible-module
+        // baseline. No retired/headless module is allowed through this editor path.
+        string workAreaModule = tileIndex >= 0
+            ? WidgetSettings.ModuleMain
+            : WidgetSettings.ModuleOperation;
+
         Rectangle workArea = screen == null ? this.workingSettings.GetWorkAreaForModule(workAreaModule) : screen.WorkingArea;
         if (workArea.Width <= 0 || workArea.Height <= 0)
         {
-            workArea = this.workingSettings.GetWorkAreaForModule(item.ModuleId);
+            workArea = this.workingSettings.GetWorkAreaForModule(workAreaModule);
         }
 
         int bottomY = item.Bounds.Bottom - 1;
-        if (string.Equals(item.ModuleId, WidgetSettings.ModuleMain, StringComparison.Ordinal))
+        if (tileIndex >= 0)
         {
-            this.workingSettings.LeftX = item.Bounds.Left;
-            this.workingSettings.BottomY = bottomY;
-        }
-        else if (string.Equals(item.ModuleId, WidgetSettings.ModuleCodexRadar, StringComparison.Ordinal))
-        {
-            this.workingSettings.CodexRadarLeftX = item.Bounds.Left;
-            this.workingSettings.CodexRadarBottomY = bottomY;
-        }
-        else if (string.Equals(item.ModuleId, WidgetSettings.ModuleClaudeRadar, StringComparison.Ordinal))
-        {
-            this.workingSettings.ClaudeRadarLeftX = item.Bounds.Left;
-            this.workingSettings.ClaudeRadarBottomY = bottomY;
-        }
-        else if (string.Equals(item.ModuleId, WidgetSettings.ModulePowerThermal, StringComparison.Ordinal))
-        {
-            this.workingSettings.PowerThermalLeftX = item.Bounds.Left;
-            this.workingSettings.PowerThermalBottomY = bottomY;
-        }
-        else if (string.Equals(item.ModuleId, WidgetSettings.ModuleNetworkMonitor, StringComparison.Ordinal))
-        {
-            this.workingSettings.NetworkMonitorLeftX = item.Bounds.Left;
-            this.workingSettings.NetworkMonitorBottomY = bottomY;
-        }
-        else if (string.Equals(item.ModuleId, WidgetSettings.ModuleConnectionCheck, StringComparison.Ordinal))
-        {
-            this.workingSettings.ConnectionCheckLeftX = item.Bounds.Left;
-            this.workingSettings.ConnectionCheckBottomY = bottomY;
+            this.workingSettings.SetMetricTilePosition(tileIndex, item.Bounds.Left, bottomY);
         }
         else if (string.Equals(item.ModuleId, WidgetSettings.ModuleOperation, StringComparison.Ordinal))
         {
             this.workingSettings.OperationLeftOffset = item.Bounds.Left - workArea.Left;
             this.workingSettings.OperationBottomOffset = workArea.Bottom - item.Bounds.Bottom;
         }
-        else if (string.Equals(item.ModuleId, SpecBoardModuleId, StringComparison.Ordinal))
-        {
-            this.workingSettings.SpecBoardLeftX = item.Bounds.Left;
-            this.workingSettings.SpecBoardBottomY = bottomY;
-        }
 
         this.workingSettings.Normalize();
     }
 
+    private void ApplyLeftDockTabBoundsToSettings(EdgeDockTabRole role, Rectangle draggedBounds)
+    {
+        int draggedCenterY = draggedBounds.Top + draggedBounds.Height / 2;
+        if (this.workingSettings.LeftDockAutoArrangeEnabled)
+        {
+            Rectangle currentBounds = GetLeftDockTabBounds(role);
+            int currentCenterY = currentBounds.Top + currentBounds.Height / 2;
+            ShiftColumnGroupOffset(this.workingSettings, true, draggedCenterY - currentCenterY);
+            return;
+        }
+
+        SetLeftDockTabCenterY(this.workingSettings, role, draggedCenterY);
+    }
+
+    private static void ShiftColumnGroupOffset(WidgetSettings settings, bool leftDock, int deltaY)
+    {
+        long current = leftDock ? settings.LeftDockGroupOffsetY : settings.RightTileGroupOffsetY;
+        long shifted = current + deltaY;
+        int normalized = (int)Math.Max(
+            WidgetSettings.MinColumnGroupOffsetY,
+            Math.Min(WidgetSettings.MaxColumnGroupOffsetY, shifted));
+        if (leftDock)
+        {
+            settings.LeftDockGroupOffsetY = normalized;
+        }
+        else
+        {
+            settings.RightTileGroupOffsetY = normalized;
+        }
+    }
+
+    private static void SetLeftDockTabCenterY(WidgetSettings settings, EdgeDockTabRole role, int centerY)
+    {
+        switch (role)
+        {
+            case EdgeDockTabRole.Network:
+                settings.NetworkMonitorLeftDockTabCenterY = centerY;
+                break;
+            case EdgeDockTabRole.SpecBoard:
+                settings.SpecBoardLeftDockTabCenterY = centerY;
+                break;
+            case EdgeDockTabRole.CodexTask:
+                settings.CodexTaskBoardLeftDockTabCenterY = centerY;
+                break;
+            case EdgeDockTabRole.Guard:
+                settings.GuardBoardLeftDockTabCenterY = centerY;
+                break;
+            case EdgeDockTabRole.CodexIq:
+                settings.CodexIqBoardLeftDockTabCenterY = centerY;
+                break;
+        }
+    }
+
     private void SetModuleDisplayDeviceName(string moduleId, string displayDeviceName)
     {
+        // Metric tiles have no per-tile display setting: they follow the main widget's target
+        // display, so dragging one to another monitor stores absolute coordinates without
+        // repointing a module baseline.
+        EdgeDockTabRole ignoredRole;
+        if (MetricTileIndexOf(moduleId) >= 0 || TryGetLeftDockRole(moduleId, out ignoredRole))
+        {
+            return;
+        }
+
         displayDeviceName = WidgetSettings.NormalizeDisplayDeviceName(displayDeviceName);
-        if (string.Equals(moduleId, WidgetSettings.ModuleMain, StringComparison.Ordinal))
-        {
-            this.workingSettings.MainDisplayDeviceName = displayDeviceName;
-        }
-        else if (string.Equals(moduleId, WidgetSettings.ModuleCodexRadar, StringComparison.Ordinal))
-        {
-            this.workingSettings.CodexRadarDisplayDeviceName = displayDeviceName;
-        }
-        else if (string.Equals(moduleId, WidgetSettings.ModuleClaudeRadar, StringComparison.Ordinal))
-        {
-            this.workingSettings.ClaudeRadarDisplayDeviceName = displayDeviceName;
-        }
-        else if (string.Equals(moduleId, WidgetSettings.ModulePowerThermal, StringComparison.Ordinal))
-        {
-            this.workingSettings.PowerThermalDisplayDeviceName = displayDeviceName;
-        }
-        else if (string.Equals(moduleId, WidgetSettings.ModuleNetworkMonitor, StringComparison.Ordinal))
-        {
-            this.workingSettings.NetworkMonitorDisplayDeviceName = displayDeviceName;
-        }
-        else if (string.Equals(moduleId, WidgetSettings.ModuleConnectionCheck, StringComparison.Ordinal))
-        {
-            this.workingSettings.ConnectionCheckDisplayDeviceName = displayDeviceName;
-        }
-        else if (string.Equals(moduleId, WidgetSettings.ModuleOperation, StringComparison.Ordinal))
+        if (string.Equals(moduleId, WidgetSettings.ModuleOperation, StringComparison.Ordinal))
         {
             this.workingSettings.OperationDisplayDeviceName = displayDeviceName;
         }
@@ -640,6 +787,87 @@ internal sealed class GlobalLayoutEditorForm : Form
         {
             return 1.0f;
         }
+    }
+
+    internal static void RunSelfTest()
+    {
+        WidgetSettings edge = WidgetSettings.CreateDefaults();
+        edge.SpecBoardLeftDockEnabled = true;
+        edge.CodexTaskBoardLeftDockEnabled = true;
+        edge.GuardBoardLeftDockEnabled = true;
+        edge.CodexIqBoardLeftDockEnabled = true;
+        edge.LeftDockAutoArrangeEnabled = true;
+        edge.RightTileAutoArrangeEnabled = true;
+        edge.Normalize();
+
+        List<string> edgeIds = BuildEditableSurfaceIds(edge);
+        List<string> expectedIds = new List<string>
+        {
+            WidgetSettings.ModuleOperation,
+            "LeftDockTab.Network",
+            "LeftDockTab.SpecBoard",
+            "LeftDockTab.CodexTask",
+            "LeftDockTab.Guard",
+            "LeftDockTab.CodexIq",
+            "MetricTile.Cpu",
+            "MetricTile.Memory",
+            "MetricTile.Disk",
+            "MetricTile.Network",
+            "MetricTile.Gpu",
+            "MetricTile.Npu",
+            "MetricTile.Power",
+            "MetricTile.Guard",
+            "MetricTile.CodexQuota",
+            "MetricTile.ClaudeQuota"
+        };
+        if (!HaveSameSurfaceIds(edgeIds, expectedIds))
+        {
+            throw new InvalidOperationException(
+                "Global layout editor must expose the exact canonical 16-surface plan: Operation, five dock tabs, and ten tiles.");
+        }
+
+        edge.VisibilityMode = WidgetVisibilityMode.HideWhenOverlapped;
+        if (!HaveSameSurfaceIds(edgeIds, BuildEditableSurfaceIds(edge)))
+        {
+            throw new InvalidOperationException(
+                "Environmental visibility modes must not change the structural edit-surface plan.");
+        }
+
+        edge.LeftDockGroupOffsetY = WidgetSettings.MaxColumnGroupOffsetY - 2;
+        edge.RightTileGroupOffsetY = WidgetSettings.MinColumnGroupOffsetY + 2;
+        ShiftColumnGroupOffset(edge, true, 50);
+        ShiftColumnGroupOffset(edge, false, -50);
+        if (edge.LeftDockGroupOffsetY != WidgetSettings.MaxColumnGroupOffsetY ||
+            edge.RightTileGroupOffsetY != WidgetSettings.MinColumnGroupOffsetY)
+        {
+            throw new InvalidOperationException("Global layout editor group-drag offset clamp self-test failed.");
+        }
+
+        SetLeftDockTabCenterY(edge, EdgeDockTabRole.Guard, 777);
+        if (edge.GuardBoardLeftDockTabCenterY != 777)
+        {
+            throw new InvalidOperationException("Global layout editor manual left-tab coordinate self-test failed.");
+        }
+
+        Console.WriteLine("Global layout editor surface policy: PASS structural filtering, 10 tiles, five tabs, and group drag");
+    }
+
+    private static bool HaveSameSurfaceIds(List<string> a, List<string> b)
+    {
+        if (a == null || b == null || a.Count != b.Count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (!string.Equals(a[i], b[i], StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private struct LayoutItem

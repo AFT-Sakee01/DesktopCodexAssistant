@@ -1,7 +1,8 @@
 param(
     [string]$OutputPath = (Join-Path $PSScriptRoot "DesktopCodexAssistant.exe"),
     [ValidateSet("arm64", "x64")]
-    [string]$Platform = "arm64"
+    [string]$Platform = "arm64",
+    [switch]$RequireTrackedSources
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,7 +12,7 @@ $compilerCandidates = @(
     (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\17\BuildTools\MSBuild\Current\Bin\Roslyn\csc.exe"),
     (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\Roslyn\csc.exe")
 )
-$mainSource = Join-Path $PSScriptRoot "DesktopCodexAssistant.cs"
+$sourceManifestPath = Join-Path $PSScriptRoot "Build-Sources.json"
 $sourceDirectories = @(
     "Core",
     "Settings",
@@ -24,20 +25,100 @@ if (-not $compiler) {
     throw "A Roslyn C# compiler with /platform:$Platform support was not found. Install Visual Studio Build Tools 2022 or newer."
 }
 
-if (-not (Test-Path -LiteralPath $mainSource)) {
-    throw "Source file was not found: $mainSource"
+if (-not (Test-Path -LiteralPath $sourceManifestPath)) {
+    throw "Build source manifest was not found: $sourceManifestPath"
 }
 
-$sourceFiles = @($mainSource)
+$manifest = Get-Content -LiteralPath $sourceManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($null -eq $manifest -or [int]$manifest.schema_version -ne 1 -or $null -eq $manifest.sources) {
+    throw "Build-Sources.json must contain schema_version=1 and a sources array."
+}
+
+$projectRoot = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') + '\'
+$sourceFiles = New-Object System.Collections.Generic.List[string]
+$manifestRelativePaths = New-Object System.Collections.Generic.List[string]
+$manifestSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+foreach ($entryValue in @($manifest.sources)) {
+    $entry = [string]$entryValue
+    if ([string]::IsNullOrWhiteSpace($entry) -or
+        [IO.Path]::IsPathRooted($entry) -or
+        $entry.IndexOfAny([char[]]'*?') -ge 0) {
+        throw "Invalid source manifest path: '$entry'"
+    }
+
+    $relative = $entry.Replace('/', '\')
+    $fullPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot $relative))
+    if (-not $fullPath.StartsWith($projectRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([IO.Path]::GetExtension($fullPath), ".cs", [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Source manifest path escapes the project or is not C#: '$entry'"
+    }
+
+    $normalizedRelative = $fullPath.Substring($projectRoot.Length).Replace('\', '/')
+    if (-not $manifestSet.Add($normalizedRelative)) {
+        throw "Duplicate source manifest path: '$entry'"
+    }
+
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "Source file was not found: $fullPath"
+    }
+
+    $manifestRelativePaths.Add($normalizedRelative)
+    $sourceFiles.Add($fullPath)
+}
+
+$discoveredFiles = New-Object System.Collections.Generic.List[string]
+$mainSource = Join-Path $PSScriptRoot "DesktopCodexAssistant.cs"
+if (Test-Path -LiteralPath $mainSource -PathType Leaf) {
+    $discoveredFiles.Add([IO.Path]::GetFullPath($mainSource))
+}
 foreach ($directory in $sourceDirectories) {
     $sourceRoot = Join-Path $PSScriptRoot $directory
     if (-not (Test-Path -LiteralPath $sourceRoot)) {
         throw "Source directory was not found: $sourceRoot"
     }
 
-    $sourceFiles += Get-ChildItem -Path $sourceRoot -Recurse -Filter *.cs -File |
+    Get-ChildItem -Path $sourceRoot -Recurse -Filter *.cs -File |
         Sort-Object FullName |
-        ForEach-Object { $_.FullName }
+        ForEach-Object { $discoveredFiles.Add([IO.Path]::GetFullPath($_.FullName)) }
+}
+
+$discoveredRelative = @($discoveredFiles | ForEach-Object {
+    $_.Substring($projectRoot.Length).Replace('\', '/')
+})
+$unknownSources = @($discoveredRelative | Where-Object { -not $manifestSet.Contains($_) })
+$discoveredSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+$discoveredRelative | ForEach-Object { [void]$discoveredSet.Add($_) }
+$manifestOnly = @($manifestRelativePaths | Where-Object { -not $discoveredSet.Contains($_) })
+if ($unknownSources.Count -gt 0 -or $manifestOnly.Count -gt 0) {
+    $details = @()
+    if ($unknownSources.Count -gt 0) {
+        $details += "Unlisted C# files: " + ($unknownSources -join ", ")
+    }
+    if ($manifestOnly.Count -gt 0) {
+        $details += "Manifest entries outside managed source discovery: " + ($manifestOnly -join ", ")
+    }
+
+    throw "Build source manifest mismatch. $($details -join ' | ')"
+}
+
+if ($RequireTrackedSources) {
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if ($null -eq $git) {
+        throw "git is required by -RequireTrackedSources."
+    }
+
+    $trackedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    & $git.Source -C $PSScriptRoot ls-files -- '*.cs' | ForEach-Object {
+        [void]$trackedSet.Add(([string]$_).Replace('\', '/'))
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "git ls-files failed while validating tracked build sources."
+    }
+
+    $untrackedManifestSources = @($manifestRelativePaths | Where-Object { -not $trackedSet.Contains($_) })
+    if ($untrackedManifestSources.Count -gt 0) {
+        throw "Formal build sources are not tracked by Git: $($untrackedManifestSources -join ', ')"
+    }
 }
 
 $outputDirectory = Split-Path -Parent $OutputPath
@@ -98,7 +179,7 @@ $compilerArgs = @(
     "/reference:$($windowsWinmd.FullName)",
     "/reference:$windowsRuntime",
     "/out:$OutputPath"
-) + $sourceFiles
+) + @($sourceFiles)
 
 $iconPath = Join-Path $PSScriptRoot "Assets\AppIcon.ico"
 if (Test-Path -LiteralPath $iconPath) {

@@ -37,6 +37,8 @@ internal sealed partial class OperationForm
             this.codexTaskBoardForm = new OperationCodexTaskBoardForm(this);
         }
 
+        this.codexTaskBoardForm.SetDockTabDisplaySuspended(this.displaySuspended);
+        this.codexTaskBoardForm.SetDockTabHiddenForFullscreen(this.hiddenForFullscreen);
         this.codexTaskBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
         return this.codexTaskBoardForm;
     }
@@ -88,7 +90,7 @@ internal sealed partial class OperationForm
     // between 8° and 82°). Geometry mirrors OperationLauncherTrioForm.ComputeArcCenterOffsets.
     internal Rectangle GetLauncherObstructionScreenRect()
     {
-        RectangleF core = GetQuickGridAnchorScreenRect();
+        RectangleF core = GetOperationAnchorScreenRect();
         float coreSize = GetStartButtonSize();
         float item = GetSmallButtonSize();
         float coreRadius = coreSize / 2.0f;
@@ -273,7 +275,7 @@ internal sealed partial class OperationForm
         }
     }
 
-    // All four dock tabs at 8x zoom so the 5x30 trapezoid and centre arrow are reviewable. Each
+    // All five dock tabs at 8x zoom so the 5x30 trapezoid and centre arrow are reviewable. Each
     // strip is normal idle/hover, hidden idle, protected collapsed, expanded and expanded-hover.
     private static void RenderEdgeDockTabSample(string outputDir)
     {
@@ -284,19 +286,29 @@ internal sealed partial class OperationForm
             EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Network),
             EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SpecBoard),
             EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexTask),
-            EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Guard)
+            EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Guard),
+            EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexIq)
         };
         int[] salts =
         {
             BurnInProtection.NetworkMonitorDockTabSalt,
             BurnInProtection.SpecBoardDockTabSalt,
             BurnInProtection.CodexTaskBoardDockTabSalt,
-            BurnInProtection.GuardBoardDockTabSalt
+            BurnInProtection.GuardBoardDockTabSalt,
+            BurnInProtection.CodexIqBoardDockTabSalt
         };
-        string[] names = { "network", "spec", "codex", "guard" };
+        string[] names = { "network", "spec", "codex", "guard", "codex-iq" };
+        EdgeDockTabRole[] roles =
+        {
+            EdgeDockTabRole.Network,
+            EdgeDockTabRole.SpecBoard,
+            EdgeDockTabRole.CodexTask,
+            EdgeDockTabRole.Guard,
+            EdgeDockTabRole.CodexIq
+        };
         for (int i = 0; i < accents.Length; i++)
         {
-            using (EdgeDockTabForm tab = new EdgeDockTabForm(settings, accents[i], salts[i], "SampleDockTab", i == 2))
+            using (EdgeDockTabForm tab = new EdgeDockTabForm(settings, accents[i], salts[i], "SampleDockTab", roles[i]))
             {
                 string path = System.IO.Path.Combine(outputDir, "operation-dock-tab-" + names[i] + ".png");
                 tab.SaveSample(path, 8.0f);
@@ -433,6 +445,8 @@ internal sealed partial class OperationForm
         private RectangleF viewToggleRect = RectangleF.Empty;
         private CodexTaskBoardView viewMode;
         private bool viewModeUserChosen;
+        private bool displaySuspended;
+        private bool hiddenForFullscreen;
 
         public OperationCodexTaskBoardForm(OperationForm owner)
         {
@@ -455,7 +469,7 @@ internal sealed partial class OperationForm
 
         private bool IsLeftDocked
         {
-            get { return this.CurrentSettings != null && this.CurrentSettings.CodexTaskBoardLeftDockEnabled; }
+            get { return true; }
         }
 
         protected override int WindowTransparencyOverridePercent
@@ -468,17 +482,17 @@ internal sealed partial class OperationForm
             get { return this.CurrentSettings.CodexTaskBoardScaleOverridePercent; }
         }
 
-        // Auto sentinel puts this tab just below the work area's vertical middle, adjacent to the
-        // Spec board's slot just above it, so the two 30px tabs never overlap out of the box.
+        protected override bool CanRenderLayeredWindow()
+        {
+            return !this.displaySuspended;
+        }
+
         private int ResolveDockTabCenterY()
         {
-            Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
-            if (this.CurrentSettings.CodexTaskBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY)
-            {
-                return this.CurrentSettings.CodexTaskBoardLeftDockTabCenterY;
-            }
-
-            return workArea.Top + workArea.Height / 2 + S(WidgetSettings.LeftDockTabAutoOffsetY);
+            return LeftDockLayout.ResolveTabCenterY(
+                this.CurrentSettings,
+                EdgeDockTabRole.CodexTask,
+                this.LayerScale);
         }
 
         public void ApplyRuntimeSettings(WidgetSettings settings)
@@ -531,7 +545,7 @@ internal sealed partial class OperationForm
                     EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexTask),
                     BurnInProtection.CodexTaskBoardDockTabSalt,
                     "CodexTaskBoardDockTab",
-                    true);
+                    EdgeDockTabRole.CodexTask);
                 this.dockTab.HoverEntered += OnDockTabHoverEntered;
                 this.dockTab.HoverExited += OnDockTabHoverExited;
                 this.dockTab.PollTick += OnDockTabPollTick;
@@ -543,6 +557,8 @@ internal sealed partial class OperationForm
                     EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexTask));
             }
 
+            this.dockTab.SetDisplaySuspended(this.displaySuspended);
+            this.dockTab.SetHiddenForFullscreen(this.hiddenForFullscreen);
             this.dockTab.SetBoardExpanded(this.Visible);
             this.dockTab.ShowTab(ResolveDockTabCenterY());
             // Docked and collapsed still needs the tick: it drives the tab's burn-in drift and the
@@ -552,17 +568,18 @@ internal sealed partial class OperationForm
 
         internal void SetDockTabHiddenForFullscreen(bool hidden)
         {
-            if (this.dockTab == null || this.dockTab.IsDisposed)
+            this.hiddenForFullscreen = hidden;
+            if (this.dockTab != null && !this.dockTab.IsDisposed)
             {
-                return;
+                this.dockTab.SetHiddenForFullscreen(hidden);
             }
 
             if (hidden)
             {
-                this.dockTab.HideTab();
                 HideBoard();
             }
-            else if (this.IsLeftDocked)
+            else if (!this.displaySuspended && this.IsLeftDocked &&
+                this.dockTab != null && !this.dockTab.IsDisposed)
             {
                 this.dockTab.ShowTab(ResolveDockTabCenterY());
             }
@@ -570,15 +587,22 @@ internal sealed partial class OperationForm
 
         internal void SetDockTabDisplaySuspended(bool suspended)
         {
+            this.displaySuspended = suspended;
             if (this.dockTab != null && !this.dockTab.IsDisposed)
             {
                 this.dockTab.SetDisplaySuspended(suspended);
+            }
+
+            if (suspended)
+            {
+                ResetDisplayRenderResources();
             }
         }
 
         private void OnDockTabHoverEntered(object sender, EventArgs e)
         {
-            if (this.IsDisposed || !this.IsLeftDocked || this.Visible)
+            if (this.IsDisposed || !this.IsLeftDocked || this.Visible ||
+                LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
             {
                 return;
             }
@@ -713,16 +737,26 @@ internal sealed partial class OperationForm
         // tab -> board without crossing a gap that would start the collapse countdown.
         private void PositionAtLeftDock()
         {
-            Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation);
-            int left = workArea.Left + S(EdgeDockTabForm.LogicalWidth);
-            int top = ResolveDockTabCenterY() - this.Height / 2;
-            left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
-            top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
-            this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(new Point(left, top), this.Size, workArea, BurnInProtection.CodexTaskBoardSalt);
+            Rectangle workArea = LeftDockLayout.ResolveWorkArea(this.CurrentSettings);
+            Point baseLocation = LeftDockLayout.ResolveBoardBaseLocation(
+                this.CurrentSettings,
+                EdgeDockTabRole.CodexTask,
+                this.LayerScale,
+                this.Size);
+            this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
+                baseLocation,
+                this.Size,
+                workArea,
+                BurnInProtection.CodexTaskBoardSalt);
         }
 
         public void ShowBoard()
         {
+            if (LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
+            {
+                return;
+            }
+
             this.owner.PrepareForCodexTaskOverlayShow();
             this.outsideClickCollapseUtc = DateTime.MinValue;
             this.outsideClickSequence = OutsideClickDismissalMonitor.ArmConsumer();
@@ -943,7 +977,7 @@ internal sealed partial class OperationForm
         {
             this.Location = ComputeCodexTaskBoardPlacement(
                 this.owner.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation),
-                this.owner.GetQuickGridAnchorScreenRect(),
+                this.owner.GetOperationAnchorScreenRect(),
                 this.owner.GetLauncherObstructionScreenRect(),
                 this.Size,
                 S(8));

@@ -560,11 +560,16 @@ internal sealed class FixedPingSnapshot
     public bool Running { get; set; }
     public DateTime CheckedAtLocal { get; set; }
     public bool CheckedAtKnown { get; set; }
+    public long NetworkGeneration { get; set; }
+    public string InterfaceId { get; set; }
+    public string TargetSignature { get; set; }
     public FixedPingTargetSnapshot[] Targets { get; set; }
 
     public FixedPingSnapshot()
     {
         this.CheckedAtLocal = DateTime.MinValue;
+        this.InterfaceId = string.Empty;
+        this.TargetSignature = string.Empty;
         this.Targets = new FixedPingTargetSnapshot[0];
     }
 
@@ -582,6 +587,9 @@ internal sealed class FixedPingSnapshot
             Running = this.Running,
             CheckedAtLocal = this.CheckedAtLocal,
             CheckedAtKnown = this.CheckedAtKnown,
+            NetworkGeneration = this.NetworkGeneration,
+            InterfaceId = this.InterfaceId,
+            TargetSignature = this.TargetSignature,
             Targets = targets
         };
     }
@@ -743,6 +751,12 @@ internal sealed class CleanIpConnectionSnapshot
     public bool TestMode { get; set; }
     public string Ip { get; set; }
     public string Location { get; set; }
+    // Raw egress country as reported by the geo lookup (before it is joined into Location).
+    // The China-egress AI guard reads this to decide whether the outbound IP is mainland China.
+    public string CountryRaw { get; set; }
+    // False after a Windows network-identity event until a lookup on the replacement network
+    // succeeds. This prevents an otherwise-fresh country result from authorizing the new route.
+    public bool EgressIdentityCurrent { get; set; }
     public string Asn { get; set; }
     public string Organization { get; set; }
     public bool ScoreKnown { get; set; }
@@ -764,6 +778,7 @@ internal sealed class CleanIpConnectionSnapshot
         this.CheckedAtLocal = DateTime.MinValue;
         this.Ip = "--";
         this.Location = "--";
+        this.CountryRaw = string.Empty;
         this.Asn = "--";
         this.Organization = "--";
         this.Grade = "--";
@@ -804,6 +819,8 @@ internal sealed class CleanIpConnectionSnapshot
             TestMode = this.TestMode,
             Ip = this.Ip,
             Location = this.Location,
+            CountryRaw = this.CountryRaw,
+            EgressIdentityCurrent = this.EgressIdentityCurrent,
             Asn = this.Asn,
             Organization = this.Organization,
             ScoreKnown = this.ScoreKnown,

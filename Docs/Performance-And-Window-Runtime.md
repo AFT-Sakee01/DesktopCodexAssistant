@@ -1,605 +1,282 @@
-# 性能模式、主窗口与指标运行机制
+# 性能采样、可见表面与运行时架构
 
-适用版本：1.0.6.03
+适用版本：2.0.0.0
 
-## 1. 文档范围
+本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
-本文以 Desktop Codex Assistant 当前源码为准，说明性能数据从 Windows 采样到界面显示的完整链路、三档性能模式，以及以下窗口的共同运行机制：
+## 1. 当前可见拓扑
 
-- 主性能窗口 `WidgetForm`
-- Codex 监测窗口 `CodexRadarForm`
-- Claude 监测窗口 `ClaudeRadarForm`
-- 功耗与温度窗口 `PowerThermalForm`
-- 网络监控窗口 `NetworkMonitorForm`
-- Clean IP 连接检测绘制器 `ConnectionCheckForm`（独立运行时窗口已隐藏）
-- 操作窗口 `OperationForm`
+常驻运行时只有下列用户表面：
 
-网络监控窗口的源文件备份位于：
+| 区域 | 数量 | 表面 |
+| --- | ---: | --- |
+| 右侧方块列 | 10 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度；每项是独立 `MetricTileForm` |
+| 左侧停靠列 | 5 | Network、Spec Board、Codex Task、GUARD、Codex IQ 的 tab；每个 tab 控制对应 board |
+| 操作 | 1 | `OperationForm` |
+| 设置 | 按需 | `Win11SettingsForm`，是任务栏和 Alt+Tab 中的普通设置窗口 |
 
-`Backups/NetworkWindow_20260607_0900`
+隐藏运行时对象不属于可见拓扑：
 
-网络窗口的完整状态机、检测算法和渲染说明见：
+| 对象 | 角色 |
+| --- | --- |
+| `WidgetForm` | 隐藏消息循环、性能采样与生命周期协调宿主 |
+| `CodexRadarForm` | 永久 headless 的 Codex/Claude 双 family 数据所有者 |
+| `PowerThermalForm` | 永久 headless 的功耗/电池/温度数据所有者 |
 
-`Docs/NetworkMonitor-Architecture.md`
+`NetworkMonitorForm` 只提供 Dock board 与其 tab，不提供浮动网络表面。Clean IP 画像作为 Network board 的一部分展示。设置窗口按需显示，不参与常驻边缘排列。
 
-本文中的“主窗口”指六栏 CPU、内存、磁盘、网络、GPU、NPU 性能面板，不包含设置窗口。
-
-## 2. 总体架构
-
-`WidgetForm` 是主窗口和运行协调器。它负责加载设置、跟踪应用窗口状态、创建其他窗口，并把运行时设置同步到各窗口。`PdhSampler` 负责读取 Windows PDH 性能计数器及系统硬件信息，渲染层不直接查询系统数据。
-
-每个监控窗口保持自己的定时器和快照，不共享 UI 绘制线程之外的可变图形对象。耗时采样和网络请求在后台任务中执行，结果通过锁保护的快照传回 UI 线程。
+## 2. 所有权与数据流
 
 ```mermaid
 flowchart LR
-    Settings["settings.ini"] --> Main["WidgetForm"]
-Main --> Radar["CodexRadarForm"]
-Main --> Claude["ClaudeRadarForm"]
-Main --> Power["PowerThermalForm"]
-    Main --> Network["NetworkMonitorForm"]
-    Main --> CleanIP["ConnectionCheckForm"]
-    Main --> Operation["OperationForm"]
-    Network --> Reader["NetworkMonitorReader"]
-    Reader --> Local["本地网卡 / Wi-Fi"]
-    Reader --> Connectivity["连通性 / 延迟 / 抖动"]
-    Reader --> PublicIP["公网 IP"]
-    Reader --> GFW["GfwProbeReader"]
-    Reader --> Cloud["CloudEndpointProbeReader"]
-    CleanIP --> CleanReader["CleanIpConnectionReader"]
+    A["WidgetForm hidden host"] --> B["PdhSampler / histories"]
+    A --> C["PowerThermalForm headless owner"]
+    A --> D["CodexRadarForm headless owner"]
+    A --> E["NetworkMonitorForm Dock owner"]
+    A --> F["OperationForm"]
+    A --> G["Win11SettingsForm on demand"]
+    B --> H["MetricTileFeed"]
+    C --> I["BuildStripSnapshot cache-only"]
+    D --> J["Codex + Claude tile snapshots cache-only"]
+    I --> H
+    J --> H
+    H --> K["10 MetricTileForm instances"]
+    K --> L["MetricTileExpandForm on hover"]
+    D --> M["Codex IQ / task / service snapshots"]
+    M --> N["Codex IQ / Codex Task boards"]
+    E --> O["Network reader + CleanIpConnectionReader.Shared"]
+    O --> P["Network Dock board"]
 ```
 
-主性能窗口的数据链如下：
+关键边界：
 
-```mermaid
-flowchart LR
-    Windows["Windows PDH / 系统 API"] --> Sampler["PdhSampler"]
-    Sampler --> Snapshot["PerfSnapshot"]
-    Snapshot --> History["34 点历史缓冲"]
-    Snapshot --> Alert["告警状态机"]
-    History --> Render["WidgetForm 分层窗口渲染"]
-    Alert --> Render
-    Settings["settings.ini"] --> Render
-```
+- 数据 owner 决定采样、请求、缓存和单飞；可见表面只消费快照。
+- snapshot builder 可以 clone、格式化和映射，但不能发起 I/O。
+- `WidgetForm` 统一分发设置、全屏状态、显示挂起/恢复、前台层级和退出清理。
+- board 与 tab 是一个模块的两个表面；全局布局只编辑 tab 的结构位置，不把展开 board 重复计数。
 
-数据职责按层分离：
+## 3. 隐藏宿主 `WidgetForm`
 
-- `PdhSampler`：读取原始字节率、占用率、容量、硬件名称和连接状态。
-- `PerfSnapshot`：保存一次采样的不可视化数据，不包含文本排版。
-- `WidgetForm`：换算单位、维护历史、计算告警、构造栏目文本并绘制。
-- `NetworkRateFormatter`：统一网络和磁盘速率的显示单位及小数规则。
+`WidgetForm.OnShown` 完成一次启动编排后保持自身隐藏。它保留 HWND 和 WinForms message loop，用于：
 
-## 3. 三档性能模式
+- 主 PDH tick、设置热加载与性能快照历史。
+- 全屏/遮挡/手动隐藏协调。
+- 显示器、会话、电源恢复与全局热键。
+- 创建和释放 visible surfaces 与 headless owners。
+- `ForceRefreshAllModules()`、设置预览和正式保存分发。
+- 统一 Z-order、Win+D/SeelenUI 恢复和退出。
 
-设置界面名称与内部枚举的对应关系：
+隐藏宿主不创建 layered bitmap，不参与屏幕定位、hover、burn-in 或全局布局编辑，也不能被桌面宿主模式重新设为 `WS_VISIBLE`。
 
-| 设置界面 | 内部值 | 目标 |
-| --- | --- | --- |
-| 性能 | `Smooth` | 更高刷新率和交互流畅度 |
-| 均衡 | `Balanced` | 默认刷新率，控制后台开销 |
-| 省电 | `BatterySaver` | 降低采样、绘制、网络探测和交互轮询频率 |
+## 4. Headless 数据所有者
 
-模式切换可以热生效，不需要重启。`WidgetForm.ApplyRuntimeSettings` 将新设置分发到所有子窗口。
+### 4.1 Radar owner
 
-### 3.1 通用时间策略
+`WidgetForm.EnsureCodexRadarWindow()` 构造 `CodexRadarForm` 后调用 `StartHeadlessDataOwner()`。owner 显式创建隐藏 HWND、启动 backend scheduler，并同时维护 Codex 与 Claude 两个隔离 family。关闭时必须先 `StopHeadlessDataOwner()` 再 `Dispose()`。
 
-时间参数由 `WidgetSettings` 统一提供；各策略在三档模式下的具体数值以 `Docs/Component-Refresh-Rules.md` §2 为唯一权威表，本文不重复维护。
+可见消费者只调用：
 
-`AdapterMissing` 状态不进行周期连通性检测，等待网络地址或可用性事件重新触发。
+- `BuildRadarTileSnapshot(Codex)`
+- `BuildRadarTileSnapshot(Claude)`
+- `BuildCodexIqBoardSnapshot()`
+- `BuildServiceHealth()`
+- `CodexTaskPresentation.SnapshotProvider`
 
-### 3.2 Windows 进程级策略
+以上 API 只读缓存。详细规则见 `Docs/CodexRadar-Architecture.md` 与 `Docs/Codex-ClaudeRadar-Architecture.md`。
 
-- 性能、均衡：正常进程优先级，清除执行速度节流请求。
-- 省电：请求 Windows 执行速度节流，并把进程优先级设为 `BelowNormal`。
-- 设置失败不会中断程序，结果写入主日志。
+### 4.2 Power/Thermal owner
 
-该策略只改变调度优先级，不改变检测结果或告警阈值。
+`WidgetForm.OnShown` 构造 `PowerThermalForm` 后调用 `StartHeadlessDataOwner()`。owner 通过隐藏 HWND 接收电源广播，在单飞 worker 中采样，再由 `BuildStripSnapshot()` 把缓存投影给 `PWR` tile。关闭时调用 `StopHeadlessDataOwner()`。
 
-## 4. 绘制与调度机制
+owner 不显示、不定位、不渲染，也不参加 hover、burn-in 或 Z-order。详细规则见 `Docs/PowerThermal-Architecture.md`。
 
-### 4.1 只在内容变化时绘制
+### 4.3 生命周期门控
 
-`NetworkMonitorForm` 和 `ConnectionCheckForm` 先比较旧、新快照。只有显示字段变化、窗口尺寸变化或需要动画时才重绘。
+headless owners 永不调用 `Show()`。全屏状态只隐藏可见表面，不停止这两个 backend；显示器关闭、会话锁定和系统挂起仍会暂停有外部成本的采样/轮询，恢复后使相关缓存到期并错峰续跑。具体刷新规则只在 `Docs/Component-Refresh-Rules.md` 维护。
 
-定时器仍会读取轻量快照，以便及时接收后台任务完成后的结果，但不会为相同内容重复执行完整 GDI+ 绘制。
+## 5. 右侧 10 个指标方块
 
-### 4.2 复用分层窗口缓冲区
-
-`WidgetForm`、`CodexRadarForm`、`ClaudeRadarForm`、`PowerThermalForm`、`NetworkMonitorForm`、`ConnectionCheckForm` 和 `OperationForm` 均继承 `LayeredWidgetFormBase`，共用 `NativeMethods.LayeredBitmapSurface`、`Bitmap` 与 `Graphics` 生命周期：
-
-- 尺寸不变时复用缓冲区。
-- 尺寸变化或窗口关闭时释放。
-- 仅透明度变化时复用已绘制内容，只调用 `UpdateLayeredWindow`。
-- 当前运行设置引用由 `LayeredWidgetFormBase.CurrentSettings` 持有，透明度百分比统一通过 `LayeredWidgetFormBase.ComputeOpacityAlpha` 转换为 alpha。
-- 网络窗口额外缓存内容层和字体，避免每帧创建 GDI 对象。
-
-这减少了托管对象分配、GDI 句柄波动和垃圾回收压力。
-
-### 4.3 交互定时器按需运行
-
-悬停透明度动画分为两种频率：
-
-- 动画进行中：使用对应模式的动画间隔。
-- 动画静止：切换到较低频率的空闲轮询。
-
-窗口因全屏模式隐藏时停止悬停定时器，重新显示后恢复。
-
-`OperationForm` 的动画定时器只在按压或悬停进度尚未达到目标值时运行。鼠标静止停留在按钮上且动画已经完成后，定时器停止；全屏隐藏和显示器挂起时同时停止动画与 FPS 定时器。
-
-### 4.4 网络事件驱动
-
-`NetworkMonitorReader`、`CleanIpConnectionReader` 和 Codex 服务状态监听：
-
-- `NetworkChange.NetworkAddressChanged`
-- `NetworkChange.NetworkAvailabilityChanged`
-
-网络变化时只设置失效标记，并由 `NetworkMonitorReader` 对事件做 30 秒防抖。真正的网卡枚举和网络请求仍由各自调度路径执行，避免在系统事件线程中阻塞。GFW 和云服务不会因每个 `NetworkChange` 事件直接重置周期；只有本地快照确认连接恢复、网卡 ID、默认网关或主 IP 地址变化时，才作为网络身份变化刷新远端探测。PING 滚动窗口也随这些身份变化清空。
-
-省电模式下，本地 IP、DNS、Wi-Fi 等信息主要由网络事件触发刷新，而不是固定轮询。
-
-### 4.5 异步任务与过期结果保护
-
-网络监控将公网 IP、连通性检测和 PING 滚动采样放入后台任务。每次网络身份变化都会增加 `networkGeneration`。
-
-后台任务完成时必须同时满足：
-
-- generation 与任务启动时一致；
-- 网卡 ID 与任务启动时一致；
-- PING 滚动采样还要求主 IP 和默认网关签名一致；
-- reader 尚未释放。
-
-否则结果被丢弃，避免旧网络的公网 IP 或延迟覆盖新网络状态。
-
-功耗与温度读取采用单任务运行规则。采样正在执行时，新请求只合并为一个待处理请求，避免慢传感器导致任务堆积。
-
-### 4.6 窗口状态、全屏、休眠与显示恢复
-
-- `ApplicationWindowStateTracker` 由 `WidgetForm` 在主窗口显示后启动，复用 `NativeMethods.WindowEventHook` 监听前台、创建、销毁、显示、隐藏、状态、位置、名称、父级和 cloaked/uncloaked 事件，并在主控制 tick 里全量重校验一次，避免 Windows 漏发事件后状态卡住。
-- 应用窗口状态来自 `NativeMethods.TryGetApplicationWindowInfo`：过滤本程序、SeelenUI、Shell/桌面、工具窗口、无标题窗口和 UWP frame 未稳定窗口；记录窗口矩形、所在显示器、最小化、`IsZoomed` 最大化和全屏标志。
-- 全屏判定采用 Seelen UI 同类策略：普通 `WS_THICKFRAME` 可调整窗口先排除，剩余窗口矩形在 2 px 容差内覆盖所在显示器才视为全屏，因此普通最大化不会被当成全屏。
-- `VisibilityMode` 分为五档：`AlwaysVisible` 总是可见、`HideWhenFullscreen` 全屏时不可见、`HideWhenMaximized` 最大化时不可见、`HideWhenOverlapped` 遮挡时不可见、`DesktopOnly` 仅桌面可见；默认值为 `HideWhenFullscreen`。最大化档同时包含全屏，因为全屏窗口也会覆盖当前显示器的工作区域。
-- `HideWhenFullscreen` 按每个监控窗口所在显示器判断最近前台的可交互应用窗口是否全屏；`HideWhenMaximized` 判断同屏是否存在最大化或全屏应用窗口；`HideWhenOverlapped` 使用同屏应用窗口矩形与监控窗口矩形相交判断遮挡；`DesktopOnly` 不由状态缓存隐藏，而由桌面层级/非置顶行为表达。
-- `VisibilityOverlapIgnoresOperationPanelEnabled` 只影响 `HideWhenOverlapped`：开启后左下角 `OperationForm` 不参与自身遮挡隐藏判定，RadialDial 展开后变大的同一窗口矩形也会一起跳过；全屏和最大化档不受该开关影响。
-- 主窗口和子窗口都通过 `ApplicationWindowStateTracker.ShouldHideForVisibilityMode` 做每窗体、每显示器判断，并分别调用子窗口 `SetHiddenForFullscreen`；不再用单个前台窗口状态隐藏所有窗口。
-- `AutoHoverOpacityMaximizedEnabled` 使用同一窗口状态缓存，只要存在非本程序、非 SeelenUI 的最大化或全屏应用窗口，就进入自动隐藏透明度状态。
-- `OperationRadialCoreAutoHideKeepAliveEnabled` 开启时，`WidgetForm` 复用共享悬停交互 tick 查询左下角 `OperationForm` 的 RadialDial 核心圆圈命中；命中期间重置空闲计时、清除自动隐藏来源，并让主窗口、Codex Radar、功耗、网络和连接检测窗口的悬停延迟状态复位。该保持显示行为只暂停自动/悬停隐藏计时器，不替代用户手动开启的隐藏来源。
-- 全屏隐藏时，各窗口停止不必要的悬停和绘制。
-- 主窗口在省电模式下跳过隐藏期间的昂贵 PDH 采样，但控制定时器仍运行，因此可以处理停止信号、设置变更和退出全屏。
-- 显示器关闭、会话锁定或系统休眠时，Codex 与功耗采样暂停。
-- 显示器关闭或系统挂起时，主窗口会释放主窗口和子窗口的托管渲染缓存，并重置复用的 native layered-window DC/HBITMAP，避免唤醒后继续使用息屏前的 GDI 资源。
-- 显示恢复后执行三轮延迟恢复，重新定位、重建 layered-window 资源、强制重绘，并安排一次刷新；这覆盖 DWM、显示驱动或 WorkerW 桌面宿主稍晚恢复的情况。
-- 休眠/系统挂起唤醒收到 `PBT_APMRESUMEAUTOMATIC`、`PBT_APMRESUMESUSPEND` 或 `PBT_APMRESUMECRITICAL` 后，若设置开启，会在三轮显示恢复完成后重启 SeelenUI 和本程序。SeelenUI 只在休眠前或唤醒时存在运行实例时重启，避免用户主动关闭 SeelenUI 后被强行启动。
-- `--desktop-parent` 模式下，恢复时先把主窗口从旧 WorkerW 脱离成普通顶层窗口，再尝试挂接到新的桌面宿主；如果第一次没有找到宿主，后续恢复轮继续重试。
-
-### 4.7 主网络接口筛选
-
-Windows 中可能同时存在 Wi-Fi、以太网、WSL2、Hyper-V、VPN 和 WAN Miniport。主性能窗口不会直接采用枚举到的第一个接口。
-
-`PdhSampler` 使用以下规则：
-
-1. 排除未启用、回环、隧道和已知虚拟接口。
-2. 优先选择带默认网关的接口。
-3. 其次优先带有效 IPv4 地址的接口。
-4. 再根据 Wi-Fi/以太网类型和链路速度评分。
-5. Wi-Fi 接口优先显示实时 SSID；无法读取 SSID 时退回接口名称或描述。
-
-PDH 网络速率计数器也排除 WSL、`vEthernet`、Hyper-V、虚拟交换机和 WAN Miniport，避免虚拟交换流量被误计入主网络图表。
-
-### 4.8 统一速率格式
-
-网络和磁盘速率都由 `NetworkRateFormatter` 格式化：
-
-- 原始输入为 `Bytes/sec`。
-- 显示值使用十进制比特率：`Kbps`、`Mbps`、`Gbps`。
-- 达到 `1000 Kbps` 切换为 `Mbps`，达到 `1000 Mbps` 切换为 `Gbps`。
-- 显示值小于 `10` 时保留一位小数；四舍五入后大于等于 `10` 时不显示小数。
-
-因此 `100 KB/s` 的原始字节率会显示为约 `800 Kbps`，而不是 `100 Kbps`。这是有意采用与网络模块一致的比特率口径。
-
-### 4.9 磁盘四行显示
-
-磁盘栏目读取整块物理磁盘计数器，当前文本为：
-
-1. `DISK`
-2. `WT`：物理磁盘写入速率
-3. `RD`：物理磁盘读取速率
-4. 已用容量/总容量，单位 `GB`，四舍五入到整数
-
-图表包含写入和读取两条自动缩放曲线。容量只保留在第四行文本中，不参与曲线缩放。
-
-`Disk Read Bytes/sec` 和 `Disk Write Bytes/sec` 反映实际到达物理磁盘设备的 I/O。Windows 文件缓存命中不会形成同等数量的物理读取，因此日常使用中读取曲线长时间接近零、写入仍有波动是正常现象。若要观察应用请求的逻辑 I/O，应改用进程 I/O 或逻辑磁盘口径，不能直接与当前物理磁盘数值比较。
-
-### 4.10 磁盘联合告警
-
-磁盘红色背景和黄色告警图标使用 `% Disk Write Time` 与 `% Disk Read Time`，不使用 WT/RD 速率数值。联合告警值为两者的较小值：
+`Core/MetricTileModel.cs` 定义稳定顺序：
 
 ```text
-diskAlertPercent = min(writeBusyPercent, readBusyPercent)
+Cpu, Memory, Disk, Network, Gpu, Npu, Power, Guard, CodexQuota, ClaudeQuota
 ```
 
-这意味着只有读写忙碌度同时达到条件时才触发：
+每个 ID 对应一个独立 `MetricTileForm`。`WidgetForm.BuildMetricTileFeed()` 在控制 tick 中组装一次输入：
 
-- 低于 `80%`：无红色背景。
-- `80%` 到 `100%`：红色背景透明度线性增加。
-- `100%`：红色背景不透明度约 `70%`。
-- 大于等于 `98%` 且连续至少 `3` 秒：显示并闪烁黄色三角告警。
-- 设置中的告警测试：强制按 `100%` 处理，不需要制造真实高负载。
+- 当前 `PerfSnapshot`。
+- CPU/内存/磁盘/网络/GPU/NPU 历史缓冲。
+- `PowerThermalForm.BuildStripSnapshot()` 的缓存副本。
+- GUARD 状态。
+- Codex 与 Claude 的 `RadarTileSnapshot`。
 
-### 4.11 12 小时滚动耗时统计
+`PushMetricTileFeed()` 把同一个 feed 推给全部 tile；方块不自行采样。鼠标悬停时 `MetricTileExpandForm` 使用同一 feed 和相同 tile ID 展开详情，也不建立 reader 或 timer。
 
-`TimingStats` 在进程内保存最近 12 小时的耗时样本，新样本进入后会按时间窗口和数量上限淘汰旧样本。当前接入点包括：
+右列排列由 `RightTileButtonOrder`、启用状态、按钮间距、整组 Y 偏移和目标工作区解析。自动排列保持整列贴住工作区右缘；防烧屏只对整组应用共享 Y 偏移，不能让 10 个方块各自漂移而破坏列结构。
 
-- 主窗口控制 tick：`widget.main_tick`
-- 主性能 PDH 采样：`widget.pdh_sample`
-- 主窗口分层渲染：`widget.render`
-- Codex 本地额度读取：`codex.quota_read`
+“主显示器/主工作区”设置仍是右侧 tile 的布局基线。目标显示器断开时按设置决定回退到主显示器或保留上次工作区；这些设置不依赖隐藏宿主是否可见。
 
-统计器只保存内存样本，不新增持久化文件。每 15 分钟最多写入一条 `TimingStats12h` 摘要到主日志，包含样本数、平均耗时、p95 和最大耗时，用于后续判断是否需要把 PDH 采样或 Codex 本地读取迁移到后台 worker。
+## 6. 左侧 5 个停靠位
 
-### 4.12 UI 无响应看门狗
+固定角色顺序为：
 
-`UiHangWatchdog` 随主程序启动，在后台线程每 2 秒检查一次 UI 线程心跳。`WidgetForm` 在主控制 tick、悬停交互 tick、自动透明度合并、运行时设置分发和关键子窗口设置应用前后更新心跳检查点。
+```text
+Network, SpecBoard, CodexTask, Guard, CodexIq
+```
 
-当 UI 心跳超过 10 秒未更新时，看门狗直接向 `%LOCALAPPDATA%\DesktopCodexAssistant\ui-hang-watchdog.jsonl` 追加 `ui_thread_unresponsive` JSONL 记录；若无响应持续存在，每 30 秒追加一次重复记录，UI 恢复后追加 `ui_thread_responsive_again`。记录包含当前操作、操作开始时间、最后一次已完成操作、延迟毫秒、进程 ID 和程序版本。
+`LeftDockLayout` 根据启用项、稳定顺序、真实 DPI 尺寸、间距和整组 Y 偏移计算 5 个 tab。`EdgeDockTabForm` 负责：
 
-该文件独立于普通 `Logger`，目的是覆盖 Windows `AppHangB1` 这类“UI 线程卡死但后台线程仍可运行”的故障。它不会捕获完整调用栈，也无法在所有线程都被挂起或进程被系统立即终止时写入；这类场景仍需要 WER dump 或外部调试器。休眠/息屏导致的 5 分钟以上心跳间隔会被视为系统挂起空洞，不写误报。
+- 左缘绝对可达的梯形 tab。
+- 悬停展开与离开/外部点击收起。
+- 固定角色色、收起灰态和 board 内描边。
+- 共享 120 ms 交互 tick，不建立全局 mouse hook。
+- `ApplyRuntimeOffsetWithPinnedX`：X 固定在工作区左缘，只允许整组 Y 微位移。
 
-## 5. 各窗口运行机制
+展开 board 的 X 统一固定为 `workArea.Left + tab.Width`，因此五块 board 水平对齐。board 之间按产品规则互斥；后打开者收起其它 board。每个 board 仍拥有自己的数据和显示 tick，tab 不复制业务 reader。
 
-### 5.1 主性能窗口
+Network 是 Dock-only；其采样、PathPing、固定 Ping、Clean IP 和 board 缓存规则见 `Docs/NetworkMonitor-Architecture.md`。
 
-主定时器执行以下顺序：
+## 7. Operation 与 Settings
 
-1. 检查全局停止事件。
-2. 检查 `settings.ini` 修改时间并热加载设置。
-3. 更新全屏可见性。
-4. 按模式决定是否采样 PDH 数据。
-5. 更新历史曲线、告警状态并绘制。
+`OperationForm` 是常驻可见表面，拥有 RadialDial、快速开关、刷新、设置入口和 GUARD 联动。动画 timer 只在按压或悬停状态尚未收敛时运行；静止交互复用 `WidgetForm` 的共享 tick。
 
-隐藏时仍保留控制循环。省电模式隐藏后不读取 PDH；性能模式维持正常采样；均衡模式降低控制循环频率。
+`Win11SettingsForm` 按需创建，`ShowInTaskbar=true`。设置预览经 75 ms debounce 应用；保存写 `settings.ini`，取消或异常关闭恢复打开时 baseline。设置窗口不是 layered edge surface，不参加 burn-in，也不进入 16 项全局布局清单。
 
-各栏目的当前数据口径：
+## 8. 性能模式
 
-| 栏目 | 主要数据源 | 显示和图表 | 告警值 |
-| --- | --- | --- | --- |
-| CPU | Processor/Processor Information PDH | 总占用曲线、每逻辑核心柱状图、实时/基准频率 | CPU 柱状图自身颜色规则，不使用通用面板红底 |
-| MEMORY | Windows 内存状态、`Win32_PhysicalMemory`、GPU/NPU 内存计数器 | 厂商、频率、占用率、已用/总量；黄线为 GPU+NPU 已用内存占总内存比例 | 内存占用率 |
-| DISK | PhysicalDisk PDH、物理盘到逻辑盘 WMI 关联及卷容量 | `DISK C/D/E`、WT/RD 双曲线、整数容量行；超过 3 个正常分区时只显示容量最大的 3 个 | 读写忙碌度较小值 |
-| NETWORK | Network Interface PDH、NetworkInterface API、Wi-Fi API | SSID/接口名、UP/DL 双曲线；Wi-Fi 时增加 RSSI 行 | 断线状态，不使用通用高负载告警 |
-| GPU | GPU Engine/Adapter Memory PDH | GPU 与显存双曲线 | GPU/显存占用率较大值 |
-| NPU | NPU 计数器，必要时从 GPU Engine LUID 分类 | NPU 与共享/专用内存双曲线 | NPU/内存占用率较大值 |
+用户可选性能、均衡和省电；内部 `Smooth` 是“性能”的兼容枚举名。模式影响：
 
-历史曲线最多保留 34 个点。CPU、内存、GPU、NPU 使用百分比；网络和磁盘历史统一保存为 `Kbps`，绘图时按当前历史最大值自动缩放。
+- 主 PDH 和普通调度检查频率。
+- GPU/NPU 等昂贵计数器的独立采样频率。
+- hover 动画与静止交互轮询频率。
+- 网络本地枚举、连通性、PING、DNS 与公网 IP 节流。
+- 功耗和温度 deadline。
+- 进程优先级与 Windows Power Throttling。
 
-主窗口文本支持三行和四行布局。磁盘容量和 Wi-Fi RSSI 使用四等分行高；其他栏目继续使用原有三行布局，避免四行支持改变非 Wi-Fi 网络和内存的字号及间距。
+所有具体间隔、单飞、冷却、网络事件和暂停恢复表只在 `Docs/Component-Refresh-Rules.md` 维护。架构文档只保留所有权和边界，避免出现第二份会漂移的数字表。
 
-Wi-Fi RSSI 读取方式：
+## 9. 可见性与全屏
 
-- 先通过 `WlanQueryInterface` 读取当前连接详情、SSID、BSSID 和链路速率。
-- 再通过 `WlanGetNetworkBssList` 读取当前可见 BSS 列表。
-- 使用当前 BSSID 匹配对应 `WLAN_BSS_ENTRY.lRssi`，显示为 `RSSI -45dBm` 这类格式。
-- 主性能窗口缓存主网络状态，Wi-Fi RSSI 约每 5 秒刷新一次；网络切换事件会立即触发重新检测。
+`WidgetForm` 统一计算全屏、遮挡、自动隐藏、手动隐藏和反向恢复。规则按表面类型分开：
 
-### 5.2 主窗口告警层
-
-除 CPU 和网络外，通用告警层按以下顺序绘制：
-
-1. 图表基础背景与边框。
-2. 随占用率变化的红色背景层。
-3. 黄色透明三角边框和感叹号。
-4. CPU 核心柱或历史曲线。
-
-告警图标达到触发条件后，在每次刷新间于约 `30%` 和 `70%` 黄色不透明度之间切换。测试开关复用同一绘制路径，只替换输入值，因此可验证布局和动画而不增加硬件负载。
-
-### 5.3 网络监控窗口
-
-网络监控分为 UI 层和数据层。
-
-`NetworkMonitorForm`：
-
-- 定时读取 `NetworkMonitorReader` 的快照；
-- 对比显示字段；
-- 只在变化时绘制；
-- 处理位置、透明度、穿透和全屏隐藏。
-
-`NetworkMonitorReader`：
-
-- 同步读取本地网卡、IPv4/IPv6、DNS、Wi-Fi 认证和 PHY；IP 行只显示第一个地址，后续地址折叠为 `+n`，第一个地址放得下时不显示第二个地址；
-- 支持设置页指定当前网卡；未指定时继续按默认网关、地址、接口类型和链路速率自动选择；
-- 异步读取公网 IPv4；`IP4` 行右侧公网显示优先使用本地可公开路由 IPv6 的短显，没有 IPv6 时回退到公网 IPv4；
-- 异步检测 DNS 可用性、错误返回和随机不存在域名劫持，并按正常/异常状态自适应复查周期；
-- 异步执行 Ping、NCSI 门户检测、延迟、抖动和丢包率测量；
-- 单飞执行 PING 滚动采样，保留网关、公网和百度回退窗口，用于 PING 行 1 位小数丢包、ICMP 禁用和 loss 后缀链路诊断；
-- 在 `Online` 时根据丢包、抖动和延迟生成内部本地链路劣化标记，供 DNS 和云服务检测降低高丢包误判；
-- 调用 `GfwProbeReader` 获取防火墙检测结果；GFW 的本地链路门控只来自当前活动目标滚动 PING 丢包率 `>= 2%` 且已确认，不直接使用 4 包连通性丢包，也不使用网关侧 ICMP 丢包、延迟或抖动诊断，`Unknown`、离线和该门控只影响本轮显示，不清空 GFW 周期；
-- 调用 `CloudEndpointProbeReader` 独立获取云服务检测结果，GFW 失败结论不会使云服务检测跳过或置灰；真实状态非 `Online` 时停止/取消云服务探测并隐藏标题右侧云服务告警；
-- Classic 是唯一保留的布局（`1.0.4.56` 起 GroupedCards 第二布局连同其绘制代码已删除），使用扁平信息条：头部为 `NETWORK`、状态文字和链路摘要；中部三行显示 `IP4 / IP6 / DNS`，`公网` 模块在 `IP4` 行右侧，DNS 异常原因在 `DNS` 行右侧；底部显示 `PING / GFW` 和右对齐 6 个云服务方块。DNS 异常只消费已有 DNS 快照，不增加额外网络请求；DNS 状态保留网卡返回的 DNS 优先级顺序，错误状态只改变颜色、不把报错项提前；连通性/GFW 长错误文本在固定布局中使用紧凑摘要或整行兜底，避免与其它字段相撞；IP 行仍使用压缩短显，完整地址只留在快照中；DNS 历史 JSONL 记录按顺序写入脱敏的 `status_detail`/`abnormal_detail`，保留具体原因但不写 DNS 地址；
-- 返回快照副本，禁止 UI 直接修改内部状态。
-
-连通性状态判定：
-
-| 状态 | 含义 |
+| 类型 | 全屏/隐藏行为 |
 | --- | --- |
-| `Online` | Ping 或 NCSI 证明公网可用 |
-| `NeedsValidation` | 门户重定向、HTTP 认证状态或内容被替换 |
-| `Offline` | 网卡存在，但连通性检测失败 |
-| `AdapterMissing` | 没有可用的物理网络接口 |
-| `Unknown` | 正在刷新或尚未得到结论 |
-
-### 5.4 Codex 监测窗口
-
-面板定时器负责检查各数据源是否到期，但网站检测周期与 UI 性能模式分离：
-
-完整的数据合并、重置保护、IQ/效率算法和额度文件缓存说明见：
-
-`Docs/CodexRadar-Architecture.md`
-
-| 数据源 | 周期 |
-| --- | ---: |
-| CodexRadar 模型数据 | 启动/恢复/模型切换触发一次；常规定时为北京时间每小时整点，RSS 重置提醒只跟随成功响应附属读取 |
-| CodexRadar 失败重试 | 10 min |
-| Claude 失败重试 | 2 min |
-| Claude 官方状态 | 15 min |
-| Claude Code 用量 | Codex Radar `SF:CLAUDE` 和独立 Claude Radar 共享进程级调度；正常 5 min；失败 10 min；429 冷却 15 min |
-| 检测软件 Auto | 前台窗口识别，性能/均衡/省电为 2/5/10 s；不发网络请求 |
-| 五阶段连接诊断 | 当前停用，不调度 |
-| 五阶段异常重试 | 当前停用 |
-| DeepSeek 余额 | 正常 60 s；失败 5 min |
-
-当前 `EvenRow` 布局隐藏五点连接摘要和旧三行服务健康面板；Rader、Claude、DeepSeek 以及 OpenAI 兜底状态用于单行 API 摘要。正常显示 `API无异常`，异常按服务名和原因轮播。当前检测软件为 `CLAUDE` 时，Claude Code 用量接口的未登录、鉴权失败、限流、不可达或解析失败也进入该摘要；`CODEX` 模式不会被 Claude 用量探测状态影响。五阶段连接诊断的网络/DNS/隧道/OpenAI/本地 Codex 请求链保留为回滚代码，但当前不调度。右侧状态格同时显示网页短数据标签和 IQ 更新时间，二者跟随同一次 CodexRadar 网站刷新；若公开 JSON 已成功但缺少这些展示字段，首页 HTML 只作为轻量补齐来源，不触发额外高频轮询。`1.0.3.58` 起右侧状态列加宽并提高最小字号，避免三行共同拟合后比旧版更小。
-
-DeepSeek 余额行使用官方余额接口实时读取 `CNY total_balance`。由于官方余额接口不提供 24 小时消费明细，程序通过本地 48 小时余额样本估算最近 24 小时消耗；该历史只含时间和余额，不含 API key。当前 Codex Radar 底部 DS 元信息不再按余额、24 小时估算消耗或高低峰改变颜色，而与 `RC/LLM/SF` 共用中性灰白；文案右侧追加按北京时间 `09:00-12:00`、`14:00-18:00` 判定的 `高峰` 或 `低谷`。底部四项按实际文本拆成独立绘制矩形，并使用灰线到窗口底边之间的整段高度上下居中绘制，不再共用一条硬等分文字层，也不依赖灰线下方剩余高度，避免 `DS:... 高峰/低谷` 被相邻项、分隔线或实际窗口高度裁掉。`1.0.3.59` 起底部元信息字体基准在 `1.0.3.58` 基础上再放大 30%。设置页的 DeepSeek 配置入口只写本地 key 文件，并通过 `DeepSeekApiKeyRevision` 让运行中的 Codex Radar 立即刷新，不把密钥写入 `settings.ini`。
-
-性能模式影响额度读取和进程检测的正常周期；五阶段连接诊断当前停用：
-
-| 项目 | 性能 | 均衡 | 省电 |
-| --- | ---: | ---: | ---: |
-| Codex 活跃时额度刷新 | 10 s | 15 s | 30 s |
-| Codex 进程检查 | 3 s | 5 s | 10 s |
-| Codex 不活跃时额度刷新 | 10 min | 20 min | 60 min |
-| Auto 软件识别 | 2 s | 5 s | 10 s |
-| Claude Code 用量 | 5 min 共享调度 | 5 min 共享调度 | 5 min 共享调度 |
-
-时间显示最多每秒重绘一次。网站请求完成、测试状态变化或额度变化可以立即触发绘制。
-
-### 5.5 功耗与温度窗口
-
-功耗与温度采用自适应采样：
-
-| 策略 | 性能 | 均衡 | 省电 |
-| --- | ---: | ---: | ---: |
-| 功耗 | 1 s | 2 s | 5 s |
-| 温度低于 65°C | 2 s | 5 s | 10 s |
-| 65°C 至 69.9°C | 1.5 s | 3 s | 5 s |
-| 70°C 至 89.9°C | 1 s | 2 s | 3 s |
-| 90°C 及以上 | 1 s | 1 s | 1 s |
-
-温度升高时会自动提高采样频率。严重温度告警的 1 秒采样不受省电模式限制。
-
-### 5.6 Clean IP 出口画像
-
-CleanIP 检测触发条件：
-
-- 首次启动；
-- 网络重新连接；
-- 每小时计划，随机偏移范围为正负 5 分钟并包含秒；
-- 错误状态下到达 10 分钟时间槽；
-- 设置中的手动刷新；
-- 操作面板强制刷新。
-
-检测结果会一直保留到下一次检测覆盖。网络事件只使网络状态缓存失效，不会伪装成手动或操作面板触发。
-
-1.0.5.74 起主窗口不再实例化右下角独立 `ConnectionCheckForm`，出口画像由网络停靠面板统一展示。`CleanIpConnectionReader.Shared` 仍是进程级单例，检测计划、网络恢复、错误重试和设置 token 行为不变；网络面板的 `ForceRefresh()` 同时请求网络与 Clean IP 刷新。`ConnectionCheckForm` 的三状态框绘制与样张入口继续保留作自动回归和可控回滚，但不属于正常运行时窗口集合。
-
-Codex Radar 整窗随机测试启用后会暂停真实网站、额度、Claude 和连接流程轮询。随机快照会缓存；手动刷新通过 refresh token 立即重建，自动刷新开启时最多每秒重建一次，不会在普通 UI tick 上重复随机。测试关闭后恢复真实调度并立即请求关键状态。
-
-### 5.7 操作窗口
-
-操作窗口主要处理：
-
-- Windows/SeelenUI 开始菜单操作；
-- 打开设置；
-- 系统快捷操作、刷新和重启；
-- 按压与悬停动画；
-- 左侧主区域的 Windows 按钮、内存饼图、自动切换和隐藏收缩布局。
-
-Windows 开始菜单左键不发送 Win 键，因为 SeelenUI 会捕获 Win 键并打开自己的应用菜单；也不能直接启动 `StartMenuExperienceHost` 的 AppsFolder 项，因为它会生成独立的 `ApplicationFrameWindow/StartDocked` 白窗。左键优先尝试原生任务栏 UI Automation；当 SeelenUI 隐藏 `Shell_TrayWnd` 导致 UIA 根树不可见时，回退到隐藏 `Shell_TrayWnd` 下的原生 `Start` 子窗口并发送 `BM_CLICK`。Windows 大按钮、RadialDial 核心圆圈和电源/系统按钮的右键都调用 `NativeMethods.OpenWindowsStartContextMenu`；该入口优先右键原生开始按钮，失败时回退 `Win+X`，打开包含设备管理器、磁盘管理等项目的 Windows Power User 菜单。
-
-SeelenUI 电源菜单通过后台单飞任务启动 `slu.exe` 并等待最多 1.5 秒，UI 线程只更新按钮状态和执行 Windows 安全菜单回退。快速重复点击不会并发启动多个命令。
-
-动画结束后停止动画定时器。左侧主区域由 `OperationPrimaryPanelMode` 控制：自动模式按 SeelenUI 运行态在 Windows 按钮和内存饼图之间切换；Windows 按钮、内存饼图和隐藏模式分别强制显示对应状态。隐藏模式不保留左侧大按钮宽度，右侧小按钮从最左侧 margin 开始布局。SeelenUI 运行态和左侧内存饼图只在操作面板可见时复用主窗口协调 tick 低频刷新：SeelenUI 进程状态最多每 2 秒检查一次；当左侧主区域解析为内存饼图时，最多每 2 秒读取一次 `GlobalMemoryStatusEx` 和前台进程 Working Set。隐藏模式命中遮罩只覆盖实际可见按钮和内存饼图区域。7 分钟防烧屏位移检查同样复用主窗口协调 tick。
-
-设置窗口关闭、异常销毁或被宿主清理时，主窗口会主动调用 `OperationForm.ClearTransientInteractionState()` 清除 hover、pressed、tooltip 和鼠标捕获状态。这是一次性生命周期清理，不新增常驻定时器或后台轮询。
-
-操作窗口自身使用 `WS_EX_NOACTIVATE`，点击它不会让本程序成为前台进程。因此操作面板的程序设置按钮不能只调用 `Form.Activate()`；单击会打开操作面板上方的特殊设置窗，双击才打开普通设置窗，宿主会先清理操作面板瞬态交互状态，再对已有窗口执行 `ShowWindow`/`SetForegroundWindow` 激活。这样用户从设置页 Alt+Tab 到浏览器复制内容后，既可以通过 Alt+Tab 回到设置页，也可以再次点操作面板按钮把相关窗口拉回。
-
-`OperationSettingsLogicExtensionEnabled` 默认关闭。开启后，扇形速控盘的「设置」分支在原有程序设置、特殊设置和 Windows 设置之后追加「常用逻辑」与「全部开关」两项；新增路径只通过 `OperationForm.BuildRadialCommonLogicBranch`、`OperationForm.BuildRadialAllSettingsBranch` 和 `NewSettingToggle` 生成 `RadialNode`，继续复用既有布局、命中、绘制、提示和点击分发逻辑。常用逻辑收纳现有系统快捷、AI/额度、Radar、维护和网络/功耗入口；全部开关按系统、隐藏与防烧屏、主指标、Radar 通用、Codex、Claude、网络功耗测试分层，隐藏与防烧屏内再把自动隐藏相关开关收纳到「自动隐藏」子层，单层上限随深度保持 3/5/7/9/11/13 的可操作约束。
-
-RadialDial 仍被 `PositionOperationWindow` 固定在左下角并只向右上 90 度象限增长；`OperationForm.ComputeRadialLayout` 会按同层节点密度选择弧宽。1-3 个节点保持 `RadialSparseArcStartDeg = 8` 到 `RadialSparseArcEndDeg = 82` 的紧凑弧，4-6 个节点使用 `RadialMediumArcStartDeg = 2` 到 `RadialMediumArcEndDeg = 88`，7 个及以上使用 `RadialDenseArcStartDeg = 0` 到 `RadialDenseArcEndDeg = 90`，再由 `ComputeRingRadius` 按实际弧宽计算最小半径，避免大分支在中间 74 度里挤成一列。不同层级的灰色同级轨道中心距由 `RadialLevelSpacingMultiplier = 2.0` 放大，减少多层环同时展开时的纵深拥挤。
-
-RadialDial 展开后的自动收回由 `OperationRadialIdleCollapseSeconds` 控制，默认 10 秒；设置为 0 时永不自动收回，设置页限制 1-60 秒。`OperationRadialIdleResetOnInteractionEnabled` 默认开启，开启时鼠标移动、按下或展开分支都会刷新 `radialLastInteractionUtc`；关闭时倒计时从打开菜单时持续计算，用户交互不延长本轮展开时间。`OperationRadialKeepOpenAfterLeafClickEnabled` 默认开启，点击末端叶子按钮后保持当前菜单展开并重置收回计时；关闭时恢复叶子执行后自动收起。
-
-RadialDial 核心圆圈与非 Radial 模式的左侧主操作按钮共用 `OperationForm.HandleSpecBoardEntryMouseUp()` 和 `OperationForm.HandleSpecBoardEntryDoubleClick()`。第一次 MouseUp 立即执行单击动作，不等待系统双击间隔；若第二次点击构成双击，则先收起第一次单击打开的 Radial 菜单，再执行双击动作并吞掉第二次 MouseUp。`OperationDoubleClickSpecialMenuEnabled` 默认关闭；双击时通过宿主已有的 `WidgetForm.ToggleForcedHoverOpacity()` 回调直接开关隐藏模式。用户在“操作面板 → 按钮与面板”手动开启“双击打开特殊菜单”后，双击才显示 `OperationLauncherTrioForm`，提供 Spec 管理、Codex 任务和睡眠防护三个入口。关闭该设置会立即收起已显示的特殊菜单。该路径不再使用专用单击定时器。
-
-FPS 回退面板只在电池保养按钮不可见时运行，并在后台单飞读取性能计数器。性能、均衡、省电模式的刷新间隔分别为 1、2、5 秒；值未变化时不重绘。
-
-## 6. 窗口合成与交互模式
-
-### 6.1 分层窗口
-
-各监测窗口使用 Windows layered window。界面先绘制到内存 `Bitmap`，再通过 `UpdateLayeredWindow` 一次提交带 Alpha 的画面。这样可以实现无边框、每像素透明度和桌面层显示。
-
-非桌面模式下的监测浮窗使用受保护浮层感知的 Z-order 策略：`LayeredWidgetFormBase.GetLayeredWidgetInsertAfter()` 通过 `NativeMethods.PrepareSeelenAwareTopMostInsertAfter(bool)` 查找可见、TopMost、非零尺寸的 SeelenUI `Tauri Window`；当 `CodexPetZOrderProtectionEnabled = true` 时，还会识别 OpenAI Codex 桌面包中使用 `Chrome_WidgetWin_1` 且带 `WS_EX_TOOLWINDOW` 的宠物浮层。每次应用窗口层级前先保持原相对顺序地把受保护窗口组归到 TopMost 栈最前方，再把本程序窗口插到受保护组最下方，因此本程序仍低于 SeelenUI Dock/顶部栏/弹出层和可选 Codex 宠物，但高于其他普通及后来出现的 TopMost 应用。`AlwaysVisible` 模式还复用 `ApplicationWindowStateTracker` 的前台 WinEvent 调用 `NativeMethods.RestoreCurrentProcessTopMostWindows(bool)`：它枚举当前进程全部可见 TopMost 窗口，包含独立看板、左缘 tab 和后续新增浮层，不依赖固定窗体字段列表，也不新增轮询计时器。该设置默认开启并可在“系统 → 窗口行为”即时切换；关闭宠物保护时只保留 SeelenUI 在本程序上方；桌面模式仍使用桌面宿主层或 `HWND_TOP`，不参与该策略。
-
-透明度分成两部分：
-
-- 黑色背景透明度：控制面板和图表底色。
-- 内容透明度：控制文字、曲线、边框、图标等背景之外的内容。
-
-两项设置同时应用于主性能窗口和功耗/时间窗口。只改变整体 Alpha 时不会重新绘制全部内容，而是复用渲染缓冲并重新提交窗口。
-
-防烧屏微位移由 `Core/BurnInProtection.cs` 和 `LayeredWidgetFormBase.ShouldRefreshBurnInPosition` 统一提供。基类为每个窗口实例保存 7 分钟刷新 slot；各窗口在自己的 `Position*Window` 或等价维护入口中调用 `BurnInProtection.ApplyRuntimeOffset`，先按设置和目标工作区算出基准位置，再按命名 salt 得到不越界的微位移位置。四块左缘停靠看板是水平锚点例外：Network、Spec、Codex Task、GUARD 的 `PositionAtLeftDock` 统一调用 `ApplyRuntimeOffsetWithPinnedX`，把 X 固定为 `工作区左缘 + tab 宽度`，只保留各自 salt 的 Y 轴微位移；非停靠窗口继续使用完整的 X/Y 位移。现有 salt 为 `MainWidgetSalt = 1`、`CodexRadarSalt = 7`、`ClaudeRadarSalt = 31`、`PowerThermalSalt = 13`、`NetworkMonitorSalt = 19`、`ConnectionCheckSalt = 23`、`OperationPanelSalt = 29`、`SpecBoardSalt = 73`、`SpecBoardDockTabSalt = 37`、`CodexTaskBoardSalt = 41`、`CodexTaskBoardDockTabSalt = 43`、`NetworkMonitorDockTabSalt = 47`、`GuardBoardSalt = 53`、`GuardBoardDockTabSalt = 59`。这些值是窗口之间错开微迁移相位的运行时契约；维护时必须引用命名常量，不能在窗口代码里写裸数字。
-
-四枚左缘开关（Network、Spec、Codex Task、GUARD）共用 `EdgeDockTabForm` 的状态绘制，不由四个看板各自实现。开关固定为 `5×30` 逻辑像素，从上到下的角色识别色依次是蓝、橙、绿、紫；每枚梯形中央绘制一个同角色色、较低不透明度的向右三角箭头。梯形和箭头画入同一张分层位图，窗口级防烧屏位移会同时移动两者。`ForceHoverOpacityActive` 采用主窗口下发的手动、空闲或最大化隐藏组合态；状态变化在既有 `ApplyRuntimeSettings` 链路立即重绘，不新增计时器。视觉与交互契约如下：
-
-| 防烧屏配色保护 | 看板状态 | 梯形 | 箭头 |
-| --- | --- | --- | --- |
-| 关闭 | 收起 | 角色识别色；隐藏模式只降低 Alpha | 同角色色且比梯形更淡 |
-| 关闭 | 展开 | 角色识别色 | 同角色色且比梯形更淡 |
-| 开启 | 收起 | 低亮 `GlyphMuted` 灰色，不因悬停提前上色 | 始终保留对应的蓝/橙/绿/紫识别色 |
-| 开启 | 展开 | 恢复对应的蓝/橙/绿/紫识别色 | 同角色色且比梯形更淡 |
-
-`SetBoardExpanded` 是梯形着色的唯一展开状态输入：各看板在真正显示后置 `true`，收起前置 `false`；单纯悬停不会绕过防烧屏灰态。左缘开关不经过通用 `ApplyHiddenModeColorProtection` 位图反色：该组件几乎只含带抗锯齿边缘的梯形与箭头，后处理会产生反色或清空灰边。它改为在绘制前直接选择低能量配色；7 分钟 Y 轴微位移照常生效，且梯形、箭头共享同一窗口位移。X 轴仍固定工作区绝对左缘，以保留边缘命中；任何视觉态都不得隐藏或穿透完整 `5×30` 逻辑命中矩形，鼠标在屏幕最左像素时仍能触达四枚开关。
-
-四块展开看板沿用同一角色识别色，在最终分层位图最上层绘制 `3` 逻辑像素圆角内描边：Network 蓝、Spec 橙、Codex Task 绿、GUARD 紫。入口统一为 `EdgeDockTabForm.DrawBoardAccentBorder`；线宽随 `LayerScale` 缩放，路径按半线宽内缩，不能扩大窗口边界，也不能让四个看板各自复制 Radar 风格的边框几何。该边框参考 `CodexRadarForm.DrawCodexRadarSoftwareInnerBorder`，但不参与左缘 tab 的收起灰态——看板可见时始终显示其角色色边框。
-
-### 6.2 可见性与桌面层
-
-| 模式 | 行为 |
-| --- | --- |
-| 一直可见 | 普通顶层窗口，应用在前台时仍显示 |
-| 仅桌面可见 | 挂接桌面宿主层，只在桌面场景显示 |
-| 仅全屏不可见 | 普通顶层窗口，检测到全屏应用后隐藏 |
-
-全屏检测和位置维护由主窗口控制循环处理。位置 X/Y 以目标屏幕坐标为准，保存设置后所有子窗口重新应用位置。
-
-### 6.3 分辨率与工作区比例适配
-
-`settings.ini` 从 Version 9 起写入 `LayoutWorkAreaLeft`、`LayoutWorkAreaTop`、`LayoutWorkAreaWidth` 和 `LayoutWorkAreaHeight`。Version 28 起继续为 Codex Radar、功耗温度、网络监控、连接检测和操作面板分别写入独立 `*LayoutWorkArea*` 基准，并写入 `*DisplayDeviceName` 目标显示器。
-
-加载设置、收到 `WM_DISPLAYCHANGE`、收到系统设置变化、息屏恢复和会话解锁恢复时，`WidgetSettings.AdaptToCurrentWorkArea` 会按模块比较旧工作区与目标显示器当前工作区：
-
-- 宽度、左侧坐标按 X 比例换算；
-- 高度、底边坐标按 Y 比例换算；
-- 操作面板的按钮尺寸使用较小轴比例，保持正方形；
-- 所有窗口最终再裁剪到各自目标显示器的工作区，避免低分辨率或任务栏变化后跑出屏幕。
-
-目标显示器留空时使用当前主显示器。指定显示器断开时，`FallbackDisconnectedDisplaysEnabled` 默认让对应模块回退到当前主显示器；关闭后保留该模块上次记录的显示器工作区，不强制挤回已有显示器。因此用户在当前分辨率和显示器组合下调整好的屏占比，会在切换分辨率、外接显示器模式变化或息屏唤醒后尽量保持一致。
-
-`ResolutionCompatibilityModeEnabled` 默认关闭。开启后，`WidgetSettings` 把保存的 `2880x1800` 参考布局视为逻辑画布，并通过 `ResolutionCompatibilityScalePercent` 在运行时投影主窗口、Codex Radar、Claude Radar、功耗温度、网络监控、连接检测和操作面板的位置与尺寸。`LayeredWidgetFormBase.ApplyLayerScaleFromSettings` 同步调整 `LayerScale`，让文字、线宽、圆角和图标跟随窗口缩放；低于 `100%` 用于压缩预览，超过 `100%` 用于放大预览。该模式不改写保存的真实布局坐标，全局编辑模式会临时关闭兼容投影，避免把预览坐标保存回正常布局。投影坐标与 `ScalePanelLayout` 使用同一重定基语义：`MapResolutionCompatibilityLeft` / `MapResolutionCompatibilityBottom` 先减去模块参考工作区（`GetModuleLayoutWorkArea`）的原点，再加上目标工作区原点，因此任务栏在左/上或目标显示器原点非零时不会被重复计入。
-
-1.0.5.54 起，9 个窗口对象分别提供 `*ScaleOverridePercent`，取值 `-1` 或 `40..200`。`-1` 继续完全跟随上述全局兼容缩放；显式值同时替换 `LayerScale` 与窗口物理边界缩放，防止只放大内容而裁切画布。Operation 的 QuickGrid/启动器子窗跟随 Operation 覆盖，Spec Board/Codex 任务看板的左缘 tab 跟随各自宿主。Codex Radar 的 Ring/Text 手动缩放仍是元素级微调，叠加在窗口缩放之上。
-
-1.0.5.53 起，夜间时段不增加独立计时器：各窗口在既有 tick 调用 `RefreshNightScheduleAtExistingTick`，边界变化时失效分层位图；`BurnInProtection.ApplyLuminance` 只缩放 RGB 并保留 alpha。1.0.5.55 起，提醒展示统一经 `AlertPresentationPolicy` 与夜间勿扰做 AND 判定；关闭分类或进入勿扰只中和颜色、图标、文本与系统通知，不停止额度、重置保护、服务健康、Codex 任务或 DeepSeek 余额采集。
-
-1.0.5.56 起，用户可配置的三个全局热键只由 `WidgetForm` 注册。全窗隐藏复用统一可见性来源，悬停透明度复用 QuickGrid 动作，打开设置复用 `OpenSettings`；设置热加载按规范化签名重注册，句柄销毁统一注销。
-
-设置页“全局编辑”使用 `GlobalLayoutEditorForm` 打开全屏编辑层。底层遮罩为 50% 黑色，顶层透明交互层显示模块边框、顶部提示和拖拽辅助线。进入编辑模式后，`WidgetForm` 使用临时运行态设置禁用所有隐藏/悬停透明规则，并通过窗口层级刷新回调把所有模块保持在遮罩之上；拖拽过程中每次鼠标移动都会实时调用预览并刷新窗口层级。拖拽时，活动窗口四边中点会连接到当前屏幕四边并标注像素距离；与其他模块在水平或垂直方向可直线连接且间距小于 `500 px` 时，每个其他模块最多绘制一根连接线。Enter 保存并退出，Esc 放弃并还原进入编辑前的预览设置。
-
-### 6.4 鼠标穿透与防遮挡
-
-`ClickThroughMode` 有启用、禁用和自动三种内部状态。自动模式下：
-
-- 仅桌面可见：不强制穿透。
-- 一直可见或仅全屏不可见：启用鼠标穿透，点击落到后面的应用。
-
-防遮挡功能与鼠标穿透属于互斥交互方案。防遮挡启用时，程序通过全局鼠标位置判断指针是否进入窗口，不依赖窗口收到鼠标消息，因此可兼容透明分层窗口。进入窗口后，整个窗口的可见 Alpha 在 `0.15` 秒内过渡到约 `5%`，移开后恢复设置值。动画只改变提交 Alpha，通常比重新绘制所有曲线和文字开销更低。
-
-敏感鼠标模式默认开启。命中判定使用以鼠标为中心的正方形与窗口矩形相交，默认边长 `100 px`，可设置 `10-300 px`。正方形判定只做整数矩形相交，比圆形命中少一次距离平方计算和边界分支；关闭该模式后退回鼠标点是否在窗口内。
-
-延迟显现作用于普通“鼠标移上去隐藏”，可在设置中关闭。开启时，鼠标离开窗口判定区后，窗口继续保持隐藏 `1-10 s`，默认 `1 s`；离开倒计时内如果鼠标重新进入该窗口判定区，需要持续停留 `0.1-5 s`，默认 `0.5 s`，才重置本轮显示倒计时。若显示倒计时到期时鼠标仍在判定区，窗口保持隐藏，直到离开后重新满足显示延迟。关闭时，鼠标离开判定区后立即恢复正常透明度。
-
-覆盖开启默认开启。自动隐藏已经激活时，鼠标在窗口外的普通移动不会重置空闲计时，只有进入任意程序窗口的敏感命中范围后才解除自动隐藏。手动点击仍作为真实交互处理。
-
-左下角 RadialDial 核心圆圈可以作为自动隐藏 keep-alive 区域。默认开启时，鼠标静止停在该圆圈上也会持续重置自动隐藏计时器，并且清空普通悬停隐藏的延迟显现状态；该逻辑复用 `WidgetForm` 的共享交互 tick，不增加额外高频轮询。圆圈自身在悬停持续达到 `AutoHoverOpacityIdleSeconds` 后进入确认视觉态：`DrawRadialCoreAutoHideThresholdVisual` 使用 `CompositingMode.SourceCopy` 改写最终 layered-window 像素 alpha，而不是在已有圆圈上做 SourceOver 叠色；核心内部黑色遮罩按 95% 透明度写入，对应 `RadialCoreAutoHideThresholdDimAlpha = 13`；外层 3 px 绿色环状边框按 70% 透明度写入，对应 `RadialCoreAutoHideThresholdRingAlpha = 77`；该视觉反馈随 `OperationRadialCoreAutoHideKeepAliveEnabled` 自动启停，不单独暴露设置。
-
-反向隐藏默认开启，仅作用于操作面板手动激活的隐藏模式。鼠标进入某个程序窗口的敏感命中范围时，该窗口临时恢复正常透明度，并且不会再被“鼠标移上去隐藏”规则立即压回隐藏；鼠标移开后按设置延迟 `1-30 s` 重新隐藏。
-
-主性能窗口的时间趋势水印在普通状态使用 `DenseWatermarkFillAlpha = 16`；隐藏反色状态改用 `DenseWatermarkBurnInFillAlpha = 128` 后再由 `BurnInProtection.ApplyHiddenModeColorProtection` 反色。该差异用于补偿半透明蓝色与深色卡片先做 SourceOver 合成造成的色度损失，最终窗口仍由 95% 隐藏透明度压低亮度；CPU、GPU、NPU 的填色不会再被合成为近白色。
-
-操作面板自身有一个额外边界：刚从左下角按钮开启手动隐藏后，鼠标通常仍在操作面板上。为避免操作面板立刻被反向隐藏恢复而看起来“按钮无效”，它会先保持隐藏，直到鼠标离开操作面板判定范围；之后再移回操作面板时，反向隐藏恢复照常生效。
-
-操作面板是主动交互窗口。`OperationForm.IsLayeredBurnInColorProtectionActive` 始终返回 `false`，因此无论隐藏透明度由手动、空闲、最大化/全屏还是反向隐藏路径触发，操作面板都不执行 `BurnInProtection.ApplyHiddenModeColorProtection` 的反色和白灰透明化；它只保留整体隐藏透明度。RadialDial 核心圆圈长期悬停提示由 `DrawRadialCoreAutoHideThresholdVisual` 单独写入最终像素 alpha，不属于隐藏反色路径。
-
-### 6.5 设置预览、保存与取消
-
-设置窗口编辑时把临时设置实时应用到各窗口：
-
-- 调整尺寸、位置、透明度、Codex Radar 模型下拉和基准模式会立即预览。
-- 点击保存后写入 `settings.ini`，并以新值作为后续基准。
-- 点击取消或直接关闭设置窗口时恢复打开设置前的快照。
-- 主窗口也会检查配置文件修改时间，使外部修改能够热加载。
-
-未保存预览的回滚由 `Win11SettingsForm.OnFormClosing` 和宿主 `FormClosed/Disposed` 清理共同兜底。异常销毁路径通过 `ISettingsWindow.TryConsumeUnsavedPreview()` 只消费一次 baseline，避免重复回滚，也避免关闭链路中断后把预览设置留在运行窗口上。
-
-设置窗口作为真实可编辑窗口显示在任务栏和 Alt+Tab 中。离屏自测会临时关闭 `ShowInTaskbar` 避免测试闪烁，但生产窗口必须保持可任务切换，否则浏览器复制 API key 后没有可靠方式回到设置页。程序图标由 `ApplicationIcon` 统一生成并设置到各个 `Form.Icon`；构建脚本把同款 `Assets\AppIcon.ico` 作为 Win32 图标嵌入 exe，保证任务栏、Alt+Tab、任务管理器和托盘使用同一视觉标识。
-
-### 6.6 空闲 CPU 诊断
-
-设置页提供“空闲CPU诊断”即时检查。该检查复用线程 `019ee4e9-9d1a-7fe2-b154-c20b59153a33` 中的排查逻辑，但压缩为程序内一次性诊断：采样当前总 CPU、用户态、内核态、中断、DPC、处理器队列和进程 CPU 差值，并扫描最近 30 分钟的 WMI Activity、Windows Update、Defender、Hyper-V vSwitch、Kernel-Power/Thermal 事件。
-
-诊断会公式化归因：优先判断单个普通进程高占用；其次判断 Windows Update/Defender、Hyper-V 虚拟交换机、WMI 客户端；最后根据 privileged、interrupt+DPC 和未归属 CPU 判断内核/驱动/中断链路。报告写入 `%LOCALAPPDATA%\DesktopCodexAssistant\idle-cpu-diagnosis-*.txt/.json`，同时更新 `idle-cpu-diagnosis-latest.txt`。该功能不常驻，不改变电源、任务计划或 Defender 设置。
-
-## 7. 线程与资源所有权
-
-- WinForms 控件、窗口位置和 GDI+ 绘制只在 UI 线程操作。
-- 网络、功耗和温度等阻塞操作在 `Task.Run` 中执行。
-- 后台任务只写入锁保护的数据对象，不直接操作控件。
-- reader 在窗口关闭时取消系统网络事件订阅。
-- `Bitmap`、`Graphics`、`Font` 和 `Region` 由创建它们的窗口负责释放。
-- 异步任务不做强制中止；关闭后通过 `disposed`、generation 或句柄状态丢弃迟到结果。
-
-## 8. 维护规则
-
-调整性能模式时应遵守以下规则：
-
-1. 通用时间参数优先放入 `WidgetSettings`，不要在多个窗口复制常量。
-2. 告警正确性优先于省电，严重温度和错误重试不能被无限延迟。
-3. UI 调度周期和远程网站检测周期分开，降低 UI 帧率不应改变业务检测语义。
-4. 网络请求必须有单任务保护，不能让相同请求并发堆积。
-5. 网络相关异步结果必须验证 generation 或网络身份。
-6. 新增 GDI 对象时必须明确释放位置；高频绘制路径应优先缓存。
-7. 快照比较只包含实际显示字段，否则内部时间变化会造成无意义重绘。
-8. 采样层保持原始单位，单位换算和显示舍入放在 UI/格式化层。
-9. 虚拟网卡过滤应同时更新接口名称选择与 PDH 计数器筛选，避免名称和速率来自不同接口集合。
-10. 告警值与显示速率必须分开。磁盘告警基于忙碌度百分比，不得改为吞吐量阈值。
-
-## 9. 构建与验证
-
-构建：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-X64.ps1
+| 右侧 tile / expand | 隐藏可见表面；feed owner 可继续维护必要缓存 |
+| 左侧 tab / board | 隐藏或收起可见表面；board 自身按模块规则停止不必要绘制 |
+| Operation | 停止动画/FPS 等展示工作并隐藏 |
+| Settings | 用户任务窗口，不被 edge-widget 自动隐藏规则当作布局表面 |
+| headless Radar/Power owners | 不因全屏标志停止 backend；仍服从显示关闭、会话锁定和系统挂起 |
+| hidden Widget host | 始终保持消息循环与协调职责 |
+
+hover、click-through、敏感鼠标范围、延迟显现和反向隐藏只作用于有命中表面的可见 layered forms。不得把 headless owner 或 hidden host 加入交互轮询清单。
+
+## 10. 显示挂起与恢复
+
+显示关闭或系统显示栈恢复时，协调顺序为：
+
+1. 标记 display suspend，停止可见表面的动画/绘制并释放 layered render resources。
+2. 通知需要暂停外部采样的 owner/reader。
+3. 恢复后延迟执行多轮显示器/work-area 重新枚举。
+4. 重建可见表面的 bitmap、Graphics、字体缓存和命中区。
+5. 按右列/左列结构重新定位，再恢复 tab、board 与 Operation。
+6. 使数据缓存到期，由各 owner 的单飞规则错峰刷新。
+7. 重申 TopMost 组顺序，并按设置处理 SeelenUI 与进程重启流程。
+
+迟到的后台结果必须验证 owner 状态、generation、接口或请求 key，不能在恢复后覆盖新显示/网络状态。Radar owner 的 Stop/挂起会先失效并取消 generation，恢复只建立一个新 generation 并 prime 一轮，避免 refresh storm 或双 timer。
+
+## 11. 分层渲染资源
+
+可见 layered forms 统一复用：
+
+- `NativeMethods.LayeredBitmapSurface`
+- `UiFontCache`
+- `DesignTokens`
+- `BurnInProtection`
+
+内容变化时才重建像素；仅整体透明度变化时复用现有位图提交 Alpha。尺寸变化、显示挂起和关闭必须释放 Bitmap、Graphics、字体、Region 与原生句柄。绘制失败可记录诊断并降级，但不能在 paint 路径同步访问网络、WMI、文件或外部进程。
+
+headless owners 不拥有展示缓冲。Codex/Power 的旧 renderer 已删除，只保留抽象基类要求的空 `DrawWindowContent` 和恒 false 的 `CanRenderLayeredWindow()`；hidden `WidgetForm` 同样不提交 layered bitmap。
+
+## 12. Burn-in、交互与 Z-order
+
+- 右侧 10 个 tile 在自动模式使用同一个列 salt 和 Y 偏移。
+- 左侧 5 个 tab 在自动模式使用同一个列 salt；X 始终钉住 work-area 左缘。
+- 展开 board 可以使用自己的 named salt，但固定相同展开 X。
+- Operation 使用自己的 named salt。
+- hidden host 与 headless owners不参与 burn-in。
+
+TopMost 恢复只遍历当前可见 forms，保持组内顺序，并把本程序表面放在受保护的 Codex 宠物/SeelenUI 层级策略所要求的位置。不得维护包含已删除表面的固定列表。
+
+## 13. 全局布局编辑
+
+`GlobalLayoutEditorForm.BuildEditableSurfaceIds()` 的规范集合恰好 16 项：
+
+```text
+Operation
+LeftDockTab.Network
+LeftDockTab.SpecBoard
+LeftDockTab.CodexTask
+LeftDockTab.Guard
+LeftDockTab.CodexIq
+MetricTile.Cpu
+MetricTile.Memory
+MetricTile.Disk
+MetricTile.Network
+MetricTile.Gpu
+MetricTile.Npu
+MetricTile.Power
+MetricTile.Guard
+MetricTile.CodexQuota
+MetricTile.ClaudeQuota
 ```
 
-停止正在运行的实例：
+进入编辑时，50% 黑色遮罩临时禁用环境隐藏，把这 16 个结构表面保持在遮罩上方。拖拽只修改位置、整列偏移或目标显示器；Enter 保存，Esc 恢复 baseline。
 
-```powershell
-.\DesktopCodexAssistant.exe --stop
+不得加入：
+
+- 5 个展开 board（由各自 tab 代表）。
+- `Win11SettingsForm`。
+- `WidgetForm` hidden host。
+- Radar/Power headless owners。
+- hover expand 临时表面。
+
+`--test-layout` 必须断言规范 ID 集合、稳定顺序、启用过滤、列偏移边界和编辑前后可见性恢复。
+
+## 14. 设置兼容边界
+
+- `PowerThermalIntegratedEnabled` 仅兼容读取，在设置 UI 隐藏；它不能控制采样、owner 生命周期或显示。
+- 旧独立展示的尺寸、位置、透明度、缩放和变体值不能创建额外表面。
+- Network 始终按 Dock 结构运行；旧浮动展示选项不能改变 topology。
+- Radar 设置只控制 Codex 公共数据、Codex/Claude 官方额度、服务健康和测试，不包含 Claude 社区模型/fallback 或 DeepSeek key/余额；它不控制 owner 可见性。
+- 主显示/work-area 设置继续作为右 tile 列基线；不能因为 hidden host 没有画面而删除。
+
+新设置若影响可见表面，必须覆盖 defaults、clone、load/save、normalize、UI、migration 和 `--test-settings-bindings`；兼容键不得重新进入设置 UI。
+
+## 15. 命令行与验证
+
+当前离屏渲染入口：
+
+```text
+--render-networkmonitor
+--render-tilecolumn
+--render-operation
+--render-specboard <sample|current>
+--render-specboardmanager <sample|current>
+--render-guard <sample|current>
 ```
 
-日志目录：
+这些入口只渲染仍存在的可见表面或 board。所有样张数据都应由固定 fixture 或当前只读快照提供，不启动正式后台 owner。
 
-`%LOCALAPPDATA%\DesktopCodexAssistant`
-
-网络检查历史 `network-check-history.jsonl` 采用 15 秒 / 32 KiB / 退出时批量追加，运行中每 6 小时粗粒度修剪旧记录。新增高频网络检查应复用该记录器，避免在采样路径逐条打开文件或自行维护并发写入。
-
-主要验证项：
-
-- 三个模式均能热切换且窗口保持响应；
-- 模式切换后定时器间隔和进程级策略正确更新；
-- 网络切换后旧异步结果不会覆盖新状态；
-- 隐藏、显示器恢复和会话解锁后窗口能够重新定位并刷新；
-- 长时间运行时句柄数没有持续增长；
-- `error.log` 没有新增异常；
-- 退出后不存在残留进程。
-- ARM64 产物 PE Machine 为 ARM64，x64 产物 PE Machine 为 x64；
-- WSL2/Hyper-V 存在时，网络主名称仍选择实际联网接口或 Wi-Fi SSID；
-- 网络与磁盘速率在 Kbps/Mbps/Gbps 边界正确切换；
-- 磁盘第四行容量只显示整数；
-- 磁盘仅写入或仅读取繁忙时不触发联合告警；
-- 告警测试能够验证红色背景和黄色图标，且不制造真实高负载。
-
-可运行采样自检：
+建议验证：
 
 ```powershell
-.\DesktopCodexAssistant.exe --test-layout
-.\DesktopCodexAssistant.exe --test-settings-bindings
-.\DesktopCodexAssistant.exe --test-display-recovery
-.\DesktopCodexAssistant.exe --test-operation-panel
-.\DesktopCodexAssistant.exe --test
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPath .\_build\DesktopCodexAssistant-arm64-test.exe -Platform arm64
+.\_build\DesktopCodexAssistant-arm64-test.exe --test
+.\_build\DesktopCodexAssistant-arm64-test.exe --test-layout
+.\_build\DesktopCodexAssistant-arm64-test.exe --test-settings-bindings
+.\_build\DesktopCodexAssistant-arm64-test.exe --test-display-recovery
+.\_build\DesktopCodexAssistant-arm64-test.exe --test-radar-display-lifecycle
+.\_build\DesktopCodexAssistant-arm64-test.exe --test-operation-panel
 ```
 
-布局自检会模拟工作区尺寸变化并验证比例换算。设置绑定自检会在程序内部创建设置面板对象，验证可见控件能读回到 WidgetSettings，并覆盖位置范围与连接检测刷新间隔。显示恢复自检会用真实 layered-window API 验证 native surface reset 后仍可更新窗口。操作面板自检覆盖隐藏模式命中像素、动画停止条件、单飞状态、FPS 三档间隔和 SeelenUI 结果映射。采样自检会输出 CPU、内存、磁盘 WT/RD、网络 UP/DL、GPU 和 NPU 的一次采样结果。
-
-历史 CPU 占用基准观察值见 `Docs/Reports/Performance/Performance-Optimization-Evaluation-20260607.md` 附录，用于同机回归比较。
+人工核对重点：右侧恰好 10 个独立 tile、左侧恰好 5 个 tab/board、Operation 正常、Settings 可从任务栏/Alt+Tab 返回、全局编辑恰好 16 项、Network 只有 Dock 展示，以及三个隐藏对象从未出现在桌面、任务栏、布局编辑器或渲染样张中。

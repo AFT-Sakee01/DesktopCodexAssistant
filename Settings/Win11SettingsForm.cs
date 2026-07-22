@@ -28,13 +28,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private const int MediumNavWidth = 300;
     private const int CompactNavWidth = 220;
     private const int NavItemHeight = 60;
-    private const int ClaudeRadarModelGridColumns = 5;
-    private const int ClaudeRadarModelButtonWidth = 216;
-    private const int ClaudeRadarModelButtonMinimumWidth = 88;
-    private const int ClaudeRadarModelButtonHeight = 38;
-    private const int ClaudeRadarModelButtonGap = 8;
-    private const int ClaudeRadarModelButtonMaxTextChars = 21;
-    private const string ClaudeRadarModelGridName = "ClaudeRadarModelGrid";
     private const string GlobalLayoutEditCommandName = "GlobalLayoutEditCommand";
     private const string ClaudeSetupTokenCommandName = "ClaudeSetupTokenCommand";
 
@@ -462,9 +455,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddPageGrouped("\uE115", "系统", "开机启动、性能和窗口基础行为。", new string[][]
         {
             new string[] { "启动与性能", "StartupEnabled", "PerformanceMode" },
-            new string[] { "窗口行为", "VisibilityMode", "CodexPetZOrderProtectionEnabled", "VisibilityOverlapIgnoresOperationPanelEnabled", "ClickThroughMode" },
+            new string[] { "窗口行为", "VisibilityMode", "CodexPetZOrderProtectionEnabled", "VisibilityOverlapIgnoresOperationPanelEnabled" },
             new string[] { "全局快捷键", "HotkeyToggleAllWindows", "HotkeyToggleHoverOpacity", "HotkeyOpenSettings" },
-            new string[] { "AI 请求阻断", "AiRequestProtectionAutoEnabled", "AiRequestProtectionManualBlockEnabled" },
+            new string[] { "AI 请求阻断", "AiRequestProtectionAutoEnabled", "AiRequestProtectionManualBlockEnabled", "AiChinaEgressGuardEnabled" },
             new string[] { "!Codex 额度计划", "CodexQuotaPlanEnabled", "CodexQuotaPlanWeeklyComparison", "CodexQuotaPlanWeeklyThresholdPercent",
                            "CodexQuotaPlanFiveHourComparison", "CodexQuotaPlanFiveHourThresholdPercent", "CodexQuotaPlanResumeConditionMode",
                            "CodexQuotaPlanAutoResumePausedGoals", "CodexQuotaPlanPauseGoalIds", "CodexQuotaPlanResumeGoalIds" },
@@ -472,92 +465,63 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "!调试", "ForceShowForegroundFpsEnabled" }
         });
 
-        AddPageGrouped("\uE7C2", "布局与位置", "所有浮窗的位置、大小和所在显示器；推荐用可视化编辑直接拖拽。", new string[][]
+        AddPageGrouped("\uE7C2", "布局与位置", "可见停靠列、看板与操作面板的位置、缩放和显示器。", new string[][]
         {
             new string[] { "可视化编辑", GlobalLayoutEditCommandName },
+            new string[] { "左侧面板列", "LeftDockAutoArrangeEnabled", "LeftDockButtonOrder", "LeftDockButtonGapPixels", "LeftDockGroupOffsetY" },
+            new string[] { "右侧窗口列", "RightTileAutoArrangeEnabled", "RightTileButtonOrder", "RightTileButtonGapPixels", "RightTileGroupOffsetY" },
             new string[] { "分辨率兼容", "ResolutionCompatibilityModeEnabled", "ResolutionCompatibilityScalePercent" },
-            new string[] { "每窗口缩放", "MainWidgetScaleOverridePercent", "CodexRadarScaleOverridePercent", "ClaudeRadarScaleOverridePercent", "PowerThermalScaleOverridePercent", "NetworkMonitorScaleOverridePercent", "ConnectionCheckScaleOverridePercent", "OperationScaleOverridePercent", "SpecBoardScaleOverridePercent", "CodexTaskBoardScaleOverridePercent" },
-            new string[] { "显示器分配", "FallbackDisconnectedDisplaysEnabled", "MainDisplayDeviceName", "CodexRadarDisplayDeviceName",
-                           "ClaudeRadarDisplayDeviceName", "PowerThermalDisplayDeviceName", "NetworkMonitorDisplayDeviceName", "ConnectionCheckDisplayDeviceName", "OperationDisplayDeviceName" },
-            new string[] { "!主窗口位置", "Width", "Height", "LeftX", "BottomY" },
-            new string[] { "!Codex Radar 位置", "CodexRadarWidth", "CodexRadarHeight", "CodexRadarLeftX", "CodexRadarBottomY" },
-            new string[] { "!Claude Radar 位置", "ClaudeRadarWidth", "ClaudeRadarHeight", "ClaudeRadarLeftX", "ClaudeRadarBottomY" },
-            new string[] { "!功耗温度位置", "PowerThermalWidth", "PowerThermalHeight", "PowerThermalLeftX", "PowerThermalBottomY" },
-            new string[] { "!网络监控位置", "NetworkMonitorWidth", "NetworkMonitorHeight", "NetworkMonitorLeftX", "NetworkMonitorBottomY" },
-            new string[] { "!连接检测位置", "ConnectionCheckWidth", "ConnectionCheckHeight", "ConnectionCheckLeftX", "ConnectionCheckBottomY" },
-            new string[] { "!Spec Board 位置", "SpecBoardWidth", "SpecBoardHeight", "SpecBoardLeftX", "SpecBoardBottomY" },
+            new string[] { "可见面缩放", "NetworkMonitorScaleOverridePercent", "OperationScaleOverridePercent", "SpecBoardScaleOverridePercent", "CodexTaskBoardScaleOverridePercent" },
+            new string[] { "显示器分配", "FallbackDisconnectedDisplaysEnabled", "MainDisplayDeviceName", "OperationDisplayDeviceName" },
+            new string[] { "!Spec Board 尺寸", "SpecBoardWidth", "SpecBoardHeight" },
             new string[] { "!操作面板位置", "OperationLeftOffset", "OperationBottomOffset" }
         });
 
         AddPageGrouped("\uE7B3", "隐藏与防烧屏", "鼠标靠近时隐藏、空闲自动隐藏和 OLED 防烧屏。", new string[][]
         {
             new string[] { "夜间时段", "NightScheduleEnabled", "NightScheduleStartMinutes", "NightScheduleEndMinutes", "NightDimLuminancePercent", "NightQuietHoursEnabled" },
-            new string[] { "提醒分类", "AlertQuotaEnabled", "AlertResetProtectionEnabled", "AlertServiceHealthEnabled", "AlertCodexTaskEnabled", "AlertDeepSeekBalanceEnabled" },
+            new string[] { "提醒分类", "AlertQuotaEnabled", "AlertResetProtectionEnabled", "AlertServiceHealthEnabled", "AlertCodexTaskEnabled" },
             new string[] { "鼠标靠近时隐藏", "HoverOpacityEnabled", "SensitiveMouseModeEnabled", "SensitiveMouseRangePixels" },
             new string[] { "自动隐藏", "AutoHoverOpacityIdleEnabled", "AutoHoverOpacityIdleSeconds", "AutoHoverOpacityMaximizedEnabled", "OperationRadialCoreAutoHideKeepAliveEnabled", "OperationRadialIdleCollapseSeconds", "OperationRadialIdleResetOnInteractionEnabled", "OperationRadialKeepOpenAfterLeafClickEnabled", "BurnInHiddenModeColorProtectionEnabled" },
             new string[] { "!延迟显现", "HoverOpacityRevealDelayEnabled", "HoverOpacityRevealDelaySeconds", "HoverOpacityRevealResetSeconds" },
             new string[] { "!覆盖与反向", "HoverOpacityCoverEnabled", "ReverseHoverOpacityRevealEnabled", "ReverseHoverOpacityRestoreDelaySeconds" }
         });
 
-        AddPageGrouped("\uE737", "主窗口", "主监控窗口显示哪些指标、透明度和外观。", new string[][]
+        AddPageGrouped("\uE737", "右侧磁贴", "性能与 Radar 磁贴列的尺寸和透明度。", new string[][]
         {
-            new string[] { "显示哪些指标", "ShowCpu", "ShowMemory", "ShowDisk", "ShowNetwork", "ShowGpu", "ShowNpu" },
-            new string[] { "透明度", "BackgroundTransparencyPercent", "ApplicationTransparencyPercent", "MainWidgetTransparencyOverridePercent" }
+            new string[] { "磁贴与展开面板", "MainWidgetTileLargeModeEnabled", "MetricTileExpandWidth", "MetricTileExpandHeight" },
+            new string[] { "透明度", "ApplicationTransparencyPercent", "MainWidgetTransparencyOverridePercent" }
         });
 
-        AddPageGrouped("\uE121", "Radar 通用", "Codex / Claude Radar 共用的时钟显示和时区。", new string[][]
+        AddPageGrouped("\uE71E", "Codex Radar", "Codex Radar 数据、额度保护与右侧磁贴内容。", new string[][]
         {
-            new string[] { "时钟显示", "RadarClockTimeDisplayMode", "RadarClockAutoSwitchModelEnabled" },
-            new string[] { "显示时区", "DisplayTimeZoneMode", "DisplayTimeZoneId" }
-        });
-
-        AddPageGrouped("\uE71E", "Codex Radar", "共享 Radar 小窗：可按前台自动显示 Codex 或 Claude，也可固定检测对象。", new string[][]
-        {
-            // 手动布局与元素偏移分组已从设置界面隐藏（改用渲染变体切换布局）。
-            // 对应 WidgetSettings 属性仍保留，Classic 布局若通过 settings.ini 设置仍生效；
-            // 均布变体本就忽略这些设置。恢复入口时把下方分组加回，并同步 VerifySelfTest 必需绑定。
-            new string[] { "共享小窗", "CodexRadarEnabled", "CodexRadarSoftwareMode", "CodexRadarTransparencyPercent", "CodexRadarTransparencyOverridePercent" },
-            new string[] { "CODEX 模式数据", "CodexRadarModelKey", "CodexRadarSpeedWindowCountdownEnabled", "CodexRadarQuotaResetRainbowEnabled" },
+            new string[] { "数据模式", "CodexRadarSoftwareMode", "CodexRadarModelKey", "RadarClockAutoSwitchModelEnabled" },
             new string[] { "!CodexRadar.com 读取链路", "CodexRadarPublicJsonEnabled", "CodexRadarHtmlFallbackEnabled", "CodexRadarRssFallbackEnabled", "CodexRadarServiceProbeToken" },
             new string[] { "!额度保护", "CodexQuotaDueResetProtectionEnabled", "CodexQuotaRssResetProtectionEnabled",
                            "CodexQuotaProviderZeroDropProtectionEnabled", "CodexQuotaDuplicateSameBalanceRingProtectionEnabled",
                            "CodexQuotaProviderFiveHourEarlyResetSpikeProtectionEnabled", "CodexQuotaProviderWeeklySpikeProtectionEnabled",
                            "CodexQuotaStrictFiveHourResetBoundaryEnabled", "CodexQuotaWeeklyBaselineAutoRepairEnabled" },
-            new string[] { "!兼容模型设置", "CodexRadarModelVersion" },
-            new string[] { "!IQ 测试覆盖", "CodexModelIqTestEnabled", "CodexModelIqTestPassed", "CodexModelIqBaselineAutoEnabled", "CodexModelIqBaselinePassed", "CodexModelIqBaselineValidTasks" },
-            new string[] { "!效率测试覆盖", "CodexModelEfficiencyTestEnabled", "CodexModelTokenEfficiencyTestPercent", "CodexModelTimeEfficiencyTestPercent",
-                           "CodexModelTokenEfficiencyBaselineMode", "CodexModelTokenEfficiencyBaselinePassed", "CodexModelTokenEfficiencyBaselineTokens",
-                           "CodexModelTimeEfficiencyBaselineMode", "CodexModelTimeEfficiencyBaselinePassed", "CodexModelTimeEfficiencyBaselineSeconds",
-                           "CodexModelTokenEfficiencyLowThresholdPercent", "CodexModelTimeEfficiencyLowThresholdPercent" },
-            new string[] { "!随机测试", "CodexRadarRandomTestEnabled", "CodexRadarRandomTestAutoRefresh", "CodexRadarRandomTestRefreshToken" }
+            new string[] { "!服务健康测试", "CodexRadarRandomTestEnabled", "CodexRadarRandomTestAutoRefresh", "CodexRadarRandomTestRefreshToken" }
         });
 
-        AddPageGrouped("\uE8D4", "Claude Radar", "Claude 相关数据：独立 Claude 小窗，以及共享 Radar 小窗的 CLAUDE 模式辅助状态。", new string[][]
+        AddPageGrouped("\uE8D4", "Claude 用量", "Claude 官方额度凭据与右侧 CLD 磁贴数据。", new string[][]
         {
-            new string[] { "独立小窗", "ClaudeRadarEnabled", "ClaudeRadarTransparencyPercent", "ClaudeRadarTransparencyOverridePercent" },
-            new string[] { "Claude 模型", "ClaudeRadarModelKey" },
-            new string[] { "Claude 数据链路", "ClaudeRadarJsonEnabled", "ClaudeRadarCommunityRatingsEnabled", "ClaudeRadarLocalQuotaFallbackEnabled" },
-            new string[] { "Claude Code 用量令牌", ClaudeSetupTokenCommandName },
-            new string[] { "DeepSeek 余额", "DeepSeekApiKeyRevision" },
-            new string[] { "!元数据与诊断", "ClaudeRadarHomepageFallbackEnabled", "ClaudeRadarServiceProbeToken" },
-            new string[] { "!随机测试", "ClaudeRadarRandomTestEnabled", "ClaudeRadarRandomTestAutoRefresh", "ClaudeRadarRandomTestRefreshToken" }
+            new string[] { "Claude Code 用量令牌", ClaudeSetupTokenCommandName }
         });
 
-        AddPageGrouped("\uEBB0", "功耗与温度", "UX3407N / UX3607O 专用功耗温度窗口。", new string[][]
+        AddPageGrouped("\uEBB0", "功耗与温度", "UX3407N / UX3607O 专用功耗温度数据。", new string[][]
         {
-            new string[] { "自动布局与告警", "PowerThermalIntegratedEnabled", "PowerThermalAutoSizeEnabled", "PowerThermalAutoDirection", "PowerThermalVisibleAlertCount", "CpuCoreWarningPercent", "CpuCoreCriticalPercent" },
             new string[] { "电池与节能", "PowerThermalManualEnergySaverThresholdPercent" },
-            new string[] { "透明度", "PowerThermalTransparencyPercent", "PowerThermalTransparencyOverridePercent" },
             new string[] { "!测试", "ThermalTestMode" }
         });
 
         AddPageGrouped("\uE774", "网络", "网络监控、GFW 检测、云服务和出口身份。", new string[][]
         {
-            new string[] { "网络监控", "NetworkMonitorAdapterId", "NetworkMonitorTransparencyPercent", "NetworkMonitorTransparencyOverridePercent" },
+            new string[] { "网络停靠板", "NetworkMonitorAdapterId", "NetworkMonitorTransparencyOverridePercent", "NetworkMonitorLeftDockTabCenterY" },
             new string[] { "GFW 检测", "GfwProbeEnabled", "GfwProbeIntervalMinutes" },
             new string[] { "云服务检测", "CloudEndpointTargets", "CloudStatusRegionMask" },
             new string[] { "固定站点 Ping", "FixedPingTargets" },
-            new string[] { "连接检测", "ConnectionCheckIntervalSeconds", "ConnectionCheckTransparencyPercent", "ConnectionCheckBorderTransparencyPercent", "ConnectionCheckTransparencyOverridePercent" },
+            new string[] { "连接检测", "ConnectionCheckIntervalSeconds" },
             new string[] { "!手动刷新", "GfwProbeManualRefreshToken", "ConnectionCheckManualRefreshToken" },
             new string[] { "!云服务测试", "CloudEndpointTestSeed" },
             new string[] { "!测试", "CleanIpBadgeTestMode", "NetworkStatusTestMode" }
@@ -566,7 +530,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddPageGrouped("\uE700", "操作面板", "左下角操作面板的按钮、透明度和外观。", new string[][]
         {
             new string[] { "按钮与面板", "OperationButtonSize", "OperationPrimaryPanelMode", "OperationDoubleClickSpecialMenuEnabled", "OperationSettingsLogicExtensionEnabled", "OperationBackgroundTransparencyPercent", "OperationTransparencyOverridePercent" },
-            new string[] { "Spec Board", "SpecBoardTransparencyOverridePercent", "CodexTaskBoardTransparencyOverridePercent", "LeftDockOutsideClickCollapseEnabled", "SpecBoardAutoPopupEnabled", "SpecBoardAutoPopupSeconds", "SpecBoardAutoHideSeconds", "SpecBoardLedgerPath", "SpecBoardManagerWidth", "SpecBoardManagerHeight", "SpecBoardManagerDangerZoneRequiresTypedConfirm" },
+            new string[] { "Spec Board", "SpecBoardTransparencyOverridePercent", "SpecBoardLeftDockTabCenterY", "LeftDockOutsideClickCollapseEnabled", "SpecBoardAutoPopupEnabled", "SpecBoardAutoPopupSeconds", "SpecBoardAutoHideSeconds", "SpecBoardLedgerPath", "SpecBoardManagerWidth", "SpecBoardManagerHeight", "SpecBoardManagerDangerZoneRequiresTypedConfirm" },
+            new string[] { "Codex 任务看板", "CodexTaskBoardTransparencyOverridePercent", "CodexTaskBoardLeftDockTabCenterY" },
+            new string[] { "GUARD 看板", "GuardBoardTransparencyOverridePercent", "GuardBoardScaleOverridePercent", "GuardBoardLeftDockTabCenterY", "GuardBoardAutoHideSeconds" },
+            new string[] { "Codex IQ 看板", "CodexIqBoardTransparencyOverridePercent", "CodexIqBoardScaleOverridePercent", "CodexIqBoardLeftDockTabCenterY", "CodexIqBoardAutoHideSeconds" },
             new string[] { "!测试", "AlertTestEnabled" }
         });
     }
@@ -798,7 +765,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         PropertyInfo property = typeof(WidgetSettings).GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
         if (property == null || !property.CanRead || !property.CanWrite ||
-            (property.PropertyType == typeof(string[]) && !IsNetworkProbeTargetSetting(property.Name)))
+            (property.PropertyType == typeof(string[]) &&
+                !IsNetworkProbeTargetSetting(property.Name) &&
+                !IsColumnOrderSetting(property.Name)))
         {
             return null;
         }
@@ -810,9 +779,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         card.TitleLabel.Text = GetSettingTitle(propertyName);
         card.HintLabel.Text = GetSettingHint(propertyName);
         card.BackColor = Color.Transparent;
-        // The model button grid wraps to multiple rows on its own and doesn't fit alongside the
-        // title/hint text in the normal side-by-side column - stack it below instead of squeezing.
-        if (string.Equals(propertyName, "ClaudeRadarModelKey", StringComparison.Ordinal))
+        // Column-order controls wrap on their own and need the full row width.
+        if (IsColumnOrderSetting(propertyName))
         {
             card.ForceCompactLayout = true;
         }
@@ -1124,29 +1092,32 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
     private static bool TrySaveClaudeSetupTokenFile(string token, out string errorCode)
     {
+        return TrySaveClaudeSetupTokenFile(
+            token,
+            ClaudeCodeUsageReader.SetupTokenFilePath,
+            ClaudeCodeUsageReader.LegacySetupTokenFilePath,
+            out errorCode);
+    }
+
+    private static bool TrySaveClaudeSetupTokenFile(
+        string token,
+        string encryptedPath,
+        string legacyTextPath,
+        out string errorCode)
+    {
         errorCode = string.Empty;
         try
         {
-            string trimmed = (token ?? string.Empty).Trim().Trim('"', '\'');
-            string path = ClaudeCodeUsageReader.SetupTokenFilePath;
+            string trimmed = ClaudeCodeUsageReader.NormalizeSetupToken(token);
             if (trimmed.Length == 0)
             {
-                if (File.Exists(path))
-                {
-                    File.Delete(path);
-                }
-
+                SecretStore.DeleteSecretFiles(encryptedPath, legacyTextPath);
                 ClaudeCodeUsageScheduler.ClearLastError();
                 return true;
             }
 
-            string directory = Path.GetDirectoryName(path);
-            if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-            {
-                Directory.CreateDirectory(directory);
-            }
-
-            File.WriteAllText(path, trimmed, SharedEncoding.Utf8NoBom);
+            SecretStore.WriteSecret(encryptedPath, trimmed);
+            SecretStore.DeleteLegacySecretFiles(legacyTextPath);
             ClaudeCodeUsageScheduler.ClearLastError();
             return true;
         }
@@ -1161,6 +1132,16 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private Control BuildValueControl(PropertyInfo property)
     {
         Type type = property.PropertyType;
+        if (type == typeof(string[]) && IsColumnOrderSetting(property.Name))
+        {
+            ColumnOrderEditorControl editor = new ColumnOrderEditorControl(
+                string.Equals(property.Name, "LeftDockButtonOrder", StringComparison.Ordinal),
+                GetUiFont(9.0f, FontStyle.Bold));
+            editor.Width = 560;
+            editor.ValueChanged += delegate { OnSettingChanged(); };
+            return editor;
+        }
+
         if (type == typeof(string[]) && IsNetworkProbeTargetSetting(property.Name))
         {
             bool cloud = string.Equals(property.Name, "CloudEndpointTargets", StringComparison.Ordinal);
@@ -1187,14 +1168,21 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         if (type == typeof(bool))
         {
             ToggleSwitch toggle = new ToggleSwitch();
-            toggle.CheckedChanged += delegate { OnSettingChanged(); };
+            toggle.CheckedChanged += delegate
+            {
+                if (IsColumnAutoArrangeSetting(property.Name))
+                {
+                    RefreshColumnArrangementEditorEnabledStates();
+                }
+
+                OnSettingChanged();
+            };
             return toggle;
         }
 
         if (type.IsEnum)
         {
-            if (property.Name.EndsWith("RenderVariant", StringComparison.Ordinal) &&
-                !property.Name.StartsWith("ClaudeRadar", StringComparison.Ordinal))
+            if (property.Name.EndsWith("RenderVariant", StringComparison.Ordinal))
             {
                 return BuildVariantPicker(property);
             }
@@ -1221,11 +1209,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             return BuildCodexRadarModelCombo();
         }
 
-        if (type == typeof(string) && string.Equals(property.Name, "ClaudeRadarModelKey", StringComparison.Ordinal))
-        {
-            return BuildClaudeRadarModelGridSelector();
-        }
-
         if (type == typeof(string) && IsDisplayDeviceSetting(property.Name))
         {
             return BuildDisplayDeviceCombo();
@@ -1238,25 +1221,40 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         if (type == typeof(int) || type == typeof(double))
         {
+            if (type == typeof(int) && IsLeftDockTabCenterSetting(property.Name))
+            {
+                return BuildLeftDockTabCenterEditor();
+            }
+
             if (string.Equals(property.Name, "ResolutionCompatibilityScalePercent", StringComparison.Ordinal))
             {
                 PercentSliderControl slider = new PercentSliderControl(GetUiFont(9.0f, FontStyle.Bold));
                 slider.Width = 400;
                 slider.Height = 54;
+                slider.AccessibleLabel = GetSettingTitle(property.Name);
                 slider.Minimum = WidgetSettings.MinResolutionCompatibilityScalePercent;
                 slider.Maximum = WidgetSettings.MaxResolutionCompatibilityScalePercent;
                 slider.ValueChanged += delegate { OnSettingChanged(); };
                 return slider;
             }
 
-            if (string.Equals(property.Name, "DeepSeekApiKeyRevision", StringComparison.Ordinal))
+            if (type == typeof(int) &&
+                (IsColumnButtonGapSetting(property.Name) || IsColumnGroupOffsetSetting(property.Name)))
             {
-                Button button = BuildCommandButton(GetDeepSeekApiKeyButtonText(), false);
-                button.Width = 227;
-                button.Height = 54;
-                button.Tag = 0;
-                button.Click += delegate { OpenDeepSeekApiKeyDialog(button); };
-                return button;
+                PercentSliderControl slider = new PercentSliderControl(GetUiFont(9.0f, FontStyle.Bold));
+                slider.Width = 480;
+                slider.Height = 54;
+                slider.AccessibleLabel = GetSettingTitle(property.Name);
+                slider.Minimum = IsColumnButtonGapSetting(property.Name)
+                    ? WidgetSettings.MinColumnButtonGapPixels
+                    : WidgetSettings.MinColumnGroupOffsetY;
+                slider.Maximum = IsColumnButtonGapSetting(property.Name)
+                    ? WidgetSettings.MaxColumnButtonGapPixels
+                    : WidgetSettings.MaxColumnGroupOffsetY;
+                slider.Suffix = " px";
+                slider.ShowPositiveSign = IsColumnGroupOffsetSetting(property.Name);
+                slider.ValueChanged += delegate { OnSettingChanged(); };
+                return slider;
             }
 
             if (string.Equals(property.Name, "CodexRadarServiceProbeToken", StringComparison.Ordinal))
@@ -1270,22 +1268,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                     int token = button.Tag is int ? (int)button.Tag : 0;
                     button.Tag = token == int.MaxValue ? 1 : token + 1;
                     ShowStatus("Codex Radar 服务检测已启动，结果写入本地诊断文件。", SettingsStatusSeverity.Warning);
-                    OnSettingChanged();
-                };
-                return button;
-            }
-
-            if (string.Equals(property.Name, "ClaudeRadarServiceProbeToken", StringComparison.Ordinal))
-            {
-                Button button = BuildCommandButton("立即检测", false);
-                button.Width = 227;
-                button.Height = 54;
-                button.Tag = 0;
-                button.Click += delegate
-                {
-                    int token = button.Tag is int ? (int)button.Tag : 0;
-                    button.Tag = token == int.MaxValue ? 1 : token + 1;
-                    ShowStatus("Claude Radar 服务检测已启动，结果写入本地诊断文件。", SettingsStatusSeverity.Warning);
                     OnSettingChanged();
                 };
                 return button;
@@ -1319,7 +1301,21 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             box.ForeColor = TextSecondary;
             box.BorderStyle = BorderStyle.FixedSingle;
             box.Font = GetUiFont(9.5f);
-            box.ValueChanged += delegate { OnSettingChanged(); };
+            box.ValueChanged += delegate
+            {
+                if (!this.initializing &&
+                    IsWindowScaleOverrideSetting(property.Name) &&
+                    box.Value >= 0 &&
+                    box.Value < WidgetSettings.MinResolutionCompatibilityScalePercent)
+                {
+                    // NumericUpDown cannot express a discontinuous domain. Invalid custom values
+                    // snap immediately to the supported floor so the editor and preview agree.
+                    box.Value = WidgetSettings.MinResolutionCompatibilityScalePercent;
+                    return;
+                }
+
+                OnSettingChanged();
+            };
             return box;
         }
 
@@ -1338,6 +1334,88 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     {
         return string.Equals(propertyName, "CloudEndpointTargets", StringComparison.Ordinal) ||
             string.Equals(propertyName, "FixedPingTargets", StringComparison.Ordinal);
+    }
+
+    private static bool IsColumnOrderSetting(string propertyName)
+    {
+        return string.Equals(propertyName, "LeftDockButtonOrder", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "RightTileButtonOrder", StringComparison.Ordinal);
+    }
+
+    private static bool IsColumnAutoArrangeSetting(string propertyName)
+    {
+        return string.Equals(propertyName, "LeftDockAutoArrangeEnabled", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "RightTileAutoArrangeEnabled", StringComparison.Ordinal);
+    }
+
+    private static bool IsColumnButtonGapSetting(string propertyName)
+    {
+        return string.Equals(propertyName, "LeftDockButtonGapPixels", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "RightTileButtonGapPixels", StringComparison.Ordinal);
+    }
+
+    private static bool IsColumnGroupOffsetSetting(string propertyName)
+    {
+        return string.Equals(propertyName, "LeftDockGroupOffsetY", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "RightTileGroupOffsetY", StringComparison.Ordinal);
+    }
+
+    private static bool IsWindowScaleOverrideSetting(string propertyName)
+    {
+        return !string.IsNullOrEmpty(propertyName) &&
+            propertyName.EndsWith("ScaleOverridePercent", StringComparison.Ordinal);
+    }
+
+    private static bool IsLeftDockTabCenterSetting(string propertyName)
+    {
+        return string.Equals(propertyName, "SpecBoardLeftDockTabCenterY", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "CodexTaskBoardLeftDockTabCenterY", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "NetworkMonitorLeftDockTabCenterY", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "GuardBoardLeftDockTabCenterY", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "CodexIqBoardLeftDockTabCenterY", StringComparison.Ordinal);
+    }
+
+    private Control BuildLeftDockTabCenterEditor()
+    {
+        Panel panel = new Panel();
+        panel.Width = 400;
+        panel.Height = 54;
+        panel.BackColor = Color.Transparent;
+
+        ComboBox mode = new ComboBox();
+        mode.Width = 124;
+        mode.Height = 54;
+        mode.DropDownStyle = ComboBoxStyle.DropDownList;
+        mode.FlatStyle = FlatStyle.Flat;
+        mode.BackColor = ControlBg;
+        mode.ForeColor = TextSecondary;
+        mode.Font = GetUiFont(9.5f);
+        mode.Items.Add("自动");
+        mode.Items.Add("手动");
+
+        NumericUpDown position = new NumericUpDown();
+        position.Location = new Point(136, 0);
+        position.Width = 264;
+        position.Height = 54;
+        position.Minimum = 0;
+        position.Maximum = 1000000;
+        position.Increment = 10;
+        position.BackColor = ControlBg;
+        position.ForeColor = TextSecondary;
+        position.BorderStyle = BorderStyle.FixedSingle;
+        position.Font = GetUiFont(9.5f);
+
+        LeftDockTabCenterEditorState state = new LeftDockTabCenterEditorState(mode, position);
+        panel.Tag = state;
+        mode.SelectedIndexChanged += delegate
+        {
+            state.SyncEnabledState();
+            OnSettingChanged();
+        };
+        position.ValueChanged += delegate { OnSettingChanged(); };
+        panel.Controls.Add(mode);
+        panel.Controls.Add(position);
+        return panel;
     }
 
     private Control BuildSpecBoardLedgerPathPicker()
@@ -1468,412 +1546,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         return combo;
     }
 
-    private Control BuildClaudeRadarModelGridSelector()
-    {
-        Panel panel = new Panel();
-        panel.Width = GetClaudeRadarModelGridPreferredWidth();
-        panel.BackColor = Color.Transparent;
-        panel.Resize += delegate { LayoutClaudeRadarModelPanel(panel); };
-
-        FlowLayoutPanel grid = new FlowLayoutPanel();
-        grid.Name = ClaudeRadarModelGridName;
-        grid.Width = panel.Width;
-        grid.Location = new Point(0, 0);
-        grid.Margin = new Padding(0);
-        grid.Padding = new Padding(0);
-        grid.FlowDirection = FlowDirection.LeftToRight;
-        grid.WrapContents = true;
-        grid.AutoSize = false;
-        grid.BackColor = Color.Transparent;
-        panel.Controls.Add(grid);
-
-        Button edit = BuildCommandButton("编辑映射", false);
-        edit.Width = panel.Width;
-        edit.Height = 54;
-        edit.Click += delegate
-        {
-            using (ClaudeRadarModelMapEditorForm dialog = new ClaudeRadarModelMapEditorForm())
-            {
-                if (dialog.ShowDialog(this) == DialogResult.OK)
-                {
-                    string selected = GetClaudeRadarModelGridValue(grid);
-                    PopulateClaudeRadarModelGrid(grid, selected);
-                    LayoutClaudeRadarModelPanel(panel);
-                    RelayoutSettingGroup(panel);
-                    ShowStatus("Claude Radar 模型映射已保存。", SettingsStatusSeverity.Success);
-                    OnSettingChanged();
-                }
-            }
-        };
-        panel.Controls.Add(edit);
-        PopulateClaudeRadarModelGrid(grid, string.Empty);
-        LayoutClaudeRadarModelPanel(panel);
-        return panel;
-    }
-
-    private void PopulateClaudeRadarModelGrid(FlowLayoutPanel grid, string selectedKey)
-    {
-        if (grid == null)
-        {
-            return;
-        }
-
-        string normalizedSelected = WidgetSettings.NormalizeClaudeRadarModelKey(selectedKey);
-        List<ClaudeModelOption> options = BuildClaudeRadarModelOptions(normalizedSelected);
-        bool selectedExists = false;
-        for (int i = 0; i < options.Count; i++)
-        {
-            if (string.Equals(options[i].Key, normalizedSelected, StringComparison.OrdinalIgnoreCase))
-            {
-                selectedExists = true;
-                break;
-            }
-        }
-
-        if (!selectedExists)
-        {
-            normalizedSelected = string.Empty;
-        }
-
-        grid.Tag = normalizedSelected;
-        grid.SuspendLayout();
-        try
-        {
-            while (grid.Controls.Count > 0)
-            {
-                Control old = grid.Controls[0];
-                grid.Controls.RemoveAt(0);
-                old.Dispose();
-            }
-
-            int columns = GetClaudeRadarModelColumnCountForGrid(grid.Width);
-            int slots = Math.Max(
-                ClaudeRadarModelGridColumns,
-                ((options.Count + ClaudeRadarModelGridColumns - 1) / ClaudeRadarModelGridColumns) * ClaudeRadarModelGridColumns);
-            for (int i = 0; i < slots; i++)
-            {
-                ClaudeModelOption option = i < options.Count ? options[i] : null;
-                Button button = BuildClaudeRadarModelButton(option);
-                button.Margin = new Padding(0, 0, i % columns == columns - 1 ? 0 : ClaudeRadarModelButtonGap, ClaudeRadarModelButtonGap);
-                grid.Controls.Add(button);
-            }
-
-            ApplyClaudeRadarModelGridSelection(grid);
-            int rows = Math.Max(1, (slots + columns - 1) / columns);
-            grid.Height = rows * ClaudeRadarModelButtonHeight + Math.Max(0, rows - 1) * ClaudeRadarModelButtonGap;
-        }
-        finally
-        {
-            grid.ResumeLayout();
-        }
-    }
-
-    private List<ClaudeModelOption> BuildClaudeRadarModelOptions(string selectedKey)
-    {
-        List<ClaudeModelOption> options = new List<ClaudeModelOption>();
-        options.Add(new ClaudeModelOption(string.Empty, "自动", true, false));
-        HashSet<string> keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        keys.Add(string.Empty);
-        try
-        {
-            List<ClaudeRadarModelEntry> models = ClaudeRadarReader.LoadModelMap();
-            for (int i = 0; i < models.Count; i++)
-            {
-                ClaudeRadarModelEntry model = models[i];
-                if (model == null)
-                {
-                    continue;
-                }
-
-                string key = WidgetSettings.NormalizeClaudeRadarModelKey(model.SourceKey);
-                if (key.Length == 0 || keys.Contains(key))
-                {
-                    continue;
-                }
-
-                string status = (model.Status ?? string.Empty).Trim();
-                bool deleted = string.Equals(status, "deleted", StringComparison.OrdinalIgnoreCase);
-                if (deleted && !string.Equals(key, selectedKey, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                bool pending = string.Equals(status, "pending", StringComparison.OrdinalIgnoreCase);
-                bool temporarilyMissing = string.Equals(status, "temporarily_missing", StringComparison.OrdinalIgnoreCase);
-                bool available = model.Enabled &&
-                    !deleted &&
-                    !pending &&
-                    !temporarilyMissing &&
-                    !string.IsNullOrWhiteSpace(model.RatingKey);
-                string label = string.IsNullOrWhiteSpace(model.DisplayName)
-                    ? key
-                    : model.DisplayName;
-                options.Add(new ClaudeModelOption(
-                    key,
-                    label,
-                    available,
-                    pending || temporarilyMissing));
-                keys.Add(key);
-            }
-        }
-        catch (Exception ex)
-        {
-            Program.LogException(ex);
-        }
-
-        if (!string.IsNullOrEmpty(selectedKey) && !keys.Contains(selectedKey))
-        {
-            options.Add(new ClaudeModelOption(selectedKey, selectedKey, false, true));
-        }
-
-        return options;
-    }
-
-    private Button BuildClaudeRadarModelButton(ClaudeModelOption option)
-    {
-        Button button = new Button();
-        button.Width = ClaudeRadarModelButtonWidth;
-        button.Height = ClaudeRadarModelButtonHeight;
-        button.Tag = option;
-        button.Text = option == null ? "--" : GetClaudeRadarModelButtonText(option);
-        button.AutoEllipsis = true;
-        button.TextAlign = ContentAlignment.MiddleCenter;
-        button.FlatStyle = FlatStyle.Flat;
-        button.UseVisualStyleBackColor = false;
-        button.FlatAppearance.BorderSize = 1;
-        button.Font = GetUiFont(8.8f, FontStyle.Bold);
-        button.Cursor = option != null && option.Available ? Cursors.Hand : Cursors.Default;
-        button.Enabled = option != null && option.Available;
-        button.Click += delegate
-        {
-            ClaudeModelOption clicked = button.Tag as ClaudeModelOption;
-            if (clicked == null)
-            {
-                return;
-            }
-
-            FlowLayoutPanel grid = FindClaudeRadarModelGrid(button.Parent);
-            if (grid == null)
-            {
-                return;
-            }
-
-            string current = GetClaudeRadarModelGridValue(grid);
-            if (string.Equals(current, clicked.Key, StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
-            grid.Tag = clicked.Key;
-            ApplyClaudeRadarModelGridSelection(grid);
-            OnSettingChanged();
-        };
-        return button;
-    }
-
-    private static string GetClaudeRadarModelButtonText(ClaudeModelOption option)
-    {
-        if (option == null)
-        {
-            return "--";
-        }
-
-        if (option.Key.Length == 0)
-        {
-            return "自动";
-        }
-
-        string label = option.Label ?? option.Key;
-        if (label.Length <= ClaudeRadarModelButtonMaxTextChars)
-        {
-            return label;
-        }
-
-        return label.Substring(0, ClaudeRadarModelButtonMaxTextChars);
-    }
-
-    private void ApplyClaudeRadarModelGridSelection(FlowLayoutPanel grid)
-    {
-        if (grid == null)
-        {
-            return;
-        }
-
-        string selectedKey = WidgetSettings.NormalizeClaudeRadarModelKey(grid.Tag as string);
-        for (int i = 0; i < grid.Controls.Count; i++)
-        {
-            Button button = grid.Controls[i] as Button;
-            if (button == null)
-            {
-                continue;
-            }
-
-            ClaudeModelOption option = button.Tag as ClaudeModelOption;
-            bool selected = option != null &&
-                string.Equals(option.Key, selectedKey, StringComparison.OrdinalIgnoreCase);
-            ApplyClaudeRadarModelButtonStyle(button, option, selected);
-        }
-    }
-
-    private static void ApplyClaudeRadarModelButtonStyle(Button button, ClaudeModelOption option, bool selected)
-    {
-        if (button == null)
-        {
-            return;
-        }
-
-        if (option == null)
-        {
-            button.BackColor = ControlBg;
-            button.ForeColor = TextTertiary;
-            button.FlatAppearance.BorderColor = ControlBorder;
-            return;
-        }
-
-        if (selected)
-        {
-            button.BackColor = DesignTokens.SettingsWarmTheme.Accent;
-            button.ForeColor = Color.Black;
-            button.FlatAppearance.BorderColor = DesignTokens.SettingsWarmTheme.AccentHover;
-            return;
-        }
-
-        if (option.Available)
-        {
-            button.BackColor = DesignTokens.Colors.Warning;
-            button.ForeColor = Color.Black;
-            button.FlatAppearance.BorderColor = DesignTokens.Colors.WarningDeep;
-            return;
-        }
-
-        button.BackColor = MicaLayer;
-        button.ForeColor = TextTertiary;
-        button.FlatAppearance.BorderColor = option.Pending ? DesignTokens.Colors.Warning : ControlBorder;
-    }
-
-    private static string GetClaudeRadarModelGridValue(FlowLayoutPanel grid)
-    {
-        return grid == null ? string.Empty : WidgetSettings.NormalizeClaudeRadarModelKey(grid.Tag as string);
-    }
-
-    private void SetClaudeRadarModelGridValue(FlowLayoutPanel grid, string value)
-    {
-        PopulateClaudeRadarModelGrid(grid, value);
-        if (grid != null && grid.Parent != null)
-        {
-            LayoutClaudeRadarModelPanel(grid.Parent);
-        }
-    }
-
-    private static FlowLayoutPanel FindClaudeRadarModelGrid(Control control)
-    {
-        FlowLayoutPanel grid = control as FlowLayoutPanel;
-        if (grid != null && string.Equals(grid.Name, ClaudeRadarModelGridName, StringComparison.Ordinal))
-        {
-            return grid;
-        }
-
-        if (control != null)
-        {
-            for (int i = 0; i < control.Controls.Count; i++)
-            {
-                grid = FindClaudeRadarModelGrid(control.Controls[i]);
-                if (grid != null)
-                {
-                    return grid;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private static void LayoutClaudeRadarModelPanel(Control panel)
-    {
-        if (panel == null)
-        {
-            return;
-        }
-
-        FlowLayoutPanel grid = FindClaudeRadarModelGrid(panel);
-        Button edit = null;
-        for (int i = 0; i < panel.Controls.Count; i++)
-        {
-            Button candidate = panel.Controls[i] as Button;
-            if (candidate != null && string.Equals(candidate.Text, "编辑映射", StringComparison.Ordinal))
-            {
-                edit = candidate;
-                break;
-            }
-        }
-
-        int y = 0;
-        if (grid != null)
-        {
-            grid.Location = new Point(0, 0);
-            grid.Width = panel.Width;
-            int columns = GetClaudeRadarModelColumnCountForGrid(grid.Width);
-            int buttonWidth = GetClaudeRadarModelButtonWidthForGrid(grid.Width);
-            for (int i = 0; i < grid.Controls.Count; i++)
-            {
-                Button button = grid.Controls[i] as Button;
-                if (button == null)
-                {
-                    continue;
-                }
-
-                button.Width = buttonWidth;
-                button.Height = ClaudeRadarModelButtonHeight;
-                button.Margin = new Padding(
-                    0,
-                    0,
-                    i % columns == columns - 1 ? 0 : ClaudeRadarModelButtonGap,
-                    ClaudeRadarModelButtonGap);
-            }
-
-            int rows = Math.Max(1, (grid.Controls.Count + columns - 1) / columns);
-            grid.Height = rows * ClaudeRadarModelButtonHeight + Math.Max(0, rows - 1) * ClaudeRadarModelButtonGap;
-            y = grid.Bottom + 10;
-        }
-
-        if (edit != null)
-        {
-            edit.Location = new Point(0, y);
-            edit.Width = panel.Width;
-            y = edit.Bottom;
-        }
-
-        panel.Height = Math.Max(54, y);
-    }
-
-    private static int GetClaudeRadarModelButtonWidthForGrid(int gridWidth)
-    {
-        int columns = GetClaudeRadarModelColumnCountForGrid(gridWidth);
-        int gaps = Math.Max(0, columns - 1) * ClaudeRadarModelButtonGap;
-        int usable = Math.Max(columns, gridWidth - gaps);
-        return Math.Max(32, Math.Min(ClaudeRadarModelButtonWidth, usable / columns));
-    }
-
-    private static int GetClaudeRadarModelColumnCountForGrid(int gridWidth)
-    {
-        for (int columns = ClaudeRadarModelGridColumns; columns > 1; columns--)
-        {
-            int gaps = Math.Max(0, columns - 1) * ClaudeRadarModelButtonGap;
-            if (gridWidth >= columns * ClaudeRadarModelButtonMinimumWidth + gaps)
-            {
-                return columns;
-            }
-        }
-
-        return 1;
-    }
-
-    private static int GetClaudeRadarModelGridPreferredWidth()
-    {
-        return ClaudeRadarModelGridColumns * ClaudeRadarModelButtonWidth +
-            Math.Max(0, ClaudeRadarModelGridColumns - 1) * ClaudeRadarModelButtonGap;
-    }
-
     private static void RelayoutSettingGroup(Control control)
     {
         Control parent = control;
@@ -1887,120 +1559,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             }
 
             parent = parent.Parent;
-        }
-    }
-
-    private static ComboBox FindComboBox(Control control)
-    {
-        ComboBox combo = control as ComboBox;
-        if (combo != null)
-        {
-            return combo;
-        }
-
-        if (control != null)
-        {
-            for (int i = 0; i < control.Controls.Count; i++)
-            {
-                combo = FindComboBox(control.Controls[i]);
-                if (combo != null)
-                {
-                    return combo;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private void PopulateClaudeRadarModelCombo(ComboBox combo)
-    {
-        if (combo == null)
-        {
-            return;
-        }
-
-        combo.Items.Clear();
-        combo.Items.Add(new ClaudeModelOption(string.Empty, "自动选择", true, false));
-        try
-        {
-            List<ClaudeRadarModelEntry> models = ClaudeRadarReader.LoadModelMap();
-            HashSet<string> keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < models.Count; i++)
-            {
-                ClaudeRadarModelEntry model = models[i];
-                if (model == null)
-                {
-                    continue;
-                }
-
-                string key = WidgetSettings.NormalizeClaudeRadarModelKey(model.SourceKey);
-                if (key.Length == 0 || keys.Contains(key))
-                {
-                    continue;
-                }
-
-                bool available = model.Enabled &&
-                    !string.Equals(model.Status, "deleted", StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(model.Status, "pending", StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(model.Status, "temporarily_missing", StringComparison.OrdinalIgnoreCase) &&
-                    !string.IsNullOrWhiteSpace(model.RatingKey);
-                string label = string.IsNullOrWhiteSpace(model.DisplayName)
-                    ? key
-                    : model.DisplayName;
-                combo.Items.Add(new ClaudeModelOption(
-                    key,
-                    label,
-                    available,
-                    string.Equals(model.Status, "pending", StringComparison.OrdinalIgnoreCase)));
-                keys.Add(key);
-            }
-        }
-        catch (Exception ex)
-        {
-            Program.LogException(ex);
-        }
-
-        if (combo.Items.Count > 0 && combo.SelectedIndex < 0)
-        {
-            combo.SelectedIndex = 0;
-        }
-    }
-
-    private static object GetClaudeRadarModelComboValue(ComboBox combo)
-    {
-        ClaudeModelOption option = combo == null ? null : combo.SelectedItem as ClaudeModelOption;
-        return option == null ? string.Empty : option.Key;
-    }
-
-    private static void SetClaudeRadarModelComboValue(ComboBox combo, string value)
-    {
-        if (combo == null)
-        {
-            return;
-        }
-
-        string modelKey = WidgetSettings.NormalizeClaudeRadarModelKey(value);
-        for (int i = 0; i < combo.Items.Count; i++)
-        {
-            ClaudeModelOption option = combo.Items[i] as ClaudeModelOption;
-            if (option != null && string.Equals(option.Key, modelKey, StringComparison.OrdinalIgnoreCase))
-            {
-                combo.SelectedIndex = i;
-                return;
-            }
-        }
-
-        if (!string.IsNullOrEmpty(modelKey))
-        {
-            combo.Items.Add(new ClaudeModelOption(modelKey, modelKey, false, true));
-            combo.SelectedIndex = combo.Items.Count - 1;
-            return;
-        }
-
-        if (combo.Items.Count > 0)
-        {
-            combo.SelectedIndex = 0;
         }
     }
 
@@ -2145,8 +1703,41 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             this.initializing = false;
         }
 
+        RefreshColumnArrangementEditorEnabledStates();
         RefreshGlobalHotkeyRegistrationState();
         SetDirtyState(false);
+    }
+
+    private void RefreshColumnArrangementEditorEnabledStates()
+    {
+        RefreshColumnArrangementEditorEnabledState(
+            "LeftDockAutoArrangeEnabled",
+            new string[] { "LeftDockButtonOrder", "LeftDockButtonGapPixels", "LeftDockGroupOffsetY" });
+        RefreshColumnArrangementEditorEnabledState(
+            "RightTileAutoArrangeEnabled",
+            new string[] { "RightTileButtonOrder", "RightTileButtonGapPixels", "RightTileGroupOffsetY" });
+    }
+
+    private void RefreshColumnArrangementEditorEnabledState(string toggleName, string[] dependentNames)
+    {
+        SettingEditor toggleEditor;
+        if (!this.editors.TryGetValue(toggleName, out toggleEditor))
+        {
+            return;
+        }
+
+        ToggleSwitch toggle = toggleEditor.Control as ToggleSwitch;
+        bool enabled = toggle != null && toggle.Checked;
+        for (int i = 0; i < dependentNames.Length; i++)
+        {
+            SettingEditor dependent;
+            if (this.editors.TryGetValue(dependentNames[i], out dependent))
+            {
+                // A disabled editor remains visible so users can understand the master/subordinate
+                // relationship, but it cannot accept changes that have no runtime effect.
+                dependent.Control.Enabled = enabled;
+            }
+        }
     }
 
     private WidgetSettings ReadSettings()
@@ -2198,6 +1789,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
     private void SetEditorValue(SettingEditor editor, object value)
     {
+        ColumnOrderEditorControl orderEditor = editor.Control as ColumnOrderEditorControl;
+        if (orderEditor != null)
+        {
+            orderEditor.SetOrderSilent(value as string[]);
+            RelayoutSettingGroup(editor.Control);
+            return;
+        }
+
         NetworkProbeTargetEditorState targetState = editor.Control == null
             ? null
             : editor.Control.Tag as NetworkProbeTargetEditorState;
@@ -2205,6 +1804,15 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             targetState.SetValues(value as string[]);
             editor.Control.Text = targetState.GetButtonText();
+            return;
+        }
+
+        LeftDockTabCenterEditorState dockCenterState = editor.Control == null
+            ? null
+            : editor.Control.Tag as LeftDockTabCenterEditorState;
+        if (dockCenterState != null)
+        {
+            dockCenterState.SetValue(Convert.ToInt32(value, CultureInfo.InvariantCulture));
             return;
         }
 
@@ -2225,17 +1833,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             return;
         }
 
-        if (string.Equals(editor.Property.Name, "ClaudeRadarModelKey", StringComparison.Ordinal))
-        {
-            FlowLayoutPanel grid = FindClaudeRadarModelGrid(editor.Control);
-            if (grid != null)
-            {
-                SetClaudeRadarModelGridValue(grid, value as string);
-                RelayoutSettingGroup(editor.Control);
-                return;
-            }
-        }
-
         VariantPicker picker = editor.Control as VariantPicker;
         if (picker != null)
         {
@@ -2252,11 +1849,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         ComboBox combo = editor.Control as ComboBox;
-        if (combo == null && string.Equals(editor.Property.Name, "ClaudeRadarModelKey", StringComparison.Ordinal))
-        {
-            combo = FindComboBox(editor.Control);
-        }
-
         if (combo != null)
         {
             string displayDeviceName = value as string;
@@ -2284,12 +1876,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                     false,
                     true));
                 combo.SelectedIndex = combo.Items.Count - 1;
-                return;
-            }
-
-            if (string.Equals(editor.Property.Name, "ClaudeRadarModelKey", StringComparison.Ordinal))
-            {
-                SetClaudeRadarModelComboValue(combo, value as string);
                 return;
             }
 
@@ -2366,10 +1952,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         if (button != null)
         {
             button.Tag = value is int ? (int)value : 0;
-            if (string.Equals(editor.Name, "DeepSeekApiKeyRevision", StringComparison.Ordinal))
-            {
-                button.Text = GetDeepSeekApiKeyButtonText();
-            }
         }
     }
 
@@ -2404,12 +1986,26 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         Type type = editor.Property.PropertyType;
+        ColumnOrderEditorControl orderEditor = editor.Control as ColumnOrderEditorControl;
+        if (orderEditor != null)
+        {
+            return orderEditor.GetOrder();
+        }
+
         NetworkProbeTargetEditorState targetState = editor.Control == null
             ? null
             : editor.Control.Tag as NetworkProbeTargetEditorState;
         if (targetState != null)
         {
             return NetworkProbeTargetSettings.CloneArray(targetState.Values);
+        }
+
+        LeftDockTabCenterEditorState dockCenterState = editor.Control == null
+            ? null
+            : editor.Control.Tag as LeftDockTabCenterEditorState;
+        if (dockCenterState != null)
+        {
+            return dockCenterState.Value;
         }
 
         if (string.Equals(editor.Property.Name, "SpecBoardLedgerPath", StringComparison.Ordinal))
@@ -2422,15 +2018,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         if (toggle != null)
         {
             return toggle.Checked;
-        }
-
-        if (string.Equals(editor.Property.Name, "ClaudeRadarModelKey", StringComparison.Ordinal))
-        {
-            FlowLayoutPanel grid = FindClaudeRadarModelGrid(editor.Control);
-            if (grid != null)
-            {
-                return GetClaudeRadarModelGridValue(grid);
-            }
         }
 
         VariantPicker picker = editor.Control as VariantPicker;
@@ -2446,19 +2033,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         ComboBox combo = editor.Control as ComboBox;
-        if (combo == null && string.Equals(editor.Property.Name, "ClaudeRadarModelKey", StringComparison.Ordinal))
-        {
-            combo = FindComboBox(editor.Control);
-        }
-
         if (combo != null)
         {
-            ClaudeModelOption claudeModelOption = combo.SelectedItem as ClaudeModelOption;
-            if (claudeModelOption != null)
-            {
-                return claudeModelOption.Key;
-            }
-
             ModelOption modelOption = combo.SelectedItem as ModelOption;
             if (modelOption != null)
             {
@@ -2598,210 +2174,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         this.owner.PreviewSettings(ReadSettings());
         ShowStatus("全局编辑已取消", SettingsStatusSeverity.Warning);
-    }
-
-    private void OpenDeepSeekApiKeyDialog(Button sourceButton)
-    {
-        Form dialog = new Form();
-        try
-        {
-            dialog.Text = "DeepSeek 配置";
-            dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
-            dialog.StartPosition = FormStartPosition.CenterParent;
-            dialog.ShowInTaskbar = false;
-            dialog.MaximizeBox = false;
-            dialog.MinimizeBox = false;
-            dialog.ClientSize = new Size(560, 238);
-            dialog.BackColor = MicaBase;
-            dialog.ForeColor = TextSecondary;
-            dialog.Font = GetUiFont(9.5f);
-
-            Label title = new Label();
-            title.Text = "DeepSeek API Key";
-            title.Font = GetUiFont(12.0f, FontStyle.Bold);
-            title.ForeColor = TextPrimary;
-            title.BackColor = MicaBase;
-            title.Location = new Point(24, 20);
-            title.Size = new Size(500, 30);
-            title.TextAlign = ContentAlignment.MiddleLeft;
-
-            Label hint = new Label();
-            hint.Text = HasDeepSeekEnvironmentApiKeyForUi()
-                ? "检测到 DEEPSEEK_API_KEY 环境变量；环境变量会优先于本地文件。"
-                : "密钥保存到本地应用数据目录，不写入 settings.ini 或日志。";
-            hint.Font = GetUiFont(8.8f);
-            hint.ForeColor = TextTertiary;
-            hint.BackColor = MicaBase;
-            hint.Location = new Point(24, 56);
-            hint.Size = new Size(500, 42);
-            hint.TextAlign = ContentAlignment.MiddleLeft;
-
-            TextBox keyBox = new TextBox();
-            keyBox.Location = new Point(24, 104);
-            keyBox.Size = new Size(512, 34);
-            keyBox.BackColor = ControlBg;
-            keyBox.ForeColor = TextSecondary;
-            keyBox.BorderStyle = BorderStyle.FixedSingle;
-            keyBox.Font = GetUiFont(9.5f);
-            keyBox.UseSystemPasswordChar = true;
-            keyBox.Text = ReadDeepSeekApiKeyFileForUi();
-
-            Button clear = BuildCommandButton("清除", false);
-            clear.Location = new Point(24, 166);
-            clear.Width = 112;
-            clear.Height = 44;
-
-            Button cancel = BuildCommandButton("取消", false);
-            cancel.Location = new Point(302, 166);
-            cancel.Width = 112;
-            cancel.Height = 44;
-            cancel.Click += delegate { dialog.Close(); };
-
-            Button save = BuildCommandButton("保存", true);
-            save.Location = new Point(424, 166);
-            save.Width = 112;
-            save.Height = 44;
-
-            clear.Click += delegate
-            {
-                string errorCode;
-                if (TrySaveDeepSeekApiKeyFile(string.Empty, out errorCode))
-                {
-                    keyBox.Text = string.Empty;
-                    IncrementDeepSeekApiKeyRevision(sourceButton);
-                    ShowStatus("DeepSeek 配置已清除", SettingsStatusSeverity.Success);
-                    dialog.Close();
-                    return;
-                }
-
-                ShowStatus("DeepSeek 配置清除失败 " + errorCode, SettingsStatusSeverity.Error);
-            };
-
-            save.Click += delegate
-            {
-                string errorCode;
-                if (TrySaveDeepSeekApiKeyFile(keyBox.Text, out errorCode))
-                {
-                    IncrementDeepSeekApiKeyRevision(sourceButton);
-                    ShowStatus("DeepSeek 配置已保存", SettingsStatusSeverity.Success);
-                    dialog.Close();
-                    return;
-                }
-
-                ShowStatus("DeepSeek 配置保存失败 " + errorCode, SettingsStatusSeverity.Error);
-            };
-
-            dialog.Controls.Add(title);
-            dialog.Controls.Add(hint);
-            dialog.Controls.Add(keyBox);
-            dialog.Controls.Add(clear);
-            dialog.Controls.Add(cancel);
-            dialog.Controls.Add(save);
-            dialog.AcceptButton = save;
-            dialog.CancelButton = cancel;
-            dialog.ShowDialog(this);
-        }
-        finally
-        {
-            dialog.Dispose();
-        }
-    }
-
-    private void IncrementDeepSeekApiKeyRevision(Button sourceButton)
-    {
-        if (sourceButton != null)
-        {
-            int token = sourceButton.Tag is int ? (int)sourceButton.Tag : 0;
-            sourceButton.Tag = token == int.MaxValue ? 1 : token + 1;
-            sourceButton.Text = GetDeepSeekApiKeyButtonText();
-        }
-
-        OnSettingChanged();
-    }
-
-    private static string GetDeepSeekApiKeyButtonText()
-    {
-        return IsDeepSeekApiKeyConfiguredForUi() ? "修改配置" : "配置";
-    }
-
-    private static bool IsDeepSeekApiKeyConfiguredForUi()
-    {
-        if (HasDeepSeekEnvironmentApiKeyForUi())
-        {
-            return true;
-        }
-
-        return ReadDeepSeekApiKeyFileForUi().Length > 0;
-    }
-
-    private static bool HasDeepSeekEnvironmentApiKeyForUi()
-    {
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(DeepSeekBalanceMonitor.ApiKeyEnvironmentVariable)))
-            {
-                return true;
-            }
-
-            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(DeepSeekBalanceMonitor.ApiKeyEnvironmentVariable, EnvironmentVariableTarget.User)))
-            {
-                return true;
-            }
-
-            return !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(DeepSeekBalanceMonitor.ApiKeyEnvironmentVariable, EnvironmentVariableTarget.Machine));
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static string ReadDeepSeekApiKeyFileForUi()
-    {
-        try
-        {
-            string secret;
-            bool migrated;
-            string errorCode;
-            return SecretStore.TryReadOrMigrateSecret(
-                DeepSeekBalanceMonitor.ApiKeyPath,
-                DeepSeekBalanceMonitor.LegacyApiKeyPath,
-                SecretStore.TrimSecret,
-                out secret,
-                out migrated,
-                out errorCode)
-                ? secret
-                : string.Empty;
-        }
-        catch
-        {
-        }
-
-        return string.Empty;
-    }
-
-    private static bool TrySaveDeepSeekApiKeyFile(string apiKey, out string errorCode)
-    {
-        errorCode = string.Empty;
-        try
-        {
-            string trimmed = (apiKey ?? string.Empty).Trim();
-            if (trimmed.Length == 0)
-            {
-                SecretStore.DeleteSecretFiles(DeepSeekBalanceMonitor.ApiKeyPath, DeepSeekBalanceMonitor.LegacyApiKeyPath);
-                return true;
-            }
-
-            SecretStore.WriteSecret(DeepSeekBalanceMonitor.ApiKeyPath, trimmed);
-            SecretStore.DeleteLegacySecretFiles(DeepSeekBalanceMonitor.LegacyApiKeyPath);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Program.LogException(ex);
-            errorCode = "0x" + ex.HResult.ToString("X8", CultureInfo.InvariantCulture);
-            return false;
-        }
     }
 
     // ── Status Toast ─────────────────────────────────────────────────────
@@ -2984,11 +2356,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
     private static decimal GetNumericIncrement(string name)
     {
-        if (IsCodexRadarManualElementOffsetSetting(name))
-        {
-            return 1;
-        }
-
         if (name.EndsWith("Seconds", StringComparison.OrdinalIgnoreCase))
         {
             return 1;
@@ -3009,13 +2376,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         if (NumericRanges.TryGetValue(name, out range))
         {
             return range;
-        }
-
-        if (IsCodexRadarManualElementOffsetSetting(name))
-        {
-            return new NumericRange(
-                WidgetSettings.MinCodexRadarManualElementOffsetPixels,
-                WidgetSettings.MaxCodexRadarManualElementOffsetPixels);
         }
 
         if (name.IndexOf("Transparency", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -3053,14 +2413,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         return new NumericRange(0, 100000000);
-    }
-
-    private static bool IsCodexRadarManualElementOffsetSetting(string name)
-    {
-        return name != null &&
-            name.StartsWith("CodexRadar", StringComparison.OrdinalIgnoreCase) &&
-            (name.EndsWith("OffsetX", StringComparison.OrdinalIgnoreCase) ||
-             name.EndsWith("OffsetY", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string SplitPascalCase(string name)
@@ -3313,8 +2665,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     {
         int loopCount = Math.Max(1, Math.Min(500, iterations));
         WidgetSettings baseline = WidgetSettings.CreateDefaults();
-        baseline.CodexRadarEnabled = true;
-        baseline.ClaudeRadarEnabled = true;
         baseline.Normalize();
 
         using (Win11SettingsForm warmup = new Win11SettingsForm(null, baseline))
@@ -3393,6 +2743,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     {
         VerifySettingsWindowActivationPolicy();
         VerifyUnsavedPreviewConsumePolicy();
+        VerifyClaudeSetupTokenStoragePolicy();
+        VerifyGuardRuntimePersistencePolicy();
         WidgetSettings baseline = WidgetSettings.CreateDefaults();
         using (Win11SettingsForm form = new Win11SettingsForm(null, baseline))
         {
@@ -3520,8 +2872,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "OperationRadialKeepOpenAfterLeafClickEnabled",
             "SpecBoardWidth",
             "SpecBoardHeight",
-            "SpecBoardLeftX",
-            "SpecBoardBottomY",
             "SpecBoardAutoHideSeconds",
             "LeftDockOutsideClickCollapseEnabled",
             "SpecBoardAutoPopupEnabled",
@@ -3530,23 +2880,36 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "SpecBoardManagerWidth",
             "SpecBoardManagerHeight",
             "SpecBoardManagerDangerZoneRequiresTypedConfirm",
+            "SpecBoardLeftDockTabCenterY",
+            "LeftDockAutoArrangeEnabled",
+            "LeftDockButtonOrder",
+            "LeftDockButtonGapPixels",
+            "LeftDockGroupOffsetY",
+            "CodexTaskBoardLeftDockTabCenterY",
+            "NetworkMonitorLeftDockTabCenterY",
+            "GuardBoardLeftDockTabCenterY",
+            "GuardBoardAutoHideSeconds",
+            "GuardBoardTransparencyOverridePercent",
+            "GuardBoardScaleOverridePercent",
+            "CodexIqBoardLeftDockTabCenterY",
+            "CodexIqBoardAutoHideSeconds",
+            "CodexIqBoardTransparencyOverridePercent",
+            "CodexIqBoardScaleOverridePercent",
+            "RightTileAutoArrangeEnabled",
+            "RightTileButtonOrder",
+            "RightTileButtonGapPixels",
+            "RightTileGroupOffsetY",
             "FallbackDisconnectedDisplaysEnabled",
             "ResolutionCompatibilityModeEnabled",
             "ResolutionCompatibilityScalePercent",
             "MainDisplayDeviceName",
-            "CodexRadarDisplayDeviceName",
-            "ClaudeRadarDisplayDeviceName",
             GlobalLayoutEditCommandName,
-            "Width",
-            "CodexRadarEnabled",
+            "MainWidgetTileLargeModeEnabled",
+            "MetricTileExpandWidth",
+            "MetricTileExpandHeight",
             "CodexRadarSoftwareMode",
             "CodexRadarModelKey",
             "RadarClockAutoSwitchModelEnabled",
-            "RadarClockTimeDisplayMode",
-            "CodexRadarSpeedWindowCountdownEnabled",
-            "CodexRadarQuotaResetRainbowEnabled",
-            "DisplayTimeZoneMode",
-            "DisplayTimeZoneId",
             "CodexRadarPublicJsonEnabled",
             "CodexRadarHtmlFallbackEnabled",
             "CodexRadarRssFallbackEnabled",
@@ -3559,16 +2922,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexQuotaProviderWeeklySpikeProtectionEnabled",
             "CodexQuotaStrictFiveHourResetBoundaryEnabled",
             "CodexQuotaWeeklyBaselineAutoRepairEnabled",
-            "ClaudeRadarEnabled",
-            "ClaudeRadarModelKey",
-            "ClaudeRadarJsonEnabled",
-            "ClaudeRadarCommunityRatingsEnabled",
-            "ClaudeRadarLocalQuotaFallbackEnabled",
-            "ClaudeRadarServiceProbeToken",
             ClaudeSetupTokenCommandName,
-            "DeepSeekApiKeyRevision",
             "AiRequestProtectionAutoEnabled",
             "AiRequestProtectionManualBlockEnabled",
+            "AiChinaEgressGuardEnabled",
             "CodexQuotaPlanEnabled",
             "CodexQuotaPlanWeeklyComparison",
             "CodexQuotaPlanWeeklyThresholdPercent",
@@ -3578,10 +2935,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexQuotaPlanAutoResumePausedGoals",
             "CodexQuotaPlanPauseGoalIds",
             "CodexQuotaPlanResumeGoalIds",
-            "PowerThermalIntegratedEnabled",
-            "CpuCoreWarningPercent",
-            "CpuCoreCriticalPercent",
-            "PowerThermalAutoSizeEnabled",
             "PowerThermalManualEnergySaverThresholdPercent",
             "GfwProbeIntervalMinutes",
             "CloudEndpointTargets",
@@ -3600,12 +2953,17 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             }
         }
 
+        VerifySettingsUiBindingCoverage();
+        VerifyLeftDockTabCenterEditorPolicy();
+        VerifyColumnArrangementEditorPolicy();
+
         for (int i = 0; i < this.pages.Count; i++)
         {
             LayoutPage(this.pages[i]);
         }
 
-        VerifyClaudeRadarModelGridPolicy();
+        VerifySearchFilteredGroupLayoutPolicy();
+        VerifyVisibleSurfaceScaleEditorNormalization();
         VerifyDynamicResolutionSizingPolicy();
         VerifyNoVisibleControlClipping();
 
@@ -3621,6 +2979,470 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         if (page == null || !page.ScrollByMouseWheelDelta(-120))
         {
             throw new InvalidOperationException("WinUI settings page wheel scroll failed.");
+        }
+    }
+
+    private void VerifyLeftDockTabCenterEditorPolicy()
+    {
+        string[] names = new string[]
+        {
+            "SpecBoardLeftDockTabCenterY",
+            "CodexTaskBoardLeftDockTabCenterY",
+            "NetworkMonitorLeftDockTabCenterY",
+            "GuardBoardLeftDockTabCenterY",
+            "CodexIqBoardLeftDockTabCenterY"
+        };
+        for (int i = 0; i < names.Length; i++)
+        {
+            SettingEditor editor = this.editors[names[i]];
+            object original = editor.Property.GetValue(this.baseline, null);
+            SetEditorValue(editor, WidgetSettings.AutoLeftDockTabCenterY);
+            if (Convert.ToInt32(GetEditorValue(editor), CultureInfo.InvariantCulture) != WidgetSettings.AutoLeftDockTabCenterY)
+            {
+                throw new InvalidOperationException("WinUI left dock auto sentinel binding failed: " + names[i]);
+            }
+
+            SetEditorValue(editor, 731 + i);
+            if (Convert.ToInt32(GetEditorValue(editor), CultureInfo.InvariantCulture) != 731 + i)
+            {
+                throw new InvalidOperationException("WinUI left dock manual center binding failed: " + names[i]);
+            }
+
+            SetEditorValue(editor, original);
+        }
+
+        WidgetSettings normalized = this.baseline.Clone();
+        normalized.SpecBoardLeftDockTabCenterY = -20;
+        normalized.CodexTaskBoardLeftDockTabCenterY = -30;
+        normalized.NetworkMonitorLeftDockTabCenterY = -40;
+        normalized.GuardBoardLeftDockTabCenterY = -50;
+        normalized.CodexIqBoardLeftDockTabCenterY = -60;
+        normalized.Normalize();
+        if (normalized.SpecBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
+            normalized.CodexTaskBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
+            normalized.NetworkMonitorLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
+            normalized.GuardBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
+            normalized.CodexIqBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY)
+        {
+            throw new InvalidOperationException("WinUI left dock centers must normalize invalid negative values to the auto sentinel.");
+        }
+    }
+
+    private void VerifyColumnArrangementEditorPolicy()
+    {
+        string[] orderNames = { "LeftDockButtonOrder", "RightTileButtonOrder" };
+        for (int i = 0; i < orderNames.Length; i++)
+        {
+            SettingEditor editor = this.editors[orderNames[i]];
+            string[] original = (string[])editor.Property.GetValue(this.baseline, null);
+            string[] reversed = i == 0
+                ? new string[] { "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network" }
+                : new string[] { "ClaudeQuota", "CodexQuota", "Guard", "Power", "Npu", "Gpu", "Network", "Disk", "Memory", "Cpu" };
+            SetEditorValue(editor, reversed);
+            string[] actual = GetEditorValue(editor) as string[];
+            if (actual == null || actual.Length != reversed.Length || object.ReferenceEquals(actual, reversed))
+            {
+                throw new InvalidOperationException("WinUI column order binding or clone isolation failed: " + orderNames[i]);
+            }
+
+            for (int j = 0; j < reversed.Length; j++)
+            {
+                if (!string.Equals(actual[j], reversed[j], StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("WinUI column order binding failed: " + orderNames[i]);
+                }
+            }
+
+            ColumnOrderEditorControl orderControl = editor.Control as ColumnOrderEditorControl;
+            int changeCount = 0;
+            orderControl.ValueChanged += delegate { changeCount++; };
+            bool originalInitializing = this.initializing;
+            this.initializing = true;
+            try
+            {
+                orderControl.PerformMoveForSelfTest(reversed[0], 1);
+            }
+            finally
+            {
+                this.initializing = originalInitializing;
+            }
+
+            string[] moved = orderControl.GetOrder();
+            if (changeCount != 1 ||
+                !string.Equals(moved[0], reversed[1], StringComparison.Ordinal) ||
+                !string.Equals(moved[1], reversed[0], StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("WinUI column order move action failed: " + orderNames[i]);
+            }
+
+            string duplicateId = i == 0 ? "guard" : "cpu";
+            string[] malformed = { duplicateId, "unknown-surface", duplicateId.ToUpperInvariant() };
+            SetEditorValue(editor, malformed);
+            string[] normalized = orderControl.GetOrder();
+            if (normalized.Length != reversed.Length ||
+                !string.Equals(normalized[0], i == 0 ? "Guard" : "Cpu", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("WinUI column order normalization failed: " + orderNames[i]);
+            }
+
+            int originalWidth = orderControl.Width;
+            orderControl.Width = 320;
+            orderControl.VerifyRowsFitForSelfTest();
+            orderControl.Width = originalWidth;
+
+            SetEditorValue(editor, original);
+        }
+
+        string[] sliderNames =
+        {
+            "LeftDockButtonGapPixels", "LeftDockGroupOffsetY",
+            "RightTileButtonGapPixels", "RightTileGroupOffsetY"
+        };
+        for (int i = 0; i < sliderNames.Length; i++)
+        {
+            SettingEditor editor = this.editors[sliderNames[i]];
+            PercentSliderControl slider = editor.Control as PercentSliderControl;
+            if (slider == null || slider.Suffix != " px" || string.IsNullOrEmpty(slider.AccessibleLabel))
+            {
+                throw new InvalidOperationException("WinUI column range slider binding failed: " + sliderNames[i]);
+            }
+
+            bool offset = IsColumnGroupOffsetSetting(sliderNames[i]);
+            int expectedMinimum = offset ? WidgetSettings.MinColumnGroupOffsetY : WidgetSettings.MinColumnButtonGapPixels;
+            int expectedMaximum = offset ? WidgetSettings.MaxColumnGroupOffsetY : WidgetSettings.MaxColumnButtonGapPixels;
+            object original = editor.Property.GetValue(this.baseline, null);
+            SetEditorValue(editor, expectedMinimum);
+            if (slider.Minimum != expectedMinimum || slider.Maximum != expectedMaximum ||
+                Convert.ToInt32(GetEditorValue(editor), CultureInfo.InvariantCulture) != expectedMinimum ||
+                slider.ShowPositiveSign != offset)
+            {
+                throw new InvalidOperationException("WinUI column range slider policy failed: " + sliderNames[i]);
+            }
+
+            SetEditorValue(editor, original);
+        }
+
+        VerifyColumnArrangementDependentEnabledState("LeftDockAutoArrangeEnabled", "LeftDockButtonOrder");
+        VerifyColumnArrangementDependentEnabledState("RightTileAutoArrangeEnabled", "RightTileButtonOrder");
+    }
+
+    private void VerifyColumnArrangementDependentEnabledState(string toggleName, string dependentName)
+    {
+        SettingEditor toggleEditor = this.editors[toggleName];
+        SettingEditor dependentEditor = this.editors[dependentName];
+        ToggleSwitch toggle = toggleEditor.Control as ToggleSwitch;
+        bool original = toggle.Checked;
+        toggle.SetCheckedSilent(false);
+        RefreshColumnArrangementEditorEnabledStates();
+        if (dependentEditor.Control.Enabled)
+        {
+            throw new InvalidOperationException("WinUI column subordinate editor must disable with auto arrange: " + dependentName);
+        }
+
+        toggle.SetCheckedSilent(true);
+        RefreshColumnArrangementEditorEnabledStates();
+        if (!dependentEditor.Control.Enabled)
+        {
+            throw new InvalidOperationException("WinUI column subordinate editor did not re-enable: " + dependentName);
+        }
+
+        toggle.SetCheckedSilent(original);
+        RefreshColumnArrangementEditorEnabledStates();
+    }
+
+    private void VerifySearchFilteredGroupLayoutPolicy()
+    {
+        SettingEditor target = this.editors["LeftDockGroupOffsetY"];
+        SettingGroupCard group = target.Card.Parent as SettingGroupCard;
+        if (group == null)
+        {
+            throw new InvalidOperationException("WinUI layout search self-test could not locate target group.");
+        }
+
+        string originalQuery = this.searchBox.Text;
+        try
+        {
+            this.searchBox.Text = GetSettingTitle(target.Name);
+            ApplySearchFilter();
+            if (!target.Card.Visible || target.Card.Top != 0 || target.Card.ShowTopDivider ||
+                group.Height != target.Card.Height)
+            {
+                throw new InvalidOperationException("WinUI filtered group retained hidden-row geometry.");
+            }
+
+            for (int i = 0; i < group.Controls.Count; i++)
+            {
+                Control row = group.Controls[i];
+                if (!row.Visible && (row.Width != 0 || row.Height != 0))
+                {
+                    throw new InvalidOperationException("WinUI filtered hidden row still occupies space.");
+                }
+            }
+        }
+        finally
+        {
+            this.searchBox.Text = originalQuery;
+            ApplySearchFilter();
+        }
+    }
+
+    private static void VerifyClaudeSetupTokenStoragePolicy()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "desktopcodex-settings-token-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string encrypted = Path.Combine(root, "claude-setup-token.bin");
+            string legacy = Path.Combine(root, "claude-setup-token.txt");
+            string errorCode;
+            const string token = "oauth-settings-entry";
+            if (!TrySaveClaudeSetupTokenFile(token, encrypted, legacy, out errorCode) ||
+                !File.Exists(encrypted) ||
+                File.ReadAllText(encrypted, Encoding.UTF8).IndexOf(token, StringComparison.Ordinal) >= 0 ||
+                !string.Equals(
+                    ClaudeCodeUsageReader.ReadConfiguredSetupTokenFiles(encrypted, legacy),
+                    token,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Claude setup-token encrypted save self-test failed: " + errorCode);
+            }
+
+            File.WriteAllText(legacy, "must-not-resurrect", SharedEncoding.Utf8NoBom);
+            File.WriteAllText(legacy + ".migrated", "must-not-resurrect", SharedEncoding.Utf8NoBom);
+            File.WriteAllText(legacy + ".migrated.20260720", "must-not-resurrect", SharedEncoding.Utf8NoBom);
+            if (!TrySaveClaudeSetupTokenFile(string.Empty, encrypted, legacy, out errorCode) ||
+                File.Exists(encrypted) ||
+                File.Exists(legacy) ||
+                File.Exists(legacy + ".migrated") ||
+                File.Exists(legacy + ".migrated.20260720") ||
+                ClaudeCodeUsageReader.ReadConfiguredSetupTokenFiles(encrypted, legacy).Length != 0)
+            {
+                throw new InvalidOperationException("Claude setup-token clear self-test failed: " + errorCode);
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, true);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private static void VerifyGuardRuntimePersistencePolicy()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "desktopcodex-guard-persist-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string path = Path.Combine(root, "settings.ini");
+            WidgetSettings committedA = WidgetSettings.CreateDefaults();
+            committedA.MetricTileExpandWidth = 522;
+            committedA.ApplicationTransparencyPercent = 71;
+            committedA.GuardSleepEnabled = false;
+            committedA.SaveToPathForSelfTest(path);
+
+            WidgetSettings previewB = committedA.Clone();
+            previewB.MetricTileExpandWidth = 777;
+            previewB.ApplicationTransparencyPercent = 43;
+            WidgetSettings guard = previewB.Clone();
+            guard.GuardSleepEnabled = true;
+            guard.GuardSleepSinceUtcTicks = new DateTime(2026, 7, 20, 0, 0, 0, DateTimeKind.Utc).Ticks;
+            guard.GuardDisplayMinutes = 120;
+            guard.GuardOfflineThresholdMinutes = 5;
+            guard.GuardDisplayUntilUtcTicks = new DateTime(2026, 7, 20, 2, 0, 0, DateTimeKind.Utc).Ticks;
+            guard.GuardBatteryCarePauseUntilUtcTicks = new DateTime(2026, 7, 21, 0, 0, 0, DateTimeKind.Utc).Ticks;
+
+            WidgetSettings merged = WidgetForm.MergeGuardRuntimeFields(committedA, guard);
+            merged.SaveToPathForSelfTest(path);
+            WidgetSettings disk = WidgetSettings.LoadFromPathForSelfTest(path);
+            if (disk.MetricTileExpandWidth != committedA.MetricTileExpandWidth ||
+                disk.ApplicationTransparencyPercent != committedA.ApplicationTransparencyPercent ||
+                disk.MetricTileExpandWidth == previewB.MetricTileExpandWidth ||
+                disk.ApplicationTransparencyPercent == previewB.ApplicationTransparencyPercent ||
+                !disk.GuardSleepEnabled ||
+                disk.GuardSleepSinceUtcTicks != guard.GuardSleepSinceUtcTicks ||
+                disk.GuardDisplayMinutes != 120 ||
+                disk.GuardOfflineThresholdMinutes != 5 ||
+                disk.GuardDisplayUntilUtcTicks != guard.GuardDisplayUntilUtcTicks ||
+                disk.GuardBatteryCarePauseUntilUtcTicks != guard.GuardBatteryCarePauseUntilUtcTicks)
+            {
+                throw new InvalidOperationException("GUARD committed-snapshot persistence self-test failed.");
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    private void VerifyVisibleSurfaceScaleEditorNormalization()
+    {
+        SettingEditor editor;
+        if (!this.editors.TryGetValue("NetworkMonitorScaleOverridePercent", out editor))
+        {
+            throw new InvalidOperationException("Visible-surface scale override editor self-test fixture is missing.");
+        }
+
+        NumericUpDown number = editor.Control as NumericUpDown;
+        if (number == null)
+        {
+            throw new InvalidOperationException("Visible-surface scale override editor is not numeric.");
+        }
+
+        decimal original = number.Value;
+        try
+        {
+            number.Value = 20;
+            WidgetSettings model = ReadSettings();
+            if (number.Value != WidgetSettings.MinResolutionCompatibilityScalePercent ||
+                model.NetworkMonitorScaleOverridePercent != (int)number.Value)
+            {
+                throw new InvalidOperationException("Visible-surface scale override editor/model normalization self-test failed.");
+            }
+        }
+        finally
+        {
+            number.Value = original;
+        }
+    }
+
+    private void VerifySettingsUiBindingCoverage()
+    {
+        Dictionary<string, string> exemptions = CreateSettingsUiBindingExemptions();
+        PropertyInfo[] properties = typeof(WidgetSettings).GetProperties(BindingFlags.Instance | BindingFlags.Public);
+        Dictionary<string, PropertyInfo> writableProperties = new Dictionary<string, PropertyInfo>(StringComparer.Ordinal);
+        List<string> errors = new List<string>();
+        int boundCount = 0;
+        for (int i = 0; i < properties.Length; i++)
+        {
+            PropertyInfo property = properties[i];
+            if (!property.CanRead || !property.CanWrite || property.GetIndexParameters().Length != 0)
+            {
+                continue;
+            }
+
+            writableProperties[property.Name] = property;
+            bool bound = this.editors.ContainsKey(property.Name);
+            bool exempt = exemptions.ContainsKey(property.Name);
+            if (bound && exempt)
+            {
+                errors.Add(property.Name + " is both bound and exempt");
+            }
+            else if (!bound && !exempt)
+            {
+                errors.Add(property.Name + " has no settings UI binding or explicit exemption");
+            }
+            else if (bound)
+            {
+                boundCount++;
+            }
+        }
+
+        foreach (KeyValuePair<string, string> exemption in exemptions)
+        {
+            if (!writableProperties.ContainsKey(exemption.Key))
+            {
+                errors.Add(exemption.Key + " exemption does not name a public writable setting");
+            }
+        }
+
+        if (errors.Count > 0)
+        {
+            throw new InvalidOperationException("WinUI settings binding coverage failed: " + string.Join("; ", errors.ToArray()));
+        }
+
+        Console.WriteLine(
+            "Settings UI binding coverage: PASS bound=" + boundCount.ToString(CultureInfo.InvariantCulture) +
+            " exempt=" + exemptions.Count.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private static Dictionary<string, string> CreateSettingsUiBindingExemptions()
+    {
+        Dictionary<string, string> exemptions = new Dictionary<string, string>(StringComparer.Ordinal);
+        AddSettingsUiBindingExemptions(exemptions, "captured work-area cache; updated by display/layout adaptation, not edited directly", new string[]
+        {
+            "LayoutWorkAreaLeft", "LayoutWorkAreaTop", "LayoutWorkAreaWidth", "LayoutWorkAreaHeight",
+            "OperationLayoutWorkAreaLeft", "OperationLayoutWorkAreaTop", "OperationLayoutWorkAreaWidth", "OperationLayoutWorkAreaHeight"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "legacy render/test compatibility key; intentionally hidden from the supported settings surface", new string[]
+        {
+            "OperationRenderVariant", "CodexRadarTestMode", "ServiceHealthTestMode"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "compatibility-only power integration flag; retained for existing data flow but hidden from the settings surface", new string[]
+        {
+            "PowerThermalIntegratedEnabled"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "compatibility-only hidden-host policy; no visible surface consumes these values after interface convergence", new string[]
+        {
+            "ClickThroughMode", "MainWidgetScaleOverridePercent"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "compatibility-only undocked Spec Board fallback coordinates; the production board is always owned by the fixed left dock", new string[]
+        {
+            "SpecBoardLeftX", "SpecBoardBottomY"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "legacy model enum derived from CodexRadarModelKey; retained only for settings-file compatibility", new string[]
+        {
+            "CodexRadarModelVersion"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "compatibility-only retired Radar presentation controls; current tiles, expansion panels and Codex IQ board consume family snapshots directly", new string[]
+        {
+            "RadarClockTimeDisplayMode", "CodexRadarSpeedWindowCountdownEnabled", "CodexRadarQuotaResetRainbowEnabled",
+            "DisplayTimeZoneMode", "DisplayTimeZoneId",
+            "CodexModelIqTestEnabled", "CodexModelIqTestPassed", "CodexModelIqBaselineAutoEnabled",
+            "CodexModelIqBaselinePassed", "CodexModelIqBaselineValidTasks", "CodexModelEfficiencyTestEnabled",
+            "CodexModelTokenEfficiencyTestPercent", "CodexModelTimeEfficiencyTestPercent",
+            "CodexModelTokenEfficiencyBaselineMode", "CodexModelTokenEfficiencyBaselinePassed",
+            "CodexModelTokenEfficiencyBaselineTokens", "CodexModelTimeEfficiencyBaselineMode",
+            "CodexModelTimeEfficiencyBaselinePassed", "CodexModelTimeEfficiencyBaselineSeconds",
+            "CodexModelTokenEfficiencyLowThresholdPercent", "CodexModelTimeEfficiencyLowThresholdPercent"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "compatibility-only dock flags; the canonical visible topology always contains all five left-edge tabs", new string[]
+        {
+            "SpecBoardLeftDockEnabled", "CodexTaskBoardLeftDockEnabled",
+            "GuardBoardLeftDockEnabled", "CodexIqBoardLeftDockEnabled"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "Codex task-board geometry/view is owned by the board surface; monitor thresholds are internal tuning", new string[]
+        {
+            "CodexTaskBoardWidth", "CodexTaskBoardHeight", "CodexTaskBoardView", "CodexTaskBoardTimelineMinutes",
+            "CodexTaskMonitorEnabled", "CodexTaskMonitorActiveWindowMinutes", "CodexTaskMonitorActiveSeconds",
+            "CodexTaskMonitorIdleSeconds", "CodexTaskMonitorTerminalHoldSeconds", "CodexTaskMonitorErrorHoldSeconds",
+            "CodexTaskMonitorNumberCooldownSeconds"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "GUARD runtime or board-owned value; persisted for restart recovery and edited on the GUARD board", new string[]
+        {
+            "GuardSleepEnabled", "GuardSleepSinceUtcTicks", "GuardDisplayMinutes", "GuardOfflineThresholdMinutes",
+            "GuardDisplayUntilUtcTicks", "GuardBatteryCarePauseUntilUtcTicks"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "transient action state controlled by the operation panel or hotkey, not a preference row", new string[]
+        {
+            "ForceHoverOpacityActive", "ManualHoverOpacityActive"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "derived legacy compatibility value; OperationPrimaryPanelMode is the sole editor", new string[]
+        {
+            "OperationWindowsButtonEnabled", "OperationMemoryPieEnabled"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "derived legacy compatibility value; PerformanceMode is the sole editor", new string[] { "PowerSavingEnabled" });
+        AddSettingsUiBindingExemptions(exemptions, "per-tile manual coordinates are edited by the global layout editor", new string[]
+        {
+            "MetricTileLeftX", "MetricTileBottomY"
+        });
+        AddSettingsUiBindingExemptions(exemptions, "shared dock collapse timing is an internal interaction constant", new string[] { "LeftDockCollapseSeconds" });
+        AddSettingsUiBindingExemptions(exemptions, "derived IQ baseline provenance retained for compatibility", new string[] { "CodexModelIqBaselineMode" });
+        return exemptions;
+    }
+
+    private static void AddSettingsUiBindingExemptions(
+        Dictionary<string, string> exemptions,
+        string reason,
+        string[] names)
+    {
+        for (int i = 0; i < names.Length; i++)
+        {
+            exemptions.Add(names[i], reason);
         }
     }
 
@@ -3645,130 +3467,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             {
                 throw new InvalidOperationException("Network probe target editor round-trip failed: " + names[i]);
             }
-        }
-    }
-
-    private void VerifyClaudeRadarModelGridPolicy()
-    {
-        if (ClaudeRadarModelButtonWidth != 216 || ClaudeRadarModelButtonMaxTextChars != 21)
-        {
-            throw new InvalidOperationException("Claude Radar model grid cells must retain the requested 50% width and text-capacity increase.");
-        }
-
-        using (Button unselected = new Button())
-        using (Button selected = new Button())
-        using (Button empty = new Button())
-        {
-            ClaudeModelOption available = new ClaudeModelOption("m1", "Opus", true, false);
-            ApplyClaudeRadarModelButtonStyle(unselected, available, false);
-            ApplyClaudeRadarModelButtonStyle(selected, available, true);
-            ApplyClaudeRadarModelButtonStyle(empty, null, false);
-            if (unselected.BackColor != DesignTokens.Colors.Warning ||
-                unselected.ForeColor != Color.Black ||
-                unselected.FlatAppearance.BorderColor != DesignTokens.Colors.WarningDeep)
-            {
-                throw new InvalidOperationException("Claude Radar selectable unselected model buttons must use the yellow fill style.");
-            }
-
-            if (selected.BackColor != DesignTokens.SettingsWarmTheme.Accent || selected.ForeColor != Color.Black)
-            {
-                throw new InvalidOperationException("Claude Radar selected model button must retain the green accent style.");
-            }
-
-            if (empty.BackColor == DesignTokens.Colors.Warning)
-            {
-                throw new InvalidOperationException("Claude Radar empty model slots must remain visually disabled instead of yellow.");
-            }
-        }
-
-        SettingEditor editor;
-        if (!this.editors.TryGetValue("ClaudeRadarModelKey", out editor))
-        {
-            throw new InvalidOperationException("Claude Radar model grid editor missing.");
-        }
-
-        FlowLayoutPanel grid = FindClaudeRadarModelGrid(editor.Control);
-        if (grid == null)
-        {
-            throw new InvalidOperationException("Claude Radar model selector must use the responsive button grid.");
-        }
-
-        if (grid.Controls.Count < ClaudeRadarModelGridColumns)
-        {
-            throw new InvalidOperationException("Claude Radar model grid slot count is below the maximum row size.");
-        }
-
-        int columns = GetClaudeRadarModelColumnCountForGrid(grid.Width);
-        int buttonWidth = GetClaudeRadarModelButtonWidthForGrid(grid.Width);
-        int rowWidth = columns * buttonWidth +
-            Math.Max(0, columns - 1) * ClaudeRadarModelButtonGap;
-        if (rowWidth > grid.Width)
-        {
-            throw new InvalidOperationException("Claude Radar model grid buttons exceed selector width.");
-        }
-
-        int preferredGridWidth = GetClaudeRadarModelGridPreferredWidth();
-        if (grid.Width >= preferredGridWidth && buttonWidth < ClaudeRadarModelButtonWidth)
-        {
-            throw new InvalidOperationException("Claude Radar model grid preferred button width was reduced.");
-        }
-
-        int compactWidth = 280;
-        int compactColumns = GetClaudeRadarModelColumnCountForGrid(compactWidth);
-        int compactButtonWidth = GetClaudeRadarModelButtonWidthForGrid(compactWidth);
-        if (compactColumns != 3 || compactButtonWidth < ClaudeRadarModelButtonMinimumWidth)
-        {
-            throw new InvalidOperationException("Claude Radar model grid does not expand cells in narrow settings rows.");
-        }
-
-        string commonLongLabel = GetClaudeRadarModelButtonText(
-            new ClaudeModelOption("m9", "Opus 4.8 medium", true, false));
-        if (!string.Equals(commonLongLabel, "Opus 4.8 medium", StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException("Claude Radar model grid truncates common model labels.");
-        }
-
-        bool sawAuto = false;
-        for (int i = 0; i < grid.Controls.Count; i++)
-        {
-            Button button = grid.Controls[i] as Button;
-            if (button == null)
-            {
-                throw new InvalidOperationException("Claude Radar model grid contains a non-button slot.");
-            }
-
-            if (button.Width != buttonWidth)
-            {
-                throw new InvalidOperationException("Claude Radar model grid button width is not responsive.");
-            }
-
-            ClaudeModelOption option = button.Tag as ClaudeModelOption;
-            if (option == null)
-            {
-                if (button.Enabled || !string.Equals(button.Text, "--", StringComparison.Ordinal))
-                {
-                    throw new InvalidOperationException("Claude Radar empty model slot must be disabled --.");
-                }
-                continue;
-            }
-
-            if (option.Key.Length == 0)
-            {
-                sawAuto = true;
-                if (!button.Enabled)
-                {
-                    throw new InvalidOperationException("Claude Radar automatic model slot must be selectable.");
-                }
-            }
-            else if (!option.Available && button.Enabled)
-            {
-                throw new InvalidOperationException("Claude Radar unavailable model slot must be disabled.");
-            }
-        }
-
-        if (!sawAuto)
-        {
-            throw new InvalidOperationException("Claude Radar model grid missing automatic slot.");
         }
     }
 
@@ -3815,6 +3513,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 SettingEditor editor = page.Editors[j];
                 SettingRow card = editor.Card;
                 Control control = editor.Control;
+                if (!card.Visible)
+                {
+                    continue;
+                }
+
                 card.RefreshLayoutForWidth(card.ClientSize.Width);
                 int rightLimit = card.ClientSize.Width - card.Padding.Right + 1;
                 int bottomLimit = card.ClientSize.Height - card.Padding.Bottom + 1;
@@ -3876,60 +3579,41 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
     private static readonly Dictionary<string, NumericRange> NumericRanges = new Dictionary<string, NumericRange>(StringComparer.Ordinal)
     {
-        { "Width", new NumericRange(WidgetSettings.MinWidth, WidgetSettings.MaxWidth) },
-        { "Height", new NumericRange(WidgetSettings.MinHeight, WidgetSettings.MaxHeight) },
-        { "CodexRadarWidth", new NumericRange(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MaxCodexRadarWidth) },
-        { "CodexRadarHeight", new NumericRange(WidgetSettings.MinCodexRadarHeight, WidgetSettings.MaxCodexRadarHeight) },
-        { "ClaudeRadarWidth", new NumericRange(WidgetSettings.MinCodexRadarWidth, WidgetSettings.MaxCodexRadarWidth) },
-        { "ClaudeRadarHeight", new NumericRange(WidgetSettings.MinCodexRadarHeight, WidgetSettings.MaxCodexRadarHeight) },
-        { "CodexRadarManualLeftPercent", new NumericRange(WidgetSettings.MinCodexRadarManualLeftPercent, WidgetSettings.MaxCodexRadarManualLeftPercent) },
-        { "CodexRadarManualGapPixels", new NumericRange(WidgetSettings.MinCodexRadarManualGapPixels, WidgetSettings.MaxCodexRadarManualGapPixels) },
-        { "CodexRadarManualEfficiencyTextWidthPixels", new NumericRange(WidgetSettings.MinCodexRadarManualEfficiencyTextWidthPixels, WidgetSettings.MaxCodexRadarManualEfficiencyTextWidthPixels) },
-        { "CodexRadarManualQuotaRowsWidthPixels", new NumericRange(WidgetSettings.MinCodexRadarManualQuotaRowsWidthPixels, WidgetSettings.MaxCodexRadarManualQuotaRowsWidthPixels) },
-        { "CodexRadarManualIqStatusWidthPixels", new NumericRange(WidgetSettings.MinCodexRadarManualIqStatusWidthPixels, WidgetSettings.MaxCodexRadarManualIqStatusWidthPixels) },
-        { "CodexRadarManualTextScalePercent", new NumericRange(WidgetSettings.MinCodexRadarManualTextScalePercent, WidgetSettings.MaxCodexRadarManualTextScalePercent) },
-        { "CodexRadarManualRingScalePercent", new NumericRange(WidgetSettings.MinCodexRadarManualRingScalePercent, WidgetSettings.MaxCodexRadarManualRingScalePercent) },
-        { "PowerThermalWidth", new NumericRange(WidgetSettings.MinPowerThermalWidth, WidgetSettings.MaxPowerThermalWidth) },
-        { "PowerThermalHeight", new NumericRange(WidgetSettings.MinPowerThermalHeight, WidgetSettings.MaxPowerThermalHeight) },
-        { "PowerThermalVisibleAlertCount", new NumericRange(WidgetSettings.MinPowerThermalVisibleAlerts, WidgetSettings.MaxPowerThermalVisibleAlerts) },
+        { "MetricTileExpandWidth", new NumericRange(WidgetSettings.MinMetricTileExpandWidth, WidgetSettings.MaxMetricTileExpandWidth) },
+        { "MetricTileExpandHeight", new NumericRange(WidgetSettings.MinMetricTileExpandHeight, WidgetSettings.MaxMetricTileExpandHeight) },
         { "PowerThermalManualEnergySaverThresholdPercent", new NumericRange(WidgetSettings.MinPowerThermalManualEnergySaverThresholdPercent, WidgetSettings.MaxPowerThermalManualEnergySaverThresholdPercent) },
-        { "NetworkMonitorWidth", new NumericRange(WidgetSettings.MinNetworkMonitorWidth, WidgetSettings.MaxNetworkMonitorWidth) },
-        { "NetworkMonitorHeight", new NumericRange(WidgetSettings.MinNetworkMonitorHeight, WidgetSettings.MaxNetworkMonitorHeight) },
         { "GfwProbeIntervalMinutes", new NumericRange(WidgetSettings.MinGfwProbeIntervalMinutes, WidgetSettings.MaxGfwProbeIntervalMinutes) },
-        { "ConnectionCheckWidth", new NumericRange(WidgetSettings.MinConnectionCheckWidth, WidgetSettings.MaxConnectionCheckWidth) },
-        { "ConnectionCheckHeight", new NumericRange(WidgetSettings.MinConnectionCheckHeight, WidgetSettings.MaxConnectionCheckHeight) },
         { "SpecBoardWidth", new NumericRange(WidgetSettings.MinSpecBoardWidth, WidgetSettings.MaxSpecBoardWidth) },
         { "SpecBoardHeight", new NumericRange(WidgetSettings.MinSpecBoardHeight, WidgetSettings.MaxSpecBoardHeight) },
-        { "SpecBoardLeftX", new NumericRange(-1, 1000000) },
-        { "SpecBoardBottomY", new NumericRange(-1, 1000000) },
         { "SpecBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinSpecBoardAutoHideSeconds, WidgetSettings.MaxSpecBoardAutoHideSeconds) },
+        { "SpecBoardLeftDockTabCenterY", new NumericRange(WidgetSettings.AutoLeftDockTabCenterY, 1000000) },
+        { "CodexTaskBoardLeftDockTabCenterY", new NumericRange(WidgetSettings.AutoLeftDockTabCenterY, 1000000) },
+        { "NetworkMonitorLeftDockTabCenterY", new NumericRange(WidgetSettings.AutoLeftDockTabCenterY, 1000000) },
+        { "GuardBoardLeftDockTabCenterY", new NumericRange(WidgetSettings.AutoLeftDockTabCenterY, 1000000) },
+        { "GuardBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinGuardBoardAutoHideSeconds, WidgetSettings.MaxGuardBoardAutoHideSeconds) },
+        { "CodexIqBoardLeftDockTabCenterY", new NumericRange(WidgetSettings.AutoLeftDockTabCenterY, 1000000) },
+        { "CodexIqBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinCodexIqBoardAutoHideSeconds, WidgetSettings.MaxCodexIqBoardAutoHideSeconds) },
         { "SpecBoardAutoPopupSeconds", new NumericRange(WidgetSettings.MinSpecBoardAutoPopupSeconds, WidgetSettings.MaxSpecBoardAutoPopupSeconds) },
         { "SpecBoardManagerWidth", new NumericRange(WidgetSettings.MinSpecBoardManagerWidth, WidgetSettings.MaxSpecBoardManagerWidth) },
         { "SpecBoardManagerHeight", new NumericRange(WidgetSettings.MinSpecBoardManagerHeight, WidgetSettings.MaxSpecBoardManagerHeight) },
         { "ConnectionCheckIntervalSeconds", new NumericRange(WidgetSettings.MinConnectionCheckIntervalSeconds, WidgetSettings.MaxConnectionCheckIntervalSeconds) },
-        { "ConnectionCheckBorderTransparencyPercent", new NumericRange(WidgetSettings.MinBorderTransparency, WidgetSettings.MaxBorderTransparency) },
         { "OperationButtonSize", new NumericRange(WidgetSettings.MinOperationButtonSize, WidgetSettings.MaxOperationButtonSize) },
         { "OperationLeftOffset", new NumericRange(WidgetSettings.MinOperationOffset, WidgetSettings.MaxOperationOffset) },
         { "OperationBottomOffset", new NumericRange(WidgetSettings.MinOperationOffset, WidgetSettings.MaxOperationOffset) },
         { "ResolutionCompatibilityScalePercent", new NumericRange(WidgetSettings.MinResolutionCompatibilityScalePercent, WidgetSettings.MaxResolutionCompatibilityScalePercent) },
-        { "MainWidgetScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
-        { "CodexRadarScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
-        { "ClaudeRadarScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
-        { "PowerThermalScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
         { "NetworkMonitorScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
-        { "ConnectionCheckScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
         { "OperationScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
         { "SpecBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
         { "CodexTaskBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "GuardBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "CodexIqBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
         { "MainWidgetTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
-        { "CodexRadarTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
-        { "ClaudeRadarTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
-        { "PowerThermalTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "NetworkMonitorTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
-        { "ConnectionCheckTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "OperationTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "SpecBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "CodexTaskBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "GuardBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "CodexIqBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "NightScheduleStartMinutes", new NumericRange(WidgetSettings.MinNightScheduleMinutes, WidgetSettings.MaxNightScheduleMinutes) },
         { "NightScheduleEndMinutes", new NumericRange(WidgetSettings.MinNightScheduleMinutes, WidgetSettings.MaxNightScheduleMinutes) },
         { "NightDimLuminancePercent", new NumericRange(WidgetSettings.MinNightDimLuminancePercent, WidgetSettings.MaxNightDimLuminancePercent) },
@@ -3941,11 +3625,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationRadialIdleCollapseSeconds", new NumericRange(WidgetSettings.NeverOperationRadialIdleCollapseSeconds, WidgetSettings.MaxOperationRadialIdleCollapseSeconds) },
         { "CodexQuotaPlanWeeklyThresholdPercent", new NumericRange(WidgetSettings.MinCodexQuotaPlanThresholdPercent, WidgetSettings.MaxCodexQuotaPlanThresholdPercent) },
         { "CodexQuotaPlanFiveHourThresholdPercent", new NumericRange(WidgetSettings.MinCodexQuotaPlanThresholdPercent, WidgetSettings.MaxCodexQuotaPlanThresholdPercent) },
-        { "CodexModelIqTestPassed", new NumericRange(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed) },
-        { "CodexModelIqBaselinePassed", new NumericRange(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed) },
-        { "CodexModelIqBaselineValidTasks", new NumericRange(WidgetSettings.MinCodexModelIqValidTasks, WidgetSettings.MaxCodexModelIqValidTasks) },
-        { "CodexModelTokenEfficiencyBaselinePassed", new NumericRange(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed) },
-        { "CodexModelTimeEfficiencyBaselinePassed", new NumericRange(WidgetSettings.MinCodexModelIqPassed, WidgetSettings.MaxCodexModelIqPassed) }
     };
 
     private static readonly Dictionary<string, string> SettingTitles = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -3955,7 +3634,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "VisibilityMode", "可见性" },
         { "CodexPetZOrderProtectionEnabled", "小窗保持在 Codex 宠物下层" },
         { "VisibilityOverlapIgnoresOperationPanelEnabled", "遮挡忽略操作面板" },
-        { "ClickThroughMode", "点击穿透" },
         { "ForceShowForegroundFpsEnabled", "强制显示 FPS" },
         { "OperationPrimaryPanelMode", "左侧区域模式" },
         { "OperationWindowsButtonEnabled", "显示 Windows 按钮" },
@@ -3965,6 +3643,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "PowerResumeRestartEnabled", "休眠唤醒后重启" },
         { "AiRequestProtectionAutoEnabled", "AI 自动阻断" },
         { "AiRequestProtectionManualBlockEnabled", "AI 手动阻断" },
+        { "AiChinaEgressGuardEnabled", "大陆出口保护" },
         { "CodexQuotaPlanEnabled", "启用额度计划" },
         { "CodexQuotaPlanWeeklyComparison", "周额度条件" },
         { "CodexQuotaPlanWeeklyThresholdPercent", "周额度阈值" },
@@ -3975,38 +3654,31 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexQuotaPlanPauseGoalIds", "暂停 goal 列表" },
         { "CodexQuotaPlanResumeGoalIds", "恢复 goal 列表" },
         { "FallbackDisconnectedDisplaysEnabled", "断开后回退显示器" },
-        { "MainDisplayDeviceName", "主窗口显示器" },
-        { "CodexRadarDisplayDeviceName", "Codex Radar 显示器" },
-        { "ClaudeRadarDisplayDeviceName", "Claude Radar 显示器" },
-        { "PowerThermalDisplayDeviceName", "功耗温度显示器" },
-        { "NetworkMonitorDisplayDeviceName", "网络监控显示器" },
-        { "ConnectionCheckDisplayDeviceName", "连接检测显示器" },
+        { "MainDisplayDeviceName", "右侧磁贴列显示器" },
         { "OperationDisplayDeviceName", "操作面板显示器" },
         { "ResolutionCompatibilityModeEnabled", "分辨率兼容模式" },
         { "ResolutionCompatibilityScalePercent", "兼容缩放比例" },
         { GlobalLayoutEditCommandName, "全局编辑" },
-        { "Width", "主窗口宽度" },
-        { "Height", "主窗口高度" },
-        { "LeftX", "主窗口距左边" },
-        { "BottomY", "主窗口距下边" },
-        { "CodexRadarWidth", "Codex Radar 宽度" },
-        { "CodexRadarHeight", "Codex Radar 高度" },
-        { "CodexRadarLeftX", "Codex Radar 距左边" },
-        { "CodexRadarBottomY", "Codex Radar 距下边" },
-        { "PowerThermalWidth", "功耗温度宽度" },
-        { "PowerThermalHeight", "功耗温度高度" },
-        { "PowerThermalLeftX", "功耗温度距左边" },
-        { "PowerThermalBottomY", "功耗温度距下边" },
-        { "NetworkMonitorWidth", "网络监控宽度" },
-        { "NetworkMonitorHeight", "网络监控高度" },
-        { "NetworkMonitorLeftX", "网络监控距左边" },
-        { "NetworkMonitorBottomY", "网络监控距下边" },
-        { "ConnectionCheckWidth", "连接检测宽度" },
+        { "LeftDockAutoArrangeEnabled", "自动排列左侧面板列" },
+        { "LeftDockButtonOrder", "左侧按钮顺序" },
+        { "LeftDockButtonGapPixels", "左侧按钮间距" },
+        { "LeftDockGroupOffsetY", "左侧整列上下位置" },
+        { "RightTileAutoArrangeEnabled", "自动排列右侧磁贴列" },
+        { "RightTileButtonOrder", "右侧磁贴顺序" },
+        { "RightTileButtonGapPixels", "右侧磁贴间距" },
+        { "RightTileGroupOffsetY", "右侧整列上下位置" },
+        { "MetricTileExpandWidth", "展开面板宽度" },
+        { "MetricTileExpandHeight", "展开面板高度" },
         { "SpecBoardWidth", "Spec Board 宽度" },
         { "SpecBoardHeight", "Spec Board 高度" },
-        { "SpecBoardLeftX", "Spec Board 左侧 X" },
-        { "SpecBoardBottomY", "Spec Board 底部 Y" },
         { "SpecBoardAutoHideSeconds", "Spec Board 自动收回秒数" },
+        { "SpecBoardLeftDockTabCenterY", "Spec Board 标签中心 Y" },
+        { "CodexTaskBoardLeftDockTabCenterY", "Codex 任务标签中心 Y" },
+        { "NetworkMonitorLeftDockTabCenterY", "网络监控标签中心 Y" },
+        { "GuardBoardLeftDockTabCenterY", "GUARD 标签中心 Y" },
+        { "GuardBoardAutoHideSeconds", "GUARD 自动收回秒数" },
+        { "CodexIqBoardLeftDockTabCenterY", "Codex IQ 标签中心 Y" },
+        { "CodexIqBoardAutoHideSeconds", "Codex IQ 自动收回秒数" },
         { "LeftDockOutsideClickCollapseEnabled", "点击看板外部时收回" },
         { "SpecBoardAutoPopupEnabled", "发现新 Spec 时自动弹出" },
         { "SpecBoardAutoPopupSeconds", "新 Spec 弹窗停留秒数" },
@@ -4014,31 +3686,22 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "SpecBoardManagerWidth", "Spec 管理窗口宽度" },
         { "SpecBoardManagerHeight", "Spec 管理窗口高度" },
         { "SpecBoardManagerDangerZoneRequiresTypedConfirm", "删除源文件需要输入文件名确认" },
-        { "ConnectionCheckHeight", "连接检测高度" },
-        { "ConnectionCheckLeftX", "连接检测距左边" },
-        { "ConnectionCheckBottomY", "连接检测距下边" },
         { "OperationLeftOffset", "操作面板距左边" },
         { "OperationBottomOffset", "操作面板距下边" },
-        { "BackgroundTransparencyPercent", "主窗口背景透明度" },
         { "ApplicationTransparencyPercent", "全局整体透明度" },
-        { "MainWidgetTransparencyOverridePercent", "主窗口整体透明度覆盖" },
-        { "MainWidgetScaleOverridePercent", "主窗口缩放覆盖" },
-        { "CodexRadarScaleOverridePercent", "Codex Radar 缩放覆盖" },
-        { "ClaudeRadarScaleOverridePercent", "Claude Radar 缩放覆盖" },
-        { "PowerThermalScaleOverridePercent", "功耗温度缩放覆盖" },
+        { "MainWidgetTransparencyOverridePercent", "右侧磁贴透明度覆盖" },
         { "NetworkMonitorScaleOverridePercent", "网络监控缩放覆盖" },
-        { "ConnectionCheckScaleOverridePercent", "连接检测缩放覆盖" },
         { "OperationScaleOverridePercent", "操作面板缩放覆盖" },
         { "SpecBoardScaleOverridePercent", "Spec Board 缩放覆盖" },
         { "CodexTaskBoardScaleOverridePercent", "Codex 任务看板缩放覆盖" },
-        { "CodexRadarTransparencyOverridePercent", "Codex Radar 整体透明度覆盖" },
-        { "ClaudeRadarTransparencyOverridePercent", "Claude Radar 整体透明度覆盖" },
-        { "PowerThermalTransparencyOverridePercent", "功耗温度整体透明度覆盖" },
+        { "GuardBoardScaleOverridePercent", "GUARD 看板缩放覆盖" },
+        { "CodexIqBoardScaleOverridePercent", "Codex IQ 看板缩放覆盖" },
         { "NetworkMonitorTransparencyOverridePercent", "网络监控整体透明度覆盖" },
-        { "ConnectionCheckTransparencyOverridePercent", "连接检测整体透明度覆盖" },
         { "OperationTransparencyOverridePercent", "操作面板整体透明度覆盖" },
         { "SpecBoardTransparencyOverridePercent", "Spec Board 整体透明度覆盖" },
         { "CodexTaskBoardTransparencyOverridePercent", "Codex 任务看板整体透明度覆盖" },
+        { "GuardBoardTransparencyOverridePercent", "GUARD 看板整体透明度覆盖" },
+        { "CodexIqBoardTransparencyOverridePercent", "Codex IQ 看板整体透明度覆盖" },
         { "NightScheduleEnabled", "启用夜间时段" },
         { "NightScheduleStartMinutes", "夜间开始（自午夜分钟）" },
         { "NightScheduleEndMinutes", "夜间结束（自午夜分钟）" },
@@ -4048,16 +3711,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "AlertResetProtectionEnabled", "重置保护提醒" },
         { "AlertServiceHealthEnabled", "服务健康提醒" },
         { "AlertCodexTaskEnabled", "Codex 任务提醒" },
-        { "AlertDeepSeekBalanceEnabled", "DeepSeek 余额提醒" },
         { "HotkeyToggleAllWindows", "隐藏/显示全部挂件" },
         { "HotkeyToggleHoverOpacity", "切换悬停透明度" },
         { "HotkeyOpenSettings", "打开设置" },
-        { "ShowCpu", "显示 CPU" },
-        { "ShowMemory", "显示内存" },
-        { "ShowDisk", "显示磁盘" },
-        { "ShowNetwork", "显示网络" },
-        { "ShowGpu", "显示 GPU" },
-        { "ShowNpu", "显示 NPU" },
         { "HoverOpacityEnabled", "鼠标靠近时隐藏" },
         { "SensitiveMouseModeEnabled", "敏感鼠标模式" },
         { "SensitiveMouseRangePixels", "触发距离（像素）" },
@@ -4075,72 +3731,15 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationRadialIdleResetOnInteractionEnabled", "操作后重置收回计时" },
         { "OperationRadialKeepOpenAfterLeafClickEnabled", "末端按钮后保持展开" },
         { "BurnInHiddenModeColorProtectionEnabled", "隐藏反色防烧屏" },
-        { "CodexRadarSoftwareMode", "共享窗检测对象" },
+        { "CodexRadarSoftwareMode", "Radar 数据族" },
         { "CodexRadarModelKey", "CODEX 模型" },
-        { "CodexRadarModelVersion", "旧模型版本" },
         { "RadarClockAutoSwitchModelEnabled", "过期自动切换模型" },
-        { "RadarClockTimeDisplayMode", "时钟时间显示" },
-        { "CodexRadarSpeedWindowCountdownEnabled", "速蹬结束倒计时" },
-        { "CodexRadarQuotaResetRainbowEnabled", "额度重置天蓝提醒" },
-        { "CodexRadarEnabled", "启用共享 Radar 小窗" },
-        { "CodexRadarTransparencyPercent", "Codex Radar 透明度" },
-        { "ClaudeRadarEnabled", "启用独立 Claude Radar" },
-        { "ClaudeRadarWidth", "Claude Radar 宽度" },
-        { "ClaudeRadarHeight", "Claude Radar 高度" },
-        { "ClaudeRadarLeftX", "Claude Radar 左侧 X" },
-        { "ClaudeRadarBottomY", "Claude Radar 底部 Y" },
-        { "ClaudeRadarTransparencyPercent", "Claude Radar 背景透明" },
-        { "ClaudeRadarModelKey", "Claude 模型映射" },
-        { "ClaudeRadarJsonEnabled", "Claude 站点 JSON" },
-        { "ClaudeRadarHomepageFallbackEnabled", "首页模型元数据回退" },
-        { "ClaudeRadarCommunityRatingsEnabled", "Claude 社区体感分" },
-        { "ClaudeRadarLocalQuotaFallbackEnabled", "本地 7 天额度线回退" },
-        { "ClaudeRadarServiceProbeToken", "检查 Claude 数据链路" },
         { ClaudeSetupTokenCommandName, "Claude Code 用量令牌" },
-        { "ClaudeRadarRandomTestEnabled", "Claude 随机测试" },
-        { "ClaudeRadarRandomTestAutoRefresh", "Claude 随机测试自动刷新" },
-        { "ClaudeRadarRandomTestRefreshToken", "立即刷新随机测试" },
-        { "CodexRadarRandomTestEnabled", "随机测试" },
-        { "CodexRadarRandomTestAutoRefresh", "随机测试自动刷新" },
-        { "CodexRadarRandomTestRefreshToken", "立即刷新随机测试" },
+        { "CodexRadarRandomTestEnabled", "服务健康随机测试" },
+        { "CodexRadarRandomTestAutoRefresh", "健康测试自动刷新" },
+        { "CodexRadarRandomTestRefreshToken", "立即刷新健康测试" },
         { "OperationSettingsLogicExtensionEnabled", "设置扩展到操作逻辑" },
         { "OperationDoubleClickSpecialMenuEnabled", "双击打开特殊菜单" },
-        { "CodexRadarManualLayoutEnabled", "启用手动布局" },
-        { "CodexRadarManualLeftPercent", "左侧区域占比" },
-        { "CodexRadarManualGapPixels", "模块间距" },
-        { "CodexRadarManualEfficiencyTextWidthPixels", "效率文字列宽" },
-        { "CodexRadarManualQuotaRowsWidthPixels", "余额列宽" },
-        { "CodexRadarManualIqStatusWidthPixels", "IQ 状态列宽" },
-        { "CodexRadarManualTextScalePercent", "文字比例" },
-        { "CodexRadarManualRingScalePercent", "圆环比例" },
-        { "CodexRadarTimeEfficiencyRingOffsetX", "时间环 X" },
-        { "CodexRadarTimeEfficiencyRingOffsetY", "时间环 Y" },
-        { "CodexRadarTimeEfficiencyTextOffsetX", "时间字 X" },
-        { "CodexRadarTimeEfficiencyTextOffsetY", "时间字 Y" },
-        { "CodexRadarTokenEfficiencyRingOffsetX", "Token 环 X" },
-        { "CodexRadarTokenEfficiencyRingOffsetY", "Token 环 Y" },
-        { "CodexRadarTokenEfficiencyTextOffsetX", "Token 字 X" },
-        { "CodexRadarTokenEfficiencyTextOffsetY", "Token 字 Y" },
-        { "CodexRadarConnectionTopTextOffsetX", "连接上字 X" },
-        { "CodexRadarConnectionTopTextOffsetY", "连接上字 Y" },
-        { "CodexRadarConnectionLineOffsetX", "连接线 X" },
-        { "CodexRadarConnectionLineOffsetY", "连接线 Y" },
-        { "CodexRadarConnectionBottomTextOffsetX", "连接下字 X" },
-        { "CodexRadarConnectionBottomTextOffsetY", "连接下字 Y" },
-        { "CodexRadarFiveHourQuotaRingOffsetX", "5h 环 X" },
-        { "CodexRadarFiveHourQuotaRingOffsetY", "5h 环 Y" },
-        { "CodexRadarFiveHourQuotaTextOffsetX", "5h 字 X" },
-        { "CodexRadarFiveHourQuotaTextOffsetY", "5h 字 Y" },
-        { "CodexRadarWeeklyQuotaRingOffsetX", "周环 X" },
-        { "CodexRadarWeeklyQuotaRingOffsetY", "周环 Y" },
-        { "CodexRadarWeeklyQuotaTextOffsetX", "周字 X" },
-        { "CodexRadarWeeklyQuotaTextOffsetY", "周字 Y" },
-        { "CodexRadarQuotaRadarLineOffsetX", "额度线 X" },
-        { "CodexRadarQuotaRadarLineOffsetY", "额度线 Y" },
-        { "CodexRadarIqRingOffsetX", "IQ 环 X" },
-        { "CodexRadarIqRingOffsetY", "IQ 环 Y" },
-        { "CodexRadarIqTextOffsetX", "IQ 字 X" },
-        { "CodexRadarIqTextOffsetY", "IQ 字 Y" },
         { "CodexRadarPublicJsonEnabled", "Codex 公开 JSON" },
         { "CodexRadarHtmlFallbackEnabled", "Codex 首页 HTML 回退" },
         { "CodexRadarRssFallbackEnabled", "Codex RSS 重置提醒" },
@@ -4153,34 +3752,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexQuotaProviderWeeklySpikeProtectionEnabled", "周额度突增保护" },
         { "CodexQuotaStrictFiveHourResetBoundaryEnabled", "严格 5h 边界" },
         { "CodexQuotaWeeklyBaselineAutoRepairEnabled", "周基线自动修复" },
-        { "DeepSeekApiKeyRevision", "DeepSeek 余额配置" },
-        { "CodexModelIqTestEnabled", "用测试值代替实时 IQ（调试用）" },
-        { "CodexModelIqTestPassed", "IQ 测试通过数" },
-        { "CodexModelIqBaselineAutoEnabled", "IQ 基准自动跟随网站" },
-        { "CodexModelIqBaselineMode", "IQ 基准模式" },
-        { "CodexModelIqBaselinePassed", "IQ 基准通过数" },
-        { "CodexModelIqBaselineValidTasks", "IQ 基准总题数" },
-        { "CodexModelEfficiencyTestEnabled", "用测试值代替实时效率（调试用）" },
-        { "CodexModelTokenEfficiencyTestPercent", "Token 效率测试百分比" },
-        { "CodexModelTimeEfficiencyTestPercent", "时间效率测试百分比" },
-        { "CodexModelTokenEfficiencyBaselineMode", "Token 效率基准模式" },
-        { "CodexModelTimeEfficiencyBaselineMode", "时间效率基准模式" },
-        { "CodexModelTokenEfficiencyBaselineTokens", "Token 效率基准值" },
-        { "CodexModelTimeEfficiencyBaselineSeconds", "时间效率基准秒数" },
-        { "CodexModelTokenEfficiencyLowThresholdPercent", "Token 低效阈值" },
-        { "CodexModelTimeEfficiencyLowThresholdPercent", "时间低效阈值" },
-        { "DisplayTimeZoneId", "通用显示时区 ID" },
-        { "DisplayTimeZoneMode", "通用显示时区模式" },
-        { "PowerThermalIntegratedEnabled", "功耗模块集成到性能窗口" },
-        { "CpuCoreWarningPercent", "CPU 核心警戒阈值 (%)" },
-        { "CpuCoreCriticalPercent", "CPU 核心满载阈值 (%)" },
-        { "PowerThermalAutoSizeEnabled", "功耗模块自动大小" },
-        { "PowerThermalAutoDirection", "自动大小方向" },
-        { "PowerThermalVisibleAlertCount", "可见告警数量" },
+        { "MainWidgetTileLargeModeEnabled", "方块大窗口模式" },
         { "PowerThermalManualEnergySaverThresholdPercent", "手动节能阈值" },
-        { "PowerThermalTransparencyPercent", "功耗温度透明度" },
         { "NetworkMonitorAdapterId", "网络适配器 ID" },
-        { "NetworkMonitorTransparencyPercent", "网络监控透明度" },
         { "NetworkStatusTestMode", "网络状态测试" },
         { "GfwProbeIntervalMinutes", "GFW 检测间隔" },
         { "GfwProbeEnabled", "启用 GFW 检测" },
@@ -4190,16 +3764,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "FixedPingTargets", "Ping 目标" },
         { "CloudStatusRegionMask", "云服务地区掩码" },
         { "ConnectionCheckIntervalSeconds", "连接检测间隔" },
-        { "ConnectionCheckTransparencyPercent", "连接检测透明度" },
-        { "ConnectionCheckBorderTransparencyPercent", "连接检测边框透明度" },
         { "ConnectionCheckManualRefreshToken", "立即刷新连接检测" },
         { "CleanIpBadgeTestMode", "出口身份测试模式" },
         { "ThermalTestMode", "温控测试模式" },
         { "AlertTestEnabled", "告警测试" },
         { "OperationButtonSize", "按钮大小" },
-        { "OperationBackgroundTransparencyPercent", "操作面板透明度" },
-        { "CodexModelTokenEfficiencyBaselinePassed", "Token 效率基准通过数" },
-        { "CodexModelTimeEfficiencyBaselinePassed", "时间效率基准通过数" }
+        { "OperationBackgroundTransparencyPercent", "操作面板透明度" }
     };
 
     private static readonly Dictionary<string, string> SettingHints = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -4209,10 +3779,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "VisibilityMode", "五档：总是可见、全屏时不可见、最大化时不可见、遮挡时不可见、仅桌面可见；默认全屏时不可见。最大化档也包含全屏。" },
         { "CodexPetZOrderProtectionEnabled", "开启后，非桌面模式的小窗口始终排在 Codex 桌面宠物和 SeelenUI 浮层下方；默认开启。" },
         { "VisibilityOverlapIgnoresOperationPanelEnabled", "仅在“遮挡时不可见”生效；开启后左下角操作面板及其展开区域不会因为被其他应用窗口覆盖而隐藏。" },
-        { "ClickThroughMode", "允许鼠标事件穿透主窗口。" },
         { "ForceShowForegroundFpsEnabled", "调试用，强制显示前台 FPS 信息。" },
         { "AiRequestProtectionAutoEnabled", "网络监控判定为 GFW 明确阻断时，阻断本程序发往 OpenAI、ChatGPT、Claude 和 Anthropic 的请求。" },
         { "AiRequestProtectionManualBlockEnabled", "手动启用后立即阻断本程序相关 AI 请求；也可在左下角程序设置按钮单击打开的特殊设置中切换。" },
+        { "AiChinaEgressGuardEnabled", "出口 IP 明确位于中国大陆时，自动阻断本程序发往 Anthropic、OpenAI 的请求并弹出全屏警告；出口未知或结果过期时仅静默阻断，确认在日本等境外时不动作。判据为出口 IP 国别，采用 fail-closed。" },
         { "CodexQuotaPlanEnabled", "按本地 Codex 剩余额度缓存自动暂停或恢复选中的 Codex goal。" },
         { "CodexQuotaPlanWeeklyComparison", "周额度百分比的比较方向；默认小于 3%。" },
         { "CodexQuotaPlanWeeklyThresholdPercent", "周额度剩余百分比阈值，范围 0-100。" },
@@ -4241,13 +3811,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationSettingsLogicExtensionEnabled", "开启后在扇形速控盘“设置”分支中增加常用逻辑和全部开关目录；关闭时保持原来的 3 项设置菜单。" },
         { "OperationDoubleClickSpecialMenuEnabled", "开启后双击左下角主操作按钮会打开 Spec 管理、Codex 任务和睡眠防护特殊菜单；关闭时双击直接开关隐藏模式。" },
         { "BurnInHiddenModeColorProtectionEnabled", "隐藏时执行颜色反相和白灰透明化。" },
-        { "CodexRadarSoftwareMode", "只影响 Codex Radar 这个共享小窗：自动按前台和运行态选择，或固定显示 CODEX/CLAUDE 数据。独立 Claude Radar 不受这里影响。" },
-        { "CodexRadarModelKey", "共享小窗处于 CODEX 模式时使用的 CodexRadar 模型；CLAUDE 模式使用 Claude 模型映射。" },
-        { "CodexRadarModelVersion", "兼容旧配置的模型版本枚举；日常使用上方 CODEX 模型选择，不需要改这里。" },
-        { "RadarClockAutoSwitchModelEnabled", "Codex/Claude Radar 时钟跨过完整周期仍没有当前模型 IQ 更新时，自动切到同站点当天最近刷新 IQ 的模型。" },
-        { "RadarClockTimeDisplayMode", "控制两个 Radar 时钟中心下方时间：UTC、当前本机时间、上次尝试刷新，或上次实际 IQ 刷新。" },
-        { "CodexRadarSpeedWindowCountdownEnabled", "速蹬窗口有明确结束时间时，用天蓝色消退圆环、小时倒计时和 RST 取代右侧 IQ 时钟；关闭后仍保留左侧额度时间强制金色。" },
-        { "CodexRadarQuotaResetRainbowEnabled", "周额度经确认上涨回到 95% 及以上时，两个额度圆环变天蓝色以提醒额度已重置，直到周额度低于 90% 才恢复；仅对经干扰过滤后被接受的真实上涨生效，避免幻影样本误触发。关闭后圆环始终使用常规配色。（存在不满一天到期的重置卡时两环显示静态彩虹，不受本开关控制。）" },
+        { "CodexRadarSoftwareMode", "控制后台额度数据族自动按运行态选择，或固定使用 CODEX/CLAUDE；CLAUDE 只读取官方 Claude Code 用量。" },
+        { "CodexRadarModelKey", "仅用于 CODEX 数据族的 CodexRadar 模型选择；CLAUDE 额度不区分模型。" },
+        { "RadarClockAutoSwitchModelEnabled", "Codex Radar 跨过完整周期仍没有当前模型 IQ 更新时，自动切到站点当天最近刷新 IQ 的模型。" },
         { "CodexRadarPublicJsonEnabled", "读取 codexradar.com/current.json 公开摘要层，包含窗口、预测和 API 可用性说明。" },
         { "CodexRadarHtmlFallbackEnabled", "公开 JSON 缺少展示字段时，从 codexradar.com 首页补齐 IQ、效率、额度线和模型目录展示数据。" },
         { "CodexRadarRssFallbackEnabled", "读取 CodexRadar feed.xml 的重置提醒；关闭后不会用 RSS 触发额度重置保护。" },
@@ -4260,55 +3826,13 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexQuotaProviderWeeklySpikeProtectionEnabled", "Provider 在周窗口未到期时把低周余额跳到近满时拒绝；默认关闭，避免拦截手动重置卡。" },
         { "CodexQuotaStrictFiveHourResetBoundaryEnabled", "只有旧 5 小时 reset 已到期且边界推进时才重建周消耗基线；默认关闭，允许手动重置卡被余额上涨识别。" },
         { "CodexQuotaWeeklyBaselineAutoRepairEnabled", "检测到疑似被 100 污染的周消耗基线时自动修回当前周余额；默认关闭，避免隐藏真实重置卡效果。" },
-        { "CodexRadarRandomTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
-        { "CodexRadarRandomTestAutoRefresh", "仅用于测试显示效果，日常保持关闭。" },
-        { "CodexRadarRandomTestRefreshToken", "点击后让随机测试数据立刻换一组。" },
-        { "CodexModelIqTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
-        { "CodexModelIqTestPassed", "手动指定 IQ 测试通过数。" },
-        { "CodexModelIqBaselineAutoEnabled", "开启时自动读取网站有效题数和常态区推导 n/N；关闭后使用下方手动 n/N。" },
-        { "CodexModelIqBaselineMode", "选择 IQ 对比基准的来源。" },
-        { "CodexModelIqBaselinePassed", "手动指定 IQ 基准通过数 n。" },
-        { "CodexModelIqBaselineValidTasks", "手动指定 IQ 基准总题数 N；仅在关闭自动基准时用于 IQ 环。" },
-        { "CodexModelEfficiencyTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
-        { "CodexModelTokenEfficiencyTestPercent", "手动指定 Token 效率测试百分比。" },
-        { "CodexModelTimeEfficiencyTestPercent", "手动指定时间效率测试百分比。" },
-        { "CodexModelTokenEfficiencyBaselineMode", "选择 Token 效率对比基准的来源。" },
-        { "CodexModelTokenEfficiencyBaselinePassed", "手动指定 Token 效率基准通过数。" },
-        { "CodexModelTokenEfficiencyBaselineTokens", "手动指定 Token 效率基准消耗。" },
-        { "CodexModelTimeEfficiencyBaselineMode", "选择时间效率对比基准的来源。" },
-        { "CodexModelTimeEfficiencyBaselinePassed", "手动指定时间效率基准通过数。" },
-        { "CodexModelTimeEfficiencyBaselineSeconds", "手动指定时间效率基准秒数。" },
-        { "CodexModelTokenEfficiencyLowThresholdPercent", "低于该百分比时标记为偏低。" },
-        { "CodexModelTimeEfficiencyLowThresholdPercent", "低于该百分比时标记为偏低。" },
-        { "CodexRadarEnabled", "关闭后会释放共享 Codex Radar 分层窗口；该窗口仍可在 CLAUDE 模式显示 Claude 数据。" },
-        { "DisplayTimeZoneMode", "控制 Radar 和其他窗口里的时间文字使用本机、北京时间还是指定时区。" },
-        { "DisplayTimeZoneId", "Windows 时区 ID；仅在通用显示时区模式选择“指定时区”时生效。" },
-        { "ClaudeRadarEnabled", "开启独立 Claude Radar 分层窗口；它固定显示 Claude 数据，不读取 Codex Radar 缓存。" },
-        { "ClaudeRadarModelKey", "五列按钮选择 Claude Radar 站点 m* 模型；留空为自动，编辑映射用于维护站点模型和社区评分 key 的对应关系。" },
-        { "ClaudeRadarJsonEnabled", "读取 claudecoderadar.com/data/claude-code-radar.json 作为主数据源。" },
-        { "ClaudeRadarHomepageFallbackEnabled", "主 JSON 缺少模型元数据时，读取首页 MODEL_NAMES 作为弱回退；不会伪造 IQ、效率或额度。" },
-        { "ClaudeRadarCommunityRatingsEnabled", "读取 Claude Radar 社区体感分接口，并通过模型映射表关联当前模型。" },
-        { "ClaudeRadarLocalQuotaFallbackEnabled", "站点额度趋势不完整时使用本地 7 天 JSONL 历史绘制额度线。" },
-        { "ClaudeRadarServiceProbeToken", "点击后触发 Claude Radar 数据链路检查；服务状态显示在窗口右侧 R/C/U 和 API 摘要中。" },
+        { "CodexRadarRandomTestEnabled", "仅用于联调 Network 面板中的 Radar 服务健康状态，日常保持关闭。" },
+        { "CodexRadarRandomTestAutoRefresh", "开启后自动轮换服务健康测试值，日常保持关闭。" },
+        { "CodexRadarRandomTestRefreshToken", "点击后立即换一组服务健康测试值。" },
         { ClaudeSetupTokenCommandName, "Claude 桌面版不会主动上报用量，需要生成一次性长效令牌并粘贴进来；未配置时两个额度环会显示满环红色。" },
-        { "ClaudeRadarRandomTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
-        { "ClaudeRadarRandomTestAutoRefresh", "仅用于测试显示效果，日常保持关闭。" },
-        { "ClaudeRadarRandomTestRefreshToken", "点击后让随机测试数据立刻换一组。" },
-        { "DeepSeekApiKeyRevision", "配置共享 Radar 小窗 CLAUDE 模式和独立 Claude Radar 底部 DS 余额使用的 DeepSeek API Key；密钥只写入本地 DPAPI 文件，修订号只用于触发即时刷新。" },
-        { "CodexRadarManualLayoutEnabled", "开启后下方布局参数实时影响 Codex Radar 内部模块，不需要重启。" },
-        { "CodexRadarManualLeftPercent", "调整效率/IQ/连接流程区与余额区的左右分配。" },
-        { "CodexRadarManualGapPixels", "调整左侧区域和余额区之间的像素间距。" },
-        { "CodexRadarManualEfficiencyTextWidthPixels", "调整左侧效率/IQ 圆环右侧文字列宽。" },
-        { "CodexRadarManualQuotaRowsWidthPixels", "调整余额两行圆环和重置时间的总宽度。" },
-        { "CodexRadarManualIqStatusWidthPixels", "调整余额区右侧 IQ 圆环与降智文字列宽。" },
-        { "CodexRadarManualTextScalePercent", "只影响 Codex Radar 内部状态文字和余额时间字号。" },
-        { "CodexRadarManualRingScalePercent", "只影响 Codex Radar 内部效率、余额和 IQ 圆环大小。" },
-        { "PowerThermalIntegratedEnabled", "开启后功耗温度显示为性能窗口底部的一条区域，独立窗口隐藏；关闭则恢复为独立窗口。" },
-        { "CpuCoreWarningPercent", "单个核心占用达到该值后，柱状图超出部分显示为黄色。默认 80。" },
-        { "CpuCoreCriticalPercent", "单个核心占用达到该值后，整根柱子显示为红色。默认 100，不得低于警戒阈值。" },
-        { "PowerThermalAutoSizeEnabled", "根据告警数量自动调整功耗温度窗口高度。" },
-        { "PowerThermalAutoDirection", "自动调整时从哪个方向展开。" },
-        { "PowerThermalVisibleAlertCount", "功耗温度窗口中最多显示的告警数量。" },
+        { "MainWidgetTileLargeModeEnabled", "只影响右缘方块列：关闭时磁贴为 60×60 像素；开启后磁贴与悬停展开面板各放大一倍，适合高分屏或视力需要。" },
+        { "MetricTileExpandWidth", "右缘指标磁贴悬停展开后的逻辑像素宽度；大窗口模式会在运行时按比例放大。" },
+        { "MetricTileExpandHeight", "右缘指标磁贴悬停展开后的逻辑像素高度；大窗口模式会在运行时按比例放大。" },
         { "PowerThermalManualEnergySaverThresholdPercent", "电量低于该百分比时，在功耗电池模块显示节能叶子和“（节能）”；0 表示关闭。默认 30。" },
         { "ThermalTestMode", "仅用于测试显示效果，日常保持关闭。" },
         { "NetworkMonitorAdapterId", "留空时自动选择网络适配器。" },
@@ -4326,42 +3850,30 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "AlertTestEnabled", "仅用于测试显示效果，日常保持关闭。" },
         { "PowerResumeRestartEnabled", "系统唤醒后自动重启 SeelenUI 和本程序。" },
         { "SeelenDockForegroundPulseEnabled", "需要时短暂拉前 Seelen Dock，避免被系统窗口压住。" },
-        { "FallbackDisconnectedDisplaysEnabled", "指定显示器未连接时，将对应模块回退到当前主显示器。" },
-        { "MainDisplayDeviceName", "留空使用当前主显示器；选择 DISPLAY 后按该显示器工作区定位。" },
-        { "CodexRadarDisplayDeviceName", "留空使用当前主显示器；未连接且不回退时保留原显示器工作区。" },
-        { "PowerThermalDisplayDeviceName", "留空使用当前主显示器；适合把功耗模块固定到副屏。" },
-        { "NetworkMonitorDisplayDeviceName", "留空使用当前主显示器；适合把网络监控固定到副屏。" },
-        { "ConnectionCheckDisplayDeviceName", "留空使用当前主显示器；适合把连接检测固定到副屏。" },
+        { "FallbackDisconnectedDisplaysEnabled", "指定显示器未连接时，将对应可见面回退到当前主显示器。" },
+        { "MainDisplayDeviceName", "留空使用当前主显示器；右侧十枚磁贴及展开面板按该显示器工作区定位。" },
         { "OperationDisplayDeviceName", "留空使用当前主显示器；操作面板偏移量按目标显示器左下角计算。" },
-        { "ResolutionCompatibilityModeEnabled", "默认关闭。开启后按 2880x1800 参考布局在运行时投影所有浮窗，用于在当前设备预览其他分辨率占比。" },
+        { "ResolutionCompatibilityModeEnabled", "默认关闭。开启后按 2880x1800 参考布局投影 Operation、五个 Dock 与十枚磁贴/展开面板。" },
         { "ResolutionCompatibilityScalePercent", "运行时输出比例，低于 100% 压缩，高于 100% 放大；不会改写保存的真实布局坐标。" },
-        { GlobalLayoutEditCommandName, "打开全屏布局编辑遮罩，拖拽模块位置；Enter 保存，Esc 放弃。" },
-        { "Width", "逻辑像素，主窗口宽度。" },
-        { "Height", "逻辑像素，主窗口高度。" },
-        { "LeftX", "逻辑像素，距目标显示器左边缘。" },
-        { "BottomY", "逻辑像素，距目标显示器下边缘。" },
-        { "CodexRadarWidth", "逻辑像素，Codex Radar 宽度。" },
-        { "CodexRadarHeight", "逻辑像素，Codex Radar 高度。" },
-        { "CodexRadarLeftX", "逻辑像素，距目标显示器左边缘。" },
-        { "CodexRadarBottomY", "逻辑像素，距目标显示器下边缘。" },
-        { "ClaudeRadarWidth", "逻辑像素，Claude Radar 宽度。" },
-        { "ClaudeRadarHeight", "逻辑像素，Claude Radar 高度。" },
-        { "ClaudeRadarLeftX", "逻辑像素，距目标显示器左边缘。" },
-        { "ClaudeRadarBottomY", "逻辑像素，距目标显示器下边缘。" },
-        { "PowerThermalWidth", "逻辑像素，功耗温度窗口宽度。" },
-        { "PowerThermalHeight", "逻辑像素，功耗温度窗口高度。" },
-        { "PowerThermalLeftX", "逻辑像素，距目标显示器左边缘。" },
-        { "PowerThermalBottomY", "逻辑像素，距目标显示器下边缘。" },
-        { "NetworkMonitorWidth", "逻辑像素，网络监控窗口宽度。" },
-        { "NetworkMonitorHeight", "逻辑像素，网络监控窗口高度。" },
-        { "NetworkMonitorLeftX", "逻辑像素，距目标显示器左边缘。" },
-        { "NetworkMonitorBottomY", "逻辑像素，距目标显示器下边缘。" },
-        { "ConnectionCheckWidth", "逻辑像素，连接检测窗口宽度。" },
+        { GlobalLayoutEditCommandName, "打开全屏布局编辑遮罩，显示 Operation、固定五个左侧停靠按钮与固定十枚右侧磁贴；Enter 保存，Esc 放弃。自动排列开启时拖动列成员会整体上下移动。" },
+        { "LeftDockAutoArrangeEnabled", "开启后按下方顺序和间距自动排列固定五个左侧梯形按钮；关闭后保留全局编辑器写入的单项位置。" },
+        { "LeftDockButtonOrder", "用上下箭头调整 Network、Spec、Codex Task、GUARD 与 Codex IQ 五个固定按钮的排列顺序。" },
+        { "LeftDockButtonGapPixels", "相邻左侧梯形按钮之间的真实屏幕像素间距。" },
+        { "LeftDockGroupOffsetY", "把全部左侧按钮视为一个整体，相对屏幕垂直居中位置上下移动；0 为居中，负值向上。" },
+        { "RightTileAutoArrangeEnabled", "开启后按下方顺序和间距自动排列固定十枚右缘磁贴；关闭后保留全局编辑器写入的单项位置。" },
+        { "RightTileButtonOrder", "用上下箭头调整 CPU、内存、磁盘、网络、GPU、NPU、功耗、GUARD、Codex 额度与 Claude 额度十枚磁贴的顺序。" },
+        { "RightTileButtonGapPixels", "相邻右侧磁贴之间的真实屏幕像素间距，普通和大窗口模式使用同一数值。" },
+        { "RightTileGroupOffsetY", "把全部右侧方块窗口视为一个整体，相对屏幕垂直居中位置上下移动；0 为居中，正值向下。" },
         { "SpecBoardWidth", "逻辑像素，范围 320-700。" },
         { "SpecBoardHeight", "逻辑像素，范围 240-800。" },
-        { "SpecBoardLeftX", "-1 表示每次呼出时自动与操作面板左边缘对齐；在全局布局编辑器拖动后写入具体坐标。" },
-        { "SpecBoardBottomY", "-1 表示每次呼出时自动放在操作面板上方 10 像素；在全局布局编辑器拖动后写入具体坐标。把两项重新设为 -1 即恢复自动。" },
         { "SpecBoardAutoHideSeconds", "范围 0-600 秒；0 表示不自动收回。鼠标停在看板内时暂停，移出后重新计时。" },
+        { "SpecBoardLeftDockTabCenterY", "自动模式按五看板队列计算位置；手动模式填写屏幕坐标 Y。无效负值保存时恢复自动。" },
+        { "CodexTaskBoardLeftDockTabCenterY", "自动模式按五看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "NetworkMonitorLeftDockTabCenterY", "自动模式按五看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "GuardBoardLeftDockTabCenterY", "自动模式按五看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "GuardBoardAutoHideSeconds", "范围 0-600 秒；0 表示展开后不自动收回。" },
+        { "CodexIqBoardLeftDockTabCenterY", "自动模式按五看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "CodexIqBoardAutoHideSeconds", "范围 0-600 秒；0 表示展开后不自动收回。" },
         { "LeftDockOutsideClickCollapseEnabled", "开启后，停靠展开的 Spec Board 或 Codex Task 在点击桌面、其他窗口或另一块看板时收回；点击自身、停靠梯形或 Spec 管理窗口不会误收回。" },
         { "SpecBoardAutoPopupEnabled", "开启后监测新建的 Spec；发现新项时自动弹出小看板并高亮。" },
         { "SpecBoardAutoPopupSeconds", "范围 1-120 秒；自动弹窗在鼠标未停留时的显示时长，鼠标移入会暂停并重置倒计时。" },
@@ -4369,31 +3881,22 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "SpecBoardManagerWidth", "管理窗口宽度，范围 560-1000。" },
         { "SpecBoardManagerHeight", "管理窗口高度，范围 400-900。" },
         { "SpecBoardManagerDangerZoneRequiresTypedConfirm", "推荐保持开启；删除账本条目并删除源文件前必须输入完全一致的文件名。" },
-        { "ConnectionCheckHeight", "逻辑像素，连接检测窗口高度。" },
-        { "ConnectionCheckLeftX", "逻辑像素，距目标显示器左边缘。" },
-        { "ConnectionCheckBottomY", "逻辑像素，距目标显示器下边缘。" },
         { "OperationLeftOffset", "逻辑像素，距目标显示器左边缘。" },
         { "OperationBottomOffset", "逻辑像素，距目标显示器下边缘。" },
-        { "BackgroundTransparencyPercent", "只影响主窗口背景底色，数值越高越透明。" },
-        { "ApplicationTransparencyPercent", "全部挂件窗口的默认整体透明度；设置了每窗口覆盖时以覆盖值为准。" },
-        { "MainWidgetTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖主窗口。" },
-        { "MainWidgetScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖主窗口。" },
-        { "CodexRadarScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖共享 Radar，内部文字环形手动缩放仍继续叠加。" },
-        { "ClaudeRadarScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖独立 Claude Radar。" },
-        { "PowerThermalScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖功耗温度窗口。" },
-        { "NetworkMonitorScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖网络监控。" },
-        { "ConnectionCheckScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖连接检测。" },
-        { "OperationScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖操作面板及其 QuickGrid/启动器子窗。" },
+        { "ApplicationTransparencyPercent", "全部可见面的默认整体透明度；设置了每个可见面覆盖时以覆盖值为准。" },
+        { "MainWidgetTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖右侧十枚磁贴及展开面板。" },
+        { "NetworkMonitorScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖 Network 停靠板及其标签。" },
+        { "OperationScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖操作面板及其启动器子窗。" },
         { "SpecBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖 Spec 看板及其停靠标签。" },
         { "CodexTaskBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖 Codex 任务看板及其停靠标签。" },
-        { "CodexRadarTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖共享 Radar。" },
-        { "ClaudeRadarTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖独立 Claude Radar。" },
-        { "PowerThermalTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖功耗温度窗口。" },
-        { "NetworkMonitorTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖网络监控。" },
-        { "ConnectionCheckTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖连接检测。" },
-        { "OperationTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖操作面板及其 QuickGrid/启动器子窗。" },
+        { "GuardBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖 GUARD 看板及其停靠标签。" },
+        { "CodexIqBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖 Codex IQ 看板及其停靠标签。" },
+        { "NetworkMonitorTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖 Network 停靠板及其标签。" },
+        { "OperationTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖操作面板及其启动器子窗。" },
         { "SpecBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖 Spec 看板及其停靠标签。" },
         { "CodexTaskBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖 Codex 任务看板及其停靠标签。" },
+        { "GuardBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖 GUARD 看板及其停靠标签。" },
+        { "CodexIqBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖 Codex IQ 看板及其停靠标签。" },
         { "NightScheduleEnabled", "按本地时间在固定时段降低全部挂件亮度。" },
         { "NightScheduleStartMinutes", "0–1439；例如 1380 = 23:00，可与结束时间组成跨午夜时段。" },
         { "NightScheduleEndMinutes", "0–1439；例如 420 = 07:00，结束分钟本身不属于夜间。" },
@@ -4401,25 +3904,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "NightQuietHoursEnabled", "夜间只静默用户可见提醒，数据采集和状态机继续运行，退出后不补发。" },
         { "AlertQuotaEnabled", "控制额度、额度计划及 AlertPercent 阈值的颜色、图标、文本和系统通知；不停止采集。" },
         { "AlertResetProtectionEnabled", "控制 RSS/到期重置保护的提示和强调；保护状态机仍继续工作。" },
-        { "AlertServiceHealthEnabled", "控制 Radar、OpenAI、Claude 等 Statuspage 服务健康提示；探测仍继续。" },
+        { "AlertServiceHealthEnabled", "控制 Radar、OpenAI、Claude 与 DeepSeek 服务健康提示；探测仍继续。" },
         { "AlertCodexTaskEnabled", "控制 Codex 任务待处理数量、强调色和提醒文本；任务监控仍继续。" },
-        { "AlertDeepSeekBalanceEnabled", "控制 DeepSeek 余额低与余额服务异常提示；余额读取仍继续。" },
         { "HotkeyToggleAllWindows", "格式如 Ctrl+Alt+H；至少包含一个修饰键，留空表示不绑定。" },
-        { "HotkeyToggleHoverOpacity", "等价于 QuickGrid 的“悬停透明度”动作；格式如 Ctrl+Shift+O。" },
+        { "HotkeyToggleHoverOpacity", "切换悬停透明度动作；格式如 Ctrl+Shift+O。" },
         { "HotkeyOpenSettings", "从任意应用打开设置窗口；格式如 Ctrl+Alt+S。" },
-        { "CodexRadarTransparencyPercent", "影响 Codex Radar 背景透明度。" },
-        { "ClaudeRadarTransparencyPercent", "影响 Claude Radar 背景透明度。" },
-        { "PowerThermalTransparencyPercent", "影响功耗温度窗口背景透明度。" },
-        { "NetworkMonitorTransparencyPercent", "影响网络监控窗口背景透明度。" },
-        { "ConnectionCheckTransparencyPercent", "影响连接检测窗口背景透明度。" },
-        { "ConnectionCheckBorderTransparencyPercent", "影响连接检测三框边框透明度。" },
         { "OperationBackgroundTransparencyPercent", "影响左下角操作面板背景透明度。" },
-        { "ShowCpu", "在主窗口显示 CPU 指标。" },
-        { "ShowMemory", "在主窗口显示内存指标。" },
-        { "ShowDisk", "在主窗口显示磁盘指标。" },
-        { "ShowNetwork", "在主窗口显示网络指标。" },
-        { "ShowGpu", "在主窗口显示 GPU 指标。" },
-        { "ShowNpu", "在主窗口显示 NPU 指标。" },
         { "OperationPrimaryPanelMode", "自动模式会按 SeelenUI 运行态在 Windows 按钮和内存饼图之间切换；隐藏会让小按钮移到最左侧。" },
         { "OperationButtonSize", "左下角操作面板按钮的逻辑像素大小。" },
         { "OperationWindowsButtonEnabled", "SeelenUI 未运行时会自动隐藏；关闭后始终不显示左侧 Windows 按钮。" },
@@ -4431,12 +3921,343 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     // Nested Classes — Custom Controls
     // ═════════════════════════════════════════════════════════════════════
 
+    // ── ColumnOrderEditorControl ─────────────────────────────────────────
+    // A compact "rail composer" for the two edge columns. Stable ids are kept in settings while
+    // the visible label and accent mirror the actual surface, so renaming UI copy cannot corrupt a
+    // saved order. Up/down buttons are used instead of drag/drop because the settings page itself is
+    // scrollable and pointer capture would otherwise fight vertical page scrolling.
+    private sealed class ColumnOrderEditorControl : Panel
+    {
+        private const int RowGap = 6;
+
+        private readonly bool leftColumn;
+        private readonly Font rowFont;
+        private readonly string[] allowedIds;
+        private readonly int rowHeight;
+        private readonly Dictionary<string, ColumnOrderRowState> rowStates;
+        private string[] order;
+
+        public event EventHandler ValueChanged;
+
+        public ColumnOrderEditorControl(bool leftColumn, Font rowFont)
+        {
+            this.leftColumn = leftColumn;
+            this.rowFont = rowFont;
+            this.allowedIds = leftColumn
+                ? new string[] { "Network", "SpecBoard", "CodexTask", "Guard", "CodexIq" }
+                : (string[])WidgetSettings.MetricTileIds.Clone();
+            this.rowStates = new Dictionary<string, ColumnOrderRowState>(StringComparer.OrdinalIgnoreCase);
+            this.order = (string[])this.allowedIds.Clone();
+            this.rowHeight = Math.Max(42, GetSingleLineHeight(rowFont, 4) + 12);
+            this.BackColor = Color.Transparent;
+            this.Width = 560;
+            this.Height = this.allowedIds.Length * this.rowHeight + Math.Max(0, this.allowedIds.Length - 1) * RowGap;
+            this.SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw,
+                true);
+            BuildRows();
+        }
+
+        public string[] GetOrder()
+        {
+            return (string[])this.order.Clone();
+        }
+
+        public void SetOrderSilent(string[] value)
+        {
+            this.order = NormalizeOrder(value);
+            LayoutRows();
+        }
+
+        protected override void OnResize(EventArgs eventargs)
+        {
+            base.OnResize(eventargs);
+            LayoutRows();
+        }
+
+        private string[] NormalizeOrder(string[] value)
+        {
+            List<string> normalized = new List<string>(this.allowedIds.Length);
+            if (value != null)
+            {
+                for (int i = 0; i < value.Length; i++)
+                {
+                    string canonical = FindCanonicalId(value[i]);
+                    if (canonical.Length > 0 && !ContainsId(normalized, canonical))
+                    {
+                        normalized.Add(canonical);
+                    }
+                }
+            }
+
+            for (int i = 0; i < this.allowedIds.Length; i++)
+            {
+                if (!ContainsId(normalized, this.allowedIds[i]))
+                {
+                    normalized.Add(this.allowedIds[i]);
+                }
+            }
+
+            return normalized.ToArray();
+        }
+
+        private string FindCanonicalId(string value)
+        {
+            for (int i = 0; i < this.allowedIds.Length; i++)
+            {
+                if (string.Equals(this.allowedIds[i], value, StringComparison.OrdinalIgnoreCase))
+                {
+                    return this.allowedIds[i];
+                }
+            }
+
+            return string.Empty;
+        }
+
+        private static bool ContainsId(List<string> values, string id)
+        {
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (string.Equals(values[i], id, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void BuildRows()
+        {
+            this.SuspendLayout();
+            try
+            {
+                for (int i = 0; i < this.allowedIds.Length; i++)
+                {
+                    Panel row = BuildRow(this.allowedIds[i]);
+                    this.Controls.Add(row);
+                }
+            }
+            finally
+            {
+                this.ResumeLayout(false);
+            }
+
+            LayoutRows();
+        }
+
+        private Panel BuildRow(string id)
+        {
+            Panel row = new Panel();
+            row.Height = this.rowHeight;
+            row.BackColor = ControlBg;
+            row.AccessibleName = GetItemLabel(id) + " 排序项";
+
+            Label dot = new Label();
+            dot.AutoSize = false;
+            dot.Text = "●";
+            dot.TextAlign = ContentAlignment.MiddleCenter;
+            dot.Font = this.rowFont;
+            dot.ForeColor = GetItemAccent(id);
+            dot.BackColor = Color.Transparent;
+
+            Label sequence = new Label();
+            sequence.AutoSize = false;
+            sequence.Text = string.Empty;
+            sequence.TextAlign = ContentAlignment.MiddleCenter;
+            sequence.Font = this.rowFont;
+            sequence.ForeColor = TextTertiary;
+            sequence.BackColor = Color.Transparent;
+
+            Label name = new Label();
+            name.AutoSize = false;
+            name.Text = GetItemLabel(id);
+            name.TextAlign = ContentAlignment.MiddleLeft;
+            name.Font = this.rowFont;
+            name.ForeColor = TextPrimary;
+            name.BackColor = Color.Transparent;
+
+            Button up = BuildMoveButton("↑", "上移 " + name.Text, id, -1);
+            Button down = BuildMoveButton("↓", "下移 " + name.Text, id, 1);
+
+            row.Controls.Add(dot);
+            row.Controls.Add(sequence);
+            row.Controls.Add(name);
+            row.Controls.Add(up);
+            row.Controls.Add(down);
+            row.Resize += delegate { LayoutRow(row, dot, sequence, name, up, down); };
+            ColumnOrderRowState state = new ColumnOrderRowState(row, sequence, up, down);
+            row.Tag = state;
+            this.rowStates.Add(id, state);
+            LayoutRow(row, dot, sequence, name, up, down);
+            return row;
+        }
+
+        private Button BuildMoveButton(string text, string accessibleName, string id, int delta)
+        {
+            Button button = new Button();
+            button.Text = text;
+            button.AccessibleName = accessibleName;
+            button.Font = this.rowFont;
+            button.FlatStyle = FlatStyle.Flat;
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.BorderColor = DividerColor;
+            button.BackColor = CardRest;
+            button.ForeColor = TextSecondary;
+            button.Cursor = Cursors.Hand;
+            button.TabStop = true;
+            button.Click += delegate { MoveItem(id, delta); };
+            return button;
+        }
+
+        private void MoveItem(string id, int delta)
+        {
+            int index = Array.FindIndex(
+                this.order,
+                delegate(string candidate) { return string.Equals(candidate, id, StringComparison.OrdinalIgnoreCase); });
+            int next = index + delta;
+            if (index < 0 || index >= this.order.Length || next < 0 || next >= this.order.Length)
+            {
+                return;
+            }
+
+            string value = this.order[index];
+            this.order[index] = this.order[next];
+            this.order[next] = value;
+            // Keep row/button instances alive while changing their bounds. This preserves keyboard
+            // focus for repeated Space/Enter moves and avoids flicker in the ten-item right rail.
+            LayoutRows();
+            if (this.ValueChanged != null)
+            {
+                this.ValueChanged(this, EventArgs.Empty);
+            }
+        }
+
+        private void LayoutRows()
+        {
+            int width = Math.Max(160, this.ClientSize.Width);
+            int top = 0;
+            for (int i = 0; i < this.order.Length; i++)
+            {
+                ColumnOrderRowState state;
+                if (!this.rowStates.TryGetValue(this.order[i], out state))
+                {
+                    continue;
+                }
+
+                state.Sequence.Text = (i + 1).ToString("00", CultureInfo.InvariantCulture);
+                state.Up.Enabled = i > 0;
+                state.Down.Enabled = i + 1 < this.order.Length;
+                state.Row.SetBounds(0, top, width, this.rowHeight);
+                top += this.rowHeight + RowGap;
+            }
+        }
+
+        internal void PerformMoveForSelfTest(string id, int delta)
+        {
+            MoveItem(id, delta);
+        }
+
+        internal void VerifyRowsFitForSelfTest()
+        {
+            LayoutRows();
+            for (int i = 0; i < this.order.Length; i++)
+            {
+                ColumnOrderRowState state;
+                if (!this.rowStates.TryGetValue(this.order[i], out state) ||
+                    state.Row.Left < 0 || state.Row.Top < 0 ||
+                    state.Row.Right > this.ClientSize.Width || state.Row.Bottom > this.ClientSize.Height)
+                {
+                    throw new InvalidOperationException("WinUI column order row is clipped: " + this.order[i]);
+                }
+
+                for (int childIndex = 0; childIndex < state.Row.Controls.Count; childIndex++)
+                {
+                    Control child = state.Row.Controls[childIndex];
+                    if (child.Left < 0 || child.Top < 0 ||
+                        child.Right > state.Row.ClientSize.Width || child.Bottom > state.Row.ClientSize.Height)
+                    {
+                        throw new InvalidOperationException("WinUI column order child is clipped: " + this.order[i]);
+                    }
+                }
+            }
+        }
+
+        private void LayoutRow(Panel row, Label dot, Label sequence, Label name, Button up, Button down)
+        {
+            int padding = 10;
+            int buttonSize = Math.Max(30, row.Height - 10);
+            int buttonGap = 6;
+            int downLeft = Math.Max(padding, row.ClientSize.Width - padding - buttonSize);
+            int upLeft = Math.Max(padding, downLeft - buttonGap - buttonSize);
+            dot.SetBounds(padding, 0, 18, row.Height);
+            sequence.SetBounds(dot.Right + 2, 0, 34, row.Height);
+            name.SetBounds(sequence.Right + 8, 0, Math.Max(20, upLeft - sequence.Right - 16), row.Height);
+            up.SetBounds(upLeft, (row.Height - buttonSize) / 2, buttonSize, buttonSize);
+            down.SetBounds(downLeft, (row.Height - buttonSize) / 2, buttonSize, buttonSize);
+        }
+
+        private string GetItemLabel(string id)
+        {
+            if (this.leftColumn)
+            {
+                if (string.Equals(id, "Network", StringComparison.Ordinal)) return "Network 网络面板";
+                if (string.Equals(id, "SpecBoard", StringComparison.Ordinal)) return "Spec Board";
+                if (string.Equals(id, "CodexTask", StringComparison.Ordinal)) return "Codex Task";
+                if (string.Equals(id, "Guard", StringComparison.Ordinal)) return "GUARD";
+                return "Codex IQ";
+            }
+
+            int index = WidgetSettings.IndexOfMetricTile(id);
+            return index >= 0 && index < MetricTileModel.AllOrder.Length
+                ? MetricTileModel.GetLabel(MetricTileModel.AllOrder[index])
+                : id;
+        }
+
+        private Color GetItemAccent(string id)
+        {
+            if (this.leftColumn)
+            {
+                if (string.Equals(id, "Network", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Network);
+                if (string.Equals(id, "SpecBoard", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SpecBoard);
+                if (string.Equals(id, "CodexTask", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexTask);
+                if (string.Equals(id, "Guard", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Guard);
+                return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexIq);
+            }
+
+            int index = WidgetSettings.IndexOfMetricTile(id);
+            return index >= 0 && index < MetricTileModel.AllOrder.Length
+                ? MetricTileModel.GetAccent(MetricTileModel.AllOrder[index])
+                : AccentClr;
+        }
+
+        private sealed class ColumnOrderRowState
+        {
+            public ColumnOrderRowState(Panel row, Label sequence, Button up, Button down)
+            {
+                this.Row = row;
+                this.Sequence = sequence;
+                this.Up = up;
+                this.Down = down;
+            }
+
+            public Panel Row { get; private set; }
+            public Label Sequence { get; private set; }
+            public Button Up { get; private set; }
+            public Button Down { get; private set; }
+        }
+    }
+
     // ── PercentSliderControl ─────────────────────────────────────────────
     private sealed class PercentSliderControl : Panel
     {
         private readonly TrackBar trackBar;
         private readonly Label valueLabel;
         private bool suppressChanged;
+        private string suffix = "%";
+        private bool showPositiveSign;
 
         public event EventHandler ValueChanged;
 
@@ -4497,6 +4318,40 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             get { return this.trackBar.Value; }
         }
 
+        public string Suffix
+        {
+            get { return this.suffix; }
+            set
+            {
+                this.suffix = value ?? string.Empty;
+                UpdateValueLabel();
+            }
+        }
+
+        public bool ShowPositiveSign
+        {
+            get { return this.showPositiveSign; }
+            set
+            {
+                this.showPositiveSign = value;
+                UpdateValueLabel();
+            }
+        }
+
+        public string AccessibleLabel
+        {
+            get { return this.trackBar.AccessibleName ?? string.Empty; }
+            set
+            {
+                string label = value ?? string.Empty;
+                this.trackBar.AccessibleName = label;
+                this.trackBar.AccessibleDescription = label.Length == 0
+                    ? string.Empty
+                    : label + "，使用方向键微调，Page Up 或 Page Down 大步调整。";
+                this.valueLabel.AccessibleName = label.Length == 0 ? string.Empty : label + " 当前值";
+            }
+        }
+
         public void SetValueSilent(int value)
         {
             int next = Math.Max(this.trackBar.Minimum, Math.Min(this.trackBar.Maximum, value));
@@ -4515,7 +4370,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
-            int labelWidth = 70;
+            int labelWidth = 90;
             int gap = 8;
             int trackWidth = Math.Max(80, this.Width - labelWidth - gap);
             int top = Math.Max(0, (this.Height - this.trackBar.Height) / 2);
@@ -4534,7 +4389,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         private void UpdateValueLabel()
         {
-            this.valueLabel.Text = this.trackBar.Value.ToString(CultureInfo.InvariantCulture) + "%";
+            int value = this.trackBar.Value;
+            string prefix = this.showPositiveSign && value > 0 ? "+" : string.Empty;
+            this.valueLabel.Text = prefix + value.ToString(CultureInfo.InvariantCulture) + this.suffix;
         }
     }
 
@@ -4803,6 +4660,15 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 for (int i = 0; i < this.rows.Count; i++)
                 {
                     SettingRow row = this.rows[i];
+                    if (!row.Visible)
+                    {
+                        // Search filtering must remove hidden rows from geometry as well as paint;
+                        // otherwise the tall order composers leave hundreds of blank pixels behind.
+                        row.ShowTopDivider = false;
+                        row.SetBounds(0, 0, 0, 0);
+                        continue;
+                    }
+
                     row.ShowTopDivider = !first;
                     int h = row.ComputeDesiredHeight(layoutWidth);
                     row.SetBounds(0, y, layoutWidth, h);
@@ -4907,10 +4773,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         public Label TitleLabel { get; private set; }
         public Label HintLabel { get; private set; }
 
-        // Some value controls (e.g. the Claude model button grid) are inherently wide and wrap
-        // to multiple rows on their own; forcing them to share row width with the title/hint text
-        // squeezes them into unreadable single-character buttons. This skips the width-threshold
-        // heuristic and always stacks the control below the text for that row.
+        // Column-order controls are inherently wide and wrap on their own. This skips the
+        // width-threshold heuristic and always stacks the control below the text for that row.
         public bool ForceCompactLayout;
 
         public int ComputeDesiredHeight(int width)
@@ -5059,17 +4923,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             if (picker != null)
             {
                 return picker.GetPreferredHeightForWidth(controlWidth);
-            }
-
-            if (FindClaudeRadarModelGrid(this.valueControl) != null)
-            {
-                if (this.valueControl.Width != controlWidth)
-                {
-                    this.valueControl.Width = controlWidth;
-                }
-
-                LayoutClaudeRadarModelPanel(this.valueControl);
-                return this.valueControl.Height;
             }
 
             return this.valueControl.Height;
@@ -5599,6 +5452,47 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         public readonly List<SettingEditor> Editors = new List<SettingEditor>();
     }
 
+    private sealed class LeftDockTabCenterEditorState
+    {
+        private readonly ComboBox mode;
+        private readonly NumericUpDown position;
+
+        public LeftDockTabCenterEditorState(ComboBox mode, NumericUpDown position)
+        {
+            this.mode = mode;
+            this.position = position;
+        }
+
+        public int Value
+        {
+            get
+            {
+                return this.mode.SelectedIndex == 0
+                    ? WidgetSettings.AutoLeftDockTabCenterY
+                    : Convert.ToInt32(this.position.Value, CultureInfo.InvariantCulture);
+            }
+        }
+
+        public void SetValue(int value)
+        {
+            bool automatic = value == WidgetSettings.AutoLeftDockTabCenterY || value < 0;
+            decimal next = Math.Max(0, value);
+            if (next > this.position.Maximum)
+            {
+                next = this.position.Maximum;
+            }
+
+            this.position.Value = next;
+            this.mode.SelectedIndex = automatic ? 0 : 1;
+            SyncEnabledState();
+        }
+
+        public void SyncEnabledState()
+        {
+            this.position.Enabled = this.mode.SelectedIndex == 1;
+        }
+    }
+
     private sealed class SettingEditor
     {
         public SettingEditor(PropertyInfo property, SettingRow card, Control control)
@@ -5643,37 +5537,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             if (this.MissingFromCatalog)
             {
                 return this.Label + "（未在目录）";
-            }
-
-            return this.Available ? this.Label : this.Label + "（暂不可用）";
-        }
-    }
-
-    private sealed class ClaudeModelOption
-    {
-        public ClaudeModelOption(string key, string label, bool available, bool pending)
-        {
-            this.Key = WidgetSettings.NormalizeClaudeRadarModelKey(key);
-            this.Label = label ?? string.Empty;
-            this.Available = available;
-            this.Pending = pending;
-        }
-
-        public string Key { get; private set; }
-        public string Label { get; private set; }
-        public bool Available { get; private set; }
-        public bool Pending { get; private set; }
-
-        public override string ToString()
-        {
-            if (this.Key.Length == 0)
-            {
-                return this.Label;
-            }
-
-            if (this.Pending)
-            {
-                return this.Label + "（待映射）";
             }
 
             return this.Available ? this.Label : this.Label + "（暂不可用）";
@@ -5780,30 +5643,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 }
             }
 
-            if (this.Value is RadarClockTimeDisplayMode)
-            {
-                RadarClockTimeDisplayMode mode = (RadarClockTimeDisplayMode)this.Value;
-                if (mode == RadarClockTimeDisplayMode.Utc)
-                {
-                    return "UTC";
-                }
-
-                if (mode == RadarClockTimeDisplayMode.CurrentLocal)
-                {
-                    return "当前时间";
-                }
-
-                if (mode == RadarClockTimeDisplayMode.LastAttemptRefresh)
-                {
-                    return "上次尝试刷新";
-                }
-
-                if (mode == RadarClockTimeDisplayMode.LastActualRefresh)
-                {
-                    return "上次实际刷新";
-                }
-            }
-
             if (this.Value is CodexQuotaPlanComparison)
             {
                 CodexQuotaPlanComparison comparison = (CodexQuotaPlanComparison)this.Value;
@@ -5829,24 +5668,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 }
 
                 return "周额度与 5 小时额度";
-            }
-
-            if (this.Value is NetworkMonitorRenderVariant)
-            {
-                string networkVariantName = Convert.ToString(this.Value, CultureInfo.InvariantCulture);
-                if (networkVariantName == "Classic") return "扁平信息条";
-                if (networkVariantName == "GroupedCards") return "分组卡片";
-            }
-
-            if (this.Value is CodexRadarRenderVariant ||
-                this.Value is MainWidgetRenderVariant ||
-                this.Value is PowerThermalRenderVariant ||
-                this.Value is ConnectionCheckRenderVariant)
-            {
-                string variantName = Convert.ToString(this.Value, CultureInfo.InvariantCulture);
-                if (variantName == "Classic") return "经典布局";
-                if (variantName == "EvenGrid") return "均布六格";
-                if (variantName == "EvenRow") return "均布单行";
             }
 
             return Convert.ToString(this.Value, CultureInfo.InvariantCulture);

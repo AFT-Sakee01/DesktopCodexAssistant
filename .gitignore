@@ -12,6 +12,7 @@ Release/Assets/
 Backups/
 *_backup*/
 *.bak
+*.exe.bak-*
 *.bak.zip
 *.zip
 replace*.py
@@ -19,6 +20,7 @@ replace*.py
 
 # Local validation and debug dumps
 _validation/
+_preview-*/
 settings_layout_dump.txt
 dump_error.txt
 test.cs

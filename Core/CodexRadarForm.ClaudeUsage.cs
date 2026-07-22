@@ -48,7 +48,7 @@ internal sealed partial class CodexRadarForm
 
     private string GetCodexRadarServiceFamilyDisplayText()
     {
-        return GetEffectiveCodexRadarSoftwareMode() == CodexRadarSoftwareMode.Claude ? "Claude" : "Codex";
+        return "Codex";
     }
 
     private void UpdateEffectiveCodexRadarSoftwareModeIfNeeded()
@@ -238,22 +238,22 @@ internal sealed partial class CodexRadarForm
     private void SwitchCodexRadarSoftwareFamily(string trigger)
     {
         RestoreCodexRadarDisplayForCurrentMode(trigger);
-        ResetCodexApiServiceAlertDebounceForDisplayContextSwitch();
         RequestSelectedQuotaUsageRefresh(trigger);
 
-        RenderLayeredWindow();
+        PublishProjectionStateFromOwner();
     }
 
     private void RestoreCodexRadarDisplayForCurrentMode(string trigger)
     {
         CodexRadarSoftwareMode mode = GetEffectiveCodexRadarSoftwareMode();
+        bool quotaOnlyClaude = mode == CodexRadarSoftwareMode.Claude;
         string modelKey = GetSelectedRadarModelKeyForSoftwareMode(mode);
         RadarDisplayRestoreResult restored = TryRestoreCodexRadarDisplayModeCache(mode, modelKey);
 
         // Radar and quota restore independently. A quota-known memory state must never stand in for
         // a usable Radar snapshot, otherwise the disk IQ cache is skipped and the current batch is
         // recorded as first-seen with the request time (false refresh marker on family switch).
-        if (!restored.RadarRestored)
+        if (!quotaOnlyClaude && !restored.RadarRestored)
         {
             CodexRadarSnapshot cachedSnapshot = LoadCodexRadarCache(mode, modelKey);
             if (cachedSnapshot != null)
@@ -274,7 +274,13 @@ internal sealed partial class CodexRadarForm
 
         lock (this.codexRadarStatusLock)
         {
-            if (this.codexRadarSnapshot == null)
+            if (quotaOnlyClaude)
+            {
+                // Old Claude.* records can still exist in codex-radar-cache.ini after an upgrade.
+                // They are deliberately not a compatibility source: CLD owns official quota only.
+                this.codexRadarSnapshot = CodexRadarSnapshot.CreateDefault();
+            }
+            else if (this.codexRadarSnapshot == null)
             {
                 this.codexRadarSnapshot = CodexRadarSnapshot.CreateDefault();
             }
@@ -289,28 +295,34 @@ internal sealed partial class CodexRadarForm
     private void CacheCodexRadarDisplayMode(CodexRadarSoftwareMode mode)
     {
         mode = NormalizeEffectiveSoftwareMode(mode);
+        bool quotaOnlyClaude = mode == CodexRadarSoftwareMode.Claude;
         RadarFamilyRuntimeState state = GetRadarFamilyState(mode);
-        string modelKey = this.CurrentSettings == null
+        string modelKey = quotaOnlyClaude || this.CurrentSettings == null
             ? string.Empty
             : GetSelectedRadarModelKeyForSoftwareMode(mode);
-        CodexRadarSnapshot radarSnapshot;
-        lock (this.codexRadarStatusLock)
+        CodexRadarSnapshot radarSnapshot = null;
+        if (!quotaOnlyClaude)
         {
-            radarSnapshot = this.codexRadarSnapshot == null ? null : this.codexRadarSnapshot.Clone();
+            lock (this.codexRadarStatusLock)
+            {
+                radarSnapshot = this.codexRadarSnapshot == null ? null : this.codexRadarSnapshot.Clone();
+            }
         }
 
         CodexQuotaSnapshot quotaSnapshot = this.quotaSnapshot == null ? null : this.quotaSnapshot.Clone();
-        ServiceHealthState radarHealth;
-        lock (this.serviceHealthLock)
+        ServiceHealthState radarHealth = ServiceHealthState.Unknown;
+        if (!quotaOnlyClaude)
         {
-            radarHealth = this.radarServiceHealth;
+            lock (this.serviceHealthLock)
+            {
+                radarHealth = this.radarServiceHealth;
+            }
         }
 
         state.ModelKey = modelKey ?? string.Empty;
-        if (radarSnapshot != null)
-        {
-            state.RadarSnapshot = radarSnapshot.Clone();
-        }
+        state.RadarSnapshot = radarSnapshot == null
+            ? CodexRadarSnapshot.CreateDefault()
+            : radarSnapshot.Clone();
 
         if (quotaSnapshot != null)
         {
@@ -347,15 +359,23 @@ internal sealed partial class CodexRadarForm
     private RadarDisplayRestoreResult TryRestoreCodexRadarDisplayModeCache(CodexRadarSoftwareMode mode, string modelKey)
     {
         mode = NormalizeEffectiveSoftwareMode(mode);
+        bool quotaOnlyClaude = mode == CodexRadarSoftwareMode.Claude;
         modelKey = modelKey ?? string.Empty;
         RadarFamilyRuntimeState state = GetRadarFamilyState(mode);
+        if (quotaOnlyClaude)
+        {
+            modelKey = string.Empty;
+            state.ModelKey = string.Empty;
+            state.RadarSnapshot = CodexRadarSnapshot.CreateDefault();
+            state.RadarSiteHealth = ServiceHealthState.Unknown;
+        }
 
         // Fast path: the family's live runtime snapshot already matches the requested model. Radar is
         // "restored" only when the live snapshot is actually usable; quota-known is reported on its own
         // channel and must not imply the Radar snapshot is present.
         if (string.Equals(state.ModelKey ?? string.Empty, modelKey, StringComparison.OrdinalIgnoreCase))
         {
-            bool radarUsable = IsRuntimeRadarSnapshotUsable(state.RadarSnapshot);
+            bool radarUsable = !quotaOnlyClaude && IsRuntimeRadarSnapshotUsable(state.RadarSnapshot);
             if (radarUsable || state.Quota.SourceKnown)
             {
                 return new RadarDisplayRestoreResult
@@ -379,7 +399,7 @@ internal sealed partial class CodexRadarForm
             cached = new CodexRadarDisplayModeCache
             {
                 ModelKey = cached.ModelKey,
-                RadarSnapshot = cached.RadarSnapshot == null ? null : cached.RadarSnapshot.Clone(),
+                RadarSnapshot = quotaOnlyClaude || cached.RadarSnapshot == null ? null : cached.RadarSnapshot.Clone(),
                 QuotaSnapshot = cached.QuotaSnapshot == null ? null : cached.QuotaSnapshot.Clone(),
                 QuotaSourceKnown = cached.QuotaSourceKnown,
                 RadarHealth = cached.RadarHealth,
@@ -388,12 +408,15 @@ internal sealed partial class CodexRadarForm
         }
 
         bool radarRestored = false;
-        lock (this.codexRadarStatusLock)
+        if (!quotaOnlyClaude)
         {
-            if (cached.RadarSnapshot != null)
+            lock (this.codexRadarStatusLock)
             {
-                this.codexRadarSnapshot = cached.RadarSnapshot;
-                radarRestored = IsRuntimeRadarSnapshotUsable(cached.RadarSnapshot);
+                if (cached.RadarSnapshot != null)
+                {
+                    this.codexRadarSnapshot = cached.RadarSnapshot;
+                    radarRestored = IsRuntimeRadarSnapshotUsable(cached.RadarSnapshot);
+                }
             }
         }
 
@@ -405,11 +428,14 @@ internal sealed partial class CodexRadarForm
             quotaRestored = cached.QuotaSourceKnown;
         }
 
-        lock (this.serviceHealthLock)
+        if (!quotaOnlyClaude)
         {
-            this.radarServiceHealth = this.serviceNetworkAvailable
-                ? cached.RadarHealth
-                : ServiceHealthState.Offline;
+            lock (this.serviceHealthLock)
+            {
+                this.radarServiceHealth = this.serviceNetworkAvailable
+                    ? cached.RadarHealth
+                    : ServiceHealthState.Offline;
+            }
         }
 
         return new RadarDisplayRestoreResult
@@ -423,27 +449,25 @@ internal sealed partial class CodexRadarForm
     {
         return snapshot != null &&
             (snapshot.CheckedAtKnown ||
-             snapshot.ModelIqKnown ||
-             snapshot.CommunityRatingKnown ||
-             IsCodexQuotaRadarKnown(snapshot));
+             snapshot.ModelIqKnown);
     }
 
     private void RequestSelectedQuotaUsageRefresh(string trigger)
     {
         SoftwareRuntimePresenceSnapshot presence = RefreshSoftwareRuntimePresenceSnapshot(false);
-        CodexRadarSoftwareMode mode = GetEffectiveCodexRadarSoftwareMode();
-        SelectedQuotaRefreshTarget target = ResolveSelectedQuotaRefreshTarget(mode, presence);
-        if (target == SelectedQuotaRefreshTarget.Claude)
+        // Both Radar tiles are permanent consumers. Request each running family independently;
+        // the existing schedulers retain their own single-flight and cadence guards.
+        if (presence.ClaudeRunning)
         {
             RequestClaudeUsageRefresh(trigger);
-            return;
         }
 
-        if (target == SelectedQuotaRefreshTarget.Codex)
+        if (presence.CodexRunning)
         {
             RequestCodexProviderUsageRefresh(trigger);
-            this.lastQuotaRefreshUtc = DateTime.MinValue;
-            this.nextQuotaInactiveRefreshUtc = DateTime.MinValue;
+            QuotaRuntimeState codexQuota = GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex);
+            codexQuota.LastRefreshUtc = DateTime.MinValue;
+            codexQuota.NextInactiveRefreshUtc = DateTime.MinValue;
         }
     }
 
@@ -458,48 +482,6 @@ internal sealed partial class CodexRadarForm
     {
         SoftwareRuntimePresence.RunSelfTest();
         RadarSoftwareModeController.RunSelfTest();
-
-        ClaudeRadarSnapshot claudeSnapshot = ClaudeRadarSnapshot.CreateDefault();
-        claudeSnapshot.Known = true;
-        claudeSnapshot.CheckedAtLocal = new DateTime(2026, 7, 5, 13, 30, 0);
-        claudeSnapshot.DataState = ClaudeRadarServiceState.Normal;
-        claudeSnapshot.SelectedModelKey = "m1";
-        claudeSnapshot.SelectedModelName = "Opus 4.8 high";
-        claudeSnapshot.SelectedModel = new ClaudeRadarModelMetric
-        {
-            Known = true,
-            SourceKey = "m1",
-            Name = "Opus 4.8 high",
-            LatestAtKnown = true,
-            LatestAtUtc = new DateTime(2026, 7, 5, 4, 20, 0, DateTimeKind.Utc),
-            IqScore = 119,
-            Passed = 8,
-            ValidTasks = 10,
-            TokenEfficiencyPercent = 123,
-            TimeEfficiencyPercent = 88,
-            StatusText = "常态"
-        };
-        claudeSnapshot.Community = new ClaudeRadarCommunitySnapshot
-        {
-            Known = true,
-            RatingKey = "opus48_high",
-            Label = "Opus 4.8 high",
-            Average = 7.5,
-            Count = 42,
-            UpdatedAtUtc = new DateTime(2026, 7, 5, 4, 0, 0, DateTimeKind.Utc)
-        };
-        CodexRadarSnapshot sharedSnapshot = ConvertClaudeRadarSnapshotForSharedWindow(claudeSnapshot, true);
-        if (sharedSnapshot == null ||
-            !sharedSnapshot.ModelIqKnown ||
-            sharedSnapshot.ModelIqPassRatePercent != 119 ||
-            sharedSnapshot.ModelIqTokenEfficiencyPercent != 123 ||
-            sharedSnapshot.ModelIqTimeEfficiencyPercent != 88 ||
-            sharedSnapshot.CheckedAtLocal != claudeSnapshot.SelectedModel.LatestAtUtc.ToLocalTime() ||
-            !sharedSnapshot.CommunityRatingKnown ||
-            !string.Equals(sharedSnapshot.CommunityRatingModelId, "opus48_high", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("Codex Radar software mode self-test failed: Claude shared snapshot conversion.");
-        }
     }
 
     private void RequestClaudeUsageRefresh(string trigger)
@@ -517,35 +499,27 @@ internal sealed partial class CodexRadarForm
             return;
         }
 
-        if (GetEffectiveCodexRadarSoftwareMode() == CodexRadarSoftwareMode.Claude)
+        this.quotaCodexProcessRunning = presence.CodexRunning;
+        if (presence.CodexRunning)
         {
-            this.quotaCodexProcessRunning = presence.CodexRunning;
-            // Codex quota reads are paused while the shared window presents Claude. Break the local
-            // burn-rate segment as well, otherwise the next Codex sample would absorb this blind gap.
+            RefreshQuotaInfoIfNeeded();
+            RefreshCodexProviderUsageIfNeeded();
+        }
+        else
+        {
             UpdateWeeklyBurnObservationClock(GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex), false, DateTime.UtcNow);
-            if (!presence.ClaudeRunning)
-            {
-                return;
-            }
+        }
 
+        if (presence.ClaudeRunning)
+        {
             RefreshClaudeUsageIfNeeded();
-            return;
         }
-
-        if (!presence.CodexRunning)
-        {
-            this.quotaCodexProcessRunning = false;
-            UpdateWeeklyBurnObservationClock(GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex), false, DateTime.UtcNow);
-            return;
-        }
-
-        RefreshQuotaInfoIfNeeded();
-        RefreshCodexProviderUsageIfNeeded();
     }
 
     private void RefreshClaudeUsageIfNeeded()
     {
-        if (GetEffectiveCodexRadarSoftwareMode() != CodexRadarSoftwareMode.Claude)
+        OwnerOperationLease lease = CaptureOwnerOperation();
+        if (lease == null)
         {
             return;
         }
@@ -558,34 +532,41 @@ internal sealed partial class CodexRadarForm
 
         task.ContinueWith(delegate(Task<ClaudeCodeUsageSchedulerOutcome> completedTask)
         {
-            if (this.IsDisposed || !this.IsHandleCreated)
+            // Observe a fault even when this owner generation has already stopped; stale faults are
+            // deliberately not persisted as a current-lifetime business event.
+            Exception observed = completedTask.Exception == null
+                ? null
+                : completedTask.Exception.GetBaseException();
+            if (!IsOwnerOperationCurrent(lease))
             {
                 return;
             }
 
-            try
+            if (observed != null)
             {
-                this.BeginInvoke((MethodInvoker)delegate
-                {
-                    ApplyClaudeUsageSchedulerResult(completedTask);
-                });
+                TryExecuteOwnerCurrent(lease, delegate { Program.LogException(observed); });
             }
-            catch (InvalidOperationException)
+
+            TryBeginInvokeOwnerCurrent(lease, delegate
             {
-            }
+                ApplyClaudeUsageSchedulerResult(completedTask, lease);
+            });
         });
     }
 
-    private void ApplyClaudeUsageSchedulerResult(Task<ClaudeCodeUsageSchedulerOutcome> task)
+    private void ApplyClaudeUsageSchedulerResult(
+        Task<ClaudeCodeUsageSchedulerOutcome> task,
+        OwnerOperationLease lease)
     {
+        if (!IsOwnerOperationCurrent(lease))
+        {
+            return;
+        }
+
         ClaudeCodeUsageSchedulerOutcome outcome = null;
         if (task.Status == TaskStatus.RanToCompletion)
         {
             outcome = task.Result;
-        }
-        else if (task.Exception != null)
-        {
-            Program.LogException(task.Exception.GetBaseException());
         }
 
         ClaudeCodeUsageResult result = ConvertClaudeCodeUsageReadResult(outcome == null ? null : outcome.Result);
@@ -602,7 +583,7 @@ internal sealed partial class CodexRadarForm
 
         if (result.Success && result.Snapshot != null)
         {
-            ApplyClaudeUsageResultOnUiThread(result.Snapshot);
+            ApplyClaudeUsageResultOnUiThread(result.Snapshot, lease);
         }
 
         NetworkCheckHistoryLogger.LogCompleted(
@@ -621,10 +602,12 @@ internal sealed partial class CodexRadarForm
                 { "source_known_after", sourceKnownAfter }
             });
 
-        RenderLayeredWindow();
+        PublishProjectionStateFromOwner();
     }
 
-    private void ApplyClaudeUsageResultOnUiThread(CodexQuotaSnapshot snapshot)
+    private void ApplyClaudeUsageResultOnUiThread(
+        CodexQuotaSnapshot snapshot,
+        OwnerOperationLease lease)
     {
         if (snapshot == null || this.IsDisposed || !this.IsHandleCreated)
         {
@@ -633,18 +616,17 @@ internal sealed partial class CodexRadarForm
 
         try
         {
-            this.BeginInvoke((MethodInvoker)delegate
+            TryBeginInvokeOwnerCurrent(lease, delegate
             {
                 if (this.IsDisposed ||
                     this.CurrentSettings == null ||
-                    this.CurrentSettings.CodexRadarRandomTestEnabled ||
-                    GetEffectiveCodexRadarSoftwareMode() != CodexRadarSoftwareMode.Claude)
+                    this.CurrentSettings.CodexRadarRandomTestEnabled)
                 {
                     return;
                 }
 
                 DateTime nowUtc = DateTime.UtcNow;
-                this.lastQuotaRefreshUtc = nowUtc;
+                GetQuotaRuntimeState(CodexRadarSoftwareMode.Claude).LastRefreshUtc = nowUtc;
                 ApplyQuotaSnapshot(
                     CodexRadarSoftwareMode.Claude,
                     snapshot.Clone(),
@@ -653,19 +635,12 @@ internal sealed partial class CodexRadarForm
                     DateTime.Now,
                     nowUtc,
                     string.IsNullOrWhiteSpace(snapshot.SourceKind) ? "claude_personal" : snapshot.SourceKind);
-                RenderLayeredWindow();
+                PublishProjectionStateFromOwner();
             });
         }
         catch
         {
         }
-    }
-
-    private bool IsClaudeQuotaDisplayAvailable()
-    {
-        return this.quotaSourceKnown ||
-            this.claudeQuotaSourceKnown ||
-            (ClaudeCodeUsageScheduler.IsRequestRunning && this.claudeCodeUsageHealth != ServiceHealthState.Offline);
     }
 
     private void SetClaudeCodeUsageHealth(ServiceHealthState health, string errorCode, string errorMessage)
@@ -675,54 +650,10 @@ internal sealed partial class CodexRadarForm
         this.claudeCodeUsageErrorMessage = errorMessage ?? string.Empty;
     }
 
-    private void AddClaudeCodeUsageAlertCandidate(List<CodexConnectionAlertCandidate> candidates)
+    private static bool IsClaudeSetupTokenMissing(string errorCode)
     {
-        if (GetEffectiveCodexRadarSoftwareMode() != CodexRadarSoftwareMode.Claude)
-        {
-            return;
-        }
-
-        bool checking;
-        bool known;
-        ServiceHealthState health;
-        string errorCode;
-        string errorMessage;
-        checking = ClaudeCodeUsageScheduler.IsRequestRunning;
-        known = this.claudeQuotaSourceKnown;
-        health = this.claudeCodeUsageHealth;
-        errorCode = this.claudeCodeUsageErrorCode ?? string.Empty;
-        errorMessage = this.claudeCodeUsageErrorMessage ?? string.Empty;
-
-        if (checking && !known)
-        {
-            candidates.Add(new CodexConnectionAlertCandidate
-            {
-                Key = "claude_code_usage:checking",
-                Name = "Claude",
-                Reason = "检测中",
-                Color = DesignTokens.Colors.Warning
-            });
-            return;
-        }
-
-        if (health == ServiceHealthState.Normal || health == ServiceHealthState.Unknown)
-        {
-            return;
-        }
-
-        if ((QuotaRingPresentation.IsSetupTokenMissing(errorCode) || IsClaudeCodeStatusLineCacheMissing(errorCode)) &&
-            (this.quotaSourceKnown || known))
-        {
-            return;
-        }
-
-        candidates.Add(new CodexConnectionAlertCandidate
-        {
-            Key = "claude_code_usage:" + health.ToString() + ":" + errorCode,
-            Name = "Claude",
-            Reason = string.IsNullOrWhiteSpace(errorMessage) ? GetServiceHealthAlertReason(health) : errorMessage,
-            Color = GetClaudeCodeUsageAlertColor(health, errorCode)
-        });
+        return string.Equals(errorCode, "NO_SETUP_TOKEN", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(errorCode, "NO_TOKEN", StringComparison.OrdinalIgnoreCase);
     }
 
     private static Color GetClaudeCodeUsageAlertColor(ServiceHealthState health, string errorCode)
@@ -739,7 +670,7 @@ internal sealed partial class CodexRadarForm
 
         if (string.Equals(errorCode, "401", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(errorCode, "403", StringComparison.OrdinalIgnoreCase) ||
-            QuotaRingPresentation.IsSetupTokenMissing(errorCode))
+            IsClaudeSetupTokenMissing(errorCode))
         {
             return DesignTokens.Colors.WarningDeep;
         }
@@ -791,19 +722,19 @@ internal sealed partial class CodexRadarForm
         };
     }
 
-    private static ServiceHealthState ConvertClaudeCodeUsageHealth(ClaudeRadarServiceState state)
+    private static ServiceHealthState ConvertClaudeCodeUsageHealth(ClaudeCodeUsageServiceState state)
     {
         switch (state)
         {
-            case ClaudeRadarServiceState.Normal:
+            case ClaudeCodeUsageServiceState.Normal:
                 return ServiceHealthState.Normal;
-            case ClaudeRadarServiceState.Offline:
+            case ClaudeCodeUsageServiceState.Offline:
                 return ServiceHealthState.Offline;
-            case ClaudeRadarServiceState.Incomplete:
+            case ClaudeCodeUsageServiceState.Incomplete:
                 return ServiceHealthState.Incomplete;
-            case ClaudeRadarServiceState.Unavailable:
+            case ClaudeCodeUsageServiceState.Unavailable:
                 return ServiceHealthState.Unavailable;
-            case ClaudeRadarServiceState.Unreachable:
+            case ClaudeCodeUsageServiceState.Unreachable:
                 return ServiceHealthState.Unreachable;
             default:
                 return ServiceHealthState.Unknown;

@@ -1,7 +1,5 @@
 using System;
 using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Drawing.Text;
 using System.Globalization;
 
 internal enum RadarClockDialPhase
@@ -29,8 +27,7 @@ internal sealed class RadarClockDialInput
     public DateTime LastAttemptLocal;
     public bool LastActualKnown;
     public DateTime LastActualLocal;
-    // Scheme F: optional Codex task ring drawn outside the dial. Null (the default) keeps the legacy
-    // full-size dial, so the Claude radar and every other caller are unaffected.
+    // Optional Codex task-ring projection. Null keeps consumers on the clock-only state.
     public CodexTaskRingModel TaskRing;
 }
 
@@ -51,18 +48,7 @@ internal sealed class RadarClockDialState
     public CodexTaskRingModel TaskRing;
 }
 
-internal sealed class RadarClockDialDrawContext
-{
-    public float LayerScale;
-    public Font DayFont;
-    public Font TimeFont;
-    public Font ModeFont;
-    public Font BadgeFont;
-    public Action<Graphics, string, Font, Brush, RectangleF, StringAlignment, float> DrawFittedText;
-}
-
-// Owns the shared Radar clock state machine and geometry. Window-specific snapshot access,
-// font caches, and text fitting stay at the call sites so this module remains side-effect free.
+// Owns the side-effect-free Radar clock state and task-ring projection.
 internal static class RadarClockDial
 {
     private const float BoundaryAngle = -90.0f;
@@ -247,227 +233,6 @@ internal static class RadarClockDial
         return sweep;
     }
 
-    internal static void Draw(
-        Graphics g,
-        RectangleF rect,
-        RadarClockDialState state,
-        RadarClockDialDrawContext context)
-    {
-        if (g == null || state == null || context == null || context.DrawFittedText == null)
-        {
-            return;
-        }
-
-        // GDI+ text/arc rendering on a shared PArgb surface can affect pixels outside the dial
-        // when the caller has already painted sibling cells. Keep this reusable renderer inside
-        // its ownership rectangle and restore every caller-owned Graphics setting on exit.
-        GraphicsState savedState = g.Save();
-        try
-        {
-            g.SetClip(rect, CombineMode.Intersect);
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-
-        float outerDiameter = Math.Min(rect.Width, rect.Height) - Scale(1.0f, context.LayerScale);
-        outerDiameter = Math.Max(Scale(20.0f, context.LayerScale), outerDiameter);
-        RectangleF outer = new RectangleF(
-            rect.Left,
-            rect.Top + (rect.Height - outerDiameter) / 2.0f,
-            outerDiameter,
-            outerDiameter);
-
-        // Scheme F: the task ring owns the outermost band and the clock dial shrinks to fit inside
-        // it. The band is taken from the dial rather than added outside it because Draw clips to its
-        // ownership rectangle; growing past `rect` would silently truncate the ring.
-        float taskRingStroke = Math.Max(1.5f, Scale(1.6f, context.LayerScale));
-        float taskRingBand = taskRingStroke + Math.Max(1.0f, Scale(1.2f, context.LayerScale));
-        bool taskRingVisible = state.TaskRing != null &&
-            state.TaskRing.HasSegments &&
-            outerDiameter - 2.0f * taskRingBand >= Scale(20.0f, context.LayerScale);
-        if (taskRingVisible)
-        {
-            DrawTaskRing(g, RectangleF.Inflate(outer, -taskRingStroke / 2.0f, -taskRingStroke / 2.0f), state.TaskRing, taskRingStroke);
-        }
-        else
-        {
-            taskRingBand = 0.0f;
-        }
-
-        RectangleF dial = RectangleF.Inflate(outer, -taskRingBand, -taskRingBand);
-        float stroke = Math.Max(2.0f, Scale(2.0f, context.LayerScale));
-        RectangleF arcRect = new RectangleF(
-            dial.Left + stroke / 2.0f,
-            dial.Top + stroke / 2.0f,
-            dial.Width - stroke,
-            dial.Height - stroke);
-
-        using (Pen trackPen = new Pen(DesignTokens.White(46), stroke))
-        {
-            g.DrawArc(trackPen, arcRect, BoundaryAngle, 360.0f);
-        }
-
-        if (state.WarningRingVisible)
-        {
-            using (Pen warningPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Danger, 90), stroke))
-            {
-                warningPen.StartCap = LineCap.Round;
-                warningPen.EndCap = LineCap.Round;
-                g.DrawArc(warningPen, arcRect, BoundaryAngle, 360.0f);
-            }
-        }
-
-        if (state.ArcSweepDegrees > 1.0f)
-        {
-            using (Pen arcPen = new Pen(state.StatusColor, stroke))
-            {
-                arcPen.StartCap = LineCap.Round;
-                arcPen.EndCap = LineCap.Round;
-                g.DrawArc(arcPen, arcRect, state.ArcStartAngle, state.ArcSweepDegrees);
-            }
-        }
-
-        DrawBoundaryTick(
-            g,
-            arcRect,
-            Math.Max(1.0f, stroke * 0.74f),
-            DesignTokens.White(170));
-
-        if (state.RefreshMarkerVisible)
-        {
-            DrawDot(
-                g,
-                arcRect,
-                state.RefreshMarkerAngle,
-                Math.Max(2.5f, Scale(3.0f, context.LayerScale)),
-                DesignTokens.WithAlpha(DesignTokens.Colors.Success, 245));
-        }
-
-        DrawDot(
-            g,
-            arcRect,
-            state.CurrentAngle,
-            Math.Max(3.0f, Scale(4.0f, context.LayerScale)),
-            DesignTokens.White(235));
-
-        if (state.SecondRunBadge)
-        {
-            double markerRadians = BoundaryAngle * Math.PI / 180.0;
-            float radius = arcRect.Width / 2.0f;
-            float markerX = arcRect.Left + radius + (float)Math.Cos(markerRadians) * radius;
-            float markerY = arcRect.Top + radius + (float)Math.Sin(markerRadians) * radius;
-            float markerDiameter = Math.Max(3.0f, Scale(4.0f, context.LayerScale));
-            float badgeOffset = markerDiameter + Scale(2.0f, context.LayerScale);
-            RectangleF badgeRect = new RectangleF(
-                markerX - (float)Math.Cos(markerRadians) * badgeOffset - Scale(4.0f, context.LayerScale),
-                markerY - (float)Math.Sin(markerRadians) * badgeOffset - Scale(4.0f, context.LayerScale),
-                Scale(8.0f, context.LayerScale),
-                Scale(8.0f, context.LayerScale));
-            using (SolidBrush badgeBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, 245)))
-            {
-                DrawCenteredText(g, "2", context.BadgeFont, badgeBrush, badgeRect);
-            }
-        }
-
-        float innerWidth = dial.Width * 0.72f;
-        float centerX = dial.Left + dial.Width / 2.0f;
-        float centerY = dial.Top + dial.Height / 2.0f;
-        RectangleF dayRect = new RectangleF(
-            centerX - innerWidth / 2.0f,
-            centerY - Scale(11.0f, context.LayerScale),
-            innerWidth,
-            Scale(11.0f, context.LayerScale));
-        RectangleF timeRect = new RectangleF(
-            centerX - innerWidth / 2.0f,
-            centerY + Scale(1.0f, context.LayerScale),
-            innerWidth,
-            Scale(8.0f, context.LayerScale));
-        RectangleF modeRect = new RectangleF(
-            centerX - innerWidth / 2.0f,
-            centerY + Scale(9.0f, context.LayerScale),
-            innerWidth,
-            Scale(6.0f, context.LayerScale));
-        using (SolidBrush dayBrush = new SolidBrush(DesignTokens.White(235)))
-        using (SolidBrush timeBrush = new SolidBrush(state.StatusColor))
-        {
-            context.DrawFittedText(g, state.DateText, context.DayFont, dayBrush, dayRect, StringAlignment.Center, 6.0f);
-            context.DrawFittedText(g, state.TimeText, context.TimeFont, timeBrush, timeRect, StringAlignment.Center, 6.0f);
-            context.DrawFittedText(g, state.ModeLabel, context.ModeFont, timeBrush, modeRect, StringAlignment.Center, 4.5f);
-        }
-        }
-        finally
-        {
-            g.Restore(savedState);
-        }
-    }
-
-    // One arc per tracked Codex task, ordered by stable task number and colored by task status.
-    // Segments are butt-capped so the gap between neighbours reads as a real divider.
-    internal static void DrawTaskRing(
-        Graphics g,
-        RectangleF ringRect,
-        CodexTaskRingModel ring,
-        float stroke)
-    {
-        if (g == null || ring == null || !ring.HasSegments || ringRect.Width <= 0.0f || ringRect.Height <= 0.0f)
-        {
-            return;
-        }
-
-        for (int i = 0; i < ring.Segments.Count; i++)
-        {
-            CodexTaskRingSegment segment = ring.Segments[i];
-            if (segment == null || segment.SweepDegrees <= 0.0f)
-            {
-                continue;
-            }
-
-            using (Pen pen = new Pen(segment.Color, stroke))
-            {
-                pen.StartCap = LineCap.Flat;
-                pen.EndCap = LineCap.Flat;
-                g.DrawArc(pen, ringRect, segment.StartAngle, segment.SweepDegrees);
-            }
-        }
-    }
-
-    internal static void DrawDot(
-        Graphics g,
-        RectangleF arcRect,
-        float angle,
-        float diameter,
-        Color color)
-    {
-        double radians = angle * Math.PI / 180.0;
-        float radius = arcRect.Width / 2.0f;
-        float x = arcRect.Left + radius + (float)Math.Cos(radians) * radius;
-        float y = arcRect.Top + radius + (float)Math.Sin(radians) * radius;
-        using (SolidBrush brush = new SolidBrush(color))
-        {
-            g.FillEllipse(brush, x - diameter / 2.0f, y - diameter / 2.0f, diameter, diameter);
-        }
-    }
-
-    internal static void DrawBoundaryTick(
-        Graphics g,
-        RectangleF arcRect,
-        float stroke,
-        Color color)
-    {
-        if (arcRect.Width <= 0.0f || arcRect.Height <= 0.0f)
-        {
-            return;
-        }
-
-        float x = arcRect.Left + arcRect.Width / 2.0f;
-        float y = arcRect.Top;
-        float length = Math.Max(3.0f, arcRect.Height * 0.18f);
-        using (Pen pen = new Pen(color, stroke))
-        {
-            pen.StartCap = LineCap.Round;
-            pen.EndCap = LineCap.Round;
-            g.DrawLine(pen, x, y - length * 0.35f, x, y + length * 0.65f);
-        }
-    }
-
     internal static void SplitDataLabel(string dataLabelText, out string main, out string suffix)
     {
         string raw = (dataLabelText ?? string.Empty).Trim();
@@ -625,8 +390,7 @@ internal static class RadarClockDial
             throw new InvalidOperationException("Radar clock date formatting changed.");
         }
 
-        // Scheme F pass-through: callers that supply no task ring (Claude radar, every legacy path)
-        // must keep the legacy full-size dial, and an empty ring must not reserve the outer band.
+        // Task-ring pass-through: absent and empty rings stay out of the projected clock state.
         RadarClockDialInput ringInput = CreateTestInput(12.0, truthNow, truthNow, truthNow);
         if (ComputeState(ringInput).TaskRing != null)
         {
@@ -643,7 +407,7 @@ internal static class RadarClockDial
         RadarClockDialState ringState = ComputeState(ringInput);
         if (ringState.TaskRing == null || ringState.TaskRing.Segments.Count != 4)
         {
-            throw new InvalidOperationException("Radar clock should pass a populated task ring through to draw state.");
+            throw new InvalidOperationException("Radar clock should pass a populated task ring through to projected state.");
         }
     }
 
@@ -798,22 +562,4 @@ internal static class RadarClockDial
         }
     }
 
-    private static void DrawCenteredText(Graphics g, string text, Font font, Brush brush, RectangleF rect)
-    {
-        using (StringFormat format = new StringFormat
-        {
-            Alignment = StringAlignment.Center,
-            LineAlignment = StringAlignment.Center,
-            Trimming = StringTrimming.EllipsisCharacter,
-            FormatFlags = StringFormatFlags.NoWrap
-        })
-        {
-            g.DrawString(text ?? string.Empty, font, brush, rect, format);
-        }
-    }
-
-    private static int Scale(float value, float layerScale)
-    {
-        return Math.Max(1, (int)Math.Round(value * layerScale));
-    }
 }

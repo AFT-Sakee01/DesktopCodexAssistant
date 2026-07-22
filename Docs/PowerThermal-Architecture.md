@@ -1,69 +1,79 @@
-# 功耗与电池窗口技术说明
+# 功耗与温度数据所有者架构
 
-适用版本：1.0.4.74
+适用版本：2.0.0.0
 
-## 1. 文档范围
+本文说明 `PowerThermalForm` 作为永久 headless 数据所有者时的数据来源、采样、通知、缓存和快照边界。
 
-本文描述 `PowerThermalForm` 的数据来源、运行状态、三档性能策略、事件通知、后台采样、温度告警、自动布局和分层窗口渲染机制。
+## 1. 当前定位
+
+`PowerThermalForm` 不再是可见功耗温度窗口。`WidgetForm.OnShown` 构造它后调用 `StartHeadlessDataOwner()`，右侧 `PWR` 方块及其悬停详情通过 `BuildStripSnapshot()` 读取缓存。
 
 相关源码：
 
 | 文件 | 职责 |
 | --- | --- |
-| `Core/PowerThermalForm.cs` | 功耗、电池、系统电源模式和温度告警窗口 |
-| `Interop/NativeMethods.cs` | Windows 电源通知、有效电源模式通知和分层窗口接口 |
-| `Settings/WidgetSettings.cs` | 三档性能模式、公共刷新间隔和低电量节能显示阈值 |
-| `Settings/Win11SettingsForm.cs` | 性能模式、窗口尺寸、透明度、延展方向、低电量节能阈值和测试状态 |
-| `DesktopCodexAssistant.cs` | 进程优先级与 Windows Power Throttling |
-| `Core/WidgetForm.cs` | 子窗口生命周期、显示器恢复和设置分发 |
+| `Core/PowerThermalForm.cs` | headless 生命周期、电源通知、单飞采样、缓存和温度状态 |
+| `Core/PowerThermalForm.Snapshot.cs` | `PowerStripSnapshot` 只读投影与 `ThermalSummary` 数据汇总 |
+| `Core/WidgetForm.TileColumn.cs` | 把功耗快照装入共享 `MetricTileFeed` |
+| `Core/MetricTileModel.cs` | 把电池、温度和告警映射为 `PWR` 方块模型 |
+| `Core/MetricTileExpandForm.cs` | 绘制 `PWR` 悬停详情 |
+| `Settings/WidgetSettings.cs` | 性能模式、测试模式和功耗数据设置 |
+| `Interop/NativeMethods.cs` | Windows 电源通知与 Effective Power Mode 接口 |
 
-本文中的“性能模式”对应内部枚举 `WidgetPerformanceMode.Smooth`。保留旧枚举名是为了兼容已有设置文件。
+## 2. Headless 生命周期
 
-## 2. 数据语义
+```mermaid
+flowchart LR
+    A["WidgetForm hidden host"] --> B["new PowerThermalForm"]
+    B --> C["StartHeadlessDataOwner"]
+    C --> D["创建隐藏 HWND / 注册电源通知"]
+    C --> E["启动采样 scheduler"]
+    E --> F["更新功耗与温度缓存"]
+    F --> G["BuildStripSnapshot"]
+    G --> H["MetricTileFeed"]
+    H --> I["右侧 PWR tile / expand"]
+    A --> J["StopHeadlessDataOwner"]
+    J --> K["停止 timer / 注销通知 / 释放资源"]
+```
 
-### 2.1 功耗值
+生命周期约束：
 
-窗口中的瓦数来自 `root\WMI:BatteryStatus`：
+- `StartHeadlessDataOwner()` 在 UI 线程显式创建隐藏 HWND，使电源广播、显示状态和 `BeginInvoke` 仍可工作。
+- 运行时不调用 `Show()`；`SetVisibleCore` 还会防止旧调用把 owner 重新显示。
+- headless 模式不分配 layered bitmap，不定位、不执行 hover、burn-in、透明度或 Z-order 工作。
+- 旧 `ThreePane`、paint、hover、定位和 renderer cache 已物理删除；类只保留抽象基类要求的空绘制覆盖，不能恢复可见能力。
+- `StopHeadlessDataOwner()` 是幂等的最终清理入口；`Dispose` 与关闭路径复用同一资源释放逻辑。
+- 全屏标志不控制采样。显示器关闭、会话锁定和系统挂起会暂停采样，恢复后立即使缓存过期并重新采样。
 
-- `ChargeRate` 表示电池充电功率。
-- `DischargeRate` 表示电池放电功率。
-- 单位由毫瓦转换为瓦。
+## 3. 数据语义
 
-该值不是插座功率，也不是 CPU、GPU 或整机总功耗。设备固件未公开 `BatteryStatus` 时显示 `-- W`。
+### 3.1 功耗与电池
 
-### 2.2 电池状态
+瓦数来自 `root\WMI:BatteryStatus`：
 
-基础电池信息优先从 `SystemInformation.PowerStatus` 读取：
+- `ChargeRate` 表示充电功率。
+- `DischargeRate` 表示放电功率。
+- 毫瓦转换为瓦。
 
-- 电池百分比
-- AC 是否接入
-- 是否不存在系统电池
+该值不是插座功率，也不是 CPU、GPU 或整机总功耗。固件未公开 `BatteryStatus` 时，快照把瓦数标记为 unknown。
 
-如果设备没有系统电池，将跳过 `root\WMI:BatteryStatus` 查询，减少无意义的 WMI 开销。
+基础电池信息优先从 `SystemInformation.PowerStatus` 读取，包括电池百分比、AC 状态和是否存在系统电池。没有系统电池时跳过 BatteryStatus WMI 查询。
 
-“电池养护暂停”没有厂商无关的 Windows 标准字段，因此当前不进行推断，也不会显示可能误导的养护标志。
+电池保养暂停没有厂商无关的 Windows 标准字段；只有当前设备专用链路已经明确提供状态时，`BatteryCarePauseActive` 才为真，不能根据充电百分比猜测。
 
-### 2.3 系统电源模式
+### 3.2 系统电源模式与节能
 
-电源模式按以下顺序读取：
+基础电源模式按以下顺序读取：
 
-1. 注册表中的 AC/DC Overlay GUID
-2. `root\cimv2\power:Win32_PowerPlan`
-3. `powercfg.exe /getactivescheme`
+1. 注册表 AC/DC Overlay GUID。
+2. `root\cimv2\power:Win32_PowerPlan`。
+3. `powercfg.exe /getactivescheme`。
 
-结果归一化为：
+结果归一化为性能、平衡或省电。全局节能状态优先读取 `Windows.System.Power.PowerManager.EnergySaverStatus`，并用 `GetSystemPowerStatus().SystemStatusFlag` 兼容兜底。
 
-- `性能`
-- `平衡`
-- `省电`
+`PowerThermalManualEnergySaverThresholdPercent` 只根据最近一次电池快照决定 `EnergySaverActive` 的展示兜底，不修改 Windows 电源模式，也不让全局性能档位强制进入省电。
 
-其中注册表 Overlay 会根据当前 AC/DC 状态选择不同字段，因此能反映用户为插电和电池分别配置的模式。
-
-全局节能状态独立读取 `Windows.System.Power.PowerManager.EnergySaverStatus`，并用 `GetSystemPowerStatus().SystemStatusFlag` 作为 Battery Saver 兼容备用来源。该状态不覆盖基础三档；任一来源显示已开启时，在电池百分比右侧显示叶子标志，并把底部文本显示为 `基础模式（节能）`，例如 `平衡（节能）`。如果基础模式不可读但全局节能可读为开启，则显示 `节能`。`ReadCurrentSystemPowerModeText()` 也会返回带 `节能` 的文本，使 `WidgetPerformanceMode.WindowsPowerMode` 能按省电档位解析。
-
-设置键 `PowerThermalManualEnergySaverThresholdPercent` 是功耗窗口的显示兜底，默认 `30`，范围 `0-100`，`0` 表示关闭。当前电池百分比低于该阈值时，`PowerThermalForm.DrawBatteryModule` 同样显示叶子和 `（节能）` 后缀，用于 Windows API 未暴露全局节能但用户希望低电量按节能显示的场景。该阈值只作用于功耗窗口显示，不修改 Windows 电源模式，也不让 `ReadCurrentSystemPowerModeText()` 的全局性能档位解析强制进入省电。
-
-### 2.4 温度
+### 3.3 温度
 
 温度来自：
 
@@ -72,223 +82,71 @@ root\cimv2
 Win32_PerfFormattedData_Counters_ThermalZoneInformation
 ```
 
-优先使用 `HighPrecisionTemperature`，否则使用 `Temperature`，最终从开尔文转换为摄氏度。
+优先使用 `HighPrecisionTemperature`，否则使用 `Temperature`，再从开尔文转换为摄氏度。这是 ACPI Thermal Zone，不保证等于 CPU 核心温度。传感器名会缩短为最后一段，例如 `\_SB.TZ37` 投影为 `TZ37`。
 
-这里得到的是 Windows ACPI Thermal Zone，不保证等同于 CPU 核心温度。传感器名会缩短为最后一段，例如 `\_SB.TZ37` 显示为 `TZ37`。
+## 4. 调度、事件与单飞
 
-## 3. 总体运行模型
+功耗和温度各有 deadline，但共用一个后台采样 worker：
 
-```mermaid
-flowchart LR
-    A["WinForms 调度定时器"] --> B["判断功耗/温度是否到期"]
-    C["Windows 电源事件"] --> D["请求立即采样"]
-    B --> E["单飞采样队列"]
-    D --> E
-    E --> F["Task.Run 后台读取 WMI/注册表"]
-    F --> G["BeginInvoke 回到 UI 线程"]
-    G --> H["更新缓存与告警状态"]
-    H --> I{"显示内容或尺寸变化?"}
-    I -- "是" --> J["重绘缓存位图"]
-    I -- "否" --> K["保留现有位图"]
-    J --> L["UpdateLayeredWindow"]
-    K --> M["等待下一事件/到期时间"]
-```
+- timer 只判断哪些数据到期，不在 UI 线程做 WMI、注册表或 `powercfg` 读取。
+- `samplingWorkerRunning` 保证任意时刻最多一个 worker。
+- worker 运行时到达的强制请求合并到 `pendingPowerSample` / `pendingThermalSample`，当前任务提交后最多补一轮。
+- 后台只构造 `SamplingResult`；缓存替换和状态机更新通过 `BeginInvoke` 回到 UI 线程。
+- owner 已停止、generation 失效或句柄销毁后，迟到结果直接丢弃。
 
-核心原则：
+注册通知：
 
-1. WMI 和 `powercfg` 不在 UI 线程执行。
-2. 任意时刻最多运行一个采样任务。
-3. 电源事件负责触发立即采样，但不直接读取数据。
-4. 后台结果必须回到 UI 线程后才能修改窗口缓存和布局。
-5. 数据未变化时不重绘窗口内容。
-
-## 4. 三档性能策略
-
-### 4.1 全局策略
-
-采样/调度/动画/轮询在三档模式下的具体数值以 `Docs/Component-Refresh-Rules.md` §2 为唯一权威表，本文不重复维护。窗口进程级差异：
-
-| 项目 | 性能 | 平衡 | 省电 |
-| --- | ---: | ---: | ---: |
-| 进程优先级 | Normal | Normal | BelowNormal |
-| Windows Power Throttling | 关闭 | 关闭 | 开启 |
-
-性能档提高数据和动画响应速度；平衡档保持原有一秒级体验；省电档降低定时器唤醒、绘制和性能计数器采样频率。
-
-### 4.2 功耗与温度窗口策略
-
-功耗/温度按热状态分档的采样间隔以 `Docs/Component-Refresh-Rules.md` §5 为唯一权威表。温度越高，采样自动加速；严重高温时不允许省电模式把采样降到低频。
-
-调度器不是固定频率轮询器。它根据最近一次功耗和温度采样时间，计算二者中更早的到期时间，再调整 WinForms Timer 的下一次触发时间。
-
-## 5. 事件驱动刷新
-
-窗口注册以下通知：
-
-| 通知 | 用途 |
+| 通知 | 行为 |
 | --- | --- |
-| `GUID_CONSOLE_DISPLAY_STATE` | 屏幕关闭时暂停采样，恢复时立即刷新 |
-| `GUID_ACDC_POWER_SOURCE` | 插拔电源后立即刷新 |
-| `GUID_BATTERY_PERCENTAGE_REMAINING` | 电量变化后立即刷新 |
-| `GUID_POWERSCHEME_PERSONALITY` | 电源计划变化后立即刷新 |
-| `GUID_POWER_SAVING_STATUS` | 全局节能状态变化后立即刷新功耗快照 |
-| Effective Power Mode callback | Windows 电源模式滑块变化后立即刷新 |
-| `SystemEvents.SessionSwitch` | 锁屏暂停，解锁恢复 |
+| `GUID_CONSOLE_DISPLAY_STATE` | 显示器关闭时暂停，恢复时请求完整采样 |
+| `GUID_ACDC_POWER_SOURCE` | 电源来源变化后立即刷新功耗 |
+| `GUID_BATTERY_PERCENTAGE_REMAINING` | 电量变化后立即刷新功耗 |
+| `GUID_POWERSCHEME_PERSONALITY` | 电源计划变化后立即刷新功耗 |
+| `GUID_POWER_SAVING_STATUS` | 节能状态变化后立即刷新功耗 |
+| Effective Power Mode callback | 电源模式滑块变化后立即刷新功耗 |
+| `SystemEvents.SessionSwitch` | 锁屏暂停、解锁恢复 |
+| `PBT_APMRESUME*` | 清除挂起状态并请求完整采样 |
 
-Effective Power Mode 优先注册接口版本 2，失败时回退版本 1。无法注册不会阻止窗口运行，定时采样仍作为兜底。
+性能/均衡/省电的具体间隔和热状态加速表只在 `Docs/Component-Refresh-Rules.md` §5 维护。
 
-`PBT_APMRESUMEAUTOMATIC`、`PBT_APMRESUMESUSPEND` 和 `PBT_APMRESUMECRITICAL` 都会清除挂起状态并请求完整采样。
+## 5. 温度状态
 
-## 6. 采样队列和线程约束
+普通告警使用迟滞：达到 70°C 进入告警，低于 67°C 退出。严重告警要求达到 95°C 并持续 3 秒，低于 92°C 清除；100°C 测试模式跳过等待，便于自动验证。
 
-### 6.1 单飞模型
+这些状态投影到 `PowerStripSnapshot.AlertCount`、`MaxCelsius`、`AvgCelsius` 和 `HotZones`，由 `PWR` 方块/详情消费；状态变化不会创建额外显示表面。
 
-`samplingWorkerRunning` 保证同时只有一个后台任务。这样可以避免：
+## 6. Cache-only 快照
 
-- WMI 查询重叠
-- 电源事件密集到达时创建大量线程池任务
-- 较旧结果与较新结果交叉提交
+`PowerThermalForm.BuildStripSnapshot()` 只读取 owner 缓存并返回新的 `PowerStripSnapshot`：
 
-### 6.2 待处理请求
+- 功耗：known/charging/plugged-in/watts/battery/runtime。
+- 状态：energy saver、电池保养暂停、电源模式文本。
+- 温度：zone 数、告警数、最高/平均温度和热点列表。
 
-后台任务运行期间：
+该方法不得触发采样、WMI、进程启动、磁盘或网络 I/O。`WidgetForm.BuildMetricTileFeed()` 每个控制 tick 至多取一次快照，再把同一 feed 推给 `PWR` 方块及展开详情；消费者不能修改 sampler-owned state。
 
-- 普通定时器发现数据到期时不会重复排队。
-- 强制刷新或系统电源事件会设置 `pendingPowerSample` / `pendingThermalSample`。
-- 当前任务提交后，再合并执行一次待处理请求。
+## 7. 设置边界
 
-`queueAfterCurrent` 参数表示“如果当前正在采样，是否必须在它结束后再补一次”。定时到期通常传 `false`，状态事件和手动刷新传 `true`。
+`PowerThermalIntegratedEnabled` 只为旧 `settings.ini` 兼容保留，在设置 UI 中隐藏；无论其值为何，都不控制 owner 生命周期、采样或可见性。
 
-### 6.3 UI 线程提交
+数据仍会消费性能模式、温度测试模式、手动节能阈值和设备专用阈值。旧独立展示的尺寸、位置、透明度、延展方向和自动大小设置不得重新创建功耗温度表面；`PWR` 的位置和大小由右侧 tile 布局统一管理。
 
-后台线程只构造 `SamplingResult`。以下操作只在 UI 线程进行：
+## 8. 故障与降级
 
-- 替换缓存快照
-- 更新温度告警状态
-- 计算窗口尺寸
-- 调用 `SetWindowPos`
-- 绘制和更新分层窗口
+- WMI、注册表和 `powercfg` 错误彼此隔离，不终止 UI 线程。
+- 功耗不可读时 `WattsKnown=false`；温度不可读时返回空温度集合。
+- Effective Power Mode 通知不可用时继续使用电源广播和 deadline 采样。
+- `powercfg` 有有界超时，并始终运行在后台任务中。
+- 停止 owner 后不得继续写缓存或递归记录错误。
 
-窗口关闭或句柄销毁后，后台结果会被丢弃。
-
-## 7. 温度告警状态机
-
-### 7.1 普通告警迟滞
-
-- 温度达到 70°C：进入告警。
-- 温度低于 67°C：退出告警。
-- 67°C 到 70°C：保持之前状态。
-
-迟滞区间防止温度在 70°C 附近波动时，告警框和自动延展窗口频繁出现、消失。
-
-### 7.2 严重告警迟滞
-
-- 温度达到 95°C 并持续 3 秒：激活黄色三角告警。
-- 温度低于 92°C：清除严重告警。
-- 92°C 到 95°C：保持已建立的严重告警状态。
-
-设置中的 100°C 测试模式会跳过等待时间，以便立即验证告警 UI。
-
-### 7.3 自动延展
-
-自动大小开启后：
-
-- 向左延展：温度告警在功耗模块左侧横向增加。
-- 向下延展：电池模块位于功耗模块下方，温度告警继续向下增加。
-- `+n` 表示未展开的额外告警，不计入“显示告警数”限制。
-
-窗口尺寸只在告警集合或设置发生变化时调整。
-
-## 8. 绘制与资源管理
-
-窗口使用 `WS_EX_LAYERED` 和 `UpdateLayeredWindow`。
-
-### 8.1 可复用渲染缓冲区
-
-`renderBitmap` 和 `renderGraphics` 会在窗口尺寸不变时复用，避免每次刷新创建新的 GDI Bitmap/Graphics。
-
-缓冲区在以下情况释放：
-
-- 窗口尺寸变化
-- 窗口关闭
-
-显示器恢复时会把 `renderBufferValid` 设为 `false`，强制重新绘制内容。
-
-### 8.2 内容重绘与透明度更新
-
-`RenderLayeredWindow(true)` 会重新绘制背景和内容。
-
-`RenderLayeredWindow(false)` 只重新提交已有位图并修改整体 Alpha，用于悬停透明度动画。这样动画过程不必重复创建字体、路径和笔刷。
-
-### 8.3 变化检测
-
-功耗比较按实际显示值进行，例如瓦数格式化后都为 `12.3 W` 时视为未变化。
-
-温度比较关注：
-
-- 告警数量和顺序
-- 传感器名称
-- 严重告警状态
-- 最终红色透明度
-
-如果数据变化不会影响当前画面，则跳过内容重绘。
-
-## 9. 暂停与恢复
-
-满足任意条件时停止普通采样：
-
-- 窗口正在关闭
-- 因全屏应用隐藏
-- Windows 会话锁定
-- 控制台显示器关闭
-- 系统处于挂起状态
-- 窗口不可见
-
-恢复后会：
-
-1. 清除挂起/显示关闭状态
-2. 将缓存时间标记为过期
-3. 重新定位窗口
-4. 使渲染缓冲区失效
-5. 请求功耗和温度完整采样
-
-## 10. 故障与降级
-
-- WMI、注册表和 `powercfg` 读取异常被隔离，不会终止 UI 线程。
-- 电源模式读取失败时显示 `--`。
-- 功耗读取失败时显示 `-- W`。
-- 温度读取失败时保留空告警集合。
-- Effective Power Mode 通知不可用时继续使用原生电源广播和定时采样。
-- `UpdateLayeredWindow` 失败时记录一次日志并回退到普通 `Invalidate`。
-- `powercfg` 最长等待 1200 ms，超时后终止子进程；该过程位于后台任务中。
-
-日志目录：
-
-```text
-%LOCALAPPDATA%\DesktopCodexAssistant
-```
-
-## 11. 测试入口
-
-设置页提供：
-
-- 75°C 温度模拟
-- 100°C 温度模拟
-- 性能 / 平衡 / 省电切换
-- 自动大小、延展方向和告警数量
-
-建议修改后至少执行：
+## 9. 验证
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPath .\DesktopCodexAssistant-test.exe
-.\DesktopCodexAssistant-test.exe --test
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPath .\_build\DesktopCodexAssistant-arm64-test.exe -Platform arm64
+.\_build\DesktopCodexAssistant-arm64-test.exe --test
+.\_build\DesktopCodexAssistant-arm64-test.exe --test-layout
+.\_build\DesktopCodexAssistant-arm64-test.exe --test-radar-display-lifecycle
+.\_build\DesktopCodexAssistant-arm64-test.exe --render-tilecolumn --out .\_build\tilecolumn
 ```
 
-运行检查：
-
-1. 三档模式切换后进程优先级正确。
-2. 100°C 模拟能扩展窗口并显示严重告警。
-3. 恢复关闭测试后窗口尺寸收回。
-4. 插拔电源后电池边框和电源模式及时变化。
-5. 挂起/恢复、锁屏/解锁后数据继续更新。
-6. 长时间运行时 GDI 对象和句柄数不持续增长。
+验收重点是：owner 始终隐藏、Start/Stop 生命周期完整、全屏不停止采样、显示/会话/挂起门控正确、快照构建无 I/O、`PWR` 方块使用缓存，以及兼容设置不能恢复独立表面。

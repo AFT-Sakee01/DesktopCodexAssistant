@@ -19,9 +19,9 @@ internal sealed partial class OperationForm
     // GuardRuntime then falls back to NetworkInterface.GetIsNetworkAvailable rather than guessing.
     internal Func<bool?> GuardNetworkOnlineProvider;
 
-    // Read-only peek for the main widget's guard strip: never creates the board. A null result
-    // means the board has never been opened, and since guard state is per-process and not
-    // persisted, that genuinely means every guard is off.
+    // Read-only peek for the main widget's guard strip: never creates the board. Guard state is
+    // persisted in settings and restored when the board is constructed at startup; null only
+    // means the board has not been constructed yet.
     internal GuardRuntime PeekGuardRuntime()
     {
         if (this.guardBoardForm == null || this.guardBoardForm.IsDisposed)
@@ -46,6 +46,7 @@ internal sealed partial class OperationForm
             };
         }
 
+        this.guardBoardForm.PreparePresentationState(this.displaySuspended, this.hiddenForFullscreen);
         this.guardBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
         return this.guardBoardForm;
     }
@@ -133,7 +134,7 @@ internal sealed partial class OperationForm
         }
     }
 
-    // Expanding the guard board collapses the other three dock members, matching what each of them
+    // Expanding the guard board collapses the other dock members, matching what each of them
     // does to the others.
     internal void PrepareForGuardBoardOverlayShow()
     {
@@ -146,8 +147,8 @@ internal sealed partial class OperationForm
         CollapseLeftDockBoardsExcept(LeftDockBoardKind.Guard);
     }
 
-    // The board mutates guard state directly on its own settings clone; this pushes that state into
-    // the live settings and writes it to disk so an armed guard survives a restart.
+    // The board mutates guard state on its own clone. WidgetForm owns the committed settings
+    // snapshot, so only it may merge these six runtime fields and persist them.
     internal void PersistGuardStateFromBoard(WidgetSettings boardSettings)
     {
         if (boardSettings == null || this.CurrentSettings == null)
@@ -162,9 +163,15 @@ internal sealed partial class OperationForm
         this.CurrentSettings.GuardDisplayUntilUtcTicks = boardSettings.GuardDisplayUntilUtcTicks;
         this.CurrentSettings.GuardBatteryCarePauseUntilUtcTicks = boardSettings.GuardBatteryCarePauseUntilUtcTicks;
 
+        Action<WidgetSettings> persist = this.persistGuardStateAction;
+        if (persist == null)
+        {
+            return;
+        }
+
         try
         {
-            this.CurrentSettings.Save();
+            persist(boardSettings.Clone());
         }
         catch (Exception ex)
         {

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Web.Script.Serialization;
 
 internal sealed class SpecBoardRow
@@ -35,14 +36,10 @@ internal sealed class SpecBoardRow
                 return string.Empty;
             }
 
-            try
-            {
-                return Path.GetFullPath(Path.Combine(this.ProjectRoot, this.SpecPath.Replace('/', Path.DirectorySeparatorChar)));
-            }
-            catch
-            {
-                return string.Empty;
-            }
+            string resolved;
+            return SpecBoardPathPolicy.TryResolve(this.ProjectRoot, this.SpecPath, out resolved)
+                ? resolved
+                : string.Empty;
         }
     }
 }
@@ -79,24 +76,52 @@ internal sealed class SpecBoardSnapshot
 
 internal static class SpecBoardReader
 {
+    internal const int MaxFileBytes = 2 * 1024 * 1024;
+    internal const int MaxLineBytes = 64 * 1024;
+    internal const int MaxLedgerLines = 5000;
+    internal const int MaxProjects = 64;
+    internal const int MaxScannedFiles = 512;
 
     public static SpecBoardSnapshot Read(string ledgerPath, bool reconcile)
+    {
+        return Read(ledgerPath, reconcile, CancellationToken.None);
+    }
+
+    public static SpecBoardSnapshot Read(string ledgerPath, bool reconcile, CancellationToken cancellationToken)
     {
         SpecBoardSnapshot snapshot = new SpecBoardSnapshot();
         snapshot.LedgerPath = ledgerPath ?? string.Empty;
         snapshot.ScanTimeUtc = DateTime.UtcNow;
-        Dictionary<string, SpecBoardProject> projectsByName = LoadProjects(snapshot, GetProjectsPath(ledgerPath));
-        LoadLedger(snapshot, ledgerPath, projectsByName);
-        AppendLedgerOnlyProjects(snapshot, projectsByName);
-        if (reconcile && !snapshot.LedgerMissing && snapshot.ProjectRegistryAvailable)
+        ReadDiagnostics diagnostics = new ReadDiagnostics();
+        try
         {
-            Reconcile(snapshot, projectsByName);
-        }
+            cancellationToken.ThrowIfCancellationRequested();
+            Dictionary<string, SpecBoardProject> projectsByName = LoadProjects(
+                snapshot,
+                GetProjectsPath(ledgerPath),
+                diagnostics,
+                cancellationToken);
+            LoadLedger(snapshot, ledgerPath, projectsByName, diagnostics, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            AppendLedgerOnlyProjects(snapshot, projectsByName, diagnostics, cancellationToken);
+            if (reconcile && !snapshot.LedgerMissing && snapshot.ProjectRegistryAvailable)
+            {
+                Reconcile(snapshot, projectsByName, diagnostics, cancellationToken);
+            }
 
-        return snapshot;
+            return snapshot;
+        }
+        finally
+        {
+            diagnostics.LogSummary();
+        }
     }
 
-    private static Dictionary<string, SpecBoardProject> LoadProjects(SpecBoardSnapshot snapshot, string projectsPath)
+    private static Dictionary<string, SpecBoardProject> LoadProjects(
+        SpecBoardSnapshot snapshot,
+        string projectsPath,
+        ReadDiagnostics diagnostics,
+        CancellationToken cancellationToken)
     {
         Dictionary<string, SpecBoardProject> result = new Dictionary<string, SpecBoardProject>(StringComparer.OrdinalIgnoreCase);
         try
@@ -107,8 +132,10 @@ internal static class SpecBoardReader
                 return result;
             }
 
+            BoundedLineReadResult read = ReadBoundedLines(projectsPath, cancellationToken);
+            ApplyReadLimits(snapshot, diagnostics, read, "projects");
             JavaScriptSerializer serializer = new JavaScriptSerializer();
-            Dictionary<string, object> root = serializer.DeserializeObject(File.ReadAllText(projectsPath, SharedEncoding.Utf8NoBom)) as Dictionary<string, object>;
+            Dictionary<string, object> root = serializer.DeserializeObject(string.Join("\n", read.Lines.ToArray())) as Dictionary<string, object>;
             object projectsValue;
             object[] projects = root != null && root.TryGetValue("projects", out projectsValue) ? projectsValue as object[] : null;
             if (projects == null)
@@ -119,6 +146,16 @@ internal static class SpecBoardReader
 
             for (int i = 0; i < projects.Length; i++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (i >= MaxProjects)
+                {
+                    int omitted = projects.Length - MaxProjects;
+                    snapshot.MalformedLines += omitted;
+                    diagnostics.ExcessProjects += omitted;
+                    diagnostics.Sources.Add("projects");
+                    break;
+                }
+
                 Dictionary<string, object> value = projects[i] as Dictionary<string, object>;
                 string name = ReadString(value, "name");
                 string display = ReadString(value, "display");
@@ -126,6 +163,7 @@ internal static class SpecBoardReader
                 string specGlob = ReadString(value, "spec_glob");
                 if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(rootPath) || string.IsNullOrWhiteSpace(specGlob))
                 {
+                    snapshot.MalformedLines++;
                     continue;
                 }
 
@@ -145,6 +183,10 @@ internal static class SpecBoardReader
 
             snapshot.ProjectRegistryAvailable = true;
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch
         {
             snapshot.ProjectRegistryAvailable = false;
@@ -155,7 +197,12 @@ internal static class SpecBoardReader
         return result;
     }
 
-    private static void LoadLedger(SpecBoardSnapshot snapshot, string ledgerPath, Dictionary<string, SpecBoardProject> projectsByName)
+    private static void LoadLedger(
+        SpecBoardSnapshot snapshot,
+        string ledgerPath,
+        Dictionary<string, SpecBoardProject> projectsByName,
+        ReadDiagnostics diagnostics,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -167,17 +214,19 @@ internal static class SpecBoardReader
 
             snapshot.LedgerLastWriteLocal = File.GetLastWriteTime(ledgerPath);
             JavaScriptSerializer serializer = new JavaScriptSerializer();
-            string[] lines = File.ReadAllLines(ledgerPath, SharedEncoding.Utf8NoBom);
-            for (int i = 0; i < lines.Length; i++)
+            BoundedLineReadResult read = ReadBoundedLines(ledgerPath, cancellationToken);
+            ApplyReadLimits(snapshot, diagnostics, read, "ledger");
+            for (int i = 0; i < read.Lines.Count; i++)
             {
-                if (string.IsNullOrWhiteSpace(lines[i]))
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.IsNullOrWhiteSpace(read.Lines[i]))
                 {
                     continue;
                 }
 
                 try
                 {
-                    Dictionary<string, object> value = serializer.DeserializeObject(lines[i]) as Dictionary<string, object>;
+                    Dictionary<string, object> value = serializer.DeserializeObject(read.Lines[i]) as Dictionary<string, object>;
                     SpecBoardRow row = ParseLedgerRow(value, projectsByName);
                     if (row == null)
                     {
@@ -192,6 +241,10 @@ internal static class SpecBoardReader
                     snapshot.MalformedLines++;
                 }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {
@@ -245,14 +298,34 @@ internal static class SpecBoardReader
         };
     }
 
-    private static void AppendLedgerOnlyProjects(SpecBoardSnapshot snapshot, Dictionary<string, SpecBoardProject> projectsByName)
+    private static void AppendLedgerOnlyProjects(
+        SpecBoardSnapshot snapshot,
+        Dictionary<string, SpecBoardProject> projectsByName,
+        ReadDiagnostics diagnostics,
+        CancellationToken cancellationToken)
     {
+        HashSet<string> omittedProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (SpecBoardRow row in snapshot.Rows)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             SpecBoardProject project;
             if (projectsByName.TryGetValue(row.Project, out project))
             {
                 row.ProjectRoot = project.Root;
+                continue;
+            }
+
+            // The registry cap also applies to project names discovered only in the ledger. Without
+            // this guard a bounded 64-project registry could still expand to 5000 in-memory projects.
+            if (projectsByName.Count >= MaxProjects)
+            {
+                if (omittedProjects.Add(row.Project))
+                {
+                    snapshot.MalformedLines++;
+                    diagnostics.ExcessProjects++;
+                    diagnostics.Sources.Add("ledger-projects");
+                }
+
                 continue;
             }
 
@@ -269,10 +342,17 @@ internal static class SpecBoardReader
         }
     }
 
-    private static void Reconcile(SpecBoardSnapshot snapshot, Dictionary<string, SpecBoardProject> projectsByName)
+    private static void Reconcile(
+        SpecBoardSnapshot snapshot,
+        Dictionary<string, SpecBoardProject> projectsByName,
+        ReadDiagnostics diagnostics,
+        CancellationToken cancellationToken)
     {
+        int scannedFiles = 0;
+        bool scanLimitReached = false;
         foreach (SpecBoardProject project in snapshot.Projects)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrEmpty(project.Root) || !Directory.Exists(project.Root))
             {
                 project.Reachable = false;
@@ -294,16 +374,26 @@ internal static class SpecBoardReader
                 snapshot.Rows.Where(row => string.Equals(row.Project, project.Name, StringComparison.OrdinalIgnoreCase))
                     .Select(row => NormalizeRelativePath(row.SpecPath)),
                 StringComparer.OrdinalIgnoreCase);
-            string[] files = Directory.GetFiles(globDirectory, pattern, SearchOption.TopDirectoryOnly);
-            for (int i = 0; i < files.Length; i++)
+            foreach (string file in Directory.EnumerateFiles(globDirectory, pattern, SearchOption.TopDirectoryOnly))
             {
-                string fileName = Path.GetFileName(files[i]);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (scannedFiles >= MaxScannedFiles)
+                {
+                    snapshot.MalformedLines++;
+                    diagnostics.ExcessScannedFiles++;
+                    diagnostics.Sources.Add("scan");
+                    scanLimitReached = true;
+                    break;
+                }
+
+                scannedFiles++;
+                string fileName = Path.GetFileName(file);
                 if (fileName.IndexOf("GoalSpec", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     continue;
                 }
 
-                string relativePath = GetRelativePath(project.Root, files[i]);
+                string relativePath = GetRelativePath(project.Root, file);
                 if (!ledgerPaths.Contains(relativePath))
                 {
                     snapshot.Rows.Add(new SpecBoardRow
@@ -312,9 +402,9 @@ internal static class SpecBoardReader
                         Project = project.Name,
                         ProjectRoot = project.Root,
                         SpecPath = relativePath,
-                        Title = Path.GetFileNameWithoutExtension(files[i]),
+                        Title = Path.GetFileNameWithoutExtension(file),
                         Status = SpecBoardStatus.Unregistered,
-                        EventTimeUtc = File.GetLastWriteTimeUtc(files[i]),
+                        EventTimeUtc = File.GetLastWriteTimeUtc(file),
                         IsUnregistered = true
                     });
                 }
@@ -322,6 +412,7 @@ internal static class SpecBoardReader
 
             foreach (SpecBoardRow row in snapshot.Rows)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!string.Equals(row.Project, project.Name, StringComparison.OrdinalIgnoreCase) ||
                     (!string.Equals(row.Status, SpecBoardStatus.Pending, StringComparison.OrdinalIgnoreCase) &&
                      !string.Equals(row.Status, SpecBoardStatus.NeedsRevision, StringComparison.OrdinalIgnoreCase) &&
@@ -333,6 +424,11 @@ internal static class SpecBoardReader
                 row.ProjectRoot = project.Root;
                 string absolutePath = row.AbsolutePath;
                 row.FileMissing = string.IsNullOrEmpty(absolutePath) || !File.Exists(absolutePath);
+            }
+
+            if (scanLimitReached)
+            {
+                break;
             }
         }
 
@@ -412,8 +508,181 @@ internal static class SpecBoardReader
             : Path.GetFileName(pathFull);
     }
 
+    internal static List<string> ReadLedgerLinesStrict(string ledgerPath, CancellationToken cancellationToken)
+    {
+        BoundedLineReadResult read = ReadBoundedLines(ledgerPath, cancellationToken);
+        if (read.FileLimitExceeded || read.OversizedLines > 0 || read.LineCountExceeded)
+        {
+            throw new InvalidDataException(
+                "Spec Board 账本超过安全读取上限（2 MiB、64 KiB/行、5000 行），拒绝写入。" );
+        }
+
+        return read.Lines;
+    }
+
+    private static void ApplyReadLimits(
+        SpecBoardSnapshot snapshot,
+        ReadDiagnostics diagnostics,
+        BoundedLineReadResult read,
+        string source)
+    {
+        int limitEvents = (read.FileLimitExceeded ? 1 : 0) + read.OversizedLines + (read.LineCountExceeded ? 1 : 0);
+        snapshot.MalformedLines += limitEvents;
+        if (read.FileLimitExceeded)
+        {
+            diagnostics.OversizedFiles++;
+        }
+
+        diagnostics.OversizedLines += read.OversizedLines;
+        if (read.LineCountExceeded)
+        {
+            diagnostics.ExcessLineSets++;
+        }
+
+        if (limitEvents > 0)
+        {
+            diagnostics.Sources.Add(source);
+        }
+    }
+
+    private static BoundedLineReadResult ReadBoundedLines(string path, CancellationToken cancellationToken)
+    {
+        BoundedLineReadResult result = new BoundedLineReadResult();
+        using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        using (MemoryStream line = new MemoryStream(Math.Min(MaxLineBytes, 4096)))
+        {
+            long readableBytes = Math.Min(stream.Length, MaxFileBytes);
+            result.FileLimitExceeded = stream.Length > MaxFileBytes;
+            byte[] buffer = new byte[4096];
+            long consumed = 0;
+            int physicalLines = 0;
+            bool discardLine = false;
+            while (consumed < readableBytes)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int requested = (int)Math.Min(buffer.Length, readableBytes - consumed);
+                int read = stream.Read(buffer, 0, requested);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                for (int i = 0; i < read; i++)
+                {
+                    if ((i & 1023) == 0)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+
+                    byte value = buffer[i];
+                    consumed++;
+                    if (value == (byte)'\n')
+                    {
+                        physicalLines++;
+                        if (!discardLine)
+                        {
+                            result.Lines.Add(DecodeLine(line));
+                        }
+
+                        line.SetLength(0);
+                        discardLine = false;
+                        if (physicalLines >= MaxLedgerLines &&
+                            (i + 1 < read || consumed < readableBytes || stream.Length > readableBytes))
+                        {
+                            result.LineCountExceeded = true;
+                            return result;
+                        }
+
+                        continue;
+                    }
+
+                    if (discardLine)
+                    {
+                        continue;
+                    }
+
+                    if (line.Length >= MaxLineBytes)
+                    {
+                        result.OversizedLines++;
+                        discardLine = true;
+                        line.SetLength(0);
+                        continue;
+                    }
+
+                    line.WriteByte(value);
+                }
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!result.FileLimitExceeded && (line.Length > 0 || discardLine))
+            {
+                physicalLines++;
+                if (physicalLines > MaxLedgerLines)
+                {
+                    result.LineCountExceeded = true;
+                }
+                else if (!discardLine)
+                {
+                    result.Lines.Add(DecodeLine(line));
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static string DecodeLine(MemoryStream line)
+    {
+        byte[] bytes = line.ToArray();
+        int count = bytes.Length;
+        if (count > 0 && bytes[count - 1] == (byte)'\r')
+        {
+            count--;
+        }
+
+        string value = SharedEncoding.Utf8NoBom.GetString(bytes, 0, count);
+        return value.Length > 0 && value[0] == '\uFEFF' ? value.Substring(1) : value;
+    }
+
+    private sealed class BoundedLineReadResult
+    {
+        public readonly List<string> Lines = new List<string>();
+        public bool FileLimitExceeded;
+        public int OversizedLines;
+        public bool LineCountExceeded;
+    }
+
+    private sealed class ReadDiagnostics
+    {
+        public readonly HashSet<string> Sources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        public int OversizedFiles;
+        public int OversizedLines;
+        public int ExcessLineSets;
+        public int ExcessProjects;
+        public int ExcessScannedFiles;
+
+        public void LogSummary()
+        {
+            if (this.OversizedFiles == 0 && this.OversizedLines == 0 && this.ExcessLineSets == 0 &&
+                this.ExcessProjects == 0 && this.ExcessScannedFiles == 0)
+            {
+                return;
+            }
+
+            Program.LogInfo(
+                "SpecBoard bounded read truncated input. Sources=" + string.Join(",", this.Sources.ToArray()) +
+                ", OversizedFiles=" + this.OversizedFiles.ToString(CultureInfo.InvariantCulture) +
+                ", OversizedLines=" + this.OversizedLines.ToString(CultureInfo.InvariantCulture) +
+                ", ExcessLineSets=" + this.ExcessLineSets.ToString(CultureInfo.InvariantCulture) +
+                ", ExcessProjects=" + this.ExcessProjects.ToString(CultureInfo.InvariantCulture) +
+                ", ExcessScannedFiles=" + this.ExcessScannedFiles.ToString(CultureInfo.InvariantCulture));
+        }
+    }
+
     internal static void RunSelfTest()
     {
+        SpecBoardPathPolicy.RunSelfTest();
+        RunBoundedReadSelfTest();
         string tempRoot = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-specboard-reader-" + Guid.NewGuid().ToString("N"));
         string technical = Path.Combine(tempRoot, "project", "Docs", "Technical");
         Directory.CreateDirectory(technical);
@@ -461,6 +730,133 @@ internal static class SpecBoardReader
         finally
         {
             try { Directory.Delete(tempRoot, true); } catch { }
+        }
+    }
+
+    internal static void RunBoundedReadSelfTest()
+    {
+        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+        string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-specboard-bounds-" + Guid.NewGuid().ToString("N"));
+        string projectRoot = Path.Combine(root, "project");
+        string technical = Path.Combine(projectRoot, "Docs", "Technical");
+        Directory.CreateDirectory(technical);
+        try
+        {
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            string ledger = Path.Combine(root, "SPEC_BOARD.jsonl");
+            string projectsPath = Path.Combine(root, "PROJECTS.json");
+            List<Dictionary<string, object>> projects = new List<Dictionary<string, object>>();
+            for (int i = 0; i < MaxProjects + 1; i++)
+            {
+                projects.Add(new Dictionary<string, object>
+                {
+                    { "name", "Project" + i.ToString(CultureInfo.InvariantCulture) },
+                    { "display", "Project " + i.ToString(CultureInfo.InvariantCulture) },
+                    { "root", projectRoot },
+                    { "spec_glob", "Docs/Technical/*-SPEC-*.md" }
+                });
+            }
+
+            File.WriteAllText(
+                projectsPath,
+                serializer.Serialize(new Dictionary<string, object> { { "schema_version", 1 }, { "projects", projects.ToArray() } }),
+                SharedEncoding.Utf8NoBom);
+            File.WriteAllText(ledger, string.Empty, SharedEncoding.Utf8NoBom);
+            for (int i = 0; i < MaxScannedFiles + 1; i++)
+            {
+                File.WriteAllText(
+                    Path.Combine(technical, "Bounded-" + i.ToString("D3", CultureInfo.InvariantCulture) + "-SPEC-v1.md"),
+                    "fixture",
+                    SharedEncoding.Utf8NoBom);
+            }
+
+            SpecBoardSnapshot scanLimited = Read(ledger, true, CancellationToken.None);
+            if (scanLimited.Projects.Count != MaxProjects ||
+                scanLimited.Rows.Count(row => row.IsUnregistered) != MaxScannedFiles ||
+                scanLimited.MalformedLines < 2)
+            {
+                throw new InvalidOperationException("Spec Board project-count or directory-scan limit self-test failed.");
+            }
+
+            File.WriteAllText(
+                ledger,
+                "{\"schema_version\":1,\"id\":\"LedgerOnly.row\",\"project\":\"LedgerOnly\",\"spec_path\":\"Docs/Technical/LedgerOnly.md\",\"title\":\"Ledger only\",\"status\":\"pending\",\"updated_utc\":\"2026-07-20T00:00:00Z\"}\n",
+                SharedEncoding.Utf8NoBom);
+            SpecBoardSnapshot ledgerProjectLimited = Read(ledger, false, CancellationToken.None);
+            if (ledgerProjectLimited.Projects.Count != MaxProjects || ledgerProjectLimited.MalformedLines < 2)
+            {
+                throw new InvalidOperationException("Spec Board ledger-only project-count limit self-test failed.");
+            }
+
+            using (StreamWriter writer = new StreamWriter(ledger, false, SharedEncoding.Utf8NoBom))
+            {
+                for (int i = 0; i < MaxLedgerLines + 1; i++)
+                {
+                    writer.WriteLine(
+                        "{\"schema_version\":1,\"id\":\"Project0.row" + i.ToString(CultureInfo.InvariantCulture) +
+                        "\",\"project\":\"Project0\",\"spec_path\":\"Docs/Technical/Row-" + i.ToString(CultureInfo.InvariantCulture) +
+                        ".md\",\"title\":\"Row\",\"status\":\"pending\",\"updated_utc\":\"2026-07-20T00:00:00Z\"}");
+                }
+            }
+
+            SpecBoardSnapshot lineLimited = Read(ledger, false, CancellationToken.None);
+            if (lineLimited.Rows.Count != MaxLedgerLines || lineLimited.MalformedLines < 1)
+            {
+                throw new InvalidOperationException("Spec Board ledger line-count limit self-test failed.");
+            }
+
+            string validRow =
+                "{\"schema_version\":1,\"id\":\"Project0.valid\",\"project\":\"Project0\",\"spec_path\":\"Docs/Technical/Valid.md\",\"title\":\"Valid\",\"status\":\"pending\",\"updated_utc\":\"2026-07-20T00:00:00Z\"}";
+            File.WriteAllText(ledger, new string('x', MaxLineBytes + 1) + "\n" + validRow + "\n", SharedEncoding.Utf8NoBom);
+            SpecBoardSnapshot oversizedLine = Read(ledger, false, CancellationToken.None);
+            if (oversizedLine.Rows.Count != 1 || oversizedLine.MalformedLines < 1)
+            {
+                throw new InvalidOperationException("Spec Board ledger line-length limit self-test failed.");
+            }
+
+            File.WriteAllText(ledger, new string('x', MaxFileBytes + 1), SharedEncoding.Utf8NoBom);
+            SpecBoardSnapshot oversizedLedger = Read(ledger, false, CancellationToken.None);
+            if (oversizedLedger.Rows.Count != 0 || oversizedLedger.MalformedLines < 2)
+            {
+                throw new InvalidOperationException("Spec Board ledger file-size limit self-test failed.");
+            }
+
+            File.WriteAllText(projectsPath, new string(' ', MaxFileBytes + 1), SharedEncoding.Utf8NoBom);
+            File.WriteAllText(ledger, validRow + "\n", SharedEncoding.Utf8NoBom);
+            SpecBoardSnapshot oversizedProjects = Read(ledger, false, CancellationToken.None);
+            if (oversizedProjects.ProjectRegistryAvailable || oversizedProjects.MalformedLines < 2)
+            {
+                throw new InvalidOperationException("Spec Board project registry file-size limit self-test failed.");
+            }
+
+            using (CancellationTokenSource cancellation = new CancellationTokenSource())
+            {
+                cancellation.Cancel();
+                bool canceled = false;
+                try
+                {
+                    Read(ledger, true, cancellation.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    canceled = true;
+                }
+
+                if (!canceled)
+                {
+                    throw new InvalidOperationException("Spec Board cancellation self-test failed.");
+                }
+            }
+
+            elapsed.Stop();
+            if (elapsed.Elapsed >= TimeSpan.FromSeconds(30))
+            {
+                throw new InvalidOperationException("Spec Board bounded-read self-test exceeded 30 seconds.");
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
         }
     }
 }

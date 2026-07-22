@@ -204,7 +204,7 @@ internal sealed partial class NetworkMonitorForm
                 bounds.Height);
             if (summaryRect.Width > S(30))
             {
-                g.DrawString(BuildClassicStripLinkSummary(), smallFont, muted, summaryRect, farClipped);
+                g.DrawString(BuildNetworkLinkSummary(), smallFont, muted, summaryRect, farClipped);
             }
         }
     }
@@ -334,14 +334,14 @@ internal sealed partial class NetworkMonitorForm
                     y,
                     bodyRow,
                     dns.Address + "  " + latency + "  " + GetDnsStatusText(dns.Status),
-                    GetClassicStripDnsStatusColor(dns.Status),
+                    GetDockedDnsStatusColor(dns.Status),
                     bodyFont);
             }
         }
 
         y = DrawDockedModuleDivider(g, bounds, y);
         y = DrawDockedSectionLabel(g, bounds, y, sectionRow, "出境", smallBold);
-        y = DrawDockedTextRow(g, bounds, y, bodyRow, "GFW " + BuildClassicStripGfwText(), GetGfwProbeColor(), bodyFont);
+        y = DrawDockedTextRow(g, bounds, y, bodyRow, "GFW " + BuildDockedGfwText(), GetGfwProbeColor(), bodyFont);
 
         // GFW is a censorship-path verdict while cloud endpoints are independent service-health
         // probes. Keeping a visible module boundary prevents the cloud rows from reading as GFW
@@ -376,6 +376,9 @@ internal sealed partial class NetworkMonitorForm
                 break;
             }
         }
+
+        // Radar service LEDs (Radar / OpenAI / Claude / DeepSeek) moved to the Codex IQ board's
+        // status band (1.0.6.x); the network panel keeps only the cloud-endpoint probes here.
     }
 
     private string BuildDockedInterfaceLine()

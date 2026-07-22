@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """文档治理校验 Gate。
 
-检查四个项目 JSONL 的可解析性、唯一键、源码/文档路径和 CHANGELOG 类型。
+检查四个项目 JSONL 的可解析性、唯一键、索引必填字段、源码/文档路径和 CHANGELOG 类型。
 此文件复用 Codex doc-governance skill 的标准校验器，便于项目内重复执行。
 """
 
 import argparse
 import collections
+import functools
 import json
 import os
+import re
 import sys
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -26,6 +28,42 @@ CHANGE_TYPES = {
     "documentation", "spec", "release", "deployment", "revert",
     "confirmed_issue", "correction",
 }
+
+SEMANTIC_INDEXES = (
+    "Docs/Indexes/FEATURE_INDEX.jsonl",
+    "Docs/Interfaces/INTERFACE_INDEX.jsonl",
+)
+
+
+def nonempty_text(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def entrypoint_symbol(value):
+    """Return a source identifier only for entrypoints that look like C# symbols."""
+    if not isinstance(value, str):
+        return ""
+    candidate = value.strip()
+    if not candidate or "://" in candidate or "--" in candidate:
+        return ""
+    candidate = candidate.split("(", 1)[0].strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", candidate):
+        return ""
+    return candidate.rsplit(".", 1)[-1]
+
+
+@functools.lru_cache(maxsize=None)
+def read_source(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+
+def source_contains_symbol(path, symbol):
+    text = read_source(path)
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(symbol)}(?![A-Za-z0-9_])", text) is not None
 
 
 def iter_jsonl(path):
@@ -76,6 +114,37 @@ def main():
             if not os.path.exists(os.path.join(root, file_path)):
                 print(f"FAIL FEATURE_INDEX {obj.get('feature_id')} 引用缺失文件: {file_path}")
                 fail = True
+
+    for rel in SEMANTIC_INDEXES:
+        key = FILES[rel]
+        for obj in parsed.get(rel, []):
+            item_id = obj.get(key)
+            for field in ("status", "added_version"):
+                if not nonempty_text(obj.get(field)):
+                    print(f"FAIL {rel} {item_id} 必填字段为空: {field}")
+                    fail = True
+
+    # FEATURE_INDEX explicitly maps entrypoints to primary_files. Missing symbols are warnings:
+    # generated methods and partial-class moves can make a textual lookup conservative, while a
+    # warning still exposes stale navigation metadata without blocking an otherwise valid release.
+    for obj in parsed.get("Docs/Indexes/FEATURE_INDEX.jsonl", []):
+        if obj.get("status") == "removed":
+            continue
+        source_paths = [
+            os.path.join(root, value)
+            for value in (obj.get("primary_files", []) or [])
+            if isinstance(value, str) and os.path.isfile(os.path.join(root, value))
+        ]
+        if not source_paths:
+            continue
+        for entrypoint in obj.get("entrypoints", []) or []:
+            symbol = entrypoint_symbol(entrypoint)
+            if symbol and not any(source_contains_symbol(path, symbol) for path in source_paths):
+                print(
+                    f"WARN FEATURE_INDEX {obj.get('feature_id')} entrypoint "
+                    f"未在 primary_files 命中: {entrypoint}"
+                )
+                warn_count += 1
 
     for obj in parsed.get("Docs/Technical/INDEX.jsonl", []):
         for key in ("doc_path", "spec_path"):

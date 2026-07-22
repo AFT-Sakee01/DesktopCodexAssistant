@@ -4,6 +4,8 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Threading;
 using System.Web.Script.Serialization;
 
 internal static class SpecBoardLedgerStore
@@ -106,17 +108,26 @@ internal static class SpecBoardLedgerStore
             }
 
             rawRows.Remove(raw);
+            string path;
+            if (!SpecBoardPathPolicy.TryResolve(row.ProjectRoot, row.SpecPath, out path) || !File.Exists(path))
+            {
+                error = "源文件不存在或超出项目目录，账本未修改。";
+                return false;
+            }
+
             PreparedWrite prepared = PrepareWrite(ledgerPath, rawRows);
             try
             {
-                string path = row.AbsolutePath;
-                if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                string revalidatedPath;
+                if (!SpecBoardPathPolicy.TryResolve(row.ProjectRoot, row.SpecPath, out revalidatedPath) ||
+                    !string.Equals(path, revalidatedPath, StringComparison.OrdinalIgnoreCase) ||
+                    !File.Exists(revalidatedPath))
                 {
-                    error = "源文件不存在，账本未修改。";
+                    error = "源文件路径在删除前发生变化，账本未修改。";
                     return false;
                 }
 
-                if (!RecycleFile(path, out error))
+                if (!RecycleFile(revalidatedPath, out error))
                 {
                     return false;
                 }
@@ -208,7 +219,7 @@ internal static class SpecBoardLedgerStore
         JavaScriptSerializer serializer = new JavaScriptSerializer();
         List<Dictionary<string, object>> rows = new List<Dictionary<string, object>>();
         HashSet<string> ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (string line in File.ReadAllLines(ledgerPath, SharedEncoding.Utf8NoBom))
+        foreach (string line in SpecBoardReader.ReadLedgerLinesStrict(ledgerPath, CancellationToken.None))
         {
             if (string.IsNullOrWhiteSpace(line)) continue;
             Dictionary<string, object> raw = serializer.DeserializeObject(line) as Dictionary<string, object>;
@@ -255,12 +266,39 @@ internal static class SpecBoardLedgerStore
         JavaScriptSerializer serializer = new JavaScriptSerializer();
         string temp = ledgerPath + ".tmp";
         string backup = ledgerPath + ".bak";
+        if (rows.Count > SpecBoardReader.MaxLedgerLines)
+        {
+            throw new InvalidDataException("写入结果超过 5000 行，账本未修改。" );
+        }
+
+        List<string> serializedRows = new List<string>(rows.Count);
+        long totalBytes = 0;
+        for (int i = 0; i < rows.Count; i++)
+        {
+            string serialized = serializer.Serialize(rows[i]);
+            int lineBytes = SharedEncoding.Utf8NoBom.GetByteCount(serialized);
+            if (lineBytes > SpecBoardReader.MaxLineBytes)
+            {
+                throw new InvalidDataException("写入结果包含超过 64 KiB 的行，账本未修改。" );
+            }
+
+            totalBytes += lineBytes + 2;
+            if (totalBytes > SpecBoardReader.MaxFileBytes)
+            {
+                throw new InvalidDataException("写入结果超过 2 MiB，账本未修改。" );
+            }
+
+            serializedRows.Add(serialized);
+        }
+
+        // Validate the complete replacement before touching the rolling backup. A rejected
+        // oversized mutation must leave both the ledger and its recovery copy unchanged.
         File.Copy(ledgerPath, backup, true);
         using (StreamWriter writer = new StreamWriter(temp, false, SharedEncoding.Utf8NoBom))
         {
-            for (int i = 0; i < rows.Count; i++)
+            for (int i = 0; i < serializedRows.Count; i++)
             {
-                writer.WriteLine(serializer.Serialize(rows[i]));
+                writer.WriteLine(serializedRows[i]);
             }
         }
 
@@ -444,10 +482,60 @@ internal static class SpecBoardLedgerStore
             {
                 throw new InvalidOperationException("Spec Board batch ledger-only delete failed: " + error);
             }
+
+            RunOversizedWriteRejectionSelfTest(root, projectRoot);
         }
         finally
         {
             try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    private static void RunOversizedWriteRejectionSelfTest(string root, string projectRoot)
+    {
+        string oversizedLedger = Path.Combine(root, "oversized-write.jsonl");
+        string validLine =
+            "{\"schema_version\":1,\"id\":\"Test.oversized\",\"project\":\"Test\",\"spec_path\":\"Docs/Technical/Oversized.md\",\"title\":\"Oversized\",\"status\":\"pending\",\"updated_utc\":\"2026-07-20T00:00:00Z\"}";
+        File.WriteAllText(
+            oversizedLedger,
+            validLine + "\n" + new string('x', SpecBoardReader.MaxFileBytes),
+            SharedEncoding.Utf8NoBom);
+        byte[] before = ComputeSha256(oversizedLedger);
+        string error;
+        if (TrySetNote(
+            oversizedLedger,
+            new SpecBoardRow { Id = "Test.oversized", UpdatedUtc = new DateTime(2026, 7, 20, 0, 0, 0, DateTimeKind.Utc) },
+            "must fail",
+            out error) ||
+            !before.SequenceEqual(ComputeSha256(oversizedLedger)))
+        {
+            throw new InvalidOperationException("Spec Board oversized input write rejection changed the ledger.");
+        }
+
+        string outputLedger = Path.Combine(root, "oversized-output.jsonl");
+        File.WriteAllText(outputLedger, validLine + "\n", SharedEncoding.Utf8NoBom);
+        before = ComputeSha256(outputLedger);
+        SpecBoardRow row = new SpecBoardRow
+        {
+            Id = "Test.oversized",
+            Project = "Test",
+            ProjectRoot = projectRoot,
+            SpecPath = "Docs/Technical/Oversized.md",
+            UpdatedUtc = new DateTime(2026, 7, 20, 0, 0, 0, DateTimeKind.Utc)
+        };
+        if (TrySetNote(outputLedger, row, new string('n', SpecBoardReader.MaxLineBytes + 1), out error) ||
+            !before.SequenceEqual(ComputeSha256(outputLedger)) || File.Exists(outputLedger + ".bak"))
+        {
+            throw new InvalidOperationException("Spec Board oversized output write rejection changed the ledger or backup.");
+        }
+    }
+
+    private static byte[] ComputeSha256(string path)
+    {
+        using (SHA256 hash = SHA256.Create())
+        using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        {
+            return hash.ComputeHash(stream);
         }
     }
 

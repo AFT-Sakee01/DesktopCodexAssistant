@@ -7,6 +7,7 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
@@ -32,9 +33,11 @@ internal sealed class GfwProbeReader
     private DateTime lastProbeStartedUtc;
     private DateTime lastDetailedLogUtc;
     private bool requestRunning;
-    private bool localNetworkGateActive;
     private int lastManualRefreshToken;
     private string pendingForcedTrigger = string.Empty;
+    private string currentNetworkBaseSignature = string.Empty;
+    private string currentRequestIdentitySignature = string.Empty;
+    private long requestEpoch;
 
     public void RequestRefresh()
     {
@@ -54,9 +57,43 @@ internal sealed class GfwProbeReader
         WidgetSettings settings,
         NetworkAccessState networkState,
         bool localNetworkDegraded,
-        string localNetworkDegradedReason)
+        string localNetworkDegradedReason,
+        long networkGeneration,
+        string interfaceId)
     {
-        if (settings == null || !settings.GfwProbeEnabled)
+        bool enabled = settings != null && settings.GfwProbeEnabled;
+        string networkBaseSignature = BuildNetworkBaseSignature(networkGeneration, interfaceId);
+        string requestIdentitySignature = BuildRequestIdentitySignature(
+            networkGeneration,
+            interfaceId,
+            enabled,
+            networkState,
+            localNetworkDegraded);
+        lock (this.sync)
+        {
+            if (!string.Equals(this.currentRequestIdentitySignature, requestIdentitySignature, StringComparison.Ordinal))
+            {
+                bool hadNetworkIdentity = this.currentNetworkBaseSignature.Length > 0;
+                bool networkIdentityChanged = !string.Equals(
+                    this.currentNetworkBaseSignature,
+                    networkBaseSignature,
+                    StringComparison.Ordinal);
+                this.currentNetworkBaseSignature = networkBaseSignature;
+                this.currentRequestIdentitySignature = requestIdentitySignature;
+                this.requestEpoch++;
+                this.requestRunning = false;
+                if (networkIdentityChanged)
+                {
+                    this.lastProbeStartedUtc = DateTime.MinValue;
+                    if (hadNetworkIdentity && enabled && networkState == NetworkAccessState.Online && !localNetworkDegraded)
+                    {
+                        this.pendingForcedTrigger = "网络身份变化";
+                    }
+                }
+            }
+        }
+
+        if (!enabled)
         {
             lock (this.sync)
             {
@@ -68,7 +105,6 @@ internal sealed class GfwProbeReader
                     Detail = "关闭",
                     Reason = string.Empty
                 };
-                this.localNetworkGateActive = false;
 
                 return this.snapshot.Clone();
             }
@@ -82,8 +118,7 @@ internal sealed class GfwProbeReader
         {
             lock (this.sync)
             {
-                this.localNetworkGateActive = false;
-                return CreateUnavailableNetworkClone(this.snapshot, this.requestRunning, networkState);
+                return CreateUnavailableNetworkClone(this.snapshot, false, networkState);
             }
         }
 
@@ -91,36 +126,49 @@ internal sealed class GfwProbeReader
         {
             lock (this.sync)
             {
-                this.localNetworkGateActive = true;
-                return CreateLocalNetworkDegradedClone(this.snapshot, this.requestRunning, localNetworkDegradedReason);
+                return CreateLocalNetworkDegradedClone(this.snapshot, false, localNetworkDegradedReason);
             }
         }
 
         DateTime now = DateTime.UtcNow;
         bool shouldStart = false;
         string startTrigger = string.Empty;
+        long requestEpochAtStart = 0;
         lock (this.sync)
         {
-            this.localNetworkGateActive = false;
             bool manualRefresh = settings.GfwProbeManualRefreshToken != this.lastManualRefreshToken;
             int intervalMinutes = Math.Max(WidgetSettings.MinGfwProbeIntervalMinutes, settings.GfwProbeIntervalMinutes);
             bool due = this.lastProbeStartedUtc == DateTime.MinValue ||
                 (now - this.lastProbeStartedUtc).TotalMinutes >= intervalMinutes;
 
-            if (manualRefresh || due)
+            if (TryAcquireProbeStart(
+                manualRefresh,
+                due,
+                settings.GfwProbeManualRefreshToken,
+                ref this.requestRunning,
+                ref this.lastManualRefreshToken,
+                ref this.pendingForcedTrigger,
+                this.lastProbeStartedUtc,
+                out startTrigger))
             {
                 shouldStart = true;
-                startTrigger = manualRefresh
-                    ? "手动测试按钮"
-                    : SelectAutomaticTrigger(this.lastProbeStartedUtc, this.pendingForcedTrigger);
-                this.lastManualRefreshToken = settings.GfwProbeManualRefreshToken;
-                this.pendingForcedTrigger = string.Empty;
+                this.lastProbeStartedUtc = now;
+                this.snapshot.Enabled = true;
+                this.snapshot.Running = true;
+                if (!this.snapshot.CheckedAtKnown)
+                {
+                    this.snapshot.Status = GfwProbeStatus.Checking;
+                    this.snapshot.Detail = "检测中";
+                    this.snapshot.Reason = string.Empty;
+                }
+
+                requestEpochAtStart = this.requestEpoch;
             }
         }
 
         if (shouldStart)
         {
-            StartProbe(now, startTrigger);
+            StartProbe(startTrigger, requestEpochAtStart, requestIdentitySignature);
         }
 
         lock (this.sync)
@@ -241,27 +289,8 @@ internal sealed class GfwProbeReader
         return snapshots;
     }
 
-    private void StartProbe(DateTime now, string trigger)
+    private void StartProbe(string trigger, long requestEpochAtStart, string requestIdentitySignature)
     {
-        lock (this.sync)
-        {
-            if (this.requestRunning)
-            {
-                return;
-            }
-
-            this.requestRunning = true;
-            this.lastProbeStartedUtc = now;
-            this.snapshot.Enabled = true;
-            this.snapshot.Running = true;
-            if (!this.snapshot.CheckedAtKnown)
-            {
-                this.snapshot.Status = GfwProbeStatus.Checking;
-                this.snapshot.Detail = "检测中";
-                this.snapshot.Reason = string.Empty;
-            }
-        }
-
         Task.Run(delegate
         {
             GfwProbeSnapshot result;
@@ -292,9 +321,12 @@ internal sealed class GfwProbeReader
             bool shouldWriteDetailedLog;
             lock (this.sync)
             {
-                if (this.localNetworkGateActive)
+                if (!IsRequestIdentityCurrent(
+                    this.requestEpoch,
+                    this.currentRequestIdentitySignature,
+                    requestEpochAtStart,
+                    requestIdentitySignature))
                 {
-                    this.requestRunning = false;
                     return;
                 }
 
@@ -342,6 +374,180 @@ internal sealed class GfwProbeReader
         });
     }
 
+    // Token and trigger consumption must be atomic with ownership of the single-flight slot.
+    // This prevents a UI refresh that arrives during an active probe from disappearing.
+    private static bool TryAcquireProbeStart(
+        bool manualRefresh,
+        bool due,
+        int observedManualToken,
+        ref bool requestRunning,
+        ref int lastManualRefreshToken,
+        ref string pendingForcedTrigger,
+        DateTime lastProbeStartedUtc,
+        out string trigger)
+    {
+        trigger = string.Empty;
+        if ((!manualRefresh && !due) || requestRunning)
+        {
+            return false;
+        }
+
+        requestRunning = true;
+        trigger = manualRefresh
+            ? "手动测试按钮"
+            : SelectAutomaticTrigger(lastProbeStartedUtc, pendingForcedTrigger);
+        if (manualRefresh)
+        {
+            lastManualRefreshToken = observedManualToken;
+        }
+
+        pendingForcedTrigger = string.Empty;
+        return true;
+    }
+
+    private static bool IsRequestIdentityCurrent(
+        long currentEpoch,
+        string currentIdentitySignature,
+        long requestEpoch,
+        string requestIdentitySignature)
+    {
+        return currentEpoch == requestEpoch &&
+            string.Equals(currentIdentitySignature, requestIdentitySignature, StringComparison.Ordinal);
+    }
+
+    private static string BuildRequestIdentitySignature(
+        long networkGeneration,
+        string interfaceId,
+        bool enabled,
+        NetworkAccessState networkState,
+        bool localNetworkDegraded)
+    {
+        return BuildNetworkBaseSignature(networkGeneration, interfaceId) + "|" +
+            (enabled ? "enabled" : "disabled") + "|" +
+            networkState.ToString() + "|" +
+            (localNetworkDegraded ? "gated" : "clear");
+    }
+
+    private static string BuildNetworkBaseSignature(long networkGeneration, string interfaceId)
+    {
+        return networkGeneration.ToString(CultureInfo.InvariantCulture) + "|" +
+            (interfaceId ?? string.Empty).Trim().ToUpperInvariant();
+    }
+
+    internal static void RunSelfTest()
+    {
+        bool running = true;
+        int consumedToken = 20;
+        string pendingTrigger = "网络身份变化";
+        string trigger;
+        if (TryAcquireProbeStart(
+                true,
+                true,
+                21,
+                ref running,
+                ref consumedToken,
+                ref pendingTrigger,
+                DateTime.MinValue,
+                out trigger) ||
+            consumedToken != 20 ||
+            !string.Equals(pendingTrigger, "网络身份变化", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("GFW reader self-test: occupied single-flight consumed token or trigger.");
+        }
+
+        running = false;
+        if (!TryAcquireProbeStart(
+                true,
+                true,
+                21,
+                ref running,
+                ref consumedToken,
+                ref pendingTrigger,
+                DateTime.MinValue,
+                out trigger) ||
+            consumedToken != 21 ||
+            pendingTrigger.Length != 0 ||
+            !string.Equals(trigger, "手动测试按钮", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("GFW reader self-test: pending token was not consumed after acquisition.");
+        }
+
+        if (IsRequestIdentityCurrent(8, "new-network", 7, "old-network") ||
+            !IsRequestIdentityCurrent(8, "new-network", 8, "new-network"))
+        {
+            throw new InvalidOperationException("GFW reader self-test: stale request identity validation failed.");
+        }
+
+        RunTlsDiagnosticSelfTest();
+
+        Console.WriteLine("GFW reader: PASS single-flight-token trigger-preservation request-identity tls-trust-semantics");
+    }
+
+    private static void RunTlsDiagnosticSelfTest()
+    {
+        TlsCertificateTrustObservation trusted = new TlsCertificateTrustObservation();
+        RecordCertificateTrust(trusted, SslPolicyErrors.None);
+        DomainProbeResult trustedResult = new DomainProbeResult
+        {
+            Domain = "trusted.fixture",
+            TcpOk = true,
+            ProtocolHandshakeReachable = true,
+            CertificateTrustKnown = trusted.Known,
+            CertificateTrusted = trusted.Trusted,
+            CertificatePolicyErrors = trusted.PolicyErrors
+        };
+        string trustedText = FormatProbeResult(trustedResult);
+        if (!trusted.Known ||
+            !trusted.Trusted ||
+            trusted.PolicyErrors != SslPolicyErrors.None ||
+            trustedText.IndexOf("协议握手可达=是", StringComparison.Ordinal) < 0 ||
+            trustedText.IndexOf("certificate trust=trusted", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("GFW reader self-test: trusted certificate semantics failed.");
+        }
+
+        TlsCertificateTrustObservation untrusted = new TlsCertificateTrustObservation();
+        RecordCertificateTrust(
+            untrusted,
+            SslPolicyErrors.RemoteCertificateNameMismatch | SslPolicyErrors.RemoteCertificateChainErrors);
+        DomainProbeResult untrustedResult = new DomainProbeResult
+        {
+            Domain = "untrusted.fixture",
+            TcpOk = true,
+            ProtocolHandshakeReachable = true,
+            CertificateTrustKnown = untrusted.Known,
+            CertificateTrusted = untrusted.Trusted,
+            CertificatePolicyErrors = untrusted.PolicyErrors,
+            HasTlsAnomaly = IsTlsProtocolAnomaly(true, true)
+        };
+        string untrustedText = FormatProbeResult(untrustedResult);
+        if (!untrusted.Known ||
+            untrusted.Trusted ||
+            untrusted.PolicyErrors == SslPolicyErrors.None ||
+            untrustedResult.HasTlsAnomaly ||
+            untrustedText.IndexOf("协议握手可达=是", StringComparison.Ordinal) < 0 ||
+            untrustedText.IndexOf("certificate trust=untrusted(", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("GFW reader self-test: untrusted certificate was confused with protocol reachability.");
+        }
+
+        DomainProbeResult failedResult = new DomainProbeResult
+        {
+            Domain = "failed.fixture",
+            TcpOk = true,
+            ProtocolHandshakeReachable = false,
+            ProtocolHandshakeError = "fixture",
+            HasTlsAnomaly = IsTlsProtocolAnomaly(true, false)
+        };
+        string failedText = FormatProbeResult(failedResult);
+        if (!failedResult.HasTlsAnomaly ||
+            failedText.IndexOf("协议握手可达=否", StringComparison.Ordinal) < 0 ||
+            failedText.IndexOf("certificate trust=unknown", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("GFW reader self-test: failed protocol handshake semantics failed.");
+        }
+    }
+
     private static GfwProbeSnapshot RunProbe(List<string> logLines)
     {
         int controlPasses = 0;
@@ -352,7 +558,7 @@ internal sealed class GfwProbeReader
             DomainProbeResult control = ProbeDomain(ControlDomains[i], false);
             controlResults.Add(control);
             logLines.Add("  " + FormatProbeResult(control));
-            if (control.HttpOk || control.TlsOk)
+            if (control.HttpOk || control.ProtocolHandshakeReachable)
             {
                 controlPasses++;
             }
@@ -444,7 +650,7 @@ internal sealed class GfwProbeReader
             {
                 status = GfwProbeStatus.SuspectedTlsSni;
                 detail = "疑似SNI";
-                reason = "TCP可连但TLS/SNI握手失败 " + FormatCount(summary.TlsAnomalies, summary.DomainsTested);
+                reason = "TCP可连但TLS/SNI协议握手失败 " + FormatCount(summary.TlsAnomalies, summary.DomainsTested);
             }
             else if (summary.TcpAnomalies >= summary.HttpAnomalies)
             {
@@ -510,14 +716,17 @@ internal sealed class GfwProbeReader
             builder.Append(")");
         }
 
-        builder.Append(" TLS/SNI=");
-        builder.Append(result.TlsOk ? "OK" : "FAIL");
-        if (!string.IsNullOrEmpty(result.TlsError))
+        builder.Append(" 协议握手可达=");
+        builder.Append(result.ProtocolHandshakeReachable ? "是" : "否");
+        if (!string.IsNullOrEmpty(result.ProtocolHandshakeError))
         {
             builder.Append("(");
-            builder.Append(result.TlsError);
+            builder.Append(result.ProtocolHandshakeError);
             builder.Append(")");
         }
+
+        builder.Append(" certificate trust=");
+        builder.Append(FormatCertificateTrust(result));
 
         builder.Append(" HTTPS=");
         builder.Append(result.HttpOk ? "OK" : "FAIL");
@@ -553,7 +762,7 @@ internal sealed class GfwProbeReader
 
         if (result.HasTlsAnomaly)
         {
-            return "TLS/SNI";
+            return "TLS/SNI协议握手";
         }
 
         if (result.HasHttpAnomaly)
@@ -618,13 +827,18 @@ internal sealed class GfwProbeReader
             return result;
         }
 
-        result.TlsOk = TryTlsHandshake(domain, DefaultTimeoutMs, out result.TlsError);
-        if (!result.TlsOk)
+        TlsCertificateTrustObservation certificateTrust;
+        result.ProtocolHandshakeReachable = TryTlsProtocolHandshake(
+            domain,
+            DefaultTimeoutMs,
+            out certificateTrust,
+            out result.ProtocolHandshakeError);
+        result.CertificateTrustKnown = certificateTrust.Known;
+        result.CertificateTrusted = certificateTrust.Trusted;
+        result.CertificatePolicyErrors = certificateTrust.PolicyErrors;
+        if (!result.ProtocolHandshakeReachable)
         {
-            if (candidate)
-            {
-                result.HasTlsAnomaly = true;
-            }
+            result.HasTlsAnomaly = IsTlsProtocolAnomaly(candidate, result.ProtocolHandshakeReachable);
 
             return result;
         }
@@ -667,7 +881,8 @@ internal sealed class GfwProbeReader
         {
             string url = "https://cloudflare-dns.com/dns-query?name=" + Uri.EscapeDataString(domain) + "&type=A";
             string json = FetchText(url, "application/dns-json", DefaultTimeoutMs);
-            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            JavaScriptSerializer serializer = BoundedHttpTextReader.CreateJsonSerializer(
+                BoundedHttpTextReader.SmallProbeMaxBytes);
             DnsJsonResponse response = serializer.Deserialize<DnsJsonResponse>(json);
             if (response == null || response.Answer == null)
             {
@@ -733,9 +948,15 @@ internal sealed class GfwProbeReader
         }
     }
 
-    private static bool TryTlsHandshake(string host, int timeoutMs, out string error)
+    private static bool TryTlsProtocolHandshake(
+        string host,
+        int timeoutMs,
+        out TlsCertificateTrustObservation certificateTrust,
+        out string error)
     {
         error = string.Empty;
+        TlsCertificateTrustObservation trust = new TlsCertificateTrustObservation();
+        certificateTrust = trust;
         TcpClient client = null;
         SslStream ssl = null;
         try
@@ -749,7 +970,20 @@ internal sealed class GfwProbeReader
             }
 
             client.EndConnect(connect);
-            ssl = new SslStream(client.GetStream(), false, ValidateAnyCertificate);
+            // This callback belongs only to this diagnostic SslStream. It permits the
+            // protocol handshake to finish so TLS/SNI reachability can be observed, while
+            // recording certificate trust separately. Authenticated HTTP requests below
+            // continue to use the platform certificate policy.
+            RemoteCertificateValidationCallback diagnosticCertificateCallback = delegate(
+                object sender,
+                X509Certificate certificate,
+                X509Chain chain,
+                SslPolicyErrors sslPolicyErrors)
+            {
+                RecordCertificateTrust(trust, sslPolicyErrors);
+                return true;
+            };
+            ssl = new SslStream(client.GetStream(), false, diagnosticCertificateCallback);
             IAsyncResult auth = ssl.BeginAuthenticateAsClient(
                 host,
                 new X509CertificateCollection(),
@@ -808,7 +1042,7 @@ internal sealed class GfwProbeReader
         error = string.Empty;
         try
         {
-            EnsureTls12();
+            // Do not install a process-wide TLS callback or protocol override here.
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create("https://" + host + "/");
             request.Method = "HEAD";
             request.Timeout = timeoutMs;
@@ -845,7 +1079,6 @@ internal sealed class GfwProbeReader
 
     private static string FetchText(string url, string accept, int timeoutMs)
     {
-        EnsureTls12();
         HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
         request.Method = "GET";
         request.Timeout = timeoutMs;
@@ -856,17 +1089,54 @@ internal sealed class GfwProbeReader
             request.Accept = accept;
         }
 
-        using (WebResponse response = request.GetResponse())
-        using (System.IO.Stream stream = response.GetResponseStream())
-        using (System.IO.StreamReader reader = new System.IO.StreamReader(stream, Encoding.UTF8))
+        BoundedHttpTextResult response = BoundedHttpTextReader.Execute(
+            request,
+            BoundedHttpTextReader.SmallProbeMaxBytes,
+            timeoutMs,
+            CancellationToken.None);
+        if (!response.Success)
         {
-            return reader.ReadToEnd();
+            throw new InvalidOperationException("GFW probe response failed: " + response.ErrorCode);
         }
+
+        return response.Content;
     }
 
-    private static void EnsureTls12()
+    private static bool IsTlsProtocolAnomaly(bool candidate, bool protocolHandshakeReachable)
     {
-        ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+        return candidate && !protocolHandshakeReachable;
+    }
+
+    private static void RecordCertificateTrust(
+        TlsCertificateTrustObservation observation,
+        SslPolicyErrors policyErrors)
+    {
+        if (observation == null)
+        {
+            return;
+        }
+
+        observation.Known = true;
+        observation.Trusted = policyErrors == SslPolicyErrors.None;
+        observation.PolicyErrors = policyErrors;
+    }
+
+    private static string FormatCertificateTrust(DomainProbeResult result)
+    {
+        if (result == null || !result.CertificateTrustKnown)
+        {
+            return "unknown";
+        }
+
+        if (result.CertificateTrusted)
+        {
+            return "trusted";
+        }
+
+        string errors = result.CertificatePolicyErrors.ToString();
+        return result.CertificatePolicyErrors == SslPolicyErrors.None || string.IsNullOrWhiteSpace(errors)
+            ? "untrusted"
+            : "untrusted(" + errors + ")";
     }
 
     private static string FormatException(Exception ex)
@@ -889,15 +1159,6 @@ internal sealed class GfwProbeReader
         }
 
         return ex.GetType().Name + ":" + message;
-    }
-
-    private static bool ValidateAnyCertificate(
-        object sender,
-        X509Certificate certificate,
-        X509Chain chain,
-        SslPolicyErrors sslPolicyErrors)
-    {
-        return true;
     }
 
     private static void AddDistinct(List<string> values, string value)
@@ -936,18 +1197,28 @@ internal sealed class GfwProbeReader
         public bool SystemDnsOk;
         public bool DohOk;
         public bool TcpOk;
-        public bool TlsOk;
+        public bool ProtocolHandshakeReachable;
+        public bool CertificateTrustKnown;
+        public bool CertificateTrusted;
         public bool HttpOk;
         public bool HasDnsAnomaly;
         public bool HasTcpAnomaly;
         public bool HasTlsAnomaly;
         public bool HasHttpAnomaly;
         public int HttpStatusCode;
+        public SslPolicyErrors CertificatePolicyErrors;
         public string TcpError;
-        public string TlsError;
+        public string ProtocolHandshakeError;
         public string HttpError;
         public List<string> SystemAddresses;
         public List<string> DohAddresses;
+    }
+
+    private sealed class TlsCertificateTrustObservation
+    {
+        public bool Known;
+        public bool Trusted;
+        public SslPolicyErrors PolicyErrors;
     }
 
     private struct ProbeSummary

@@ -2,7 +2,7 @@
 
 本文件是**全项目文档维护的唯一权威规则**，约束所有在本仓库工作的 AI 代理与人。根目录 `AGENTS.md` 管项目与代码；本文件管 `Docs/`、`README.md` 与三套 JSONL 索引。两者冲突时以根目录 `AGENTS.md` 为准。
 
-生效版本：1.0.4.17 起。本文件本身遵循"活文档"规则（§4）：只描述现行规则，不记录历史；历史入 CHANGELOG。
+适用版本：2.0.0.0。本文件本身遵循"活文档"规则（§4）：只描述现行规则，不记录历史；历史入 CHANGELOG。
 
 ---
 
@@ -27,15 +27,12 @@
 | `README.md` | 概览 | 产品是什么、安装/卸载、命令行入口一览 |
 | `Docs/Component-Refresh-Rules.md` | 规则 | **所有**刷新间隔、定时器归属、手动刷新 token、网络事件、单飞、冷却、挂起/恢复刷新策略 |
 | `Docs/Performance-And-Window-Runtime.md` | 架构 | 分层窗口运行时、渲染缓冲、烧屏防护、性能模式、显示恢复 |
-| `Docs/CodexRadar-Architecture.md` | 架构 | Codex Radar 窗口结构与绘制 |
-| `Docs/Codex-ClaudeRadar-Architecture.md` | 架构 | 独立 Claude Radar 窗口 |
-| `Docs/Claude-EvenRow-DialCard-Technical.md` | 架构 | Claude EvenRow/DialCard 细节 |
+| `Docs/CodexRadar-Architecture.md` | 架构 | `CodexRadarForm` 永久 headless owner、Codex/Claude 双 family、缓存与只读投影 |
+| `Docs/Codex-ClaudeRadar-Architecture.md` | 架构 | 共享 headless owner 内的 Claude 官方额度、缓存、CLD tile 与服务健康边界 |
 | `Docs/NetworkMonitor-Architecture.md` | 架构 | 网络监控窗口 |
 | `Docs/PowerThermal-Architecture.md` | 架构 | 功耗温度窗口 |
 | `Docs/Hardware-Support.md` | 参考 | 目标硬件与设备家族差异 |
 | `Docs/Interface-And-Reuse-Resources.md` | 参考 | 可复用资源/助手清单（人读版；机器版是接口索引） |
-| `Docs/Fable5-Data-Sources-And-Caching-Technical.md` | 参考 | 数据源 URL、fallback 链、缓存文件位置 |
-| `Docs/Fable5-Frontend-Rendering-Technical.md` | 规则 | 前端渲染管线、变体系统、sample/current 采样语义、绘制禁改清单与查验流程 |
 | `Docs/SpecBoard-Architecture.md` | 架构 | 跨项目 spec 账本读取、对账、看板窗口、交互与只读边界 |
 | `Docs/Indexes/FEATURE_INDEX.jsonl` | 索引 | 功能 → 文件/入口/设置键/接口/推荐测试 的机器索引 |
 | `Docs/Interfaces/INTERFACE_INDEX.jsonl` | 索引 | 全部接口与持久化资源的机器索引 |
@@ -44,6 +41,14 @@
 | `Docs/Reports/` | 快照 | 诊断/性能报告归档 |
 
 新建文档前先问：**这个主题已有 owner 吗？** 有 → 更新 owner，不新建。没有 → 归入上表某一类型，并把新文档登记进本表（修改本文件属于文档变更，走正常流程）。
+
+以下文件是已被现行架构取代的**历史快照**，不属于活文档 owner 地图，也不是执行必读材料。它们只用于追溯旧界面和旧实现，正文中的窗口、命令、设置与验收要求不得作为当前实现依据：
+
+| 文档 | 分类 | 当前替代事实源 |
+|---|---|---|
+| `Docs/Fable5-Frontend-Rendering-Technical.md` | superseded historical snapshot | `Docs/Performance-And-Window-Runtime.md` 与各现行 `*-Architecture.md` |
+| `Docs/Fable5-Data-Sources-And-Caching-Technical.md` | superseded historical snapshot | `Docs/Interfaces/INTERFACE_INDEX.jsonl`、`Docs/Component-Refresh-Rules.md` 与两份现行 Radar 架构 |
+| `Docs/Claude-EvenRow-DialCard-Technical.md` | superseded historical snapshot | `Docs/CodexRadar-Architecture.md` 与 `Docs/Codex-ClaudeRadar-Architecture.md` |
 
 ---
 
@@ -71,7 +76,7 @@
 |---|---|
 | 任何刷新间隔/定时器/单飞/冷却/手动 token/挂起恢复策略 | `Component-Refresh-Rules.md`（唯一 owner，别处不得有间隔表） |
 | 新增/修改/删除 设置键 | `FEATURE_INDEX` 对应行的 `setting_keys`；相关窗口架构文档 |
-| 新增/修改 外部 URL、持久化文件、命令行参数、进程间接口 | `INTERFACE_INDEX`（必须）+ `Fable5-Data-Sources-And-Caching-Technical.md`（若涉数据源/缓存） |
+| 新增/修改 外部 URL、持久化文件、命令行参数、进程间接口 | `INTERFACE_INDEX`（必须）+ 对应现行 owner 架构文档；刷新语义另查 `Component-Refresh-Rules.md` |
 | 窗口布局/绘制结构变化（非纯配色） | 对应 `*-Architecture.md` |
 | 功能新增/移动/改名/废弃、推荐测试变化 | `FEATURE_INDEX` |
 | 版本号提升 | 根 `AGENTS.md` 的 `Current version` |
@@ -164,55 +169,15 @@
 ## 8. 验证 Gate（任何 Docs 变更提交前必须全绿）
 
 ```powershell
-# 1) 三索引 + CHANGELOG 逐行可解析、id 唯一
-python - <<'EOF'
-import json, sys, collections
-files = {
- 'Docs/Indexes/FEATURE_INDEX.jsonl': 'feature_id',
- 'Docs/Interfaces/INTERFACE_INDEX.jsonl': 'id',
- 'Docs/Technical/INDEX.jsonl': 'id',
- 'Docs/Maintenance/CHANGELOG.jsonl': 'id',
-}
-fail = False
-for path, key in files.items():
-    seen = collections.Counter()
-    for i, line in enumerate(open(path, encoding='utf-8'), 1):
-        if not line.strip(): continue
-        try: obj = json.loads(line)
-        except Exception as e: print(f"FAIL {path}:{i} bad json: {e}"); fail = True; continue
-        seen[obj.get(key, '')] += 1
-    dup = [k for k, v in seen.items() if v > 1 and k]
-    if dup: print(f"FAIL {path} duplicate {key}: {dup}"); fail = True
-print("FAIL" if fail else "PASS: jsonl parse + id uniqueness")
-sys.exit(1 if fail else 0)
-EOF
+# 1) JSONL 解析、唯一 id、引用路径、索引必填语义与 CHANGELOG 类型
+python .\Docs\validate_docs.py
 
-# 2) 索引引用的源码文件与文档路径必须存在
-python - <<'EOF'
-import json, os, sys
-fail = False
-for line in open('Docs/Indexes/FEATURE_INDEX.jsonl', encoding='utf-8'):
-    if not line.strip(): continue
-    o = json.loads(line)
-    if o.get('status') == 'removed': continue
-    for f in o.get('primary_files', []):
-        if not os.path.exists(f): print("FAIL missing", o['feature_id'], f); fail = True
-for line in open('Docs/Technical/INDEX.jsonl', encoding='utf-8'):
-    if not line.strip(): continue
-    o = json.loads(line)
-    for k in ('doc_path', 'spec_path'):
-        p = o.get(k)
-        if p and not os.path.exists(p): print("FAIL missing", o['id'], p); fail = True
-print("FAIL" if fail else "PASS: path existence")
-sys.exit(1 if fail else 0)
-EOF
-
-# 3) 版本一致性：根 AGENTS.md 的 Current version == ProductIdentity.Version
-#    （grep 两处版本号人工比对，或写入提交说明）
-# 4) git diff --check（无空白错误）
+# 2) 版本一致性：根 AGENTS.md 的 Current version == ProductIdentity.Version
+# 3) 无空白错误
+git diff --check
 ```
 
-新增 CHANGELOG 条目时额外自查：`change_type` 在 §6.2 词表内、`version` 等于当前 `ProductIdentity.Version`、验证证据是实跑结果。
+Gate 对 `FEATURE_INDEX` 和 `INTERFACE_INDEX` 的 `status`、`added_version` 空值按错误处理；功能索引的 `entrypoints` 在 `primary_files` 中无法文本命中时只警告，供人工识别 partial class 迁移或过期定位。新增 CHANGELOG 条目时额外自查：`change_type` 在 §6.2 词表内、`version` 等于当前 `ProductIdentity.Version`、验证证据是实跑结果。
 
 ---
 
@@ -220,6 +185,6 @@ EOF
 
 1. 接到任务 → 关键字搜 `FEATURE_INDEX.jsonl`（aliases 就是为此准备的）→ 得到 `primary_files` / `entrypoints` / `interface_ids` / 推荐测试。
 2. 涉及接口/持久化文件 → 按 `interface_ids` 精确读 `INTERFACE_INDEX.jsonl` 对应行。
-3. 需要背景 → 只读该功能 owner 架构文档的相关小节；刷新/调度问题直接查 `Component-Refresh-Rules.md`；数据源/缓存问题直接查 `Fable5-Data-Sources-And-Caching-Technical.md`。
+3. 需要背景 → 只读该功能 owner 架构文档的相关小节；刷新/调度问题直接查 `Component-Refresh-Rules.md`；数据源、URL 与缓存先精确查 `INTERFACE_INDEX.jsonl` 的命中行，再查对应现行 owner 架构文档。
 4. 需要维护脉络 → 关键字搜 `CHANGELOG.jsonl`，只读命中行，**不要从头读**。
 5. 完成变更 → 按 §4 触发表同步文档 → 按 §5/§6 更新索引与日志 → 跑 §8 Gate。

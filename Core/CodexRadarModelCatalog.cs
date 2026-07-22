@@ -65,6 +65,7 @@ internal static class CodexRadarModelCatalog
     private const double ModelUnavailableGraceHours = 26.0;
     private const double ModelDeleteGraceHours = 7.0 * 24.0;
     public const int ConsolidatedNotificationThreshold = 4;
+    internal static Action LoadModelsObserverForSelfTest;
 
     public static string CatalogPath
     {
@@ -73,6 +74,12 @@ internal static class CodexRadarModelCatalog
 
     public static List<CodexRadarModelInfo> LoadModels()
     {
+        Action observer = LoadModelsObserverForSelfTest;
+        if (observer != null)
+        {
+            observer();
+        }
+
         string path = CatalogPath;
         if (!File.Exists(path))
         {

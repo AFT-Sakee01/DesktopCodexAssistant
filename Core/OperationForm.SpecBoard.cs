@@ -143,7 +143,7 @@ internal sealed partial class OperationForm
         }
     }
 
-    // The four left-dock boards. Expanded, they overlap heavily — their tabs are only 40 logical
+    // The five left-dock boards. Expanded, they overlap heavily — their tabs are close together
     // pixels apart while the boards themselves are 400 tall — so two of them visible at once is not
     // a cosmetic glitch: the top one covers the other, and the covered board's own collapse timer
     // then reads the cursor as still inside its bounds and never fires. Mutual exclusion at show
@@ -154,7 +154,8 @@ internal sealed partial class OperationForm
         Spec,
         CodexTask,
         Network,
-        Guard
+        Guard,
+        CodexIq
     }
 
     // Single place that knows the full membership of the queue. Every expand path routes through
@@ -168,7 +169,8 @@ internal sealed partial class OperationForm
             LeftDockBoardKind.Spec,
             LeftDockBoardKind.CodexTask,
             LeftDockBoardKind.Network,
-            LeftDockBoardKind.Guard
+            LeftDockBoardKind.Guard,
+            LeftDockBoardKind.CodexIq
         };
     }
 
@@ -206,6 +208,10 @@ internal sealed partial class OperationForm
 
             case LeftDockBoardKind.Guard:
                 HideGuardBoardIfVisible();
+                break;
+
+            case LeftDockBoardKind.CodexIq:
+                HideCodexIqBoardIfVisible();
                 break;
         }
     }
@@ -294,6 +300,7 @@ internal sealed partial class OperationForm
             this.specBoardForm = new SpecBoardForm(this, this.CurrentSettings);
         }
 
+        this.specBoardForm.PreparePresentationState(this.displaySuspended, this.hiddenForFullscreen);
         this.specBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
         return this.specBoardForm;
     }
