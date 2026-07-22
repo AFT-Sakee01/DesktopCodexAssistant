@@ -1,6 +1,6 @@
 # Codex / Claude Radar 数据所有者架构
 
-适用版本：2.0.0.10
+适用版本：2.0.0.12
 
 本文说明 `CodexRadarForm` 作为永久 headless owner 时的 Codex 公共 Radar、Codex/Claude 官方额度、服务健康、任务状态和只读投影。
 
@@ -23,6 +23,7 @@
 | `Core/BoundedHttpTextReader.cs` / `Core/CodexRadarUrlPolicy.cs` | 有界 HTTP 文本读取与 Radar 精确 URL/SSRF 策略 |
 | `Core/ClaudeCodeUsageReader.cs` / `Core/ClaudeCodeUsageScheduler.cs` | Claude 官方额度读取、单飞调度与缓存提交 |
 | `Core/DeepSeekServiceMonitor.cs` | 无凭据 DeepSeek 服务可达性探测 |
+| `Core/DeepSeekBalanceMonitor.cs` | 可选凭据的官方余额读取、48 小时本地趋势与只读快照 |
 | `Core/StatuspageMonitor.cs` | OpenAI/Anthropic 官方状态单飞监控 |
 | `Core/CodexTaskMonitorReader.cs` / `Core/CodexTaskPresentation.cs` | Codex 会话增量读取和共享任务快照 |
 | `Core/WidgetForm.TileColumn.cs` | 把两个 family 的额度快照写入同一 `MetricTileFeed` |
@@ -156,7 +157,9 @@ owner 复用进程级 `StatuspageMonitor` 与 `DeepSeekServiceMonitor`，向 Cod
 | `C` | Anthropic 官方状态与 Claude usage |
 | `D` | DeepSeek 服务可达性 |
 
-DeepSeek 项不读取凭据、不查询或保存账户余额，也不产生余额提醒。它只输出 `known`、`available`、错误码与检查时间。HTTP 鉴权或请求格式响应可证明网关可达；无响应、拒绝或服务端故障按服务异常语义分类。
+这里的 DeepSeek 健康项不读取凭据，只输出 `known`、`available`、错误码与检查时间。HTTP 鉴权或请求格式响应可证明网关可达；无响应、拒绝或服务端故障按服务异常语义分类。
+
+账户余额是独立的 `DeepSeekBalanceMonitor`：只有用户配置 API Key 后才访问官方 `/user/balance`，并把当前余额、24 小时本地消耗、预计可用时间和最多 96 个绘图点作为 clone 快照交给右侧 `DS` tile/expand。Key 使用 CurrentUser DPAPI envelope，余额历史不包含 key、Authorization header 或响应正文；服务健康失败与账户鉴权失败不得互相改色或覆盖。
 
 服务错误经过 `ServiceAlertDebouncer`；检测中立即发布，新错误稳定后发布，恢复立即清除。`BuildServiceHealth()` 只复制已有状态，不触发探测。具体调度与手动刷新语义见 `Docs/Component-Refresh-Rules.md`。
 
@@ -193,9 +196,9 @@ IQ board 的 tab、展开/收起和渲染属于左侧停靠运行时，不改变
 
 ## 12. 设置边界
 
-设置页保留 Codex 公共数据、family 选择、Codex 模型/周期、个人额度、服务探测、Claude setup-token 与测试配置。Claude 不提供公共数据源、社区评分、模型选择或本地公共额度 fallback；DeepSeek 不提供 API key、余额或余额告警设置。
+设置页保留 Codex 公共数据、family 选择、Codex 模型/周期、个人额度、服务探测、Claude setup-token、DeepSeek API Key 与测试配置。Claude 不提供公共数据源、社区评分、模型选择或本地公共额度 fallback；DeepSeek Key 只进入独立 DPAPI 文件，不进入 `settings.ini`、日志或快照。
 
-全局布局编辑器登记 `MetricTile.CodexQuota`、`MetricTile.ClaudeQuota` 以及左侧 `CodexIq`、`ResetSpeed` tabs；headless owner 不在 17 个布局项中。
+全局布局编辑器登记 `MetricTile.CodexQuota`、`MetricTile.ClaudeQuota`、`MetricTile.DeepSeekQuota` 以及左侧 `CodexIq`、`ResetSpeed`、`SystemDay` tabs；headless owner 不在 19 个布局项中。
 
 ## 13. 故障、安全与验证
 
@@ -218,4 +221,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-resetspeedboard --out .\_build\reset-speed
 ```
 
-验收重点是：owner 始终隐藏、Start/Stop 完整、两套额度与四条趋势历史按 family/window 隔离、重置与速蹬投影无同步 I/O、Codex/CLD 展开窗给出 5 小时和周额度的耗尽/重置判断、Codex 第六 board 提供 7 天历史/重置/速蹬/重置卡信息、CLD 仍只使用官方额度源、DeepSeek 只保留服务健康，以及设置/布局不暴露已不存在的入口。
+验收重点是：owner 始终隐藏、Start/Stop 完整、两套额度与四条趋势历史按 family/window 隔离、重置与速蹬投影无同步 I/O、Codex/CLD 展开窗给出 5 小时和周额度的耗尽/重置判断、Codex 第六 board 提供 7 天历史/重置/速蹬/重置卡信息、CLD 仍只使用官方额度源、DeepSeek 服务健康与账户余额严格分离、Key 只以 DPAPI 密文落盘，以及 11 tile / 7 dock 布局完整。

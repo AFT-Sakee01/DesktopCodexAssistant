@@ -162,6 +162,11 @@ internal static class Program
             return RenderResetSpeedBoardSample(args);
         }
 
+        if (HasArg(args, "--render-systemdayboard"))
+        {
+            return RenderSystemDayBoardSample(args);
+        }
+
         if (HasArg(args, "--render-specboardmanager"))
         {
             return RenderSpecBoardManagerSamples(args);
@@ -825,6 +830,7 @@ internal static class Program
             RunNamedSelfTest("GfwProbeReader", GfwProbeReader.RunSelfTest);
             RunNamedSelfTest("StatuspageMonitor", StatuspageMonitor.RunSelfTest);
             RunNamedSelfTest("DeepSeekServiceMonitor", DeepSeekServiceMonitor.RunSelfTest);
+            RunNamedSelfTest("DeepSeekBalanceMonitor", DeepSeekBalanceMonitor.RunSelfTest);
             RunNamedSelfTest("ServiceAlertDebouncer", ServiceAlertDebouncer.RunSelfTest);
             RunNamedSelfTest("ClaudeCodeUsageReader", ClaudeCodeUsageReader.RunSelfTest);
             RunNamedSelfTest("ClaudeCodeUsageScheduler", ClaudeCodeUsageScheduler.RunSelfTest);
@@ -1162,6 +1168,28 @@ internal static class Program
         }
     }
 
+    private static int RenderSystemDayBoardSample(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir)) outputDir = ".";
+            SystemDayBoardForm.RenderSample(outputDir);
+            Console.WriteLine("Rendered System Day board sample to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
     private static int RenderGuardBoardSamples(string[] args)
     {
         NativeMethods.AttachToParentConsole();
@@ -1460,7 +1488,8 @@ internal static class Program
                     EdgeDockTabRole.CodexTask,
                     EdgeDockTabRole.Guard,
                     EdgeDockTabRole.CodexIq,
-                    EdgeDockTabRole.ResetSpeed
+                    EdgeDockTabRole.ResetSpeed,
+                    EdgeDockTabRole.SystemDay
                 };
                 EdgeDockTabForm[] dockTabs = new EdgeDockTabForm[dockRoles.Length];
                 codex.StartHeadlessDataOwner();
@@ -1600,6 +1629,8 @@ internal static class Program
             OperationForm.RunSelfTest();
             CodexIqBoardForm.RunSelfTest();
             ResetSpeedBoardForm.RunSelfTest();
+            SystemDayHistoryStore.RunSelfTest();
+            SystemDayBoardForm.RunSelfTest();
             RunCtfmonRestartHelperArgumentSelfTest();
             RunCommandLineArgumentParserSelfTest();
             Console.WriteLine("Operation panel interaction and performance policy: PASS");

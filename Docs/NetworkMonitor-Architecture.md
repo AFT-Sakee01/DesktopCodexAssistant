@@ -1,12 +1,12 @@
 # 网络监控停靠架构
 
-适用版本：2.0.0.10
+适用版本：2.0.0.12
 
 本文说明 Network 左缘停靠 tab/board 的数据读取、状态机、单飞一致性、PathPing、Clean IP 投影和 Dock-only 渲染边界。
 
 ## 1. 当前定位
 
-Network 是左侧 6 个停靠角色之一，只以 tab + 展开 board 运行。`NetworkMonitorForm` 仍是 reader、调度和 board 的 owner，但不提供浮动展示模式。
+Network 是左侧 7 个停靠角色之一，只以 tab + 展开 board 运行。`NetworkMonitorForm` 仍是 reader、调度和 board 的 owner，但不提供浮动展示模式。
 
 相关源码：
 
@@ -210,4 +210,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-networkmonitor --out .\_build\network
 ```
 
-验收重点是：Network 只通过第一枚左侧 tab 展开、Clean IP 只在该 board 展示、换网后旧任务不回写、收起后 PathPing 停止、六块 board 水平对齐、GFW 不改云服务结果，以及显示恢复后没有第二个 Network 表面。
+验收重点是：Network 只通过第一枚左侧 tab 展开、Clean IP 只在该 board 展示、换网后旧任务不回写、收起后 PathPing 停止、七块 board 水平对齐、GFW 不改云服务结果，以及显示恢复后没有第二个 Network 表面。

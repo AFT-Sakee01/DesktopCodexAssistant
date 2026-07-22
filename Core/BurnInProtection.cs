@@ -36,6 +36,8 @@ internal static class BurnInProtection
     public const int LeftDockButtonColumnSalt = 83;
     public const int ResetSpeedBoardSalt = 89;
     public const int ResetSpeedBoardDockTabSalt = 97;
+    public const int SystemDayBoardSalt = 101;
+    public const int SystemDayBoardDockTabSalt = 103;
 
     private const int ShiftIntervalMinutes = 7;
     private static int currentVisualLevel;

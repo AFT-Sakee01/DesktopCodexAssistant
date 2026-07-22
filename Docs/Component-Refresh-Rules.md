@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.10
+适用版本：2.0.0.12
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -59,8 +59,8 @@ DNS 检测：
 | 应用窗口事件 | 前台窗口 Hook 始终启用；只有最大化自动隐藏或全屏/最大化/遮挡可见性模式才启用对象 Hook 和主采样周期完整枚举。事件按 HWND 合并，125 ms 批处理，每批最多 64 项，队列上限 256 项；溢出退化为一次完整枚举。同产品测试/辅助进程的窗口事件按 PID 身份缓存过滤。 |
 | 昂贵硬件 | GPU/NPU 按 1/2/5 s 独立 deadline；不能被更快的 CPU tick 放大。 |
 | 设置热加载 | `settings.ini` 由 `FileSystemWatcher` 与主 tick 的修改时间检查共同覆盖。 |
-| 右侧 tiles | 10 个 `MetricTileForm` 只消费同一次 feed；方块和 hover expand 不自行采样。 |
-| 左侧 docks | 6 个 `EdgeDockTabForm` 复用各自既有 hover tick；展开 board 的业务刷新由 owner 管理。 |
+| 右侧 tiles | 11 个 `MetricTileForm` 只消费同一次 feed；方块和 hover expand 不自行采样。 |
+| 左侧 docks | 7 个 `EdgeDockTabForm` 复用各自既有 hover tick；展开 board 的业务刷新由 owner 管理。 |
 | 全屏 | 隐藏 visible tiles/tabs/boards/Operation；不停止 Radar/Power headless backend。 |
 | 显示恢复 | 首轮延迟 350 ms，最多 3 轮；后续重试 1500 ms。重枚举 work-area、重建 visible layered resources、重定位并强制刷新。 |
 | Win+D | 全局 Win+D 后延迟 2000 ms 执行本程序和 SeelenUI 拉前；不拦截系统显示桌面。 |
@@ -74,13 +74,13 @@ hover/自动隐藏规则：
 - 离开判定区后延迟显现默认 1 s；倒计时内重新进入需连续停留默认 0.5 s 才重置。
 - 自动隐藏激活后普通鼠标移动不释放，必须进入任一 visible surface 的敏感范围。
 - 两级防烧屏默认开启：`BurnInLevelOneIdleSeconds = 10` 后进入一级，随后 `BurnInLevelTwoDelaySeconds = 30` 后进入二级；允许范围分别为 1-300 秒和 1-600 秒。
-- 防烧屏复用 hidden `WidgetForm` 的静止交互轮询和六个 `EdgeDockTabForm` 的 120 ms hover tick，不新增 timer。一级/二级激活后，纯鼠标移动只驱动左 tab 局部恢复或右侧 tile/expand 整组恢复；点击、滚轮、键盘输入、显示挂起与布局编辑会归零状态并重新计时。
+- 防烧屏复用 hidden `WidgetForm` 的静止交互轮询和七个 `EdgeDockTabForm` 的 120 ms hover tick，不新增 timer。一级/二级激活后，纯鼠标移动只驱动左 tab 局部恢复或右侧 tile/expand 整组恢复；点击、滚轮、键盘输入、显示挂起与布局编辑会归零状态并重新计时。
 - Operation RadialDial 核心 keep-alive 复用共享交互 tick，不建立 timer；达到空闲阈值后只改变一次核心视觉。
 - hidden host 只协调防烧屏状态，不提交像素；headless owners 不进入 hover、click-through、burn-in 或 Z-order 轮询。
 
 ## 4. Codex / Claude Radar headless owner
 
-源码：`Core/CodexRadarForm.cs`、`Core/CodexRadarForm.RuntimeState.cs`、`Core/CodexRadarForm.ProjectionState.cs`、`Core/CodexRadarForm.TileSnapshot.cs`、`Core/OwnerOperationGeneration.cs`、`Core/ClaudeCodeUsageReader.cs`、`Core/ClaudeCodeUsageScheduler.cs`、`Core/DeepSeekServiceMonitor.cs`
+源码：`Core/CodexRadarForm.cs`、`Core/CodexRadarForm.RuntimeState.cs`、`Core/CodexRadarForm.ProjectionState.cs`、`Core/CodexRadarForm.TileSnapshot.cs`、`Core/OwnerOperationGeneration.cs`、`Core/ClaudeCodeUsageReader.cs`、`Core/ClaudeCodeUsageScheduler.cs`、`Core/DeepSeekServiceMonitor.cs`、`Core/DeepSeekBalanceMonitor.cs`
 
 | 项目 | 规则 |
 | --- | --- |
@@ -110,10 +110,11 @@ hover/自动隐藏规则：
 | Claude Code usage | 5 min | 普通失败 10 min；HTTP 429 15 min | selected-provider gate、setup token/恢复/手动刷新 |
 | OpenAI/Anthropic Statuspage | 正常 15 min | 异常或失败 2 min | 启动、网络变化、服务 token、手动刷新 |
 | DeepSeek service monitor | 正常 60 s | 失败/未知 5 min | 启动、网络变化、手动刷新 |
+| DeepSeek balance monitor | 有 key 且成功 5 min | 失败 10 min；无 key 15 min | 启动、网络变化、手动刷新、Key 更新/清除 |
 
 约束：
 
-- 各来源单飞；Claude 官方 usage 的消费者 join 同一 scheduler 请求，同一 Statuspage serviceKey 和 DeepSeek service 请求各只发一次。
+- 各来源单飞；Claude 官方 usage 的消费者 join 同一 scheduler 请求，同一 Statuspage serviceKey、DeepSeek service 和 DeepSeek balance 请求各只发一次。
 - Claude usage 只有两组百分比、两组 reset 与可信来源时间均完整且新鲜时才提交；部分结果进入失败退避并保留 last-good。
 - Radar 网站同内容保留原数据时间，不能用抓取时间伪造新批次。
 - `current.json` schema 2 是模型 IQ 主源；HTML 仅在速蹬窗口缺失时补该窗口，不读取已删除的 model-ratings 或 quota_radar 链。
@@ -244,6 +245,14 @@ hover/自动隐藏规则：
 - JSONL 后台批量写入 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-quota-seven-day-history.jsonl`；board 的 5 秒投影只 clone 已加载内存，不同步读文件。
 - board 隐藏、全屏或显示挂起时停止展示轮询；历史记录继续服从 Radar owner 的额度调度，不建立 provider、reader 或网络请求。
 
+### 8.6 系统日记
+
+- hidden `WidgetForm` 在现有性能 feed 完成后调用 `SystemDayHistoryStore.RecordSample()`；`MinimumSampleSeconds = 55` 保证最多约每分钟一条，不新增硬件 timer 或 sampler。
+- 连续 5 分钟无键鼠输入后记为 `Idle`，否则记为 `Active`；`PBT_APMSUSPEND` / `PBT_APMRESUME*` 另记睡眠边界事件。
+- JSONL 由后台 `FlushIntervalMs = 15000` 批量落盘；挂起前同步刷出待写行，恢复后重新进入批量模式。保留 8 天、最多 13000 条。
+- `SystemDayBoardForm` 可见时每 5 s clone 范围快照；500 ms maintenance tick 只处理 tab、外部点击、自动收回、范围点击、定位和必要重绘。
+- board 隐藏、全屏或显示挂起时停止展示刷新；历史记录仍随 hidden host 的有效性能采样运行。绘制路径不读 JSONL，也不调用 Power/Thermal sampler。
+
 ## 9. Settings 与布局编辑
 
 源码：`Settings/Win11SettingsForm.cs`、`Core/GlobalLayoutEditorForm.cs`
@@ -254,13 +263,13 @@ hover/自动隐藏规则：
 | 预览 | 变更后 75 ms debounce 应用，避免每个控件事件直接写运行时。 |
 | 保存/取消 | 保存写 `settings.ini`；取消或异常关闭回滚打开时 baseline。 |
 | 全局热键 | 只有 hidden `WidgetForm` 注册；设置变更先注销再按规范化签名注册。 |
-| 全局布局 | 恰好 17 项：Operation、6 个 left dock tabs、10 个 right tiles。board、Settings、hidden host、headless owners 和 hover expand 不进入清单。 |
+| 全局布局 | 恰好 19 项：Operation、7 个 left dock tabs、11 个 right tiles。board、Settings、hidden host、headless owners 和 hover expand 不进入清单。 |
 | 显示器 | 保存 `Screen.DeviceName`；主显示/work-area 继续作为右 tile 基线。 |
-| Radar | 只配置 Codex 数据 family/模型/源/周期、Codex 与 Claude 官方额度、服务与健康测试；不提供 Claude 社区模型/fallback、DeepSeek key/余额或 owner 可见几何。 |
+| Radar | 配置 Codex 数据 family/模型/源/周期、Codex 与 Claude 官方额度、DeepSeek DPAPI 凭据入口、服务与健康测试；不提供 Claude 社区模型/fallback 或 owner 可见几何。 |
 | Power compatibility | `PowerThermalIntegratedEnabled` UI 隐藏，只兼容旧设置。 |
 | Network | 只按 Dock topology 配置目标、board/tab 与 reader；不能切出第二展示形态。 |
 
-GFW、Clean IP 和 Radar 随机测试的“立即刷新”递增对应 token；owner/reader 在成功占用单飞路径时消费。DeepSeek service monitor 不读取凭据，网络变化或共享手动刷新直接使其 deadline 到期。
+GFW、Clean IP 和 Radar 随机测试的“立即刷新”递增对应 token；owner/reader 在成功占用单飞路径时消费。DeepSeek service monitor 不读取凭据；balance monitor 仅从 DPAPI / 环境变量读取 Key。网络变化或共享手动刷新使两者各自 deadline 到期，但二者保持独立状态。
 
 ## 10. 修改检查清单
 
@@ -271,5 +280,5 @@ GFW、Clean IP 和 Radar 随机测试的“立即刷新”递增对应 token；o
 3. visible surface 是否只读快照，且 hidden/headless 对象未进入绘制与交互 tick。
 4. 全屏与显示关闭是否区分：全屏只隐藏表面，显示/会话/挂起才暂停对应 backend。
 5. Network 是否仍为 Dock-only，Clean IP 是否仍由共享 reader 提供。
-6. 全局布局是否仍恰好 17 项。
+6. 全局布局是否仍恰好 19 项。
 7. 是否需要运行 `--test`、`--test-layout`、`--test-settings-bindings`、`--test-display-recovery`、`--test-radar-display-lifecycle`、`--test-operation-panel` 或对应 board render。

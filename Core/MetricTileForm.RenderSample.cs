@@ -4,12 +4,12 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 
-// Test-only render harness for --render-tilecolumn. Paints the ten tiles (normal and hovered
-// states) and every one of the ten expanded panels to PNGs so the layout can be reviewed
+// Test-only render harness for --render-tilecolumn. Paints the eleven tiles (normal and hovered
+// states) and every one of the eleven expanded panels to PNGs so the layout can be reviewed
 // without running the app: none of these windows is reachable from the Start menu and the panel only
 // exists while the cursor is on its tile.
 //
-// The tiles are separate windows now, so the "column" image is composited here from the ten tile
+// The tiles are separate windows now, so the "column" image is composited here from the eleven tile
 // bitmaps at their auto-column offsets — that is what the default placement actually looks like.
 internal sealed partial class MetricTileForm
 {
@@ -70,6 +70,8 @@ internal sealed partial class MetricTileForm
                 }
             }
         }
+
+        RenderQuotaEasterEggSamples(outputDir, settings, feed);
     }
 
     private static void RenderColumn(
@@ -237,7 +239,93 @@ internal sealed partial class MetricTileForm
         feed.Guards = MetricTileModel.BuildGuardEntries(runtime, DateTime.UtcNow);
         feed.CodexRadar = BuildSampleRadar(CodexRadarSoftwareMode.Codex);
         feed.ClaudeRadar = BuildSampleRadar(CodexRadarSoftwareMode.Claude);
+        DeepSeekBalanceSnapshot deepSeek = DeepSeekBalanceSnapshot.CreateEmpty();
+        deepSeek.ApiKeyConfigured = true;
+        deepSeek.Known = true;
+        deepSeek.IsAvailable = true;
+        deepSeek.Currency = "CNY";
+        deepSeek.Balance = 88.5;
+        deepSeek.ReferenceBalance = 112.0;
+        deepSeek.Last24HourUsageKnown = true;
+        deepSeek.Last24HourUsage = 11.5;
+        deepSeek.RunwayKnown = true;
+        deepSeek.RunwayHours = 184.7;
+        deepSeek.CheckedAtLocal = DateTime.Now;
+        deepSeek.History = new List<DeepSeekBalancePoint>();
+        double[] balanceHistory = { 112, 110, 108, 105, 103, 101, 98, 96, 92, 88.5 };
+        for (int i = 0; i < balanceHistory.Length; i++)
+        {
+            deepSeek.History.Add(new DeepSeekBalancePoint
+            {
+                TimestampUtc = DateTime.UtcNow.AddHours(-48 + i * 5),
+                Currency = "CNY",
+                Balance = balanceHistory[i]
+            });
+        }
+
+        feed.DeepSeekBalance = deepSeek;
         return feed;
+    }
+
+    private static void RenderQuotaEasterEggSamples(
+        string outputDir,
+        WidgetSettings settings,
+        MetricTileFeed feed)
+    {
+        RadarTileSnapshot codex = feed.CodexRadar;
+        RadarTileSnapshot claude = feed.ClaudeRadar;
+        QuotaEasterEggSnapshot easterEgg = feed.QuotaEasterEgg;
+        try
+        {
+            RadarTileSnapshot emptyCodex = RadarTileSnapshot.CreateEmpty(CodexRadarSoftwareMode.Codex);
+            RadarTileSnapshot emptyClaude = RadarTileSnapshot.CreateEmpty(CodexRadarSoftwareMode.Claude);
+            feed.CodexRadar = emptyCodex;
+            feed.ClaudeRadar = claude;
+            feed.QuotaEasterEgg = new QuotaEasterEggSnapshot { Enabled = true, CodexEmpty = true, ClaudeEmpty = false };
+            RenderColumn(outputDir, settings, feed, "tilecolumn-codex-fallen.png", -1, BurnInVisualLevel.Normal, false);
+            RenderExpandedSample(outputDir, settings, feed, MetricTileId.CodexQuota, false, "tileexpand-codexquota-fallen.png");
+
+            feed.ClaudeRadar = emptyClaude;
+            feed.QuotaEasterEgg = new QuotaEasterEggSnapshot { Enabled = true, CodexEmpty = true, ClaudeEmpty = true };
+            RenderColumn(outputDir, settings, feed, "tilecolumn-both-fallen.png", -1, BurnInVisualLevel.Normal, false);
+            RenderExpandedSample(outputDir, settings, feed, MetricTileId.ClaudeQuota, false, "tileexpand-bothquota-fallen.png");
+
+            feed.CodexRadar = codex;
+            feed.ClaudeRadar = claude;
+            feed.QuotaEasterEgg = new QuotaEasterEggSnapshot { Enabled = true, CodexEmpty = false, ClaudeEmpty = false };
+            RenderExpandedSample(outputDir, settings, feed, MetricTileId.CodexQuota, true, "tileexpand-codexquota-revived.png");
+        }
+        finally
+        {
+            feed.CodexRadar = codex;
+            feed.ClaudeRadar = claude;
+            feed.QuotaEasterEgg = easterEgg;
+        }
+    }
+
+    private static void RenderExpandedSample(
+        string outputDir,
+        WidgetSettings settings,
+        MetricTileFeed feed,
+        MetricTileId id,
+        bool revival,
+        string fileName)
+    {
+        using (MetricTileExpandForm panel = new MetricTileExpandForm(settings))
+        {
+            panel.MaximumSize = new Size(4000, 4000);
+            panel.Size = panel.GetDesiredSize();
+            panel.PrepareForRenderSample(id, feed, revival);
+            using (Bitmap bitmap = new Bitmap(panel.Width, panel.Height, PixelFormat.Format32bppPArgb))
+            using (Graphics g = Graphics.FromImage(bitmap))
+            {
+                g.Clear(DesignTokens.Colors.AppBackground);
+                panel.DrawPanel(g);
+                string path = Path.Combine(outputDir, fileName);
+                bitmap.Save(path, ImageFormat.Png);
+                Console.WriteLine(id + " easter egg -> " + path + " (" + panel.Width + "x" + panel.Height + ")");
+            }
+        }
     }
 
     private static RadarTileSnapshot BuildSampleRadar(CodexRadarSoftwareMode family)

@@ -1,21 +1,22 @@
 # Desktop Codex Assistant（UX3407N / UX3607O 专调版）
 
-适用版本：2.0.0.10
+适用版本：2.0.0.12
 
-A Windows-on-Arm desktop workspace for AI-assisted development: ten right-edge metric/quota tiles, six left-edge dock tabs and boards, an operation panel, and an on-demand settings window. Sampling and Radar coordination run in hidden owners. Tuned for ASUS UX3407N / UX3607O; ARM64 is the formal build target.
+A Windows-on-Arm desktop workspace for AI-assisted development: eleven right-edge metric/quota tiles, seven left-edge dock tabs and boards, an operation panel, and an on-demand settings window. Sampling and Radar coordination run in hidden owners. Tuned for ASUS UX3407N / UX3607O; ARM64 is the formal build target.
 
-本程序把 AI 辅助开发时最常盯的信息固定到桌面两侧：右侧 10 个独立指标方块，左侧 6 个停靠标签/看板，另有操作面板与按需打开的设置窗口。`WidgetForm` 只做隐藏协调，`CodexRadarForm` 与 `PowerThermalForm` 只做永久 headless 数据所有者；它们不再作为可见窗口。整个项目由 AI 编写与维护——OpenAI Codex 主创，Anthropic Claude（Opus / Fable）参与功能开发、审查与修复。
+本程序把 AI 辅助开发时最常盯的信息固定到桌面两侧：右侧 11 个独立指标方块，左侧 7 个停靠标签/看板，另有操作面板与按需打开的设置窗口。`WidgetForm` 只做隐藏协调，`CodexRadarForm` 与 `PowerThermalForm` 只做永久 headless 数据所有者；它们不再作为可见窗口。整个项目由 AI 编写与维护——OpenAI Codex 主创，Anthropic Claude（Opus / Fable）参与功能开发、审查与修复。
 
 ## 运行表面与数据所有者
 
 | 类别 | 当前内容 |
 |---|---|
-| 右侧 10 个方块 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度；每项是独立 `MetricTileForm`，悬停详情只消费同一份快照；MEM 外环显示物理占用，内环显示绿/黄/红三态内存压力，底部色带记录最近 60 秒压力历史 |
-| 左侧 6 个停靠位 | Network、Spec Board、Codex Task、GUARD、Codex IQ、重置与速蹬；常驻 tab 与展开 board 组成一套停靠拓扑 |
+| 右侧 11 个方块 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度、DeepSeek 余额；每项是独立 `MetricTileForm`，悬停详情只消费同一份快照；MEM 外环显示物理占用，内环显示绿/黄/红三态内存压力，底部色带记录最近 60 秒压力历史 |
+| 左侧 7 个停靠位 | Network、Spec Board、Codex Task、GUARD、Codex IQ、重置与速蹬、系统日记；常驻 tab 与展开 board 组成一套停靠拓扑 |
 | 重置与速蹬看板 | 展示 Codex 最近 7 天周额度余量、自然/硬/重置卡事件、速蹬窗口倒计时、重置卡余量与最近到期时间；只读 Radar owner 的缓存投影 |
+| 系统日记看板 | 用统一时间轴查看今天、最近 24 小时或最近一周的工作/空闲/睡眠、性能峰值、电量红升青降、功耗、预计充满/耗尽时间与命名热区；完整相关样本按日保存在本机 JSONL |
 | Network 看板 | 接口、DNS、公网连通性、GFW、云服务、PathPing、固定 Ping，以及共享 Clean IP 出口画像；只以 Dock 形态展示 |
 | Operation | 扇形速控盘、常用开关、电池保养、CTF 重启与 SeelenUI 联动 |
-| Settings | Win11 风格设置窗口，按需显示；全局布局编辑只编辑上述 10 个方块、6 个 tab 与 Operation，共 17 项 |
+| Settings | Win11 风格设置窗口，按需显示；全局布局编辑只编辑上述 11 个方块、7 个 tab 与 Operation，共 19 项 |
 | 隐藏协调与采样 | `WidgetForm` 是隐藏宿主；`CodexRadarForm` 维护 Codex 公共 Radar 与 Codex/Claude 官方额度/服务状态，`PowerThermalForm` 维护功耗/温度；可见表面只读缓存快照 |
 
 右侧方块的自动排列仍以“主显示器/主工作区”设置为基线；这些设置继续服务当前 tile 拓扑。
@@ -48,13 +49,14 @@ DesktopCodexAssistant.exe --stop   # 停止正在运行的实例
 |---|---|
 | 运行模式 | `--desktop-parent` / `--workerw`（桌面宿主层）、`--night-proof`、`--restart-after-pid <pid>` |
 | 自检 | `--test`、`--test-logger`、`--test-layout`、`--test-settings-bindings`、`--test-display-recovery`、`--test-operation-panel`、`--test-codex-task-monitor`、`--test-specboard-manager`、`--test-settings-open-close [--iterations N]`、`--test-radar-display-lifecycle [--iterations N]` |
-| 渲染采样（离屏出 PNG） | `--render-networkmonitor` / `--render-operation` / `--render-tilecolumn` / `--render-resetspeedboard`，以及带模式参数的 `--render-specboard <sample|current>`、`--render-specboardmanager <sample|current>`、`--render-guard <sample|current>`；均支持 `--out <目录>` |
+| 渲染采样（离屏出 PNG） | `--render-networkmonitor` / `--render-operation` / `--render-tilecolumn` / `--render-resetspeedboard` / `--render-systemdayboard`，以及带模式参数的 `--render-specboard <sample|current>`、`--render-specboardmanager <sample|current>`、`--render-guard <sample|current>`；均支持 `--out <目录>` |
 | 诊断 | `--diagnose-idle-cpu [--diagnose-minutes N]`、`--diagnose-radar-runtime [--diagnose-seconds N]`、`--dump-codex-tasks`（只读，输出任务状态 / 模型 / token 数字与官方会话标题，不含提示词、回复或完整会话路径） |
 
 ## 数据与隐私
 
 - 设置、日志与缓存全部位于 `%LOCALAPPDATA%\DesktopCodexAssistant`，不写注册表（自启动项除外）、不上传任何数据。
-- Claude setup-token 以 Windows DPAPI（当前用户范围）加密存储在本地；DeepSeek 服务探测不读取凭据或账户数据。
+- 系统日记写入 `%LOCALAPPDATA%\DesktopCodexAssistant\system-day\system-day-YYYY-MM-DD.jsonl`，保存最近 8 天的本机性能、电池、工作/睡眠状态与完整热区样本，供时间关联分析使用。
+- Claude setup-token 与可选 DeepSeek API Key 均以 Windows DPAPI（当前用户范围）加密存储在本地；无凭据 DeepSeek 服务探测与账户余额读取保持独立。
 - “大陆出口保护”默认开启：出口未知或结果过期时静默阻断本程序自身的 OpenAI/Anthropic 请求；明确检测到中国大陆出口或 GFW 墙内信号时显示可暂时隐藏 60 秒的全屏警告。它不修改 hosts、不提权，也不拦截其它程序。
 - 下节列出的全部网络请求均为只读探测 / 查询，可在设置中逐项关闭。
 - 旧版本目录（`CodexDeveloperAssistantWindowOnWOA`、`DesktopPerfWidget-Lite`）的数据首次启动时自动迁移，不覆盖新文件。
@@ -70,7 +72,7 @@ DesktopCodexAssistant.exe --stop   # 停止正在运行的实例
 | [Codex Radar](https://codexradar.com/)（codexradar.com） | Codex 公共状态、模型 IQ、速蹬窗口与 RSS；结构化 `current.json` 为主源，首页仅补缺失的速蹬窗口 |
 | [OpenAI Status](https://status.openai.com/) | OpenAI 官方服务状态（Statuspage v2 API） |
 | [Anthropic Status](https://status.claude.com/) | Claude 官方服务状态（Statuspage v2 API） |
-| [DeepSeek API](https://api.deepseek.com/) | 无凭据服务可达性探测；只判断网关/服务健康，不读取余额 |
+| [DeepSeek API](https://api.deepseek.com/) | 无凭据服务可达性探测；另可选使用用户配置的 DPAPI 加密 API Key 读取官方余额 |
 
 **个人账户额度（需用户自行绑定凭据）**
 
@@ -114,6 +116,7 @@ DesktopCodexAssistant.exe --stop   # 停止正在运行的实例
 - [Codex / Claude Radar 数据所有者架构](Docs/CodexRadar-Architecture.md)
 - [Claude CLD 官方额度链架构](Docs/Codex-ClaudeRadar-Architecture.md)
 - [功耗温度数据所有者架构](Docs/PowerThermal-Architecture.md)
+- [系统日记看板架构](Docs/SystemDayBoard-Architecture.md)
 - [网络监控停靠架构](Docs/NetworkMonitor-Architecture.md)
 - [Spec Board 架构](Docs/SpecBoard-Architecture.md)
 - [GUARD 看板架构](Docs/GuardBoard-Architecture.md)
@@ -121,6 +124,6 @@ DesktopCodexAssistant.exe --stop   # 停止正在运行的实例
 - [机器可读接口索引](Docs/Interfaces/INTERFACE_INDEX.jsonl)
 - [机器可读功能索引](Docs/Indexes/FEATURE_INDEX.jsonl)
 
-当前可见拓扑以本页的“10 + 5 + Operation + Settings”为准；隐藏宿主与 headless owners 只提供协调和数据。Dock 启动器、Launchpad、顶栏与 Direct2D 工程不属于本产品范围。
+当前可见拓扑以本页的“11 + 7 + Operation + Settings”为准；隐藏宿主与 headless owners 只提供协调和数据。Dock 启动器、Launchpad、顶栏与 Direct2D 工程不属于本产品范围。
 
 历史设计快照（superseded，仅供追溯，不作为当前实现依据）：[旧数据源与缓存说明](Docs/Fable5-Data-Sources-And-Caching-Technical.md)、[旧多悬浮窗渲染规程](Docs/Fable5-Frontend-Rendering-Technical.md)、[旧 EvenRow 表盘说明](Docs/Claude-EvenRow-DialCard-Technical.md)。

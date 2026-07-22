@@ -27,7 +27,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     internal const int TileLogicalRadius = 10;
     // A normal work area that can provide this many pixels per enabled tile never degrades below a
     // comfortably clickable target. Smaller values are only possible when fitting every enabled
-    // tile is mathematically impossible at 24 px (for example ten tiles in a 200 px work area).
+    // tile is mathematically impossible at 24 px (for example eleven tiles in a 200 px work area).
     internal const int MinimumComfortableAutoTilePixels = 24;
 
     private const int HoverPollIntervalMs = 120;
@@ -114,6 +114,12 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     protected override bool CanRenderLayeredWindow()
     {
         return !this.displaySuspended && !this.hiddenForFullscreen;
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyMouseClickThroughStyle(this.CurrentSettings.RightTileMouseClickThroughEnabled);
     }
 
     internal int GetTilePixels()
@@ -422,6 +428,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     {
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
+        ApplyMouseClickThroughStyle(this.CurrentSettings.RightTileMouseClickThroughEnabled);
         SetLayerScale(GetTileContentScale());
         Size desired = GetDesiredSize();
         if (this.Size != desired)
@@ -466,6 +473,8 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
 
         if (a.CenterValue != b.CenterValue ||
             a.CenterSuffix != b.CenterSuffix ||
+            a.EasterEggVisual != b.EasterEggVisual ||
+            a.EasterEggSecondLine != b.EasterEggSecondLine ||
             a.AlertIconVisible != b.AlertIconVisible ||
             a.Accent.ToArgb() != b.Accent.ToArgb() ||
             Math.Abs(a.OuterPercent - b.OuterPercent) >= 0.5 ||
@@ -959,6 +968,51 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         {
             DrawAlertDot(g, bounds);
         }
+
+        if (data.EasterEggVisual == QuotaEasterEggVisual.FallenLookElsewhere ||
+            data.EasterEggVisual == QuotaEasterEggVisual.FallenTogether)
+        {
+            DrawQuotaEasterEggOverlay(g, bounds, data);
+        }
+    }
+
+    private void DrawQuotaEasterEggOverlay(Graphics g, RectangleF bounds, MetricTileData data)
+    {
+        Color messageColor = data.EasterEggVisual == QuotaEasterEggVisual.FallenTogether
+            ? DesignTokens.Colors.DangerStrong
+            : DesignTokens.Colors.Warning;
+        messageColor = ResolveBurnInRingColor(messageColor, this.burnInVisualLevel);
+        RectangleF veilBounds = RectangleF.Inflate(bounds, -S(2), -S(2));
+        using (GraphicsPath veil = RoundedRectangle(veilBounds, Math.Max(2.0f, S(TileLogicalRadius - 2))))
+        using (SolidBrush dim = new SolidBrush(Color.FromArgb(190, 5, 7, 10)))
+        {
+            g.FillPath(dim, veil);
+        }
+
+        float titleSize = Math.Max(7.0f, bounds.Height * 0.145f);
+        float detailSize = Math.Max(5.0f, bounds.Height * 0.092f);
+        RectangleF titleRect = new RectangleF(
+            bounds.X + S(2),
+            bounds.Y + bounds.Height * 0.20f,
+            bounds.Width - S(4),
+            bounds.Height * 0.23f);
+        RectangleF detailRect = new RectangleF(
+            bounds.X + S(3),
+            titleRect.Bottom - S(1),
+            bounds.Width - S(6),
+            bounds.Bottom - titleRect.Bottom - S(3));
+        using (Font titleFont = new Font(DesignTokens.UiFontFamily, titleSize, FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font detailFont = new Font(DesignTokens.UiFontFamily, detailSize, FontStyle.Bold, GraphicsUnit.Pixel))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(messageColor, 255)))
+        using (StringFormat titleFormat = CenterFormat())
+        using (StringFormat detailFormat = new StringFormat())
+        {
+            detailFormat.Alignment = StringAlignment.Center;
+            detailFormat.LineAlignment = StringAlignment.Near;
+            detailFormat.Trimming = StringTrimming.None;
+            g.DrawString("传奇程序员", titleFont, brush, titleRect, titleFormat);
+            g.DrawString(data.EasterEggSecondLine ?? string.Empty, detailFont, brush, detailRect, detailFormat);
+        }
     }
 
     private void DrawRing(Graphics g, RectangleF box, float stroke, double percent, Color color, int alpha)
@@ -1207,7 +1261,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         arranged.RightTileButtonOrder = new string[]
         {
             "ClaudeQuota", "Cpu", "CodexQuota", "Memory", "Disk",
-            "Network", "Gpu", "Npu", "Power", "Guard"
+            "Network", "Gpu", "Npu", "Power", "Guard", "DeepSeekQuota"
         };
         Rectangle testWorkArea = new Rectangle(-1920, 40, 1920, 1760);
         int[] arrangedOrder = ResolveEnabledTileOrder(arranged);
@@ -1254,7 +1308,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         extremeGap.MainWidgetTileLargeModeEnabled = true;
         extremeGap.RightTileButtonGapPixels = WidgetSettings.MaxColumnButtonGapPixels;
         extremeGap.RightTileGroupOffsetY = 0;
-        Rectangle gapLimitedWorkArea = new Rectangle(100, 50, 320, 1250);
+        Rectangle gapLimitedWorkArea = new Rectangle(100, 50, 320, 1370);
         Rectangle[] gapLimitedBounds = ResolveAutoTileBounds(extremeGap, gapLimitedWorkArea);
         AssertAutoColumnReachable(extremeGap, gapLimitedWorkArea, "large/extreme-gap auto column");
         if (gapLimitedBounds[0].Width != TileLargePixels ||
@@ -1268,7 +1322,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
 
         // On a genuinely short work area even zero gap cannot fit 120 px. The resolver therefore
         // picks the largest common square (26 px here), which is still a practical pointer target.
-        Rectangle shortWorkArea = new Rectangle(-640, 30, 320, 260);
+        Rectangle shortWorkArea = new Rectangle(-640, 30, 320, 286);
         Rectangle[] shortBounds = ResolveAutoTileBounds(extremeGap, shortWorkArea);
         AssertAutoColumnReachable(extremeGap, shortWorkArea, "short-screen large-mode auto column");
         if (shortBounds[0].Width != 26 ||
@@ -1295,7 +1349,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         // to the envelope once; every child must receive the identical delta and remain disjoint.
         extremeGap.RightTileButtonGapPixels = 0;
         extremeGap.RightTileGroupOffsetY = WidgetSettings.MaxColumnGroupOffsetY;
-        Rectangle burnInWorkArea = new Rectangle(20, 40, 500, 1300);
+        Rectangle burnInWorkArea = new Rectangle(20, 40, 500, 1400);
         Rectangle[] edgeBounds = ResolveAutoTileBounds(extremeGap, burnInWorkArea);
         Rectangle edgeGroup = ResolveAutoTileGroupBounds(extremeGap, burnInWorkArea);
         if (edgeGroup.Bottom != burnInWorkArea.Bottom || edgeGroup.Right != burnInWorkArea.Right)
@@ -1367,18 +1421,18 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         }
 
         // Presentation modes were retired: every metric and Radar tile is now part of the single
-        // canonical ten-tile column.
+        // canonical eleven-tile column.
         WidgetSettings canonical = WidgetSettings.CreateDefaults();
         canonical.Normalize();
         for (int i = 0; i < MetricTileModel.AllTileCount; i++)
         {
             if (!IsTileEnabled(canonical, i))
             {
-                throw new InvalidOperationException("All ten canonical metric tiles must remain enabled.");
+                throw new InvalidOperationException("All eleven canonical metric tiles must remain enabled.");
             }
         }
 
-        Console.WriteLine("Metric tile window: PASS consistent sizing, short-screen fallback, group burn-in, two-level ring/text protection, custom auto column, per-tile placement, hover isolation, fixed ten-tile surface");
+        Console.WriteLine("Metric tile window: PASS consistent sizing, short-screen fallback, group burn-in, two-level ring/text protection, custom auto column, per-tile placement, hover isolation, fixed eleven-tile surface");
     }
 }
 

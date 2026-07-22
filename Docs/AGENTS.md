@@ -2,7 +2,7 @@
 
 本文件是**全项目文档维护的唯一权威规则**，约束所有在本仓库工作的 AI 代理与人。根目录 `AGENTS.md` 管项目与代码；本文件管 `Docs/`、`README.md` 与三套 JSONL 索引。两者冲突时以根目录 `AGENTS.md` 为准。
 
-适用版本：2.0.0.10。本文件本身遵循"活文档"规则（§4）：只描述现行规则，不记录历史；历史入 CHANGELOG。
+适用版本：2.0.0.12。本文件本身遵循"活文档"规则（§4）：只描述现行规则，不记录历史；历史入 CHANGELOG。
 
 ---
 
@@ -31,6 +31,7 @@
 | `Docs/Codex-ClaudeRadar-Architecture.md` | 架构 | 共享 headless owner 内的 Claude 官方额度、缓存、CLD tile 与服务健康边界 |
 | `Docs/NetworkMonitor-Architecture.md` | 架构 | 网络监控窗口 |
 | `Docs/PowerThermal-Architecture.md` | 架构 | 功耗温度窗口 |
+| `Docs/SystemDayBoard-Architecture.md` | 架构 | 系统日记看板、按日历史与峰值/热区关联数据契约 |
 | `Docs/Hardware-Support.md` | 参考 | 目标硬件与设备家族差异 |
 | `Docs/Interface-And-Reuse-Resources.md` | 参考 | 可复用资源/助手清单（人读版；机器版是接口索引） |
 | `Docs/SpecBoard-Architecture.md` | 架构 | 跨项目 spec 账本读取、对账、看板窗口、交互与只读边界 |

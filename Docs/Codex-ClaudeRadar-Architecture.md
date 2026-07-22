@@ -1,6 +1,6 @@
 # Claude CLD 官方额度链架构
 
-适用版本：2.0.0.7
+适用版本：2.0.0.12
 
 本文说明共享 headless owner 内的 Claude 官方额度读取、缓存、调度、服务健康和 CLD tile 投影；Claude 不拥有公共 Radar 模型链或独立窗口。
 
@@ -88,7 +88,7 @@ Claude 软件运行期间，`UpdateQuotaBurnObservationClock()` 推进本 family
 
 ## 7. 服务健康
 
-Claude 服务健康由 `StatuspageMonitor` 和 Claude usage 状态共同形成。DeepSeek 健康由独立的 `DeepSeekServiceMonitor` 提供；它不读取 key、不查询余额，也不记录账户数据。
+Claude 服务健康由 `StatuspageMonitor` 和 Claude usage 状态共同形成。DeepSeek 健康由独立的 `DeepSeekServiceMonitor` 提供；它不读取 key、不查询余额，也不记录账户数据。可选的 DeepSeek 余额由另一个 `DeepSeekBalanceMonitor` 直接服务 `DS` tile，不进入 Claude family。
 
 `BuildServiceHealth()` 把已有服务状态复制给 Codex IQ board。新的稳定错误经过 `ServiceAlertDebouncer` 后发布，恢复立即清除；具体刷新规则见 `Docs/Component-Refresh-Rules.md`。
 
@@ -104,7 +104,7 @@ Claude 服务健康由 `StatuspageMonitor` 和 Claude usage 状态共同形成�
 
 ## 9. 设置与安全边界
 
-设置页只保留 Claude setup-token、请求保护和必要的 provider/family 控制。Claude 没有公共 JSON、homepage fallback、社区评分、本地公共额度 fallback 或模型 key 设置；DeepSeek 没有 API key、余额和余额提醒设置。
+设置页为 Claude 只保留 setup-token、请求保护和必要的 provider/family 控制。Claude 没有公共 JSON、homepage fallback、社区评分、本地公共额度 fallback 或模型 key 设置；全局 DeepSeek API Key 入口属于独立余额 monitor，不改变 Claude 的数据边界。
 
 setup-token 只从环境变量或 `dpapi-v1:` CurrentUser envelope 读取，不写入 `settings.ini`、日志或 snapshot。旧明文/无版本密文只有在严格 validator 通过后才原子迁移；DPAPI 损坏或未知 Base64 必须 fail-closed 并保留原字节。OAuth token、Authorization header、完整响应正文和 statusline 原始输入不得记录；HTTP 正文统一经过有界读取器。
 
@@ -121,4 +121,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-tilecolumn --out .\_build\tilecolumn
 ```
 
-验收重点是：共享 owner 从未可见、官方 usage/statusline 是唯一 Claude 额度来源、`claude-quota.ini` 原子且有新鲜度保护、CLD tile 显示 5 小时/周额度、两个 reset 与双窗口趋势判断、Claude IQ/评分/效率恒 unknown，以及 DeepSeek 仅保留服务健康。
+验收重点是：共享 owner 从未可见、官方 usage/statusline 是唯一 Claude 额度来源、`claude-quota.ini` 原子且有新鲜度保护、CLD tile 显示 5 小时/周额度、两个 reset 与双窗口趋势判断、Claude IQ/评分/效率恒 unknown，以及 DeepSeek 余额不会进入 Claude family。

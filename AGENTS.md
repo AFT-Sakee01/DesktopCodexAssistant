@@ -2,7 +2,7 @@
 
 The global `C:\Users\GengH\.codex\AGENTS.md` rules apply. This file only records project-specific constraints and overrides; do not duplicate global rules or maintenance history here.
 
-Current version: `2.0.0.10`
+Current version: `2.0.0.12`
 
 ## Project AI
 
@@ -25,8 +25,8 @@ Current version: `2.0.0.10`
 - Do not compile, publish, or validate x64 unless the user explicitly requests x64.
 - Keep the product identity `Desktop Codex Assistant UX3407N/UX3607O`, executable name `DesktopCodexAssistant.exe`, and storage root `%LOCALAPPDATA%\DesktopCodexAssistant`.
 - Dock, Launchpad, top bar, and the Direct2D project are intentionally disabled. Do not restore or depend on them.
-- The canonical visible topology is ten independent right-edge `MetricTileForm` tiles; six left-edge dock tabs/boards (Network, Spec Board, Codex Task, GUARD, Codex IQ, Reset / Speed); `OperationForm`; and the on-demand settings window.
-- Global layout editing exposes exactly 17 structural items: the ten tiles, the six dock tabs, and Operation. Boards, the settings window, hidden owners, and the hidden host are not editable layout items.
+- The canonical visible topology is eleven independent right-edge `MetricTileForm` tiles; seven left-edge dock tabs/boards (Network, Spec Board, Codex Task, GUARD, Codex IQ, Reset / Speed, System Day); `OperationForm`; and the on-demand settings window.
+- Global layout editing exposes exactly 19 structural items: the eleven tiles, the seven dock tabs, and Operation. Boards, the settings window, hidden owners, and the hidden host are not editable layout items.
 - `WidgetForm` is a hidden coordination host. `CodexRadarForm` and `PowerThermalForm` are permanent headless data owners started and stopped explicitly; the runtime must not call `Show()` for them.
 - `NetworkMonitorForm` is Dock-only. Runtime Radar and Power/Thermal presentation belongs to the right tiles, and Clean IP presentation belongs to the Network board; do not create additional surfaces for those owners/readers.
 - `ClaudeRadarForm` and `ConnectionCheckForm` are removed; retain only the official `ClaudeCodeUsageReader`/`ClaudeCodeUsageScheduler` quota chain and the Clean IP reader through their current owners.
@@ -37,7 +37,7 @@ Current version: `2.0.0.10`
 
 - `WidgetForm` owns coordination for settings, refresh, fullscreen visibility, suspend/resume, display recovery, and visible-surface/headless-owner lifetime while remaining hidden itself.
 - Visible layered surfaces must reuse `NativeMethods.LayeredBitmapSurface`, `UiFontCache`, `DesignTokens`, and `BurnInProtection`; release and recreate rendering resources across display suspend/resume. Headless owners do not allocate presentation buffers or participate in hover, positioning, burn-in, or Z-order work.
-- `CodexRadarForm` keeps Codex public Radar state isolated from the Claude family, which owns only official Claude quota and service-health state; both publish cache-only snapshots. `PowerThermalForm.BuildStripSnapshot()` is also cache-only. Snapshot construction must not start I/O or sampling.
+- `CodexRadarForm` keeps Codex public Radar state isolated from the Claude family, which owns only official Claude quota and service-health state; both publish cache-only snapshots. `PowerThermalForm.BuildStripSnapshot()` is also cache-only. System Day may persist cloned performance and Power/Thermal snapshots, but snapshot construction and board drawing must not start I/O or sampling.
 - `PowerThermalIntegratedEnabled` is compatibility-only and hidden from the settings UI; it must not control visibility, lifetime, or sampling. Main display/work-area settings remain active as the right-tile layout baseline.
 - Background readers publish cloned snapshots. UI code must not mutate reader-owned state or synchronously block on network work.
 - GFW probing and cloud endpoint probing remain independently scheduled; a GFW result must not suppress or recolor cloud probe results.

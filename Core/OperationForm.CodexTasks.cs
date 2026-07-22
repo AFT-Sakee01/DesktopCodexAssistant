@@ -275,7 +275,7 @@ internal sealed partial class OperationForm
         }
     }
 
-    // All six dock tabs at 8x zoom so the 5x30 trapezoid and centre arrow are reviewable. Each
+    // All seven dock tabs at 8x zoom so the 5x30 trapezoid and centre arrow are reviewable. Each
     // strip is normal idle/hover, hidden idle, protected collapsed, expanded and expanded-hover.
     private static void RenderEdgeDockTabSample(string outputDir)
     {
@@ -288,7 +288,8 @@ internal sealed partial class OperationForm
             EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexTask),
             EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Guard),
             EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexIq),
-            EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.ResetSpeed)
+            EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.ResetSpeed),
+            EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SystemDay)
         };
         int[] salts =
         {
@@ -297,9 +298,10 @@ internal sealed partial class OperationForm
             BurnInProtection.CodexTaskBoardDockTabSalt,
             BurnInProtection.GuardBoardDockTabSalt,
             BurnInProtection.CodexIqBoardDockTabSalt,
-            BurnInProtection.ResetSpeedBoardDockTabSalt
+            BurnInProtection.ResetSpeedBoardDockTabSalt,
+            BurnInProtection.SystemDayBoardDockTabSalt
         };
-        string[] names = { "network", "spec", "codex", "guard", "codex-iq", "reset-speed" };
+        string[] names = { "network", "spec", "codex", "guard", "codex-iq", "reset-speed", "system-day" };
         EdgeDockTabRole[] roles =
         {
             EdgeDockTabRole.Network,
@@ -307,7 +309,8 @@ internal sealed partial class OperationForm
             EdgeDockTabRole.CodexTask,
             EdgeDockTabRole.Guard,
             EdgeDockTabRole.CodexIq,
-            EdgeDockTabRole.ResetSpeed
+            EdgeDockTabRole.ResetSpeed,
+            EdgeDockTabRole.SystemDay
         };
         for (int i = 0; i < accents.Length; i++)
         {

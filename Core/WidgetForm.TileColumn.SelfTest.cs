@@ -39,7 +39,7 @@ internal sealed partial class WidgetForm
                 form.metricTileExpandForm.IsDisposed)
             {
                 throw new InvalidOperationException(
-                    "WidgetForm cold start must create exactly ten metric tiles and one expand panel.");
+                    "WidgetForm cold start must create exactly eleven metric tiles and one expand panel.");
             }
 
             MetricTileForm[] originalTiles = form.metricTileForms.ToArray();

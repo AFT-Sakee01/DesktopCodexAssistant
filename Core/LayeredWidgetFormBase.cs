@@ -224,6 +224,41 @@ internal abstract class LayeredWidgetFormBase : Form
             GetLayeredWidgetTopMostInsertAfter(keepBelowCodexPet);
     }
 
+    // Right-edge tiles still discover hover by polling Cursor.Position, so making their HWNDs
+    // transparent to hit-testing does not disable expansion. Keep the style mutation here so every
+    // layered right-side surface preserves WS_EX_LAYERED and refreshes the non-client cache in the
+    // same way when the setting changes at runtime.
+    protected void ApplyMouseClickThroughStyle(bool enabled)
+    {
+        if (!this.IsHandleCreated)
+        {
+            return;
+        }
+
+        int exStyle = NativeMethods.GetWindowLong(this.Handle, NativeMethods.GWL_EXSTYLE);
+        int desired = enabled
+            ? (exStyle | NativeMethods.WS_EX_TRANSPARENT | NativeMethods.WS_EX_LAYERED)
+            : ((exStyle & ~NativeMethods.WS_EX_TRANSPARENT) | NativeMethods.WS_EX_LAYERED);
+        if (desired == exStyle)
+        {
+            return;
+        }
+
+        NativeMethods.SetWindowLong(this.Handle, NativeMethods.GWL_EXSTYLE, desired);
+        NativeMethods.SetWindowPos(
+            this.Handle,
+            IntPtr.Zero,
+            0,
+            0,
+            0,
+            0,
+            NativeMethods.SWP_NOACTIVATE |
+            NativeMethods.SWP_NOMOVE |
+            NativeMethods.SWP_NOSIZE |
+            NativeMethods.SWP_NOZORDER |
+            NativeMethods.SWP_FRAMECHANGED);
+    }
+
     private static IntPtr GetLayeredWidgetTopMostInsertAfter(bool keepBelowCodexPet)
     {
         // Normalize the protected stack before choosing its lowest HWND. Otherwise an unrelated

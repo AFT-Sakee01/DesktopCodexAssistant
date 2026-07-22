@@ -9,7 +9,7 @@ using System.Windows.Forms;
 // settings are migrated from the retired Codex Radar geometry and it pops out to the LEFT of
 // the column so it never covers the tiles the cursor is tracking.
 //
-// One window is reused for all ten tiles: the metric only changes which content renderer runs, so
+// One window is reused for all eleven tiles: the metric only changes which content renderer runs, so
 // there is a single layered surface, a single burn-in slot and no per-tile window lifecycle. It
 // samples nothing — WidgetForm pushes the same MetricTileFeed the column renders from.
 internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
@@ -30,6 +30,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     private bool displaySuspended;
     private BurnInVisualLevel burnInVisualLevel;
     private bool burnInBrightnessRestored;
+    private bool quotaRevivalVisible;
 
     public MetricTileExpandForm(WidgetSettings settings)
     {
@@ -69,6 +70,12 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     protected override bool CanRenderLayeredWindow()
     {
         return !this.displaySuspended;
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyMouseClickThroughStyle(this.CurrentSettings.RightTileMouseClickThroughEnabled);
     }
 
     protected override int ApplyHoverAlpha(int alpha)
@@ -145,6 +152,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     {
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
+        ApplyMouseClickThroughStyle(this.CurrentSettings.RightTileMouseClickThroughEnabled);
         ApplyPanelSizeAndScale();
         InvalidateLayeredRenderBuffer();
         if (this.Visible && CanRenderLayeredWindow())
@@ -168,8 +176,15 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     // tile near the taskbar still opens a fully visible panel.
     public void ShowForTile(MetricTileId id, Rectangle anchorTile, MetricTileFeed next)
     {
+        ShowForTile(id, anchorTile, next, false);
+    }
+
+    public void ShowForTile(MetricTileId id, Rectangle anchorTile, MetricTileFeed next, bool showRevival)
+    {
         this.metricId = id;
         this.feed = next ?? this.feed ?? new MetricTileFeed();
+        this.quotaRevivalVisible = showRevival &&
+            (id == MetricTileId.CodexQuota || id == MetricTileId.ClaudeQuota);
         ApplyPanelSizeAndScale();
 
         Rectangle workArea = this.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleMain);
@@ -207,6 +222,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
 
     public void HidePanel()
     {
+        this.quotaRevivalVisible = false;
         if (this.Visible)
         {
             Hide();
@@ -270,7 +286,71 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             case MetricTileId.Power: DrawPower(g, content, accent); break;
             case MetricTileId.CodexQuota: DrawRadarQuota(g, content, accent, false); break;
             case MetricTileId.ClaudeQuota: DrawRadarQuota(g, content, accent, true); break;
+            case MetricTileId.DeepSeekQuota: DrawDeepSeekBalance(g, content, accent); break;
             default: DrawGuard(g, content, accent); break;
+        }
+
+        if (this.metricId == MetricTileId.CodexQuota || this.metricId == MetricTileId.ClaudeQuota)
+        {
+            string secondLine = string.Empty;
+            QuotaEasterEggVisual visual = this.quotaRevivalVisible
+                ? QuotaEasterEggVisual.Revived
+                : MetricTileModel.ResolveQuotaEasterEggVisual(
+                    this.metricId,
+                    this.feed.QuotaEasterEgg,
+                    out secondLine);
+            if (this.quotaRevivalVisible)
+            {
+                secondLine = "成功复活！！！";
+            }
+
+            if (visual != QuotaEasterEggVisual.None)
+            {
+                DrawQuotaEasterEggOverlay(g, bounds, visual, secondLine);
+            }
+        }
+    }
+
+    private void DrawQuotaEasterEggOverlay(
+        Graphics g,
+        RectangleF bounds,
+        QuotaEasterEggVisual visual,
+        string secondLine)
+    {
+        Color color = visual == QuotaEasterEggVisual.FallenTogether
+            ? DesignTokens.Colors.DangerStrong
+            : (visual == QuotaEasterEggVisual.Revived
+                ? DesignTokens.Colors.Accent
+                : DesignTokens.Colors.Warning);
+        color = MetricTileForm.ResolveBurnInRingColor(color, this.burnInVisualLevel);
+        RectangleF veilBounds = RectangleF.Inflate(bounds, -S(2), -S(2));
+        using (GraphicsPath veil = RoundedRectangle(veilBounds, Math.Max(2.0f, S(DesignTokens.Radius.Panel - 1))))
+        using (SolidBrush dim = new SolidBrush(Color.FromArgb(205, 4, 6, 9)))
+        {
+            g.FillPath(dim, veil);
+        }
+
+        FontStyle titleStyle = visual == QuotaEasterEggVisual.Revived
+            ? FontStyle.Bold | FontStyle.Italic
+            : FontStyle.Bold;
+        FontStyle detailStyle = visual == QuotaEasterEggVisual.Revived
+            ? FontStyle.Italic
+            : FontStyle.Bold;
+        float titleSize = S(23);
+        float detailSize = S(17);
+        float blockHeight = titleSize + detailSize + S(8);
+        float top = bounds.Y + (bounds.Height - blockHeight) / 2.0f;
+        RectangleF titleRect = new RectangleF(bounds.X + S(12), top, bounds.Width - S(24), titleSize + S(6));
+        RectangleF detailRect = new RectangleF(bounds.X + S(12), titleRect.Bottom, bounds.Width - S(24), detailSize + S(7));
+        using (Font titleFont = new Font(DesignTokens.UiFontFamily, titleSize, titleStyle, GraphicsUnit.Pixel))
+        using (Font detailFont = new Font(DesignTokens.UiFontFamily, detailSize, detailStyle, GraphicsUnit.Pixel))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 255)))
+        using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
+        {
+            format.Alignment = StringAlignment.Center;
+            format.LineAlignment = StringAlignment.Center;
+            g.DrawString("传奇程序员", titleFont, brush, titleRect, format);
+            g.DrawString(secondLine ?? string.Empty, detailFont, brush, detailRect, format);
         }
     }
 
@@ -1041,6 +1121,108 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     // The full-bleed chart is the instrument: accepted weekly readings occupy its first 68%, leaving
     // a real future lane between "now" and the reset marker. The forecast headline translates that
     // geometry into the answer people need: when it runs out, or whether it survives the reset.
+    private void DrawDeepSeekBalance(Graphics g, RectangleF content, Color accent)
+    {
+        DeepSeekBalanceSnapshot d = this.feed.GetDeepSeekBalance();
+        DeepSeekServiceSnapshot service = this.feed.GetDeepSeekService();
+        Color chartColor = MetricTileForm.ResolveBurnInRingColor(accent, this.burnInVisualLevel);
+        Color usageColor = MetricTileForm.ResolveBurnInRingColor(DesignTokens.Colors.Warning, this.burnInVisualLevel);
+        List<double> balances = new List<double>();
+        if (d.History != null)
+        {
+            for (int i = 0; i < d.History.Count; i++)
+            {
+                DeepSeekBalancePoint point = d.History[i];
+                if (point != null && string.Equals(point.Currency, d.Currency, StringComparison.OrdinalIgnoreCase))
+                {
+                    balances.Add(Math.Max(0.0, point.Balance));
+                }
+            }
+        }
+
+        RectangleF ground = GroundRect(content, true);
+        double max = Math.Max(d.ReferenceBalance, d.Balance);
+        DrawSpark(g, ground, balances, chartColor, max <= 0.0 ? 1.0 : max, true, false);
+        DrawCaption(g, content, "DEEPSEEK · 48h 余额");
+
+        string balance = d.Known ? d.Balance.ToString("0.##", CultureInfo.InvariantCulture) : "--";
+        string currency = string.IsNullOrWhiteSpace(d.Currency) ? "CNY" : d.Currency;
+        using (Font labelFont = new Font(DesignTokens.UiFontFamily, S(LabelSize), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font valueFont = new Font(DesignTokens.UiFontFamily, S(ValueSize), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font suffixFont = new Font(DesignTokens.UiFontFamily, S(SuffixSize), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.WithAlpha(chartColor, 230)))
+        using (SolidBrush valueBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextStrong, 225)))
+        using (SolidBrush suffixBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 200)))
+        {
+            g.DrawString("DS", labelFont, labelBrush, content.X, content.Y + S(9));
+            float labelWidth = g.MeasureString("DS", labelFont).Width;
+            if (ShouldDrawNeutralText(this.burnInVisualLevel))
+            {
+                float valueX = content.X + labelWidth + S(8);
+                g.DrawString(balance, valueFont, valueBrush, valueX, content.Y);
+                float valueWidth = g.MeasureString(balance, valueFont).Width;
+                g.DrawString(currency, suffixFont, suffixBrush, valueX + valueWidth + S(2), content.Y + S(14));
+            }
+        }
+
+        string usage = d.Last24HourUsageKnown
+            ? "24h 消耗 " + d.Last24HourUsage.ToString("0.##", CultureInfo.InvariantCulture) + " " + currency
+            : "24h 消耗采样中";
+        using (Font usageFont = new Font(DesignTokens.UiFontFamily, S(14), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (SolidBrush usageBrush = new SolidBrush(DesignTokens.WithAlpha(usageColor, 245)))
+        {
+            g.DrawString(usage, usageFont, usageBrush, content.X, content.Y + S(45));
+        }
+
+        if (ShouldDrawNeutralText(this.burnInVisualLevel))
+        {
+            string runway = d.RunwayKnown
+                ? "按近 24h 趋势约 " + FormatForecastHours(d.RunwayHours) + " 可用"
+                : (d.ApiKeyConfigured ? "等待余额下降后估算可用时长" : "未配置 DeepSeek API Key");
+            string status = d.RequestRunning
+                ? "正在刷新"
+                : (!string.IsNullOrEmpty(d.ErrorCode)
+                    ? (d.ErrorMessage ?? "刷新失败，保留上次余额")
+                    : (d.Known ? (d.IsAvailable ? "账户可用" : "账户暂不可用") : "等待数据"));
+            if (service.Known)
+            {
+                status += service.IsAvailable ? " · API 正常" : " · API 服务异常";
+            }
+            DrawRightAlignedText(g, runway, content, content.Y + S(26), S(13),
+                DesignTokens.WithAlpha(DesignTokens.Colors.TextStrong, 225), FontStyle.Bold);
+            DrawRightAlignedText(g, status, content, content.Y + S(48), S(11),
+                DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 215), FontStyle.Regular);
+            if (d.CheckedAtLocal != DateTime.MinValue)
+            {
+                DrawRightAlignedText(g, "更新 " + d.CheckedAtLocal.ToString("HH:mm", CultureInfo.CurrentCulture),
+                    content, content.Y + S(65), S(10),
+                    DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 205), FontStyle.Regular);
+            }
+        }
+
+        RectangleF strip = StripRect(content);
+        using (GraphicsPath track = RoundedRectangle(strip, Math.Max(1.0f, strip.Height / 2.0f)))
+        using (SolidBrush trackBrush = new SolidBrush(DesignTokens.White(28)))
+        {
+            g.FillPath(trackBrush, track);
+            double denominator = d.Balance + d.Last24HourUsage;
+            float width = d.Last24HourUsageKnown && denominator > 0.0001
+                ? (float)(strip.Width * MetricTileModel.Clamp(d.Last24HourUsage / denominator, 0.0, 1.0))
+                : 0.0f;
+            if (width > 0.0f)
+            {
+                Region previous = g.Clip;
+                g.SetClip(track, CombineMode.Intersect);
+                using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(usageColor, 225)))
+                {
+                    g.FillRectangle(fill, strip.X, strip.Y, width, strip.Height);
+                }
+
+                g.Clip = previous;
+            }
+        }
+    }
+
     private void DrawRadarQuota(Graphics g, RectangleF content, Color accent, bool claude)
     {
         RadarTileSnapshot r = this.feed.GetRadar(claude);
@@ -1556,10 +1738,11 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         return NetworkRateFormatter.Format(bytesPerSecond);
     }
 
-    internal void PrepareForRenderSample(MetricTileId id, MetricTileFeed sampleFeed)
+    internal void PrepareForRenderSample(MetricTileId id, MetricTileFeed sampleFeed, bool showRevival = false)
     {
         this.metricId = id;
         this.feed = sampleFeed ?? new MetricTileFeed();
+        this.quotaRevivalVisible = showRevival;
     }
 
     internal static void RunSelfTest()

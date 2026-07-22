@@ -30,6 +30,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private const int NavItemHeight = 60;
     private const string GlobalLayoutEditCommandName = "GlobalLayoutEditCommand";
     private const string ClaudeSetupTokenCommandName = "ClaudeSetupTokenCommand";
+    private const string DeepSeekApiKeyCommandName = "DeepSeekApiKeyCommand";
 
     private static readonly Color MicaBase = DesignTokens.SettingsWarmTheme.WindowBase;
     private static readonly Color MicaLayer = DesignTokens.SettingsWarmTheme.InputBackground;
@@ -491,6 +492,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddPageGrouped("\uE737", "右侧磁贴", "性能与 Radar 磁贴列的尺寸和透明度。", new string[][]
         {
             new string[] { "磁贴与展开面板", "MainWidgetTileLargeModeEnabled", "MetricTileExpandWidth", "MetricTileExpandHeight" },
+            new string[] { "交互与彩蛋", "RightTileMouseClickThroughEnabled", "GeniusProgrammerEasterEggEnabled" },
             new string[] { "透明度", "ApplicationTransparencyPercent", "MainWidgetTransparencyOverridePercent" }
         });
 
@@ -508,6 +510,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddPageGrouped("\uE8D4", "Claude 用量", "Claude 官方额度凭据与右侧 CLD 磁贴数据。", new string[][]
         {
             new string[] { "Claude Code 用量令牌", ClaudeSetupTokenCommandName }
+        });
+
+        AddPageGrouped("\uE950", "DeepSeek 用量", "DeepSeek 官方余额与本地消费趋势。", new string[][]
+        {
+            new string[] { "DeepSeek API Key", DeepSeekApiKeyCommandName }
         });
 
         AddPageGrouped("\uEBB0", "功耗与温度", "UX3407N / UX3607O 专用功耗温度数据。", new string[][]
@@ -536,6 +543,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "GUARD 看板", "GuardBoardTransparencyOverridePercent", "GuardBoardScaleOverridePercent", "GuardBoardLeftDockTabCenterY", "GuardBoardAutoHideSeconds" },
             new string[] { "Codex IQ 看板", "CodexIqBoardTransparencyOverridePercent", "CodexIqBoardScaleOverridePercent", "CodexIqBoardLeftDockTabCenterY", "CodexIqBoardAutoHideSeconds" },
             new string[] { "重置与速蹬看板", "ResetSpeedBoardTransparencyOverridePercent", "ResetSpeedBoardScaleOverridePercent", "ResetSpeedBoardLeftDockTabCenterY", "ResetSpeedBoardAutoHideSeconds" },
+            new string[] { "系统日记看板", "SystemDayBoardTransparencyOverridePercent", "SystemDayBoardScaleOverridePercent", "SystemDayBoardLeftDockTabCenterY", "SystemDayBoardAutoHideSeconds" },
             new string[] { "!测试", "AlertTestEnabled" }
         });
     }
@@ -765,6 +773,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             return BuildClaudeSetupTokenEditor();
         }
 
+        if (string.Equals(propertyName, DeepSeekApiKeyCommandName, StringComparison.Ordinal))
+        {
+            return BuildDeepSeekApiKeyEditor();
+        }
+
         PropertyInfo property = typeof(WidgetSettings).GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
         if (property == null || !property.CanRead || !property.CanWrite ||
             (property.PropertyType == typeof(string[]) &&
@@ -820,6 +833,237 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         card.HintLabel.Text = GetSettingHint(ClaudeSetupTokenCommandName);
         card.BackColor = Color.Transparent;
         return new SettingEditor(ClaudeSetupTokenCommandName, card, button);
+    }
+
+    private SettingEditor BuildDeepSeekApiKeyEditor()
+    {
+        Button button = BuildCommandButton(GetDeepSeekApiKeyButtonText(), false, GetDeepSeekApiKeyAccentColor());
+        button.Width = 227;
+        button.Height = 54;
+        button.Click += delegate { OpenDeepSeekApiKeyDialog(button); };
+
+        SettingRow card = new SettingRow(button, GetUiFont(10.0f), GetUiFont(8.5f));
+        card.Width = 1152;
+        card.Margin = new Padding(0);
+        card.TitleLabel.Text = GetSettingTitle(DeepSeekApiKeyCommandName);
+        card.HintLabel.Text = GetSettingHint(DeepSeekApiKeyCommandName);
+        card.BackColor = Color.Transparent;
+        return new SettingEditor(DeepSeekApiKeyCommandName, card, button);
+    }
+
+    private void OpenDeepSeekApiKeyDialog(Button sourceButton)
+    {
+        Form dialog = new Form();
+        try
+        {
+            dialog.Text = "DeepSeek API Key";
+            dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+            dialog.StartPosition = FormStartPosition.CenterParent;
+            dialog.ShowInTaskbar = false;
+            dialog.MaximizeBox = false;
+            dialog.MinimizeBox = false;
+            dialog.AutoScaleMode = AutoScaleMode.None;
+            dialog.BackColor = MicaBase;
+            dialog.ForeColor = TextSecondary;
+            dialog.Font = GetUiFont(9.5f);
+
+            const int marginLeft = 24;
+            const int contentWidth = 572;
+            int y = 20;
+
+            Font titleFont = GetUiFont(12.0f, FontStyle.Bold);
+            Label title = new Label();
+            title.Text = "连接 DeepSeek 官方余额 API";
+            title.Font = titleFont;
+            title.ForeColor = TextPrimary;
+            title.BackColor = MicaBase;
+            title.Location = new Point(marginLeft, y);
+            title.Size = new Size(contentWidth, GetSingleLineHeight(titleFont, 8));
+            title.TextAlign = ContentAlignment.MiddleLeft;
+            y += title.Height + 8;
+
+            Font hintFont = GetUiFont(8.8f);
+            string hintText = "Key 仅以当前 Windows 用户的 DPAPI 加密保存在本机，用于读取 /user/balance；" +
+                "消费量由本地 48 小时余额变化估算，不会上传历史。环境变量 DEEPSEEK_API_KEY 的优先级更高。";
+            Label hint = new Label();
+            hint.Text = hintText;
+            hint.Font = hintFont;
+            hint.ForeColor = TextTertiary;
+            hint.BackColor = MicaBase;
+            hint.Location = new Point(marginLeft, y);
+            hint.Size = new Size(contentWidth, GetWrappedTextHeight(hintText, hintFont, contentWidth, 8));
+            hint.TextAlign = ContentAlignment.TopLeft;
+            y += hint.Height + 16;
+
+            Font sectionFont = GetUiFont(9.0f, FontStyle.Bold);
+            Label keyLabel = new Label();
+            keyLabel.Text = "API Key";
+            keyLabel.Font = sectionFont;
+            keyLabel.ForeColor = TextPrimary;
+            keyLabel.BackColor = MicaBase;
+            keyLabel.Location = new Point(marginLeft, y);
+            keyLabel.Size = new Size(contentWidth, GetSingleLineHeight(sectionFont, 6));
+            keyLabel.TextAlign = ContentAlignment.MiddleLeft;
+            y += keyLabel.Height + 6;
+
+            TextBox keyBox = new TextBox();
+            keyBox.Location = new Point(marginLeft, y);
+            keyBox.Size = new Size(contentWidth, 34);
+            keyBox.BackColor = ControlBg;
+            keyBox.ForeColor = TextSecondary;
+            keyBox.BorderStyle = BorderStyle.FixedSingle;
+            keyBox.Font = GetUiFont(9.2f);
+            keyBox.UseSystemPasswordChar = true;
+            SendMessage(keyBox.Handle, EmSetCueBanner, IntPtr.Zero, "sk-...（留空不会覆盖现有 Key）");
+            y += keyBox.Height + 10;
+
+            Font statusFont = GetUiFont(8.5f);
+            Label status = new Label();
+            status.Text = IsDeepSeekApiKeyConfiguredForUi() ? "当前状态：已配置" : "当前状态：未配置";
+            status.Font = statusFont;
+            status.ForeColor = IsDeepSeekApiKeyConfiguredForUi() ? AccentClr : TextTertiary;
+            status.BackColor = MicaBase;
+            status.Location = new Point(marginLeft, y);
+            status.Size = new Size(contentWidth, GetSingleLineHeight(statusFont, 6));
+            status.TextAlign = ContentAlignment.MiddleLeft;
+            y += status.Height + 18;
+
+            Button clearButton = BuildCommandButton("清除", false, ErrorClr);
+            clearButton.Location = new Point(marginLeft, y);
+            clearButton.Width = 112;
+            clearButton.Height = 38;
+            Button cancelButton = BuildCommandButton("取消", false);
+            cancelButton.Location = new Point(marginLeft + contentWidth - 238, y);
+            cancelButton.Width = 112;
+            cancelButton.Height = 38;
+            cancelButton.DialogResult = DialogResult.Cancel;
+            Button saveButton = BuildCommandButton("保存并刷新", true);
+            saveButton.Location = new Point(marginLeft + contentWidth - 118, y);
+            saveButton.Width = 118;
+            saveButton.Height = 38;
+
+            clearButton.Click += delegate
+            {
+                string errorCode;
+                if (TrySaveDeepSeekApiKeyFile(string.Empty, out errorCode))
+                {
+                    DeepSeekBalanceMonitor.RequestRefresh("设置清除");
+                    RefreshDeepSeekApiKeyButton(sourceButton);
+                    dialog.DialogResult = DialogResult.OK;
+                    dialog.Close();
+                    ShowStatus("DeepSeek API Key 已清除", SettingsStatusSeverity.Warning);
+                    return;
+                }
+
+                ShowStatus("DeepSeek API Key 清除失败 " + errorCode, SettingsStatusSeverity.Error);
+            };
+            saveButton.Click += delegate
+            {
+                if (string.IsNullOrWhiteSpace(keyBox.Text))
+                {
+                    dialog.DialogResult = DialogResult.Cancel;
+                    dialog.Close();
+                    return;
+                }
+
+                string errorCode;
+                if (TrySaveDeepSeekApiKeyFile(keyBox.Text, out errorCode))
+                {
+                    DeepSeekBalanceMonitor.RequestRefresh("设置更新");
+                    RefreshDeepSeekApiKeyButton(sourceButton);
+                    dialog.DialogResult = DialogResult.OK;
+                    dialog.Close();
+                    ShowStatus("DeepSeek API Key 已保存", SettingsStatusSeverity.Success);
+                    return;
+                }
+
+                ShowStatus("DeepSeek API Key 保存失败 " + errorCode, SettingsStatusSeverity.Error);
+            };
+
+            dialog.Controls.Add(title);
+            dialog.Controls.Add(hint);
+            dialog.Controls.Add(keyLabel);
+            dialog.Controls.Add(keyBox);
+            dialog.Controls.Add(status);
+            dialog.Controls.Add(clearButton);
+            dialog.Controls.Add(cancelButton);
+            dialog.Controls.Add(saveButton);
+            dialog.AcceptButton = saveButton;
+            dialog.CancelButton = cancelButton;
+            dialog.ClientSize = new Size(contentWidth + marginLeft * 2, y + saveButton.Height + 22);
+            dialog.ShowDialog(this);
+        }
+        finally
+        {
+            dialog.Dispose();
+        }
+    }
+
+    private static bool IsDeepSeekApiKeyConfiguredForUi()
+    {
+        try
+        {
+            return DeepSeekBalanceMonitor.ReadConfiguredApiKey().Length > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string GetDeepSeekApiKeyButtonText()
+    {
+        return IsDeepSeekApiKeyConfiguredForUi() ? "已配置 · 修改" : "未配置 · 立即设置";
+    }
+
+    private static Color GetDeepSeekApiKeyAccentColor()
+    {
+        return IsDeepSeekApiKeyConfiguredForUi() ? AccentClr : ErrorClr;
+    }
+
+    private static void RefreshDeepSeekApiKeyButton(Button sourceButton)
+    {
+        if (sourceButton != null && !sourceButton.IsDisposed)
+        {
+            sourceButton.Text = GetDeepSeekApiKeyButtonText();
+        }
+    }
+
+    private static bool TrySaveDeepSeekApiKeyFile(string apiKey, out string errorCode)
+    {
+        return TrySaveDeepSeekApiKeyFile(
+            apiKey,
+            DeepSeekBalanceMonitor.ApiKeyPath,
+            DeepSeekBalanceMonitor.LegacyApiKeyPath,
+            out errorCode);
+    }
+
+    private static bool TrySaveDeepSeekApiKeyFile(
+        string apiKey,
+        string encryptedPath,
+        string legacyTextPath,
+        out string errorCode)
+    {
+        errorCode = string.Empty;
+        try
+        {
+            string trimmed = SecretStore.TrimSecret(apiKey);
+            if (trimmed.Length == 0)
+            {
+                SecretStore.DeleteSecretFiles(encryptedPath, legacyTextPath);
+                return true;
+            }
+
+            SecretStore.WriteSecret(encryptedPath, trimmed);
+            SecretStore.DeleteLegacySecretFiles(legacyTextPath);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            errorCode = "0x" + ex.HResult.ToString("X8", CultureInfo.InvariantCulture);
+            return false;
+        }
     }
 
     private void OpenClaudeSetupTokenDialog(Button sourceButton)
@@ -1376,7 +1620,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             string.Equals(propertyName, "NetworkMonitorLeftDockTabCenterY", StringComparison.Ordinal) ||
             string.Equals(propertyName, "GuardBoardLeftDockTabCenterY", StringComparison.Ordinal) ||
             string.Equals(propertyName, "CodexIqBoardLeftDockTabCenterY", StringComparison.Ordinal) ||
-            string.Equals(propertyName, "ResetSpeedBoardLeftDockTabCenterY", StringComparison.Ordinal);
+            string.Equals(propertyName, "ResetSpeedBoardLeftDockTabCenterY", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "SystemDayBoardLeftDockTabCenterY", StringComparison.Ordinal);
     }
 
     private Control BuildLeftDockTabCenterEditor()
@@ -2748,6 +2993,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         VerifySettingsWindowActivationPolicy();
         VerifyUnsavedPreviewConsumePolicy();
         VerifyClaudeSetupTokenStoragePolicy();
+        VerifyDeepSeekApiKeyStoragePolicy();
         VerifyGuardRuntimePersistencePolicy();
         WidgetSettings baseline = WidgetSettings.CreateDefaults();
         using (Win11SettingsForm form = new Win11SettingsForm(null, baseline))
@@ -2906,10 +3152,16 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "ResetSpeedBoardAutoHideSeconds",
             "ResetSpeedBoardTransparencyOverridePercent",
             "ResetSpeedBoardScaleOverridePercent",
+            "SystemDayBoardLeftDockTabCenterY",
+            "SystemDayBoardAutoHideSeconds",
+            "SystemDayBoardTransparencyOverridePercent",
+            "SystemDayBoardScaleOverridePercent",
             "RightTileAutoArrangeEnabled",
             "RightTileButtonOrder",
             "RightTileButtonGapPixels",
             "RightTileGroupOffsetY",
+            "RightTileMouseClickThroughEnabled",
+            "GeniusProgrammerEasterEggEnabled",
             "FallbackDisconnectedDisplaysEnabled",
             "ResolutionCompatibilityModeEnabled",
             "ResolutionCompatibilityScalePercent",
@@ -2934,6 +3186,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexQuotaStrictFiveHourResetBoundaryEnabled",
             "CodexQuotaWeeklyBaselineAutoRepairEnabled",
             ClaudeSetupTokenCommandName,
+            DeepSeekApiKeyCommandName,
             "AiRequestProtectionAutoEnabled",
             "AiRequestProtectionManualBlockEnabled",
             "AiChinaEgressGuardEnabled",
@@ -3002,7 +3255,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "NetworkMonitorLeftDockTabCenterY",
             "GuardBoardLeftDockTabCenterY",
             "CodexIqBoardLeftDockTabCenterY",
-            "ResetSpeedBoardLeftDockTabCenterY"
+            "ResetSpeedBoardLeftDockTabCenterY",
+            "SystemDayBoardLeftDockTabCenterY"
         };
         for (int i = 0; i < names.Length; i++)
         {
@@ -3030,13 +3284,15 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         normalized.GuardBoardLeftDockTabCenterY = -50;
         normalized.CodexIqBoardLeftDockTabCenterY = -60;
         normalized.ResetSpeedBoardLeftDockTabCenterY = -70;
+        normalized.SystemDayBoardLeftDockTabCenterY = -80;
         normalized.Normalize();
         if (normalized.SpecBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
             normalized.CodexTaskBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
             normalized.NetworkMonitorLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
             normalized.GuardBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
             normalized.CodexIqBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
-            normalized.ResetSpeedBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY)
+            normalized.ResetSpeedBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
+            normalized.SystemDayBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY)
         {
             throw new InvalidOperationException("WinUI left dock centers must normalize invalid negative values to the auto sentinel.");
         }
@@ -3050,8 +3306,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             SettingEditor editor = this.editors[orderNames[i]];
             string[] original = (string[])editor.Property.GetValue(this.baseline, null);
             string[] reversed = i == 0
-                ? new string[] { "ResetSpeed", "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network" }
-                : new string[] { "ClaudeQuota", "CodexQuota", "Guard", "Power", "Npu", "Gpu", "Network", "Disk", "Memory", "Cpu" };
+                ? new string[] { "SystemDay", "ResetSpeed", "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network" }
+                : new string[] { "DeepSeekQuota", "ClaudeQuota", "CodexQuota", "Guard", "Power", "Npu", "Gpu", "Network", "Disk", "Memory", "Cpu" };
             SetEditorValue(editor, reversed);
             string[] actual = GetEditorValue(editor) as string[];
             if (actual == null || actual.Length != reversed.Length || object.ReferenceEquals(actual, reversed))
@@ -3258,6 +3514,54 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
     }
 
+    private static void VerifyDeepSeekApiKeyStoragePolicy()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "desktopcodex-settings-deepseek-key-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string encrypted = Path.Combine(root, "deepseek-api-key.bin");
+            string legacy = Path.Combine(root, "deepseek-api-key.txt");
+            string errorCode;
+            const string apiKey = "sk-settings-entry";
+            if (!TrySaveDeepSeekApiKeyFile(apiKey, encrypted, legacy, out errorCode) ||
+                !File.Exists(encrypted) ||
+                File.ReadAllText(encrypted, Encoding.UTF8).IndexOf(apiKey, StringComparison.Ordinal) >= 0)
+            {
+                throw new InvalidOperationException("DeepSeek API-key encrypted save self-test failed: " + errorCode);
+            }
+
+            string restored;
+            bool migrated;
+            if (!SecretStore.TryReadOrMigrateSecret(
+                    encrypted,
+                    legacy,
+                    SecretStore.TrimSecret,
+                    delegate(string value)
+                    {
+                        return !string.IsNullOrWhiteSpace(value) &&
+                            value.Trim().StartsWith("sk-", StringComparison.Ordinal);
+                    },
+                    out restored,
+                    out migrated,
+                    out errorCode) ||
+                !string.Equals(restored, apiKey, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("DeepSeek API-key encrypted read self-test failed: " + errorCode);
+            }
+
+            if (!TrySaveDeepSeekApiKeyFile(string.Empty, encrypted, legacy, out errorCode) ||
+                File.Exists(encrypted) || File.Exists(legacy))
+            {
+                throw new InvalidOperationException("DeepSeek API-key clear self-test failed: " + errorCode);
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
     private static void VerifyGuardRuntimePersistencePolicy()
     {
         string root = Path.Combine(Path.GetTempPath(), "desktopcodex-guard-persist-" + Guid.NewGuid().ToString("N"));
@@ -3426,10 +3730,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexModelTimeEfficiencyBaselinePassed", "CodexModelTimeEfficiencyBaselineSeconds",
             "CodexModelTokenEfficiencyLowThresholdPercent", "CodexModelTimeEfficiencyLowThresholdPercent"
         });
-        AddSettingsUiBindingExemptions(exemptions, "compatibility-only dock flags; the canonical visible topology always contains all six left-edge tabs", new string[]
+        AddSettingsUiBindingExemptions(exemptions, "compatibility-only dock flags; the canonical visible topology always contains all seven left-edge tabs", new string[]
         {
             "SpecBoardLeftDockEnabled", "CodexTaskBoardLeftDockEnabled",
-            "GuardBoardLeftDockEnabled", "CodexIqBoardLeftDockEnabled", "ResetSpeedBoardLeftDockEnabled"
+            "GuardBoardLeftDockEnabled", "CodexIqBoardLeftDockEnabled", "ResetSpeedBoardLeftDockEnabled",
+            "SystemDayBoardLeftDockEnabled"
         });
         AddSettingsUiBindingExemptions(exemptions, "Codex task-board geometry/view is owned by the board surface; monitor thresholds are internal tuning", new string[]
         {
@@ -3621,6 +3926,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexIqBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinCodexIqBoardAutoHideSeconds, WidgetSettings.MaxCodexIqBoardAutoHideSeconds) },
         { "ResetSpeedBoardLeftDockTabCenterY", new NumericRange(WidgetSettings.AutoLeftDockTabCenterY, 1000000) },
         { "ResetSpeedBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinResetSpeedBoardAutoHideSeconds, WidgetSettings.MaxResetSpeedBoardAutoHideSeconds) },
+        { "SystemDayBoardLeftDockTabCenterY", new NumericRange(WidgetSettings.AutoLeftDockTabCenterY, 1000000) },
+        { "SystemDayBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinSystemDayBoardAutoHideSeconds, WidgetSettings.MaxSystemDayBoardAutoHideSeconds) },
         { "SpecBoardAutoPopupSeconds", new NumericRange(WidgetSettings.MinSpecBoardAutoPopupSeconds, WidgetSettings.MaxSpecBoardAutoPopupSeconds) },
         { "SpecBoardManagerWidth", new NumericRange(WidgetSettings.MinSpecBoardManagerWidth, WidgetSettings.MaxSpecBoardManagerWidth) },
         { "SpecBoardManagerHeight", new NumericRange(WidgetSettings.MinSpecBoardManagerHeight, WidgetSettings.MaxSpecBoardManagerHeight) },
@@ -3636,6 +3943,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "GuardBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
         { "CodexIqBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
         { "ResetSpeedBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "SystemDayBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
         { "MainWidgetTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "NetworkMonitorTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "OperationTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
@@ -3644,6 +3952,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "GuardBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "CodexIqBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "ResetSpeedBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "SystemDayBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "NightScheduleStartMinutes", new NumericRange(WidgetSettings.MinNightScheduleMinutes, WidgetSettings.MaxNightScheduleMinutes) },
         { "NightScheduleEndMinutes", new NumericRange(WidgetSettings.MinNightScheduleMinutes, WidgetSettings.MaxNightScheduleMinutes) },
         { "NightDimLuminancePercent", new NumericRange(WidgetSettings.MinNightDimLuminancePercent, WidgetSettings.MaxNightDimLuminancePercent) },
@@ -3699,6 +4008,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "RightTileButtonOrder", "右侧磁贴顺序" },
         { "RightTileButtonGapPixels", "右侧磁贴分布间距（0–100）" },
         { "RightTileGroupOffsetY", "右侧整列上下位置" },
+        { "RightTileMouseClickThroughEnabled", "右侧窗口鼠标穿透" },
+        { "GeniusProgrammerEasterEggEnabled", "你是天才程序员吗" },
         { "MetricTileExpandWidth", "展开面板宽度" },
         { "MetricTileExpandHeight", "展开面板高度" },
         { "SpecBoardWidth", "Spec Board 宽度" },
@@ -3713,6 +4024,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexIqBoardAutoHideSeconds", "Codex IQ 自动收回秒数" },
         { "ResetSpeedBoardLeftDockTabCenterY", "重置与速蹬标签中心 Y" },
         { "ResetSpeedBoardAutoHideSeconds", "重置与速蹬自动收回秒数" },
+        { "SystemDayBoardLeftDockTabCenterY", "系统日记标签中心 Y" },
+        { "SystemDayBoardAutoHideSeconds", "系统日记自动收回秒数" },
         { "LeftDockOutsideClickCollapseEnabled", "点击看板外部时收回" },
         { "SpecBoardAutoPopupEnabled", "发现新 Spec 时自动弹出" },
         { "SpecBoardAutoPopupSeconds", "新 Spec 弹窗停留秒数" },
@@ -3731,6 +4044,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "GuardBoardScaleOverridePercent", "GUARD 看板缩放覆盖" },
         { "CodexIqBoardScaleOverridePercent", "Codex IQ 看板缩放覆盖" },
         { "ResetSpeedBoardScaleOverridePercent", "重置与速蹬看板缩放覆盖" },
+        { "SystemDayBoardScaleOverridePercent", "系统日记看板缩放覆盖" },
         { "NetworkMonitorTransparencyOverridePercent", "网络监控整体透明度覆盖" },
         { "OperationTransparencyOverridePercent", "操作面板整体透明度覆盖" },
         { "SpecBoardTransparencyOverridePercent", "Spec Board 整体透明度覆盖" },
@@ -3738,6 +4052,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "GuardBoardTransparencyOverridePercent", "GUARD 看板整体透明度覆盖" },
         { "CodexIqBoardTransparencyOverridePercent", "Codex IQ 看板整体透明度覆盖" },
         { "ResetSpeedBoardTransparencyOverridePercent", "重置与速蹬看板整体透明度覆盖" },
+        { "SystemDayBoardTransparencyOverridePercent", "系统日记看板整体透明度覆盖" },
         { "NightScheduleEnabled", "启用夜间时段" },
         { "NightScheduleStartMinutes", "夜间开始（自午夜分钟）" },
         { "NightScheduleEndMinutes", "夜间结束（自午夜分钟）" },
@@ -3773,6 +4088,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarModelKey", "CODEX 模型" },
         { "RadarClockAutoSwitchModelEnabled", "过期自动切换模型" },
         { ClaudeSetupTokenCommandName, "Claude Code 用量令牌" },
+        { DeepSeekApiKeyCommandName, "DeepSeek API Key" },
         { "CodexRadarRandomTestEnabled", "服务健康随机测试" },
         { "CodexRadarRandomTestAutoRefresh", "健康测试自动刷新" },
         { "CodexRadarRandomTestRefreshToken", "立即刷新健康测试" },
@@ -3870,6 +4186,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarRandomTestAutoRefresh", "开启后自动轮换服务健康测试值，日常保持关闭。" },
         { "CodexRadarRandomTestRefreshToken", "点击后立即换一组服务健康测试值。" },
         { ClaudeSetupTokenCommandName, "Claude 桌面版不会主动上报用量，需要生成一次性长效令牌并粘贴进来；未配置时两个额度环会显示满环红色。" },
+        { DeepSeekApiKeyCommandName, "使用 DeepSeek 官方余额接口读取剩余额度；Key 以当前用户 DPAPI 加密保存，24 小时消耗和预计可用时长由本地余额历史计算。" },
         { "MainWidgetTileLargeModeEnabled", "只影响右缘方块列：关闭时磁贴为 60×60 像素；开启后磁贴与悬停展开面板各放大一倍，适合高分屏或视力需要。" },
         { "MetricTileExpandWidth", "右缘指标磁贴悬停展开后的逻辑像素宽度；大窗口模式会在运行时按比例放大。" },
         { "MetricTileExpandHeight", "右缘指标磁贴悬停展开后的逻辑像素高度；大窗口模式会在运行时按比例放大。" },
@@ -3891,31 +4208,35 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "PowerResumeRestartEnabled", "系统唤醒后自动重启 SeelenUI 和本程序。" },
         { "SeelenDockForegroundPulseEnabled", "需要时短暂拉前 Seelen Dock，避免被系统窗口压住。" },
         { "FallbackDisconnectedDisplaysEnabled", "指定显示器未连接时，将对应可见面回退到当前主显示器。" },
-        { "MainDisplayDeviceName", "留空使用当前主显示器；右侧十枚磁贴及展开面板按该显示器工作区定位。" },
+        { "MainDisplayDeviceName", "留空使用当前主显示器；右侧十一枚磁贴及展开面板按该显示器工作区定位。" },
         { "OperationDisplayDeviceName", "留空使用当前主显示器；操作面板偏移量按目标显示器左下角计算。" },
-        { "ResolutionCompatibilityModeEnabled", "默认关闭。开启后按 2880x1800 参考布局投影 Operation、五个 Dock 与十枚磁贴/展开面板。" },
+        { "ResolutionCompatibilityModeEnabled", "默认关闭。开启后按 2880x1800 参考布局投影 Operation、七个 Dock 与十一枚磁贴/展开面板。" },
         { "ResolutionCompatibilityScalePercent", "运行时输出比例，低于 100% 压缩，高于 100% 放大；不会改写保存的真实布局坐标。" },
-        { GlobalLayoutEditCommandName, "打开全屏布局编辑遮罩，显示 Operation、固定六个左侧停靠按钮与固定十枚右侧磁贴；Enter 保存，Esc 放弃。自动排列开启时拖动列成员会整体上下移动。" },
-        { "LeftDockAutoArrangeEnabled", "开启后按下方顺序和分布间距自动排列固定六个左侧梯形按钮；关闭后保留全局编辑器写入的单项位置。" },
-        { "LeftDockButtonOrder", "用上下箭头调整 Network、Spec、Codex Task、GUARD、Codex IQ 与重置/速蹬六个固定按钮的排列顺序。" },
+        { GlobalLayoutEditCommandName, "打开全屏布局编辑遮罩，显示 Operation、固定七个左侧停靠按钮与固定十一枚右侧磁贴；Enter 保存，Esc 放弃。自动排列开启时拖动列成员会整体上下移动。" },
+        { "LeftDockAutoArrangeEnabled", "开启后按下方顺序和分布间距自动排列固定七个左侧梯形按钮；关闭后保留全局编辑器写入的单项位置。" },
+        { "LeftDockButtonOrder", "用上下箭头调整 Network、Spec、Codex Task、GUARD、Codex IQ、重置/速蹬与系统日记七个固定按钮的排列顺序。" },
         { "LeftDockButtonGapPixels", "可拖动滑块或直接输入 0–100；0 让按钮紧挨，100 让整列从工作区顶部到底部均匀分布，中间值按比例展开。" },
         { "LeftDockGroupOffsetY", "把全部左侧按钮视为一个整体，相对屏幕垂直居中位置上下移动；0 为居中，负值向上。" },
-        { "RightTileAutoArrangeEnabled", "开启后按下方顺序和分布间距自动排列固定十枚右缘磁贴；关闭后保留全局编辑器写入的单项位置。" },
-        { "RightTileButtonOrder", "用上下箭头调整 CPU、内存、磁盘、网络、GPU、NPU、功耗、GUARD、Codex 额度与 Claude 额度十枚磁贴的顺序。" },
+        { "RightTileAutoArrangeEnabled", "开启后按下方顺序和分布间距自动排列固定十一枚右缘磁贴；关闭后保留全局编辑器写入的单项位置。" },
+        { "RightTileButtonOrder", "用上下箭头调整 CPU、内存、磁盘、网络、GPU、NPU、功耗、GUARD、Codex、Claude 与 DeepSeek 十一枚磁贴的顺序。" },
         { "RightTileButtonGapPixels", "可拖动滑块或直接输入 0–100；0 让磁贴紧挨，100 让整列从工作区顶部到底部均匀分布，中间值按比例展开。" },
         { "RightTileGroupOffsetY", "把全部右侧方块窗口视为一个整体，相对屏幕垂直居中位置上下移动；0 为居中，正值向下。" },
+        { "RightTileMouseClickThroughEnabled", "开启后十一枚右侧小窗和悬停展开面板都不拦截鼠标点击；悬停展开仍由光标位置轮询工作。" },
+        { "GeniusProgrammerEasterEggEnabled", "开启额度彩蛋：Codex 或 Claude 归零时显示陨落提示，额度恢复后第一次展开显示复活提示。" },
         { "SpecBoardWidth", "逻辑像素，范围 320-700。" },
         { "SpecBoardHeight", "逻辑像素，范围 240-800。" },
         { "SpecBoardAutoHideSeconds", "范围 0-600 秒；0 表示不自动收回。鼠标停在看板内时暂停，移出后重新计时。" },
-        { "SpecBoardLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。无效负值保存时恢复自动。" },
-        { "CodexTaskBoardLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。" },
-        { "NetworkMonitorLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。" },
-        { "GuardBoardLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "SpecBoardLeftDockTabCenterY", "自动模式按七看板队列计算位置；手动模式填写屏幕坐标 Y。无效负值保存时恢复自动。" },
+        { "CodexTaskBoardLeftDockTabCenterY", "自动模式按七看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "NetworkMonitorLeftDockTabCenterY", "自动模式按七看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "GuardBoardLeftDockTabCenterY", "自动模式按七看板队列计算位置；手动模式填写屏幕坐标 Y。" },
         { "GuardBoardAutoHideSeconds", "范围 0-600 秒；0 表示展开后不自动收回。" },
-        { "CodexIqBoardLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "CodexIqBoardLeftDockTabCenterY", "自动模式按七看板队列计算位置；手动模式填写屏幕坐标 Y。" },
         { "CodexIqBoardAutoHideSeconds", "范围 0-600 秒；0 表示展开后不自动收回。" },
-        { "ResetSpeedBoardLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "ResetSpeedBoardLeftDockTabCenterY", "自动模式按七看板队列计算位置；手动模式填写屏幕坐标 Y。" },
         { "ResetSpeedBoardAutoHideSeconds", "范围 0-600 秒；0 表示展开后不自动收回。" },
+        { "SystemDayBoardLeftDockTabCenterY", "自动模式按七看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "SystemDayBoardAutoHideSeconds", "范围 0-600 秒；0 表示展开后不自动收回。" },
         { "LeftDockOutsideClickCollapseEnabled", "开启后，停靠展开的 Spec Board 或 Codex Task 在点击桌面、其他窗口或另一块看板时收回；点击自身、停靠梯形或 Spec 管理窗口不会误收回。" },
         { "SpecBoardAutoPopupEnabled", "开启后监测新建的 Spec；发现新项时自动弹出小看板并高亮。" },
         { "SpecBoardAutoPopupSeconds", "范围 1-120 秒；自动弹窗在鼠标未停留时的显示时长，鼠标移入会暂停并重置倒计时。" },
@@ -3926,7 +4247,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationLeftOffset", "逻辑像素，距目标显示器左边缘。" },
         { "OperationBottomOffset", "逻辑像素，距目标显示器下边缘。" },
         { "ApplicationTransparencyPercent", "全部可见面的默认整体透明度；设置了每个可见面覆盖时以覆盖值为准。" },
-        { "MainWidgetTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖右侧十枚磁贴及展开面板。" },
+        { "MainWidgetTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖右侧十一枚磁贴及展开面板。" },
         { "NetworkMonitorScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖 Network 停靠板及其标签。" },
         { "OperationScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖操作面板及其启动器子窗。" },
         { "SpecBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖 Spec 看板及其停靠标签。" },
@@ -3934,6 +4255,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "GuardBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖 GUARD 看板及其停靠标签。" },
         { "CodexIqBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖 Codex IQ 看板及其停靠标签。" },
         { "ResetSpeedBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖重置与速蹬看板及其停靠标签。" },
+        { "SystemDayBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖系统日记看板及其停靠标签。" },
         { "NetworkMonitorTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖 Network 停靠板及其标签。" },
         { "OperationTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖操作面板及其启动器子窗。" },
         { "SpecBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖 Spec 看板及其停靠标签。" },
@@ -3941,6 +4263,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "GuardBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖 GUARD 看板及其停靠标签。" },
         { "CodexIqBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖 Codex IQ 看板及其停靠标签。" },
         { "ResetSpeedBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖重置与速蹬看板及其停靠标签。" },
+        { "SystemDayBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖系统日记看板及其停靠标签。" },
         { "NightScheduleEnabled", "按本地时间在固定时段降低全部挂件亮度。" },
         { "NightScheduleStartMinutes", "0–1439；例如 1380 = 23:00，可与结束时间组成跨午夜时段。" },
         { "NightScheduleEndMinutes", "0–1439；例如 420 = 07:00，结束分钟本身不属于夜间。" },
@@ -3988,7 +4311,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             this.leftColumn = leftColumn;
             this.rowFont = rowFont;
             this.allowedIds = leftColumn
-                ? new string[] { "Network", "SpecBoard", "CodexTask", "Guard", "CodexIq", "ResetSpeed" }
+                ? new string[] { "Network", "SpecBoard", "CodexTask", "Guard", "CodexIq", "ResetSpeed", "SystemDay" }
                 : (string[])WidgetSettings.MetricTileIds.Clone();
             this.rowStates = new Dictionary<string, ColumnOrderRowState>(StringComparer.OrdinalIgnoreCase);
             this.order = (string[])this.allowedIds.Clone();
@@ -4252,7 +4575,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 if (string.Equals(id, "CodexTask", StringComparison.Ordinal)) return "Codex Task";
                 if (string.Equals(id, "Guard", StringComparison.Ordinal)) return "GUARD";
                 if (string.Equals(id, "CodexIq", StringComparison.Ordinal)) return "Codex IQ";
-                return "重置与速蹬";
+                if (string.Equals(id, "ResetSpeed", StringComparison.Ordinal)) return "重置与速蹬";
+                return "系统日记";
             }
 
             int index = WidgetSettings.IndexOfMetricTile(id);
@@ -4270,7 +4594,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 if (string.Equals(id, "CodexTask", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexTask);
                 if (string.Equals(id, "Guard", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Guard);
                 if (string.Equals(id, "CodexIq", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexIq);
-                return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.ResetSpeed);
+                if (string.Equals(id, "ResetSpeed", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.ResetSpeed);
+                return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SystemDay);
             }
 
             int index = WidgetSettings.IndexOfMetricTile(id);

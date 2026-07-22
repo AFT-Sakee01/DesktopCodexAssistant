@@ -1,6 +1,6 @@
 # 功耗与温度数据所有者架构
 
-适用版本：2.0.0.0
+适用版本：2.0.0.12
 
 本文说明 `PowerThermalForm` 作为永久 headless 数据所有者时的数据来源、采样、通知、缓存和快照边界。
 
@@ -15,6 +15,7 @@
 | `Core/PowerThermalForm.cs` | headless 生命周期、电源通知、单飞采样、缓存和温度状态 |
 | `Core/PowerThermalForm.Snapshot.cs` | `PowerStripSnapshot` 只读投影与 `ThermalSummary` 数据汇总 |
 | `Core/WidgetForm.TileColumn.cs` | 把功耗快照装入共享 `MetricTileFeed` |
+| `Core/WidgetForm.SystemDay.cs` | 把同一缓存快照交给系统日记历史，不新增硬件采样 |
 | `Core/MetricTileModel.cs` | 把电池、温度和告警映射为 `PWR` 方块模型 |
 | `Core/MetricTileExpandForm.cs` | 绘制 `PWR` 悬停详情 |
 | `Settings/WidgetSettings.cs` | 性能模式、测试模式和功耗数据设置 |
@@ -121,9 +122,9 @@ Win32_PerfFormattedData_Counters_ThermalZoneInformation
 
 - 功耗：known/charging/plugged-in/watts/battery/runtime。
 - 状态：energy saver、电池保养暂停、电源模式文本。
-- 温度：zone 数、告警数、最高/平均温度和热点列表。
+- 温度：zone 数、告警数、最高/平均温度、告警热点列表，以及带固件原始名称的完整 `ThermalZones` 克隆。
 
-该方法不得触发采样、WMI、进程启动、磁盘或网络 I/O。`WidgetForm.BuildMetricTileFeed()` 每个控制 tick 至多取一次快照，再把同一 feed 推给 `PWR` 方块及展开详情；消费者不能修改 sampler-owned state。
+该方法不得触发采样、WMI、进程启动、磁盘或网络 I/O。`WidgetForm.BuildMetricTileFeed()` 每个控制 tick 至多取一次快照，再把同一 feed 推给 `PWR` 方块、展开详情和系统日记记录器；消费者不能修改 sampler-owned state。系统日记为何保留完整热区及其持久化边界见 `Docs/SystemDayBoard-Architecture.md`。
 
 ## 7. 设置边界
 

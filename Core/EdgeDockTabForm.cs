@@ -10,7 +10,8 @@ internal enum EdgeDockTabRole
     CodexTask,
     Guard,
     CodexIq,
-    ResetSpeed
+    ResetSpeed,
+    SystemDay
 }
 
 // A 5x30 logical right-pointing trapezoid parked against the left screen edge. It is the only
@@ -151,6 +152,8 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
                 return DesignTokens.Colors.Accent;
             case EdgeDockTabRole.ResetSpeed:
                 return DesignTokens.Colors.Warning;
+            case EdgeDockTabRole.SystemDay:
+                return DesignTokens.Colors.WarningDeep;
             default:
                 return DesignTokens.Colors.GlyphMuted;
         }
@@ -496,21 +499,29 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         roleSettings.CodexTaskBoardTransparencyOverridePercent = 33;
         roleSettings.GuardBoardTransparencyOverridePercent = 44;
         roleSettings.CodexIqBoardTransparencyOverridePercent = 55;
+        roleSettings.ResetSpeedBoardTransparencyOverridePercent = 56;
+        roleSettings.SystemDayBoardTransparencyOverridePercent = 57;
         roleSettings.NetworkMonitorScaleOverridePercent = 51;
         roleSettings.SpecBoardScaleOverridePercent = 62;
         roleSettings.CodexTaskBoardScaleOverridePercent = 73;
         roleSettings.GuardBoardScaleOverridePercent = 84;
         roleSettings.CodexIqBoardScaleOverridePercent = 95;
+        roleSettings.ResetSpeedBoardScaleOverridePercent = 96;
+        roleSettings.SystemDayBoardScaleOverridePercent = 97;
         if (ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.Network) != 11 ||
             ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.SpecBoard) != 22 ||
             ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.CodexTask) != 33 ||
             ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.Guard) != 44 ||
             ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.CodexIq) != 55 ||
+            ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.ResetSpeed) != 56 ||
+            ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.SystemDay) != 57 ||
             ResolveScaleOverride(roleSettings, EdgeDockTabRole.Network) != 51 ||
             ResolveScaleOverride(roleSettings, EdgeDockTabRole.SpecBoard) != 62 ||
             ResolveScaleOverride(roleSettings, EdgeDockTabRole.CodexTask) != 73 ||
             ResolveScaleOverride(roleSettings, EdgeDockTabRole.Guard) != 84 ||
-            ResolveScaleOverride(roleSettings, EdgeDockTabRole.CodexIq) != 95)
+            ResolveScaleOverride(roleSettings, EdgeDockTabRole.CodexIq) != 95 ||
+            ResolveScaleOverride(roleSettings, EdgeDockTabRole.ResetSpeed) != 96 ||
+            ResolveScaleOverride(roleSettings, EdgeDockTabRole.SystemDay) != 97)
         {
             throw new InvalidOperationException("Edge dock tabs must use the visual override slots owned by their roles.");
         }
@@ -594,7 +605,9 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             BurnInProtection.SpecBoardSalt,
             BurnInProtection.CodexTaskBoardSalt,
             BurnInProtection.GuardBoardSalt,
-            BurnInProtection.CodexIqBoardSalt
+            BurnInProtection.CodexIqBoardSalt,
+            BurnInProtection.ResetSpeedBoardSalt,
+            BurnInProtection.SystemDayBoardSalt
         };
         for (int i = 0; i < boardSalts.Length; i++)
         {
@@ -655,7 +668,8 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             ResolveQueueAccent(EdgeDockTabRole.CodexTask),
             ResolveQueueAccent(EdgeDockTabRole.Guard),
             ResolveQueueAccent(EdgeDockTabRole.CodexIq),
-            ResolveQueueAccent(EdgeDockTabRole.ResetSpeed)
+            ResolveQueueAccent(EdgeDockTabRole.ResetSpeed),
+            ResolveQueueAccent(EdgeDockTabRole.SystemDay)
         };
         Color[] expectedAccents = new Color[]
         {
@@ -664,13 +678,14 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             DesignTokens.Colors.Success,
             DesignTokens.Colors.AccentAlt,
             DesignTokens.Colors.Accent,
-            DesignTokens.Colors.Warning
+            DesignTokens.Colors.Warning,
+            DesignTokens.Colors.WarningDeep
         };
         for (int i = 0; i < queueAccents.Length; i++)
         {
             if (queueAccents[i].ToArgb() != expectedAccents[i].ToArgb())
             {
-                throw new InvalidOperationException("Edge dock queue colours must remain blue, orange, green, purple, cyan and yellow from top to bottom.");
+                throw new InvalidOperationException("Edge dock queue colours must retain seven stable role accents.");
             }
         }
 
@@ -687,7 +702,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Left-dock board accent borders must stay as a clipped-safe 3px inner stroke.");
         }
 
-        Console.WriteLine("Edge dock tab: PASS 5x30 trapezoid arrow blue-orange-green-purple-cyan-yellow burn-in-gray-hover level2-inverted-arrow board-border-3px auto-slots-6 shared-pixel-shift");
+        Console.WriteLine("Edge dock tab: PASS 5x30 trapezoid arrow seven-role accents burn-in-gray-hover level2-inverted-arrow board-border-3px auto-slots-7 shared-pixel-shift");
     }
 
     internal static void RunDisplayLifecycleSelfTest()
@@ -700,7 +715,8 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             EdgeDockTabRole.CodexTask,
             EdgeDockTabRole.Guard,
             EdgeDockTabRole.CodexIq,
-            EdgeDockTabRole.ResetSpeed
+            EdgeDockTabRole.ResetSpeed,
+            EdgeDockTabRole.SystemDay
         };
         for (int i = 0; i < roles.Length; i++)
         {

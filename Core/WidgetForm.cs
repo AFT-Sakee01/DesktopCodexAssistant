@@ -238,6 +238,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         EnsureRadarChildWindows();
         this.powerThermalForm = new PowerThermalForm(this.CurrentSettings);
         this.powerThermalForm.StartHeadlessDataOwner();
+        InitializeSystemDayHistory();
         this.networkMonitorForm = new NetworkMonitorForm(this.CurrentSettings);
         this.networkMonitorForm.SetSharedInteractionPolling(true);
         this.networkMonitorForm.StartDockedOwner(this);
@@ -304,6 +305,12 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             }
 
             return this.codexRadarForm.BuildResetSpeedBoardSnapshot();
+        };
+        // The seventh board reads only the in-memory projection. Minute samples and suspend/resume
+        // markers are owned by this hidden host and persisted independently of board visibility.
+        this.operationForm.SystemDaySnapshotProvider = delegate(SystemDayRange range)
+        {
+            return BuildSystemDayBoardSnapshot(range);
         };
         // ApplyRuntimeSettings runs before childWindowLifecycleStarted so the hidden host can
         // establish its own HWND safely. Build the canonical tile set only after every data owner
@@ -739,6 +746,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.powerThermalForm = null;
         }
 
+        DisposeSystemDayHistory();
+
         if (this.networkMonitorForm != null)
         {
             this.networkMonitorForm.Close();
@@ -810,6 +819,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         int eventType = eventTypePtr.ToInt32();
         if (eventType == NativeMethods.PBT_APMSUSPEND)
         {
+            RecordSystemDaySuspend();
             this.displayRecoveryTimer.Stop();
             this.pendingDisplayRecoveryAttempt = 0;
             CapturePowerResumeRestartState();
@@ -819,6 +829,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         if (IsPowerResumeEventType(eventType))
         {
+            RecordSystemDayResume();
             if (this.operationForm != null && !this.operationForm.IsDisposed)
             {
                 this.operationForm.NotifyGuardBoardSystemResume();
@@ -1471,6 +1482,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             UpdateAlertIconStates();
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:metric_tiles");
             PushMetricTileFeed();
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:system_day_history");
+            RecordSystemDaySample();
 
             DateTime nowUtc = DateTime.UtcNow;
             if (this.lastSampleDiagnosticUtc == DateTime.MinValue ||

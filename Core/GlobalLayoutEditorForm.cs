@@ -215,7 +215,7 @@ internal sealed class GlobalLayoutEditorForm : Form
         }
     }
 
-    // The converged editor exposes only real on-screen surfaces: Operation, six left-dock tabs,
+    // The converged editor exposes only real on-screen surfaces: Operation, seven left-dock tabs,
     // and ten right-side tiles. Headless owners and retired classic windows must never reappear
     // merely because layout editing bypasses environmental hiding.
     private static List<string> BuildEditableSurfaceIds(WidgetSettings settings)
@@ -332,6 +332,12 @@ internal sealed class GlobalLayoutEditorForm : Form
             return true;
         }
 
+        if (string.Equals(id, "SystemDay", StringComparison.OrdinalIgnoreCase))
+        {
+            role = EdgeDockTabRole.SystemDay;
+            return true;
+        }
+
         return false;
     }
 
@@ -351,6 +357,8 @@ internal sealed class GlobalLayoutEditorForm : Form
                 return "左侧 IQ";
             case EdgeDockTabRole.ResetSpeed:
                 return "左侧 重置/速蹬";
+            case EdgeDockTabRole.SystemDay:
+                return "左侧 系统日记";
             default:
                 return "左侧按钮";
         }
@@ -537,6 +545,9 @@ internal sealed class GlobalLayoutEditorForm : Form
                 break;
             case EdgeDockTabRole.ResetSpeed:
                 settings.ResetSpeedBoardLeftDockTabCenterY = centerY;
+                break;
+            case EdgeDockTabRole.SystemDay:
+                settings.SystemDayBoardLeftDockTabCenterY = centerY;
                 break;
         }
     }
@@ -808,6 +819,7 @@ internal sealed class GlobalLayoutEditorForm : Form
         edge.GuardBoardLeftDockEnabled = true;
         edge.CodexIqBoardLeftDockEnabled = true;
         edge.ResetSpeedBoardLeftDockEnabled = true;
+        edge.SystemDayBoardLeftDockEnabled = true;
         edge.LeftDockAutoArrangeEnabled = true;
         edge.RightTileAutoArrangeEnabled = true;
         edge.Normalize();
@@ -822,6 +834,7 @@ internal sealed class GlobalLayoutEditorForm : Form
             "LeftDockTab.Guard",
             "LeftDockTab.CodexIq",
             "LeftDockTab.ResetSpeed",
+            "LeftDockTab.SystemDay",
             "MetricTile.Cpu",
             "MetricTile.Memory",
             "MetricTile.Disk",
@@ -831,12 +844,13 @@ internal sealed class GlobalLayoutEditorForm : Form
             "MetricTile.Power",
             "MetricTile.Guard",
             "MetricTile.CodexQuota",
-            "MetricTile.ClaudeQuota"
+            "MetricTile.ClaudeQuota",
+            "MetricTile.DeepSeekQuota"
         };
         if (!HaveSameSurfaceIds(edgeIds, expectedIds))
         {
             throw new InvalidOperationException(
-                "Global layout editor must expose the exact canonical 17-surface plan: Operation, six dock tabs, and ten tiles.");
+                "Global layout editor must expose the exact canonical 19-surface plan: Operation, seven dock tabs, and eleven tiles.");
         }
 
         edge.VisibilityMode = WidgetVisibilityMode.HideWhenOverlapped;
@@ -862,7 +876,7 @@ internal sealed class GlobalLayoutEditorForm : Form
             throw new InvalidOperationException("Global layout editor manual left-tab coordinate self-test failed.");
         }
 
-        Console.WriteLine("Global layout editor surface policy: PASS structural filtering, 10 tiles, six tabs, and group drag");
+        Console.WriteLine("Global layout editor surface policy: PASS structural filtering, 11 tiles, seven tabs, and group drag");
     }
 
     private static bool HaveSameSurfaceIds(List<string> a, List<string> b)

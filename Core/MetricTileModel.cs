@@ -21,11 +21,134 @@ internal enum MetricTileId
     Npu,
     Power,
     Guard,
-    // Radar tiles (1.0.6.20), now permanent members of the same ten-tile column.
+    // Quota tiles are permanent members of the same eleven-tile column.
     // The model-quality (IQ) tiles were retired in favour of the left-docked Codex IQ board, so only
-    // the two quota tiles remain here.
+    // Codex/Claude quota and the restored DeepSeek balance tile remain here.
     CodexQuota,
-    ClaudeQuota
+    ClaudeQuota,
+    DeepSeekQuota
+}
+
+internal enum QuotaEasterEggVisual
+{
+    None,
+    FallenLookElsewhere,
+    FallenTogether,
+    Revived
+}
+
+internal sealed class QuotaEasterEggSnapshot
+{
+    public bool Enabled;
+    public bool CodexEmpty;
+    public bool ClaudeEmpty;
+}
+
+// Process-lifetime transition tracker. A refill is announced only when a family was actually seen
+// empty earlier in this run, and the pending announcement is consumed by the first hover-open of
+// that family's expanded panel. Repeated feed construction cannot retrigger the same resurrection.
+internal sealed class QuotaEasterEggTracker
+{
+    private bool initialized;
+    private bool previousCodexEmpty;
+    private bool previousClaudeEmpty;
+    private bool previousCodexKnown;
+    private bool previousClaudeKnown;
+    private bool codexRevivalPending;
+    private bool claudeRevivalPending;
+    private QuotaEasterEggSnapshot current = new QuotaEasterEggSnapshot();
+
+    public QuotaEasterEggSnapshot Update(
+        bool enabled,
+        RadarTileSnapshot codex,
+        RadarTileSnapshot claude)
+    {
+        bool codexEmpty = MetricTileModel.IsQuotaEmpty(codex);
+        bool claudeEmpty = MetricTileModel.IsQuotaEmpty(claude);
+        bool codexKnown = codex != null && codex.QuotaKnown;
+        bool claudeKnown = claude != null && claude.QuotaKnown;
+        if (!enabled)
+        {
+            this.initialized = false;
+            this.codexRevivalPending = false;
+            this.claudeRevivalPending = false;
+        }
+        else if (!this.initialized)
+        {
+            this.initialized = true;
+            this.previousCodexEmpty = codexEmpty;
+            this.previousClaudeEmpty = claudeEmpty;
+            this.previousCodexKnown = codexKnown;
+            this.previousClaudeKnown = claudeKnown;
+        }
+        else
+        {
+            if (this.previousCodexKnown && this.previousCodexEmpty && !codexEmpty)
+            {
+                this.codexRevivalPending = true;
+            }
+
+            if (this.previousClaudeKnown && this.previousClaudeEmpty && !claudeEmpty)
+            {
+                this.claudeRevivalPending = true;
+            }
+
+            if (codexEmpty)
+            {
+                this.codexRevivalPending = false;
+            }
+
+            if (claudeEmpty)
+            {
+                this.claudeRevivalPending = false;
+            }
+
+            this.previousCodexEmpty = codexEmpty;
+            this.previousClaudeEmpty = claudeEmpty;
+            this.previousCodexKnown = codexKnown;
+            this.previousClaudeKnown = claudeKnown;
+        }
+
+        this.current = new QuotaEasterEggSnapshot
+        {
+            Enabled = enabled,
+            CodexEmpty = codexEmpty,
+            ClaudeEmpty = claudeEmpty
+        };
+        return CloneCurrent();
+    }
+
+    public bool TryConsumeRevival(MetricTileId id)
+    {
+        if (!this.current.Enabled)
+        {
+            return false;
+        }
+
+        if (id == MetricTileId.CodexQuota && !this.current.CodexEmpty && this.codexRevivalPending)
+        {
+            this.codexRevivalPending = false;
+            return true;
+        }
+
+        if (id == MetricTileId.ClaudeQuota && !this.current.ClaudeEmpty && this.claudeRevivalPending)
+        {
+            this.claudeRevivalPending = false;
+            return true;
+        }
+
+        return false;
+    }
+
+    private QuotaEasterEggSnapshot CloneCurrent()
+    {
+        return new QuotaEasterEggSnapshot
+        {
+            Enabled = this.current.Enabled,
+            CodexEmpty = this.current.CodexEmpty,
+            ClaudeEmpty = this.current.ClaudeEmpty
+        };
+    }
 }
 
 // One guard row: the same four guards the classic panel's badge strip carries, in the same order,
@@ -64,11 +187,24 @@ internal sealed class MetricTileFeed
     // Radar families. Null when the Radar window is not available yet; every renderer tolerates it.
     public RadarTileSnapshot CodexRadar;
     public RadarTileSnapshot ClaudeRadar;
+    public DeepSeekBalanceSnapshot DeepSeekBalance;
+    public DeepSeekServiceSnapshot DeepSeekService;
+    public QuotaEasterEggSnapshot QuotaEasterEgg = new QuotaEasterEggSnapshot();
 
     public RadarTileSnapshot GetRadar(bool claude)
     {
         RadarTileSnapshot s = claude ? this.ClaudeRadar : this.CodexRadar;
         return s ?? RadarTileSnapshot.CreateEmpty(claude ? CodexRadarSoftwareMode.Claude : CodexRadarSoftwareMode.Codex);
+    }
+
+    public DeepSeekBalanceSnapshot GetDeepSeekBalance()
+    {
+        return this.DeepSeekBalance == null ? DeepSeekBalanceSnapshot.CreateEmpty() : this.DeepSeekBalance;
+    }
+
+    public DeepSeekServiceSnapshot GetDeepSeekService()
+    {
+        return this.DeepSeekService == null ? DeepSeekServiceSnapshot.CreateUnknown() : this.DeepSeekService;
     }
 }
 
@@ -91,6 +227,8 @@ internal sealed class MetricTileData
     public bool AlertIconVisible;
     // Guard tile only: the four dots, in the same order as MetricTileFeed.Guards.
     public List<MetricTileGuardEntry> Guards;
+    public QuotaEasterEggVisual EasterEggVisual;
+    public string EasterEggSecondLine = string.Empty;
 }
 
 internal static class MetricTileModel
@@ -98,7 +236,7 @@ internal static class MetricTileModel
     // Metric tiles only. Radar tiles live in RadarOrder and are counted separately, because the two
     // groups are switched on by independent settings.
     internal const int TileCount = 8;
-    internal const int RadarTileCount = 2;
+    internal const int RadarTileCount = 3;
     internal const int AllTileCount = TileCount + RadarTileCount;
 
     // Fixed order top-to-bottom. Unlike the classic panel this does not follow MetricOrder or the
@@ -123,7 +261,8 @@ internal static class MetricTileModel
     internal static readonly MetricTileId[] RadarOrder =
     {
         MetricTileId.CodexQuota,
-        MetricTileId.ClaudeQuota
+        MetricTileId.ClaudeQuota,
+        MetricTileId.DeepSeekQuota
     };
 
     // Every tile, in the order their positions are stored in settings: metric tiles 0-7, Radar
@@ -132,12 +271,14 @@ internal static class MetricTileModel
     {
         MetricTileId.Cpu, MetricTileId.Memory, MetricTileId.Disk, MetricTileId.Network,
         MetricTileId.Gpu, MetricTileId.Npu, MetricTileId.Power, MetricTileId.Guard,
-        MetricTileId.CodexQuota, MetricTileId.ClaudeQuota
+        MetricTileId.CodexQuota, MetricTileId.ClaudeQuota, MetricTileId.DeepSeekQuota
     };
 
     internal static bool IsRadarTile(MetricTileId id)
     {
-        return id == MetricTileId.CodexQuota || id == MetricTileId.ClaudeQuota;
+        return id == MetricTileId.CodexQuota ||
+            id == MetricTileId.ClaudeQuota ||
+            id == MetricTileId.DeepSeekQuota;
     }
 
     internal static bool IsClaudeTile(MetricTileId id)
@@ -159,6 +300,7 @@ internal static class MetricTileModel
             // Radar: each quota tile carries its service colour.
             case MetricTileId.CodexQuota: return DesignTokens.Colors.Success;
             case MetricTileId.ClaudeQuota: return DesignTokens.Colors.Warning;
+            case MetricTileId.DeepSeekQuota: return DesignTokens.Colors.Accent;
             default: return DesignTokens.Colors.AccentAlt;
         }
     }
@@ -176,6 +318,7 @@ internal static class MetricTileModel
             case MetricTileId.Power: return "PWR";
             case MetricTileId.CodexQuota: return "CDX";
             case MetricTileId.ClaudeQuota: return "CLD";
+            case MetricTileId.DeepSeekQuota: return "DS";
             default: return "守护";
         }
     }
@@ -339,11 +482,93 @@ internal static class MetricTileModel
                         tile.AlertPercent = 100.0;
                     }
 
+                    tile.EasterEggVisual = ResolveQuotaEasterEggVisual(
+                        id,
+                        feed.QuotaEasterEgg,
+                        out tile.EasterEggSecondLine);
+
+                    break;
+                }
+
+            case MetricTileId.DeepSeekQuota:
+                {
+                    DeepSeekBalanceSnapshot d = feed.GetDeepSeekBalance();
+                    tile.InnerAccent = DesignTokens.Colors.Warning;
+                    tile.OuterPercent = d.Known
+                        ? (d.ReferenceBalance > 0.0001
+                            ? Clamp(d.Balance / d.ReferenceBalance * 100.0, 0.0, 100.0)
+                            : (d.Balance > 0.0 ? 100.0 : 0.0))
+                        : -1.0;
+                    tile.InnerPercent = d.Known && d.Last24HourUsageKnown
+                        ? Clamp(d.Last24HourUsage / Math.Max(0.0001, d.Balance + d.Last24HourUsage) * 100.0, 0.0, 100.0)
+                        : -1.0;
+                    tile.CenterValue = d.Known ? FormatCompactBalance(d.Balance) : (d.RequestRunning ? "..." : "--");
+                    if (d.Known && (!d.IsAvailable || d.Balance <= 0.0001))
+                    {
+                        tile.AlertPercent = 100.0;
+                    }
+
                     break;
                 }
         }
 
         return tile;
+    }
+
+    internal static bool IsQuotaEmpty(RadarTileSnapshot snapshot)
+    {
+        if (snapshot == null || !snapshot.QuotaKnown || snapshot.WeeklyPercent <= 0)
+        {
+            return true;
+        }
+
+        return !snapshot.FiveHourLimitAbsent && snapshot.FiveHourPercent <= 0;
+    }
+
+    internal static QuotaEasterEggVisual ResolveQuotaEasterEggVisual(
+        MetricTileId id,
+        QuotaEasterEggSnapshot snapshot,
+        out string secondLine)
+    {
+        secondLine = string.Empty;
+        if (snapshot == null || !snapshot.Enabled ||
+            (id != MetricTileId.CodexQuota && id != MetricTileId.ClaudeQuota))
+        {
+            return QuotaEasterEggVisual.None;
+        }
+
+        if (snapshot.CodexEmpty && snapshot.ClaudeEmpty)
+        {
+            secondLine = "已经陨落...";
+            return QuotaEasterEggVisual.FallenTogether;
+        }
+
+        bool currentEmpty = id == MetricTileId.CodexQuota ? snapshot.CodexEmpty : snapshot.ClaudeEmpty;
+        if (!currentEmpty)
+        {
+            return QuotaEasterEggVisual.None;
+        }
+
+        secondLine = id == MetricTileId.CodexQuota
+            ? "陨落...了吗？看向Claude"
+            : "陨落...了吗？看向Codex";
+        return QuotaEasterEggVisual.FallenLookElsewhere;
+    }
+
+    private static string FormatCompactBalance(double balance)
+    {
+        double value = Math.Max(0.0, balance);
+        if (value >= 1000.0)
+        {
+            return (value / 1000.0).ToString("0.0", CultureInfo.InvariantCulture) + "K";
+        }
+
+        if (value >= 10.0)
+        {
+            return Math.Round(value, MidpointRounding.AwayFromZero).ToString("0", CultureInfo.InvariantCulture);
+        }
+
+        return value.ToString("0.#", CultureInfo.InvariantCulture);
     }
 
     // The four guards, in the fixed order the tile's dot pad reads top-left, top-right,
@@ -594,6 +819,63 @@ internal static class MetricTileModel
             throw new InvalidOperationException("Guard tile must suppress both rings in favour of its dot pad.");
         }
 
-        Console.WriteLine("Metric tile model: PASS 8 tiles, memory pressure ring, dual-ring mapping, guard dot pad");
+        RadarTileSnapshot emptyCodex = RadarTileSnapshot.CreateEmpty(CodexRadarSoftwareMode.Codex);
+        RadarTileSnapshot emptyClaude = RadarTileSnapshot.CreateEmpty(CodexRadarSoftwareMode.Claude);
+        emptyCodex.QuotaKnown = true;
+        emptyClaude.QuotaKnown = true;
+        RadarTileSnapshot aliveCodex = RadarTileSnapshot.CreateEmpty(CodexRadarSoftwareMode.Codex);
+        aliveCodex.QuotaKnown = true;
+        aliveCodex.WeeklyPercent = 50;
+        aliveCodex.FiveHourPercent = 50;
+        RadarTileSnapshot aliveClaude = RadarTileSnapshot.CreateEmpty(CodexRadarSoftwareMode.Claude);
+        aliveClaude.QuotaKnown = true;
+        aliveClaude.WeeklyPercent = 50;
+        aliveClaude.FiveHourPercent = 50;
+        QuotaEasterEggTracker tracker = new QuotaEasterEggTracker();
+        QuotaEasterEggSnapshot fallen = tracker.Update(true, emptyCodex, aliveClaude);
+        string secondLine;
+        if (ResolveQuotaEasterEggVisual(MetricTileId.CodexQuota, fallen, out secondLine) !=
+                QuotaEasterEggVisual.FallenLookElsewhere ||
+            secondLine.IndexOf("Claude", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("Single-family quota easter-egg state failed.");
+        }
+
+        tracker.Update(true, aliveCodex, aliveClaude);
+        if (!tracker.TryConsumeRevival(MetricTileId.CodexQuota) ||
+            tracker.TryConsumeRevival(MetricTileId.CodexQuota))
+        {
+            throw new InvalidOperationException("Quota revival must be consumed exactly once.");
+        }
+
+        QuotaEasterEggSnapshot bothFallen = tracker.Update(true, emptyCodex, emptyClaude);
+        if (ResolveQuotaEasterEggVisual(MetricTileId.ClaudeQuota, bothFallen, out secondLine) !=
+                QuotaEasterEggVisual.FallenTogether ||
+            !string.Equals(secondLine, "已经陨落...", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Dual-family quota easter-egg state failed.");
+        }
+
+        DeepSeekBalanceSnapshot deepSeek = DeepSeekBalanceSnapshot.CreateEmpty();
+        deepSeek.ApiKeyConfigured = true;
+        deepSeek.Known = true;
+        deepSeek.IsAvailable = true;
+        deepSeek.Balance = 88.5;
+        deepSeek.ReferenceBalance = 100.0;
+        deepSeek.Last24HourUsageKnown = true;
+        deepSeek.Last24HourUsage = 11.5;
+        feed.DeepSeekBalance = deepSeek;
+        MetricTileData deepSeekTile = BuildTile(MetricTileId.DeepSeekQuota, feed);
+        if (deepSeekTile.CenterValue != "89" || Math.Abs(deepSeekTile.OuterPercent - 88.5) > 0.01)
+        {
+            throw new InvalidOperationException("DeepSeek tile balance mapping failed.");
+        }
+
+        if (AllTileCount != 11 || AllOrder.Length != 11)
+        {
+            throw new InvalidOperationException("Metric tile topology must contain eleven tiles.");
+        }
+
+        Console.WriteLine("Metric tile model: PASS 11-tile topology, quota easter egg, DeepSeek balance, memory and guard mapping");
     }
 }

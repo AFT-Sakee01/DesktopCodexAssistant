@@ -1,10 +1,10 @@
 # 接口与复用资源汇总
 
-适用版本：2.0.0.10
+适用版本：2.0.0.12
 
 ## 1. 文档用途
 
-本汇总以当前源码为准，帮助后续修改在新增实现前优先找到可复用接口、服务、组件、命令和持久化资源。现行用户界面是右侧 10 个 metric tiles、左侧 6 个固定 Dock、`OperationForm` 与按需打开的设置窗口；`WidgetForm` 是隐藏宿主，`CodexRadarForm` 与 `PowerThermalForm` 是永久 headless 数据所有者。
+本汇总以当前源码为准，帮助后续修改在新增实现前优先找到可复用接口、服务、组件、命令和持久化资源。现行用户界面是右侧 11 个 metric tiles、左侧 7 个固定 Dock、`OperationForm` 与按需打开的设置窗口；`WidgetForm` 是隐藏宿主，`CodexRadarForm` 与 `PowerThermalForm` 是永久 headless 数据所有者。
 
 机器可检索的完整索引位于：
 
@@ -32,6 +32,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `external_api.claude_code.usage` | Claude Code OAuth usage | `ClaudeCodeUsageReader` / `CodexRadarForm` | CLD tile 的官方额度来源；无 token 时消费 Claude Code statusline 本地快照，结果统一提交到官方额度缓存 |
 | `external_api.openai.status` | OpenAI Statuspage | `CodexRadarForm` | 五阶段连接诊断的回滚接口；当前 `CodexConnectionFlowEnabled=false` 时不调度 |
 | `external_api.deepseek.service_health` | DeepSeek service gateway | `DeepSeekServiceMonitor` / `CodexRadarForm` | 无凭据服务可达性探测；只输出 known/available/error，不查询、解析或保存余额 |
+| `external_api.deepseek.balance` | DeepSeek `/user/balance` | `DeepSeekBalanceMonitor` | 仅在配置 Key 后读取官方余额；有界请求、单飞调度，Key/响应正文不写日志 |
 | `external_api.chatgpt.probe` | ChatGPT HTTPS | `CodexRadarForm` | 五阶段连接诊断的回滚接口；当前停用时不调度 |
 | `external_api.cleanip.me` | CleanIP | `CleanIpConnectionReader` | 整点抖动、错误重试和测试快照 |
 | `external_api.ipify.public_ip` | ipify | `NetworkMonitorReader` | 单飞和 network generation 校验 |
@@ -141,6 +142,8 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `internal_api.owner_operation_generation` | owner generation/取消边界 | Start/恢复建立 lease，Stop/挂起先取消并失效；迟到 completion 用 `TryExecuteCurrent` 拒绝全部副作用 |
 | `internal_api.codex_radar_published_projection` | Radar 同代 published state | producer 一次原子替换，tile/IQ 只 clone 一份已发布状态，锁内禁止 I/O、日志、绘制和 UI dispatch |
 | `internal_api.deepseek_service_monitor` | DeepSeek 服务健康单飞监控 | timer、网络事件和手动刷新 join 同一无凭据请求；健康状态只以 clone 快照交付 |
+| `internal_api.deepseek_balance_monitor` | DeepSeek 官方余额单飞监控 | 与服务健康分离；提供当前余额、24 小时本地消耗、预计可用时间和有界趋势 clone |
+| `internal_api.system_day.board_projection` | 系统日记范围投影 | 从 owner-memory 历史裁剪今天/24h/一周，拼接工作睡眠、聚合峰值和 ETA；绘制路径不读文件 |
 | `internal_api.ui_font_cache` | 字体缓存 | 每个窗口生命周期内复用 |
 | `internal_api.shared_encoding` | UTF-8 no BOM 编码常量 | 持久化文本写入复用 `SharedEncoding.Utf8NoBom`，不在调用点重复 `new UTF8Encoding(false)` |
 | `internal_api.burn_in_protection` | 像素微迁移和夜间亮度 | 新窗口分配独立 salt；自动列共享相位，左缘表面固定 X；不得在此重新引入隐藏颜色变换 |
@@ -168,6 +171,9 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `file_format.claude_statusline_quota` | `claude-statusline-quota.ini` | Claude Code statusline 桥接脚本写入的只读额度快照；默认 Claude 用量来源，不含 token |
 | `command.claude_statusline_bridge` | `%USERPROFILE%\.claude\desktop-codex-statusline-bridge.ps1` | Claude Code `statusLine` 命令；程序仅在没有自定义 statusline 时自动安装，不覆盖用户已有命令 |
 | `file_format.claude_code_credentials` | `CLAUDE_CODE_OAUTH_TOKEN` 或 `%LOCALAPPDATA%\DesktopCodexAssistant\claude-code-oauth-token.bin` | `claude setup-token` 生成 token 的保留回退来源；本地文件为 DPAPI 密文，旧 `.txt` 只作迁移来源；默认调度不调用，不自动执行命令、不读取 `.credentials.json`、不写回、不刷新、不记录敏感内容 |
+| `file_format.deepseek_api_key` | `DEEPSEEK_API_KEY` 或 `deepseek-api-key.bin` | DeepSeek Key 来源；本地文件为 DPAPI CurrentUser 密文，旧 `.txt` 只作严格校验后的迁移来源 |
+| `file_format.deepseek_balance_history` | `deepseek-balance-history.jsonl` | 最近 48 小时官方余额样本；不包含凭据、请求头或响应正文 |
+| `file_format.system_day.daily_history_jsonl` | `system-day/system-day-YYYY-MM-DD.jsonl` | 最近 8 天性能、电池方向、工作/睡眠与完整命名热区的逐分钟相关样本 |
 | `file_format.application_icon_ico` | `Assets/AppIcon.ico` | 编译时嵌入 exe 的 Win32 图标，和 `ApplicationIcon` 运行时绘制保持同款 |
 | `file_format.codex_quota` | `quota.ini` | Codex 额度缓存 |
 | `file_format.claude_quota` | `claude-quota.ini` | 只由 `ClaudeCodeUsageReader` 官方 usage/statusline 链原子写入的 CLD 额度缓存；包含 5h/周额度、两个 reset 与来源更新时间 |
@@ -187,12 +193,12 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 
 | 类别 | 对象与边界 |
 | --- | --- |
-| 右侧可见表面 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度共 10 个 `MetricTileForm`；悬停详情复用一个 `MetricTileExpandForm`，只读同一 `MetricTileFeed`。MEM 外环/中心显示物理占用，内环显示三态压力，底部色带显示最近 60 秒压力历史 |
-| 左侧固定 Dock | Network、Spec Board、Codex Task、GUARD、Codex IQ、重置与速蹬共 6 枚 `EdgeDockTabForm` 及对应 board；六角色始终存在，只允许排序，不允许恢复浮动窗或禁用角色 |
+| 右侧可见表面 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度、DeepSeek 余额共 11 个 `MetricTileForm`；悬停详情复用一个 `MetricTileExpandForm`，只读同一 `MetricTileFeed`。MEM 外环/中心显示物理占用，内环显示三态压力，底部色带显示最近 60 秒压力历史 |
+| 左侧固定 Dock | Network、Spec Board、Codex Task、GUARD、Codex IQ、重置与速蹬、系统日记共 7 枚 `EdgeDockTabForm` 及对应 board；七角色始终存在，只允许排序，不允许恢复浮动窗或禁用角色 |
 | 其他用户界面 | `OperationForm` 常驻；`Win11SettingsForm` 与 `SpecBoardManagerForm` 按需打开，后二者是可聚焦的普通工具窗口 |
 | headless owners | `CodexRadarForm` 统一拥有 Codex/Claude 双 family；`PowerThermalForm` 拥有功耗、温度和电池采样。两者只运行 scheduler、缓存和 cache-only snapshot builder，不调用 `Show()`、不参与布局编辑；旧 Radar/Power renderer 已物理删除 |
 
-Network 的网络、GFW、云服务与 Clean IP 数据继续复用 `NetworkMonitorReader`、`GfwProbeReader`、`CloudEndpointProbe` 和 `CleanIpConnectionReader.Shared`，只投影到 Network Dock board；不存在独立连接检查窗口。`OperationForm` 启动时持有 Spec、Codex Task、GUARD、Codex IQ 四个 board，`NetworkMonitorForm` 持有 Network board，五者共同遵守固定左 Dock 拓扑。
+Network 的网络、GFW、云服务与 Clean IP 数据继续复用 `NetworkMonitorReader`、`GfwProbeReader`、`CloudEndpointProbe` 和 `CleanIpConnectionReader.Shared`，只投影到 Network Dock board；不存在独立连接检查窗口。`OperationForm` 启动时持有 Spec、Codex Task、GUARD、Codex IQ、重置与速蹬、系统日记六个 board，`NetworkMonitorForm` 持有 Network board，七者共同遵守固定左 Dock 拓扑。
 
 可见分层表面按职责复用 `ApplyRuntimeSettings`、`ForceRefresh`、`SetHiddenForFullscreen`、`RecoverAfterDisplayResume`、`PrepareForDisplaySuspend` 及共享交互/维护 tick。它们同时复用 `NativeMethods.LayeredBitmapSurface`、`UiFontCache`、`DesignTokens`、`BurnInProtection` 的位移/两级视觉策略、`LayeredWidgetFormBase.CurrentSettings` 与 `PresentationLuminancePercent`、内容变化判断和透明度-only 提交。防烧屏状态只由 hidden `WidgetForm` 发布：左 tab 在自身既有 poll 中消费，右 tile/expand 由 host 按整组命中分发；不得为单窗新增 timer 或恢复旧 `BurnInHiddenModeColorProtectionEnabled`。headless owners 另走显式 `StartHeadlessDataOwner` / `StopHeadlessDataOwner` 生命周期；Radar owner 还复用 `OwnerOperationGeneration` 和原子 published projection，迟到任务不能提交副作用。
 

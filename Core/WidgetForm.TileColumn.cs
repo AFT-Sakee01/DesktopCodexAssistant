@@ -3,11 +3,12 @@ using System.Collections.Generic;
 using System.Drawing;
 
 // Host side of the only retained metric presentation. WidgetForm stays hidden as the lifecycle and
-// sampler owner; the same per-tick snapshot is pushed into all ten tiles and the active expand panel.
+// sampler owner; the same per-tick snapshot is pushed into all eleven tiles and the active expand panel.
 // Nothing here starts a data timer — each tile's own hover poll is the only extra clock.
 internal sealed partial class WidgetForm
 {
     private readonly List<MetricTileForm> metricTileForms = new List<MetricTileForm>();
+    private readonly QuotaEasterEggTracker quotaEasterEggTracker = new QuotaEasterEggTracker();
     private MetricTileExpandForm metricTileExpandForm;
     private int hoveredMetricTileIndex = -1;
 
@@ -183,6 +184,13 @@ internal sealed partial class WidgetForm
             }
         }
 
+        feed.DeepSeekBalance = DeepSeekBalanceMonitor.GetSnapshot();
+        feed.DeepSeekService = DeepSeekServiceMonitor.GetSnapshot();
+        feed.QuotaEasterEgg = this.quotaEasterEggTracker.Update(
+            this.CurrentSettings == null || this.CurrentSettings.GeniusProgrammerEasterEggEnabled,
+            feed.CodexRadar,
+            feed.ClaudeRadar);
+
         return feed;
     }
 
@@ -243,7 +251,10 @@ internal sealed partial class WidgetForm
         this.hoveredMetricTileIndex = e.Index;
         MetricTileForm tile = this.metricTileForms[e.Index];
         Rectangle anchor = new Rectangle(tile.Location, tile.Size);
-        this.metricTileExpandForm.ShowForTile(MetricTileModel.AllOrder[e.Index], anchor, BuildMetricTileFeed());
+        MetricTileId id = MetricTileModel.AllOrder[e.Index];
+        MetricTileFeed feed = BuildMetricTileFeed();
+        bool showRevival = this.quotaEasterEggTracker.TryConsumeRevival(id);
+        this.metricTileExpandForm.ShowForTile(id, anchor, feed, showRevival);
 
         // Feed the panel's rect back to the owning tile so the pointer moving onto the panel still
         // counts as hovering; clear it on the others so they do not hold it open.

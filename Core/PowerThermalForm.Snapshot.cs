@@ -25,13 +25,23 @@ internal sealed class PowerStripSnapshot
     public int AlertCount;
     public double MaxCelsius;
     public double AvgCelsius;
+    // Full calibrated ACPI zone set for the System Day history. HotZones remains the alert-only
+    // compatibility projection used by the right-side power tile. RawName is retained because the
+    // short display label alone is insufficient for later peak/zone correlation and calibration.
+    public List<PowerStripZone> ThermalZones = new List<PowerStripZone>();
     public List<PowerStripZone> HotZones = new List<PowerStripZone>();
 }
 
 internal sealed class PowerStripZone
 {
+    public string RawName = string.Empty;
     public string Name = string.Empty;
     public double Celsius;
+
+    public PowerStripZone Clone()
+    {
+        return (PowerStripZone)this.MemberwiseClone();
+    }
 }
 
 internal sealed partial class PowerThermalForm
@@ -204,10 +214,31 @@ internal sealed partial class PowerThermalForm
         s.MaxCelsius = summary.MaxCelsius;
         s.AvgCelsius = summary.AvgCelsius;
 
+        for (int i = 0; i < this.cachedThermalReadings.Count; i++)
+        {
+            ThermalReading reading = this.cachedThermalReadings[i];
+            if (reading == null || string.IsNullOrWhiteSpace(reading.Name) || reading.Celsius <= 0.0)
+            {
+                continue;
+            }
+
+            s.ThermalZones.Add(new PowerStripZone
+            {
+                RawName = reading.Name.Trim(),
+                Name = FormatThermalSensorName(reading.Name),
+                Celsius = reading.Celsius
+            });
+        }
+        s.ThermalZones.Sort(delegate(PowerStripZone left, PowerStripZone right)
+        {
+            return right.Celsius.CompareTo(left.Celsius);
+        });
+
         for (int i = 0; i < alerts.Count; i++)
         {
             s.HotZones.Add(new PowerStripZone
             {
+                RawName = alerts[i].Name == null ? string.Empty : alerts[i].Name.Trim(),
                 Name = FormatThermalSensorName(alerts[i].Name),
                 Celsius = alerts[i].Celsius
             });

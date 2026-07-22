@@ -3357,6 +3357,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private void RequestDeepSeekServiceRefresh(string trigger)
     {
         DeepSeekServiceMonitor.RequestRefresh(trigger);
+        DeepSeekBalanceMonitor.RequestRefresh(trigger);
     }
 
     private void RefreshDeepSeekServiceIfNeeded()
@@ -3368,6 +3369,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         DeepSeekServiceMonitor.RefreshIfNeeded(
+            "codex_radar",
+            "定时间隔",
+            delegate
+            {
+                RequestCodexRadarRenderFromAnyThread(lease);
+            });
+        DeepSeekBalanceMonitor.RefreshIfNeeded(
             "codex_radar",
             "定时间隔",
             delegate
