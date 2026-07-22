@@ -1305,9 +1305,10 @@ internal sealed class WidgetSettings
         // User-confirmed default snapshot captured from settings.ini on 2026-07-06.
         // Runtime refresh/probe tokens stay on their original zero defaults so a fresh profile
         // does not inherit stale manual-refresh counters or force network probe side effects.
-        settings.Width = 628;
-        settings.Height = 414;
-        settings.LeftX = 2252;
+        // V1 final uses a two-thirds main widget, aligned to the shared right edge at 2880.
+        settings.Width = 419;
+        settings.Height = 276;
+        settings.LeftX = 2461;
         settings.BottomY = 1549;
         settings.BackgroundTransparencyPercent = 40;
         settings.ApplicationTransparencyPercent = 0;
@@ -1390,12 +1391,13 @@ internal sealed class WidgetSettings
         settings.CodexRadarIqRingOffsetY = 0;
         settings.CodexRadarIqTextOffsetX = 0;
         settings.CodexRadarIqTextOffsetY = 0;
-        settings.PowerThermalWidth = 120;
-        settings.PowerThermalHeight = 114;
-        settings.PowerThermalLeftX = 2760;
+        // Keep the V1 final power/thermal bar aligned with the compact main widget and Codex Radar.
+        settings.PowerThermalWidth = 419;
+        settings.PowerThermalHeight = 120;
+        settings.PowerThermalLeftX = 2461;
         settings.PowerThermalBottomY = 540;
         settings.PowerThermalTransparencyPercent = 30;
-        settings.PowerThermalAutoSizeEnabled = true;
+        settings.PowerThermalAutoSizeEnabled = false;
         settings.PowerThermalAutoDirection = PowerThermalAutoDirection.Down;
         settings.PowerThermalVisibleAlertCount = 8;
         settings.PowerThermalManualEnergySaverThresholdPercent = DefaultPowerThermalManualEnergySaverThresholdPercent;

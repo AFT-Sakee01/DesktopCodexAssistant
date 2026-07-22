@@ -1,78 +1,74 @@
-# Desktop Codex Assistant
+# Desktop Codex Assistant — V1 Legacy Final
 
-UX3407N / UX3607O tuned edition with public ARM64 and x64 builds. This software was created entirely by Codex.
+Release version: `1.0.5.68`
 
-This Windows desktop application provides a compact developer-assistance workspace with performance, Codex monitoring, power, thermal, network, and connectivity modules.
+This is the frozen V1 release for ASUS UX3407N / UX3607O-focused Windows desktop use. It preserves the classic multi-window layout: the performance widget, Codex Radar, Clean IP / connection check, power and thermal, and network monitor remain separate layered windows.
+
+The left edge has exactly two dock tabs: **Spec Board** and **Codex Task**. Network, GUARD, Codex IQ, the ten-tile topology, and headless Radar/Power owners belong to later versions and are intentionally not part of V1.
 
 ## Hardware support
 
-This branch is maintained with primary calibration for ASUS UX3407N and UX3607O Windows on Arm machines, and public binaries are provided for both ARM64 and x64 Windows.
+V1 is calibrated primarily for ASUS UX3407N and UX3607O Windows-on-Arm systems. Release assets are provided for ARM64 and x64 Windows.
 
-Other Windows machines may run with degraded or missing thermal, NPU, GPU, battery, or vendor-control data when their firmware or performance counters expose different interfaces.
+Other Windows machines may run with degraded or unavailable thermal, NPU, GPU, battery, or vendor-control data when firmware or performance counters expose different interfaces.
+
+## Install and run
+
+Download the matching architecture asset from the GitHub release, extract it to a dedicated folder, then run it directly:
+
+```powershell
+.\DesktopCodexAssistant-v1.0.5.68-arm64.exe
+.\DesktopCodexAssistant-v1.0.5.68-x64.exe
+```
+
+The application stores settings, logs, and caches under `%LOCALAPPDATA%\DesktopCodexAssistant`. On first launch it can migrate settings from `%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA` or `%LOCALAPPDATA%\DesktopPerfWidget-Lite` without overwriting newer files.
+
+Build from source:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPath .\Release\DesktopCodexAssistant-v1.0.5.68-arm64.exe -Platform arm64
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-X64.ps1 -OutputPath .\Release\DesktopCodexAssistant-v1.0.5.68-x64.exe
+```
+
+Useful checks:
+
+```powershell
+.\Release\DesktopCodexAssistant-v1.0.5.68-arm64.exe --test
+.\Release\DesktopCodexAssistant-v1.0.5.68-arm64.exe --test-layout
+.\Release\DesktopCodexAssistant-v1.0.5.68-arm64.exe --test-settings-bindings
+.\Release\DesktopCodexAssistant-v1.0.5.68-arm64.exe --test-operation-panel
+.\Release\DesktopCodexAssistant-v1.0.5.68-arm64.exe --test-codex-task-monitor
+```
+
+`--dump-codex-tasks` is read-only: it emits task status, model, numeric token usage, workspace leaf name, and official session title when available. It does not emit prompts, responses, or full session paths.
+
+## Data, services, and references
+
+The program uses the following third-party services for read-only status, quota, connectivity, or exit-profile checks. The machine-readable authority is [INTERFACE_INDEX.jsonl](Docs/Interfaces/INTERFACE_INDEX.jsonl).
+
+| Service | V1 purpose |
+|---|---|
+| [Codex Radar](https://codexradar.com/) | Codex service status, community model data, and Radar fallback data |
+| [OpenAI Status](https://status.openai.com/) / [Anthropic Status](https://status.claude.com/) | Official service-status summaries |
+| [Anthropic API](https://api.anthropic.com/) | Claude Code setup-token quota data and headers fallback |
+| [ChatGPT](https://chatgpt.com/) | Codex / ChatGPT usage and reset-credit data for a locally authenticated user |
+| [DeepSeek API](https://api.deepseek.com/) | Optional user-balance query when configured locally |
+| [Microsoft NCSI](http://www.msftconnecttest.com/connecttest.txt), [ipify](https://api.ipify.org/), [cleanip.io](https://cleanip.io/), [Cloudflare DoH](https://cloudflare-dns.com/dns-query) | Connectivity, public-IP, Clean IP, and DNS checks |
+
+Credentials are not committed to the repository. User configuration remains local under `%LOCALAPPDATA%\DesktopCodexAssistant`.
+
+## Third-party interoperability and acknowledgements
+
+- **[Seelen UI](https://github.com/eythaann/Seelen-UI)** (AGPL-3.0): V1 does not include, modify, link, or redistribute Seelen UI code. Optional actions only interact with a separately installed instance through process/window detection and its `slu.exe` CLI.
+- **OpenAI Codex CLI**: V1 uses the documented `codex app-server` protocol for quota-plan operations and reads local Codex session metadata for the task board.
+- **Anthropic Claude Code**: V1 can use a locally configured setup-token and a status-line cache bridge for quota display.
+- **[codex-monitor-hud](https://github.com/LH-03/codex-monitor-hud)** (MIT): the task-monitor presentation follows selected implementation ideas from this project.
+- **MyASUS / ASUS System Control Interface**: optional battery-care actions use the locally installed ASUS keyboard-host integration.
+- **CodexSleepGuard**: V1 can launch a separately installed companion script from its operation shortcuts; it is not bundled with this release.
 
 ## Seelen UI interoperability
 
-This project does not include, modify, link, or redistribute Seelen UI code. Optional Seelen UI actions only interoperate with a separately installed Seelen UI instance through process/window detection and the installed `slu.exe` command-line tool. Seelen UI is a separate project licensed under AGPL-3.0; its name is used only to describe interoperability.
-
-Kept:
-
-- Settings window
-- Performance widget panel
-- CodexRadar module
-
-Disabled:
-
-- Dock launcher
-- Launchpad
-- Top bar
-- Direct2D project
-
-Build:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-X64.ps1
-```
-
-Run:
-
-```powershell
-.\Release\DesktopCodexAssistant-arm64.exe
-.\Release\DesktopCodexAssistant-x64.exe
-```
-
-Operation panel self-test:
-
-```powershell
-.\DesktopCodexAssistant.exe --test-operation-panel
-```
-
-Codex task monitor backend diagnostics:
-
-```powershell
-.\DesktopCodexAssistant.exe --test-codex-task-monitor
-.\DesktopCodexAssistant.exe --dump-codex-tasks
-```
-
-The dump is read-only and emits task status, model, numeric token usage, the workspace leaf name, and the official Codex session title when available. It does not emit prompts, responses, or full session paths.
-
-Spec Board render samples:
-
-```powershell
-.\DesktopCodexAssistant.exe --render-specboard sample --out .\_build\specboard-sample
-.\DesktopCodexAssistant.exe --render-specboard current --out .\_build\specboard-current
-.\DesktopCodexAssistant.exe --test-specboard-manager
-```
-
-Radar runtime diagnosis:
-
-```powershell
-.\DesktopCodexAssistant.exe --diagnose-radar-runtime --diagnose-seconds 30
-```
-
-Logs and settings are stored under `%LOCALAPPDATA%\DesktopCodexAssistant`.
-
-When the renamed application starts for the first time, it migrates existing settings from `%LOCALAPPDATA%\CodexDeveloperAssistantWindowOnWOA` or `%LOCALAPPDATA%\DesktopPerfWidget-Lite` without overwriting newer files.
+Dock launcher, Launchpad, top bar, and the Direct2D project are disabled in V1. The settings window, performance widget, Codex Radar, and classic auxiliary windows remain available.
 
 ## Technical documentation
 
@@ -80,13 +76,11 @@ When the renamed application starts for the first time, it migrates existing set
 - [Hardware support policy](Docs/Hardware-Support.md)
 - [Performance modes and window runtime](Docs/Performance-And-Window-Runtime.md)
 - [Component refresh rules](Docs/Component-Refresh-Rules.md)
-- [Codex monitor architecture](Docs/CodexRadar-Architecture.md)
+- [Codex Radar architecture](Docs/CodexRadar-Architecture.md)
 - [Claude Radar architecture](Docs/Codex-ClaudeRadar-Architecture.md)
-- [Power and thermal window architecture](Docs/PowerThermal-Architecture.md)
+- [Power and thermal architecture](Docs/PowerThermal-Architecture.md)
 - [Network monitor architecture](Docs/NetworkMonitor-Architecture.md)
-- [Interface and reusable resource summary](Docs/Interface-And-Reuse-Resources.md)
+- [Spec Board architecture](Docs/SpecBoard-Architecture.md)
+- [Interface and reusable-resource summary](Docs/Interface-And-Reuse-Resources.md)
 - [Machine-readable interface index](Docs/Interfaces/INTERFACE_INDEX.jsonl)
 - [Machine-readable feature index](Docs/Indexes/FEATURE_INDEX.jsonl)
-- [Operation panel interaction and performance execution spec](Docs/Technical/OperationPanel-Interaction-And-Performance-SPEC-v1.0.2.64-20260616-030809.md)
-- [Spec Board architecture](Docs/SpecBoard-Architecture.md)
-- [Settings UI design alternatives](Docs/Technical/Codex-Settings-UI-Design-Alternatives-v1.0.2.91-20260627.md)
