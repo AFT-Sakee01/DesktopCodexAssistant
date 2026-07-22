@@ -1252,7 +1252,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 slider.Maximum = IsColumnButtonGapSetting(property.Name)
                     ? WidgetSettings.MaxColumnButtonGapPixels
                     : WidgetSettings.MaxColumnGroupOffsetY;
-                slider.Suffix = " px";
+                slider.Suffix = IsColumnButtonGapSetting(property.Name) ? "%" : " px";
+                slider.UseNumericInput = IsColumnButtonGapSetting(property.Name);
                 slider.ShowPositiveSign = IsColumnGroupOffsetSetting(property.Name);
                 slider.ValueChanged += delegate { OnSettingChanged(); };
                 return slider;
@@ -3106,12 +3107,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             SettingEditor editor = this.editors[sliderNames[i]];
             PercentSliderControl slider = editor.Control as PercentSliderControl;
-            if (slider == null || slider.Suffix != " px" || string.IsNullOrEmpty(slider.AccessibleLabel))
+            bool offset = IsColumnGroupOffsetSetting(sliderNames[i]);
+            string expectedSuffix = offset ? " px" : "%";
+            if (slider == null || slider.Suffix != expectedSuffix ||
+                slider.UseNumericInput == offset || string.IsNullOrEmpty(slider.AccessibleLabel))
             {
                 throw new InvalidOperationException("WinUI column range slider binding failed: " + sliderNames[i]);
             }
 
-            bool offset = IsColumnGroupOffsetSetting(sliderNames[i]);
             int expectedMinimum = offset ? WidgetSettings.MinColumnGroupOffsetY : WidgetSettings.MinColumnButtonGapPixels;
             int expectedMaximum = offset ? WidgetSettings.MaxColumnGroupOffsetY : WidgetSettings.MaxColumnButtonGapPixels;
             object original = editor.Property.GetValue(this.baseline, null);
@@ -3121,6 +3124,16 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 slider.ShowPositiveSign != offset)
             {
                 throw new InvalidOperationException("WinUI column range slider policy failed: " + sliderNames[i]);
+            }
+
+            if (!offset)
+            {
+                slider.SetNumericValueForSelfTest(expectedMaximum);
+                if (slider.Value != expectedMaximum ||
+                    Convert.ToInt32(GetEditorValue(editor), CultureInfo.InvariantCulture) != expectedMaximum)
+                {
+                    throw new InvalidOperationException("WinUI column spacing numeric input binding failed: " + sliderNames[i]);
+                }
             }
 
             SetEditorValue(editor, original);
@@ -3667,11 +3680,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { GlobalLayoutEditCommandName, "全局编辑" },
         { "LeftDockAutoArrangeEnabled", "自动排列左侧面板列" },
         { "LeftDockButtonOrder", "左侧按钮顺序" },
-        { "LeftDockButtonGapPixels", "左侧按钮间距" },
+        { "LeftDockButtonGapPixels", "左侧按钮分布间距（0–100）" },
         { "LeftDockGroupOffsetY", "左侧整列上下位置" },
         { "RightTileAutoArrangeEnabled", "自动排列右侧磁贴列" },
         { "RightTileButtonOrder", "右侧磁贴顺序" },
-        { "RightTileButtonGapPixels", "右侧磁贴间距" },
+        { "RightTileButtonGapPixels", "右侧磁贴分布间距（0–100）" },
         { "RightTileGroupOffsetY", "右侧整列上下位置" },
         { "MetricTileExpandWidth", "展开面板宽度" },
         { "MetricTileExpandHeight", "展开面板高度" },
@@ -3866,13 +3879,13 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ResolutionCompatibilityModeEnabled", "默认关闭。开启后按 2880x1800 参考布局投影 Operation、五个 Dock 与十枚磁贴/展开面板。" },
         { "ResolutionCompatibilityScalePercent", "运行时输出比例，低于 100% 压缩，高于 100% 放大；不会改写保存的真实布局坐标。" },
         { GlobalLayoutEditCommandName, "打开全屏布局编辑遮罩，显示 Operation、固定五个左侧停靠按钮与固定十枚右侧磁贴；Enter 保存，Esc 放弃。自动排列开启时拖动列成员会整体上下移动。" },
-        { "LeftDockAutoArrangeEnabled", "开启后按下方顺序和间距自动排列固定五个左侧梯形按钮；关闭后保留全局编辑器写入的单项位置。" },
+        { "LeftDockAutoArrangeEnabled", "开启后按下方顺序和分布间距自动排列固定五个左侧梯形按钮；关闭后保留全局编辑器写入的单项位置。" },
         { "LeftDockButtonOrder", "用上下箭头调整 Network、Spec、Codex Task、GUARD 与 Codex IQ 五个固定按钮的排列顺序。" },
-        { "LeftDockButtonGapPixels", "相邻左侧梯形按钮之间的真实屏幕像素间距。" },
+        { "LeftDockButtonGapPixels", "可拖动滑块或直接输入 0–100；0 让按钮紧挨，100 让整列从工作区顶部到底部均匀分布，中间值按比例展开。" },
         { "LeftDockGroupOffsetY", "把全部左侧按钮视为一个整体，相对屏幕垂直居中位置上下移动；0 为居中，负值向上。" },
-        { "RightTileAutoArrangeEnabled", "开启后按下方顺序和间距自动排列固定十枚右缘磁贴；关闭后保留全局编辑器写入的单项位置。" },
+        { "RightTileAutoArrangeEnabled", "开启后按下方顺序和分布间距自动排列固定十枚右缘磁贴；关闭后保留全局编辑器写入的单项位置。" },
         { "RightTileButtonOrder", "用上下箭头调整 CPU、内存、磁盘、网络、GPU、NPU、功耗、GUARD、Codex 额度与 Claude 额度十枚磁贴的顺序。" },
-        { "RightTileButtonGapPixels", "相邻右侧磁贴之间的真实屏幕像素间距，普通和大窗口模式使用同一数值。" },
+        { "RightTileButtonGapPixels", "可拖动滑块或直接输入 0–100；0 让磁贴紧挨，100 让整列从工作区顶部到底部均匀分布，中间值按比例展开。" },
         { "RightTileGroupOffsetY", "把全部右侧方块窗口视为一个整体，相对屏幕垂直居中位置上下移动；0 为居中，正值向下。" },
         { "SpecBoardWidth", "逻辑像素，范围 320-700。" },
         { "SpecBoardHeight", "逻辑像素，范围 240-800。" },
@@ -4265,9 +4278,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     {
         private readonly TrackBar trackBar;
         private readonly Label valueLabel;
+        private readonly NumericUpDown numericInput;
         private bool suppressChanged;
         private string suffix = "%";
         private bool showPositiveSign;
+        private bool useNumericInput;
 
         public event EventHandler ValueChanged;
 
@@ -4291,7 +4306,24 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             this.valueLabel.ForeColor = TextSecondary;
             this.valueLabel.BackColor = Color.Transparent;
 
+            this.numericInput = new NumericUpDown();
+            this.numericInput.AutoSize = false;
+            this.numericInput.Width = 82;
+            this.numericInput.Height = Math.Max(30, TextRenderer.MeasureText("100", labelFont).Height + 12);
+            this.numericInput.DecimalPlaces = 0;
+            this.numericInput.Minimum = 0;
+            this.numericInput.Maximum = 100;
+            this.numericInput.Increment = 1;
+            this.numericInput.TextAlign = HorizontalAlignment.Right;
+            this.numericInput.BorderStyle = BorderStyle.FixedSingle;
+            this.numericInput.BackColor = ControlBg;
+            this.numericInput.ForeColor = TextPrimary;
+            this.numericInput.Font = labelFont;
+            this.numericInput.Visible = false;
+            this.numericInput.ValueChanged += OnNumericInputValueChanged;
+
             this.Controls.Add(this.trackBar);
+            this.Controls.Add(this.numericInput);
             this.Controls.Add(this.valueLabel);
             this.Height = 54;
             UpdateValueLabel();
@@ -4303,6 +4335,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             set
             {
                 this.trackBar.Minimum = value;
+                this.numericInput.Minimum = value;
                 if (this.trackBar.Value < value)
                 {
                     this.trackBar.Value = value;
@@ -4316,6 +4349,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             set
             {
                 this.trackBar.Maximum = value;
+                this.numericInput.Maximum = value;
                 if (this.trackBar.Value > value)
                 {
                     this.trackBar.Value = value;
@@ -4348,6 +4382,22 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             }
         }
 
+        public bool UseNumericInput
+        {
+            get { return this.useNumericInput; }
+            set
+            {
+                this.useNumericInput = value;
+                this.numericInput.Visible = value;
+                this.valueLabel.TextAlign = value
+                    ? ContentAlignment.MiddleLeft
+                    : ContentAlignment.MiddleRight;
+                UpdateAccessibility();
+                UpdateValueLabel();
+                OnResize(EventArgs.Empty);
+            }
+        }
+
         public string AccessibleLabel
         {
             get { return this.trackBar.AccessibleName ?? string.Empty; }
@@ -4355,10 +4405,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             {
                 string label = value ?? string.Empty;
                 this.trackBar.AccessibleName = label;
-                this.trackBar.AccessibleDescription = label.Length == 0
-                    ? string.Empty
-                    : label + "，使用方向键微调，Page Up 或 Page Down 大步调整。";
-                this.valueLabel.AccessibleName = label.Length == 0 ? string.Empty : label + " 当前值";
+                UpdateAccessibility();
             }
         }
 
@@ -4369,6 +4416,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             try
             {
                 this.trackBar.Value = next;
+                this.numericInput.Value = next;
                 UpdateValueLabel();
             }
             finally
@@ -4377,19 +4425,58 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             }
         }
 
+        public void SetNumericValueForSelfTest(int value)
+        {
+            if (!this.useNumericInput)
+            {
+                throw new InvalidOperationException("Numeric input is not enabled for this slider.");
+            }
+
+            int next = Math.Max(this.trackBar.Minimum, Math.Min(this.trackBar.Maximum, value));
+            this.numericInput.Value = next;
+        }
+
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
-            int labelWidth = 90;
             int gap = 8;
-            int trackWidth = Math.Max(80, this.Width - labelWidth - gap);
             int top = Math.Max(0, (this.Height - this.trackBar.Height) / 2);
-            this.trackBar.SetBounds(0, top, trackWidth, this.trackBar.Height);
-            this.valueLabel.SetBounds(trackWidth + gap, 0, labelWidth, this.Height);
+            if (this.useNumericInput)
+            {
+                int inputWidth = 82;
+                int suffixWidth = 28;
+                int trackWidth = Math.Max(80, this.Width - inputWidth - suffixWidth - gap * 2);
+                int inputTop = Math.Max(0, (this.Height - this.numericInput.Height) / 2);
+                this.trackBar.SetBounds(0, top, trackWidth, this.trackBar.Height);
+                this.numericInput.SetBounds(trackWidth + gap, inputTop, inputWidth, this.numericInput.Height);
+                this.valueLabel.SetBounds(trackWidth + gap + inputWidth + gap, 0, suffixWidth, this.Height);
+            }
+            else
+            {
+                int labelWidth = 90;
+                int trackWidth = Math.Max(80, this.Width - labelWidth - gap);
+                this.trackBar.SetBounds(0, top, trackWidth, this.trackBar.Height);
+                this.numericInput.SetBounds(trackWidth + gap, 0, 0, 0);
+                this.valueLabel.SetBounds(trackWidth + gap, 0, labelWidth, this.Height);
+            }
         }
 
         private void OnTrackBarValueChanged(object sender, EventArgs e)
         {
+            if (this.numericInput.Value != this.trackBar.Value)
+            {
+                bool previousSuppression = this.suppressChanged;
+                this.suppressChanged = true;
+                try
+                {
+                    this.numericInput.Value = this.trackBar.Value;
+                }
+                finally
+                {
+                    this.suppressChanged = previousSuppression;
+                }
+            }
+
             UpdateValueLabel();
             if (!this.suppressChanged && this.ValueChanged != null)
             {
@@ -4397,11 +4484,51 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             }
         }
 
+        private void OnNumericInputValueChanged(object sender, EventArgs e)
+        {
+            int value = Decimal.ToInt32(this.numericInput.Value);
+            if (this.trackBar.Value != value)
+            {
+                bool previousSuppression = this.suppressChanged;
+                this.suppressChanged = true;
+                try
+                {
+                    this.trackBar.Value = value;
+                }
+                finally
+                {
+                    this.suppressChanged = previousSuppression;
+                }
+            }
+
+            UpdateValueLabel();
+            if (!this.suppressChanged && this.ValueChanged != null)
+            {
+                this.ValueChanged(this, EventArgs.Empty);
+            }
+        }
+
+        private void UpdateAccessibility()
+        {
+            string label = this.trackBar.AccessibleName ?? string.Empty;
+            this.trackBar.AccessibleDescription = label.Length == 0
+                ? string.Empty
+                : label + (this.useNumericInput
+                    ? "，可拖动滑块、使用方向键，或在数字框中直接输入。"
+                    : "，使用方向键微调，Page Up 或 Page Down 大步调整。");
+            this.numericInput.AccessibleName = label.Length == 0 ? string.Empty : label + " 数字输入";
+            this.valueLabel.AccessibleName = label.Length == 0
+                ? string.Empty
+                : label + (this.useNumericInput ? " 单位" : " 当前值");
+        }
+
         private void UpdateValueLabel()
         {
             int value = this.trackBar.Value;
             string prefix = this.showPositiveSign && value > 0 ? "+" : string.Empty;
-            this.valueLabel.Text = prefix + value.ToString(CultureInfo.InvariantCulture) + this.suffix;
+            this.valueLabel.Text = this.useNumericInput
+                ? this.suffix
+                : prefix + value.ToString(CultureInfo.InvariantCulture) + this.suffix;
         }
     }
 

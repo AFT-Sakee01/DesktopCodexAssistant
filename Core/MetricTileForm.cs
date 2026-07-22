@@ -57,7 +57,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     private struct AutoTileLayoutMetrics
     {
         public int TilePixels;
-        public int GapPixels;
+        public int DistributedWhitespacePixels;
     }
 
     // Raised when the pointer enters or leaves this tile. The host turns it into expand/collapse.
@@ -137,9 +137,13 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     {
         if (settings != null && settings.RightTileAutoArrangeEnabled)
         {
-            return Math.Max(
-                WidgetSettings.MinColumnButtonGapPixels,
-                Math.Min(WidgetSettings.MaxColumnButtonGapPixels, settings.RightTileButtonGapPixels));
+            Rectangle workArea = settings.GetWorkAreaForModule(WidgetSettings.ModuleMain);
+            int count = ResolveEnabledTileOrder(settings).Length;
+            AutoTileLayoutMetrics metrics = ResolveAutoTileLayoutMetrics(settings, workArea, count);
+            return EdgeColumnSpacing.ResolveGapAfterIndex(
+                metrics.DistributedWhitespacePixels,
+                0,
+                Math.Max(0, count - 1));
         }
 
         int px = settings != null && settings.MainWidgetTileLargeModeEnabled ? TileLargePixels : TileCompactPixels;
@@ -166,10 +170,9 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         return GetRequestedTilePixels(settings);
     }
 
-    // Fitting is deliberately lexicographic: retain the requested tile size and consume gap first;
-    // only when zero gap still cannot fit do we shrink the tile. This preserves both the large-mode
-    // hit target and custom spacing whenever the work area permits, while guaranteeing a reachable,
-    // non-overlapping column on short displays. Manual layout never calls this resolver.
+    // Automatic mode retains the requested tile size whenever the bodies fit, then uses 0-100% of
+    // the remaining work-area height as distributed whitespace. Only when the bodies themselves do
+    // not fit do we shrink them. Manual layout never calls this resolver.
     private static AutoTileLayoutMetrics ResolveAutoTileLayoutMetrics(
         WidgetSettings settings,
         Rectangle workArea,
@@ -180,45 +183,38 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         if (enabledCount <= 0)
         {
             metrics.TilePixels = requestedPixels;
-            metrics.GapPixels = 0;
+            metrics.DistributedWhitespacePixels = 0;
             return metrics;
         }
 
         int availableWidth = Math.Max(1, workArea.Width);
         int availableHeight = Math.Max(enabledCount, workArea.Height);
         int tilePixels = Math.Min(requestedPixels, availableWidth);
-        int requestedGap = GetTileGapPixels(settings);
-        int gapPixels = requestedGap;
-
-        long requestedHeight = (long)tilePixels * enabledCount +
-            (long)gapPixels * Math.Max(0, enabledCount - 1);
-        if (requestedHeight > availableHeight && enabledCount > 1)
+        if ((long)tilePixels * enabledCount > availableHeight)
         {
-            // First spend all optional separation. Integer division is deterministic and any spare
-            // remainder stays below the column rather than producing inconsistent per-slot gaps.
-            gapPixels = Math.Max(0, Math.Min(
-                requestedGap,
-                (availableHeight - tilePixels * enabledCount) / (enabledCount - 1)));
-        }
-
-        if ((long)tilePixels * enabledCount +
-            (long)gapPixels * Math.Max(0, enabledCount - 1) > availableHeight)
-        {
-            // Even zero gap cannot retain the requested (possibly 120 px) mode. Use the largest
+            // Even touching tiles cannot retain the requested (possibly 120 px) mode. Use the largest
             // common square that fits every enabled tile. On any work area with N*24 px available,
             // this remains at least MinimumComfortableAutoTilePixels.
             tilePixels = Math.Max(1, Math.Min(tilePixels, availableHeight / enabledCount));
-            gapPixels = 0;
         }
 
+        int distributedWhitespace = 0;
         if (enabledCount == 1)
         {
             tilePixels = Math.Max(1, Math.Min(tilePixels, availableHeight));
-            gapPixels = 0;
+        }
+        else
+        {
+            int spacingPercent = Math.Max(
+                WidgetSettings.MinColumnButtonGapPixels,
+                Math.Min(WidgetSettings.MaxColumnButtonGapPixels, settings.RightTileButtonGapPixels));
+            distributedWhitespace = EdgeColumnSpacing.ResolveDistributedWhitespacePixels(
+                spacingPercent,
+                availableHeight - tilePixels * enabledCount);
         }
 
         metrics.TilePixels = tilePixels;
-        metrics.GapPixels = gapPixels;
+        metrics.DistributedWhitespacePixels = distributedWhitespace;
         return metrics;
     }
 
@@ -273,8 +269,9 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
 
         AutoTileLayoutMetrics metrics = ResolveAutoTileLayoutMetrics(settings, workArea, order.Length);
         int px = metrics.TilePixels;
-        int gap = metrics.GapPixels;
-        int totalHeight = px * order.Length + gap * (order.Length - 1);
+        int distributedWhitespace = metrics.DistributedWhitespacePixels;
+        int gapCount = Math.Max(0, order.Length - 1);
+        int totalHeight = px * order.Length + distributedWhitespace;
         int offsetY = Math.Max(
             WidgetSettings.MinColumnGroupOffsetY,
             Math.Min(WidgetSettings.MaxColumnGroupOffsetY, settings.RightTileGroupOffsetY));
@@ -286,7 +283,11 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         for (int i = 0; i < order.Length; i++)
         {
             bounds[i] = new Rectangle(left, top, px, px);
-            top += px + gap;
+            top += px;
+            if (i < order.Length - 1)
+            {
+                top += EdgeColumnSpacing.ResolveGapAfterIndex(distributedWhitespace, i, gapCount);
+            }
         }
 
         return bounds;
@@ -1207,12 +1208,16 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         Rectangle testWorkArea = new Rectangle(-1920, 40, 1920, 1760);
         int[] arrangedOrder = ResolveEnabledTileOrder(arranged);
         Rectangle[] arrangedBounds = ResolveAutoTileBounds(arranged, testWorkArea);
+        int arrangedWhitespace = EdgeColumnSpacing.ResolveDistributedWhitespacePixels(
+            arranged.RightTileButtonGapPixels,
+            testWorkArea.Height - arrangedBounds.Length * arrangedBounds[0].Height);
         if (arrangedOrder.Length != MetricTileModel.AllTileCount ||
             arrangedOrder[0] != WidgetSettings.IndexOfMetricTile("ClaudeQuota") ||
             arrangedOrder[1] != WidgetSettings.IndexOfMetricTile("Cpu") ||
-            arrangedBounds[1].Top - arrangedBounds[0].Bottom != 21)
+            arrangedBounds[1].Top - arrangedBounds[0].Bottom !=
+                EdgeColumnSpacing.ResolveGapAfterIndex(arrangedWhitespace, 0, arrangedBounds.Length - 1))
         {
-            throw new InvalidOperationException("Right tile custom order, enabled filtering, or gap self-test failed.");
+            throw new InvalidOperationException("Right tile custom order, enabled filtering, or percentage spacing self-test failed.");
         }
 
         Rectangle centeredGroup = ResolveAutoTileGroupBounds(arranged, testWorkArea);
@@ -1239,8 +1244,8 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Right tile group offset must clamp the whole column inside the work area.");
         }
 
-        // Large mode + an extreme requested gap first compresses only the gap. There is enough room
-        // for all ten 120 px tiles, but not for nine 80 px gaps, so the hit targets must stay large.
+        // At 100, all remaining height becomes evenly distributed whitespace while the requested
+        // 120 px tile bodies remain intact whenever those bodies fit.
         WidgetSettings extremeGap = arranged.Clone();
         extremeGap.MainWidgetTileLargeModeEnabled = true;
         extremeGap.RightTileButtonGapPixels = WidgetSettings.MaxColumnButtonGapPixels;
@@ -1249,10 +1254,12 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         Rectangle[] gapLimitedBounds = ResolveAutoTileBounds(extremeGap, gapLimitedWorkArea);
         AssertAutoColumnReachable(extremeGap, gapLimitedWorkArea, "large/extreme-gap auto column");
         if (gapLimitedBounds[0].Width != TileLargePixels ||
+            gapLimitedBounds[0].Top != gapLimitedWorkArea.Top ||
+            gapLimitedBounds[gapLimitedBounds.Length - 1].Bottom != gapLimitedWorkArea.Bottom ||
             gapLimitedBounds[1].Top - gapLimitedBounds[0].Bottom != 5)
         {
             throw new InvalidOperationException(
-                "An extreme gap must compress before a reachable 120 px large-mode tile is resized.");
+                "Right tile 100 spacing must cover the full work area without resizing fitting tile bodies.");
         }
 
         // On a genuinely short work area even zero gap cannot fit 120 px. The resolver therefore

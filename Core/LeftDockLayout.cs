@@ -2,6 +2,62 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 
+// Shared by both edge columns so 0/100 and integer remainder handling have one definition.
+// The persisted setting names retain their historical "Pixels" suffix for compatibility, but
+// their values now represent the percentage of currently available vertical whitespace to use.
+internal static class EdgeColumnSpacing
+{
+    internal static int ResolveDistributedWhitespacePixels(int spacingPercent, int availableWhitespacePixels)
+    {
+        int percent = Math.Max(
+            WidgetSettings.MinColumnButtonGapPixels,
+            Math.Min(WidgetSettings.MaxColumnButtonGapPixels, spacingPercent));
+        int available = Math.Max(0, availableWhitespacePixels);
+        return (int)(((long)available * percent + 50L) / 100L);
+    }
+
+    internal static int ResolveGapAfterIndex(int distributedWhitespacePixels, int gapIndex, int gapCount)
+    {
+        if (distributedWhitespacePixels <= 0 || gapCount <= 0 || gapIndex < 0 || gapIndex >= gapCount)
+        {
+            return 0;
+        }
+
+        // Cumulative division guarantees an exact total and keeps all gaps within one pixel.
+        long before = (long)distributedWhitespacePixels * gapIndex / gapCount;
+        long after = (long)distributedWhitespacePixels * (gapIndex + 1) / gapCount;
+        return (int)(after - before);
+    }
+
+    internal static void RunSelfTest()
+    {
+        if (ResolveDistributedWhitespacePixels(0, 731) != 0 ||
+            ResolveDistributedWhitespacePixels(100, 731) != 731 ||
+            ResolveDistributedWhitespacePixels(50, 731) != 366)
+        {
+            throw new InvalidOperationException("Edge column spacing percentage self-test failed.");
+        }
+
+        int total = 50;
+        int count = 9;
+        int sum = 0;
+        int minimum = int.MaxValue;
+        int maximum = int.MinValue;
+        for (int i = 0; i < count; i++)
+        {
+            int gap = ResolveGapAfterIndex(total, i, count);
+            sum += gap;
+            minimum = Math.Min(minimum, gap);
+            maximum = Math.Max(maximum, gap);
+        }
+
+        if (sum != total || maximum - minimum > 1)
+        {
+            throw new InvalidOperationException("Edge column spacing remainder distribution self-test failed.");
+        }
+    }
+}
+
 internal static class LeftDockLayout
 {
     private const int LogicalGap = 10;
@@ -186,6 +242,8 @@ internal static class LeftDockLayout
 
     internal static void RunSelfTest()
     {
+        EdgeColumnSpacing.RunSelfTest();
+
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.ResolutionCompatibilityModeEnabled = true;
         settings.ResolutionCompatibilityScalePercent = 100;
@@ -223,11 +281,11 @@ internal static class LeftDockLayout
         constrained.CodexIqBoardScaleOverridePercent = 200;
         Rectangle gapLimitedWorkArea = new Rectangle(0, 0, 800, 360);
         Rectangle[] gapLimited = ResolveAutoTabBounds(constrained, gapLimitedWorkArea, 1.0f);
-        if (gapLimited.Length != 5 || gapLimited[0].Top < gapLimitedWorkArea.Top ||
-            gapLimited[gapLimited.Length - 1].Bottom > gapLimitedWorkArea.Bottom ||
+        if (gapLimited.Length != 5 || gapLimited[0].Top != gapLimitedWorkArea.Top ||
+            gapLimited[gapLimited.Length - 1].Bottom != gapLimitedWorkArea.Bottom ||
             gapLimited[1].Top - gapLimited[0].Bottom != 15)
         {
-            throw new InvalidOperationException("Left dock automatic layout must reduce an impossible custom gap to keep every tab reachable.");
+            throw new InvalidOperationException("Left dock 100 spacing must distribute the queue across the full work area.");
         }
 
         Rectangle bodyLimitedWorkArea = new Rectangle(0, 0, 800, 240);
@@ -254,19 +312,44 @@ internal static class LeftDockLayout
         arranged.GuardBoardLeftDockEnabled = false;
         Rectangle[] compact = ResolveAutoTabBounds(arranged, workArea, 1.0f);
         EdgeDockTabRole[] compactRoles = ResolveEnabledQueue(arranged);
+        int compactBodyHeight = 0;
+        for (int i = 0; i < compact.Length; i++) compactBodyHeight += compact[i].Height;
+        int compactWhitespace = EdgeColumnSpacing.ResolveDistributedWhitespacePixels(
+            arranged.LeftDockButtonGapPixels,
+            workArea.Height - compactBodyHeight);
         if (compact.Length != 5 || compactRoles.Length != 5 ||
             compactRoles[0] != EdgeDockTabRole.CodexIq ||
             compactRoles[1] != EdgeDockTabRole.Network ||
             compactRoles[2] != EdgeDockTabRole.Guard ||
             compactRoles[3] != EdgeDockTabRole.SpecBoard ||
             compactRoles[4] != EdgeDockTabRole.CodexTask ||
-            compact[1].Top - compact[0].Bottom != 27 ||
-            compact[2].Top - compact[1].Bottom != 27 ||
-            compact[3].Top - compact[2].Bottom != 27 ||
-            compact[4].Top - compact[3].Bottom != 27)
+            compact[1].Top - compact[0].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 0, 4) ||
+            compact[2].Top - compact[1].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 1, 4) ||
+            compact[3].Top - compact[2].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 2, 4) ||
+            compact[4].Top - compact[3].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 3, 4))
         {
-            throw new InvalidOperationException("Left dock fixed-five custom order or gap self-test failed.");
+            throw new InvalidOperationException("Left dock fixed-five custom order or percentage spacing self-test failed.");
         }
+
+        arranged.LeftDockButtonGapPixels = 0;
+        Rectangle[] adjacent = ResolveAutoTabBounds(arranged, workArea, 1.0f);
+        for (int i = 1; i < adjacent.Length; i++)
+        {
+            if (adjacent[i].Top != adjacent[i - 1].Bottom)
+            {
+                throw new InvalidOperationException("Left dock zero spacing must keep adjacent buttons touching.");
+            }
+        }
+
+        arranged.LeftDockButtonGapPixels = 100;
+        Rectangle[] fullyDistributed = ResolveAutoTabBounds(arranged, workArea, 1.0f);
+        if (fullyDistributed[0].Top != workArea.Top ||
+            fullyDistributed[fullyDistributed.Length - 1].Bottom != workArea.Bottom)
+        {
+            throw new InvalidOperationException("Left dock 100 spacing must cover the full work-area height.");
+        }
+
+        arranged.LeftDockButtonGapPixels = 27;
 
         Rectangle centeredGroup = ResolveAutoTabGroupBounds(arranged, workArea, 1.0f);
         arranged.LeftDockGroupOffsetY = 100;
@@ -305,9 +388,9 @@ internal static class LeftDockLayout
 
             if (i > 0 &&
                 sharedOffsetRuntime[i].Y - (sharedOffsetRuntime[i - 1].Y + sharedOffsetBase[i - 1].Height) !=
-                arranged.LeftDockButtonGapPixels)
+                sharedOffsetBase[i].Top - sharedOffsetBase[i - 1].Bottom)
             {
-                throw new InvalidOperationException("Left dock shared burn-in movement must preserve configured button gaps.");
+                throw new InvalidOperationException("Left dock shared burn-in movement must preserve resolved button gaps.");
             }
         }
 
@@ -348,18 +431,18 @@ internal static class LeftDockLayout
     }
 
     // Returns visible tab bounds in the same order as ResolveEnabledQueue. Automatic layout is an
-    // all-or-nothing column: disabled roles consume no slot, and order/gap/offset move the active
+    // all-or-nothing column: disabled roles consume no slot, and order/spacing/offset move the active
     // buttons without rewriting their legacy per-role centre coordinates.
     internal static Rectangle[] ResolveAutoTabBounds(WidgetSettings settings, Rectangle workArea, float dpiScale)
     {
         EdgeDockTabRole[] roles = ResolveEnabledQueue(settings);
-        int gap = Math.Max(
+        int spacingPercent = Math.Max(
             WidgetSettings.MinColumnButtonGapPixels,
             Math.Min(WidgetSettings.MaxColumnButtonGapPixels, settings.LeftDockButtonGapPixels));
         int offsetY = Math.Max(
             WidgetSettings.MinColumnGroupOffsetY,
             Math.Min(WidgetSettings.MaxColumnGroupOffsetY, settings.LeftDockGroupOffsetY));
-        return ResolveTabBoundsForRoles(settings, roles, workArea, dpiScale, gap, offsetY);
+        return ResolveTabBoundsForRoles(settings, roles, workArea, dpiScale, spacingPercent, offsetY, true);
     }
 
     internal static Rectangle ResolveAutoTabGroupBounds(WidgetSettings settings, Rectangle workArea, float dpiScale)
@@ -444,8 +527,9 @@ internal static class LeftDockLayout
         EdgeDockTabRole[] roles,
         Rectangle workArea,
         float dpiScale,
-        int gap,
-        int offsetY)
+        int spacingValue,
+        int offsetY,
+        bool spacingUsesAvailableWhitespacePercent)
     {
         if (roles == null || roles.Length == 0)
         {
@@ -456,17 +540,28 @@ internal static class LeftDockLayout
         Size[] sizes = ResolveAutoTabSizes(settings, roles, workArea, dpiScale);
         int memberHeight = 0;
         for (int i = 0; i < sizes.Length; i++) memberHeight += sizes[i].Height;
-        int effectiveGap = roles.Length <= 1
-            ? 0
-            : Math.Min(Math.Max(0, gap), Math.Max(0, (workArea.Height - memberHeight) / (roles.Length - 1)));
-        int totalHeight = memberHeight + effectiveGap * (roles.Length - 1);
+        int gapCount = Math.Max(0, roles.Length - 1);
+        int availableWhitespace = Math.Max(0, workArea.Height - memberHeight);
+        int distributedWhitespace = 0;
+        if (gapCount > 0)
+        {
+            distributedWhitespace = spacingUsesAvailableWhitespacePercent
+                ? EdgeColumnSpacing.ResolveDistributedWhitespacePixels(spacingValue, availableWhitespace)
+                : Math.Min(Math.Max(0, spacingValue), availableWhitespace / gapCount) * gapCount;
+        }
+
+        int totalHeight = memberHeight + distributedWhitespace;
 
         int top = workArea.Top + (workArea.Height - totalHeight) / 2 + offsetY;
         top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - totalHeight)));
         for (int i = 0; i < roles.Length; i++)
         {
             bounds[i] = new Rectangle(workArea.Left, top, sizes[i].Width, sizes[i].Height);
-            top += sizes[i].Height + effectiveGap;
+            top += sizes[i].Height;
+            if (i < roles.Length - 1)
+            {
+                top += EdgeColumnSpacing.ResolveGapAfterIndex(distributedWhitespace, i, gapCount);
+            }
         }
 
         return bounds;
@@ -494,7 +589,7 @@ internal static class LeftDockLayout
             return sizes;
         }
 
-        // A custom gap is reduced first by ResolveTabBoundsForRoles. If the tab bodies alone still
+        // Optional whitespace naturally collapses to zero first. If the tab bodies alone still
         // exceed a very short work area, proportionally compact every member so none becomes
         // unreachable. This is an emergency responsive fallback; normal 40-200% role scales retain
         // their requested size on supported desktop work areas.
@@ -520,7 +615,8 @@ internal static class LeftDockLayout
             workArea,
             dpiScale,
             gap,
-            0);
+            0,
+            false);
         int index = DefaultRoleIndex(role);
         return bounds[index].Top + bounds[index].Height / 2;
     }

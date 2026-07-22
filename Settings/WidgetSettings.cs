@@ -168,8 +168,10 @@ internal sealed class WidgetSettings
     // Left-edge dock: -1 tab centers mean "auto", resolved at show time to a centered queue so the
     // tabs never overlap out of the box. Codex IQ is the fifth member and sits after GUARD.
     public const int AutoLeftDockTabCenterY = -1;
+    // The persisted property names keep the historical Pixels suffix for settings.ini compatibility.
+    // Values are distribution percentages: 0 touches and 100 consumes all available edge whitespace.
     public const int MinColumnButtonGapPixels = 0;
-    public const int MaxColumnButtonGapPixels = 80;
+    public const int MaxColumnButtonGapPixels = 100;
     public const int MinColumnGroupOffsetY = -1000;
     public const int MaxColumnGroupOffsetY = 1000;
     public const int DefaultLeftDockButtonGapPixels = 10;
@@ -288,7 +290,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 89;
+    private const int CurrentSettingsVersion = 90;
     private const int RetiredCanonicalSettingsCount = 98;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -2394,6 +2396,14 @@ internal sealed class WidgetSettings
             // Version 89 introduces the rebuilt two-level burn-in policy. Defaults are already
             // present in memory; the canonical rewrite makes the new opt-out and both thresholds
             // explicit without ever consulting the permanently retired v88 colour-protection key.
+            saveAfterMigration = true;
+        }
+
+        if (sourceFileExists && settingsVersion < 90)
+        {
+            // Version 90 reinterprets the legacy-named gap fields as 0-100 distribution values.
+            // Existing numeric choices remain valid and are preserved; the canonical rewrite records
+            // the new contract while the wider upper bound makes full-edge distribution selectable.
             saveAfterMigration = true;
         }
 
@@ -4689,6 +4699,7 @@ internal sealed class WidgetSettings
         RunChinaEgressGuardSchema87MigrationSelfTest();
         RunHiddenColorProtectionSchema88MigrationSelfTest();
         RunBurnInProtectionSchema89MigrationSelfTest();
+        RunColumnSpacingSchema90MigrationSelfTest();
         RunCodexTaskMonitorSettingsSelfTest();
         RunSpecBoardSettingsSelfTest();
         RunCodexIqBoardSettingsSelfTest();
@@ -5466,7 +5477,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 Array.Exists(
                     migratedLines,
-                    delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }),
+                    delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }),
                 "retired settings migration should atomically rewrite the current schema");
             AssertLayout(!File.Exists(path + ".tmp"), "retired settings migration should not leave a temp file");
 
@@ -5584,7 +5595,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 Array.Exists(
                     migratedLines,
-                    delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }),
+                    delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }),
                 "schema 86 retired-key migration should atomically rewrite Version=85 input to the current schema");
             AssertLayout(!File.Exists(path + ".tmp"), "schema 86 migration should not leave a temp file");
 
@@ -5638,7 +5649,7 @@ internal sealed class WidgetSettings
                 string.Equals(versionless.NetworkMonitorAdapterId, "versionless-retained-adapter", StringComparison.Ordinal) &&
                 Array.Exists(
                     versionlessLines,
-                    delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }) &&
+                    delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
                 !Array.Exists(
                     versionlessLines,
                     delegate(string line)
@@ -5675,7 +5686,7 @@ internal sealed class WidgetSettings
             string[] defaultLines = File.ReadAllLines(defaultPath);
             AssertLayout(
                 migratedDefault.AiChinaEgressGuardEnabled &&
-                Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }) &&
+                Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
                 Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "AiChinaEgressGuardEnabled=True", StringComparison.Ordinal); }) &&
                 !File.Exists(defaultPath + ".tmp"),
                 "schema 87 migration should atomically persist the enabled guard default");
@@ -5691,7 +5702,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 !migratedDisabled.AiChinaEgressGuardEnabled &&
                 !roundTrip.AiChinaEgressGuardEnabled &&
-                Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }) &&
+                Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
                 Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "AiChinaEgressGuardEnabled=False", StringComparison.Ordinal); }) &&
                 !File.Exists(disabledPath + ".tmp"),
                 "schema 87 migration should preserve an explicit disabled guard");
@@ -5702,7 +5713,7 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("China-egress guard migration: PASS source=86 feature=87 target=89 default-on explicit-off atomic round-trip");
+        Console.WriteLine("China-egress guard migration: PASS source=86 feature=87 target=90 default-on explicit-off atomic round-trip");
     }
 
     private static void RunHiddenColorProtectionSchema88MigrationSelfTest()
@@ -5735,7 +5746,7 @@ internal sealed class WidgetSettings
                 !roundTrip.HoverOpacityEnabled,
                 "schema 88 migration should preserve unrelated hidden-opacity settings");
             AssertLayout(
-                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }) &&
+                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
                 !Array.Exists(
                     lines,
                     delegate(string line)
@@ -5751,7 +5762,7 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("Hidden colour protection migration: PASS source=87 feature=88 target=89 retired-key removed");
+        Console.WriteLine("Hidden colour protection migration: PASS source=87 feature=88 target=90 retired-key removed");
     }
 
     private static void RunBurnInProtectionSchema89MigrationSelfTest()
@@ -5774,7 +5785,7 @@ internal sealed class WidgetSettings
                 migrated.BurnInLevelOneIdleSeconds == DefaultBurnInLevelOneIdleSeconds &&
                 migrated.BurnInLevelTwoDelaySeconds == DefaultBurnInLevelTwoDelaySeconds &&
                 migrated.ApplicationTransparencyPercent == 42 &&
-                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=89", StringComparison.Ordinal); }) &&
+                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
                 Array.Exists(lines, delegate(string line) { return string.Equals(line, "BurnInProtectionEnabled=True", StringComparison.Ordinal); }) &&
                 Array.Exists(lines, delegate(string line) { return string.Equals(line, "BurnInLevelOneIdleSeconds=10", StringComparison.Ordinal); }) &&
                 Array.Exists(lines, delegate(string line) { return string.Equals(line, "BurnInLevelTwoDelaySeconds=30", StringComparison.Ordinal); }) &&
@@ -5806,7 +5817,61 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("Burn-in protection migration: PASS source=88 target=89 defaults=10/+30 explicit-opt-out");
+        Console.WriteLine("Burn-in protection migration: PASS source=88 target=90 defaults=10/+30 explicit-opt-out");
+    }
+
+    private static void RunColumnSpacingSchema90MigrationSelfTest()
+    {
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            "DesktopCodexAssistant-column-spacing-v90-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string migratedPath = Path.Combine(root, "settings-v89.ini");
+            File.WriteAllLines(
+                migratedPath,
+                new string[]
+                {
+                    "Version=89",
+                    "LeftDockButtonGapPixels=0",
+                    "RightTileButtonGapPixels=80",
+                    "ApplicationTransparencyPercent=43"
+                },
+                SharedEncoding.Utf8NoBom);
+            WidgetSettings migrated = LoadFromPathAndSaveForSelfTest(migratedPath);
+            string[] migratedLines = File.ReadAllLines(migratedPath);
+            AssertLayout(
+                migrated.LeftDockButtonGapPixels == 0 &&
+                migrated.RightTileButtonGapPixels == 80 &&
+                migrated.ApplicationTransparencyPercent == 43 &&
+                Array.Exists(migratedLines, delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
+                !File.Exists(migratedPath + ".tmp"),
+                "schema 90 migration should preserve existing spacing values and atomically record the new contract");
+
+            string fullDistributionPath = Path.Combine(root, "settings-v90.ini");
+            File.WriteAllLines(
+                fullDistributionPath,
+                new string[]
+                {
+                    "Version=90",
+                    "LeftDockButtonGapPixels=100",
+                    "RightTileButtonGapPixels=100"
+                },
+                SharedEncoding.Utf8NoBom);
+            WidgetSettings fullDistribution = LoadFromPathForSelfTest(fullDistributionPath);
+            AssertLayout(
+                fullDistribution.LeftDockButtonGapPixels == MaxColumnButtonGapPixels &&
+                fullDistribution.RightTileButtonGapPixels == MaxColumnButtonGapPixels,
+                "schema 90 should accept 100 as the full-edge distribution value");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); }
+            catch { }
+        }
+
+        Console.WriteLine("Column spacing migration: PASS source=89 target=90 range=0..100 values-preserved");
     }
 
     private static void RunGuardBoardOverrideMigrationSelfTest()

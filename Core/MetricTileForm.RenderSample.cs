@@ -79,14 +79,27 @@ internal sealed partial class MetricTileForm
         bool restoreRightGroupBrightness)
     {
         int px = settings.MainWidgetTileLargeModeEnabled ? TileLargePixels : TileCompactPixels;
-        int gap = GetTileGapPixels(settings);
-        int stride = px + gap;
-        int height = px * MetricTileModel.AllTileCount + gap * (MetricTileModel.AllTileCount - 1);
+        int gapCount = MetricTileModel.AllTileCount - 1;
+        int distributedWhitespace;
+        if (settings.RightTileAutoArrangeEnabled)
+        {
+            Rectangle workArea = settings.GetWorkAreaForModule(WidgetSettings.ModuleMain);
+            distributedWhitespace = EdgeColumnSpacing.ResolveDistributedWhitespacePixels(
+                settings.RightTileButtonGapPixels,
+                workArea.Height - px * MetricTileModel.AllTileCount);
+        }
+        else
+        {
+            distributedWhitespace = GetTileGapPixels(settings) * gapCount;
+        }
+
+        int height = px * MetricTileModel.AllTileCount + distributedWhitespace;
 
         using (Bitmap bitmap = new Bitmap(px, height, PixelFormat.Format32bppPArgb))
         using (Graphics g = Graphics.FromImage(bitmap))
         {
             g.Clear(DesignTokens.Colors.AppBackground);
+            int top = 0;
             for (int i = 0; i < MetricTileModel.AllTileCount; i++)
             {
                 using (MetricTileForm tile = new MetricTileForm(settings, i))
@@ -106,8 +119,14 @@ internal sealed partial class MetricTileForm
                             BurnInProtection.ApplyLuminance(one, BurnInProtection.LevelOneLuminancePercent);
                         }
 
-                        g.DrawImage(one, 0, i * stride);
+                        g.DrawImage(one, 0, top);
                     }
+                }
+
+                top += px;
+                if (i < MetricTileModel.AllTileCount - 1)
+                {
+                    top += EdgeColumnSpacing.ResolveGapAfterIndex(distributedWhitespace, i, gapCount);
                 }
             }
 
