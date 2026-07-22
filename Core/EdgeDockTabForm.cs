@@ -37,6 +37,10 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
     private const int BurnInIdleFillAlpha = 154;
     private const int BurnInIdleBorderAlpha = 214;
     private const int BurnInArrowAlpha = 245;
+    // Keep the idle trapezoid visibly present without competing with the protected accent arrow.
+    // These neutrals are deliberately darker than GlyphMuted; hover still restores the role colour.
+    private static readonly Color BurnInIdleFillColor = Color.FromArgb(82, 88, 96);
+    private static readonly Color BurnInIdleBorderColor = Color.FromArgb(104, 112, 122);
 
     private readonly System.Windows.Forms.Timer hoverTimer;
     private readonly int burnInSalt;
@@ -445,10 +449,10 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             return new TabVisualState(
                 isHovered
                     ? DesignTokens.WithAlpha(accent, NormalHoverFillAlpha)
-                    : DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, BurnInIdleFillAlpha),
+                    : DesignTokens.WithAlpha(BurnInIdleFillColor, BurnInIdleFillAlpha),
                 isHovered
                     ? DesignTokens.WithAlpha(accent, NormalHoverBorderAlpha)
-                    : DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, BurnInIdleBorderAlpha),
+                    : DesignTokens.WithAlpha(BurnInIdleBorderColor, BurnInIdleBorderAlpha),
                 DesignTokens.WithAlpha(arrowAccent, BurnInArrowAlpha));
         }
 
@@ -620,9 +624,14 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         TabVisualState levelOneIdle = ResolveVisualState(sampleAccent, false, false, BurnInVisualLevel.LevelOne);
         TabVisualState levelOneHover = ResolveVisualState(sampleAccent, true, false, BurnInVisualLevel.LevelOne);
         TabVisualState levelTwoIdle = ResolveVisualState(sampleAccent, false, false, BurnInVisualLevel.LevelTwo);
-        if (levelOneIdle.Fill.R != DesignTokens.Colors.GlyphMuted.R ||
-            levelOneIdle.Fill.G != DesignTokens.Colors.GlyphMuted.G ||
-            levelOneIdle.Fill.B != DesignTokens.Colors.GlyphMuted.B ||
+        if (levelOneIdle.Fill.R != BurnInIdleFillColor.R ||
+            levelOneIdle.Fill.G != BurnInIdleFillColor.G ||
+            levelOneIdle.Fill.B != BurnInIdleFillColor.B ||
+            levelOneIdle.Border.R != BurnInIdleBorderColor.R ||
+            levelOneIdle.Border.G != BurnInIdleBorderColor.G ||
+            levelOneIdle.Border.B != BurnInIdleBorderColor.B ||
+            levelOneIdle.Fill.R + levelOneIdle.Fill.G + levelOneIdle.Fill.B >=
+                DesignTokens.Colors.GlyphMuted.R + DesignTokens.Colors.GlyphMuted.G + DesignTokens.Colors.GlyphMuted.B ||
             levelOneIdle.Arrow.R != sampleAccent.R ||
             levelOneIdle.Arrow.G != sampleAccent.G ||
             levelOneIdle.Arrow.B != sampleAccent.B ||
@@ -633,7 +642,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             levelTwoIdle.Arrow.G != 255 - sampleAccent.G ||
             levelTwoIdle.Arrow.B != 255 - sampleAccent.B)
         {
-            throw new InvalidOperationException("Edge dock burn-in levels must keep a grey idle trapezoid, restore hover colour, and invert only the level-two arrow accent.");
+            throw new InvalidOperationException("Edge dock burn-in levels must keep a dark-grey idle trapezoid, restore hover colour, and invert only the level-two arrow accent.");
         }
 
         Color[] queueAccents = new Color[]

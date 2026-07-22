@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.2
+适用版本：2.0.0.3
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -208,7 +208,7 @@ headless owners 不拥有展示缓冲。Codex/Power 的旧 renderer 已删除，
 - 展开 board 可以使用自己的 named salt，但固定相同展开 X。
 - Operation 使用自己的 named salt。
 - `WidgetForm` hidden host 只拥有两级空闲状态，不绘制防烧屏像素；headless owners 完全不参与。
-- 一级下，左侧 `EdgeDockTabForm` 静止态绘制灰色梯形与角色色箭头，悬停只恢复当前梯形的角色色；右侧 tile/expand 使用 `BurnInProtection.LevelOneLuminancePercent = 45`，命中任意右侧窗口时整组恢复亮度。
+- 一级下，左侧 `EdgeDockTabForm` 静止态绘制深灰色梯形与角色色箭头，悬停只恢复当前梯形的角色色；右侧 tile/expand 使用 `BurnInProtection.LevelOneLuminancePercent = 45`，命中任意右侧窗口时整组恢复亮度。
 - 二级保持一级结构，并只反转左箭头与右 tile 环形强调色；右 tile 中心白字及展开窗白色/中性色文字不绘制。角色色标签、灰色轨道、board 内容和 Operation 不做全位图反相。
 - 鼠标移动在保护激活后是局部显现手势，不退出状态；点击、滚轮或键盘输入会退出并重启两级计时。显示挂起、布局编辑和关闭也归零状态。
 - 夜间计划与防烧屏亮度在 `LayeredWidgetFormBase` 内相乘，任一策略都不能把另一策略已压低的像素重新提亮。
