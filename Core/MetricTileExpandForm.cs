@@ -815,7 +815,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         DrawFloatingHeader(g, content, accent, "DISK",
             Math.Round(s.DiskPercent).ToString("0", CultureInfo.InvariantCulture), "%",
             string.Format(CultureInfo.InvariantCulture, "W 写入 {0}    R 读取 {1}",
-                FormatRate(s.DiskWriteBytesPerSecond), FormatRate(s.DiskReadBytesPerSecond)));
+                NetworkRateFormatter.FormatStorage(s.DiskWriteBytesPerSecond),
+                NetworkRateFormatter.FormatStorage(s.DiskReadBytesPerSecond)));
         DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)),
             string.Format(CultureInfo.InvariantCulture, "{0:0} / {1:0} GB", s.DiskUsedGb, s.DiskTotalGb));
     }

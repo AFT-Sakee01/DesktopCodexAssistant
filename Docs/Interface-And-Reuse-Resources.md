@@ -1,6 +1,6 @@
 # 接口与复用资源汇总
 
-适用版本：2.0.0.8
+适用版本：2.0.0.9
 
 ## 1. 文档用途
 
@@ -151,7 +151,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `internal_api.secret_store` | DPAPI CurrentUser 密钥文件保护 | 统一读写 `dpapi-v1:` envelope；旧格式只有严格 validator 通过后才原子迁移，损坏/未知 Base64 fail-closed 且原字节不变 |
 | `internal_api.window_runtime_contract` | 设置、刷新、全屏、挂起、恢复和共享维护 | 新模块实现同等生命周期方法，低频维护复用主协调 tick |
 | `internal_api.snapshot_models` | 跨线程快照契约 | 后台状态通过 Clone 交付 |
-| `internal_api.drawing_and_rate_formatters` | Alpha 绘图和速率格式 | 不重复实现单位换算 |
+| `internal_api.drawing_and_rate_formatters` | Alpha 绘图和速率格式 | 网络复用 `NetworkRateFormatter.Format` 的 Kbps/Mbps/Gbps 位速率；磁盘复用 `FormatStorage` 的 KB/s/MB/s/GB/s 字节速率，不重复实现单位换算 |
 
 ## 7. 持久化资源
 

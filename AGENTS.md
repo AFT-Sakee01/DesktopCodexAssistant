@@ -2,7 +2,7 @@
 
 The global `C:\Users\GengH\.codex\AGENTS.md` rules apply. This file only records project-specific constraints and overrides; do not duplicate global rules or maintenance history here.
 
-Current version: `2.0.0.8`
+Current version: `2.0.0.9`
 
 ## Project AI
 

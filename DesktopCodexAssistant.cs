@@ -791,8 +791,8 @@ internal static class Program
                     snapshot.MemoryPercent,
                     snapshot.MemoryHardwareReservedGb,
                     string.IsNullOrWhiteSpace(snapshot.DiskVolumeLabel) ? "--" : snapshot.DiskVolumeLabel,
-                    NetworkRateFormatter.Format(snapshot.DiskWriteBytesPerSecond),
-                    NetworkRateFormatter.Format(snapshot.DiskReadBytesPerSecond),
+                    NetworkRateFormatter.FormatStorage(snapshot.DiskWriteBytesPerSecond),
+                    NetworkRateFormatter.FormatStorage(snapshot.DiskReadBytesPerSecond),
                     snapshot.GpuPercent,
                     snapshot.GpuMemoryUsedGb,
                     snapshot.GpuMemoryTotalGb,
@@ -808,6 +808,7 @@ internal static class Program
                 Console.WriteLine("Process: {0}", NativeMethods.DescribeProcessMachine());
             }
 
+            RunNamedSelfTest("NetworkRateFormatter", NetworkRateFormatter.RunSelfTest);
             RunNamedSelfTest("NetworkMonitorReader.RollingPing", NetworkMonitorReader.RunRollingPingSelfTest);
             RunNamedSelfTest("PathPingProbeReader", PathPingProbeReader.RunSelfTest);
             RunNamedSelfTest("FixedPingProbeReader", FixedPingProbeReader.RunSelfTest);
