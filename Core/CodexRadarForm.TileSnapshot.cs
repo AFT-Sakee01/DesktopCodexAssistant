@@ -820,6 +820,37 @@ internal sealed partial class CodexRadarForm
                 throw new InvalidOperationException("Claude quota runtime TTL self-test failed.");
             }
 
+            // Claude owns the same dual-window estimator as Codex. Exercise the published clone,
+            // not just the private calculator, so a missing list in projection cannot silently make
+            // the CLD panel stay in "采样中" forever.
+            QuotaRuntimeState claudeQuota = form.claudeRuntimeState.Quota;
+            CodexQuotaSnapshot forecastStart = ttlProbe.Clone();
+            forecastStart.FiveHourPercent = 61;
+            forecastStart.FiveHourResetKnown = true;
+            forecastStart.FiveHourResetLocal = DateTime.Now.AddHours(2.0);
+            forecastStart.WeeklyPercent = 34;
+            forecastStart.WeeklyResetKnown = true;
+            forecastStart.WeeklyResetLocal = DateTime.Now.AddHours(10.0);
+            claudeQuota.WeeklyBurnClockActive = true;
+            claudeQuota.WeeklyBurnActiveHours = 0.0;
+            RecordQuotaBurnSamples(claudeQuota, forecastStart, quotaNowUtc.AddHours(-1.0));
+            CodexQuotaSnapshot forecastEnd = forecastStart.Clone();
+            forecastEnd.FiveHourPercent = 55;
+            forecastEnd.WeeklyPercent = 30;
+            forecastEnd.SourceUpdatedUtc = quotaNowUtc;
+            claudeQuota.WeeklyBurnActiveHours = 1.0;
+            RecordQuotaBurnSamples(claudeQuota, forecastEnd, quotaNowUtc);
+            claudeQuota.Snapshot = forecastEnd;
+            form.PublishProjectionStateFromOwner();
+            RadarTileSnapshot claudeForecast = form.BuildRadarTileSnapshot(CodexRadarSoftwareMode.Claude);
+            if (!claudeForecast.BurnRateKnown ||
+                !claudeForecast.CalendarRunwayKnown ||
+                !claudeForecast.FiveHourBurnRateKnown ||
+                !claudeForecast.HasBurnCurve)
+            {
+                throw new InvalidOperationException("Claude dual-window quota forecast projection self-test failed.");
+            }
+
             int projectionFileReads = 0;
             CodexRadarModelCatalog.LoadModelsObserverForSelfTest = delegate { projectionFileReads++; };
             try
@@ -853,47 +884,133 @@ internal sealed partial class CodexRadarForm
         }
     }
 
-    // The burn-down series and its measured rate. Both come from the same accepted-sample list the
-    // measured burn-rate ring uses, so the panel and that ring can never disagree.
+    // The burn-down series and forecasts come from the same per-family accepted histories. Active
+    // histories answer continuous use; wall histories provide the recent-rhythm estimate.
     private void FillBurnDown(RadarTileSnapshot tile, RadarFamilyProjectionState state)
     {
-        if (state == null)
+        if (tile == null || state == null || !tile.QuotaKnown)
         {
             return;
         }
 
-        List<WeeklyBurnSample> samples = state.WeeklyBurnSamples;
-        if (samples == null || samples.Count == 0)
+        List<WeeklyBurnSample> weeklyActive = state.WeeklyBurnSamples;
+        List<WeeklyBurnSample> weeklyWall = state.WeeklyWallBurnSamples;
+        List<WeeklyBurnSample> visualSamples = weeklyActive != null && weeklyActive.Count >= 2
+            ? weeklyActive
+            : weeklyWall;
+        if (visualSamples != null)
         {
-            return;
-        }
-
-        for (int i = 0; i < samples.Count; i++)
-        {
-            tile.WeeklyBurnRemaining.Add(samples[i].RemainingPercent);
+            for (int i = 0; i < visualSamples.Count; i++)
+            {
+                tile.WeeklyBurnRemaining.Add(visualSamples[i].RemainingPercent);
+            }
         }
 
         double burn;
         double runway;
         double hoursToReset;
+        double observedHours;
+        QuotaForecastConfidence confidence;
         CodexQuotaSnapshot quota = state.QuotaSnapshot;
-        bool resetKnown = quota != null && quota.WeeklyResetKnown;
-        DateTime resetLocal = quota != null ? quota.WeeklyResetLocal : DateTime.MinValue;
-        int remaining = quota != null ? quota.WeeklyPercent : 0;
+        DateTime nowLocal = DateTime.Now;
 
-        if (TryComputeWeeklyBurnRate(samples, remaining, resetKnown, resetLocal, DateTime.Now,
-                out burn, out runway, out hoursToReset))
+        if (TryComputeQuotaBurnRate(
+                weeklyActive,
+                false,
+                WeeklyBurnRateWindowActiveHours,
+                WeeklyBurnRateMinimumActiveMinutes,
+                quota.WeeklyPercent,
+                quota.WeeklyResetKnown,
+                quota.WeeklyResetLocal,
+                nowLocal,
+                out burn,
+                out runway,
+                out hoursToReset,
+                out observedHours,
+                out confidence))
         {
             tile.BurnRateKnown = true;
             tile.BurnPercentPerHour = burn;
             tile.RunwayHours = runway;
             tile.HoursToReset = hoursToReset;
+            tile.BurnObservedHours = observedHours;
+            tile.BurnConfidence = confidence;
         }
-        else if (resetKnown && resetLocal != DateTime.MinValue)
+        else if (quota.WeeklyResetKnown && quota.WeeklyResetLocal != DateTime.MinValue)
         {
-            // Not enough samples for a rate yet, but the distance to reset is still a real number
-            // and the panel can show it.
-            tile.HoursToReset = (resetLocal - DateTime.Now).TotalHours;
+            tile.HoursToReset = (quota.WeeklyResetLocal - nowLocal).TotalHours;
+        }
+
+        if (TryComputeQuotaBurnRate(
+                weeklyWall,
+                true,
+                WeeklyBurnRateWindowWallHours,
+                BurnRateMinimumWallMinutes,
+                quota.WeeklyPercent,
+                quota.WeeklyResetKnown,
+                quota.WeeklyResetLocal,
+                nowLocal,
+                out burn,
+                out runway,
+                out hoursToReset,
+                out observedHours,
+                out confidence))
+        {
+            tile.CalendarRunwayKnown = true;
+            tile.CalendarBurnPercentPerHour = burn;
+            tile.CalendarRunwayHours = runway;
+            tile.CalendarConfidence = confidence;
+        }
+
+        if (!quota.FiveHourLimitAbsent &&
+            TryComputeQuotaBurnRate(
+                state.FiveHourBurnSamples,
+                false,
+                FiveHourBurnRateWindowActiveHours,
+                WeeklyBurnRateMinimumActiveMinutes,
+                quota.FiveHourPercent,
+                quota.FiveHourResetKnown,
+                quota.FiveHourResetLocal,
+                nowLocal,
+                out burn,
+                out runway,
+                out hoursToReset,
+                out observedHours,
+                out confidence))
+        {
+            tile.FiveHourBurnRateKnown = true;
+            tile.FiveHourBurnPercentPerHour = burn;
+            tile.FiveHourRunwayHours = runway;
+            tile.FiveHourHoursToReset = hoursToReset;
+            tile.FiveHourBurnConfidence = confidence;
+        }
+        else if (!quota.FiveHourLimitAbsent &&
+                 TryComputeQuotaBurnRate(
+                    state.FiveHourWallBurnSamples,
+                    true,
+                    FiveHourBurnRateWindowWallHours,
+                    BurnRateMinimumWallMinutes,
+                    quota.FiveHourPercent,
+                    quota.FiveHourResetKnown,
+                    quota.FiveHourResetLocal,
+                    nowLocal,
+                    out burn,
+                    out runway,
+                    out hoursToReset,
+                    out observedHours,
+                    out confidence))
+        {
+            tile.FiveHourBurnRateKnown = true;
+            tile.FiveHourBurnPercentPerHour = burn;
+            tile.FiveHourRunwayHours = runway;
+            tile.FiveHourHoursToReset = hoursToReset;
+            tile.FiveHourBurnConfidence = confidence;
+        }
+        else if (!quota.FiveHourLimitAbsent &&
+                 quota.FiveHourResetKnown &&
+                 quota.FiveHourResetLocal != DateTime.MinValue)
+        {
+            tile.FiveHourHoursToReset = (quota.FiveHourResetLocal - nowLocal).TotalHours;
         }
     }
 }

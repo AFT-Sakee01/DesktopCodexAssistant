@@ -1031,78 +1031,340 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     }
 
     // ── Radar: quota ─────────────────────────────────────────────────────
-    // Ground is the measured burn-down — accepted weekly remaining-% readings on an active-time
-    // axis — with a dashed projection at the measured rate and the reset moment marked. Where the
-    // projection lands relative to that line is the whole question: does this week's quota reach
-    // the reset. Rings can show the balance but never that.
+    // The full-bleed chart is the instrument: accepted weekly readings occupy its first 68%, leaving
+    // a real future lane between "now" and the reset marker. The forecast headline translates that
+    // geometry into the answer people need: when it runs out, or whether it survives the reset.
     private void DrawRadarQuota(Graphics g, RectangleF content, Color accent, bool claude)
     {
         RadarTileSnapshot r = this.feed.GetRadar(claude);
         RectangleF ground = GroundRect(content, true);
+        Color dataAccent = BurnInProtection.NormalizeVisualLevel(this.burnInVisualLevel) == BurnInVisualLevel.LevelTwo
+            ? BurnInProtection.InvertColor(accent)
+            : accent;
 
         if (r.HasBurnCurve)
         {
-            DrawBurnDown(g, ground, r, accent);
+            DrawBurnDown(g, ground, r, dataAccent);
+        }
+
+        DrawRadarQuotaScrims(g, content);
+        DrawRadarQuotaIdentity(g, content, dataAccent, r);
+        DrawRadarQuotaForecast(g, content, dataAccent, r);
+        DrawFiveHourForecastStrip(g, content, dataAccent, r);
+    }
+
+    private void DrawRadarQuotaScrims(Graphics g, RectangleF content)
+    {
+        float leftWidth = Math.Min(content.Width * 0.60f, S(302));
+        RectangleF left = new RectangleF(content.X - S(4), content.Y - S(3), leftWidth, S(78));
+        using (LinearGradientBrush brush = new LinearGradientBrush(
+            left,
+            DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 245),
+            DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 0),
+            LinearGradientMode.Horizontal))
+        {
+            g.FillRectangle(brush, left);
+        }
+
+        RectangleF right = new RectangleF(content.Right - S(218), content.Y - S(3), S(222), S(76));
+        using (LinearGradientBrush brush = new LinearGradientBrush(
+            right,
+            DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 0),
+            DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 235),
+            LinearGradientMode.Horizontal))
+        {
+            g.FillRectangle(brush, right);
+        }
+    }
+
+    private void DrawRadarQuotaIdentity(Graphics g, RectangleF content, Color accent, RadarTileSnapshot r)
+    {
+        bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
+        using (Font labelFont = new Font(DesignTokens.UiFontFamily, S(17), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font valueFont = new Font(DesignTokens.MonoFontFamily, S(30), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font suffixFont = new Font(DesignTokens.UiFontFamily, S(14), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.WithAlpha(accent, 235)))
+        using (SolidBrush valueBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextStrong, 235)))
+        using (SolidBrush suffixBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 210)))
+        {
+            float labelY = content.Y + S(6);
+            g.DrawString(r.FamilyLabel, labelFont, labelBrush, content.X, labelY);
+            if (drawNeutral)
+            {
+                float labelWidth = g.MeasureString(r.FamilyLabel, labelFont).Width;
+                string balance = r.QuotaKnown
+                    ? Math.Round(MetricTileModel.Clamp(r.WeeklyPercent, 0.0, 100.0)).ToString("0", CultureInfo.InvariantCulture)
+                    : "--";
+                float valueX = content.X + labelWidth + S(8);
+                g.DrawString(balance, valueFont, valueBrush, valueX, content.Y);
+                float valueWidth = g.MeasureString(balance, valueFont).Width;
+                if (r.QuotaKnown)
+                {
+                    g.DrawString("%", suffixFont, suffixBrush, valueX + valueWidth - S(4), content.Y + S(13));
+                }
+            }
+        }
+
+        if (!drawNeutral)
+        {
+            return;
+        }
+
+        string fiveHour = r.FiveHourLimitAbsent
+            ? "∞"
+            : r.FiveHourPercent.ToString(CultureInfo.InvariantCulture) + "%";
+        string quotaLine = r.QuotaKnown
+            ? string.Format(
+                CultureInfo.InvariantCulture,
+                "5h {0}@{1} · 周 {2}%@{3}",
+                fiveHour,
+                r.FiveHourResetKnown ? r.FiveHourResetLocal.ToString("HH:mm", CultureInfo.CurrentCulture) : "未知",
+                r.WeeklyPercent,
+                r.WeeklyResetKnown ? r.WeeklyResetLocal.ToString("MM/dd HH:mm", CultureInfo.CurrentCulture) : "未知")
+            : "额度未知";
+        DrawText(g, quotaLine, content.X, content.Y + S(36), S(12.5f),
+            DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 210), FontStyle.Regular);
+
+        string model = string.IsNullOrEmpty(r.ModelName) ? r.FamilyLabel : r.ModelName;
+        string sampleText = r.BurnRateKnown
+            ? string.Format(
+                CultureInfo.InvariantCulture,
+                "{0} · 最近 {1} 活跃时",
+                model,
+                FormatForecastHours(r.BurnObservedHours))
+            : (r.CalendarRunwayKnown ? model + " · 近 24h 节奏已建立" : model + " · 趋势采样中");
+        DrawText(g, sampleText, content.X, content.Y + S(57), S(11),
+            DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 225), FontStyle.Regular);
+    }
+
+    private void DrawRadarQuotaForecast(Graphics g, RectangleF content, Color accent, RadarTileSnapshot r)
+    {
+        bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
+        float width = Math.Min(content.Width * 0.45f, S(205));
+        RectangleF rect = new RectangleF(content.Right - width, content.Y, width, S(74));
+        bool activeForecast = r.BurnRateKnown;
+        bool forecastKnown = activeForecast || r.CalendarRunwayKnown;
+        double forecastRunway = activeForecast ? r.RunwayHours : r.CalendarRunwayHours;
+        bool comparisonKnown = forecastKnown && r.HoursToReset > 0.0;
+        bool exhaustsBeforeReset = comparisonKnown && forecastRunway < r.HoursToReset;
+        Color dangerColor = BurnInProtection.NormalizeVisualLevel(this.burnInVisualLevel) == BurnInVisualLevel.LevelTwo
+            ? BurnInProtection.InvertColor(DesignTokens.Colors.Danger)
+            : DesignTokens.Colors.Danger;
+        Color stateColor = exhaustsBeforeReset ? dangerColor : accent;
+        string main;
+        string status;
+        if (!r.QuotaKnown)
+        {
+            main = "额度未知";
+            status = "等待额度来源";
+            stateColor = DesignTokens.Colors.GlyphMuted;
+        }
+        else if (!forecastKnown)
+        {
+            main = "趋势采样中";
+            status = r.HoursToReset > 0.0
+                ? "距周重置 " + FormatForecastHours(r.HoursToReset)
+                : "等待至少 1% 变化";
+            stateColor = DesignTokens.Colors.GlyphMuted;
+        }
+        else if (exhaustsBeforeReset)
+        {
+            main = FormatForecastHours(forecastRunway) + " 后用完";
+            status = "比周重置早 " + FormatForecastHours(r.HoursToReset - forecastRunway);
+        }
+        else if (comparisonKnown)
+        {
+            main = "可撑到重置";
+            status = "按趋势多余 " + FormatForecastHours(forecastRunway - r.HoursToReset);
         }
         else
         {
-            // No accepted samples yet. Say so rather than draw a flat line through one point: the
-            // sample clock only advances while the app is running, so a fresh process genuinely has
-            // no rate to report.
-            DrawText(g, "尚未积累实测样本", ground.X, ground.Y + ground.Height * 0.42f,
-                S(SubSize) * 0.92f, DesignTokens.Colors.GlyphMuted, FontStyle.Regular);
+            main = "约 " + FormatForecastHours(forecastRunway) + " 可用";
+            status = "周重置时间未知";
         }
 
-        // Bottom strip is the 5-hour window, the other quota the tile's inner ring carries.
-        if (r.QuotaKnown && !r.FiveHourLimitAbsent)
+        if (drawNeutral)
         {
-            DrawSegmentBar(g, StripRect(content),
-                new double[] { MetricTileModel.Clamp(r.FiveHourPercent, 0.0, 100.0) },
-                new Color[] { accent }, new int[] { 200 });
+            DrawRightAlignedText(g, activeForecast ? "按当前活跃趋势" : "按近 24h 节奏", rect, rect.Y, S(10),
+                DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 225), FontStyle.Regular);
         }
 
-        string headline = r.QuotaKnown
-            ? Math.Round(MetricTileModel.Clamp(r.WeeklyPercent, 0.0, 100.0)).ToString("0", CultureInfo.InvariantCulture)
-            : "--";
-        string sub = r.QuotaKnown
-            ? string.Format(
-                CultureInfo.InvariantCulture,
-                "5h {0}@{1} · 周 {2}%@{3} · {4}",
-                r.FiveHourLimitAbsent ? "∞" : r.FiveHourPercent.ToString(CultureInfo.InvariantCulture) + "%",
-                r.FiveHourResetKnown ? r.FiveHourResetLocal.ToString("MM/dd HH:mm", CultureInfo.CurrentCulture) : "未知",
-                r.WeeklyPercent,
-                r.WeeklyResetKnown ? r.WeeklyResetLocal.ToString("MM/dd HH:mm", CultureInfo.CurrentCulture) : "未知",
-                string.IsNullOrEmpty(r.ModelName) ? r.FamilyLabel : r.ModelName)
-            : "额度未知";
+        string confidence = forecastKnown
+            ? FormatQuotaForecastConfidence(activeForecast ? r.BurnConfidence : r.CalendarConfidence)
+            : string.Empty;
+        float statusRightInset = drawNeutral && !string.IsNullOrEmpty(confidence) ? S(48) : 0.0f;
+        if (forecastKnown || drawNeutral)
+        {
+            DrawRightAlignedText(g, main, rect, rect.Y + S(14), S(21),
+                DesignTokens.WithAlpha(stateColor, forecastKnown ? 255 : 220), FontStyle.Bold);
+            DrawRightAlignedText(g, status, rect, rect.Y + S(40), S(12),
+                DesignTokens.WithAlpha(stateColor, forecastKnown ? 245 : 210), FontStyle.Bold,
+                statusRightInset);
+        }
 
-        DrawFloatingHeader(g, content, accent, r.FamilyLabel, headline, r.QuotaKnown ? "%" : null, sub);
-        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)),
-            BuildBurnCaption(r));
+        if (drawNeutral)
+        {
+            if (!string.IsNullOrEmpty(confidence))
+            {
+                DrawRightAlignedText(g, confidence, rect, rect.Y + S(40), S(10),
+                    DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 220), FontStyle.Regular);
+            }
+
+            string rhythm = activeForecast
+                ? (r.CalendarRunwayKnown
+                    ? "按近 24h 节奏：约 " + FormatForecastHours(r.CalendarRunwayHours)
+                    : "近 24h 节奏：采样中")
+                : "当前活跃趋势：采样中";
+            DrawRightAlignedText(g, rhythm, rect, rect.Y + S(58), S(10),
+                DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 205), FontStyle.Regular);
+        }
     }
 
-    private static string BuildBurnCaption(RadarTileSnapshot r)
+    private void DrawFiveHourForecastStrip(Graphics g, RectangleF content, Color accent, RadarTileSnapshot r)
     {
-        if (r.BurnRateKnown)
+        RectangleF bar = new RectangleF(content.X, content.Bottom - S(4), content.Width, S(4));
+        using (GraphicsPath track = RoundedRectangle(bar, Math.Max(1.0f, bar.Height / 2.0f)))
+        using (SolidBrush trackBrush = new SolidBrush(DesignTokens.White(28)))
         {
-            return string.Format(
-                CultureInfo.InvariantCulture,
-                "{0:0.0}%/活跃时 · 续航 {1:0}h / 距重置 {2:0}h · 底条=5h",
-                r.BurnPercentPerHour, r.RunwayHours, r.HoursToReset);
+            g.FillPath(trackBrush, track);
+            if (r.QuotaKnown && !r.FiveHourLimitAbsent)
+            {
+                float fillWidth = (float)(bar.Width * MetricTileModel.Clamp(r.FiveHourPercent, 0.0, 100.0) / 100.0);
+                if (fillWidth > 0.0f)
+                {
+                    Region previous = g.Clip;
+                    g.SetClip(track, CombineMode.Intersect);
+                    using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(accent, 225)))
+                    {
+                        g.FillRectangle(fill, bar.X, bar.Y, fillWidth, bar.Height);
+                    }
+                    g.Clip = previous;
+                }
+            }
         }
 
-        if (r.HoursToReset > 0.0)
+        if (!ShouldDrawNeutralText(this.burnInVisualLevel) || !r.QuotaKnown)
         {
-            return string.Format(CultureInfo.InvariantCulture, "距重置 {0:0}h · 速率待积累 · 底条=5h", r.HoursToReset);
+            return;
         }
 
-        return "速率待积累 · 底条=5h";
+        string prefix = r.FiveHourLimitAbsent
+            ? "5h ∞"
+            : "5h " + r.FiveHourPercent.ToString(CultureInfo.InvariantCulture) + "%";
+        string detail;
+        Color detailColor = DesignTokens.Colors.TextMuted;
+        if (r.FiveHourLimitAbsent)
+        {
+            detail = " · 当前计划无短窗";
+        }
+        else if (!r.FiveHourBurnRateKnown)
+        {
+            detail = r.FiveHourHoursToReset > 0.0
+                ? " · 趋势采样中，" + FormatForecastHours(r.FiveHourHoursToReset) + " 后重置"
+                : " · 趋势采样中";
+        }
+        else if (r.FiveHourHoursToReset > 0.0 && r.FiveHourRunwayHours < r.FiveHourHoursToReset)
+        {
+            detail = " · 预计 " + FormatForecastHours(r.FiveHourRunwayHours) + " 用完，早 " +
+                FormatForecastHours(r.FiveHourHoursToReset - r.FiveHourRunwayHours);
+            detailColor = BurnInProtection.NormalizeVisualLevel(this.burnInVisualLevel) == BurnInVisualLevel.LevelTwo
+                ? BurnInProtection.InvertColor(DesignTokens.Colors.Danger)
+                : DesignTokens.Colors.Danger;
+        }
+        else if (r.FiveHourHoursToReset > 0.0)
+        {
+            detail = " · 可撑到本轮重置";
+        }
+        else
+        {
+            detail = " · 约 " + FormatForecastHours(r.FiveHourRunwayHours) + " 可用";
+        }
+
+        float y = content.Bottom - S(20);
+        using (Font font = new Font(DesignTokens.UiFontFamily, S(10.5f), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font detailFont = new Font(DesignTokens.UiFontFamily, S(10.5f), FontStyle.Regular, GraphicsUnit.Pixel))
+        using (SolidBrush prefixBrush = new SolidBrush(DesignTokens.WithAlpha(accent, 245)))
+        using (SolidBrush detailBrush = new SolidBrush(DesignTokens.WithAlpha(detailColor, 225)))
+        {
+            g.DrawString(prefix, font, prefixBrush, content.X, y);
+            float prefixWidth = g.MeasureString(prefix, font).Width - S(2);
+            g.DrawString(detail, detailFont, detailBrush, content.X + prefixWidth, y);
+        }
+
+        if (r.WeeklyResetKnown)
+        {
+            DrawRightAlignedText(g, "周重置", content, y, S(9),
+                DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 210), FontStyle.Regular);
+        }
+    }
+
+    private void DrawRightAlignedText(
+        Graphics g,
+        string text,
+        RectangleF rect,
+        float y,
+        float pixelSize,
+        Color color,
+        FontStyle style,
+        float rightInset = 0.0f)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        using (Font font = new Font(DesignTokens.UiFontFamily, Math.Max(6.0f, pixelSize), style, GraphicsUnit.Pixel))
+        using (SolidBrush brush = new SolidBrush(color))
+        using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
+        {
+            format.Alignment = StringAlignment.Far;
+            g.DrawString(text, font, brush,
+                new RectangleF(rect.X, y, Math.Max(1.0f, rect.Width - rightInset), pixelSize + S(5)), format);
+        }
+    }
+
+    private static string FormatQuotaForecastConfidence(QuotaForecastConfidence confidence)
+    {
+        switch (confidence)
+        {
+            case QuotaForecastConfidence.High: return "高置信";
+            case QuotaForecastConfidence.Medium: return "中置信";
+            case QuotaForecastConfidence.Low: return "低置信";
+            default: return string.Empty;
+        }
+    }
+
+    private static string FormatForecastHours(double hours)
+    {
+        if (double.IsNaN(hours) || double.IsInfinity(hours) || hours < 0.0)
+        {
+            return "--";
+        }
+
+        if (hours < 1.0)
+        {
+            return Math.Max(1, (int)Math.Round(hours * 60.0)).ToString(CultureInfo.InvariantCulture) + "m";
+        }
+
+        if (hours < 36.0)
+        {
+            return Math.Max(1, (int)Math.Round(hours)).ToString(CultureInfo.InvariantCulture) + "h";
+        }
+
+        int totalHours = Math.Max(1, (int)Math.Round(hours));
+        int days = totalHours / 24;
+        int remainder = totalHours % 24;
+        return remainder == 0
+            ? days.ToString(CultureInfo.InvariantCulture) + "天"
+            : string.Format(CultureInfo.InvariantCulture, "{0}天{1}h", days, remainder);
     }
 
     private void DrawBurnDown(Graphics g, RectangleF rect, RadarTileSnapshot r, Color accent)
     {
         List<double> v = r.WeeklyBurnRemaining;
         PointF[] pts = new PointF[v.Count];
-        float step = rect.Width / (v.Count - 1);
+        float historyRight = rect.X + rect.Width * 0.68f;
+        float step = (historyRight - rect.X) / (v.Count - 1);
         for (int i = 0; i < v.Count; i++)
         {
             double ratio = MetricTileModel.Clamp(v[i] / 100.0, 0.0, 1.0);
@@ -1126,26 +1388,55 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             g.DrawLines(line, pts);
         }
 
-        // Projection to the reset, only when there is a measured rate to project with.
-        if (r.BurnRateKnown && r.HoursToReset > 0.0)
+        // Projection uses the active rate when available and otherwise the recent wall-clock rate.
+        // The plotted source follows the same preference, so the line and headline cannot disagree.
+        bool forecastKnown = r.BurnRateKnown || r.CalendarRunwayKnown;
+        double forecastRunway = r.BurnRateKnown ? r.RunwayHours : r.CalendarRunwayHours;
+        double forecastRate = r.BurnRateKnown ? r.BurnPercentPerHour : r.CalendarBurnPercentPerHour;
+        if (forecastKnown && r.HoursToReset > 0.0)
         {
-            double projected = Math.Max(0.0, r.WeeklyPercent - r.BurnPercentPerHour * r.HoursToReset);
-            float projY = rect.Bottom - (float)(projected / 100.0 * (rect.Height - 2.0f)) - 1.0f;
             PointF last = pts[pts.Length - 1];
-            // Red when the projection reaches zero before the reset does: that is the one state
-            // this panel exists to surface.
-            Color projColor = projected <= 0.0 ? DesignTokens.Colors.DangerStrong : accent;
+            float resetX = rect.Right - S(2);
+            bool exhaustsBeforeReset = forecastRunway < r.HoursToReset;
+            Color projColor = exhaustsBeforeReset
+                ? (BurnInProtection.NormalizeVisualLevel(this.burnInVisualLevel) == BurnInVisualLevel.LevelTwo
+                    ? BurnInProtection.InvertColor(DesignTokens.Colors.DangerStrong)
+                    : DesignTokens.Colors.DangerStrong)
+                : accent;
             using (Pen dash = new Pen(DesignTokens.WithAlpha(projColor, 170), Math.Max(1.0f, S(1.2f))))
             {
                 dash.DashStyle = DashStyle.Dash;
-                g.DrawLine(dash, last.X, last.Y, rect.Right - S(2), projY);
+                if (exhaustsBeforeReset)
+                {
+                    double ratio = MetricTileModel.Clamp(forecastRunway / r.HoursToReset, 0.0, 1.0);
+                    float exhaustX = last.X + (resetX - last.X) * (float)ratio;
+                    float zeroY = rect.Bottom - S(1);
+                    g.DrawLine(dash, last.X, last.Y, exhaustX, zeroY);
+                    using (Pen bracket = new Pen(DesignTokens.WithAlpha(projColor, 120), Math.Max(1.0f, S(0.8f))))
+                    using (SolidBrush dotBrush = new SolidBrush(DesignTokens.WithAlpha(projColor, 245)))
+                    {
+                        g.DrawLine(bracket, exhaustX, zeroY, resetX, zeroY);
+                        g.DrawLine(bracket, exhaustX, zeroY - S(3), exhaustX, zeroY + S(1));
+                        float riskDot = Math.Max(1.5f, S(2.2f));
+                        g.FillEllipse(dotBrush, exhaustX - riskDot, zeroY - riskDot, riskDot * 2.0f, riskDot * 2.0f);
+                    }
+                }
+                else
+                {
+                    double projected = Math.Max(0.0, r.WeeklyPercent - forecastRate * r.HoursToReset);
+                    float projY = rect.Bottom - (float)(projected / 100.0 * (rect.Height - 2.0f)) - 1.0f;
+                    g.DrawLine(dash, last.X, last.Y, resetX, projY);
+                }
             }
         }
 
-        using (Pen resetLine = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 120), 1.0f))
+        if (r.WeeklyResetKnown && r.HoursToReset > 0.0)
         {
-            resetLine.DashStyle = DashStyle.Dot;
-            g.DrawLine(resetLine, rect.Right - S(2), rect.Y, rect.Right - S(2), rect.Bottom);
+            using (Pen resetLine = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 120), 1.0f))
+            {
+                resetLine.DashStyle = DashStyle.Dot;
+                g.DrawLine(resetLine, rect.Right - S(2), rect.Y, rect.Right - S(2), rect.Bottom);
+            }
         }
 
         PointF endPoint = pts[pts.Length - 1];

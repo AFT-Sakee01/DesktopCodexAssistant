@@ -1,6 +1,6 @@
 # Codex / Claude Radar 数据所有者架构
 
-适用版本：2.0.0.0
+适用版本：2.0.0.7
 
 本文说明 `CodexRadarForm` 作为永久 headless owner 时的 Codex 公共 Radar、Codex/Claude 官方额度、服务健康、任务状态和只读投影。
 
@@ -13,7 +13,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `Core/CodexRadarForm.cs` | headless 生命周期、统一调度、Codex 公共 Radar、额度与任务状态 |
-| `Core/CodexRadarForm.RuntimeState.cs` | `RadarFamilyRuntimeState` 与 family 隔离 |
+| `Core/CodexRadarForm.RuntimeState.cs` | `RadarFamilyRuntimeState`、双额度趋势与 family 隔离 |
 | `Core/CodexRadarForm.ProjectionState.cs` | 同代 published state 原子替换与 tile/IQ 投影 clone |
 | `Core/CodexRadarForm.ClaudeUsage.cs` | 官方 Claude Code usage 调度结果接入 |
 | `Core/CodexRadarForm.TileSnapshot.cs` | tile、Codex IQ board、服务健康的 cache-only 投影 |
@@ -29,8 +29,8 @@
 
 | 消费者 | owner API | 内容 |
 | --- | --- | --- |
-| 右侧 Codex tile / expand | `BuildRadarTileSnapshot(Codex)` | Codex 模型、额度、重置、IQ、效率与服务摘要 |
-| 右侧 CLD tile / expand | `BuildRadarTileSnapshot(Claude)` | 固定 Claude/CLD 标签、官方 5 小时/周额度与各自重置时间 |
+| 右侧 Codex tile / expand | `BuildRadarTileSnapshot(Codex)` | Codex 模型、额度、重置与 5 小时/周趋势预测 |
+| 右侧 CLD tile / expand | `BuildRadarTileSnapshot(Claude)` | 固定 Claude/CLD 标签、官方额度、重置与同构趋势预测 |
 | 左侧 Codex IQ board | `BuildCodexIqBoardSnapshot()` / `BuildServiceHealth()` | Codex 全模型 IQ、成本、耗时、token、额度趋势、名册与四项服务健康 |
 | Codex Task board / Operation | `CodexTaskPresentation.SnapshotProvider` | 本地 Codex 会话任务状态 |
 
@@ -79,7 +79,7 @@ owner 生命周期不受 tile 是否显示影响。全屏隐藏只处理可见�
 
 ## 4. Family 状态隔离
 
-Codex family 保存公共 Radar 模型快照、模型目录、额度、服务状态和各自 deadline。Claude family 只保存官方额度快照、额度来源、reset anchor、消耗基线和服务状态，不保存公共 Radar 模型、IQ 或评分目录。
+Codex family 保存公共 Radar 模型快照、模型目录、额度、服务状态和各自 deadline。Claude family 只保存官方额度快照、额度来源、reset anchor、消耗基线、趋势样本和服务状态，不保存公共 Radar 模型、IQ 或评分目录。两侧的 5 小时与周额度分别拥有活跃时间样本、近时钟样本和 reset identity；任一 family 或额度窗口都不能复用另一侧的速率。
 
 请求开始时捕获 family，完成时只写回对应状态。当前 active family 在请求期间改变时，结果仍可更新原 family 缓存，但不能覆盖另一 family。`BuildRadarTileSnapshot(Codex)` 与 `BuildRadarTileSnapshot(Claude)` 在同一个 feed 构建周期分别读取对应状态，所以两枚额度方块可同时稳定显示。
 
@@ -124,6 +124,14 @@ Codex provider 只读已配置的环境变量或 Codex `auth.json` 凭据，不�
 Claude Code 用量由进程级 `ClaudeCodeUsageScheduler` 单飞读取，结果一次提交到 Claude family，并由 `ClaudeCodeUsageReader` 原子写入 `claude-quota.ini`。只有同时包含 5 小时/周额度、两组 reset、可信更新时间且满足新鲜度规则的完整快照才会发布、落盘或在启动时恢复；部分结果保留 last-good。
 
 CLD tile 的固定模型标签为 `Claude`，紧凑标题为 `CLD`；额度与两个 reset 只来自官方 usage/statusline 链。详细边界见 `Docs/Codex-ClaudeRadar-Architecture.md`。
+
+### 7.4 双窗口趋势与续航
+
+`CodexRadarForm.ApplyQuotaSnapshot()` 只把通过既有 identity、漂移和异常跃迁保护的已接受快照交给 `RecordQuotaBurnSamples()`。每个 family 的 5 小时与周额度分别维护两条进程内历史：活跃时间轴用于回答“保持当前使用强度还能用多久”，近时钟时间轴用于在活跃样本不足时给出节奏估算。软件未运行、长时间 owner tick 间断或新活跃会话会重建活跃历史，但不会把这段时间计入活跃速率；reset identity 改变或余额上升只清除对应额度窗口的两条历史。
+
+`TryComputeQuotaBurnRate()` 对最近 1.5 个活跃小时的 5 小时额度、最近 6 个活跃小时的周额度，以及各自最近 5/24 个时钟小时进行估算。至少需要 10 个活跃分钟或 30 个时钟分钟，并且整数百分比来源必须出现至少 1% 的已接受下降；端点速率与 pairwise 中位速率组合以减轻单次整数跳变。样本跨度、下降幅度和点数共同形成低/中/高置信度。
+
+`BuildRadarTileSnapshot()` 只从同代 published projection 计算展示 DTO：优先发布活跃时间续航，活跃样本不足时才以近 24 小时节奏作为周额度主结论。`MetricTileExpandForm.DrawRadarQuota()` 将续航与 reset 距离比较，明确显示“预计多久用完并早于重置多久”或“可撑到重置并多余多久”；5 小时窗口在底部独立给出相同判断。周趋势实线只占图表前 68%，剩余区域用于虚线预测、耗尽交点和 reset 线。计算和绘制都不启动 provider、网络或磁盘读取，进程重启后重新积累样本。
 
 ## 8. 服务健康
 
@@ -194,4 +202,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-tilecolumn --out .\_build\tilecolumn
 ```
 
-验收重点是：owner 始终隐藏、Start/Stop 完整、两套额度状态隔离、四类投影无 I/O、CLD tile 仅显示官方额度与 reset、DeepSeek 只保留服务健康，以及设置/布局不暴露已不存在的入口。
+验收重点是：owner 始终隐藏、Start/Stop 完整、两套额度与四条趋势历史按 family/window 隔离、四类投影无 I/O、Codex/CLD 展开窗给出 5 小时和周额度的耗尽/重置判断、CLD 仍只使用官方额度源、DeepSeek 只保留服务健康，以及设置/布局不暴露已不存在的入口。

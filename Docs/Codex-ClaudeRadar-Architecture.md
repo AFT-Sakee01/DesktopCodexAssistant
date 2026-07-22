@@ -1,6 +1,6 @@
 # Claude CLD 官方额度链架构
 
-适用版本：2.0.0.0
+适用版本：2.0.0.7
 
 本文说明共享 headless owner 内的 Claude 官方额度读取、缓存、调度、服务健康和 CLD tile 投影；Claude 不拥有公共 Radar 模型链或独立窗口。
 
@@ -78,11 +78,13 @@ flowchart LR
 
 - `ModelName` 固定为 `Claude`，紧凑 tile 标签固定为 `CLD`。
 - 5 小时与周额度分别映射到两层额度环。
-- 展开卡同时显示两个额度百分比及各自 reset 时间。
+- 展开卡同时显示两个额度百分比及各自 reset 时间；5 小时和周额度各自维护独立趋势，不借用 Codex 的速率。
+- 周额度优先显示当前活跃趋势的预计耗尽时间，活跃样本不足时回退到近 24 小时节奏；结论与 reset 比较后显示“提前耗尽”或“可撑到重置”。
+- 5 小时额度在底条独立显示相同判断，周趋势区保留实测线、虚线预测、耗尽交点和 reset 线。
 - `IqKnown` 和 `EfficiencyKnown` 恒为 `false`，快照不再包含社区评分字段。
 - 当前 active family 改变不清空 CLD tile，也不借用 Codex 模型数据。
 
-tile 和 expand 只消费同一份缓存快照，不读取凭据、磁盘或网络。
+Claude 软件运行期间，`UpdateQuotaBurnObservationClock()` 推进本 family 的活跃时间轴；`ApplyQuotaSnapshot(Claude)` 只记录通过官方完整快照校验后的 5 小时/周余额。reset identity 改变或余额上升只清除对应窗口，活跃趋势与近时钟趋势均为进程内状态，重启后重新积累。tile 和 expand 只消费同一份 published snapshot，不读取凭据、磁盘或网络。
 
 ## 7. 服务健康
 
@@ -119,4 +121,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-tilecolumn --out .\_build\tilecolumn
 ```
 
-验收重点是：共享 owner 从未可见、官方 usage/statusline 是唯一 Claude 额度来源、`claude-quota.ini` 原子且有新鲜度保护、CLD tile 显示 5 小时/周额度与两个 reset、Claude IQ/评分/效率恒 unknown，以及 DeepSeek 仅保留服务健康。
+验收重点是：共享 owner 从未可见、官方 usage/statusline 是唯一 Claude 额度来源、`claude-quota.ini` 原子且有新鲜度保护、CLD tile 显示 5 小时/周额度、两个 reset 与双窗口趋势判断、Claude IQ/评分/效率恒 unknown，以及 DeepSeek 仅保留服务健康。

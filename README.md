@@ -1,6 +1,6 @@
 # Desktop Codex Assistant（UX3407N / UX3607O 专调版）
 
-适用版本：2.0.0.6
+适用版本：2.0.0.7
 
 A Windows-on-Arm desktop workspace for AI-assisted development: ten right-edge metric/quota tiles, five left-edge dock tabs and boards, an operation panel, and an on-demand settings window. Sampling and Radar coordination run in hidden owners. Tuned for ASUS UX3407N / UX3607O; ARM64 is the formal build target.
 

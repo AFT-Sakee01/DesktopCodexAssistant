@@ -225,7 +225,10 @@ internal sealed partial class CodexRadarForm
         public CodexRadarSnapshot RadarSnapshot { get; set; }
         public CodexQuotaSnapshot QuotaSnapshot { get; set; }
         public bool QuotaSourceKnown { get; set; }
+        public List<WeeklyBurnSample> FiveHourBurnSamples { get; set; }
         public List<WeeklyBurnSample> WeeklyBurnSamples { get; set; }
+        public List<WeeklyBurnSample> FiveHourWallBurnSamples { get; set; }
+        public List<WeeklyBurnSample> WeeklyWallBurnSamples { get; set; }
         public ServiceHealthState RadarHealth { get; set; }
         public bool RadarRequestRunning { get; set; }
         public DateTime LastRadarStatusAttemptLocal { get; set; }
@@ -240,7 +243,10 @@ internal sealed partial class CodexRadarForm
                 ModelKey = string.Empty,
                 RadarSnapshot = CodexRadarSnapshot.CreateDefault(),
                 QuotaSnapshot = CodexQuotaSnapshot.CreateDefault(),
+                FiveHourBurnSamples = new List<WeeklyBurnSample>(),
                 WeeklyBurnSamples = new List<WeeklyBurnSample>(),
+                FiveHourWallBurnSamples = new List<WeeklyBurnSample>(),
+                WeeklyWallBurnSamples = new List<WeeklyBurnSample>(),
                 RadarHealth = ServiceHealthState.Unknown
             };
         }
@@ -264,7 +270,10 @@ internal sealed partial class CodexRadarForm
                     ? CodexQuotaSnapshot.CreateDefault()
                     : quota.Snapshot.Clone(),
                 QuotaSourceKnown = quota != null && quota.SourceKnown,
+                FiveHourBurnSamples = CloneWeeklyBurnSamples(quota == null ? null : quota.FiveHourBurnSamples),
                 WeeklyBurnSamples = CloneWeeklyBurnSamples(quota == null ? null : quota.WeeklyBurnSamples),
+                FiveHourWallBurnSamples = CloneWeeklyBurnSamples(quota == null ? null : quota.FiveHourWallBurnSamples),
+                WeeklyWallBurnSamples = CloneWeeklyBurnSamples(quota == null ? null : quota.WeeklyWallBurnSamples),
                 RadarHealth = state.RadarSiteHealth,
                 RadarRequestRunning = state.RadarStatusRequestRunning,
                 LastRadarStatusAttemptLocal = state.LastRadarStatusAttemptLocal,
@@ -287,7 +296,10 @@ internal sealed partial class CodexRadarForm
                     ? CodexQuotaSnapshot.CreateDefault()
                     : this.QuotaSnapshot.Clone(),
                 QuotaSourceKnown = this.QuotaSourceKnown,
+                FiveHourBurnSamples = CloneWeeklyBurnSamples(this.FiveHourBurnSamples),
                 WeeklyBurnSamples = CloneWeeklyBurnSamples(this.WeeklyBurnSamples),
+                FiveHourWallBurnSamples = CloneWeeklyBurnSamples(this.FiveHourWallBurnSamples),
+                WeeklyWallBurnSamples = CloneWeeklyBurnSamples(this.WeeklyWallBurnSamples),
                 RadarHealth = this.RadarHealth,
                 RadarRequestRunning = this.RadarRequestRunning,
                 LastRadarStatusAttemptLocal = this.LastRadarStatusAttemptLocal,
@@ -475,7 +487,19 @@ internal sealed partial class CodexRadarForm
             RadarSnapshot = radar,
             QuotaSnapshot = quota,
             QuotaSourceKnown = true,
+            FiveHourBurnSamples = new List<WeeklyBurnSample>
+            {
+                new WeeklyBurnSample { Utc = sourceUtc, ActiveHours = marker, RemainingPercent = marker }
+            },
             WeeklyBurnSamples = new List<WeeklyBurnSample>
+            {
+                new WeeklyBurnSample { Utc = sourceUtc, ActiveHours = marker, RemainingPercent = marker }
+            },
+            FiveHourWallBurnSamples = new List<WeeklyBurnSample>
+            {
+                new WeeklyBurnSample { Utc = sourceUtc, ActiveHours = marker, RemainingPercent = marker }
+            },
+            WeeklyWallBurnSamples = new List<WeeklyBurnSample>
             {
                 new WeeklyBurnSample { Utc = sourceUtc, ActiveHours = marker, RemainingPercent = marker }
             },
@@ -548,9 +572,18 @@ internal sealed partial class CodexRadarForm
             state.CodexFamily.QuotaSnapshot != null &&
             state.CodexFamily.QuotaSnapshot.SourceUpdatedUtc == sourceUtc &&
             state.CodexFamily.QuotaSnapshot.FiveHourPercent == marker &&
+            state.CodexFamily.FiveHourBurnSamples != null &&
+            state.CodexFamily.FiveHourBurnSamples.Count == 1 &&
+            state.CodexFamily.FiveHourBurnSamples[0].RemainingPercent == marker &&
             state.CodexFamily.WeeklyBurnSamples != null &&
             state.CodexFamily.WeeklyBurnSamples.Count == 1 &&
             state.CodexFamily.WeeklyBurnSamples[0].RemainingPercent == marker &&
+            state.CodexFamily.FiveHourWallBurnSamples != null &&
+            state.CodexFamily.FiveHourWallBurnSamples.Count == 1 &&
+            state.CodexFamily.FiveHourWallBurnSamples[0].RemainingPercent == marker &&
+            state.CodexFamily.WeeklyWallBurnSamples != null &&
+            state.CodexFamily.WeeklyWallBurnSamples.Count == 1 &&
+            state.CodexFamily.WeeklyWallBurnSamples[0].RemainingPercent == marker &&
             state.CodexFamily.RadarHealth == health &&
             state.CodexFamily.RadarRequestRunning == (generation == 202) &&
             state.Services.GenerationSentinel == generation &&

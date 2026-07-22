@@ -66,7 +66,11 @@ internal sealed partial class CodexRadarForm
             this.WeeklyLastConsumingAcceptUtc = DateTime.MinValue;
             this.FiveHourLastNewbornAcceptUtc = DateTime.MinValue;
             this.WeeklyLastNewbornAcceptUtc = DateTime.MinValue;
+            this.FiveHourBurnSamples = new List<WeeklyBurnSample>();
             this.WeeklyBurnSamples = new List<WeeklyBurnSample>();
+            this.FiveHourWallBurnSamples = new List<WeeklyBurnSample>();
+            this.WeeklyWallBurnSamples = new List<WeeklyBurnSample>();
+            this.FiveHourBurnTrackedResetLocal = DateTime.MinValue;
             this.WeeklyBurnTrackedResetLocal = DateTime.MinValue;
             this.WeeklyBurnClockUtc = DateTime.MinValue;
             this.Protection = new QuotaProtectionState();
@@ -89,12 +93,16 @@ internal sealed partial class CodexRadarForm
         public DateTime WeeklyLastConsumingAcceptUtc { get; set; }
         public DateTime FiveHourLastNewbornAcceptUtc { get; set; }
         public DateTime WeeklyLastNewbornAcceptUtc { get; set; }
-        // Accepted (post-interference-filter) weekly remaining-% readings observed by THIS machine,
-        // oldest first, pruned to the burn-rate window. Feeds the measured-rate weekly budget ring;
-        // in-memory only, so a restart honestly re-accumulates before showing a rate.
+        // Accepted (post-interference-filter) remaining-% readings observed by THIS machine. The
+        // active lists answer "continuous use" while the wall lists answer "at the recent rhythm".
+        // Both are per-family and per-reset-window; a restart honestly re-accumulates the estimate.
+        public List<WeeklyBurnSample> FiveHourBurnSamples { get; private set; }
         public List<WeeklyBurnSample> WeeklyBurnSamples { get; private set; }
+        public List<WeeklyBurnSample> FiveHourWallBurnSamples { get; private set; }
+        public List<WeeklyBurnSample> WeeklyWallBurnSamples { get; private set; }
+        public DateTime FiveHourBurnTrackedResetLocal { get; set; }
         public DateTime WeeklyBurnTrackedResetLocal { get; set; }
-        // The sampling clock advances only while Codex is running. Keeping an active-time axis
+        // The sampling clock advances only while this family is running. Keeping an active-time axis
         // prevents overnight/closed-app gaps from making the measured burn rate look artificially low.
         public double WeeklyBurnActiveHours { get; set; }
         public DateTime WeeklyBurnClockUtc { get; set; }
@@ -102,7 +110,7 @@ internal sealed partial class CodexRadarForm
         public QuotaProtectionState Protection { get; private set; }
     }
 
-    // One accepted weekly-quota reading projected onto the active-time clock.
+    // One accepted quota reading. Active lists use ActiveHours; recent-rhythm lists use Utc.
     private sealed class WeeklyBurnSample
     {
         public DateTime Utc { get; set; }

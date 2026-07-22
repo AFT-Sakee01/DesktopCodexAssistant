@@ -51,7 +51,9 @@ internal sealed partial class MetricTileForm
                     Console.WriteLine(id + " -> " + path + " (" + panel.Width + "x" + panel.Height + ")");
                 }
 
-                if (id == MetricTileId.Cpu)
+                if (id == MetricTileId.Cpu ||
+                    id == MetricTileId.CodexQuota ||
+                    id == MetricTileId.ClaudeQuota)
                 {
                     panel.SetBurnInVisualState(BurnInVisualLevel.LevelTwo, false);
                     using (Bitmap bitmap = new Bitmap(panel.Width, panel.Height, PixelFormat.Format32bppPArgb))
@@ -60,9 +62,10 @@ internal sealed partial class MetricTileForm
                         g.Clear(DesignTokens.Colors.AppBackground);
                         panel.DrawPanel(g);
                         BurnInProtection.ApplyLuminance(bitmap, BurnInProtection.LevelOneLuminancePercent);
-                        string path = Path.Combine(outputDir, "tileexpand-cpu-burnin-level2.png");
+                        string idName = id.ToString().ToLowerInvariant();
+                        string path = Path.Combine(outputDir, "tileexpand-" + idName + "-burnin-level2.png");
                         bitmap.Save(path, ImageFormat.Png);
-                        Console.WriteLine("CPU level two -> " + path + " (" + panel.Width + "x" + panel.Height + ")");
+                        Console.WriteLine(id + " level two -> " + path + " (" + panel.Width + "x" + panel.Height + ")");
                     }
                 }
             }
@@ -260,6 +263,17 @@ internal sealed partial class MetricTileForm
         r.BurnPercentPerHour = claude ? 1.4 : 2.4;
         r.RunwayHours = claude ? 55 : 26;
         r.HoursToReset = claude ? 54 : 31;
+        r.BurnObservedHours = claude ? 4.2 : 6.0;
+        r.BurnConfidence = claude ? QuotaForecastConfidence.High : QuotaForecastConfidence.Medium;
+        r.CalendarRunwayKnown = true;
+        r.CalendarBurnPercentPerHour = claude ? 1.1 : 1.48;
+        r.CalendarRunwayHours = claude ? 70 : 42;
+        r.CalendarConfidence = QuotaForecastConfidence.Medium;
+        r.FiveHourBurnRateKnown = true;
+        r.FiveHourBurnPercentPerHour = claude ? 45.0 : 9.0;
+        r.FiveHourRunwayHours = claude ? 0.91 : 9.78;
+        r.FiveHourHoursToReset = claude ? 1.4 : 3.2;
+        r.FiveHourBurnConfidence = QuotaForecastConfidence.Medium;
         if (!claude)
         {
             r.IqKnown = true;

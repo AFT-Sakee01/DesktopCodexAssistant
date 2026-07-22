@@ -55,10 +55,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     // minutes after the displayed pool was seen actively consuming.
     private const double QuotaNewbornSuppressAfterConsumptionMinutes = 30.0;
     private const double QuotaRejectedPersistenceStaleGapMinutes = 15.0;
-    // The weekly-only burn-rate ring uses a short, in-memory active-time history. Six hours smooths
-    // integer-percent provider steps without making yesterday's usage dominate the current pace.
+    // Each quota window owns an active-time trend and a recent wall-clock trend. The short window
+    // reacts to bursts; the weekly window smooths integer-percent provider steps. Both remain
+    // in-memory and are invalidated by reset identity or balance increases.
+    private const double FiveHourBurnRateWindowActiveHours = 1.5;
     private const double WeeklyBurnRateWindowActiveHours = 6.0;
+    private const double FiveHourBurnRateWindowWallHours = 5.0;
+    private const double WeeklyBurnRateWindowWallHours = 24.0;
     private const double WeeklyBurnRateMinimumActiveMinutes = 10.0;
+    private const double BurnRateMinimumWallMinutes = 30.0;
     private const double WeeklyBurnClockMaximumGapSeconds = 90.0;
     private const double WeeklyBurnSampleMinimumSpacingSeconds = 60.0;
     private const int WeeklyBurnSampleLimit = 256;
@@ -1546,42 +1551,49 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return false;
     }
 
-    private static bool TryComputeWeeklyBurnRate(
+    private static bool TryComputeQuotaBurnRate(
         IList<WeeklyBurnSample> samples,
+        bool useWallClock,
+        double windowHours,
+        double minimumMinutes,
         int remainingPercent,
-        bool weeklyResetKnown,
-        DateTime weeklyResetLocal,
+        bool resetKnown,
+        DateTime resetLocal,
         DateTime nowLocal,
         out double burnPercentPerHour,
         out double runwayHours,
-        out double hoursToReset)
+        out double hoursToReset,
+        out double observedHours,
+        out QuotaForecastConfidence confidence)
     {
         burnPercentPerHour = 0.0;
         runwayHours = 0.0;
-        // hoursToReset <= 0 means "reset distance unknown/expired": the runway still computes from
-        // local samples alone; only the coverage comparison falls back to absolute thresholds.
         hoursToReset = 0.0;
+        observedHours = 0.0;
+        confidence = QuotaForecastConfidence.None;
         if (samples == null || samples.Count < 2)
         {
             return false;
         }
 
-        if (weeklyResetKnown && weeklyResetLocal != DateTime.MinValue)
+        if (resetKnown && resetLocal != DateTime.MinValue)
         {
-            hoursToReset = (weeklyResetLocal - nowLocal).TotalHours;
+            hoursToReset = (resetLocal - nowLocal).TotalHours;
         }
 
         WeeklyBurnSample end = samples[samples.Count - 1];
-        double cutoffActiveHours = end.ActiveHours - WeeklyBurnRateWindowActiveHours;
+        double endAxis = GetBurnSampleAxisHours(end, useWallClock);
+        double cutoff = endAxis - Math.Max(0.1, windowHours);
         int startIndex = 0;
-        while (startIndex < samples.Count - 1 && samples[startIndex + 1].ActiveHours <= cutoffActiveHours)
+        while (startIndex < samples.Count - 1 &&
+               GetBurnSampleAxisHours(samples[startIndex + 1], useWallClock) <= cutoff)
         {
             startIndex++;
         }
 
         WeeklyBurnSample start = samples[startIndex];
-        double observedActiveHours = end.ActiveHours - start.ActiveHours;
-        if (observedActiveHours * 60.0 < WeeklyBurnRateMinimumActiveMinutes)
+        observedHours = endAxis - GetBurnSampleAxisHours(start, useWallClock);
+        if (observedHours * 60.0 < minimumMinutes)
         {
             return false;
         }
@@ -1590,26 +1602,108 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (consumedPercent <= 0)
         {
             // Integer-percent sources cannot prove a positive rate until at least one accepted drop.
-            // Showing "采样中" is more honest than treating a flat quantized reading as infinite life.
+            // Showing "采样中" is more honest than treating a quantized plateau as infinite life.
             return false;
         }
 
-        burnPercentPerHour = consumedPercent / observedActiveHours;
-        if (double.IsNaN(burnPercentPerHour) || double.IsInfinity(burnPercentPerHour) || burnPercentPerHour <= 0.0)
+        double endpointRate = consumedPercent / observedHours;
+        List<double> pairwiseRates = new List<double>();
+        for (int i = startIndex; i < samples.Count - 1; i++)
+        {
+            double fromAxis = GetBurnSampleAxisHours(samples[i], useWallClock);
+            for (int j = i + 1; j < samples.Count; j++)
+            {
+                double span = GetBurnSampleAxisHours(samples[j], useWallClock) - fromAxis;
+                if (span < 1.0 / 60.0)
+                {
+                    continue;
+                }
+
+                int consumed = samples[i].RemainingPercent - samples[j].RemainingPercent;
+                if (consumed >= 0)
+                {
+                    pairwiseRates.Add(consumed / span);
+                }
+            }
+        }
+
+        double medianRate = Median(pairwiseRates);
+        // The endpoint rate retains the full-window budget meaning; a smaller Theil-Sen component
+        // damps single integer-percent jumps without letting long flat plateaus erase a real trend.
+        burnPercentPerHour = medianRate > 0.0
+            ? endpointRate * 0.65 + medianRate * 0.35
+            : endpointRate;
+        if (double.IsNaN(burnPercentPerHour) ||
+            double.IsInfinity(burnPercentPerHour) ||
+            burnPercentPerHour <= 0.0)
         {
             return false;
         }
+
         runwayHours = ClampPercent(remainingPercent) / burnPercentPerHour;
+        confidence = ResolveQuotaForecastConfidence(
+            observedHours,
+            consumedPercent,
+            samples.Count - startIndex);
         return !double.IsNaN(runwayHours) && !double.IsInfinity(runwayHours) && runwayHours >= 0.0;
     }
 
-    private static void UpdateWeeklyBurnObservationClock(QuotaRuntimeState quotaState, bool active, DateTime nowUtc)
+    private static double Median(List<double> values)
+    {
+        if (values == null || values.Count == 0)
+        {
+            return 0.0;
+        }
+
+        values.Sort();
+        int middle = values.Count / 2;
+        return (values.Count & 1) == 0
+            ? (values[middle - 1] + values[middle]) / 2.0
+            : values[middle];
+    }
+
+    private static QuotaForecastConfidence ResolveQuotaForecastConfidence(
+        double observedHours,
+        int consumedPercent,
+        int sampleCount)
+    {
+        if (observedHours >= 2.0 && consumedPercent >= 5 && sampleCount >= 5)
+        {
+            return QuotaForecastConfidence.High;
+        }
+
+        if (observedHours >= 0.5 && consumedPercent >= 2 && sampleCount >= 3)
+        {
+            return QuotaForecastConfidence.Medium;
+        }
+
+        return QuotaForecastConfidence.Low;
+    }
+
+    private static double GetBurnSampleAxisHours(WeeklyBurnSample sample, bool useWallClock)
+    {
+        if (sample == null)
+        {
+            return 0.0;
+        }
+
+        if (!useWallClock)
+        {
+            return sample.ActiveHours;
+        }
+
+        DateTime utc = sample.Utc.Kind == DateTimeKind.Utc ? sample.Utc : sample.Utc.ToUniversalTime();
+        return utc.Ticks / (double)TimeSpan.TicksPerHour;
+    }
+
+    private static bool UpdateQuotaBurnObservationClock(QuotaRuntimeState quotaState, bool active, DateTime nowUtc)
     {
         if (quotaState == null)
         {
-            return;
+            return false;
         }
 
+        bool historiesReset = false;
         DateTime normalizedUtc = nowUtc.Kind == DateTimeKind.Utc ? nowUtc : nowUtc.ToUniversalTime();
         DateTime previousUtc = quotaState.WeeklyBurnClockUtc;
         bool wasActive = quotaState.WeeklyBurnClockActive;
@@ -1622,24 +1716,32 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             }
             else if (wasActive && elapsedSeconds > WeeklyBurnClockMaximumGapSeconds)
             {
-                // A suspend, software-mode detour or stalled UI tick provides no evidence that Codex
-                // was active throughout the gap. Restart the estimate instead of diluting it.
+                // A suspend or stalled owner tick provides no evidence that the family was active
+                // throughout the gap. Restart active estimates; wall-clock rhythm remains valid.
+                historiesReset = quotaState.FiveHourBurnSamples.Count > 0 ||
+                    quotaState.WeeklyBurnSamples.Count > 0;
+                quotaState.FiveHourBurnSamples.Clear();
                 quotaState.WeeklyBurnSamples.Clear();
             }
 
             if (!wasActive && active)
             {
                 // A new active session gets a fresh baseline. This also prevents usage performed on
-                // another device while Codex was closed from being charged to local active time.
+                // another device while the app was closed from being charged to local active time.
+                historiesReset = historiesReset ||
+                    quotaState.FiveHourBurnSamples.Count > 0 ||
+                    quotaState.WeeklyBurnSamples.Count > 0;
+                quotaState.FiveHourBurnSamples.Clear();
                 quotaState.WeeklyBurnSamples.Clear();
             }
         }
 
         quotaState.WeeklyBurnClockUtc = normalizedUtc;
         quotaState.WeeklyBurnClockActive = active;
+        return historiesReset;
     }
 
-    private static void RecordWeeklyBurnSample(
+    private static void RecordQuotaBurnSamples(
         QuotaRuntimeState quotaState,
         CodexQuotaSnapshot snapshot,
         DateTime nowUtc)
@@ -1649,50 +1751,107 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
-        if (!snapshot.FiveHourLimitAbsent)
+        DateTime normalizedUtc = nowUtc.Kind == DateTimeKind.Utc ? nowUtc : nowUtc.ToUniversalTime();
+        quotaState.WeeklyBurnTrackedResetLocal = RecordQuotaBurnWindow(
+            quotaState.WeeklyBurnSamples,
+            quotaState.WeeklyWallBurnSamples,
+            quotaState.WeeklyBurnTrackedResetLocal,
+            snapshot.WeeklyResetKnown,
+            snapshot.WeeklyResetLocal,
+            snapshot.WeeklyPercent,
+            quotaState.WeeklyBurnClockActive,
+            quotaState.WeeklyBurnActiveHours,
+            normalizedUtc,
+            WeeklyBurnRateWindowActiveHours,
+            WeeklyBurnRateWindowWallHours);
+
+        if (snapshot.FiveHourLimitAbsent)
         {
-            quotaState.WeeklyBurnSamples.Clear();
-            quotaState.WeeklyBurnTrackedResetLocal = DateTime.MinValue;
+            quotaState.FiveHourBurnSamples.Clear();
+            quotaState.FiveHourWallBurnSamples.Clear();
+            quotaState.FiveHourBurnTrackedResetLocal = DateTime.MinValue;
             return;
         }
 
-        // A read that temporarily lacks the reset timestamp must NOT wipe the locally accumulated
-        // rate history - the provider intermittently omitting resets_at would otherwise force a
-        // fresh sampling period every time. Keep sampling on the balance axis; the reset-identity
-        // check simply pauses until a timestamp is present again, and the balance-increase guard
-        // below still catches a real reset that happened while the timestamp was missing.
-        if (snapshot.WeeklyResetKnown && snapshot.WeeklyResetLocal != DateTime.MinValue)
+        quotaState.FiveHourBurnTrackedResetLocal = RecordQuotaBurnWindow(
+            quotaState.FiveHourBurnSamples,
+            quotaState.FiveHourWallBurnSamples,
+            quotaState.FiveHourBurnTrackedResetLocal,
+            snapshot.FiveHourResetKnown,
+            snapshot.FiveHourResetLocal,
+            snapshot.FiveHourPercent,
+            quotaState.WeeklyBurnClockActive,
+            quotaState.WeeklyBurnActiveHours,
+            normalizedUtc,
+            FiveHourBurnRateWindowActiveHours,
+            FiveHourBurnRateWindowWallHours);
+    }
+
+    private static DateTime RecordQuotaBurnWindow(
+        List<WeeklyBurnSample> activeSamples,
+        List<WeeklyBurnSample> wallSamples,
+        DateTime trackedResetLocal,
+        bool resetKnown,
+        DateTime resetLocal,
+        int remainingPercent,
+        bool active,
+        double activeHours,
+        DateTime nowUtc,
+        double activeWindowHours,
+        double wallWindowHours)
+    {
+        // A temporarily missing reset timestamp must not wipe accumulated history. Reset identity
+        // changes and balance increases are the two independent boundaries that start a new pool.
+        if (resetKnown && resetLocal != DateTime.MinValue)
         {
-            bool resetChanged = quotaState.WeeklyBurnTrackedResetLocal != DateTime.MinValue &&
-                Math.Abs((snapshot.WeeklyResetLocal - quotaState.WeeklyBurnTrackedResetLocal).TotalMinutes) > QuotaIdentityToleranceMinutes;
+            bool resetChanged = trackedResetLocal != DateTime.MinValue &&
+                Math.Abs((resetLocal - trackedResetLocal).TotalMinutes) > QuotaIdentityToleranceMinutes;
             if (resetChanged)
             {
-                quotaState.WeeklyBurnSamples.Clear();
+                activeSamples.Clear();
+                wallSamples.Clear();
             }
-            quotaState.WeeklyBurnTrackedResetLocal = snapshot.WeeklyResetLocal;
+            trackedResetLocal = resetLocal;
         }
 
-        // Inactive reads may update the displayed quota, but they must not add a point to the local
-        // burn-rate axis. The next active transition starts a new baseline in the clock helper.
-        if (!quotaState.WeeklyBurnClockActive)
+        int remaining = ClampPercent(remainingPercent);
+        if (HasBalanceIncrease(activeSamples, remaining) || HasBalanceIncrease(wallSamples, remaining))
         {
-            return;
+            activeSamples.Clear();
+            wallSamples.Clear();
         }
 
-        int remaining = ClampPercent(snapshot.WeeklyPercent);
-        List<WeeklyBurnSample> samples = quotaState.WeeklyBurnSamples;
-        if (samples.Count > 0 && remaining > samples[samples.Count - 1].RemainingPercent)
+        AppendQuotaBurnSample(wallSamples, nowUtc, activeHours, remaining);
+        PruneQuotaBurnSamples(wallSamples, true, wallWindowHours);
+
+        // Inactive reads contribute to the recent wall-clock rhythm but never to continuous-use
+        // runway. The next active transition starts a new active baseline in the clock helper.
+        if (active)
         {
-            // A balance increase means a reset/card/new pool. Never project one quota window through
-            // another, even if the provider happened to reuse the same reset timestamp.
-            samples.Clear();
+            AppendQuotaBurnSample(activeSamples, nowUtc, activeHours, remaining);
+            PruneQuotaBurnSamples(activeSamples, false, activeWindowHours);
         }
 
-        DateTime normalizedUtc = nowUtc.Kind == DateTimeKind.Utc ? nowUtc : nowUtc.ToUniversalTime();
+        return trackedResetLocal;
+    }
+
+    private static bool HasBalanceIncrease(List<WeeklyBurnSample> samples, int remaining)
+    {
+        return samples != null &&
+            samples.Count > 0 &&
+            remaining > samples[samples.Count - 1].RemainingPercent;
+    }
+
+    private static void AppendQuotaBurnSample(
+        List<WeeklyBurnSample> samples,
+        DateTime normalizedUtc,
+        double activeHours,
+        int remaining)
+    {
         WeeklyBurnSample next = new WeeklyBurnSample
         {
             Utc = normalizedUtc,
-            ActiveHours = quotaState.WeeklyBurnActiveHours,
+            ActiveHours = activeHours,
             RemainingPercent = remaining
         };
 
@@ -1726,9 +1885,20 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 samples.Add(next);
             }
         }
+    }
 
-        double cutoff = quotaState.WeeklyBurnActiveHours - WeeklyBurnRateWindowActiveHours;
-        while (samples.Count > 2 && samples[1].ActiveHours < cutoff)
+    private static void PruneQuotaBurnSamples(
+        List<WeeklyBurnSample> samples,
+        bool useWallClock,
+        double windowHours)
+    {
+        if (samples == null || samples.Count == 0)
+        {
+            return;
+        }
+
+        double cutoff = GetBurnSampleAxisHours(samples[samples.Count - 1], useWallClock) - windowHours;
+        while (samples.Count > 2 && GetBurnSampleAxisHours(samples[1], useWallClock) < cutoff)
         {
             samples.RemoveAt(0);
         }
@@ -1750,18 +1920,35 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         double burn;
         double runway;
         double resetHours;
-        if (!TryComputeWeeklyBurnRate(measured, 40, true, nowLocal.AddHours(10.0), nowLocal, out burn, out runway, out resetHours) ||
+        double observedHours;
+        QuotaForecastConfidence confidence;
+        if (!TryComputeQuotaBurnRate(
+                measured, false, WeeklyBurnRateWindowActiveHours, WeeklyBurnRateMinimumActiveMinutes,
+                40, true, nowLocal.AddHours(10.0), nowLocal,
+                out burn, out runway, out resetHours, out observedHours, out confidence) ||
             Math.Abs(burn - 5.0) > 0.001 || Math.Abs(runway - 8.0) > 0.001 || Math.Abs(resetHours - 10.0) > 0.001)
         {
-            throw new InvalidOperationException("Weekly burn-rate self-test failed: measured rate/runway.");
+            throw new InvalidOperationException("Quota forecast self-test failed: measured active rate/runway.");
         }
 
         // Reset distance unknown: the runway must STILL resolve from local samples; only the
         // coverage comparison loses its reference (hoursToReset stays 0).
-        if (!TryComputeWeeklyBurnRate(measured, 40, false, DateTime.MinValue, nowLocal, out burn, out runway, out resetHours) ||
+        if (!TryComputeQuotaBurnRate(
+                measured, false, WeeklyBurnRateWindowActiveHours, WeeklyBurnRateMinimumActiveMinutes,
+                40, false, DateTime.MinValue, nowLocal,
+                out burn, out runway, out resetHours, out observedHours, out confidence) ||
             Math.Abs(runway - 8.0) > 0.001 || resetHours > 0.0)
         {
-            throw new InvalidOperationException("Weekly burn-rate self-test failed: unknown reset must still yield a measured runway.");
+            throw new InvalidOperationException("Quota forecast self-test failed: unknown reset must still yield a measured runway.");
+        }
+
+        if (!TryComputeQuotaBurnRate(
+                measured, true, WeeklyBurnRateWindowWallHours, BurnRateMinimumWallMinutes,
+                40, true, nowLocal.AddHours(10.0), nowLocal,
+                out burn, out runway, out resetHours, out observedHours, out confidence) ||
+            Math.Abs(burn - 5.0) > 0.001 || Math.Abs(runway - 8.0) > 0.001)
+        {
+            throw new InvalidOperationException("Quota forecast self-test failed: recent-rhythm rate/runway.");
         }
 
         List<WeeklyBurnSample> insufficient = new List<WeeklyBurnSample>
@@ -1774,61 +1961,86 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             new WeeklyBurnSample { Utc = nowUtc.AddHours(-1.0), ActiveHours = 0.0, RemainingPercent = 50 },
             new WeeklyBurnSample { Utc = nowUtc, ActiveHours = 1.0, RemainingPercent = 50 }
         };
-        if (TryComputeWeeklyBurnRate(insufficient, 49, true, nowLocal.AddHours(10.0), nowLocal, out burn, out runway, out resetHours) ||
-            TryComputeWeeklyBurnRate(flat, 50, true, nowLocal.AddHours(10.0), nowLocal, out burn, out runway, out resetHours))
+        if (TryComputeQuotaBurnRate(
+                insufficient, false, WeeklyBurnRateWindowActiveHours, WeeklyBurnRateMinimumActiveMinutes,
+                49, true, nowLocal.AddHours(10.0), nowLocal,
+                out burn, out runway, out resetHours, out observedHours, out confidence) ||
+            TryComputeQuotaBurnRate(
+                flat, false, WeeklyBurnRateWindowActiveHours, WeeklyBurnRateMinimumActiveMinutes,
+                50, true, nowLocal.AddHours(10.0), nowLocal,
+                out burn, out runway, out resetHours, out observedHours, out confidence))
         {
-            throw new InvalidOperationException("Weekly burn-rate self-test failed: insufficient/flat samples must stay in sampling state.");
+            throw new InvalidOperationException("Quota forecast self-test failed: insufficient/flat samples must stay in sampling state.");
         }
 
         QuotaRuntimeState clockState = new QuotaRuntimeState();
-        UpdateWeeklyBurnObservationClock(clockState, true, nowUtc);
-        UpdateWeeklyBurnObservationClock(clockState, true, nowUtc.AddSeconds(30.0));
-        UpdateWeeklyBurnObservationClock(clockState, false, nowUtc.AddSeconds(60.0));
-        UpdateWeeklyBurnObservationClock(clockState, false, nowUtc.AddSeconds(90.0));
-        UpdateWeeklyBurnObservationClock(clockState, true, nowUtc.AddSeconds(120.0));
-        UpdateWeeklyBurnObservationClock(clockState, true, nowUtc.AddSeconds(150.0));
+        UpdateQuotaBurnObservationClock(clockState, true, nowUtc);
+        UpdateQuotaBurnObservationClock(clockState, true, nowUtc.AddSeconds(30.0));
+        UpdateQuotaBurnObservationClock(clockState, false, nowUtc.AddSeconds(60.0));
+        UpdateQuotaBurnObservationClock(clockState, false, nowUtc.AddSeconds(90.0));
+        UpdateQuotaBurnObservationClock(clockState, true, nowUtc.AddSeconds(120.0));
+        UpdateQuotaBurnObservationClock(clockState, true, nowUtc.AddSeconds(150.0));
         if (Math.Abs(clockState.WeeklyBurnActiveHours - (90.0 / 3600.0)) > 0.0001)
         {
-            throw new InvalidOperationException("Weekly burn-rate self-test failed: inactive time leaked into active clock.");
+            throw new InvalidOperationException("Quota forecast self-test failed: inactive time leaked into active clock.");
         }
+        clockState.FiveHourBurnSamples.Add(new WeeklyBurnSample());
         clockState.WeeklyBurnSamples.Add(new WeeklyBurnSample());
-        UpdateWeeklyBurnObservationClock(clockState, true, nowUtc.AddMinutes(8.0));
-        if (clockState.WeeklyBurnSamples.Count != 0)
+        clockState.WeeklyWallBurnSamples.Add(new WeeklyBurnSample());
+        UpdateQuotaBurnObservationClock(clockState, true, nowUtc.AddMinutes(8.0));
+        if (clockState.FiveHourBurnSamples.Count != 0 ||
+            clockState.WeeklyBurnSamples.Count != 0 ||
+            clockState.WeeklyWallBurnSamples.Count != 1)
         {
-            throw new InvalidOperationException("Weekly burn-rate self-test failed: long clock gap did not reset samples.");
+            throw new InvalidOperationException("Quota forecast self-test failed: long gap did not isolate active and wall histories.");
         }
 
         QuotaRuntimeState recordState = new QuotaRuntimeState();
         recordState.WeeklyBurnClockActive = true;
         CodexQuotaSnapshot snapshot = CodexQuotaSnapshot.CreateDefault();
-        snapshot.FiveHourLimitAbsent = true;
+        snapshot.FiveHourLimitAbsent = false;
+        snapshot.FiveHourResetKnown = true;
+        snapshot.FiveHourResetLocal = nowLocal.AddHours(5.0);
+        snapshot.FiveHourPercent = 70;
         snapshot.WeeklyResetKnown = true;
         snapshot.WeeklyResetLocal = nowLocal.AddDays(7.0);
         snapshot.WeeklyPercent = 80;
-        RecordWeeklyBurnSample(recordState, snapshot, nowUtc);
+        RecordQuotaBurnSamples(recordState, snapshot, nowUtc);
         recordState.WeeklyBurnActiveHours = 0.5;
+        snapshot.FiveHourPercent = 66;
         snapshot.WeeklyPercent = 78;
-        RecordWeeklyBurnSample(recordState, snapshot, nowUtc.AddMinutes(30.0));
+        RecordQuotaBurnSamples(recordState, snapshot, nowUtc.AddMinutes(30.0));
+
+        if (recordState.FiveHourBurnSamples.Count != 2 ||
+            recordState.WeeklyBurnSamples.Count != 2 ||
+            recordState.FiveHourWallBurnSamples.Count != 2 ||
+            recordState.WeeklyWallBurnSamples.Count != 2)
+        {
+            throw new InvalidOperationException("Quota forecast self-test failed: dual-window histories were not recorded.");
+        }
 
         // A read that momentarily lacks the reset timestamp must keep the history and keep sampling.
         snapshot.WeeklyResetKnown = false;
         snapshot.WeeklyResetLocal = DateTime.MinValue;
+        snapshot.FiveHourPercent = 65;
         snapshot.WeeklyPercent = 77;
         recordState.WeeklyBurnActiveHours = 0.55;
-        RecordWeeklyBurnSample(recordState, snapshot, nowUtc.AddMinutes(33.0));
+        RecordQuotaBurnSamples(recordState, snapshot, nowUtc.AddMinutes(33.0));
         if (recordState.WeeklyBurnSamples.Count != 3)
         {
-            throw new InvalidOperationException("Weekly burn-rate self-test failed: unknown reset timestamp wiped the sample history.");
+            throw new InvalidOperationException("Quota forecast self-test failed: unknown reset timestamp wiped the sample history.");
         }
 
         snapshot.WeeklyResetKnown = true;
         snapshot.WeeklyResetLocal = nowLocal.AddDays(14.0);
         snapshot.WeeklyPercent = 100;
         recordState.WeeklyBurnActiveHours = 0.6;
-        RecordWeeklyBurnSample(recordState, snapshot, nowUtc.AddMinutes(36.0));
-        if (recordState.WeeklyBurnSamples.Count != 1 || recordState.WeeklyBurnSamples[0].RemainingPercent != 100)
+        RecordQuotaBurnSamples(recordState, snapshot, nowUtc.AddMinutes(36.0));
+        if (recordState.WeeklyBurnSamples.Count != 1 ||
+            recordState.WeeklyBurnSamples[0].RemainingPercent != 100 ||
+            recordState.FiveHourBurnSamples.Count != 4)
         {
-            throw new InvalidOperationException("Weekly burn-rate self-test failed: reset did not rebuild the sample window.");
+            throw new InvalidOperationException("Quota forecast self-test failed: weekly reset crossed into the 5-hour history.");
         }
     }
 
@@ -2055,7 +2267,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         QuotaRuntimeState quotaState = GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex);
         bool codexProcessChanged;
         bool codexRunning = UpdateCodexProcessRunningStatus(nowUtc, out codexProcessChanged);
-        UpdateWeeklyBurnObservationClock(quotaState, codexRunning, nowUtc);
+        UpdateQuotaBurnObservationClock(quotaState, codexRunning, nowUtc);
         bool resetDue = IsQuotaResetDue(quotaState.Snapshot, nowLocal);
         // Active Codex sessions need prompt quota updates; inactive sessions use a much slower
         // schedule unless a reset boundary or process transition requires an immediate read.
@@ -2145,9 +2357,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             : NormalizeQuotaSnapshot(nextSnapshot);
         quotaState.Snapshot = displaySnapshot;
         quotaState.SourceKnown = quotaKnown;
-        if (family == CodexRadarSoftwareMode.Codex && quotaKnown && displaySnapshot != null)
+        UpdateQuotaBurnObservationClock(quotaState, appRunning, detectedUtc);
+        if (quotaKnown && displaySnapshot != null)
         {
-            RecordWeeklyBurnSample(quotaState, displaySnapshot, detectedUtc);
+            RecordQuotaBurnSamples(quotaState, displaySnapshot, detectedUtc);
         }
         GetRadarFamilyState(family).Touch();
         PublishProjectionStateFromOwner();

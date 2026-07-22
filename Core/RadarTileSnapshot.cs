@@ -1,6 +1,14 @@
 using System;
 using System.Collections.Generic;
 
+internal enum QuotaForecastConfidence
+{
+    None,
+    Low,
+    Medium,
+    High
+}
+
 // Read-only view of one service family's Radar state, for the Radar tiles and their expand panels
 // (canonical edge Radar tiles, 1.0.6.20).
 //
@@ -32,6 +40,21 @@ internal sealed class RadarTileSnapshot
     public double BurnPercentPerHour;
     public double RunwayHours;
     public double HoursToReset;
+    public double BurnObservedHours;
+    public QuotaForecastConfidence BurnConfidence;
+    public bool CalendarRunwayKnown;
+    public double CalendarBurnPercentPerHour;
+    public double CalendarRunwayHours;
+    public QuotaForecastConfidence CalendarConfidence;
+
+    // The short 5-hour pool is estimated independently from the weekly pool. Sharing a rate would
+    // make a bursty short window inherit the week's slower pace and produce a dangerously optimistic
+    // "可撑到重置" conclusion.
+    public bool FiveHourBurnRateKnown;
+    public double FiveHourBurnPercentPerHour;
+    public double FiveHourRunwayHours;
+    public double FiveHourHoursToReset;
+    public QuotaForecastConfidence FiveHourBurnConfidence;
 
     // Model quality.
     public bool IqKnown;

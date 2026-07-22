@@ -492,10 +492,30 @@ internal sealed partial class CodexRadarForm
     private void RefreshSelectedQuotaInfoIfNeeded()
     {
         SoftwareRuntimePresenceSnapshot presence = RefreshSoftwareRuntimePresenceSnapshot(false);
+        DateTime nowUtc = DateTime.UtcNow;
+        bool codexTrendReset = UpdateQuotaBurnObservationClock(
+            GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex),
+            presence.CodexRunning,
+            nowUtc);
+        bool claudeTrendReset = UpdateQuotaBurnObservationClock(
+            GetQuotaRuntimeState(CodexRadarSoftwareMode.Claude),
+            presence.ClaudeRunning,
+            nowUtc);
+        if (codexTrendReset || claudeTrendReset)
+        {
+            if (codexTrendReset)
+            {
+                GetRadarFamilyState(CodexRadarSoftwareMode.Codex).Touch();
+            }
+            if (claudeTrendReset)
+            {
+                GetRadarFamilyState(CodexRadarSoftwareMode.Claude).Touch();
+            }
+            PublishProjectionStateFromOwner();
+        }
         if (!presence.AnySupportedAppRunning)
         {
             this.quotaCodexProcessRunning = false;
-            UpdateWeeklyBurnObservationClock(GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex), false, DateTime.UtcNow);
             return;
         }
 
@@ -507,7 +527,10 @@ internal sealed partial class CodexRadarForm
         }
         else
         {
-            UpdateWeeklyBurnObservationClock(GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex), false, DateTime.UtcNow);
+            UpdateQuotaBurnObservationClock(
+                GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex),
+                false,
+                nowUtc);
         }
 
         if (presence.ClaudeRunning)
