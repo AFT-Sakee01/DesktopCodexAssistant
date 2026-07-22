@@ -39,6 +39,7 @@ internal sealed partial class CodexRadarForm
     private string codexResetCreditsRefreshTrigger = "首次刷新";
     private CodexQuotaSnapshot codexProviderQuotaSnapshot = CodexQuotaSnapshot.CreateDefault();
     private CodexResetCreditsSnapshot codexResetCreditsSnapshot = CodexResetCreditsSnapshot.CreateDefault();
+    private readonly CodexQuotaHistoryStore codexQuotaHistoryStore;
     private bool codexProviderQuotaSourceKnown;
     private ServiceHealthState codexProviderUsageHealth = ServiceHealthState.Unknown;
     private string codexProviderUsageErrorCode = string.Empty;

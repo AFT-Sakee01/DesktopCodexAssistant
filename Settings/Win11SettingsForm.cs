@@ -535,6 +535,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "Codex 任务看板", "CodexTaskBoardTransparencyOverridePercent", "CodexTaskBoardLeftDockTabCenterY" },
             new string[] { "GUARD 看板", "GuardBoardTransparencyOverridePercent", "GuardBoardScaleOverridePercent", "GuardBoardLeftDockTabCenterY", "GuardBoardAutoHideSeconds" },
             new string[] { "Codex IQ 看板", "CodexIqBoardTransparencyOverridePercent", "CodexIqBoardScaleOverridePercent", "CodexIqBoardLeftDockTabCenterY", "CodexIqBoardAutoHideSeconds" },
+            new string[] { "重置与速蹬看板", "ResetSpeedBoardTransparencyOverridePercent", "ResetSpeedBoardScaleOverridePercent", "ResetSpeedBoardLeftDockTabCenterY", "ResetSpeedBoardAutoHideSeconds" },
             new string[] { "!测试", "AlertTestEnabled" }
         });
     }
@@ -1374,7 +1375,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             string.Equals(propertyName, "CodexTaskBoardLeftDockTabCenterY", StringComparison.Ordinal) ||
             string.Equals(propertyName, "NetworkMonitorLeftDockTabCenterY", StringComparison.Ordinal) ||
             string.Equals(propertyName, "GuardBoardLeftDockTabCenterY", StringComparison.Ordinal) ||
-            string.Equals(propertyName, "CodexIqBoardLeftDockTabCenterY", StringComparison.Ordinal);
+            string.Equals(propertyName, "CodexIqBoardLeftDockTabCenterY", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "ResetSpeedBoardLeftDockTabCenterY", StringComparison.Ordinal);
     }
 
     private Control BuildLeftDockTabCenterEditor()
@@ -2900,6 +2902,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexIqBoardAutoHideSeconds",
             "CodexIqBoardTransparencyOverridePercent",
             "CodexIqBoardScaleOverridePercent",
+            "ResetSpeedBoardLeftDockTabCenterY",
+            "ResetSpeedBoardAutoHideSeconds",
+            "ResetSpeedBoardTransparencyOverridePercent",
+            "ResetSpeedBoardScaleOverridePercent",
             "RightTileAutoArrangeEnabled",
             "RightTileButtonOrder",
             "RightTileButtonGapPixels",
@@ -2995,7 +3001,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexTaskBoardLeftDockTabCenterY",
             "NetworkMonitorLeftDockTabCenterY",
             "GuardBoardLeftDockTabCenterY",
-            "CodexIqBoardLeftDockTabCenterY"
+            "CodexIqBoardLeftDockTabCenterY",
+            "ResetSpeedBoardLeftDockTabCenterY"
         };
         for (int i = 0; i < names.Length; i++)
         {
@@ -3022,12 +3029,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         normalized.NetworkMonitorLeftDockTabCenterY = -40;
         normalized.GuardBoardLeftDockTabCenterY = -50;
         normalized.CodexIqBoardLeftDockTabCenterY = -60;
+        normalized.ResetSpeedBoardLeftDockTabCenterY = -70;
         normalized.Normalize();
         if (normalized.SpecBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
             normalized.CodexTaskBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
             normalized.NetworkMonitorLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
             normalized.GuardBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
-            normalized.CodexIqBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY)
+            normalized.CodexIqBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY ||
+            normalized.ResetSpeedBoardLeftDockTabCenterY != WidgetSettings.AutoLeftDockTabCenterY)
         {
             throw new InvalidOperationException("WinUI left dock centers must normalize invalid negative values to the auto sentinel.");
         }
@@ -3041,7 +3050,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             SettingEditor editor = this.editors[orderNames[i]];
             string[] original = (string[])editor.Property.GetValue(this.baseline, null);
             string[] reversed = i == 0
-                ? new string[] { "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network" }
+                ? new string[] { "ResetSpeed", "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network" }
                 : new string[] { "ClaudeQuota", "CodexQuota", "Guard", "Power", "Npu", "Gpu", "Network", "Disk", "Memory", "Cpu" };
             SetEditorValue(editor, reversed);
             string[] actual = GetEditorValue(editor) as string[];
@@ -3417,10 +3426,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "CodexModelTimeEfficiencyBaselinePassed", "CodexModelTimeEfficiencyBaselineSeconds",
             "CodexModelTokenEfficiencyLowThresholdPercent", "CodexModelTimeEfficiencyLowThresholdPercent"
         });
-        AddSettingsUiBindingExemptions(exemptions, "compatibility-only dock flags; the canonical visible topology always contains all five left-edge tabs", new string[]
+        AddSettingsUiBindingExemptions(exemptions, "compatibility-only dock flags; the canonical visible topology always contains all six left-edge tabs", new string[]
         {
             "SpecBoardLeftDockEnabled", "CodexTaskBoardLeftDockEnabled",
-            "GuardBoardLeftDockEnabled", "CodexIqBoardLeftDockEnabled"
+            "GuardBoardLeftDockEnabled", "CodexIqBoardLeftDockEnabled", "ResetSpeedBoardLeftDockEnabled"
         });
         AddSettingsUiBindingExemptions(exemptions, "Codex task-board geometry/view is owned by the board surface; monitor thresholds are internal tuning", new string[]
         {
@@ -3610,6 +3619,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "GuardBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinGuardBoardAutoHideSeconds, WidgetSettings.MaxGuardBoardAutoHideSeconds) },
         { "CodexIqBoardLeftDockTabCenterY", new NumericRange(WidgetSettings.AutoLeftDockTabCenterY, 1000000) },
         { "CodexIqBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinCodexIqBoardAutoHideSeconds, WidgetSettings.MaxCodexIqBoardAutoHideSeconds) },
+        { "ResetSpeedBoardLeftDockTabCenterY", new NumericRange(WidgetSettings.AutoLeftDockTabCenterY, 1000000) },
+        { "ResetSpeedBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinResetSpeedBoardAutoHideSeconds, WidgetSettings.MaxResetSpeedBoardAutoHideSeconds) },
         { "SpecBoardAutoPopupSeconds", new NumericRange(WidgetSettings.MinSpecBoardAutoPopupSeconds, WidgetSettings.MaxSpecBoardAutoPopupSeconds) },
         { "SpecBoardManagerWidth", new NumericRange(WidgetSettings.MinSpecBoardManagerWidth, WidgetSettings.MaxSpecBoardManagerWidth) },
         { "SpecBoardManagerHeight", new NumericRange(WidgetSettings.MinSpecBoardManagerHeight, WidgetSettings.MaxSpecBoardManagerHeight) },
@@ -3624,6 +3635,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexTaskBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
         { "GuardBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
         { "CodexIqBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
+        { "ResetSpeedBoardScaleOverridePercent", new NumericRange(WidgetSettings.MinWindowScaleOverridePercent, WidgetSettings.MaxWindowScaleOverridePercent) },
         { "MainWidgetTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "NetworkMonitorTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "OperationTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
@@ -3631,6 +3643,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexTaskBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "GuardBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "CodexIqBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
+        { "ResetSpeedBoardTransparencyOverridePercent", new NumericRange(WidgetSettings.MinWindowTransparencyOverridePercent, WidgetSettings.MaxWindowTransparencyOverridePercent) },
         { "NightScheduleStartMinutes", new NumericRange(WidgetSettings.MinNightScheduleMinutes, WidgetSettings.MaxNightScheduleMinutes) },
         { "NightScheduleEndMinutes", new NumericRange(WidgetSettings.MinNightScheduleMinutes, WidgetSettings.MaxNightScheduleMinutes) },
         { "NightDimLuminancePercent", new NumericRange(WidgetSettings.MinNightDimLuminancePercent, WidgetSettings.MaxNightDimLuminancePercent) },
@@ -3698,6 +3711,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "GuardBoardAutoHideSeconds", "GUARD 自动收回秒数" },
         { "CodexIqBoardLeftDockTabCenterY", "Codex IQ 标签中心 Y" },
         { "CodexIqBoardAutoHideSeconds", "Codex IQ 自动收回秒数" },
+        { "ResetSpeedBoardLeftDockTabCenterY", "重置与速蹬标签中心 Y" },
+        { "ResetSpeedBoardAutoHideSeconds", "重置与速蹬自动收回秒数" },
         { "LeftDockOutsideClickCollapseEnabled", "点击看板外部时收回" },
         { "SpecBoardAutoPopupEnabled", "发现新 Spec 时自动弹出" },
         { "SpecBoardAutoPopupSeconds", "新 Spec 弹窗停留秒数" },
@@ -3715,12 +3730,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexTaskBoardScaleOverridePercent", "Codex 任务看板缩放覆盖" },
         { "GuardBoardScaleOverridePercent", "GUARD 看板缩放覆盖" },
         { "CodexIqBoardScaleOverridePercent", "Codex IQ 看板缩放覆盖" },
+        { "ResetSpeedBoardScaleOverridePercent", "重置与速蹬看板缩放覆盖" },
         { "NetworkMonitorTransparencyOverridePercent", "网络监控整体透明度覆盖" },
         { "OperationTransparencyOverridePercent", "操作面板整体透明度覆盖" },
         { "SpecBoardTransparencyOverridePercent", "Spec Board 整体透明度覆盖" },
         { "CodexTaskBoardTransparencyOverridePercent", "Codex 任务看板整体透明度覆盖" },
         { "GuardBoardTransparencyOverridePercent", "GUARD 看板整体透明度覆盖" },
         { "CodexIqBoardTransparencyOverridePercent", "Codex IQ 看板整体透明度覆盖" },
+        { "ResetSpeedBoardTransparencyOverridePercent", "重置与速蹬看板整体透明度覆盖" },
         { "NightScheduleEnabled", "启用夜间时段" },
         { "NightScheduleStartMinutes", "夜间开始（自午夜分钟）" },
         { "NightScheduleEndMinutes", "夜间结束（自午夜分钟）" },
@@ -3878,9 +3895,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "OperationDisplayDeviceName", "留空使用当前主显示器；操作面板偏移量按目标显示器左下角计算。" },
         { "ResolutionCompatibilityModeEnabled", "默认关闭。开启后按 2880x1800 参考布局投影 Operation、五个 Dock 与十枚磁贴/展开面板。" },
         { "ResolutionCompatibilityScalePercent", "运行时输出比例，低于 100% 压缩，高于 100% 放大；不会改写保存的真实布局坐标。" },
-        { GlobalLayoutEditCommandName, "打开全屏布局编辑遮罩，显示 Operation、固定五个左侧停靠按钮与固定十枚右侧磁贴；Enter 保存，Esc 放弃。自动排列开启时拖动列成员会整体上下移动。" },
-        { "LeftDockAutoArrangeEnabled", "开启后按下方顺序和分布间距自动排列固定五个左侧梯形按钮；关闭后保留全局编辑器写入的单项位置。" },
-        { "LeftDockButtonOrder", "用上下箭头调整 Network、Spec、Codex Task、GUARD 与 Codex IQ 五个固定按钮的排列顺序。" },
+        { GlobalLayoutEditCommandName, "打开全屏布局编辑遮罩，显示 Operation、固定六个左侧停靠按钮与固定十枚右侧磁贴；Enter 保存，Esc 放弃。自动排列开启时拖动列成员会整体上下移动。" },
+        { "LeftDockAutoArrangeEnabled", "开启后按下方顺序和分布间距自动排列固定六个左侧梯形按钮；关闭后保留全局编辑器写入的单项位置。" },
+        { "LeftDockButtonOrder", "用上下箭头调整 Network、Spec、Codex Task、GUARD、Codex IQ 与重置/速蹬六个固定按钮的排列顺序。" },
         { "LeftDockButtonGapPixels", "可拖动滑块或直接输入 0–100；0 让按钮紧挨，100 让整列从工作区顶部到底部均匀分布，中间值按比例展开。" },
         { "LeftDockGroupOffsetY", "把全部左侧按钮视为一个整体，相对屏幕垂直居中位置上下移动；0 为居中，负值向上。" },
         { "RightTileAutoArrangeEnabled", "开启后按下方顺序和分布间距自动排列固定十枚右缘磁贴；关闭后保留全局编辑器写入的单项位置。" },
@@ -3890,13 +3907,15 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "SpecBoardWidth", "逻辑像素，范围 320-700。" },
         { "SpecBoardHeight", "逻辑像素，范围 240-800。" },
         { "SpecBoardAutoHideSeconds", "范围 0-600 秒；0 表示不自动收回。鼠标停在看板内时暂停，移出后重新计时。" },
-        { "SpecBoardLeftDockTabCenterY", "自动模式按五看板队列计算位置；手动模式填写屏幕坐标 Y。无效负值保存时恢复自动。" },
-        { "CodexTaskBoardLeftDockTabCenterY", "自动模式按五看板队列计算位置；手动模式填写屏幕坐标 Y。" },
-        { "NetworkMonitorLeftDockTabCenterY", "自动模式按五看板队列计算位置；手动模式填写屏幕坐标 Y。" },
-        { "GuardBoardLeftDockTabCenterY", "自动模式按五看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "SpecBoardLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。无效负值保存时恢复自动。" },
+        { "CodexTaskBoardLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "NetworkMonitorLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "GuardBoardLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。" },
         { "GuardBoardAutoHideSeconds", "范围 0-600 秒；0 表示展开后不自动收回。" },
-        { "CodexIqBoardLeftDockTabCenterY", "自动模式按五看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "CodexIqBoardLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。" },
         { "CodexIqBoardAutoHideSeconds", "范围 0-600 秒；0 表示展开后不自动收回。" },
+        { "ResetSpeedBoardLeftDockTabCenterY", "自动模式按六看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "ResetSpeedBoardAutoHideSeconds", "范围 0-600 秒；0 表示展开后不自动收回。" },
         { "LeftDockOutsideClickCollapseEnabled", "开启后，停靠展开的 Spec Board 或 Codex Task 在点击桌面、其他窗口或另一块看板时收回；点击自身、停靠梯形或 Spec 管理窗口不会误收回。" },
         { "SpecBoardAutoPopupEnabled", "开启后监测新建的 Spec；发现新项时自动弹出小看板并高亮。" },
         { "SpecBoardAutoPopupSeconds", "范围 1-120 秒；自动弹窗在鼠标未停留时的显示时长，鼠标移入会暂停并重置倒计时。" },
@@ -3914,12 +3933,14 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexTaskBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 覆盖 Codex 任务看板及其停靠标签。" },
         { "GuardBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖 GUARD 看板及其停靠标签。" },
         { "CodexIqBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖 Codex IQ 看板及其停靠标签。" },
+        { "ResetSpeedBoardScaleOverridePercent", "−1 = 跟随全局分辨率兼容缩放；40–200 只覆盖重置与速蹬看板及其停靠标签。" },
         { "NetworkMonitorTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖 Network 停靠板及其标签。" },
         { "OperationTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖操作面板及其启动器子窗。" },
         { "SpecBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖 Spec 看板及其停靠标签。" },
         { "CodexTaskBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 覆盖 Codex 任务看板及其停靠标签。" },
         { "GuardBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖 GUARD 看板及其停靠标签。" },
         { "CodexIqBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖 Codex IQ 看板及其停靠标签。" },
+        { "ResetSpeedBoardTransparencyOverridePercent", "−1 = 跟随全局整体透明度；0–90 只覆盖重置与速蹬看板及其停靠标签。" },
         { "NightScheduleEnabled", "按本地时间在固定时段降低全部挂件亮度。" },
         { "NightScheduleStartMinutes", "0–1439；例如 1380 = 23:00，可与结束时间组成跨午夜时段。" },
         { "NightScheduleEndMinutes", "0–1439；例如 420 = 07:00，结束分钟本身不属于夜间。" },
@@ -3967,7 +3988,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             this.leftColumn = leftColumn;
             this.rowFont = rowFont;
             this.allowedIds = leftColumn
-                ? new string[] { "Network", "SpecBoard", "CodexTask", "Guard", "CodexIq" }
+                ? new string[] { "Network", "SpecBoard", "CodexTask", "Guard", "CodexIq", "ResetSpeed" }
                 : (string[])WidgetSettings.MetricTileIds.Clone();
             this.rowStates = new Dictionary<string, ColumnOrderRowState>(StringComparer.OrdinalIgnoreCase);
             this.order = (string[])this.allowedIds.Clone();
@@ -4230,7 +4251,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 if (string.Equals(id, "SpecBoard", StringComparison.Ordinal)) return "Spec Board";
                 if (string.Equals(id, "CodexTask", StringComparison.Ordinal)) return "Codex Task";
                 if (string.Equals(id, "Guard", StringComparison.Ordinal)) return "GUARD";
-                return "Codex IQ";
+                if (string.Equals(id, "CodexIq", StringComparison.Ordinal)) return "Codex IQ";
+                return "重置与速蹬";
             }
 
             int index = WidgetSettings.IndexOfMetricTile(id);
@@ -4247,7 +4269,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 if (string.Equals(id, "SpecBoard", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SpecBoard);
                 if (string.Equals(id, "CodexTask", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexTask);
                 if (string.Equals(id, "Guard", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Guard);
-                return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexIq);
+                if (string.Equals(id, "CodexIq", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexIq);
+                return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.ResetSpeed);
             }
 
             int index = WidgetSettings.IndexOfMetricTile(id);

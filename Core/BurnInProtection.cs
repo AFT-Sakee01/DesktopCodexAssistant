@@ -34,6 +34,8 @@ internal static class BurnInProtection
     public const int CodexIqBoardSalt = 71;
     public const int CodexIqBoardDockTabSalt = 79;
     public const int LeftDockButtonColumnSalt = 83;
+    public const int ResetSpeedBoardSalt = 89;
+    public const int ResetSpeedBoardDockTabSalt = 97;
 
     private const int ShiftIntervalMinutes = 7;
     private static int currentVisualLevel;

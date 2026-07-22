@@ -1,12 +1,12 @@
 # Guard Board 架构
 
-适用版本：2.0.0.1
+适用版本：2.0.0.10
 
 本文负责电源守护状态机（睡眠防护、亮屏计时、断网自动睡眠、电池保护暂停窗口）、GUARD 看板窗口的布局与交互，以及该窗口与「特殊设置」三项程序守护的共用边界。
 
 ## 定位
 
-GUARD 是左缘停靠队列的第四个成员，与 Network、Spec Board、Codex 任务板和第五席 Codex IQ 看板并列。它把两处原本分散的功能合并到一个窗口：
+GUARD 是左缘六角色停靠队列的第四个成员，与 Network、Spec Board、Codex 任务板、Codex IQ 和重置与速蹬看板并列。它把两处原本分散的功能合并到一个窗口：
 
 - **电源守护**：原独立工具 `CodexSleepGuard`（`E:\Codexproject\desktopdata\CodexSleepGuard` 的 PowerShell 脚本）的三项能力，在本程序内用 C# 重新实现。
 - **程序守护**：`AiQuickMenuForm`（特殊设置窗）的链接阻断、额度计划、CTF 重启三项，此处只是第二个入口，逻辑仍归特殊设置窗所属的 owner 路径。
@@ -52,7 +52,7 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 | 设置键 | 含义 |
 |---|---|
 | `GuardBoardLeftDockEnabled` | 旧配置兼容槽；`Normalize` 固定为 `true`，设置页不再显示开关 |
-| `GuardBoardLeftDockTabCenterY` | tab 中心 Y；`-1` 为共享布局器按五枚 tab 的实际缩放高度自动排队 |
+| `GuardBoardLeftDockTabCenterY` | tab 中心 Y；`-1` 为共享布局器按六枚 tab 的实际缩放高度自动排队 |
 | `GuardBoardAutoHideSeconds` | 手动打开后的空闲自动收起秒数，默认 30 |
 | `GuardBoardTransparencyOverridePercent` | 看板及 GUARD 左缘 tab 的独立透明度覆盖；`-1` 为跟随全局 |
 | `GuardBoardScaleOverridePercent` | 看板及 GUARD 左缘 tab 的独立缩放覆盖；`-1` 为跟随全局 |

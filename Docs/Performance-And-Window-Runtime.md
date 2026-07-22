@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.9
+适用版本：2.0.0.10
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -11,7 +11,7 @@
 | 区域 | 数量 | 表面 |
 | --- | ---: | --- |
 | 右侧方块列 | 10 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度；每项是独立 `MetricTileForm` |
-| 左侧停靠列 | 5 | Network、Spec Board、Codex Task、GUARD、Codex IQ 的 tab；每个 tab 控制对应 board |
+| 左侧停靠列 | 6 | Network、Spec Board、Codex Task、GUARD、Codex IQ、重置与速蹬的 tab；每个 tab 控制对应 board |
 | 操作 | 1 | `OperationForm` |
 | 设置 | 按需 | `Win11SettingsForm`，是任务栏和 Alt+Tab 中的普通设置窗口 |
 
@@ -124,15 +124,15 @@ Codex/CLD 展开详情保留各自绿色/黄色角色色与边框。周额度历
 
 “主显示器/主工作区”设置仍是右侧 tile 的布局基线。目标显示器断开时按设置决定回退到主显示器或保留上次工作区；这些设置不依赖隐藏宿主是否可见。
 
-## 6. 左侧 5 个停靠位
+## 6. 左侧 6 个停靠位
 
 固定角色顺序为：
 
 ```text
-Network, SpecBoard, CodexTask, Guard, CodexIq
+Network, SpecBoard, CodexTask, Guard, CodexIq, ResetSpeed
 ```
 
-`LeftDockLayout` 根据启用项、稳定顺序、真实 DPI 尺寸、0–100 分布间距和整组 Y 偏移计算 5 个 tab。分布值 0 时梯形按钮紧挨；100 时整列覆盖工作区完整高度；整数余数在 4 个间隔间均匀分摊，任意两个间隔最多相差 1 像素。`EdgeDockTabForm` 负责：
+`LeftDockLayout` 根据启用项、稳定顺序、真实 DPI 尺寸、0–100 分布间距和整组 Y 偏移计算 6 个 tab。分布值 0 时梯形按钮紧挨；100 时整列覆盖工作区完整高度；整数余数在 5 个间隔间均匀分摊，任意两个间隔最多相差 1 像素。`EdgeDockTabForm` 负责：
 
 - 左缘绝对可达的梯形 tab。
 - 悬停展开与离开/外部点击收起。
@@ -140,7 +140,7 @@ Network, SpecBoard, CodexTask, Guard, CodexIq
 - 共享 120 ms 交互 tick，不建立全局 mouse hook。
 - `ApplyRuntimeOffsetWithPinnedX`：X 固定在工作区左缘，只允许整组 Y 微位移。
 
-展开 board 的 X 统一固定为 `workArea.Left + tab.Width`，因此五块 board 水平对齐。board 之间按产品规则互斥；后打开者收起其它 board。每个 board 仍拥有自己的数据和显示 tick，tab 不复制业务 reader。
+展开 board 的 X 统一固定为 `workArea.Left + tab.Width`，因此六块 board 水平对齐。board 之间按产品规则互斥；后打开者收起其它 board。每个 board 仍拥有自己的数据和显示 tick，tab 不复制业务 reader。重置与速蹬看板与 Spec Board 使用相同逻辑尺寸，只读取 `CodexRadarForm.BuildResetSpeedBoardSnapshot()` 的缓存投影。
 
 Network 是 Dock-only；其采样、PathPing、固定 Ping、Clean IP 和 board 缓存规则见 `Docs/NetworkMonitor-Architecture.md`。
 
@@ -148,7 +148,7 @@ Network 是 Dock-only；其采样、PathPing、固定 Ping、Clean IP 和 board 
 
 `OperationForm` 是常驻可见表面，拥有 RadialDial、快速开关、刷新、设置入口和 GUARD 联动。动画 timer 只在按压或悬停状态尚未收敛时运行；静止交互复用 `WidgetForm` 的共享 tick。
 
-`Win11SettingsForm` 按需创建，`ShowInTaskbar=true`。设置预览经 75 ms debounce 应用；保存写 `settings.ini`，取消或异常关闭恢复打开时 baseline。设置窗口不是 layered edge surface，不参加 burn-in，也不进入 16 项全局布局清单。
+`Win11SettingsForm` 按需创建，`ShowInTaskbar=true`。设置预览经 75 ms debounce 应用；保存写 `settings.ini`，取消或异常关闭恢复打开时 baseline。设置窗口不是 layered edge surface，不参加 burn-in，也不进入 17 项全局布局清单。
 
 ## 8. 性能模式
 
@@ -208,7 +208,7 @@ headless owners 不拥有展示缓冲。Codex/Power 的旧 renderer 已删除，
 ## 12. Burn-in、交互与 Z-order
 
 - 右侧 10 个 tile 在自动模式使用同一个列 salt 和 Y 偏移。
-- 左侧 5 个 tab 在自动模式使用同一个列 salt；X 始终钉住 work-area 左缘。
+- 左侧 6 个 tab 在自动模式使用同一个列 salt；X 始终钉住 work-area 左缘。
 - 展开 board 可以使用自己的 named salt，但固定相同展开 X。
 - Operation 使用自己的 named salt。
 - `WidgetForm` hidden host 只拥有两级空闲状态，不绘制防烧屏像素；headless owners 完全不参与。
@@ -222,7 +222,7 @@ TopMost 恢复只遍历当前可见 forms，保持组内顺序，并把本程序
 
 ## 13. 全局布局编辑
 
-`GlobalLayoutEditorForm.BuildEditableSurfaceIds()` 的规范集合恰好 16 项：
+`GlobalLayoutEditorForm.BuildEditableSurfaceIds()` 的规范集合恰好 17 项：
 
 ```text
 Operation
@@ -231,6 +231,7 @@ LeftDockTab.SpecBoard
 LeftDockTab.CodexTask
 LeftDockTab.Guard
 LeftDockTab.CodexIq
+LeftDockTab.ResetSpeed
 MetricTile.Cpu
 MetricTile.Memory
 MetricTile.Disk
@@ -243,11 +244,11 @@ MetricTile.CodexQuota
 MetricTile.ClaudeQuota
 ```
 
-进入编辑时，50% 黑色遮罩临时禁用环境隐藏，把这 16 个结构表面保持在遮罩上方。拖拽只修改位置、整列偏移或目标显示器；Enter 保存，Esc 恢复 baseline。
+进入编辑时，50% 黑色遮罩临时禁用环境隐藏，把这 17 个结构表面保持在遮罩上方。拖拽只修改位置、整列偏移或目标显示器；Enter 保存，Esc 恢复 baseline。
 
 不得加入：
 
-- 5 个展开 board（由各自 tab 代表）。
+- 6 个展开 board（由各自 tab 代表）。
 - `Win11SettingsForm`。
 - `WidgetForm` hidden host。
 - Radar/Power headless owners。
@@ -262,8 +263,8 @@ MetricTile.ClaudeQuota
 - Network 始终按 Dock 结构运行；旧浮动展示选项不能改变 topology。
 - Radar 设置只控制 Codex 公共数据、Codex/Claude 官方额度、服务健康和测试，不包含 Claude 社区模型/fallback 或 DeepSeek key/余额；它不控制 owner 可见性。
 - 主显示/work-area 设置继续作为右 tile 列基线；不能因为 hidden host 没有画面而删除。
-- 两级防烧屏只作用于五个左 tab 与右侧 tile/expand；Operation、board、Settings、hidden host 和 headless owners 不进入配色投影。
-- schema 90 保留 `LeftDockButtonGapPixels` / `RightTileButtonGapPixels` 旧键名以兼容既有 `settings.ini`，但语义改为 0–100 分布值；设置页左右两项都提供滑块与数字输入，既有 0–80 数值迁移时原样保留。
+- 两级防烧屏只作用于六个左 tab 与右侧 tile/expand；Operation、board、Settings、hidden host 和 headless owners 不进入配色投影。
+- schema 91 保留 `LeftDockButtonGapPixels` / `RightTileButtonGapPixels` 旧键名以兼容既有 `settings.ini`，但语义为 0–100 分布值；设置页左右两项都提供滑块与数字输入，既有 0–80 数值迁移时原样保留。schema 91 同时补齐 ResetSpeed 的 tab、透明度、缩放和自动收回设置。
 
 新设置若影响可见表面，必须覆盖 defaults、clone、load/save、normalize、UI、migration 和 `--test-settings-bindings`；兼容键不得重新进入设置 UI。
 
@@ -275,6 +276,7 @@ MetricTile.ClaudeQuota
 --render-networkmonitor
 --render-tilecolumn
 --render-operation
+--render-resetspeedboard
 --render-specboard <sample|current>
 --render-specboardmanager <sample|current>
 --render-guard <sample|current>
@@ -294,4 +296,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --test-operation-panel
 ```
 
-人工核对重点：右侧恰好 10 个独立 tile、左侧恰好 5 个 tab/board、Operation 正常、Settings 可从任务栏/Alt+Tab 返回、全局编辑恰好 16 项、Network 只有 Dock 展示，以及三个隐藏对象从未出现在桌面、任务栏、布局编辑器或渲染样张中。
+人工核对重点：右侧恰好 10 个独立 tile、左侧恰好 6 个 tab/board、Operation 正常、Settings 可从任务栏/Alt+Tab 返回、全局编辑恰好 17 项、Network 只有 Dock 展示，以及三个隐藏对象从未出现在桌面、任务栏、布局编辑器或渲染样张中。

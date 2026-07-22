@@ -1,6 +1,6 @@
 # Codex / Claude Radar 数据所有者架构
 
-适用版本：2.0.0.7
+适用版本：2.0.0.10
 
 本文说明 `CodexRadarForm` 作为永久 headless owner 时的 Codex 公共 Radar、Codex/Claude 官方额度、服务健康、任务状态和只读投影。
 
@@ -16,7 +16,9 @@
 | `Core/CodexRadarForm.RuntimeState.cs` | `RadarFamilyRuntimeState`、双额度趋势与 family 隔离 |
 | `Core/CodexRadarForm.ProjectionState.cs` | 同代 published state 原子替换与 tile/IQ 投影 clone |
 | `Core/CodexRadarForm.ClaudeUsage.cs` | 官方 Claude Code usage 调度结果接入 |
-| `Core/CodexRadarForm.TileSnapshot.cs` | tile、Codex IQ board、服务健康的 cache-only 投影 |
+| `Core/CodexRadarForm.TileSnapshot.cs` | tile、Codex IQ board、重置与速蹬 board、服务健康的 cache-only 投影 |
+| `Core/CodexQuotaHistoryStore.cs` | 已接受 Codex 额度的 7 天无凭据历史、重置分类与后台批量 JSONL 持久化 |
+| `Core/ResetSpeedBoardSnapshot.cs` / `Core/ResetSpeedBoardForm*.cs` | 第六左侧 board 的只读 DTO、停靠生命周期与固定尺寸绘制 |
 | `Core/OwnerOperationGeneration.cs` | Start/Stop/挂起恢复 generation、取消与迟到提交边界 |
 | `Core/BoundedHttpTextReader.cs` / `Core/CodexRadarUrlPolicy.cs` | 有界 HTTP 文本读取与 Radar 精确 URL/SSRF 策略 |
 | `Core/ClaudeCodeUsageReader.cs` / `Core/ClaudeCodeUsageScheduler.cs` | Claude 官方额度读取、单飞调度与缓存提交 |
@@ -32,6 +34,7 @@
 | 右侧 Codex tile / expand | `BuildRadarTileSnapshot(Codex)` | Codex 模型、额度、重置与 5 小时/周趋势预测 |
 | 右侧 CLD tile / expand | `BuildRadarTileSnapshot(Claude)` | 固定 Claude/CLD 标签、官方额度、重置与同构趋势预测 |
 | 左侧 Codex IQ board | `BuildCodexIqBoardSnapshot()` / `BuildServiceHealth()` | Codex 全模型 IQ、成本、耗时、token、额度趋势、名册与四项服务健康 |
+| 左侧重置与速蹬 board | `BuildResetSpeedBoardSnapshot()` | 7 天周额度余量、重置事件、速蹬窗口、重置卡余量和最近到期 |
 | Codex Task board / Operation | `CodexTaskPresentation.SnapshotProvider` | 本地 Codex 会话任务状态 |
 
 Claude tile 不生成模型 IQ 或效率；其 `IqKnown`、`EfficiencyKnown` 恒为 `false`，且没有社区评分字段。
@@ -55,11 +58,14 @@ flowchart LR
     G --> L
     H --> M["service cache"]
     I --> M
+    K --> R["CodexQuotaHistoryStore memory"]
+    R --> S["7-day JSONL (background flush)"]
     K --> N["cache-only projections"]
+    R --> N
     L --> N
     M --> N
     J --> O["CodexTaskPresentation snapshot"]
-    N --> P["right tiles / Codex IQ board"]
+    N --> P["right tiles / Codex IQ / Reset-Speed boards"]
     O --> Q["Codex Task board / Operation"]
 ```
 
@@ -117,7 +123,7 @@ Codex 的模型选择、IQ、评分、效率、通知状态与 `Codex IQ` board 
 
 Codex provider 只读已配置的环境变量或 Codex `auth.json` 凭据，不写回。5 小时与周额度分别维护 reset anchor、余额、来源和消耗基线。只有通过窗口身份、漂移容差与异常跃迁保护的结果才提交到缓存。
 
-`quota-decision-history.jsonl` 只记录额度判定所需摘要，不记录 token、提示词、响应正文或授权 header。
+`quota-decision-history.jsonl` 只记录额度判定所需摘要，不记录 token、提示词、响应正文或授权 header。另有 `codex-quota-seven-day-history.jsonl` 只保存通过保护链的时间、5 小时/周余量、reset anchor、重置卡计数与重置类型；同样不保存凭据、token、请求正文或身份信息。
 
 ### 7.3 Claude 额度
 
@@ -132,6 +138,12 @@ CLD tile 的固定模型标签为 `Claude`，紧凑标题为 `CLD`；额度与�
 `TryComputeQuotaBurnRate()` 对最近 1.5 个活跃小时的 5 小时额度、最近 6 个活跃小时的周额度，以及各自最近 5/24 个时钟小时进行估算。至少需要 10 个活跃分钟或 30 个时钟分钟，并且整数百分比来源必须出现至少 1% 的已接受下降；端点速率与 pairwise 中位速率组合以减轻单次整数跳变。样本跨度、下降幅度和点数共同形成低/中/高置信度。
 
 `BuildRadarTileSnapshot()` 只从同代 published projection 计算展示 DTO：优先发布活跃时间续航，活跃样本不足时才以近 24 小时节奏作为周额度主结论。`MetricTileExpandForm.DrawRadarQuota()` 将续航与 reset 距离比较，明确显示“预计多久用完并早于重置多久”或“可撑到重置并多余多久”；5 小时窗口在底部独立给出相同判断。周趋势实线只占图表前 68%，剩余区域用于虚线预测、耗尽交点和 reset 线。计算和绘制都不启动 provider、网络或磁盘读取，进程重启后重新积累样本。
+
+### 7.5 Codex 7 天重置与速蹬历史
+
+`CodexQuotaHistoryStore` 仅接收 `ApplyQuotaSnapshot()` 已接受且允许记录 decision 的 Codex family 快照。内存立即更新，磁盘由 15 秒 ThreadPool timer 批量写入；普通样本至少间隔 15 分钟，或周余量变化达到 3%，周余量回升达到 5% 时立即登记。旧 reset anchor 前 15 分钟至后 6 小时内的回升标记为自然重置；重置卡计数同时减少时标记为重置卡；其余标记为硬重置。每 6 小时和 owner 退出时原子裁剪到最近 7 天、最多 2048 行。
+
+`BuildResetSpeedBoardSnapshot()` 从同代 Codex published projection、reset-credit 缓存和 store 内存生成 7 个日点及最近事件。`ResetSpeedBoardForm` 每 5 秒 clone 一次；绘制路径和 snapshot 构建都不读取磁盘、凭据或网络。该持久历史只服务 Codex board，不改变 Claude family 的官方额度趋势和右侧续航计算。
 
 ## 8. 服务健康
 
@@ -159,11 +171,13 @@ owner 注册 `CodexTaskPresentation.SnapshotProvider`，并在既有 scheduler �
 
 owner 停止时清除 provider，避免消费者调用已销毁实例。
 
-## 10. Codex IQ Board 投影
+## 10. 左侧 Radar Boards 投影
 
 `BuildCodexIqBoardSnapshot()` 只复制 Codex family 的全模型数据、选中模型历史、额度趋势、名册和服务健康。`CodexIqBoardForm` 不访问网站、不读取公共 Radar 文件，也不建立 reader。
 
 IQ board 的 tab、展开/收起和渲染属于左侧停靠运行时，不改变 owner 的业务周期。
+
+`BuildResetSpeedBoardSnapshot()` 同样只复制 Codex published quota/Radar、reset-credit 缓存和已载入的 7 天历史。`ResetSpeedBoardForm` 与 Spec Board 保持相同逻辑尺寸，其黄色角色边框、绿色额度轨迹、青色速蹬圆环和重置类型标记只承担展示语义。
 
 ## 11. Cache-only 展示边界
 
@@ -171,6 +185,7 @@ IQ board 的 tab、展开/收起和渲染属于左侧停靠运行时，不改变
 
 - `BuildRadarTileSnapshot(CodexRadarSoftwareMode)`
 - `BuildCodexIqBoardSnapshot()`
+- `BuildResetSpeedBoardSnapshot()`
 - `BuildServiceHealth()`
 - `CodexTaskPresentation.SnapshotProvider`
 
@@ -180,7 +195,7 @@ IQ board 的 tab、展开/收起和渲染属于左侧停靠运行时，不改变
 
 设置页保留 Codex 公共数据、family 选择、Codex 模型/周期、个人额度、服务探测、Claude setup-token 与测试配置。Claude 不提供公共数据源、社区评分、模型选择或本地公共额度 fallback；DeepSeek 不提供 API key、余额或余额告警设置。
 
-全局布局编辑器只登记 `MetricTile.CodexQuota`、`MetricTile.ClaudeQuota` 和左侧 `CodexIq` tab；headless owner 不在 16 个布局项中。
+全局布局编辑器登记 `MetricTile.CodexQuota`、`MetricTile.ClaudeQuota` 以及左侧 `CodexIq`、`ResetSpeed` tabs；headless owner 不在 17 个布局项中。
 
 ## 13. 故障、安全与验证
 
@@ -200,6 +215,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --test-settings-bindings
 .\_build\DesktopCodexAssistant-arm64-test.exe --test-radar-display-lifecycle --iterations 20
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-tilecolumn --out .\_build\tilecolumn
+.\_build\DesktopCodexAssistant-arm64-test.exe --render-resetspeedboard --out .\_build\reset-speed
 ```
 
-验收重点是：owner 始终隐藏、Start/Stop 完整、两套额度与四条趋势历史按 family/window 隔离、四类投影无 I/O、Codex/CLD 展开窗给出 5 小时和周额度的耗尽/重置判断、CLD 仍只使用官方额度源、DeepSeek 只保留服务健康，以及设置/布局不暴露已不存在的入口。
+验收重点是：owner 始终隐藏、Start/Stop 完整、两套额度与四条趋势历史按 family/window 隔离、重置与速蹬投影无同步 I/O、Codex/CLD 展开窗给出 5 小时和周额度的耗尽/重置判断、Codex 第六 board 提供 7 天历史/重置/速蹬/重置卡信息、CLD 仍只使用官方额度源、DeepSeek 只保留服务健康，以及设置/布局不暴露已不存在的入口。

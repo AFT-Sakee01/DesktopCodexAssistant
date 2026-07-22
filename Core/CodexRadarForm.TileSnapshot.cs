@@ -176,6 +176,118 @@ internal sealed partial class CodexRadarForm
         return board;
     }
 
+    // Cache-only projection for the sixth left-dock board. Seven-day rows come from the owner's
+    // already-loaded history store; reset credits and the speed window are cloned from their
+    // current caches. This method never reads disk, credentials, or the network.
+    internal ResetSpeedBoardSnapshot BuildResetSpeedBoardSnapshot()
+    {
+        ResetSpeedBoardSnapshot board = ResetSpeedBoardSnapshot.CreateEmpty();
+        try
+        {
+            DateTime nowUtc = DateTime.UtcNow;
+            DateTime nowLocal = nowUtc.ToLocalTime();
+            RadarPublishedProjectionState published = ClonePublishedProjectionState();
+            RadarFamilyProjectionState state = published.GetFamily(CodexRadarSoftwareMode.Codex);
+            CodexQuotaSnapshot quota = state != null ? state.QuotaSnapshot : null;
+            CodexRadarSnapshot radar = state != null ? state.RadarSnapshot : null;
+            if (quota != null)
+            {
+                board.QuotaKnown = state.QuotaSourceKnown;
+                board.FiveHourRemainingPercent = quota.FiveHourPercent;
+                board.FiveHourLimitAbsent = quota.FiveHourLimitAbsent;
+                board.FiveHourResetKnown = quota.FiveHourResetKnown;
+                board.FiveHourResetLocal = quota.FiveHourResetLocal;
+                board.WeeklyRemainingPercent = quota.WeeklyPercent;
+                board.WeeklyResetKnown = quota.WeeklyResetKnown;
+                board.WeeklyResetLocal = quota.WeeklyResetLocal;
+                board.UpdatedKnown = quota.SourceUpdatedKnown;
+                board.UpdatedLocal = quota.SourceUpdatedKnown
+                    ? quota.SourceUpdatedUtc.ToLocalTime()
+                    : DateTime.MinValue;
+            }
+
+            if (radar != null)
+            {
+                board.SpeedWindowKnown = radar.SpeedWindowKnown;
+                board.SpeedWindowOpen = IsCodexRadarSpeedWindowCurrentlyOpen(radar, nowLocal);
+                board.SpeedWindowOpenedAtKnown = radar.SpeedWindowOpenedAtKnown;
+                board.SpeedWindowOpenedAtLocal = radar.SpeedWindowOpenedAtLocal;
+                board.SpeedWindowClosedAtKnown = radar.SpeedWindowClosedAtKnown;
+                board.SpeedWindowClosedAtLocal = radar.SpeedWindowClosedAtLocal;
+                int remainingMinutes;
+                float remainingRatio;
+                if (TryGetCodexRadarSpeedWindowCountdown(radar, nowLocal, out remainingMinutes, out remainingRatio))
+                {
+                    board.SpeedWindowRemainingMinutes = remainingMinutes;
+                    board.SpeedWindowRemainingRatio = remainingRatio;
+                }
+            }
+
+            CodexResetCreditsSnapshot credits = GetCodexResetCreditsDisplaySnapshot();
+            if (credits != null)
+            {
+                board.ResetCreditsKnown = credits.Known;
+                board.ResetCreditsRequestRunning = credits.RequestRunning;
+                board.ResetCreditCount = credits.GetActiveCount(nowUtc);
+                DateTime expirationUtc;
+                if (credits.TryGetEarliestActiveExpirationUtc(nowUtc, out expirationUtc))
+                {
+                    board.ResetCreditExpirationKnown = true;
+                    board.ResetCreditExpirationLocal = expirationUtc.ToLocalTime();
+                }
+            }
+
+            CodexQuotaHistorySnapshot history = this.codexQuotaHistoryStore.GetSnapshot(nowUtc);
+            DateTime firstDate = nowLocal.Date.AddDays(-6.0);
+            for (int dayOffset = 0; dayOffset < 7; dayOffset++)
+            {
+                DateTime day = firstDate.AddDays(dayOffset);
+                CodexQuotaHistoryEntry selected = null;
+                for (int i = 0; i < history.Entries.Count; i++)
+                {
+                    CodexQuotaHistoryEntry entry = history.Entries[i];
+                    if (entry != null && entry.TimestampUtc.ToLocalTime().Date == day)
+                    {
+                        selected = entry;
+                    }
+                }
+
+                bool useCurrent = selected == null && day == nowLocal.Date && board.QuotaKnown;
+                board.QuotaHistory.Add(new ResetSpeedQuotaPoint
+                {
+                    DateLocal = day,
+                    Known = selected != null || useCurrent,
+                    WeeklyRemainingPercent = selected != null
+                        ? selected.WeeklyRemainingPercent
+                        : useCurrent ? board.WeeklyRemainingPercent : 0
+                });
+            }
+
+            for (int i = history.Entries.Count - 1; i >= 0 && board.ResetEvents.Count < 8; i--)
+            {
+                CodexQuotaHistoryEntry entry = history.Entries[i];
+                if (entry == null || string.IsNullOrWhiteSpace(entry.ResetKind)) continue;
+                ResetSpeedResetKind kind = string.Equals(entry.ResetKind, "credit", StringComparison.OrdinalIgnoreCase)
+                    ? ResetSpeedResetKind.Credit
+                    : string.Equals(entry.ResetKind, "natural", StringComparison.OrdinalIgnoreCase)
+                        ? ResetSpeedResetKind.Natural
+                        : ResetSpeedResetKind.Hard;
+                board.ResetEvents.Add(new ResetSpeedResetEvent
+                {
+                    TimestampLocal = entry.TimestampUtc.ToLocalTime(),
+                    Kind = kind,
+                    WeeklyRemainingPercent = entry.WeeklyRemainingPercent
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+        }
+
+        return board;
+    }
+
     private static bool IsClaudeQuotaSnapshotFresh(CodexQuotaSnapshot snapshot, DateTime nowUtc)
     {
         if (snapshot == null || !snapshot.SourceUpdatedKnown || snapshot.SourceUpdatedUtc == DateTime.MinValue)

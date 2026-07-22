@@ -143,7 +143,7 @@ internal sealed partial class OperationForm
         }
     }
 
-    // The five left-dock boards. Expanded, they overlap heavily — their tabs are close together
+    // The six left-dock boards. Expanded, they overlap heavily — their tabs are close together
     // pixels apart while the boards themselves are 400 tall — so two of them visible at once is not
     // a cosmetic glitch: the top one covers the other, and the covered board's own collapse timer
     // then reads the cursor as still inside its bounds and never fires. Mutual exclusion at show
@@ -155,7 +155,8 @@ internal sealed partial class OperationForm
         CodexTask,
         Network,
         Guard,
-        CodexIq
+        CodexIq,
+        ResetSpeed
     }
 
     // Single place that knows the full membership of the queue. Every expand path routes through
@@ -170,7 +171,8 @@ internal sealed partial class OperationForm
             LeftDockBoardKind.CodexTask,
             LeftDockBoardKind.Network,
             LeftDockBoardKind.Guard,
-            LeftDockBoardKind.CodexIq
+            LeftDockBoardKind.CodexIq,
+            LeftDockBoardKind.ResetSpeed
         };
     }
 
@@ -213,10 +215,14 @@ internal sealed partial class OperationForm
             case LeftDockBoardKind.CodexIq:
                 HideCodexIqBoardIfVisible();
                 break;
+
+            case LeftDockBoardKind.ResetSpeed:
+                HideResetSpeedBoardIfVisible();
+                break;
         }
     }
 
-    // Proves the collapse membership still covers every declared board. A fifth board added to the
+    // Proves the collapse membership still covers every declared board. A new board added to the
     // enum without being added to the membership list fails here instead of silently sitting open
     // underneath whichever peer the user expands next.
     internal static void RunLeftDockMutualExclusionSelfTest()
@@ -259,7 +265,7 @@ internal sealed partial class OperationForm
         }
     }
 
-    // Expanding the network docked panel collapses the three boards this form owns; the panel's own
+    // Expanding the network docked panel collapses the other five boards; the panel's own
     // collapse is handled by the HideNetworkDockedPanelForOverlay callback in the inverse direction.
     internal void HideLeftDockBoardsForPeerOverlay()
     {

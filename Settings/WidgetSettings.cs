@@ -166,7 +166,7 @@ internal sealed class WidgetSettings
     public const int MaxSpecBoardAutoHideSeconds = 600;
     public const int DefaultSpecBoardAutoHideSeconds = 20;
     // Left-edge dock: -1 tab centers mean "auto", resolved at show time to a centered queue so the
-    // tabs never overlap out of the box. Codex IQ is the fifth member and sits after GUARD.
+    // tabs never overlap out of the box. Reset / Speed is the sixth member after Codex IQ.
     public const int AutoLeftDockTabCenterY = -1;
     // The persisted property names keep the historical Pixels suffix for settings.ini compatibility.
     // Values are distribution percentages: 0 touches and 100 consumes all available edge whitespace.
@@ -179,7 +179,7 @@ internal sealed class WidgetSettings
     public const int DefaultColumnGroupOffsetY = 0;
     public static readonly string[] DefaultLeftDockButtonOrder = new string[]
     {
-        "Network", "SpecBoard", "CodexTask", "Guard", "CodexIq"
+        "Network", "SpecBoard", "CodexTask", "Guard", "CodexIq", "ResetSpeed"
     };
     // Guard board: the fourth dock member. It borrows the Spec board's footprint the same way the
     // docked network panel does, so it has no width/height settings of its own.
@@ -189,6 +189,9 @@ internal sealed class WidgetSettings
     public const int MinCodexIqBoardAutoHideSeconds = 0;
     public const int MaxCodexIqBoardAutoHideSeconds = 600;
     public const int DefaultCodexIqBoardAutoHideSeconds = 30;
+    public const int MinResetSpeedBoardAutoHideSeconds = 0;
+    public const int MaxResetSpeedBoardAutoHideSeconds = 600;
+    public const int DefaultResetSpeedBoardAutoHideSeconds = 30;
     // Display-guard steps mirror the CodexSleepGuard combo box (30 min / 1 / 2 / 5 / 8 hours) and
     // the offline steps mirror its threshold list (1 / 5 / 10 / 30 min). Both are snapped to these
     // ladders rather than clamped to a range, so the board's +/- stepper cannot land off-menu.
@@ -290,7 +293,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 90;
+    private const int CurrentSettingsVersion = 91;
     private const int RetiredCanonicalSettingsCount = 98;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -384,6 +387,7 @@ internal sealed class WidgetSettings
     public int CodexTaskBoardTransparencyOverridePercent { get; set; }
     public int GuardBoardTransparencyOverridePercent { get; set; }
     public int CodexIqBoardTransparencyOverridePercent { get; set; }
+    public int ResetSpeedBoardTransparencyOverridePercent { get; set; }
     public bool NightScheduleEnabled { get; set; }
     public int NightScheduleStartMinutes { get; set; }
     public int NightScheduleEndMinutes { get; set; }
@@ -403,6 +407,7 @@ internal sealed class WidgetSettings
     public int CodexTaskBoardScaleOverridePercent { get; set; }
     public int GuardBoardScaleOverridePercent { get; set; }
     public int CodexIqBoardScaleOverridePercent { get; set; }
+    public int ResetSpeedBoardScaleOverridePercent { get; set; }
     public int PowerThermalManualEnergySaverThresholdPercent { get; set; }
     // true: the power module is drawn as a strip at the bottom of the main widget and the
     // standalone window stays hidden. false: the standalone window is shown as before.
@@ -444,6 +449,9 @@ internal sealed class WidgetSettings
     public bool CodexIqBoardLeftDockEnabled { get; set; }
     public int CodexIqBoardLeftDockTabCenterY { get; set; }
     public int CodexIqBoardAutoHideSeconds { get; set; }
+    public bool ResetSpeedBoardLeftDockEnabled { get; set; }
+    public int ResetSpeedBoardLeftDockTabCenterY { get; set; }
+    public int ResetSpeedBoardAutoHideSeconds { get; set; }
     // Guard state. GuardSleepEnabled and the two deadline ticks are live runtime state rather than
     // preferences: they are persisted so a restart during a long unattended run does not silently
     // drop the protection the board promises. Ticks are UTC; 0 means "not armed".
@@ -833,6 +841,7 @@ internal sealed class WidgetSettings
         this.CodexTaskBoardTransparencyOverridePercent = defaults.CodexTaskBoardTransparencyOverridePercent;
         this.GuardBoardTransparencyOverridePercent = defaults.GuardBoardTransparencyOverridePercent;
         this.CodexIqBoardTransparencyOverridePercent = defaults.CodexIqBoardTransparencyOverridePercent;
+        this.ResetSpeedBoardTransparencyOverridePercent = defaults.ResetSpeedBoardTransparencyOverridePercent;
         this.NightScheduleEnabled = defaults.NightScheduleEnabled;
         this.NightScheduleStartMinutes = defaults.NightScheduleStartMinutes;
         this.NightScheduleEndMinutes = defaults.NightScheduleEndMinutes;
@@ -852,6 +861,7 @@ internal sealed class WidgetSettings
         this.CodexTaskBoardScaleOverridePercent = defaults.CodexTaskBoardScaleOverridePercent;
         this.GuardBoardScaleOverridePercent = defaults.GuardBoardScaleOverridePercent;
         this.CodexIqBoardScaleOverridePercent = defaults.CodexIqBoardScaleOverridePercent;
+        this.ResetSpeedBoardScaleOverridePercent = defaults.ResetSpeedBoardScaleOverridePercent;
         this.PowerThermalIntegratedEnabled = defaults.PowerThermalIntegratedEnabled;
         this.PowerThermalManualEnergySaverThresholdPercent = defaults.PowerThermalManualEnergySaverThresholdPercent;
         this.NetworkMonitorAdapterId = defaults.NetworkMonitorAdapterId;
@@ -891,6 +901,9 @@ internal sealed class WidgetSettings
         this.CodexIqBoardLeftDockEnabled = defaults.CodexIqBoardLeftDockEnabled;
         this.CodexIqBoardLeftDockTabCenterY = defaults.CodexIqBoardLeftDockTabCenterY;
         this.CodexIqBoardAutoHideSeconds = defaults.CodexIqBoardAutoHideSeconds;
+        this.ResetSpeedBoardLeftDockEnabled = defaults.ResetSpeedBoardLeftDockEnabled;
+        this.ResetSpeedBoardLeftDockTabCenterY = defaults.ResetSpeedBoardLeftDockTabCenterY;
+        this.ResetSpeedBoardAutoHideSeconds = defaults.ResetSpeedBoardAutoHideSeconds;
         this.GuardSleepEnabled = defaults.GuardSleepEnabled;
         this.GuardSleepSinceUtcTicks = defaults.GuardSleepSinceUtcTicks;
         this.GuardDisplayMinutes = defaults.GuardDisplayMinutes;
@@ -1044,6 +1057,7 @@ internal sealed class WidgetSettings
         settings.CodexTaskBoardTransparencyOverridePercent = -1;
         settings.GuardBoardTransparencyOverridePercent = -1;
         settings.CodexIqBoardTransparencyOverridePercent = -1;
+        settings.ResetSpeedBoardTransparencyOverridePercent = -1;
         settings.NightScheduleEnabled = false;
         settings.NightScheduleStartMinutes = DefaultNightScheduleStartMinutes;
         settings.NightScheduleEndMinutes = DefaultNightScheduleEndMinutes;
@@ -1063,6 +1077,7 @@ internal sealed class WidgetSettings
         settings.CodexTaskBoardScaleOverridePercent = -1;
         settings.GuardBoardScaleOverridePercent = -1;
         settings.CodexIqBoardScaleOverridePercent = -1;
+        settings.ResetSpeedBoardScaleOverridePercent = -1;
         settings.PowerThermalIntegratedEnabled = true;
         settings.PowerThermalManualEnergySaverThresholdPercent = DefaultPowerThermalManualEnergySaverThresholdPercent;
         settings.NetworkMonitorAdapterId = string.Empty;
@@ -1102,6 +1117,9 @@ internal sealed class WidgetSettings
         settings.CodexIqBoardLeftDockEnabled = true;
         settings.CodexIqBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CodexIqBoardAutoHideSeconds = DefaultCodexIqBoardAutoHideSeconds;
+        settings.ResetSpeedBoardLeftDockEnabled = true;
+        settings.ResetSpeedBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.ResetSpeedBoardAutoHideSeconds = DefaultResetSpeedBoardAutoHideSeconds;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1259,6 +1277,7 @@ internal sealed class WidgetSettings
         settings.CodexTaskBoardTransparencyOverridePercent = -1;
         settings.GuardBoardTransparencyOverridePercent = -1;
         settings.CodexIqBoardTransparencyOverridePercent = -1;
+        settings.ResetSpeedBoardTransparencyOverridePercent = -1;
         settings.NightScheduleEnabled = false;
         settings.NightScheduleStartMinutes = DefaultNightScheduleStartMinutes;
         settings.NightScheduleEndMinutes = DefaultNightScheduleEndMinutes;
@@ -1278,6 +1297,7 @@ internal sealed class WidgetSettings
         settings.CodexTaskBoardScaleOverridePercent = -1;
         settings.GuardBoardScaleOverridePercent = -1;
         settings.CodexIqBoardScaleOverridePercent = -1;
+        settings.ResetSpeedBoardScaleOverridePercent = -1;
         settings.PowerThermalIntegratedEnabled = true;
         settings.PowerThermalManualEnergySaverThresholdPercent = DefaultPowerThermalManualEnergySaverThresholdPercent;
         settings.NetworkMonitorAdapterId = "";
@@ -1315,6 +1335,9 @@ internal sealed class WidgetSettings
         settings.CodexIqBoardLeftDockEnabled = true;
         settings.CodexIqBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CodexIqBoardAutoHideSeconds = DefaultCodexIqBoardAutoHideSeconds;
+        settings.ResetSpeedBoardLeftDockEnabled = true;
+        settings.ResetSpeedBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.ResetSpeedBoardAutoHideSeconds = DefaultResetSpeedBoardAutoHideSeconds;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1465,6 +1488,7 @@ internal sealed class WidgetSettings
             CodexTaskBoardTransparencyOverridePercent = this.CodexTaskBoardTransparencyOverridePercent,
             GuardBoardTransparencyOverridePercent = this.GuardBoardTransparencyOverridePercent,
             CodexIqBoardTransparencyOverridePercent = this.CodexIqBoardTransparencyOverridePercent,
+            ResetSpeedBoardTransparencyOverridePercent = this.ResetSpeedBoardTransparencyOverridePercent,
             NightScheduleEnabled = this.NightScheduleEnabled,
             NightScheduleStartMinutes = this.NightScheduleStartMinutes,
             NightScheduleEndMinutes = this.NightScheduleEndMinutes,
@@ -1484,6 +1508,7 @@ internal sealed class WidgetSettings
             CodexTaskBoardScaleOverridePercent = this.CodexTaskBoardScaleOverridePercent,
             GuardBoardScaleOverridePercent = this.GuardBoardScaleOverridePercent,
             CodexIqBoardScaleOverridePercent = this.CodexIqBoardScaleOverridePercent,
+            ResetSpeedBoardScaleOverridePercent = this.ResetSpeedBoardScaleOverridePercent,
             PowerThermalIntegratedEnabled = this.PowerThermalIntegratedEnabled,
             PowerThermalManualEnergySaverThresholdPercent = this.PowerThermalManualEnergySaverThresholdPercent,
             NetworkMonitorAdapterId = this.NetworkMonitorAdapterId,
@@ -1523,6 +1548,9 @@ internal sealed class WidgetSettings
             CodexIqBoardLeftDockEnabled = this.CodexIqBoardLeftDockEnabled,
             CodexIqBoardLeftDockTabCenterY = this.CodexIqBoardLeftDockTabCenterY,
             CodexIqBoardAutoHideSeconds = this.CodexIqBoardAutoHideSeconds,
+            ResetSpeedBoardLeftDockEnabled = this.ResetSpeedBoardLeftDockEnabled,
+            ResetSpeedBoardLeftDockTabCenterY = this.ResetSpeedBoardLeftDockTabCenterY,
+            ResetSpeedBoardAutoHideSeconds = this.ResetSpeedBoardAutoHideSeconds,
             GuardSleepEnabled = this.GuardSleepEnabled,
             GuardSleepSinceUtcTicks = this.GuardSleepSinceUtcTicks,
             GuardDisplayMinutes = this.GuardDisplayMinutes,
@@ -1676,6 +1704,7 @@ internal sealed class WidgetSettings
         this.CodexTaskBoardTransparencyOverridePercent = Clamp(this.CodexTaskBoardTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
         this.GuardBoardTransparencyOverridePercent = Clamp(this.GuardBoardTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
         this.CodexIqBoardTransparencyOverridePercent = Clamp(this.CodexIqBoardTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
+        this.ResetSpeedBoardTransparencyOverridePercent = Clamp(this.ResetSpeedBoardTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
         this.NightScheduleStartMinutes = Clamp(this.NightScheduleStartMinutes, MinNightScheduleMinutes, MaxNightScheduleMinutes);
         this.NightScheduleEndMinutes = Clamp(this.NightScheduleEndMinutes, MinNightScheduleMinutes, MaxNightScheduleMinutes);
         this.NightDimLuminancePercent = Clamp(this.NightDimLuminancePercent, MinNightDimLuminancePercent, MaxNightDimLuminancePercent);
@@ -1689,6 +1718,7 @@ internal sealed class WidgetSettings
         this.CodexTaskBoardScaleOverridePercent = NormalizeWindowScaleOverride(this.CodexTaskBoardScaleOverridePercent);
         this.GuardBoardScaleOverridePercent = NormalizeWindowScaleOverride(this.GuardBoardScaleOverridePercent);
         this.CodexIqBoardScaleOverridePercent = NormalizeWindowScaleOverride(this.CodexIqBoardScaleOverridePercent);
+        this.ResetSpeedBoardScaleOverridePercent = NormalizeWindowScaleOverride(this.ResetSpeedBoardScaleOverridePercent);
         this.MetricTileExpandWidth = Clamp(this.MetricTileExpandWidth, MinMetricTileExpandWidth, MaxMetricTileExpandWidth);
         this.MetricTileExpandHeight = Clamp(this.MetricTileExpandHeight, MinMetricTileExpandHeight, MaxMetricTileExpandHeight);
         this.PowerThermalManualEnergySaverThresholdPercent = Clamp(
@@ -1719,13 +1749,14 @@ internal sealed class WidgetSettings
         this.LeftDockButtonOrder = NormalizeLeftDockButtonOrder(this.LeftDockButtonOrder);
         this.LeftDockButtonGapPixels = Clamp(this.LeftDockButtonGapPixels, MinColumnButtonGapPixels, MaxColumnButtonGapPixels);
         this.LeftDockGroupOffsetY = Clamp(this.LeftDockGroupOffsetY, MinColumnGroupOffsetY, MaxColumnGroupOffsetY);
-        // The visible topology is fixed at five left-edge tabs. These persisted flags remain only
+        // The visible topology is fixed at six left-edge tabs. These persisted flags remain only
         // so older settings files round-trip safely; false values must never resurrect undocked
         // board windows or make the layout editor disagree with the runtime surface set.
         this.SpecBoardLeftDockEnabled = true;
         this.CodexTaskBoardLeftDockEnabled = true;
         this.GuardBoardLeftDockEnabled = true;
         this.CodexIqBoardLeftDockEnabled = true;
+        this.ResetSpeedBoardLeftDockEnabled = true;
         // Dock tab centers are screen coordinates; anything below zero other than the auto sentinel
         // is meaningless, and the windows clamp the resolved value into the work area anyway.
         this.SpecBoardLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.SpecBoardLeftDockTabCenterY);
@@ -1735,6 +1766,8 @@ internal sealed class WidgetSettings
         this.GuardBoardAutoHideSeconds = Clamp(this.GuardBoardAutoHideSeconds, MinGuardBoardAutoHideSeconds, MaxGuardBoardAutoHideSeconds);
         this.CodexIqBoardLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.CodexIqBoardLeftDockTabCenterY);
         this.CodexIqBoardAutoHideSeconds = Clamp(this.CodexIqBoardAutoHideSeconds, MinCodexIqBoardAutoHideSeconds, MaxCodexIqBoardAutoHideSeconds);
+        this.ResetSpeedBoardLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.ResetSpeedBoardLeftDockTabCenterY);
+        this.ResetSpeedBoardAutoHideSeconds = Clamp(this.ResetSpeedBoardAutoHideSeconds, MinResetSpeedBoardAutoHideSeconds, MaxResetSpeedBoardAutoHideSeconds);
         this.GuardDisplayMinutes = NormalizeGuardDisplayMinutes(this.GuardDisplayMinutes);
         this.GuardOfflineThresholdMinutes = NormalizeGuardOfflineThresholdMinutes(this.GuardOfflineThresholdMinutes);
         this.GuardSleepSinceUtcTicks = NormalizeUtcTicks(this.GuardSleepSinceUtcTicks);
@@ -2407,6 +2440,18 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 91)
+        {
+            // Version 91 adds the sixth fixed left-dock board. It is presentation-only, follows the
+            // shared Spec footprint, and receives independent visual/position slots on upgrade.
+            settings.ResetSpeedBoardLeftDockEnabled = true;
+            settings.ResetSpeedBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+            settings.ResetSpeedBoardAutoHideSeconds = DefaultResetSpeedBoardAutoHideSeconds;
+            settings.ResetSpeedBoardTransparencyOverridePercent = MinWindowTransparencyOverridePercent;
+            settings.ResetSpeedBoardScaleOverridePercent = MinWindowScaleOverridePercent;
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2440,7 +2485,8 @@ internal sealed class WidgetSettings
             NormalizeLeftDockTabCenterY(settings.CodexTaskBoardLeftDockTabCenterY) == AutoLeftDockTabCenterY &&
             NormalizeLeftDockTabCenterY(settings.NetworkMonitorLeftDockTabCenterY) == AutoLeftDockTabCenterY &&
             NormalizeLeftDockTabCenterY(settings.GuardBoardLeftDockTabCenterY) == AutoLeftDockTabCenterY &&
-            NormalizeLeftDockTabCenterY(settings.CodexIqBoardLeftDockTabCenterY) == AutoLeftDockTabCenterY;
+            NormalizeLeftDockTabCenterY(settings.CodexIqBoardLeftDockTabCenterY) == AutoLeftDockTabCenterY &&
+            NormalizeLeftDockTabCenterY(settings.ResetSpeedBoardLeftDockTabCenterY) == AutoLeftDockTabCenterY;
     }
 
     private static bool AreAllMetricTilePositionsAutomatic(WidgetSettings settings)
@@ -2563,6 +2609,7 @@ internal sealed class WidgetSettings
             "CodexTaskBoardTransparencyOverridePercent=" + this.CodexTaskBoardTransparencyOverridePercent,
             "GuardBoardTransparencyOverridePercent=" + this.GuardBoardTransparencyOverridePercent,
             "CodexIqBoardTransparencyOverridePercent=" + this.CodexIqBoardTransparencyOverridePercent,
+            "ResetSpeedBoardTransparencyOverridePercent=" + this.ResetSpeedBoardTransparencyOverridePercent,
             "NightScheduleEnabled=" + this.NightScheduleEnabled,
             "NightScheduleStartMinutes=" + this.NightScheduleStartMinutes,
             "NightScheduleEndMinutes=" + this.NightScheduleEndMinutes,
@@ -2582,6 +2629,7 @@ internal sealed class WidgetSettings
             "CodexTaskBoardScaleOverridePercent=" + this.CodexTaskBoardScaleOverridePercent,
             "GuardBoardScaleOverridePercent=" + this.GuardBoardScaleOverridePercent,
             "CodexIqBoardScaleOverridePercent=" + this.CodexIqBoardScaleOverridePercent,
+            "ResetSpeedBoardScaleOverridePercent=" + this.ResetSpeedBoardScaleOverridePercent,
             "PowerThermalIntegratedEnabled=" + this.PowerThermalIntegratedEnabled,
             "PowerThermalManualEnergySaverThresholdPercent=" + this.PowerThermalManualEnergySaverThresholdPercent,
             "NetworkMonitorAdapterId=" + this.NetworkMonitorAdapterId,
@@ -2619,6 +2667,9 @@ internal sealed class WidgetSettings
             "CodexIqBoardLeftDockEnabled=" + this.CodexIqBoardLeftDockEnabled,
             "CodexIqBoardLeftDockTabCenterY=" + this.CodexIqBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
             "CodexIqBoardAutoHideSeconds=" + this.CodexIqBoardAutoHideSeconds.ToString(CultureInfo.InvariantCulture),
+            "ResetSpeedBoardLeftDockEnabled=" + this.ResetSpeedBoardLeftDockEnabled,
+            "ResetSpeedBoardLeftDockTabCenterY=" + this.ResetSpeedBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
+            "ResetSpeedBoardAutoHideSeconds=" + this.ResetSpeedBoardAutoHideSeconds.ToString(CultureInfo.InvariantCulture),
             "GuardSleepEnabled=" + this.GuardSleepEnabled,
             "GuardSleepSinceUtcTicks=" + this.GuardSleepSinceUtcTicks.ToString(CultureInfo.InvariantCulture),
             "GuardDisplayMinutes=" + this.GuardDisplayMinutes.ToString(CultureInfo.InvariantCulture),
@@ -2853,6 +2904,11 @@ internal sealed class WidgetSettings
             settings.CodexIqBoardTransparencyOverridePercent = intValue;
             return;
         }
+        if (string.Equals(key, "ResetSpeedBoardTransparencyOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ResetSpeedBoardTransparencyOverridePercent = intValue;
+            return;
+        }
         if (string.Equals(key, "NightScheduleEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.NightScheduleEnabled = boolValue;
@@ -2946,6 +3002,11 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "CodexIqBoardScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
         {
             settings.CodexIqBoardScaleOverridePercent = intValue;
+            return;
+        }
+        if (string.Equals(key, "ResetSpeedBoardScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ResetSpeedBoardScaleOverridePercent = intValue;
             return;
         }
 
@@ -3180,6 +3241,24 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "CodexIqBoardAutoHideSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
         {
             settings.CodexIqBoardAutoHideSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ResetSpeedBoardLeftDockEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.ResetSpeedBoardLeftDockEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ResetSpeedBoardLeftDockTabCenterY", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.ResetSpeedBoardLeftDockTabCenterY = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "ResetSpeedBoardAutoHideSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.ResetSpeedBoardAutoHideSeconds = intValue;
             return;
         }
 
@@ -4703,6 +4782,7 @@ internal sealed class WidgetSettings
         RunCodexTaskMonitorSettingsSelfTest();
         RunSpecBoardSettingsSelfTest();
         RunCodexIqBoardSettingsSelfTest();
+        RunResetSpeedBoardSettingsSelfTest();
         RunWindowTransparencyOverrideSelfTest();
         RunWindowScaleOverrideSelfTest();
         RunGuardBoardOverrideMigrationSelfTest();
@@ -5194,7 +5274,7 @@ internal sealed class WidgetSettings
         // Generic string-array sentinels are metric IDs and are invalid for the left dock (and
         // incomplete for the ten-tile column). Full legal permutations keep Clone/Save/Load testing
         // focused on persistence instead of intentionally triggering order repair.
-        settings.LeftDockButtonOrder = new string[] { "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network" };
+        settings.LeftDockButtonOrder = new string[] { "ResetSpeed", "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network" };
         settings.RightTileButtonOrder = new string[]
         {
             "ClaudeQuota", "CodexQuota", "Guard", "Power", "Npu",
@@ -5254,7 +5334,7 @@ internal sealed class WidgetSettings
         AssertLayout(
             ColumnButtonOrdersEqual(
                 repaired.LeftDockButtonOrder,
-                new string[] { "Guard", "Network", "SpecBoard", "CodexTask", "CodexIq" }) &&
+                new string[] { "Guard", "Network", "SpecBoard", "CodexTask", "CodexIq", "ResetSpeed" }) &&
             ColumnButtonOrdersEqual(
                 repaired.RightTileButtonOrder,
                 new string[]
@@ -5477,7 +5557,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 Array.Exists(
                     migratedLines,
-                    delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }),
+                    delegate(string line) { return string.Equals(line, "Version=91", StringComparison.Ordinal); }),
                 "retired settings migration should atomically rewrite the current schema");
             AssertLayout(!File.Exists(path + ".tmp"), "retired settings migration should not leave a temp file");
 
@@ -5595,7 +5675,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 Array.Exists(
                     migratedLines,
-                    delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }),
+                    delegate(string line) { return string.Equals(line, "Version=91", StringComparison.Ordinal); }),
                 "schema 86 retired-key migration should atomically rewrite Version=85 input to the current schema");
             AssertLayout(!File.Exists(path + ".tmp"), "schema 86 migration should not leave a temp file");
 
@@ -5649,7 +5729,7 @@ internal sealed class WidgetSettings
                 string.Equals(versionless.NetworkMonitorAdapterId, "versionless-retained-adapter", StringComparison.Ordinal) &&
                 Array.Exists(
                     versionlessLines,
-                    delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
+                    delegate(string line) { return string.Equals(line, "Version=91", StringComparison.Ordinal); }) &&
                 !Array.Exists(
                     versionlessLines,
                     delegate(string line)
@@ -5686,7 +5766,7 @@ internal sealed class WidgetSettings
             string[] defaultLines = File.ReadAllLines(defaultPath);
             AssertLayout(
                 migratedDefault.AiChinaEgressGuardEnabled &&
-                Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
+                Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "Version=91", StringComparison.Ordinal); }) &&
                 Array.Exists(defaultLines, delegate(string line) { return string.Equals(line, "AiChinaEgressGuardEnabled=True", StringComparison.Ordinal); }) &&
                 !File.Exists(defaultPath + ".tmp"),
                 "schema 87 migration should atomically persist the enabled guard default");
@@ -5702,7 +5782,7 @@ internal sealed class WidgetSettings
             AssertLayout(
                 !migratedDisabled.AiChinaEgressGuardEnabled &&
                 !roundTrip.AiChinaEgressGuardEnabled &&
-                Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
+                Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "Version=91", StringComparison.Ordinal); }) &&
                 Array.Exists(disabledLines, delegate(string line) { return string.Equals(line, "AiChinaEgressGuardEnabled=False", StringComparison.Ordinal); }) &&
                 !File.Exists(disabledPath + ".tmp"),
                 "schema 87 migration should preserve an explicit disabled guard");
@@ -5713,7 +5793,7 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("China-egress guard migration: PASS source=86 feature=87 target=90 default-on explicit-off atomic round-trip");
+        Console.WriteLine("China-egress guard migration: PASS source=86 feature=87 target=91 default-on explicit-off atomic round-trip");
     }
 
     private static void RunHiddenColorProtectionSchema88MigrationSelfTest()
@@ -5746,7 +5826,7 @@ internal sealed class WidgetSettings
                 !roundTrip.HoverOpacityEnabled,
                 "schema 88 migration should preserve unrelated hidden-opacity settings");
             AssertLayout(
-                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
+                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=91", StringComparison.Ordinal); }) &&
                 !Array.Exists(
                     lines,
                     delegate(string line)
@@ -5762,7 +5842,7 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("Hidden colour protection migration: PASS source=87 feature=88 target=90 retired-key removed");
+        Console.WriteLine("Hidden colour protection migration: PASS source=87 feature=88 target=91 retired-key removed");
     }
 
     private static void RunBurnInProtectionSchema89MigrationSelfTest()
@@ -5785,7 +5865,7 @@ internal sealed class WidgetSettings
                 migrated.BurnInLevelOneIdleSeconds == DefaultBurnInLevelOneIdleSeconds &&
                 migrated.BurnInLevelTwoDelaySeconds == DefaultBurnInLevelTwoDelaySeconds &&
                 migrated.ApplicationTransparencyPercent == 42 &&
-                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
+                Array.Exists(lines, delegate(string line) { return string.Equals(line, "Version=91", StringComparison.Ordinal); }) &&
                 Array.Exists(lines, delegate(string line) { return string.Equals(line, "BurnInProtectionEnabled=True", StringComparison.Ordinal); }) &&
                 Array.Exists(lines, delegate(string line) { return string.Equals(line, "BurnInLevelOneIdleSeconds=10", StringComparison.Ordinal); }) &&
                 Array.Exists(lines, delegate(string line) { return string.Equals(line, "BurnInLevelTwoDelaySeconds=30", StringComparison.Ordinal); }) &&
@@ -5817,7 +5897,7 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("Burn-in protection migration: PASS source=88 target=90 defaults=10/+30 explicit-opt-out");
+        Console.WriteLine("Burn-in protection migration: PASS source=88 target=91 defaults=10/+30 explicit-opt-out");
     }
 
     private static void RunColumnSpacingSchema90MigrationSelfTest()
@@ -5845,7 +5925,7 @@ internal sealed class WidgetSettings
                 migrated.LeftDockButtonGapPixels == 0 &&
                 migrated.RightTileButtonGapPixels == 80 &&
                 migrated.ApplicationTransparencyPercent == 43 &&
-                Array.Exists(migratedLines, delegate(string line) { return string.Equals(line, "Version=90", StringComparison.Ordinal); }) &&
+                Array.Exists(migratedLines, delegate(string line) { return string.Equals(line, "Version=91", StringComparison.Ordinal); }) &&
                 !File.Exists(migratedPath + ".tmp"),
                 "schema 90 migration should preserve existing spacing values and atomically record the new contract");
 
@@ -5871,7 +5951,7 @@ internal sealed class WidgetSettings
             catch { }
         }
 
-        Console.WriteLine("Column spacing migration: PASS source=89 target=90 range=0..100 values-preserved");
+        Console.WriteLine("Column spacing migration: PASS source=89 target=91 range=0..100 values-preserved");
     }
 
     private static void RunGuardBoardOverrideMigrationSelfTest()
@@ -6103,6 +6183,56 @@ internal sealed class WidgetSettings
         }
 
         Console.WriteLine("Codex IQ board settings: PASS fixed dock, independent overrides, save/load, migrate(v81->v82)");
+    }
+
+    private static void RunResetSpeedBoardSettingsSelfTest()
+    {
+        WidgetSettings defaults = CreateDefaults();
+        AssertLayout(
+            defaults.ResetSpeedBoardLeftDockEnabled &&
+            defaults.ResetSpeedBoardLeftDockTabCenterY == AutoLeftDockTabCenterY &&
+            defaults.ResetSpeedBoardAutoHideSeconds == DefaultResetSpeedBoardAutoHideSeconds &&
+            defaults.ResetSpeedBoardTransparencyOverridePercent == MinWindowTransparencyOverridePercent &&
+            defaults.ResetSpeedBoardScaleOverridePercent == MinWindowScaleOverridePercent &&
+            Array.IndexOf(defaults.LeftDockButtonOrder, "ResetSpeed") == defaults.LeftDockButtonOrder.Length - 1,
+            "Reset / Speed board defaults should enable an independent sixth dock slot.");
+
+        string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-reset-speed-board-settings-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string path = Path.Combine(root, "settings.ini");
+            defaults.ResetSpeedBoardLeftDockEnabled = false;
+            defaults.ResetSpeedBoardLeftDockTabCenterY = 888;
+            defaults.ResetSpeedBoardAutoHideSeconds = 46;
+            defaults.ResetSpeedBoardTransparencyOverridePercent = 39;
+            defaults.ResetSpeedBoardScaleOverridePercent = 130;
+            defaults.SaveToPath(path, true);
+            WidgetSettings loaded = LoadFromPath(path, false);
+            AssertLayout(
+                loaded.ResetSpeedBoardLeftDockEnabled &&
+                loaded.ResetSpeedBoardLeftDockTabCenterY == 888 &&
+                loaded.ResetSpeedBoardAutoHideSeconds == 46 &&
+                loaded.ResetSpeedBoardTransparencyOverridePercent == 39 &&
+                loaded.ResetSpeedBoardScaleOverridePercent == 130,
+                "Reset / Speed board settings should preserve visual slots while forcing the sixth dock on.");
+
+            File.WriteAllLines(path, new string[] { "Version=90" }, SharedEncoding.Utf8NoBom);
+            WidgetSettings migrated = LoadFromPath(path, false);
+            AssertLayout(
+                migrated.ResetSpeedBoardLeftDockEnabled &&
+                migrated.ResetSpeedBoardLeftDockTabCenterY == AutoLeftDockTabCenterY &&
+                migrated.ResetSpeedBoardAutoHideSeconds == DefaultResetSpeedBoardAutoHideSeconds &&
+                migrated.ResetSpeedBoardTransparencyOverridePercent == MinWindowTransparencyOverridePercent &&
+                migrated.ResetSpeedBoardScaleOverridePercent == MinWindowScaleOverridePercent,
+                "Reset / Speed board v90 to v91 migration failed.");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+
+        Console.WriteLine("Reset / Speed board settings: PASS fixed dock, independent overrides, save/load, migrate(v90->v91)");
     }
 
     private static void RunSpecBoardSettingsSelfTest()

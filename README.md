@@ -1,20 +1,21 @@
 # Desktop Codex Assistant（UX3407N / UX3607O 专调版）
 
-适用版本：2.0.0.9
+适用版本：2.0.0.10
 
-A Windows-on-Arm desktop workspace for AI-assisted development: ten right-edge metric/quota tiles, five left-edge dock tabs and boards, an operation panel, and an on-demand settings window. Sampling and Radar coordination run in hidden owners. Tuned for ASUS UX3407N / UX3607O; ARM64 is the formal build target.
+A Windows-on-Arm desktop workspace for AI-assisted development: ten right-edge metric/quota tiles, six left-edge dock tabs and boards, an operation panel, and an on-demand settings window. Sampling and Radar coordination run in hidden owners. Tuned for ASUS UX3407N / UX3607O; ARM64 is the formal build target.
 
-本程序把 AI 辅助开发时最常盯的信息固定到桌面两侧：右侧 10 个独立指标方块，左侧 5 个停靠标签/看板，另有操作面板与按需打开的设置窗口。`WidgetForm` 只做隐藏协调，`CodexRadarForm` 与 `PowerThermalForm` 只做永久 headless 数据所有者；它们不再作为可见窗口。整个项目由 AI 编写与维护——OpenAI Codex 主创，Anthropic Claude（Opus / Fable）参与功能开发、审查与修复。
+本程序把 AI 辅助开发时最常盯的信息固定到桌面两侧：右侧 10 个独立指标方块，左侧 6 个停靠标签/看板，另有操作面板与按需打开的设置窗口。`WidgetForm` 只做隐藏协调，`CodexRadarForm` 与 `PowerThermalForm` 只做永久 headless 数据所有者；它们不再作为可见窗口。整个项目由 AI 编写与维护——OpenAI Codex 主创，Anthropic Claude（Opus / Fable）参与功能开发、审查与修复。
 
 ## 运行表面与数据所有者
 
 | 类别 | 当前内容 |
 |---|---|
 | 右侧 10 个方块 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度；每项是独立 `MetricTileForm`，悬停详情只消费同一份快照；MEM 外环显示物理占用，内环显示绿/黄/红三态内存压力，底部色带记录最近 60 秒压力历史 |
-| 左侧 5 个停靠位 | Network、Spec Board、Codex Task、GUARD、Codex IQ；常驻 tab 与展开 board 组成一套停靠拓扑 |
+| 左侧 6 个停靠位 | Network、Spec Board、Codex Task、GUARD、Codex IQ、重置与速蹬；常驻 tab 与展开 board 组成一套停靠拓扑 |
+| 重置与速蹬看板 | 展示 Codex 最近 7 天周额度余量、自然/硬/重置卡事件、速蹬窗口倒计时、重置卡余量与最近到期时间；只读 Radar owner 的缓存投影 |
 | Network 看板 | 接口、DNS、公网连通性、GFW、云服务、PathPing、固定 Ping，以及共享 Clean IP 出口画像；只以 Dock 形态展示 |
 | Operation | 扇形速控盘、常用开关、电池保养、CTF 重启与 SeelenUI 联动 |
-| Settings | Win11 风格设置窗口，按需显示；全局布局编辑只编辑上述 10 个方块、5 个 tab 与 Operation，共 16 项 |
+| Settings | Win11 风格设置窗口，按需显示；全局布局编辑只编辑上述 10 个方块、6 个 tab 与 Operation，共 17 项 |
 | 隐藏协调与采样 | `WidgetForm` 是隐藏宿主；`CodexRadarForm` 维护 Codex 公共 Radar 与 Codex/Claude 官方额度/服务状态，`PowerThermalForm` 维护功耗/温度；可见表面只读缓存快照 |
 
 右侧方块的自动排列仍以“主显示器/主工作区”设置为基线；这些设置继续服务当前 tile 拓扑。
@@ -47,7 +48,7 @@ DesktopCodexAssistant.exe --stop   # 停止正在运行的实例
 |---|---|
 | 运行模式 | `--desktop-parent` / `--workerw`（桌面宿主层）、`--night-proof`、`--restart-after-pid <pid>` |
 | 自检 | `--test`、`--test-logger`、`--test-layout`、`--test-settings-bindings`、`--test-display-recovery`、`--test-operation-panel`、`--test-codex-task-monitor`、`--test-specboard-manager`、`--test-settings-open-close [--iterations N]`、`--test-radar-display-lifecycle [--iterations N]` |
-| 渲染采样（离屏出 PNG） | `--render-networkmonitor` / `--render-operation` / `--render-tilecolumn`，以及带模式参数的 `--render-specboard <sample|current>`、`--render-specboardmanager <sample|current>`、`--render-guard <sample|current>`；均支持 `--out <目录>` |
+| 渲染采样（离屏出 PNG） | `--render-networkmonitor` / `--render-operation` / `--render-tilecolumn` / `--render-resetspeedboard`，以及带模式参数的 `--render-specboard <sample|current>`、`--render-specboardmanager <sample|current>`、`--render-guard <sample|current>`；均支持 `--out <目录>` |
 | 诊断 | `--diagnose-idle-cpu [--diagnose-minutes N]`、`--diagnose-radar-runtime [--diagnose-seconds N]`、`--dump-codex-tasks`（只读，输出任务状态 / 模型 / token 数字与官方会话标题，不含提示词、回复或完整会话路径） |
 
 ## 数据与隐私

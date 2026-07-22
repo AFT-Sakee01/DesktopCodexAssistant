@@ -157,6 +157,11 @@ internal static class Program
             return RenderOperationSamples(args);
         }
 
+        if (HasArg(args, "--render-resetspeedboard"))
+        {
+            return RenderResetSpeedBoardSample(args);
+        }
+
         if (HasArg(args, "--render-specboardmanager"))
         {
             return RenderSpecBoardManagerSamples(args);
@@ -1135,6 +1140,28 @@ internal static class Program
         }
     }
 
+    private static int RenderResetSpeedBoardSample(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir)) outputDir = ".";
+            ResetSpeedBoardForm.RenderSample(outputDir);
+            Console.WriteLine("Rendered Reset / Speed board sample to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
     private static int RenderGuardBoardSamples(string[] args)
     {
         NativeMethods.AttachToParentConsole();
@@ -1429,7 +1456,8 @@ internal static class Program
                     EdgeDockTabRole.SpecBoard,
                     EdgeDockTabRole.CodexTask,
                     EdgeDockTabRole.Guard,
-                    EdgeDockTabRole.CodexIq
+                    EdgeDockTabRole.CodexIq,
+                    EdgeDockTabRole.ResetSpeed
                 };
                 EdgeDockTabForm[] dockTabs = new EdgeDockTabForm[dockRoles.Length];
                 codex.StartHeadlessDataOwner();
@@ -1567,6 +1595,7 @@ internal static class Program
         {
             OperationForm.RunSelfTest();
             CodexIqBoardForm.RunSelfTest();
+            ResetSpeedBoardForm.RunSelfTest();
             RunCtfmonRestartHelperArgumentSelfTest();
             RunCommandLineArgumentParserSelfTest();
             Console.WriteLine("Operation panel interaction and performance policy: PASS");

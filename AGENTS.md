@@ -2,7 +2,7 @@
 
 The global `C:\Users\GengH\.codex\AGENTS.md` rules apply. This file only records project-specific constraints and overrides; do not duplicate global rules or maintenance history here.
 
-Current version: `2.0.0.9`
+Current version: `2.0.0.10`
 
 ## Project AI
 
@@ -25,8 +25,8 @@ Current version: `2.0.0.9`
 - Do not compile, publish, or validate x64 unless the user explicitly requests x64.
 - Keep the product identity `Desktop Codex Assistant UX3407N/UX3607O`, executable name `DesktopCodexAssistant.exe`, and storage root `%LOCALAPPDATA%\DesktopCodexAssistant`.
 - Dock, Launchpad, top bar, and the Direct2D project are intentionally disabled. Do not restore or depend on them.
-- The canonical visible topology is ten independent right-edge `MetricTileForm` tiles; five left-edge dock tabs/boards (Network, Spec Board, Codex Task, GUARD, Codex IQ); `OperationForm`; and the on-demand settings window.
-- Global layout editing exposes exactly 16 structural items: the ten tiles, the five dock tabs, and Operation. Boards, the settings window, hidden owners, and the hidden host are not editable layout items.
+- The canonical visible topology is ten independent right-edge `MetricTileForm` tiles; six left-edge dock tabs/boards (Network, Spec Board, Codex Task, GUARD, Codex IQ, Reset / Speed); `OperationForm`; and the on-demand settings window.
+- Global layout editing exposes exactly 17 structural items: the ten tiles, the six dock tabs, and Operation. Boards, the settings window, hidden owners, and the hidden host are not editable layout items.
 - `WidgetForm` is a hidden coordination host. `CodexRadarForm` and `PowerThermalForm` are permanent headless data owners started and stopped explicitly; the runtime must not call `Show()` for them.
 - `NetworkMonitorForm` is Dock-only. Runtime Radar and Power/Thermal presentation belongs to the right tiles, and Clean IP presentation belongs to the Network board; do not create additional surfaces for those owners/readers.
 - `ClaudeRadarForm` and `ConnectionCheckForm` are removed; retain only the official `ClaudeCodeUsageReader`/`ClaudeCodeUsageScheduler` quota chain and the Clean IP reader through their current owners.

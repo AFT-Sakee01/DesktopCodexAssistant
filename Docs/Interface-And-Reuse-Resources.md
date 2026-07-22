@@ -1,10 +1,10 @@
 # 接口与复用资源汇总
 
-适用版本：2.0.0.9
+适用版本：2.0.0.10
 
 ## 1. 文档用途
 
-本汇总以当前源码为准，帮助后续修改在新增实现前优先找到可复用接口、服务、组件、命令和持久化资源。现行用户界面是右侧 10 个 metric tiles、左侧 5 个固定 Dock、`OperationForm` 与按需打开的设置窗口；`WidgetForm` 是隐藏宿主，`CodexRadarForm` 与 `PowerThermalForm` 是永久 headless 数据所有者。
+本汇总以当前源码为准，帮助后续修改在新增实现前优先找到可复用接口、服务、组件、命令和持久化资源。现行用户界面是右侧 10 个 metric tiles、左侧 6 个固定 Dock、`OperationForm` 与按需打开的设置窗口；`WidgetForm` 是隐藏宿主，`CodexRadarForm` 与 `PowerThermalForm` 是永久 headless 数据所有者。
 
 机器可检索的完整索引位于：
 
@@ -188,7 +188,7 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | 类别 | 对象与边界 |
 | --- | --- |
 | 右侧可见表面 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度共 10 个 `MetricTileForm`；悬停详情复用一个 `MetricTileExpandForm`，只读同一 `MetricTileFeed`。MEM 外环/中心显示物理占用，内环显示三态压力，底部色带显示最近 60 秒压力历史 |
-| 左侧固定 Dock | Network、Spec Board、Codex Task、GUARD、Codex IQ 共 5 枚 `EdgeDockTabForm` 及对应 board；五角色始终存在，只允许排序，不允许恢复浮动窗或禁用角色 |
+| 左侧固定 Dock | Network、Spec Board、Codex Task、GUARD、Codex IQ、重置与速蹬共 6 枚 `EdgeDockTabForm` 及对应 board；六角色始终存在，只允许排序，不允许恢复浮动窗或禁用角色 |
 | 其他用户界面 | `OperationForm` 常驻；`Win11SettingsForm` 与 `SpecBoardManagerForm` 按需打开，后二者是可聚焦的普通工具窗口 |
 | headless owners | `CodexRadarForm` 统一拥有 Codex/Claude 双 family；`PowerThermalForm` 拥有功耗、温度和电池采样。两者只运行 scheduler、缓存和 cache-only snapshot builder，不调用 `Show()`、不参与布局编辑；旧 Radar/Power renderer 已物理删除 |
 

@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.8
+适用版本：2.0.0.10
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -60,7 +60,7 @@ DNS 检测：
 | 昂贵硬件 | GPU/NPU 按 1/2/5 s 独立 deadline；不能被更快的 CPU tick 放大。 |
 | 设置热加载 | `settings.ini` 由 `FileSystemWatcher` 与主 tick 的修改时间检查共同覆盖。 |
 | 右侧 tiles | 10 个 `MetricTileForm` 只消费同一次 feed；方块和 hover expand 不自行采样。 |
-| 左侧 docks | 5 个 `EdgeDockTabForm` 复用各自既有 hover tick；展开 board 的业务刷新由 owner 管理。 |
+| 左侧 docks | 6 个 `EdgeDockTabForm` 复用各自既有 hover tick；展开 board 的业务刷新由 owner 管理。 |
 | 全屏 | 隐藏 visible tiles/tabs/boards/Operation；不停止 Radar/Power headless backend。 |
 | 显示恢复 | 首轮延迟 350 ms，最多 3 轮；后续重试 1500 ms。重枚举 work-area、重建 visible layered resources、重定位并强制刷新。 |
 | Win+D | 全局 Win+D 后延迟 2000 ms 执行本程序和 SeelenUI 拉前；不拦截系统显示桌面。 |
@@ -74,7 +74,7 @@ hover/自动隐藏规则：
 - 离开判定区后延迟显现默认 1 s；倒计时内重新进入需连续停留默认 0.5 s 才重置。
 - 自动隐藏激活后普通鼠标移动不释放，必须进入任一 visible surface 的敏感范围。
 - 两级防烧屏默认开启：`BurnInLevelOneIdleSeconds = 10` 后进入一级，随后 `BurnInLevelTwoDelaySeconds = 30` 后进入二级；允许范围分别为 1-300 秒和 1-600 秒。
-- 防烧屏复用 hidden `WidgetForm` 的静止交互轮询和五个 `EdgeDockTabForm` 的 120 ms hover tick，不新增 timer。一级/二级激活后，纯鼠标移动只驱动左 tab 局部恢复或右侧 tile/expand 整组恢复；点击、滚轮、键盘输入、显示挂起与布局编辑会归零状态并重新计时。
+- 防烧屏复用 hidden `WidgetForm` 的静止交互轮询和六个 `EdgeDockTabForm` 的 120 ms hover tick，不新增 timer。一级/二级激活后，纯鼠标移动只驱动左 tab 局部恢复或右侧 tile/expand 整组恢复；点击、滚轮、键盘输入、显示挂起与布局编辑会归零状态并重新计时。
 - Operation RadialDial 核心 keep-alive 复用共享交互 tick，不建立 timer；达到空闲阈值后只改变一次核心视觉。
 - hidden host 只协调防烧屏状态，不提交像素；headless owners 不进入 hover、click-through、burn-in 或 Z-order 轮询。
 
@@ -87,7 +87,7 @@ hover/自动隐藏规则：
 | 生命周期 | `WidgetForm` 构造后显式调用 `StartHeadlessDataOwner()`；owner 创建隐藏 HWND 并启动 backend scheduler，但不调用 `Show()`。Start/恢复建立 generation，Stop/挂起先取消并失效 generation，重复调用幂等。 |
 | owner tick | 使用普通调度 500/1000/3000 ms，并贴近秒边界；tick 只检查各数据源 deadline 与单飞状态。 |
 | family 隔离 | Codex family 保存公共 Radar/模型/额度；Claude family 只保存官方额度与服务状态。请求同时捕获 family 与 owner generation；迟到结果不得写状态、缓存、日志、通知或 UI。 |
-| visible snapshots | producer 一次替换 `RadarPublishedProjectionState`；`BuildRadarTileSnapshot`、`BuildCodexIqBoardSnapshot`、`BuildServiceHealth` 和 task provider 从同一 published state clone，不触发网络、provider、磁盘或自动切换。 |
+| visible snapshots | producer 一次替换 `RadarPublishedProjectionState`；`BuildRadarTileSnapshot`、`BuildCodexIqBoardSnapshot`、`BuildResetSpeedBoardSnapshot`、`BuildServiceHealth` 和 task provider 从同一 published state 或 owner 已载入内存 clone，不触发网络、provider、磁盘或自动切换。 |
 | fullscreen | 全屏标志不停止 backend；显示器关闭、会话锁定或系统挂起停止 Radar 轮询，恢复后错峰刷新。 |
 | 随机测试 | 暂停真实网站、额度和服务轮询；手动 token 立即重建，自动 fixture 最快 1 s 一次；不得写真实缓存。 |
 
@@ -105,6 +105,7 @@ hover/自动隐藏规则：
 | --- | --- | --- | --- |
 | Codex 公开 Radar | 北京时间每小时整点一次 | 10 min 重试 | 启动、恢复、Codex 模型/源变化、手动刷新 |
 | Codex usage provider | 5 min | 普通失败 10 min；HTTP 429 15 min | selected-provider gate、手动刷新 |
+| Codex 7 天额度历史落盘 | 接受额度快照时更新内存；最多每 15 s 后台批量落盘 | 失败时保留运行期内存，不能影响额度提交 | 每 6 h 或 owner 退出时裁剪为最近 7 天、最多 2048 行 |
 | Codex 本地 session fallback | 性能/均衡/省电 10/15/30 s | 仅 provider 无新鲜快照 | 只在 Codex 正在运行时 |
 | Claude Code usage | 5 min | 普通失败 10 min；HTTP 429 15 min | selected-provider gate、setup token/恢复/手动刷新 |
 | OpenAI/Anthropic Statuspage | 正常 15 min | 异常或失败 2 min | 启动、网络变化、服务 token、手动刷新 |
@@ -235,6 +236,14 @@ hover/自动隐藏规则：
 
 可见时每 5 s clone Radar owner 快照；隐藏、全屏或显示挂起时停止展示轮询。tab/收起/定位使用既有 500 ms maintenance tick，不发网络请求。
 
+### 8.5 重置与速蹬
+
+- `ResetSpeedBoardForm` 可见时每 5 s clone `BuildResetSpeedBoardSnapshot()`；500 ms maintenance tick 只负责 tab、外部点击、自动收回、定位与必要重绘。
+- `CodexQuotaHistoryStore.Record()` 只接收已通过额度保护链的 Codex 快照；15 分钟内且变化小于 3% 的普通样本合并，周余量回升至少 5% 才登记重置事件。
+- 重置分类只使用无凭据摘要：旧 reset anchor 前 15 分钟到后 6 小时为自然重置；重置卡数同时下降为重置卡；其它确认回升为硬重置。
+- JSONL 后台批量写入 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-quota-seven-day-history.jsonl`；board 的 5 秒投影只 clone 已加载内存，不同步读文件。
+- board 隐藏、全屏或显示挂起时停止展示轮询；历史记录继续服从 Radar owner 的额度调度，不建立 provider、reader 或网络请求。
+
 ## 9. Settings 与布局编辑
 
 源码：`Settings/Win11SettingsForm.cs`、`Core/GlobalLayoutEditorForm.cs`
@@ -245,7 +254,7 @@ hover/自动隐藏规则：
 | 预览 | 变更后 75 ms debounce 应用，避免每个控件事件直接写运行时。 |
 | 保存/取消 | 保存写 `settings.ini`；取消或异常关闭回滚打开时 baseline。 |
 | 全局热键 | 只有 hidden `WidgetForm` 注册；设置变更先注销再按规范化签名注册。 |
-| 全局布局 | 恰好 16 项：Operation、5 个 left dock tabs、10 个 right tiles。board、Settings、hidden host、headless owners 和 hover expand 不进入清单。 |
+| 全局布局 | 恰好 17 项：Operation、6 个 left dock tabs、10 个 right tiles。board、Settings、hidden host、headless owners 和 hover expand 不进入清单。 |
 | 显示器 | 保存 `Screen.DeviceName`；主显示/work-area 继续作为右 tile 基线。 |
 | Radar | 只配置 Codex 数据 family/模型/源/周期、Codex 与 Claude 官方额度、服务与健康测试；不提供 Claude 社区模型/fallback、DeepSeek key/余额或 owner 可见几何。 |
 | Power compatibility | `PowerThermalIntegratedEnabled` UI 隐藏，只兼容旧设置。 |
@@ -262,5 +271,5 @@ GFW、Clean IP 和 Radar 随机测试的“立即刷新”递增对应 token；o
 3. visible surface 是否只读快照，且 hidden/headless 对象未进入绘制与交互 tick。
 4. 全屏与显示关闭是否区分：全屏只隐藏表面，显示/会话/挂起才暂停对应 backend。
 5. Network 是否仍为 Dock-only，Clean IP 是否仍由共享 reader 提供。
-6. 全局布局是否仍恰好 16 项。
+6. 全局布局是否仍恰好 17 项。
 7. 是否需要运行 `--test`、`--test-layout`、`--test-settings-bindings`、`--test-display-recovery`、`--test-radar-display-lifecycle`、`--test-operation-panel` 或对应 board render。

@@ -64,6 +64,7 @@ internal sealed partial class OperationForm
             RenderCodexTaskBoardSample(outputDir);
             RenderEdgeDockTabSample(outputDir);
             CodexIqBoardForm.RenderSample(outputDir);
+            ResetSpeedBoardForm.RenderSample(outputDir);
         }
         finally
         {

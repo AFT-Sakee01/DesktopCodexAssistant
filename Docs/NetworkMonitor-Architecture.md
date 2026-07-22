@@ -1,12 +1,12 @@
 # 网络监控停靠架构
 
-适用版本：2.0.0.1
+适用版本：2.0.0.10
 
 本文说明 Network 左缘停靠 tab/board 的数据读取、状态机、单飞一致性、PathPing、Clean IP 投影和 Dock-only 渲染边界。
 
 ## 1. 当前定位
 
-Network 是左侧 5 个停靠角色之一，只以 tab + 展开 board 运行。`NetworkMonitorForm` 仍是 reader、调度和 board 的 owner，但不提供浮动展示模式。
+Network 是左侧 6 个停靠角色之一，只以 tab + 展开 board 运行。`NetworkMonitorForm` 仍是 reader、调度和 board 的 owner，但不提供浮动展示模式。
 
 相关源码：
 
@@ -152,7 +152,7 @@ PathPing 只在 Network board 展开期间采样；收起后完全暂停逐跳�
 
 ## 10. Dock board 布局与交互
 
-Network tab 是左侧 5 槽队列的第一角色。tab X 固定在目标 work-area 左缘，只允许整列共享 Y 偏移；展开 board X 固定为 `workArea.Left + tab.Width`，与 Spec、Codex Task、GUARD、Codex IQ board 水平对齐。
+Network tab 是左侧 6 槽队列的第一角色。tab X 固定在目标 work-area 左缘，只允许整列共享 Y 偏移；展开 board X 固定为 `workArea.Left + tab.Width`，与 Spec、Codex Task、GUARD、Codex IQ、ResetSpeed board 水平对齐。
 
 board 复用 `SpecBoardWidth × SpecBoardHeight` footprint，并按 648×400 参考空间分四区：
 
@@ -210,4 +210,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-networkmonitor --out .\_build\network
 ```
 
-验收重点是：Network 只通过第一枚左侧 tab 展开、Clean IP 只在该 board 展示、换网后旧任务不回写、收起后 PathPing 停止、五块 board 水平对齐、GFW 不改云服务结果，以及显示恢复后没有第二个 Network 表面。
+验收重点是：Network 只通过第一枚左侧 tab 展开、Clean IP 只在该 board 展示、换网后旧任务不回写、收起后 PathPing 停止、六块 board 水平对齐、GFW 不改云服务结果，以及显示恢复后没有第二个 Network 表面。

@@ -605,6 +605,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     public CodexRadarForm(WidgetSettings settings, Action<string, string, ToolTipIcon> notificationAction)
     {
         this.notificationAction = notificationAction;
+        this.codexQuotaHistoryStore = new CodexQuotaHistoryStore();
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
         ApplicationIcon.ApplyTo(this);
@@ -774,6 +775,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             this.codexTaskMonitorReader.Dispose();
             this.codexTaskMonitorReader = null;
         }
+        this.codexQuotaHistoryStore.Dispose();
         this.timer.Stop();
         this.timer.Tick -= OnTimerTick;
         this.timer.Dispose();
@@ -2361,6 +2363,21 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (quotaKnown && displaySnapshot != null)
         {
             RecordQuotaBurnSamples(quotaState, displaySnapshot, detectedUtc);
+            if (family == CodexRadarSoftwareMode.Codex && logDecision)
+            {
+                CodexResetCreditsSnapshot credits = GetCodexResetCreditsDisplaySnapshot();
+                int activeCredits = credits != null && credits.Known
+                    ? credits.GetActiveCount(detectedUtc.Kind == DateTimeKind.Utc ? detectedUtc : detectedUtc.ToUniversalTime())
+                    : 0;
+                this.codexQuotaHistoryStore.Record(
+                    displaySnapshot.FiveHourPercent,
+                    displaySnapshot.WeeklyPercent,
+                    displaySnapshot.WeeklyResetKnown,
+                    displaySnapshot.WeeklyResetLocal,
+                    credits != null && credits.Known,
+                    activeCredits,
+                    detectedUtc);
+            }
         }
         GetRadarFamilyState(family).Touch();
         PublishProjectionStateFromOwner();
@@ -10377,6 +10394,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         RunCodexRadarNotificationStateSelfTest();
         RunCodexRadarCatalogCompletenessSelfTest();
         RunCodexResetCreditsSelfTest();
+        CodexQuotaHistoryStore.RunSelfTest();
         RunCodexAuthJsonSelfTest();
         RunWeeklyBurnRateSelfTest();
 

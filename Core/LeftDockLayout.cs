@@ -67,7 +67,8 @@ internal static class LeftDockLayout
         EdgeDockTabRole.SpecBoard,
         EdgeDockTabRole.CodexTask,
         EdgeDockTabRole.Guard,
-        EdgeDockTabRole.CodexIq
+        EdgeDockTabRole.CodexIq,
+        EdgeDockTabRole.ResetSpeed
     };
 
     public static Rectangle ResolveWorkArea(WidgetSettings settings)
@@ -87,6 +88,8 @@ internal static class LeftDockLayout
                 return settings.GuardBoardTransparencyOverridePercent;
             case EdgeDockTabRole.CodexIq:
                 return settings.CodexIqBoardTransparencyOverridePercent;
+            case EdgeDockTabRole.ResetSpeed:
+                return settings.ResetSpeedBoardTransparencyOverridePercent;
             default:
                 return settings.SpecBoardTransparencyOverridePercent;
         }
@@ -104,6 +107,8 @@ internal static class LeftDockLayout
                 return settings.GuardBoardScaleOverridePercent;
             case EdgeDockTabRole.CodexIq:
                 return settings.CodexIqBoardScaleOverridePercent;
+            case EdgeDockTabRole.ResetSpeed:
+                return settings.ResetSpeedBoardScaleOverridePercent;
             default:
                 return settings.SpecBoardScaleOverridePercent;
         }
@@ -254,12 +259,14 @@ internal static class LeftDockLayout
         for (int c = 0; c < scales.Length; c++)
         for (int d = 0; d < scales.Length; d++)
         for (int e = 0; e < scales.Length; e++)
+        for (int f = 0; f < scales.Length; f++)
         {
             settings.NetworkMonitorScaleOverridePercent = scales[a];
             settings.SpecBoardScaleOverridePercent = scales[b];
             settings.CodexTaskBoardScaleOverridePercent = scales[c];
             settings.GuardBoardScaleOverridePercent = scales[d];
             settings.CodexIqBoardScaleOverridePercent = scales[e];
+            settings.ResetSpeedBoardScaleOverridePercent = scales[f];
             Rectangle[] bounds = ResolveAutoTabBounds(settings, workArea, 1.0f);
             for (int i = 0; i < bounds.Length; i++)
             {
@@ -279,11 +286,12 @@ internal static class LeftDockLayout
         constrained.CodexTaskBoardScaleOverridePercent = 200;
         constrained.GuardBoardScaleOverridePercent = 200;
         constrained.CodexIqBoardScaleOverridePercent = 200;
-        Rectangle gapLimitedWorkArea = new Rectangle(0, 0, 800, 360);
+        constrained.ResetSpeedBoardScaleOverridePercent = 200;
+        Rectangle gapLimitedWorkArea = new Rectangle(0, 0, 800, 420);
         Rectangle[] gapLimited = ResolveAutoTabBounds(constrained, gapLimitedWorkArea, 1.0f);
-        if (gapLimited.Length != 5 || gapLimited[0].Top != gapLimitedWorkArea.Top ||
+        if (gapLimited.Length != 6 || gapLimited[0].Top != gapLimitedWorkArea.Top ||
             gapLimited[gapLimited.Length - 1].Bottom != gapLimitedWorkArea.Bottom ||
-            gapLimited[1].Top - gapLimited[0].Bottom != 15)
+            gapLimited[1].Top - gapLimited[0].Bottom != 12)
         {
             throw new InvalidOperationException("Left dock 100 spacing must distribute the queue across the full work area.");
         }
@@ -307,7 +315,7 @@ internal static class LeftDockLayout
         arranged.LeftDockAutoArrangeEnabled = true;
         arranged.LeftDockButtonGapPixels = 27;
         arranged.LeftDockGroupOffsetY = 0;
-        arranged.LeftDockButtonOrder = new string[] { "CodexIq", "Network", "Guard", "SpecBoard", "CodexTask" };
+        arranged.LeftDockButtonOrder = new string[] { "ResetSpeed", "CodexIq", "Network", "Guard", "SpecBoard", "CodexTask" };
         arranged.SpecBoardLeftDockEnabled = false;
         arranged.GuardBoardLeftDockEnabled = false;
         Rectangle[] compact = ResolveAutoTabBounds(arranged, workArea, 1.0f);
@@ -317,18 +325,20 @@ internal static class LeftDockLayout
         int compactWhitespace = EdgeColumnSpacing.ResolveDistributedWhitespacePixels(
             arranged.LeftDockButtonGapPixels,
             workArea.Height - compactBodyHeight);
-        if (compact.Length != 5 || compactRoles.Length != 5 ||
-            compactRoles[0] != EdgeDockTabRole.CodexIq ||
-            compactRoles[1] != EdgeDockTabRole.Network ||
-            compactRoles[2] != EdgeDockTabRole.Guard ||
-            compactRoles[3] != EdgeDockTabRole.SpecBoard ||
-            compactRoles[4] != EdgeDockTabRole.CodexTask ||
-            compact[1].Top - compact[0].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 0, 4) ||
-            compact[2].Top - compact[1].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 1, 4) ||
-            compact[3].Top - compact[2].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 2, 4) ||
-            compact[4].Top - compact[3].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 3, 4))
+        if (compact.Length != 6 || compactRoles.Length != 6 ||
+            compactRoles[0] != EdgeDockTabRole.ResetSpeed ||
+            compactRoles[1] != EdgeDockTabRole.CodexIq ||
+            compactRoles[2] != EdgeDockTabRole.Network ||
+            compactRoles[3] != EdgeDockTabRole.Guard ||
+            compactRoles[4] != EdgeDockTabRole.SpecBoard ||
+            compactRoles[5] != EdgeDockTabRole.CodexTask ||
+            compact[1].Top - compact[0].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 0, 5) ||
+            compact[2].Top - compact[1].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 1, 5) ||
+            compact[3].Top - compact[2].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 2, 5) ||
+            compact[4].Top - compact[3].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 3, 5) ||
+            compact[5].Top - compact[4].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 4, 5))
         {
-            throw new InvalidOperationException("Left dock fixed-five custom order or percentage spacing self-test failed.");
+            throw new InvalidOperationException("Left dock fixed-six custom order or percentage spacing self-test failed.");
         }
 
         arranged.LeftDockButtonGapPixels = 0;
@@ -407,21 +417,25 @@ internal static class LeftDockLayout
         settings.CodexTaskBoardTransparencyOverridePercent = 63;
         settings.GuardBoardTransparencyOverridePercent = 74;
         settings.CodexIqBoardTransparencyOverridePercent = 85;
+        settings.ResetSpeedBoardTransparencyOverridePercent = 86;
         settings.NetworkMonitorScaleOverridePercent = 45;
         settings.SpecBoardScaleOverridePercent = 85;
         settings.CodexTaskBoardScaleOverridePercent = 125;
         settings.GuardBoardScaleOverridePercent = 175;
         settings.CodexIqBoardScaleOverridePercent = 195;
+        settings.ResetSpeedBoardScaleOverridePercent = 196;
         if (ResolveTransparencyOverride(settings, EdgeDockTabRole.Network) != 41 ||
             ResolveTransparencyOverride(settings, EdgeDockTabRole.SpecBoard) != 52 ||
             ResolveTransparencyOverride(settings, EdgeDockTabRole.CodexTask) != 63 ||
             ResolveTransparencyOverride(settings, EdgeDockTabRole.Guard) != 74 ||
             ResolveTransparencyOverride(settings, EdgeDockTabRole.CodexIq) != 85 ||
+            ResolveTransparencyOverride(settings, EdgeDockTabRole.ResetSpeed) != 86 ||
             ResolveScaleOverride(settings, EdgeDockTabRole.Network) != 45 ||
             ResolveScaleOverride(settings, EdgeDockTabRole.SpecBoard) != 85 ||
             ResolveScaleOverride(settings, EdgeDockTabRole.CodexTask) != 125 ||
             ResolveScaleOverride(settings, EdgeDockTabRole.Guard) != 175 ||
             ResolveScaleOverride(settings, EdgeDockTabRole.CodexIq) != 195 ||
+            ResolveScaleOverride(settings, EdgeDockTabRole.ResetSpeed) != 196 ||
             !IsPresentationBlocked(true, false) ||
             !IsPresentationBlocked(false, true) ||
             IsPresentationBlocked(false, false))
@@ -519,7 +533,8 @@ internal static class LeftDockLayout
             role == EdgeDockTabRole.SpecBoard ||
             role == EdgeDockTabRole.CodexTask ||
             role == EdgeDockTabRole.Guard ||
-            role == EdgeDockTabRole.CodexIq;
+            role == EdgeDockTabRole.CodexIq ||
+            role == EdgeDockTabRole.ResetSpeed;
     }
 
     private static Rectangle[] ResolveTabBoundsForRoles(
@@ -670,6 +685,8 @@ internal static class LeftDockLayout
                 return settings.GuardBoardLeftDockTabCenterY;
             case EdgeDockTabRole.CodexIq:
                 return settings.CodexIqBoardLeftDockTabCenterY;
+            case EdgeDockTabRole.ResetSpeed:
+                return settings.ResetSpeedBoardLeftDockTabCenterY;
             default:
                 return settings.SpecBoardLeftDockTabCenterY;
         }

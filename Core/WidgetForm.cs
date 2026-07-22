@@ -294,6 +294,17 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
             return this.codexRadarForm.BuildCodexIqBoardSnapshot();
         };
+        // The sixth dock board reuses the same headless Radar owner. Its seven-day history store is
+        // loaded and updated by the owner; expanding the board performs only this cache projection.
+        this.operationForm.ResetSpeedSnapshotProvider = delegate
+        {
+            if (this.codexRadarForm == null || this.codexRadarForm.IsDisposed)
+            {
+                return ResetSpeedBoardSnapshot.CreateEmpty();
+            }
+
+            return this.codexRadarForm.BuildResetSpeedBoardSnapshot();
+        };
         // ApplyRuntimeSettings runs before childWindowLifecycleStarted so the hidden host can
         // establish its own HWND safely. Build the canonical tile set only after every data owner
         // and board provider is connected; otherwise a cold start has no later creation path.

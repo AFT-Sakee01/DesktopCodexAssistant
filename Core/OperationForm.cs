@@ -196,6 +196,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         DisposeCodexTaskBoardForm();
         DisposeGuardBoardForm();
         DisposeCodexIqBoardForm();
+        DisposeResetSpeedBoardForm();
         if (Interlocked.CompareExchange(ref this.foregroundFpsReadRunning, 0, 0) == 0)
         {
             this.foregroundFpsReader.Dispose();
@@ -335,6 +336,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         EnsureGuardBoardForm();
 
         EnsureCodexIqBoardForm();
+        EnsureResetSpeedBoardForm();
 
         if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed)
         {
@@ -393,6 +395,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         SetGuardBoardHiddenForFullscreen(hidden);
         SetCodexIqBoardHiddenForFullscreen(hidden);
+        SetResetSpeedBoardHiddenForFullscreen(hidden);
 
         if (this.hiddenForFullscreen == hidden &&
             ((hidden && !this.Visible) || (!hidden && this.Visible)))
@@ -440,6 +443,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         RecoverGuardBoardAfterDisplayResume();
         RecoverCodexIqBoardAfterDisplayResume();
+        RecoverResetSpeedBoardAfterDisplayResume();
 
         PositionOperationWindow();
         UpdateForegroundFpsTimer();
@@ -463,6 +467,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         PrepareGuardBoardForDisplaySuspend();
         PrepareCodexIqBoardForDisplaySuspend();
+        PrepareResetSpeedBoardForDisplaySuspend();
         ResetDisplayRenderResources();
     }
 

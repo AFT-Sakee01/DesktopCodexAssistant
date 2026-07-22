@@ -9,7 +9,8 @@ internal enum EdgeDockTabRole
     SpecBoard,
     CodexTask,
     Guard,
-    CodexIq
+    CodexIq,
+    ResetSpeed
 }
 
 // A 5x30 logical right-pointing trapezoid parked against the left screen edge. It is the only
@@ -148,6 +149,8 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
                 return DesignTokens.Colors.AccentAlt;
             case EdgeDockTabRole.CodexIq:
                 return DesignTokens.Colors.Accent;
+            case EdgeDockTabRole.ResetSpeed:
+                return DesignTokens.Colors.Warning;
             default:
                 return DesignTokens.Colors.GlyphMuted;
         }
@@ -651,7 +654,8 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             ResolveQueueAccent(EdgeDockTabRole.SpecBoard),
             ResolveQueueAccent(EdgeDockTabRole.CodexTask),
             ResolveQueueAccent(EdgeDockTabRole.Guard),
-            ResolveQueueAccent(EdgeDockTabRole.CodexIq)
+            ResolveQueueAccent(EdgeDockTabRole.CodexIq),
+            ResolveQueueAccent(EdgeDockTabRole.ResetSpeed)
         };
         Color[] expectedAccents = new Color[]
         {
@@ -659,13 +663,14 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             DesignTokens.Colors.WarningDeep,
             DesignTokens.Colors.Success,
             DesignTokens.Colors.AccentAlt,
-            DesignTokens.Colors.Accent
+            DesignTokens.Colors.Accent,
+            DesignTokens.Colors.Warning
         };
         for (int i = 0; i < queueAccents.Length; i++)
         {
             if (queueAccents[i].ToArgb() != expectedAccents[i].ToArgb())
             {
-                throw new InvalidOperationException("Edge dock queue colours must remain blue, orange, green, purple and cyan from top to bottom.");
+                throw new InvalidOperationException("Edge dock queue colours must remain blue, orange, green, purple, cyan and yellow from top to bottom.");
             }
         }
 
@@ -682,7 +687,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Left-dock board accent borders must stay as a clipped-safe 3px inner stroke.");
         }
 
-        Console.WriteLine("Edge dock tab: PASS 5x30 trapezoid arrow blue-orange-green-purple-cyan burn-in-gray-hover level2-inverted-arrow board-border-3px auto-slots-5 shared-pixel-shift");
+        Console.WriteLine("Edge dock tab: PASS 5x30 trapezoid arrow blue-orange-green-purple-cyan-yellow burn-in-gray-hover level2-inverted-arrow board-border-3px auto-slots-6 shared-pixel-shift");
     }
 
     internal static void RunDisplayLifecycleSelfTest()
@@ -694,7 +699,8 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             EdgeDockTabRole.SpecBoard,
             EdgeDockTabRole.CodexTask,
             EdgeDockTabRole.Guard,
-            EdgeDockTabRole.CodexIq
+            EdgeDockTabRole.CodexIq,
+            EdgeDockTabRole.ResetSpeed
         };
         for (int i = 0; i < roles.Length; i++)
         {
