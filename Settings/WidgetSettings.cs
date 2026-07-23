@@ -257,6 +257,9 @@ internal sealed class WidgetSettings
     public const int MaxOperationButtonSize = 120;
     public const int MinOperationOffset = 0;
     public const int MaxOperationOffset = 4000;
+    public const int MinAutoHoverOpacityIdleSeconds = 1;
+    public const int MaxAutoHoverOpacityIdleSeconds = 300;
+    public const int DefaultAutoHoverOpacityIdleSeconds = 60;
     public const int MinBurnInLevelOneIdleSeconds = 1;
     public const int MaxBurnInLevelOneIdleSeconds = 300;
     public const int DefaultBurnInLevelOneIdleSeconds = 10;
@@ -267,6 +270,18 @@ internal sealed class WidgetSettings
     public const int MinOperationRadialIdleCollapseSeconds = 1;
     public const int MaxOperationRadialIdleCollapseSeconds = 60;
     public const int DefaultOperationRadialIdleCollapseSeconds = 10;
+    public const int MinSensitiveMouseRangePixels = 10;
+    public const int MaxSensitiveMouseRangePixels = 300;
+    public const int DefaultSensitiveMouseRangePixels = 100;
+    public const int MinReverseHoverOpacityRestoreDelaySeconds = 1;
+    public const int MaxReverseHoverOpacityRestoreDelaySeconds = 30;
+    public const int DefaultReverseHoverOpacityRestoreDelaySeconds = 5;
+    public const double MinHoverOpacityRevealDelaySeconds = 1.0;
+    public const double MaxHoverOpacityRevealDelaySeconds = 10.0;
+    public const double DefaultHoverOpacityRevealDelaySeconds = 1.0;
+    public const double MinHoverOpacityRevealResetSeconds = 0.1;
+    public const double MaxHoverOpacityRevealResetSeconds = 5.0;
+    public const double DefaultHoverOpacityRevealResetSeconds = 0.5;
     public const int MinResolutionCompatibilityScalePercent = 40;
     public const int MaxResolutionCompatibilityScalePercent = 200;
     public const int DefaultResolutionCompatibilityScalePercent = 100;
@@ -281,8 +296,8 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 95;
-    private const int RetiredCanonicalSettingsCount = 113;
+    private const int CurrentSettingsVersion = 94;
+    private const int RetiredCanonicalSettingsCount = 99;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -339,18 +354,7 @@ internal sealed class WidgetSettings
         "BurnInHiddenModeColorProtectionEnabled",
         // Schema 94 replaces the configurable legacy double-click menu with one fixed physical
         // side-surface toggle. Ignore and remove the old opt-in key on the next canonical save.
-        "OperationDoubleClickSpecialMenuEnabled",
-
-        // Schema 95 permanently removes the fragmented hover-opacity and global automatic-hide
-        // feature. Keep old persisted names ignored so upgrading rewrites them out without allowing
-        // a later feature to inherit stale values.
-        "HotkeyToggleHoverOpacity",
-        "HoverOpacityEnabled", "SensitiveMouseModeEnabled", "SensitiveMouseRangePixels",
-        "HoverOpacityRevealDelayEnabled", "HoverOpacityRevealDelaySeconds",
-        "HoverOpacityRevealResetSeconds", "HoverOpacityCoverEnabled",
-        "ReverseHoverOpacityRevealEnabled", "ReverseHoverOpacityRestoreDelaySeconds",
-        "AutoHoverOpacityIdleEnabled", "AutoHoverOpacityIdleSeconds",
-        "AutoHoverOpacityMaximizedEnabled", "OperationRadialCoreAutoHideKeepAliveEnabled"
+        "OperationDoubleClickSpecialMenuEnabled"
     };
     private const int EffectivePerformanceModeCacheMs = 2000;
     private static readonly object EffectivePerformanceModeSync = new object();
@@ -401,6 +405,7 @@ internal sealed class WidgetSettings
     public bool AlertServiceHealthEnabled { get; set; }
     public bool AlertCodexTaskEnabled { get; set; }
     public string HotkeyToggleAllWindows { get; set; }
+    public string HotkeyToggleHoverOpacity { get; set; }
     public string HotkeyOpenSettings { get; set; }
     public int MainWidgetScaleOverridePercent { get; set; }
     public int NetworkMonitorScaleOverridePercent { get; set; }
@@ -809,9 +814,24 @@ internal sealed class WidgetSettings
         set { this.PerformanceMode = value ? WidgetPerformanceMode.BatterySaver : WidgetPerformanceMode.Balanced; }
     }
 
+    public bool HoverOpacityEnabled { get; set; }
+    public bool ForceHoverOpacityActive { get; set; }
+    public bool ManualHoverOpacityActive { get; set; }
+    public bool SensitiveMouseModeEnabled { get; set; }
+    public int SensitiveMouseRangePixels { get; set; }
+    public bool HoverOpacityRevealDelayEnabled { get; set; }
+    public double HoverOpacityRevealDelaySeconds { get; set; }
+    public double HoverOpacityRevealResetSeconds { get; set; }
+    public bool HoverOpacityCoverEnabled { get; set; }
+    public bool ReverseHoverOpacityRevealEnabled { get; set; }
+    public int ReverseHoverOpacityRestoreDelaySeconds { get; set; }
+    public bool AutoHoverOpacityIdleEnabled { get; set; }
+    public int AutoHoverOpacityIdleSeconds { get; set; }
+    public bool AutoHoverOpacityMaximizedEnabled { get; set; }
     public bool BurnInProtectionEnabled { get; set; }
     public int BurnInLevelOneIdleSeconds { get; set; }
     public int BurnInLevelTwoDelaySeconds { get; set; }
+    public bool OperationRadialCoreAutoHideKeepAliveEnabled { get; set; }
     public int OperationRadialIdleCollapseSeconds { get; set; }
     public bool OperationRadialIdleResetOnInteractionEnabled { get; set; }
     public bool OperationRadialKeepOpenAfterLeafClickEnabled { get; set; }
@@ -845,6 +865,7 @@ internal sealed class WidgetSettings
         this.AlertServiceHealthEnabled = defaults.AlertServiceHealthEnabled;
         this.AlertCodexTaskEnabled = defaults.AlertCodexTaskEnabled;
         this.HotkeyToggleAllWindows = defaults.HotkeyToggleAllWindows;
+        this.HotkeyToggleHoverOpacity = defaults.HotkeyToggleHoverOpacity;
         this.HotkeyOpenSettings = defaults.HotkeyOpenSettings;
         this.MainWidgetScaleOverridePercent = defaults.MainWidgetScaleOverridePercent;
         this.NetworkMonitorScaleOverridePercent = defaults.NetworkMonitorScaleOverridePercent;
@@ -1009,9 +1030,23 @@ internal sealed class WidgetSettings
         this.DisplayTimeZoneMode = defaults.DisplayTimeZoneMode;
         this.DisplayTimeZoneId = defaults.DisplayTimeZoneId;
         this.PerformanceMode = defaults.PerformanceMode;
+        this.HoverOpacityEnabled = defaults.HoverOpacityEnabled;
+        this.ManualHoverOpacityActive = defaults.ManualHoverOpacityActive;
+        this.SensitiveMouseModeEnabled = defaults.SensitiveMouseModeEnabled;
+        this.SensitiveMouseRangePixels = defaults.SensitiveMouseRangePixels;
+        this.HoverOpacityRevealDelayEnabled = defaults.HoverOpacityRevealDelayEnabled;
+        this.HoverOpacityRevealDelaySeconds = defaults.HoverOpacityRevealDelaySeconds;
+        this.HoverOpacityRevealResetSeconds = defaults.HoverOpacityRevealResetSeconds;
+        this.HoverOpacityCoverEnabled = defaults.HoverOpacityCoverEnabled;
+        this.ReverseHoverOpacityRevealEnabled = defaults.ReverseHoverOpacityRevealEnabled;
+        this.ReverseHoverOpacityRestoreDelaySeconds = defaults.ReverseHoverOpacityRestoreDelaySeconds;
+        this.AutoHoverOpacityIdleEnabled = defaults.AutoHoverOpacityIdleEnabled;
+        this.AutoHoverOpacityIdleSeconds = defaults.AutoHoverOpacityIdleSeconds;
+        this.AutoHoverOpacityMaximizedEnabled = defaults.AutoHoverOpacityMaximizedEnabled;
         this.BurnInProtectionEnabled = defaults.BurnInProtectionEnabled;
         this.BurnInLevelOneIdleSeconds = defaults.BurnInLevelOneIdleSeconds;
         this.BurnInLevelTwoDelaySeconds = defaults.BurnInLevelTwoDelaySeconds;
+        this.OperationRadialCoreAutoHideKeepAliveEnabled = defaults.OperationRadialCoreAutoHideKeepAliveEnabled;
         this.OperationRadialIdleCollapseSeconds = defaults.OperationRadialIdleCollapseSeconds;
         this.OperationRadialIdleResetOnInteractionEnabled = defaults.OperationRadialIdleResetOnInteractionEnabled;
         this.OperationSettingsLogicExtensionEnabled = defaults.OperationSettingsLogicExtensionEnabled;
@@ -1052,6 +1087,7 @@ internal sealed class WidgetSettings
         settings.AlertServiceHealthEnabled = true;
         settings.AlertCodexTaskEnabled = true;
         settings.HotkeyToggleAllWindows = string.Empty;
+        settings.HotkeyToggleHoverOpacity = string.Empty;
         settings.HotkeyOpenSettings = string.Empty;
         settings.MainWidgetScaleOverridePercent = -1;
         settings.NetworkMonitorScaleOverridePercent = -1;
@@ -1226,9 +1262,23 @@ internal sealed class WidgetSettings
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
         settings.DisplayTimeZoneId = TimeZoneInfo.Local.Id;
         settings.PerformanceMode = WidgetPerformanceMode.BatterySaver;
+        settings.HoverOpacityEnabled = true;
+        settings.ManualHoverOpacityActive = false;
+        settings.SensitiveMouseModeEnabled = true;
+        settings.SensitiveMouseRangePixels = DefaultSensitiveMouseRangePixels;
+        settings.HoverOpacityRevealDelayEnabled = true;
+        settings.HoverOpacityRevealDelaySeconds = DefaultHoverOpacityRevealDelaySeconds;
+        settings.HoverOpacityRevealResetSeconds = DefaultHoverOpacityRevealResetSeconds;
+        settings.HoverOpacityCoverEnabled = true;
+        settings.ReverseHoverOpacityRevealEnabled = true;
+        settings.ReverseHoverOpacityRestoreDelaySeconds = DefaultReverseHoverOpacityRestoreDelaySeconds;
+        settings.AutoHoverOpacityIdleEnabled = false;
+        settings.AutoHoverOpacityIdleSeconds = DefaultAutoHoverOpacityIdleSeconds;
+        settings.AutoHoverOpacityMaximizedEnabled = false;
         settings.BurnInProtectionEnabled = true;
         settings.BurnInLevelOneIdleSeconds = DefaultBurnInLevelOneIdleSeconds;
         settings.BurnInLevelTwoDelaySeconds = DefaultBurnInLevelTwoDelaySeconds;
+        settings.OperationRadialCoreAutoHideKeepAliveEnabled = true;
         settings.OperationRadialIdleCollapseSeconds = DefaultOperationRadialIdleCollapseSeconds;
         settings.OperationRadialIdleResetOnInteractionEnabled = true;
         settings.OperationRadialKeepOpenAfterLeafClickEnabled = true;
@@ -1263,6 +1313,7 @@ internal sealed class WidgetSettings
         settings.AlertServiceHealthEnabled = true;
         settings.AlertCodexTaskEnabled = true;
         settings.HotkeyToggleAllWindows = string.Empty;
+        settings.HotkeyToggleHoverOpacity = string.Empty;
         settings.HotkeyOpenSettings = string.Empty;
         settings.MainWidgetScaleOverridePercent = -1;
         settings.NetworkMonitorScaleOverridePercent = -1;
@@ -1364,6 +1415,15 @@ internal sealed class WidgetSettings
         settings.VisibilityOverlapIgnoresOperationPanelEnabled = true;
         settings.ClickThroughMode = ClickThroughMode.Auto;
         settings.StartupEnabled = true;
+        settings.SensitiveMouseModeEnabled = true;
+        settings.SensitiveMouseRangePixels = 200;
+        settings.HoverOpacityRevealDelayEnabled = false;
+        settings.HoverOpacityRevealDelaySeconds = 1.0;
+        settings.HoverOpacityRevealResetSeconds = 0.5;
+        settings.HoverOpacityCoverEnabled = true;
+        settings.ReverseHoverOpacityRevealEnabled = false;
+        settings.ReverseHoverOpacityRestoreDelaySeconds = 5;
+        settings.OperationRadialCoreAutoHideKeepAliveEnabled = true;
         settings.OperationRadialIdleCollapseSeconds = DefaultOperationRadialIdleCollapseSeconds;
         settings.OperationRadialIdleResetOnInteractionEnabled = true;
         settings.OperationRadialKeepOpenAfterLeafClickEnabled = true;
@@ -1437,6 +1497,10 @@ internal sealed class WidgetSettings
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Automatic;
         settings.DisplayTimeZoneId = "Tokyo Standard Time";
         settings.PerformanceMode = WidgetPerformanceMode.BatterySaver;
+        settings.HoverOpacityEnabled = true;
+        settings.AutoHoverOpacityIdleEnabled = true;
+        settings.AutoHoverOpacityIdleSeconds = 40;
+        settings.AutoHoverOpacityMaximizedEnabled = false;
         settings.BurnInProtectionEnabled = true;
         settings.BurnInLevelOneIdleSeconds = DefaultBurnInLevelOneIdleSeconds;
         settings.BurnInLevelTwoDelaySeconds = DefaultBurnInLevelTwoDelaySeconds;
@@ -1466,6 +1530,7 @@ internal sealed class WidgetSettings
             AlertServiceHealthEnabled = this.AlertServiceHealthEnabled,
             AlertCodexTaskEnabled = this.AlertCodexTaskEnabled,
             HotkeyToggleAllWindows = this.HotkeyToggleAllWindows,
+            HotkeyToggleHoverOpacity = this.HotkeyToggleHoverOpacity,
             HotkeyOpenSettings = this.HotkeyOpenSettings,
             MainWidgetScaleOverridePercent = this.MainWidgetScaleOverridePercent,
             NetworkMonitorScaleOverridePercent = this.NetworkMonitorScaleOverridePercent,
@@ -1632,9 +1697,24 @@ internal sealed class WidgetSettings
             DisplayTimeZoneMode = this.DisplayTimeZoneMode,
             DisplayTimeZoneId = this.DisplayTimeZoneId,
             PerformanceMode = this.PerformanceMode,
+            HoverOpacityEnabled = this.HoverOpacityEnabled,
+            ForceHoverOpacityActive = this.ForceHoverOpacityActive,
+            ManualHoverOpacityActive = this.ManualHoverOpacityActive,
+            SensitiveMouseModeEnabled = this.SensitiveMouseModeEnabled,
+            SensitiveMouseRangePixels = this.SensitiveMouseRangePixels,
+            HoverOpacityRevealDelayEnabled = this.HoverOpacityRevealDelayEnabled,
+            HoverOpacityRevealDelaySeconds = this.HoverOpacityRevealDelaySeconds,
+            HoverOpacityRevealResetSeconds = this.HoverOpacityRevealResetSeconds,
+            HoverOpacityCoverEnabled = this.HoverOpacityCoverEnabled,
+            ReverseHoverOpacityRevealEnabled = this.ReverseHoverOpacityRevealEnabled,
+            ReverseHoverOpacityRestoreDelaySeconds = this.ReverseHoverOpacityRestoreDelaySeconds,
+            AutoHoverOpacityIdleEnabled = this.AutoHoverOpacityIdleEnabled,
+            AutoHoverOpacityIdleSeconds = this.AutoHoverOpacityIdleSeconds,
+            AutoHoverOpacityMaximizedEnabled = this.AutoHoverOpacityMaximizedEnabled,
             BurnInProtectionEnabled = this.BurnInProtectionEnabled,
             BurnInLevelOneIdleSeconds = this.BurnInLevelOneIdleSeconds,
             BurnInLevelTwoDelaySeconds = this.BurnInLevelTwoDelaySeconds,
+            OperationRadialCoreAutoHideKeepAliveEnabled = this.OperationRadialCoreAutoHideKeepAliveEnabled,
             OperationRadialIdleCollapseSeconds = this.OperationRadialIdleCollapseSeconds,
             OperationRadialIdleResetOnInteractionEnabled = this.OperationRadialIdleResetOnInteractionEnabled,
             OperationRadialKeepOpenAfterLeafClickEnabled = this.OperationRadialKeepOpenAfterLeafClickEnabled,
@@ -1666,6 +1746,7 @@ internal sealed class WidgetSettings
         this.NightScheduleEndMinutes = Clamp(this.NightScheduleEndMinutes, MinNightScheduleMinutes, MaxNightScheduleMinutes);
         this.NightDimLuminancePercent = Clamp(this.NightDimLuminancePercent, MinNightDimLuminancePercent, MaxNightDimLuminancePercent);
         this.HotkeyToggleAllWindows = GlobalHotkeyParser.Normalize(this.HotkeyToggleAllWindows);
+        this.HotkeyToggleHoverOpacity = GlobalHotkeyParser.Normalize(this.HotkeyToggleHoverOpacity);
         this.HotkeyOpenSettings = GlobalHotkeyParser.Normalize(this.HotkeyOpenSettings);
         this.MainWidgetScaleOverridePercent = NormalizeWindowScaleOverride(this.MainWidgetScaleOverridePercent);
         this.NetworkMonitorScaleOverridePercent = NormalizeWindowScaleOverride(this.NetworkMonitorScaleOverridePercent);
@@ -1762,6 +1843,26 @@ internal sealed class WidgetSettings
             this.OperationRenderVariant = OperationRenderVariant.RadialDial;
         }
 
+        this.SensitiveMouseRangePixels = Clamp(
+            this.SensitiveMouseRangePixels,
+            MinSensitiveMouseRangePixels,
+            MaxSensitiveMouseRangePixels);
+        this.HoverOpacityRevealDelaySeconds = Clamp(
+            this.HoverOpacityRevealDelaySeconds,
+            MinHoverOpacityRevealDelaySeconds,
+            MaxHoverOpacityRevealDelaySeconds);
+        this.HoverOpacityRevealResetSeconds = Clamp(
+            this.HoverOpacityRevealResetSeconds,
+            MinHoverOpacityRevealResetSeconds,
+            MaxHoverOpacityRevealResetSeconds);
+        this.ReverseHoverOpacityRestoreDelaySeconds = Clamp(
+            this.ReverseHoverOpacityRestoreDelaySeconds,
+            MinReverseHoverOpacityRestoreDelaySeconds,
+            MaxReverseHoverOpacityRestoreDelaySeconds);
+        this.AutoHoverOpacityIdleSeconds = Clamp(
+            this.AutoHoverOpacityIdleSeconds,
+            MinAutoHoverOpacityIdleSeconds,
+            MaxAutoHoverOpacityIdleSeconds);
         this.BurnInLevelOneIdleSeconds = Clamp(
             this.BurnInLevelOneIdleSeconds,
             MinBurnInLevelOneIdleSeconds,
@@ -2065,6 +2166,12 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (settingsVersion > 0 && settingsVersion < 58)
+        {
+            settings.OperationRadialCoreAutoHideKeepAliveEnabled = true;
+            saveAfterMigration = true;
+        }
+
         if (settingsVersion > 0 && settingsVersion < 59)
         {
             settings.OperationSettingsLogicExtensionEnabled = false;
@@ -2210,6 +2317,7 @@ internal sealed class WidgetSettings
         if (settingsVersion > 0 && settingsVersion < 75)
         {
             settings.HotkeyToggleAllWindows = string.Empty;
+            settings.HotkeyToggleHoverOpacity = string.Empty;
             settings.HotkeyOpenSettings = string.Empty;
             saveAfterMigration = true;
         }
@@ -2407,14 +2515,6 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
-        if (sourceFileExists && settingsVersion < 95)
-        {
-            // Version 95 retires hover-opacity and global automatic-hide settings. ApplyValue ignores
-            // every retired input name; the canonical rewrite removes them while retaining unrelated
-            // physical visibility, burn-in, radial-menu and board-collapse settings.
-            saveAfterMigration = true;
-        }
-
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2585,6 +2685,7 @@ internal sealed class WidgetSettings
             "AlertServiceHealthEnabled=" + this.AlertServiceHealthEnabled,
             "AlertCodexTaskEnabled=" + this.AlertCodexTaskEnabled,
             "HotkeyToggleAllWindows=" + this.HotkeyToggleAllWindows,
+            "HotkeyToggleHoverOpacity=" + this.HotkeyToggleHoverOpacity,
             "HotkeyOpenSettings=" + this.HotkeyOpenSettings,
             "MainWidgetScaleOverridePercent=" + this.MainWidgetScaleOverridePercent,
             "NetworkMonitorScaleOverridePercent=" + this.NetworkMonitorScaleOverridePercent,
@@ -2686,6 +2787,14 @@ internal sealed class WidgetSettings
             "VisibilityOverlapIgnoresOperationPanelEnabled=" + this.VisibilityOverlapIgnoresOperationPanelEnabled,
             "ClickThroughMode=" + this.ClickThroughMode,
             "StartupEnabled=" + this.StartupEnabled,
+            "SensitiveMouseModeEnabled=" + this.SensitiveMouseModeEnabled,
+            "SensitiveMouseRangePixels=" + this.SensitiveMouseRangePixels,
+            "HoverOpacityRevealDelayEnabled=" + this.HoverOpacityRevealDelayEnabled,
+            "HoverOpacityRevealDelaySeconds=" + FormatDouble(this.HoverOpacityRevealDelaySeconds),
+            "HoverOpacityRevealResetSeconds=" + FormatDouble(this.HoverOpacityRevealResetSeconds),
+            "HoverOpacityCoverEnabled=" + this.HoverOpacityCoverEnabled,
+            "ReverseHoverOpacityRevealEnabled=" + this.ReverseHoverOpacityRevealEnabled,
+            "ReverseHoverOpacityRestoreDelaySeconds=" + this.ReverseHoverOpacityRestoreDelaySeconds,
             "AlertTestEnabled=" + this.AlertTestEnabled,
             "ThermalTestMode=" + this.ThermalTestMode,
             "CodexRadarTestMode=" + this.CodexRadarTestMode,
@@ -2750,9 +2859,14 @@ internal sealed class WidgetSettings
             "DisplayTimeZoneId=" + this.DisplayTimeZoneId,
             "PowerSavingEnabled=" + this.PowerSavingEnabled,
             "PerformanceMode=" + this.PerformanceMode,
+            "HoverOpacityEnabled=" + this.HoverOpacityEnabled,
+            "AutoHoverOpacityIdleEnabled=" + this.AutoHoverOpacityIdleEnabled,
+            "AutoHoverOpacityIdleSeconds=" + this.AutoHoverOpacityIdleSeconds,
+            "AutoHoverOpacityMaximizedEnabled=" + this.AutoHoverOpacityMaximizedEnabled,
             "BurnInProtectionEnabled=" + this.BurnInProtectionEnabled,
             "BurnInLevelOneIdleSeconds=" + this.BurnInLevelOneIdleSeconds,
             "BurnInLevelTwoDelaySeconds=" + this.BurnInLevelTwoDelaySeconds,
+            "OperationRadialCoreAutoHideKeepAliveEnabled=" + this.OperationRadialCoreAutoHideKeepAliveEnabled,
             "OperationRadialIdleCollapseSeconds=" + this.OperationRadialIdleCollapseSeconds,
             "OperationRadialIdleResetOnInteractionEnabled=" + this.OperationRadialIdleResetOnInteractionEnabled,
             "OperationRadialKeepOpenAfterLeafClickEnabled=" + this.OperationRadialKeepOpenAfterLeafClickEnabled,
@@ -2918,6 +3032,11 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "HotkeyToggleAllWindows", StringComparison.OrdinalIgnoreCase))
         {
             settings.HotkeyToggleAllWindows = value;
+            return;
+        }
+        if (string.Equals(key, "HotkeyToggleHoverOpacity", StringComparison.OrdinalIgnoreCase))
+        {
+            settings.HotkeyToggleHoverOpacity = value;
             return;
         }
         if (string.Equals(key, "HotkeyOpenSettings", StringComparison.OrdinalIgnoreCase))
@@ -3541,6 +3660,56 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "SensitiveMouseModeEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.SensitiveMouseModeEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "SensitiveMouseRangePixels", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.SensitiveMouseRangePixels = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "HoverOpacityRevealDelayEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.HoverOpacityRevealDelayEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "HoverOpacityRevealDelaySeconds", StringComparison.OrdinalIgnoreCase) &&
+            TryParseDouble(value, out doubleValue))
+        {
+            settings.HoverOpacityRevealDelaySeconds = doubleValue;
+            return;
+        }
+
+        if (string.Equals(key, "HoverOpacityRevealResetSeconds", StringComparison.OrdinalIgnoreCase) &&
+            TryParseDouble(value, out doubleValue))
+        {
+            settings.HoverOpacityRevealResetSeconds = doubleValue;
+            return;
+        }
+
+        if (string.Equals(key, "HoverOpacityCoverEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.HoverOpacityCoverEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ReverseHoverOpacityRevealEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.ReverseHoverOpacityRevealEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ReverseHoverOpacityRestoreDelaySeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.ReverseHoverOpacityRestoreDelaySeconds = intValue;
+            return;
+        }
+
         if (string.Equals(key, "AlertTestEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.AlertTestEnabled = boolValue;
@@ -4084,6 +4253,30 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "HoverOpacityEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.HoverOpacityEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "AutoHoverOpacityIdleEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.AutoHoverOpacityIdleEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "AutoHoverOpacityIdleSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.AutoHoverOpacityIdleSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "AutoHoverOpacityMaximizedEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.AutoHoverOpacityMaximizedEnabled = boolValue;
+            return;
+        }
+
         if (string.Equals(key, "BurnInProtectionEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.BurnInProtectionEnabled = boolValue;
@@ -4099,6 +4292,12 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "BurnInLevelTwoDelaySeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
         {
             settings.BurnInLevelTwoDelaySeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "OperationRadialCoreAutoHideKeepAliveEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.OperationRadialCoreAutoHideKeepAliveEnabled = boolValue;
             return;
         }
 
