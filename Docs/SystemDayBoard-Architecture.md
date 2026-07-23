@@ -1,6 +1,6 @@
 # 系统日记看板架构
 
-适用版本：2.0.0.12
+适用版本：2.0.0.13
 
 本文说明第七个左缘 `System Day` 看板的数据所有权、持久化格式、时间范围投影和绘制语义。
 
@@ -66,6 +66,8 @@ flowchart LR
 - `LayeredBitmapSurface`、`UiFontCache`、`DesignTokens` 与显示恢复资源生命周期；
 - `OperationForm` 的七看板互斥和全屏隐藏协调；
 - 648×400 的现有左看板逻辑尺寸。
+
+顶部六张摘要卡使用独立于图表的可读性字号层级：`SummaryTitleFontPixels = 8.0`、`SummaryDetailFontPixels = 8.2`、`SummaryNameFontPixels = 8.4`、`SummaryValueFontPixels = 10.0`。时长、电量、功耗和温度作为主数值加粗显示；预计充放电时间与热区名称保留各自的完整可用宽度，并在极端长文本时使用省略号，避免侵入相邻卡片。
 
 ## 6. 验证
 

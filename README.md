@@ -1,6 +1,6 @@
 # Desktop Codex Assistant（UX3407N / UX3607O 专调版）
 
-适用版本：2.0.0.12
+适用版本：2.0.0.13
 
 A Windows-on-Arm desktop workspace for AI-assisted development: eleven right-edge metric/quota tiles, seven left-edge dock tabs and boards, an operation panel, and an on-demand settings window. Sampling and Radar coordination run in hidden owners. Tuned for ASUS UX3407N / UX3607O; ARM64 is the formal build target.
 
@@ -13,7 +13,7 @@ A Windows-on-Arm desktop workspace for AI-assisted development: eleven right-edg
 | 右侧 11 个方块 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度、DeepSeek 余额；每项是独立 `MetricTileForm`，悬停详情只消费同一份快照；MEM 外环显示物理占用，内环显示绿/黄/红三态内存压力，底部色带记录最近 60 秒压力历史 |
 | 左侧 7 个停靠位 | Network、Spec Board、Codex Task、GUARD、Codex IQ、重置与速蹬、系统日记；常驻 tab 与展开 board 组成一套停靠拓扑 |
 | 重置与速蹬看板 | 展示 Codex 最近 7 天周额度余量、自然/硬/重置卡事件、速蹬窗口倒计时、重置卡余量与最近到期时间；只读 Radar owner 的缓存投影 |
-| 系统日记看板 | 用统一时间轴查看今天、最近 24 小时或最近一周的工作/空闲/睡眠、性能峰值、电量红升青降、功耗、预计充满/耗尽时间与命名热区；完整相关样本按日保存在本机 JSONL |
+| 系统日记看板 | 用统一时间轴查看今天、最近 24 小时或最近一周的工作/空闲/睡眠、性能峰值、电量红升青降、功耗、预计充满/耗尽时间与命名热区；顶部摘要卡以放大的标题、主数值和说明字号突出当天概况，完整相关样本按日保存在本机 JSONL |
 | Network 看板 | 接口、DNS、公网连通性、GFW、云服务、PathPing、固定 Ping，以及共享 Clean IP 出口画像；只以 Dock 形态展示 |
 | Operation | 扇形速控盘、常用开关、电池保养、CTF 重启与 SeelenUI 联动 |
 | Settings | Win11 风格设置窗口，按需显示；全局布局编辑只编辑上述 11 个方块、7 个 tab 与 Operation，共 19 项 |

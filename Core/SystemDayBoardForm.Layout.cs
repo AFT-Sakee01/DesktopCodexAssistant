@@ -7,6 +7,10 @@ using System.Globalization;
 internal sealed partial class SystemDayBoardForm
 {
     private const int MetricRowCount = 8;
+    private const float SummaryTitleFontPixels = 8.0f;
+    private const float SummaryDetailFontPixels = 8.2f;
+    private const float SummaryNameFontPixels = 8.4f;
+    private const float SummaryValueFontPixels = 10.0f;
 
     protected override void DrawWindowContent(Graphics g)
     {
@@ -29,6 +33,10 @@ internal sealed partial class SystemDayBoardForm
         Font smallFont = this.fontCache.GetUi(S(6.4f), FontStyle.Regular);
         Font labelFont = this.fontCache.GetMono(S(7.0f), FontStyle.Bold);
         Font valueFont = this.fontCache.GetMono(S(7.1f), FontStyle.Bold);
+        Font summaryTitleFont = this.fontCache.GetUi(S(SummaryTitleFontPixels), FontStyle.Bold);
+        Font summaryDetailFont = this.fontCache.GetUi(S(SummaryDetailFontPixels), FontStyle.Regular);
+        Font summaryNameFont = this.fontCache.GetUi(S(SummaryNameFontPixels), FontStyle.Bold);
+        Font summaryValueFont = this.fontCache.GetMono(S(SummaryValueFontPixels), FontStyle.Bold);
 
         int pad = S(11);
         Rectangle content = new Rectangle(pad, S(8), Math.Max(1, this.Width - pad * 2), Math.Max(1, this.Height - S(16)));
@@ -37,7 +45,7 @@ internal sealed partial class SystemDayBoardForm
         Rectangle chart = new Rectangle(content.Left, summary.Bottom + S(5), content.Width, S(250));
         Rectangle footer = new Rectangle(content.Left, chart.Bottom + S(3), content.Width, Math.Max(S(26), content.Bottom - chart.Bottom - S(3)));
         DrawHeader(g, header, titleFont, bodyFont, valueFont);
-        DrawSummary(g, summary, bodyFont, smallFont, valueFont);
+        DrawSummary(g, summary, summaryTitleFont, summaryDetailFont, summaryNameFont, summaryValueFont);
         DrawUnifiedChart(g, chart, smallFont, labelFont, valueFont);
         DrawFooter(g, footer, bodyFont, smallFont);
         EdgeDockTabForm.DrawBoardAccentBorder(g, this.Size, EdgeDockTabRole.SystemDay, this.LayerScale);
@@ -82,19 +90,24 @@ internal sealed partial class SystemDayBoardForm
         }
     }
 
-    private void DrawSummary(Graphics g, Rectangle bounds, Font bodyFont, Font smallFont, Font valueFont)
+    private void DrawSummary(
+        Graphics g,
+        Rectangle bounds,
+        Font titleFont,
+        Font detailFont,
+        Font nameFont,
+        Font valueFont)
     {
         int gap = S(4);
-        int durationWidth = S(66);
-        int powerWidth = Math.Max(S(132), bounds.Width - durationWidth * 4 - gap * 5 - S(146));
-        int thermalWidth = Math.Max(S(128), bounds.Right - (bounds.Left + durationWidth * 4 + gap * 4 + powerWidth + gap));
+        int durationWidth = S(62);
+        int powerWidth = Math.Max(S(150), bounds.Width - durationWidth * 4 - gap * 5 - S(142));
         int x = bounds.Left;
-        DrawSummaryCard(g, new Rectangle(x, bounds.Top, durationWidth, bounds.Height), "记录", FormatDuration(this.snapshot.RecordedMinutes), DesignTokens.Colors.TextMuted, smallFont, valueFont); x += durationWidth + gap;
-        DrawSummaryCard(g, new Rectangle(x, bounds.Top, durationWidth, bounds.Height), "工作", FormatDuration(this.snapshot.ActiveMinutes), DesignTokens.Colors.Success, smallFont, valueFont); x += durationWidth + gap;
-        DrawSummaryCard(g, new Rectangle(x, bounds.Top, durationWidth, bounds.Height), "空闲", FormatDuration(this.snapshot.IdleMinutes), DesignTokens.Colors.Warning, smallFont, valueFont); x += durationWidth + gap;
-        DrawSummaryCard(g, new Rectangle(x, bounds.Top, durationWidth, bounds.Height), "睡眠", FormatDuration(this.snapshot.SleepMinutes), DesignTokens.Colors.AccentAlt, smallFont, valueFont); x += durationWidth + gap;
-        DrawPowerSummary(g, new Rectangle(x, bounds.Top, powerWidth, bounds.Height), bodyFont, smallFont, valueFont); x += powerWidth + gap;
-        DrawThermalSummary(g, new Rectangle(x, bounds.Top, Math.Max(1, bounds.Right - x), bounds.Height), bodyFont, smallFont, valueFont);
+        DrawSummaryCard(g, new Rectangle(x, bounds.Top, durationWidth, bounds.Height), "记录", FormatDuration(this.snapshot.RecordedMinutes), DesignTokens.Colors.TextMuted, titleFont, valueFont); x += durationWidth + gap;
+        DrawSummaryCard(g, new Rectangle(x, bounds.Top, durationWidth, bounds.Height), "工作", FormatDuration(this.snapshot.ActiveMinutes), DesignTokens.Colors.Success, titleFont, valueFont); x += durationWidth + gap;
+        DrawSummaryCard(g, new Rectangle(x, bounds.Top, durationWidth, bounds.Height), "空闲", FormatDuration(this.snapshot.IdleMinutes), DesignTokens.Colors.Warning, titleFont, valueFont); x += durationWidth + gap;
+        DrawSummaryCard(g, new Rectangle(x, bounds.Top, durationWidth, bounds.Height), "睡眠", FormatDuration(this.snapshot.SleepMinutes), DesignTokens.Colors.AccentAlt, titleFont, valueFont); x += durationWidth + gap;
+        DrawPowerSummary(g, new Rectangle(x, bounds.Top, powerWidth, bounds.Height), titleFont, detailFont, valueFont); x += powerWidth + gap;
+        DrawThermalSummary(g, new Rectangle(x, bounds.Top, Math.Max(1, bounds.Right - x), bounds.Height), titleFont, nameFont, valueFont);
     }
 
     private void DrawSummaryCard(Graphics g, Rectangle bounds, string titleText, string valueText, Color color, Font titleFont, Font valueFont)
@@ -104,12 +117,12 @@ internal sealed partial class SystemDayBoardForm
         using (SolidBrush value = new SolidBrush(color))
         using (StringFormat center = CreateFormat(StringAlignment.Center))
         {
-            g.DrawString(titleText, titleFont, title, new Rectangle(bounds.Left, bounds.Top + S(4), bounds.Width, S(14)), center);
-            g.DrawString(valueText, valueFont, value, new Rectangle(bounds.Left, bounds.Top + S(21), bounds.Width, S(20)), center);
+            g.DrawString(titleText, titleFont, title, new Rectangle(bounds.Left, bounds.Top + S(3), bounds.Width, S(16)), center);
+            g.DrawString(valueText, valueFont, value, new Rectangle(bounds.Left, bounds.Top + S(19), bounds.Width, S(25)), center);
         }
     }
 
-    private void DrawPowerSummary(Graphics g, Rectangle bounds, Font bodyFont, Font smallFont, Font valueFont)
+    private void DrawPowerSummary(Graphics g, Rectangle bounds, Font titleFont, Font detailFont, Font valueFont)
     {
         DrawPanel(g, bounds, DesignTokens.Colors.Danger);
         string battery = this.snapshot.CurrentBatteryKnown
@@ -124,15 +137,15 @@ internal sealed partial class SystemDayBoardForm
         using (StringFormat near = CreateFormat(StringAlignment.Near))
         using (StringFormat far = CreateFormat(StringAlignment.Far))
         {
-            g.DrawString("电量 / 功耗", smallFont, title, new Rectangle(bounds.Left + S(7), bounds.Top + S(4), bounds.Width - S(14), S(14)), near);
-            g.DrawString(battery, valueFont, batteryBrush, new Rectangle(bounds.Left + S(7), bounds.Top + S(20), S(49), S(19)), near);
-            g.DrawString(watts, valueFont, muted, new Rectangle(bounds.Right - S(54), bounds.Top + S(20), S(47), S(19)), far);
-            g.DrawString(this.snapshot.BatteryEtaText ?? "等待电量趋势", bodyFont, muted,
-                new Rectangle(bounds.Left + S(58), bounds.Top + S(20), Math.Max(1, bounds.Width - S(116)), S(19)), near);
+            g.DrawString("电量 / 功耗", titleFont, title, new Rectangle(bounds.Left + S(7), bounds.Top + S(3), bounds.Width - S(14), S(16)), near);
+            g.DrawString(battery, valueFont, batteryBrush, new Rectangle(bounds.Left + S(7), bounds.Top + S(18), S(52), S(25)), near);
+            g.DrawString(watts, valueFont, muted, new Rectangle(bounds.Right - S(58), bounds.Top + S(18), S(51), S(25)), far);
+            g.DrawString(this.snapshot.BatteryEtaText ?? "等待电量趋势", detailFont, muted,
+                new Rectangle(bounds.Left + S(62), bounds.Top + S(18), Math.Max(1, bounds.Width - S(124)), S(25)), near);
         }
     }
 
-    private void DrawThermalSummary(Graphics g, Rectangle bounds, Font bodyFont, Font smallFont, Font valueFont)
+    private void DrawThermalSummary(Graphics g, Rectangle bounds, Font titleFont, Font nameFont, Font valueFont)
     {
         DrawPanel(g, bounds, DesignTokens.Colors.WarningDeep);
         string temp = this.snapshot.CurrentTemperatureKnown
@@ -144,10 +157,10 @@ internal sealed partial class SystemDayBoardForm
         using (StringFormat near = CreateFormat(StringAlignment.Near))
         using (StringFormat far = CreateFormat(StringAlignment.Far))
         {
-            g.DrawString("当前最热区", smallFont, title, new Rectangle(bounds.Left + S(7), bounds.Top + S(4), bounds.Width - S(14), S(14)), near);
-            g.DrawString(this.snapshot.CurrentHotZoneName ?? "--", bodyFont, muted,
-                new Rectangle(bounds.Left + S(7), bounds.Top + S(21), Math.Max(1, bounds.Width - S(58)), S(18)), near);
-            g.DrawString(temp, valueFont, hot, new Rectangle(bounds.Right - S(52), bounds.Top + S(20), S(45), S(19)), far);
+            g.DrawString("当前最热区", titleFont, title, new Rectangle(bounds.Left + S(7), bounds.Top + S(3), bounds.Width - S(14), S(16)), near);
+            g.DrawString(this.snapshot.CurrentHotZoneName ?? "--", nameFont, muted,
+                new Rectangle(bounds.Left + S(7), bounds.Top + S(18), Math.Max(1, bounds.Width - S(65)), S(25)), near);
+            g.DrawString(temp, valueFont, hot, new Rectangle(bounds.Right - S(58), bounds.Top + S(18), S(51), S(25)), far);
         }
     }
 
