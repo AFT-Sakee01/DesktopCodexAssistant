@@ -968,51 +968,6 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         {
             DrawAlertDot(g, bounds);
         }
-
-        if (data.EasterEggVisual == QuotaEasterEggVisual.FallenLookElsewhere ||
-            data.EasterEggVisual == QuotaEasterEggVisual.FallenTogether)
-        {
-            DrawQuotaEasterEggOverlay(g, bounds, data);
-        }
-    }
-
-    private void DrawQuotaEasterEggOverlay(Graphics g, RectangleF bounds, MetricTileData data)
-    {
-        Color messageColor = data.EasterEggVisual == QuotaEasterEggVisual.FallenTogether
-            ? DesignTokens.Colors.DangerStrong
-            : DesignTokens.Colors.Warning;
-        messageColor = ResolveBurnInRingColor(messageColor, this.burnInVisualLevel);
-        RectangleF veilBounds = RectangleF.Inflate(bounds, -S(2), -S(2));
-        using (GraphicsPath veil = RoundedRectangle(veilBounds, Math.Max(2.0f, S(TileLogicalRadius - 2))))
-        using (SolidBrush dim = new SolidBrush(Color.FromArgb(190, 5, 7, 10)))
-        {
-            g.FillPath(dim, veil);
-        }
-
-        float titleSize = Math.Max(7.0f, bounds.Height * 0.145f);
-        float detailSize = Math.Max(5.0f, bounds.Height * 0.092f);
-        RectangleF titleRect = new RectangleF(
-            bounds.X + S(2),
-            bounds.Y + bounds.Height * 0.20f,
-            bounds.Width - S(4),
-            bounds.Height * 0.23f);
-        RectangleF detailRect = new RectangleF(
-            bounds.X + S(3),
-            titleRect.Bottom - S(1),
-            bounds.Width - S(6),
-            bounds.Bottom - titleRect.Bottom - S(3));
-        using (Font titleFont = new Font(DesignTokens.UiFontFamily, titleSize, FontStyle.Bold, GraphicsUnit.Pixel))
-        using (Font detailFont = new Font(DesignTokens.UiFontFamily, detailSize, FontStyle.Bold, GraphicsUnit.Pixel))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(messageColor, 255)))
-        using (StringFormat titleFormat = CenterFormat())
-        using (StringFormat detailFormat = new StringFormat())
-        {
-            detailFormat.Alignment = StringAlignment.Center;
-            detailFormat.LineAlignment = StringAlignment.Near;
-            detailFormat.Trimming = StringTrimming.None;
-            g.DrawString("传奇程序员", titleFont, brush, titleRect, titleFormat);
-            g.DrawString(data.EasterEggSecondLine ?? string.Empty, detailFont, brush, detailRect, detailFormat);
-        }
     }
 
     private void DrawRing(Graphics g, RectangleF box, float stroke, double percent, Color color, int alpha)

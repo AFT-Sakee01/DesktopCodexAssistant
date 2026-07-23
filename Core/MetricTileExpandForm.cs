@@ -336,21 +336,74 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         FontStyle detailStyle = visual == QuotaEasterEggVisual.Revived
             ? FontStyle.Italic
             : FontStyle.Bold;
-        float titleSize = S(23);
-        float detailSize = S(17);
-        float blockHeight = titleSize + detailSize + S(8);
-        float top = bounds.Y + (bounds.Height - blockHeight) / 2.0f;
-        RectangleF titleRect = new RectangleF(bounds.X + S(12), top, bounds.Width - S(24), titleSize + S(6));
-        RectangleF detailRect = new RectangleF(bounds.X + S(12), titleRect.Bottom, bounds.Width - S(24), detailSize + S(7));
+        float horizontalPad = Math.Max(S(12), bounds.Width * 0.028f);
+        float verticalPad = Math.Max(S(4), bounds.Height * 0.055f);
+        float lineGap = Math.Max(S(1), bounds.Height * 0.025f);
+        float availableHeight = Math.Max(S(12), bounds.Height - verticalPad * 2.0f - lineGap);
+        float titleHeight = availableHeight * 0.54f;
+        float detailHeight = availableHeight - titleHeight;
+        RectangleF titleRect = new RectangleF(
+            bounds.X + horizontalPad,
+            bounds.Y + verticalPad,
+            Math.Max(1.0f, bounds.Width - horizontalPad * 2.0f),
+            titleHeight);
+        RectangleF detailRect = new RectangleF(
+            titleRect.X,
+            titleRect.Bottom + lineGap,
+            titleRect.Width,
+            detailHeight);
+        float titleSize = FitQuotaMessageFontSize(
+            g,
+            "传奇程序员",
+            titleStyle,
+            Math.Min(S(38), titleRect.Height * 0.72f),
+            titleRect.Width);
+        float detailSize = FitQuotaMessageFontSize(
+            g,
+            secondLine ?? string.Empty,
+            detailStyle,
+            Math.Min(S(30), detailRect.Height * 0.72f),
+            detailRect.Width);
         using (Font titleFont = new Font(DesignTokens.UiFontFamily, titleSize, titleStyle, GraphicsUnit.Pixel))
         using (Font detailFont = new Font(DesignTokens.UiFontFamily, detailSize, detailStyle, GraphicsUnit.Pixel))
         using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 255)))
         using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
         {
-            format.Alignment = StringAlignment.Center;
+            format.Alignment = StringAlignment.Near;
             format.LineAlignment = StringAlignment.Center;
+            format.Trimming = StringTrimming.None;
             g.DrawString("传奇程序员", titleFont, brush, titleRect, format);
             g.DrawString(secondLine ?? string.Empty, detailFont, brush, detailRect, format);
+        }
+    }
+
+    private static float FitQuotaMessageFontSize(
+        Graphics g,
+        string text,
+        FontStyle style,
+        float preferredSize,
+        float availableWidth)
+    {
+        float safePreferred = Math.Max(6.0f, preferredSize);
+        if (g == null || string.IsNullOrEmpty(text) || availableWidth <= 1.0f)
+        {
+            return safePreferred;
+        }
+
+        using (Font measureFont = new Font(
+            DesignTokens.UiFontFamily,
+            safePreferred,
+            style,
+            GraphicsUnit.Pixel))
+        using (StringFormat measureFormat = new StringFormat(StringFormatFlags.NoWrap))
+        {
+            SizeF measured = g.MeasureString(text, measureFont, PointF.Empty, measureFormat);
+            if (measured.Width <= availableWidth || measured.Width <= 0.0f)
+            {
+                return safePreferred;
+            }
+
+            return Math.Max(6.0f, safePreferred * availableWidth / measured.Width);
         }
     }
 

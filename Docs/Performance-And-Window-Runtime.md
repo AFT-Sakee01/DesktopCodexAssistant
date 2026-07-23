@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.12
+适用版本：2.0.0.14
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -118,9 +118,9 @@ CPU、MEM、DISK 与 NET 展开详情使用现有 tile 角色色绘制标题和�
 
 Codex/CLD 展开详情保留各自绿色/黄色角色色与边框。周额度历史占图表前 68%，右侧预测区显示预计耗尽或撑到 reset 的结论，5 小时额度在底条独立显示同类判断；两者仍只读同一 `MetricTileFeed`。DeepSeek 展开详情使用蓝色余额曲线、黄色 24 小时消耗和底条，并根据本地余额下降历史给出预计可用时长；UI 不在绘制路径发起 API 请求。二级防烧屏继续隐藏白色/中性色文字，并反转额度曲线、预测结论和底条的角色色。
 
-`QuotaEasterEggTracker` 只在 Codex/Claude 已知额度从空恢复到非空时登记一次复活；启动时的 unknown→known、仅绑定凭据或未绑定状态不会误触发。额度为空时对应 tile/expand 先降低内容亮度，再显示黄色单方“陨落”或红色双方“已经陨落”；恢复后只在第一次展开该 family 时显示蓝色斜体复活提示。`GeniusProgrammerEasterEggEnabled` 默认开启并可整体关闭。
+`QuotaEasterEggTracker` 只在 Codex/Claude 已知额度从空恢复到非空时登记一次复活；启动时的 unknown→known、仅绑定凭据或未绑定状态不会误触发。常驻 tile 不绘制彩蛋文字，继续只显示本身的额度环和中心值；只有展开详情会先降低原内容亮度，再以占满可用高度的左对齐大字显示黄色单方“陨落”或红色双方“已经陨落”。恢复后只在第一次展开该 family 时显示同样布局的蓝色斜体复活提示。`GeniusProgrammerEasterEggEnabled` 默认开启并可整体关闭。
 
-两级防烧屏由 `WidgetForm.UpdateBurnInProtectionTriggers()` 统一发布。一级通过 `LayeredWidgetFormBase.PresentationLuminancePercent` 把 11 个 tile 与当前展开窗按同一亮度策略处理；`WidgetForm.UpdateMetricTileBurnInPresentation()` 命中任意一个右侧 tile 或展开窗时，整组临时恢复亮度。二级由 `MetricTileForm.ResolveBurnInRingColor()` 只反转环形强调色，由 `MetricTileForm.ShouldDrawCenterText()` 抑制 tile 中心白字，并由 `MetricTileExpandForm.ShouldDrawNeutralText()` 抑制展开窗的白色/中性色文字，避免把整个位图做全局反色。
+两级防烧屏由 `WidgetForm.UpdateBurnInProtectionTriggers()` 统一发布。一级通过 `LayeredWidgetFormBase.PresentationLuminancePercent` 把 11 个 tile 与当前展开窗按同一亮度策略处理；`WidgetForm.UpdateMetricTileBurnInPresentation()` 命中任意一个右侧 tile 或展开窗时，整组临时恢复亮度。进入二级的边沿会立即调用 `HideMetricTileExpand()` 收起当前展开窗并清除其 tile owner；随后仍由 `MetricTileForm.ResolveBurnInRingColor()` 只反转环形强调色、`MetricTileForm.ShouldDrawCenterText()` 抑制 tile 中心白字、`MetricTileExpandForm.ShouldDrawNeutralText()` 抑制展开窗的白色/中性色文字，避免把整个位图做全局反色。
 
 右列排列由 `RightTileButtonOrder`、启用状态、0–100 分布间距、整组 Y 偏移和目标工作区解析。分布值 0 时相邻 tile 紧贴；100 时首个 tile 贴工作区顶部、末个贴底部，其余可用空白在 10 个间隔间均匀分摊；中间值线性使用对应比例的可用空白。自动排列保持整列贴住工作区右缘；防烧屏只对整组应用共享 Y 偏移，不能让 11 个方块各自漂移而破坏列结构。`RightTileMouseClickThroughEnabled` 默认开启，通过 layered window 的 `WS_EX_TRANSPARENT` 同时覆盖 11 个小窗与展开窗；悬停仍由共享光标轮询判定。
 
@@ -215,7 +215,7 @@ headless owners 不拥有展示缓冲。Codex/Power 的旧 renderer 已删除，
 - Operation 使用自己的 named salt。
 - `WidgetForm` hidden host 只拥有两级空闲状态，不绘制防烧屏像素；headless owners 完全不参与。
 - 一级下，左侧 `EdgeDockTabForm` 静止态绘制深灰色梯形与角色色箭头，悬停只恢复当前梯形的角色色；右侧 tile/expand 使用 `BurnInProtection.LevelOneLuminancePercent = 45`，命中任意右侧窗口时整组恢复亮度。
-- 二级保持一级结构，并只反转左箭头与右 tile 环形强调色；右 tile 中心白字及展开窗白色/中性色文字不绘制。角色色标签、灰色轨道、board 内容和 Operation 不做全位图反相。
+- 进入二级时先强制收起当前右侧展开窗并清除其 tile owner；二级视觉保持一级结构，只反转左箭头与右 tile 环形强调色，右 tile 中心白字及重新悬停打开的展开窗白色/中性色文字不绘制。角色色标签、灰色轨道、board 内容和 Operation 不做全位图反相。
 - 鼠标移动在保护激活后是局部显现手势，不退出状态；点击、滚轮或键盘输入会退出并重启两级计时。显示挂起、布局编辑和关闭也归零状态。
 - 夜间计划与防烧屏亮度在 `LayeredWidgetFormBase` 内相乘，任一策略都不能把另一策略已压低的像素重新提亮。
 - 旧 `BurnInHiddenModeColorProtectionEnabled` 永久保留为 schema 88 退休输入；schema 89 的 `BurnInProtectionEnabled`、`BurnInLevelOneIdleSeconds` 与 `BurnInLevelTwoDelaySeconds` 是独立新设置，迁移不读取旧布尔值。

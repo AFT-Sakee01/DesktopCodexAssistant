@@ -91,6 +91,26 @@ internal sealed partial class WidgetForm
                     "Hidden host control tick interval was " + interval + " ms, expected the interactive " + expected + " ms.");
             }
 
+            Rectangle anchor = new Rectangle(originalTiles[0].Location, originalTiles[0].Size);
+            originalExpand.ShowForTile(MetricTileId.Cpu, anchor, new MetricTileFeed());
+            if (!originalExpand.Visible)
+            {
+                throw new InvalidOperationException("Metric tile expand panel did not open for burn-in transition self-test.");
+            }
+
+            form.UpdateMetricTileBurnInPresentation(BurnInVisualLevel.LevelOne);
+            if (!originalExpand.Visible)
+            {
+                throw new InvalidOperationException("Burn-in level one must not force-close the metric tile expand panel.");
+            }
+
+            form.UpdateMetricTileBurnInPresentation(BurnInVisualLevel.LevelTwo);
+            if (originalExpand.Visible || form.hoveredMetricTileIndex != -1)
+            {
+                throw new InvalidOperationException(
+                    "Entering burn-in level two must force-close the metric tile expand panel and clear its owner.");
+            }
+
             form.Close();
         }
     }

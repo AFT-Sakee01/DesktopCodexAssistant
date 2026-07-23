@@ -1,6 +1,6 @@
 # Claude CLD 官方额度链架构
 
-适用版本：2.0.0.12
+适用版本：2.0.0.14
 
 本文说明共享 headless owner 内的 Claude 官方额度读取、缓存、调度、服务健康和 CLD tile 投影；Claude 不拥有公共 Radar 模型链或独立窗口。
 
@@ -86,7 +86,7 @@ flowchart LR
 
 Claude 软件运行期间，`UpdateQuotaBurnObservationClock()` 推进本 family 的活跃时间轴；`ApplyQuotaSnapshot(Claude)` 只记录通过官方完整快照校验后的 5 小时/周余额。reset identity 改变或余额上升只清除对应窗口，活跃趋势与近时钟趋势均为进程内状态，重启后重新积累。tile 和 expand 只消费同一份 published snapshot，不读取凭据、磁盘或网络。
 
-启用“你是天才程序员吗”时，未绑定 Claude setup-token 或额度已知为 0 均视为 Claude 空额度。只有已知空额度随后恢复为非空才登记复活，且只在第一次展开 CLD 详情时消费；冷启动 unknown→known 和单纯绑定凭据不触发。Codex 空、Claude 空和双方同时空分别投影黄色单方提示或红色双方提示，普通额度内容先降低亮度。
+启用“你是天才程序员吗”时，未绑定 Claude setup-token 或额度已知为 0 均视为 Claude 空额度。只有已知空额度随后恢复为非空才登记复活，且只在第一次展开 CLD 详情时消费；冷启动 unknown→known 和单纯绑定凭据不触发。常驻 Codex/CLD tile 不绘制彩蛋文字；展开详情才以左对齐、纵向占满的大字投影黄色单方提示、红色双方提示或蓝色斜体复活提示，普通额度内容先降低亮度。
 
 ## 7. 服务健康
 

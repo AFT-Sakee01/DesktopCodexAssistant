@@ -11,6 +11,7 @@ internal sealed partial class WidgetForm
     private readonly QuotaEasterEggTracker quotaEasterEggTracker = new QuotaEasterEggTracker();
     private MetricTileExpandForm metricTileExpandForm;
     private int hoveredMetricTileIndex = -1;
+    private BurnInVisualLevel metricTileBurnInVisualLevel = BurnInVisualLevel.Normal;
 
     private bool IsRadarTileMode
     {
@@ -288,6 +289,25 @@ internal sealed partial class WidgetForm
 
     private bool UpdateMetricTileBurnInPresentation(BurnInVisualLevel level)
     {
+        BurnInVisualLevel normalized = BurnInProtection.NormalizeVisualLevel(level);
+        bool enteredLevelTwo =
+            this.metricTileBurnInVisualLevel != BurnInVisualLevel.LevelTwo &&
+            normalized == BurnInVisualLevel.LevelTwo;
+        this.metricTileBurnInVisualLevel = normalized;
+
+        bool changed = false;
+        if (enteredLevelTwo &&
+            this.metricTileExpandForm != null &&
+            !this.metricTileExpandForm.IsDisposed &&
+            this.metricTileExpandForm.Visible)
+        {
+            // Level two is the strongest protection boundary. Closing the detail surface once on
+            // entry prevents a large bright panel from remaining open throughout an idle session;
+            // later pointer leave/re-entry may still open it deliberately without resetting idle.
+            HideMetricTileExpand();
+            changed = true;
+        }
+
         Point cursor = System.Windows.Forms.Cursor.Position;
         bool restoreRightGroupBrightness = false;
         for (int i = 0; i < this.metricTileForms.Count; i++)
@@ -309,19 +329,18 @@ internal sealed partial class WidgetForm
             restoreRightGroupBrightness = true;
         }
 
-        bool changed = false;
         for (int i = 0; i < this.metricTileForms.Count; i++)
         {
             MetricTileForm tile = this.metricTileForms[i];
             if (tile != null && !tile.IsDisposed)
             {
-                changed |= tile.SetBurnInVisualState(level, restoreRightGroupBrightness);
+                changed |= tile.SetBurnInVisualState(normalized, restoreRightGroupBrightness);
             }
         }
 
         if (this.metricTileExpandForm != null && !this.metricTileExpandForm.IsDisposed)
         {
-            changed |= this.metricTileExpandForm.SetBurnInVisualState(level, restoreRightGroupBrightness);
+            changed |= this.metricTileExpandForm.SetBurnInVisualState(normalized, restoreRightGroupBrightness);
         }
 
         return changed;
@@ -436,5 +455,6 @@ internal sealed partial class WidgetForm
 
         this.metricTileForms.Clear();
         this.hoveredMetricTileIndex = -1;
+        this.metricTileBurnInVisualLevel = BurnInVisualLevel.Normal;
     }
 }
