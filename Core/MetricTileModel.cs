@@ -209,7 +209,7 @@ internal sealed class MetricTileFeed
     }
 }
 
-// What one 60x60 tile draws: a label, up to two concentric rings and one centre number.
+// What one 60x60 tile draws: a label, up to two concentric rings and one centre value.
 // OuterPercent/InnerPercent below zero mean "no ring", which is how the guard tile suppresses both
 // and draws its dot pad instead.
 internal sealed class MetricTileData
@@ -433,11 +433,16 @@ internal static class MetricTileModel
                     PowerStripSnapshot p = feed.Power;
                     int battery = p != null && p.BatteryPercentKnown ? p.BatteryPercent : -1;
                     tile.OuterPercent = battery >= 0 ? battery : -1.0;
-                    // PWR is now a battery/runway surface. Thermal readings remain in the shared
-                    // snapshot for System Day, but the compact tile deliberately carries one clear
-                    // capacity ring instead of mixing temperature into a second axis.
+                    // Preserve the battery-capacity ring, but use the centre for the instantaneous
+                    // battery-side charge/discharge rate (not adapter or whole-system power).
+                    // The headless owner already exposes the legacy v1 BatteryStatus
+                    // ChargeRate/DischargeRate reading, so the compact surface must consume the cached
+                    // snapshot instead of starting a second WMI query from presentation code.
                     tile.InnerPercent = -1.0;
-                    tile.CenterValue = battery >= 0 ? battery.ToString(CultureInfo.InvariantCulture) : "--";
+                    tile.CenterValue = p != null && p.WattsKnown
+                        ? FormatCompactWatts(p.Watts)
+                        : "--";
+                    tile.CenterSuffix = "W";
                     if (p != null && p.Charging)
                     {
                         tile.Accent = DesignTokens.Colors.Success;
@@ -662,6 +667,20 @@ internal static class MetricTileModel
             : Math.Round(gbps).ToString("0", CultureInfo.InvariantCulture) + "G";
     }
 
+    // Matches the legacy v1 power presentation precision while leaving the unit to the compact
+    // renderer, which places a deliberately smaller W beneath the number.
+    internal static string FormatCompactWatts(double watts)
+    {
+        if (double.IsNaN(watts) || double.IsInfinity(watts) || watts < 0.0)
+        {
+            return "--";
+        }
+
+        return watts >= 100.0
+            ? watts.ToString("0", CultureInfo.InvariantCulture)
+            : watts.ToString("0.0", CultureInfo.InvariantCulture);
+    }
+
     internal static double ToKbps(double bytesPerSecond)
     {
         return Math.Max(0.0, bytesPerSecond) * 8.0 / 1000.0;
@@ -745,6 +764,13 @@ internal static class MetricTileModel
         feed.Snapshot.NetworkConnected = true;
         feed.Snapshot.NetworkReceivedBytesPerSecond = 58.0 * 1000.0 / 8.0;
         feed.Snapshot.NetworkSentBytesPerSecond = 17.0 * 1000.0 / 8.0;
+        feed.Power = new PowerStripSnapshot
+        {
+            BatteryPercentKnown = true,
+            BatteryPercent = 79,
+            WattsKnown = true,
+            Watts = 12.4
+        };
         feed.Guards = BuildGuardEntries(null, DateTime.UtcNow);
 
         List<MetricTileData> tiles = BuildTiles(feed);
@@ -801,6 +827,24 @@ internal static class MetricTileModel
         if (network.CenterValue != "58K")
         {
             throw new InvalidOperationException("Network tile centre must use the compact rate format.");
+        }
+
+        MetricTileData power = tiles[6];
+        if (power.Id != MetricTileId.Power ||
+            Math.Abs(power.OuterPercent - 79.0) > 0.01 ||
+            power.InnerPercent >= 0.0 ||
+            power.CenterValue != "12.4" ||
+            power.CenterSuffix != "W")
+        {
+            throw new InvalidOperationException(
+                "Power tile must preserve the battery ring while showing cached watts with a separate W suffix.");
+        }
+
+        feed.Power.WattsKnown = false;
+        power = BuildTile(MetricTileId.Power, feed);
+        if (power.CenterValue != "--" || power.CenterSuffix != "W")
+        {
+            throw new InvalidOperationException("Power tile must keep the W unit visible when the watts reading is unavailable.");
         }
 
         MetricTileData guard = tiles[7];

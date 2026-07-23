@@ -1,12 +1,12 @@
 # 功耗与温度数据所有者架构
 
-适用版本：2.0.0.15
+适用版本：2.0.0.16
 
 本文说明 `PowerThermalForm` 作为永久 headless 数据所有者时的数据来源、采样、通知、缓存和快照边界。
 
 ## 1. 当前定位
 
-`PowerThermalForm` 不再是可见功耗温度窗口。`WidgetForm.OnShown` 构造它后调用 `StartHeadlessDataOwner()`，右侧 `PWR` 方块通过 `BuildStripSnapshot()` 读取当前电池与功耗缓存；悬停详情还复用 System Day 保存在 owner memory 中的近 24 小时投影，回答当前状态还能使用多久。
+`PowerThermalForm` 不再是可见功耗温度窗口。`WidgetForm.OnShown` 构造它后调用 `StartHeadlessDataOwner()`，右侧 `PWR` 方块通过 `BuildStripSnapshot()` 读取当前电池与充放电功率缓存；悬停详情只把 System Day 保存在 owner memory 中的近 24 小时投影用于曲线、峰值和趋势续航，不用历史样本替换当前值。
 
 相关源码：
 
@@ -16,7 +16,7 @@
 | `Core/PowerThermalForm.Snapshot.cs` | `PowerStripSnapshot` 只读投影与 `ThermalSummary` 数据汇总 |
 | `Core/WidgetForm.TileColumn.cs` | 把当前功耗快照与近 24 小时 System Day 投影装入共享 `MetricTileFeed` |
 | `Core/WidgetForm.SystemDay.cs` | 把同一缓存快照交给系统日记历史，并提供 5 秒缓存的 PWR 近 24 小时投影 |
-| `Core/MetricTileModel.cs` | 把电池映射为单环 `PWR` 方块模型 |
+| `Core/MetricTileModel.cs` | 把电池映射为单环，并把实时电池功率映射为中心数字与小号 `W` |
 | `Core/MetricTileExpandForm.cs` | 绘制电量、功耗趋势与续航预测；不显示温度 |
 | `Settings/WidgetSettings.cs` | 性能模式、测试模式和功耗数据设置 |
 | `Interop/NativeMethods.cs` | Windows 电源通知与 Effective Power Mode 接口 |
@@ -58,8 +58,9 @@ flowchart LR
 - `ChargeRate` 表示充电功率。
 - `DischargeRate` 表示放电功率。
 - 毫瓦转换为瓦。
+- 当两个速率字段可读且当前既未充电也未放电时，`0 W` 是已知的电池空闲状态，不是 unknown。
 
-该值不是插座功率，也不是 CPU、GPU 或整机总功耗。固件未公开 `BatteryStatus` 时，快照把瓦数标记为 unknown。
+该值是电池端净充放电功率，不是插座功率，也不是 CPU、GPU 或接通外接电源时的整机总功耗。固件未公开 `BatteryStatus` 或返回 unknown sentinel 时，快照把瓦数标记为 unknown。
 
 基础电池信息优先从 `SystemInformation.PowerStatus` 读取，包括电池百分比、AC 状态和是否存在系统电池。没有系统电池时跳过 BatteryStatus WMI 查询。
 
@@ -127,7 +128,7 @@ Win32_PerfFormattedData_Counters_ThermalZoneInformation
 - 状态：energy saver、电池保养暂停、电源模式文本。
 - 温度：zone 数、告警数、最高/平均温度、告警热点列表，以及带固件原始名称的完整 `ThermalZones` 克隆。
 
-该方法不得触发采样、WMI、进程启动、磁盘或网络 I/O。`WidgetForm.BuildMetricTileFeed()` 每个控制 tick 至多取一次当前快照；`WidgetForm.BuildMetricTilePowerProjection()` 最多每 5 秒从 `SystemDayHistoryStore` 的 owner memory 重建一次近 24 小时投影。两者进入同一个 feed 后供 `PWR` 方块与展开详情消费，消费者不能修改 sampler-owned state，也不能在 paint 中读取历史文件。系统日记为何保留完整热区及其持久化边界见 `Docs/SystemDayBoard-Architecture.md`。
+该方法不得触发采样、WMI、进程启动、磁盘或网络 I/O。`WidgetForm.BuildMetricTileFeed()` 每个控制 tick 至多取一次当前快照；`WidgetForm.BuildMetricTilePowerProjection()` 最多每 5 秒从 `SystemDayHistoryStore` 的 owner memory 重建一次近 24 小时投影。两者进入同一个 feed 后供 `PWR` 方块与展开详情消费；当前电量、状态、电池功率和电源模式只取实时 `PowerStripSnapshot`，历史投影只供曲线、峰值与趋势 ETA。消费者不能修改 sampler-owned state，也不能在 paint 中读取历史文件。系统日记为何保留完整热区及其持久化边界见 `Docs/SystemDayBoard-Architecture.md`。
 
 ## 7. 设置边界
 
@@ -138,7 +139,7 @@ Win32_PerfFormattedData_Counters_ThermalZoneInformation
 ## 8. 故障与降级
 
 - WMI、注册表和 `powercfg` 错误彼此隔离，不终止 UI 线程。
-- 功耗不可读时 `WattsKnown=false`；温度不可读时返回空温度集合。
+- 电池功率字段缺失或为 unknown sentinel 时 `WattsKnown=false`；可读的空闲 `0 W` 保持 known；温度不可读时返回空温度集合。
 - Effective Power Mode 通知不可用时继续使用电源广播和 deadline 采样。
 - `powercfg` 有有界超时，并始终运行在后台任务中。
 - 停止 owner 后不得继续写缓存或递归记录错误。
@@ -153,4 +154,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-tilecolumn --out .\_build\tilecolumn
 ```
 
-验收重点是：owner 始终隐藏、Start/Stop 生命周期完整、全屏不停止采样、显示/会话/挂起门控正确、快照构建无 I/O、`PWR` 方块为单电量环、展开详情只显示电量/功耗/续航且不显示温度，以及兼容设置不能恢复独立表面。
+验收重点是：owner 始终隐藏、Start/Stop 生命周期完整、全屏不停止采样、显示/会话/挂起门控正确、快照构建无 I/O、`PWR` 方块保持单电量环且中心显示实时电池功率与小号 `W`、展开详情只显示电量/功耗/续航且不显示温度，以及兼容设置不能恢复独立表面。

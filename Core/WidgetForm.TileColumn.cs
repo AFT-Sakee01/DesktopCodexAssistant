@@ -310,24 +310,27 @@ internal sealed partial class WidgetForm
         }
 
         Point cursor = System.Windows.Forms.Cursor.Position;
-        bool restoreRightGroupBrightness = false;
+        // The right side is one visual group: hovering any compact tile or the open detail surface
+        // restores luminance and original accent colours for all of it. The level itself remains
+        // latched so level-two neutral-text suppression and the idle timer contract are unchanged.
+        bool restoreRightGroupPresentation = false;
         for (int i = 0; i < this.metricTileForms.Count; i++)
         {
             MetricTileForm tile = this.metricTileForms[i];
             if (tile != null && !tile.IsDisposed && tile.Visible && tile.Bounds.Contains(cursor))
             {
-                restoreRightGroupBrightness = true;
+                restoreRightGroupPresentation = true;
                 break;
             }
         }
 
-        if (!restoreRightGroupBrightness &&
+        if (!restoreRightGroupPresentation &&
             this.metricTileExpandForm != null &&
             !this.metricTileExpandForm.IsDisposed &&
             this.metricTileExpandForm.Visible &&
             this.metricTileExpandForm.Bounds.Contains(cursor))
         {
-            restoreRightGroupBrightness = true;
+            restoreRightGroupPresentation = true;
         }
 
         for (int i = 0; i < this.metricTileForms.Count; i++)
@@ -335,13 +338,13 @@ internal sealed partial class WidgetForm
             MetricTileForm tile = this.metricTileForms[i];
             if (tile != null && !tile.IsDisposed)
             {
-                changed |= tile.SetBurnInVisualState(normalized, restoreRightGroupBrightness);
+                changed |= tile.SetBurnInVisualState(normalized, restoreRightGroupPresentation);
             }
         }
 
         if (this.metricTileExpandForm != null && !this.metricTileExpandForm.IsDisposed)
         {
-            changed |= this.metricTileExpandForm.SetBurnInVisualState(normalized, restoreRightGroupBrightness);
+            changed |= this.metricTileExpandForm.SetBurnInVisualState(normalized, restoreRightGroupPresentation);
         }
 
         return changed;

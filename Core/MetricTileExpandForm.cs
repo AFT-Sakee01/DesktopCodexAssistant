@@ -29,7 +29,9 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     private MetricTileFeed feed = new MetricTileFeed();
     private bool displaySuspended;
     private BurnInVisualLevel burnInVisualLevel;
-    private bool burnInBrightnessRestored;
+    // Hover reveals the right group's original colours and luminance without clearing the real
+    // level-two state; white/neutral text therefore remains hidden until burn-in protection exits.
+    private bool burnInPresentationRestored;
     private bool quotaRevivalVisible;
 
     public MetricTileExpandForm(WidgetSettings settings)
@@ -87,23 +89,23 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     {
         get
         {
-            return this.burnInVisualLevel != BurnInVisualLevel.Normal && !this.burnInBrightnessRestored
+            return this.burnInVisualLevel != BurnInVisualLevel.Normal && !this.burnInPresentationRestored
                 ? BurnInProtection.LevelOneLuminancePercent
                 : 100;
         }
     }
 
-    public bool SetBurnInVisualState(BurnInVisualLevel level, bool restoreRightGroupBrightness)
+    public bool SetBurnInVisualState(BurnInVisualLevel level, bool restoreRightGroupPresentation)
     {
         BurnInVisualLevel normalized = BurnInProtection.NormalizeVisualLevel(level);
-        bool restored = normalized != BurnInVisualLevel.Normal && restoreRightGroupBrightness;
-        if (this.burnInVisualLevel == normalized && this.burnInBrightnessRestored == restored)
+        bool restored = normalized != BurnInVisualLevel.Normal && restoreRightGroupPresentation;
+        if (this.burnInVisualLevel == normalized && this.burnInPresentationRestored == restored)
         {
             return false;
         }
 
         this.burnInVisualLevel = normalized;
-        this.burnInBrightnessRestored = restored;
+        this.burnInPresentationRestored = restored;
         InvalidateLayeredRenderBuffer();
         if (this.Visible && CanRenderLayeredWindow())
         {
@@ -322,7 +324,10 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             : (visual == QuotaEasterEggVisual.Revived
                 ? DesignTokens.Colors.Accent
                 : DesignTokens.Colors.Warning);
-        color = MetricTileForm.ResolveBurnInRingColor(color, this.burnInVisualLevel);
+        color = MetricTileForm.ResolveBurnInRingColor(
+            color,
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
         RectangleF veilBounds = RectangleF.Inflate(bounds, -S(2), -S(2));
         using (GraphicsPath veil = RoundedRectangle(veilBounds, Math.Max(2.0f, S(DesignTokens.Radius.Panel - 1))))
         using (SolidBrush dim = new SolidBrush(Color.FromArgb(205, 4, 6, 9)))
@@ -1093,7 +1098,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         SystemDayBoardSnapshot day = this.feed.PowerDay;
         DrawPowerHistory(g, GroundRect(content, true), p, day);
         DrawRadarQuotaScrims(g, content);
-        DrawPowerIdentity(g, content, accent, p, day);
+        DrawPowerIdentity(g, content, accent, p);
         DrawPowerForecast(g, content, accent, p, day);
         DrawPowerBatteryStrip(g, content, accent, p, day);
     }
@@ -1133,11 +1138,13 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
 
         Color wattsColor = MetricTileForm.ResolveBurnInRingColor(
             DesignTokens.Colors.Warning,
-            this.burnInVisualLevel);
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
         bool charging = power != null ? power.Charging : day != null && day.CurrentCharging;
         Color batteryColor = MetricTileForm.ResolveBurnInRingColor(
             charging ? DesignTokens.Colors.DangerStrong : DesignTokens.Colors.Accent,
-            this.burnInVisualLevel);
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
         DrawSpark(g, ground, watts, wattsColor, Math.Max(1.0, wattsPeak), true, false);
         DrawSparkLineOnly(g, ground, battery, batteryColor, 100.0, 205, true);
     }
@@ -1146,12 +1153,14 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         Graphics g,
         RectangleF content,
         Color accent,
-        PowerStripSnapshot power,
-        SystemDayBoardSnapshot day)
+        PowerStripSnapshot power)
     {
         bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
-        Color dataAccent = MetricTileForm.ResolveBurnInRingColor(accent, this.burnInVisualLevel);
-        int battery = ResolvePowerBatteryPercent(power, day);
+        Color dataAccent = MetricTileForm.ResolveBurnInRingColor(
+            accent,
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
+        int battery = ResolvePowerBatteryPercent(power);
         using (Font labelFont = new Font(DesignTokens.UiFontFamily, S(17), FontStyle.Bold, GraphicsUnit.Pixel))
         using (Font valueFont = new Font(DesignTokens.MonoFontFamily, S(30), FontStyle.Bold, GraphicsUnit.Pixel))
         using (Font suffixFont = new Font(DesignTokens.UiFontFamily, S(14), FontStyle.Bold, GraphicsUnit.Pixel))
@@ -1180,22 +1189,19 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             return;
         }
 
-        bool wattsKnown = power != null && power.WattsKnown;
-        double watts = wattsKnown ? power.Watts : day != null ? day.CurrentWatts : 0.0;
-        wattsKnown = wattsKnown || day != null && day.CurrentWattsKnown;
+        double watts;
+        bool wattsKnown = TryResolveLivePowerWatts(power, out watts);
         string wattsText = wattsKnown
             ? watts.ToString("0.0", CultureInfo.InvariantCulture) + " W"
             : "-- W";
         string mode = power != null && !string.IsNullOrEmpty(power.PowerModeText)
             ? power.PowerModeText
-            : day != null && !string.IsNullOrEmpty(day.CurrentPowerModeText)
-                ? day.CurrentPowerModeText
-                : "--";
-        DrawText(g, "当前功耗 " + wattsText + " · " + mode, content.X, content.Y + S(36), S(12.5f),
+            : "--";
+        DrawText(g, "电池功率 " + wattsText + " · " + mode, content.X, content.Y + S(36), S(12.5f),
             DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 210), FontStyle.Regular);
 
-        bool charging = power != null ? power.Charging : day != null && day.CurrentCharging;
-        bool pluggedIn = power != null ? power.PluggedIn : day != null && day.CurrentPluggedIn;
+        bool charging = power != null && power.Charging;
+        bool pluggedIn = power != null && power.PluggedIn;
         string state = charging
             ? "正在充电"
             : pluggedIn
@@ -1217,7 +1223,10 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         float width = Math.Min(content.Width * 0.45f, S(205));
         RectangleF rect = new RectangleF(content.Right - width, content.Y, width, S(74));
         Color stateColor = ResolvePowerForecastColor(forecast.Tone, accent);
-        stateColor = MetricTileForm.ResolveBurnInRingColor(stateColor, this.burnInVisualLevel);
+        stateColor = MetricTileForm.ResolveBurnInRingColor(
+            stateColor,
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
 
         if (drawNeutral)
         {
@@ -1247,14 +1256,17 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         PowerStripSnapshot power,
         SystemDayBoardSnapshot day)
     {
-        int battery = ResolvePowerBatteryPercent(power, day);
-        bool charging = power != null ? power.Charging : day != null && day.CurrentCharging;
+        int battery = ResolvePowerBatteryPercent(power);
+        bool charging = power != null && power.Charging;
         Color fillColor = charging
             ? DesignTokens.Colors.DangerStrong
             : battery >= 0 && battery <= 20
                 ? DesignTokens.Colors.DangerStrong
                 : accent;
-        fillColor = MetricTileForm.ResolveBurnInRingColor(fillColor, this.burnInVisualLevel);
+        fillColor = MetricTileForm.ResolveBurnInRingColor(
+            fillColor,
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
         DrawSegmentBar(g, StripRect(content),
             new double[] { battery >= 0 ? battery : 0 },
             new Color[] { fillColor },
@@ -1265,12 +1277,11 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             return;
         }
 
-        bool wattsKnown = power != null && power.WattsKnown;
-        double watts = wattsKnown ? power.Watts : day != null ? day.CurrentWatts : 0.0;
-        wattsKnown = wattsKnown || day != null && day.CurrentWattsKnown;
+        double watts;
+        bool wattsKnown = TryResolveLivePowerWatts(power, out watts);
         double peak = ResolvePowerWattsPeak(day);
         string label = "电池 " + (battery >= 0 ? battery.ToString(CultureInfo.InvariantCulture) + "%" : "--");
-        label += " · 当前 " + (wattsKnown ? watts.ToString("0.0", CultureInfo.InvariantCulture) + " W" : "-- W");
+        label += " · 当前电池功率 " + (wattsKnown ? watts.ToString("0.0", CultureInfo.InvariantCulture) + " W" : "-- W");
         label += peak > 0.0
             ? " · 近24h峰值 " + peak.ToString("0.0", CultureInfo.InvariantCulture) + " W"
             : " · 近24h趋势采样中";
@@ -1278,16 +1289,30 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 205), FontStyle.Regular);
     }
 
-    private static int ResolvePowerBatteryPercent(PowerStripSnapshot power, SystemDayBoardSnapshot day)
+    private static int ResolvePowerBatteryPercent(PowerStripSnapshot power)
     {
         if (power != null && power.BatteryPercentKnown)
         {
             return Math.Max(0, Math.Min(100, power.BatteryPercent));
         }
 
-        return day != null && day.CurrentBatteryKnown
-            ? Math.Max(0, Math.Min(100, day.CurrentBatteryPercent))
-            : -1;
+        return -1;
+    }
+
+    private static bool TryResolveLivePowerWatts(PowerStripSnapshot power, out double watts)
+    {
+        watts = 0.0;
+        if (power == null ||
+            !power.WattsKnown ||
+            double.IsNaN(power.Watts) ||
+            double.IsInfinity(power.Watts) ||
+            power.Watts < 0.0)
+        {
+            return false;
+        }
+
+        watts = power.Watts;
+        return true;
     }
 
     private static double ResolvePowerWattsPeak(SystemDayBoardSnapshot day)
@@ -1314,7 +1339,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         PowerStripSnapshot power,
         SystemDayBoardSnapshot day)
     {
-        int battery = ResolvePowerBatteryPercent(power, day);
+        int battery = ResolvePowerBatteryPercent(power);
         if (battery < 0)
         {
             return new PowerForecastPresentation(
@@ -1325,8 +1350,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
                 false);
         }
 
-        bool charging = power != null ? power.Charging : day != null && day.CurrentCharging;
-        bool pluggedIn = power != null ? power.PluggedIn : day != null && day.CurrentPluggedIn;
+        bool charging = power != null && power.Charging;
+        bool pluggedIn = power != null && power.PluggedIn;
         if (charging)
         {
             int target = day != null && day.BatteryEtaTargetPercent > battery
@@ -1466,8 +1491,14 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     {
         DeepSeekBalanceSnapshot d = this.feed.GetDeepSeekBalance();
         DeepSeekServiceSnapshot service = this.feed.GetDeepSeekService();
-        Color chartColor = MetricTileForm.ResolveBurnInRingColor(accent, this.burnInVisualLevel);
-        Color usageColor = MetricTileForm.ResolveBurnInRingColor(DesignTokens.Colors.Warning, this.burnInVisualLevel);
+        Color chartColor = MetricTileForm.ResolveBurnInRingColor(
+            accent,
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
+        Color usageColor = MetricTileForm.ResolveBurnInRingColor(
+            DesignTokens.Colors.Warning,
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
         List<double> balances = new List<double>();
         if (d.History != null)
         {
@@ -2138,11 +2169,30 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         {
             BatteryPercentKnown = true,
             BatteryPercent = 80,
-            PluggedIn = true
+            PluggedIn = true,
+            WattsKnown = true,
+            Watts = 0.0
         };
         if (ResolvePowerForecast(plugged, null).Main != "外接电源")
         {
             throw new InvalidOperationException("PWR must distinguish external power from battery runway.");
+        }
+
+        double idleWatts;
+        if (!TryResolveLivePowerWatts(plugged, out idleWatts) || Math.Abs(idleWatts) > 0.0001)
+        {
+            throw new InvalidOperationException("PWR must preserve a live BatteryStatus idle value as known 0 W.");
+        }
+
+        PowerStripSnapshot unknownWatts = new PowerStripSnapshot
+        {
+            WattsKnown = false,
+            Watts = 17.5
+        };
+        double ignoredWatts;
+        if (TryResolveLivePowerWatts(unknownWatts, out ignoredWatts))
+        {
+            throw new InvalidOperationException("PWR must not present a non-live or unknown watt value as current.");
         }
 
         WidgetSettings settings = WidgetSettings.CreateDefaults();

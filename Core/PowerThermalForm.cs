@@ -1116,73 +1116,13 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
             {
                 foreach (ManagementObject item in collection)
                 {
-                    double chargeMilliwatts = ToPositiveMilliwatts(GetManagementValue(item, "ChargeRate"));
-                    double dischargeMilliwatts = ToPositiveMilliwatts(GetManagementValue(item, "DischargeRate"));
-                    object charging = GetManagementValue(item, "Charging");
-                    object discharging = GetManagementValue(item, "Discharging");
-                    object powerOnline = GetManagementValue(item, "PowerOnline");
-                    if (powerOnline != null)
-                    {
-                        reading.PluggedInKnown = true;
-                        reading.IsPluggedIn = Convert.ToBoolean(powerOnline, CultureInfo.InvariantCulture);
-                    }
-
-                    if (chargeMilliwatts > 0)
-                    {
-                        reading.StatusKnown = true;
-                        reading.IsCharging = true;
-                        if (!reading.PluggedInKnown)
-                        {
-                            reading.PluggedInKnown = true;
-                            reading.IsPluggedIn = true;
-                        }
-
-                        reading.WattsKnown = true;
-                        reading.Watts = chargeMilliwatts / 1000.0;
-                        UpdateSystemPowerModeText(ref reading);
-                        UpdateBatteryCarePauseState(ref reading);
-                        return reading;
-                    }
-
-                    if (dischargeMilliwatts > 0)
-                    {
-                        reading.StatusKnown = true;
-                        reading.IsCharging = false;
-                        if (!reading.PluggedInKnown)
-                        {
-                            reading.PluggedInKnown = true;
-                            reading.IsPluggedIn = false;
-                        }
-
-                        reading.WattsKnown = true;
-                        reading.Watts = dischargeMilliwatts / 1000.0;
-                        UpdateSystemPowerModeText(ref reading);
-                        UpdateBatteryCarePauseState(ref reading);
-                        return reading;
-                    }
-
-                    if (charging != null)
-                    {
-                        reading.StatusKnown = true;
-                        reading.IsCharging = Convert.ToBoolean(charging, CultureInfo.InvariantCulture);
-                        if (reading.IsCharging && !reading.PluggedInKnown)
-                        {
-                            reading.PluggedInKnown = true;
-                            reading.IsPluggedIn = true;
-                        }
-                    }
-
-                    if (discharging != null && Convert.ToBoolean(discharging, CultureInfo.InvariantCulture))
-                    {
-                        reading.StatusKnown = true;
-                        reading.IsCharging = false;
-                        if (!reading.PluggedInKnown)
-                        {
-                            reading.PluggedInKnown = true;
-                            reading.IsPluggedIn = false;
-                        }
-                    }
-
+                    ApplyBatteryStatus(
+                        ref reading,
+                        GetManagementValue(item, "ChargeRate"),
+                        GetManagementValue(item, "DischargeRate"),
+                        GetManagementValue(item, "Charging"),
+                        GetManagementValue(item, "Discharging"),
+                        GetManagementValue(item, "PowerOnline"));
                     UpdateSystemPowerModeText(ref reading);
                     UpdateBatteryCarePauseState(ref reading);
                     return reading;
@@ -1194,6 +1134,129 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         }
 
         return reading;
+    }
+
+    private static void ApplyBatteryStatus(
+        ref PowerReading reading,
+        object chargeRate,
+        object dischargeRate,
+        object charging,
+        object discharging,
+        object powerOnline)
+    {
+        bool powerOnlineValue;
+        if (TryReadBoolean(powerOnline, out powerOnlineValue))
+        {
+            reading.PluggedInKnown = true;
+            reading.IsPluggedIn = powerOnlineValue;
+        }
+
+        double chargeMilliwatts;
+        double dischargeMilliwatts;
+        bool chargeRateKnown = TryReadBatteryRateMilliwatts(chargeRate, out chargeMilliwatts);
+        bool dischargeRateKnown = TryReadBatteryRateMilliwatts(dischargeRate, out dischargeMilliwatts);
+
+        bool chargingValue;
+        bool chargingKnown = TryReadBoolean(charging, out chargingValue);
+        bool dischargingValue;
+        bool dischargingKnown = TryReadBoolean(discharging, out dischargingValue);
+
+        if (chargeRateKnown && chargeMilliwatts > 0.0)
+        {
+            reading.StatusKnown = true;
+            reading.IsCharging = true;
+            if (!reading.PluggedInKnown)
+            {
+                reading.PluggedInKnown = true;
+                reading.IsPluggedIn = true;
+            }
+
+            reading.WattsKnown = true;
+            reading.Watts = chargeMilliwatts / 1000.0;
+            return;
+        }
+
+        if (dischargeRateKnown && dischargeMilliwatts > 0.0)
+        {
+            reading.StatusKnown = true;
+            reading.IsCharging = false;
+            if (!reading.PluggedInKnown)
+            {
+                reading.PluggedInKnown = true;
+                reading.IsPluggedIn = false;
+            }
+
+            reading.WattsKnown = true;
+            reading.Watts = dischargeMilliwatts / 1000.0;
+            return;
+        }
+
+        if (chargingKnown)
+        {
+            reading.StatusKnown = true;
+            reading.IsCharging = chargingValue;
+            if (chargingValue && !reading.PluggedInKnown)
+            {
+                reading.PluggedInKnown = true;
+                reading.IsPluggedIn = true;
+            }
+        }
+
+        if (dischargingKnown && dischargingValue)
+        {
+            reading.StatusKnown = true;
+            reading.IsCharging = false;
+            if (!reading.PluggedInKnown)
+            {
+                reading.PluggedInKnown = true;
+                reading.IsPluggedIn = false;
+            }
+        }
+
+        // BatteryStatus reports two directional rates. Zero is a real idle value when the rate
+        // properties are present; treating it as missing made an AC-connected, non-charging battery
+        // appear unreadable and allowed an older System Day sample to replace the live state.
+        if (chargeRateKnown || dischargeRateKnown)
+        {
+            reading.WattsKnown = true;
+            reading.Watts = 0.0;
+        }
+    }
+
+    internal static void RunPowerReadingSelfTest()
+    {
+        PowerReading idle = new PowerReading();
+        ApplyBatteryStatus(ref idle, (uint)0, (uint)0, false, false, true);
+        if (!idle.PluggedInKnown ||
+            !idle.IsPluggedIn ||
+            !idle.StatusKnown ||
+            idle.IsCharging ||
+            !idle.WattsKnown ||
+            Math.Abs(idle.Watts) > 0.0001)
+        {
+            throw new InvalidOperationException(
+                "BatteryStatus idle AC state must remain a live, known 0 W reading.");
+        }
+
+        PowerReading discharge = new PowerReading();
+        ApplyBatteryStatus(ref discharge, (uint)0, (uint)12750, false, true, false);
+        if (!discharge.WattsKnown ||
+            Math.Abs(discharge.Watts - 12.75) > 0.0001 ||
+            discharge.IsCharging ||
+            discharge.IsPluggedIn)
+        {
+            throw new InvalidOperationException(
+                "BatteryStatus discharge rate must preserve the legacy v1 milliwatt-to-watt conversion.");
+        }
+
+        PowerReading unknown = new PowerReading();
+        ApplyBatteryStatus(ref unknown, uint.MaxValue, uint.MaxValue, null, null, null);
+        if (unknown.WattsKnown)
+        {
+            throw new InvalidOperationException("BatteryStatus unknown-rate sentinels must not become 0 W.");
+        }
+
+        Console.WriteLine("Power reading: PASS v1 BatteryStatus rates, idle 0 W, unknown sentinels");
     }
 
     private static void UpdateBatteryCarePauseState(ref PowerReading reading)
@@ -1490,26 +1553,50 @@ internal sealed partial class PowerThermalForm : LayeredWidgetFormBase
         }
     }
 
-    private static double ToPositiveMilliwatts(object value)
+    private static bool TryReadBoolean(object value, out bool result)
     {
+        result = false;
         if (value == null)
         {
-            return 0;
+            return false;
+        }
+
+        try
+        {
+            result = Convert.ToBoolean(value, CultureInfo.InvariantCulture);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadBatteryRateMilliwatts(object value, out double milliwatts)
+    {
+        milliwatts = 0.0;
+        if (value == null)
+        {
+            return false;
         }
 
         try
         {
             double number = Convert.ToDouble(value, CultureInfo.InvariantCulture);
-            if (number <= 0 || number >= 4294967294.0)
+            if (double.IsNaN(number) ||
+                double.IsInfinity(number) ||
+                number < 0.0 ||
+                number >= 4294967294.0)
             {
-                return 0;
+                return false;
             }
 
-            return number;
+            milliwatts = number;
+            return true;
         }
         catch
         {
-            return 0;
+            return false;
         }
     }
 

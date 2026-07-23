@@ -845,6 +845,7 @@ internal static class Program
             RunNamedSelfTest("OperationForm.LeftDockMutualExclusion", OperationForm.RunLeftDockMutualExclusionSelfTest);
             RunNamedSelfTest("BurnInProtection", BurnInProtection.RunSelfTest);
             RunNamedSelfTest("MemoryPressureTracker", MemoryPressureTracker.RunSelfTest);
+            RunNamedSelfTest("PowerThermalForm.PowerReading", PowerThermalForm.RunPowerReadingSelfTest);
             RunNamedSelfTest("MetricTileModel", MetricTileModel.RunSelfTest);
             RunNamedSelfTest("MetricTileForm", MetricTileForm.RunSelfTest);
             RunNamedSelfTest("MetricTileExpandForm", MetricTileExpandForm.RunSelfTest);
