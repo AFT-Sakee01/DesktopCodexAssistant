@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.14
+适用版本：2.0.0.15
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -149,6 +149,7 @@ hover/自动隐藏规则：
 - `GUID_ACDC_POWER_SOURCE`、电量、power scheme 和 energy saver 通知只使功耗立即到期；温度仍走自己的 deadline。
 - 严重温度采样优先于省电策略。
 - `BuildStripSnapshot()` 只读缓存，不触发 WMI、注册表或 `powercfg`。
+- `WidgetForm.BuildMetricTilePowerProjection()` 不建立 timer；只在组装 `MetricTileFeed` 时按 `MetricTilePowerProjectionRefreshIntervalMs = 5000` 最多每 5 秒 clone 一次 System Day 的 `Last24Hours` owner-memory 投影，供 PWR 展开详情绘制趋势与 ETA。
 - 全屏标志不停止采样；显示器关闭、会话锁定或系统挂起停止，恢复后清空时间戳并立即采样。
 - `PowerThermalManualEnergySaverThresholdPercent` 只根据最近电池快照影响 `EnergySaverActive`，不新增轮询。
 - `PowerThermalIntegratedEnabled` 只兼容读取且 UI 隐藏，不控制 owner、采样或可见性。

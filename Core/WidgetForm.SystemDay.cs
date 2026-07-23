@@ -5,8 +5,11 @@ using System;
 internal sealed partial class WidgetForm
 {
     private const int SystemDayActiveIdleThresholdSeconds = 5 * 60;
+    private const int MetricTilePowerProjectionRefreshIntervalMs = 5000;
     private readonly object systemDayHistoryLifecycleSync = new object();
     private SystemDayHistoryStore systemDayHistoryStore;
+    private SystemDayBoardSnapshot metricTilePowerProjection;
+    private DateTime nextMetricTilePowerProjectionUtc = DateTime.MinValue;
 
     private void InitializeSystemDayHistory()
     {
@@ -25,6 +28,8 @@ internal sealed partial class WidgetForm
         {
             store = this.systemDayHistoryStore;
             this.systemDayHistoryStore = null;
+            this.metricTilePowerProjection = null;
+            this.nextMetricTilePowerProjectionUtc = DateTime.MinValue;
         }
         if (store != null) store.Dispose();
     }
@@ -35,6 +40,22 @@ internal sealed partial class WidgetForm
         return store == null
             ? SystemDayBoardSnapshot.CreateEmpty(range, DateTime.Now)
             : store.GetBoardSnapshot(range, DateTime.Now);
+    }
+
+    private SystemDayBoardSnapshot BuildMetricTilePowerProjection()
+    {
+        DateTime nowUtc = DateTime.UtcNow;
+        if (this.metricTilePowerProjection == null || nowUtc >= this.nextMetricTilePowerProjectionUtc)
+        {
+            // The PWR panel reads the same owner-memory projection as System Day. Five-second
+            // caching matches the board's existing refresh cadence and prevents every hover/feed
+            // push from rebuilding a 24-hour plot; no timer, disk read or sampler is added here.
+            this.metricTilePowerProjection = BuildSystemDayBoardSnapshot(SystemDayRange.Last24Hours);
+            this.nextMetricTilePowerProjectionUtc =
+                nowUtc.AddMilliseconds(MetricTilePowerProjectionRefreshIntervalMs);
+        }
+
+        return this.metricTilePowerProjection;
     }
 
     private void RecordSystemDaySample()

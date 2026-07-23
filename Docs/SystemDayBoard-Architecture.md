@@ -1,6 +1,6 @@
 # 系统日记看板架构
 
-适用版本：2.0.0.13
+适用版本：2.0.0.15
 
 本文说明第七个左缘 `System Day` 看板的数据所有权、持久化格式、时间范围投影和绘制语义。
 
@@ -27,6 +27,7 @@ flowchart LR
     D --> E["按日 JSONL"]
     D --> F["SystemDayBoardSnapshot"]
     F --> G["SystemDayBoardForm"]
+    F --> H["PWR expand 近 24h 趋势 / ETA"]
 ```
 
 关键边界：
@@ -34,6 +35,7 @@ flowchart LR
 - `WidgetForm.SystemDay.cs` 只复用现有 `PerfSnapshot` 与 cache-only 功耗温度快照，不启动 PDH、ACPI、WMI 或网络读取。
 - `SystemDayHistoryStore.GetBoardSnapshot()` 在内存中完成范围裁剪、睡眠区间拼接、峰值聚合、ETA 估算和最多 180 点的绘图降采样。
 - `SystemDayBoardForm` 每次只克隆不可变展示快照；绘制路径不读文件、不访问硬件。
+- `WidgetForm.BuildMetricTilePowerProjection()` 最多每 5 秒取得一次 `Last24Hours` 投影并随 `MetricTileFeed` 推给 `PWR` 展开详情；它不新增 timer，也不改变按分钟历史记录节奏。
 - 挂起与恢复事件由 `WidgetForm.WndProc` 转交给历史所有者。跨范围左边界的睡眠区间会被裁剪后保留。
 
 ## 3. 持久化与关联字段
@@ -58,6 +60,8 @@ flowchart LR
 
 放电时优先采用 Windows 提供的剩余运行秒数；缺失时根据最近三小时的有效电量斜率估算。充电时同样使用近期斜率，启用电池保养暂停时目标为 80%，否则目标为 100%。样本不足或斜率不可信时显示未知，不伪造倒计时。
 
+右侧 `PWR` 展开详情复用同一规则：优先显示当前 Windows 续航，其次显示近三小时电量趋势 ETA；插电未放电时明确显示外接电源。背景只绘制近 24 小时黄色功耗曲线与红升/青降电量曲线，温度仍保留在 System Day 看板和历史数据中，不进入 `PWR` 展示。
+
 ## 5. 窗口和设置
 
 `SystemDayBoardForm` 使用 `SystemDayBoardLeftDockEnabled`、`SystemDayBoardLeftDockTabCenterY`、`SystemDayBoardAutoHideSeconds`、`SystemDayBoardTransparencyOverridePercent` 与 `SystemDayBoardScaleOverridePercent`。它复用：
@@ -78,6 +82,7 @@ DesktopCodexAssistant.exe --test-settings-bindings
 DesktopCodexAssistant.exe --test-layout
 DesktopCodexAssistant.exe --test-display-recovery
 DesktopCodexAssistant.exe --render-systemdayboard --out <dir>
+DesktopCodexAssistant.exe --render-tilecolumn --out <dir>
 ```
 
 自检覆盖按日 JSONL、红色增长 / 青色下降、完整热区、跨范围睡眠、峰值与 ETA、统一刻度、648×400 绘制以及设置迁移。

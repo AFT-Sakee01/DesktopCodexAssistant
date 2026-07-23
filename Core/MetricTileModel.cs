@@ -181,6 +181,7 @@ internal sealed class MetricTileFeed
     public List<double> NpuHistory;
     public List<double> NpuMemoryHistory;
     public PowerStripSnapshot Power;
+    public SystemDayBoardSnapshot PowerDay;
     public List<MetricTileGuardEntry> Guards = new List<MetricTileGuardEntry>();
     public bool AlertTestEnabled;
     public bool NpuAlertIconActive;
@@ -432,11 +433,10 @@ internal static class MetricTileModel
                     PowerStripSnapshot p = feed.Power;
                     int battery = p != null && p.BatteryPercentKnown ? p.BatteryPercent : -1;
                     tile.OuterPercent = battery >= 0 ? battery : -1.0;
-                    // Inner ring is temperature mapped onto a 30-95 degree window, so a cool machine
-                    // shows an almost empty inner ring and a thermal event fills it.
-                    double maxC = p != null ? p.MaxCelsius : 0.0;
-                    tile.InnerPercent = maxC > 0.0 ? Clamp((maxC - 30.0) / 65.0 * 100.0, 0.0, 100.0) : -1.0;
-                    tile.InnerAccent = DesignTokens.Colors.Warning;
+                    // PWR is now a battery/runway surface. Thermal readings remain in the shared
+                    // snapshot for System Day, but the compact tile deliberately carries one clear
+                    // capacity ring instead of mixing temperature into a second axis.
+                    tile.InnerPercent = -1.0;
                     tile.CenterValue = battery >= 0 ? battery.ToString(CultureInfo.InvariantCulture) : "--";
                     if (p != null && p.Charging)
                     {
@@ -446,11 +446,6 @@ internal static class MetricTileModel
                     {
                         tile.Accent = DesignTokens.Colors.DangerStrong;
                         tile.AlertPercent = 100.0;
-                    }
-
-                    if (p != null && p.AlertCount > 0)
-                    {
-                        tile.AlertIconVisible = true;
                     }
 
                     break;

@@ -52,6 +52,7 @@ internal sealed partial class MetricTileForm
                 }
 
                 if (id == MetricTileId.Cpu ||
+                    id == MetricTileId.Power ||
                     id == MetricTileId.CodexQuota ||
                     id == MetricTileId.ClaudeQuota)
                 {
@@ -231,6 +232,7 @@ internal sealed partial class MetricTileForm
         }
 
         feed.Power = power;
+        feed.PowerDay = BuildSamplePowerDay();
 
         // Two guards armed, matching the proposal's "something is held open" state.
         GuardRuntime runtime = new GuardRuntime(delegate { return (bool?)true; });
@@ -265,6 +267,44 @@ internal sealed partial class MetricTileForm
 
         feed.DeepSeekBalance = deepSeek;
         return feed;
+    }
+
+    private static SystemDayBoardSnapshot BuildSamplePowerDay()
+    {
+        DateTime now = DateTime.Now;
+        SystemDayBoardSnapshot snapshot = SystemDayBoardSnapshot.CreateEmpty(
+            SystemDayRange.Last24Hours,
+            now);
+        snapshot.CurrentBatteryKnown = true;
+        snapshot.CurrentBatteryPercent = 79;
+        snapshot.CurrentWattsKnown = true;
+        snapshot.CurrentWatts = 12.4;
+        snapshot.CurrentPowerModeText = "平衡";
+        snapshot.BatteryEtaKnown = true;
+        snapshot.BatteryEtaMinutes = 222;
+        snapshot.BatteryEtaTargetPercent = 0;
+        snapshot.BatteryEtaText = "约 3 小时 42 分";
+        snapshot.RawSampleCount = 48;
+        for (int i = 0; i < 48; i++)
+        {
+            double ratio = i / 47.0;
+            double wave = (Math.Sin(i * 0.63) + 1.0) * 0.5;
+            snapshot.Points.Add(new SystemDayBoardPoint
+            {
+                TimestampLocal = now.AddMinutes(-30.0 * (47 - i)),
+                BatteryKnown = true,
+                BatteryPercent = Math.Max(0, Math.Min(100, 96 - (int)Math.Round(ratio * 17.0))),
+                BatteryDirection = i == 0
+                    ? SystemDayBatteryDirection.Unknown
+                    : SystemDayBatteryDirection.Falling,
+                Charging = false,
+                PluggedIn = false,
+                WattsKnown = true,
+                Watts = 8.2 + wave * 9.6
+            });
+        }
+
+        return snapshot;
     }
 
     private static void RenderQuotaEasterEggSamples(

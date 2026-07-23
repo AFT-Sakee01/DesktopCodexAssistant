@@ -1,12 +1,12 @@
 # 功耗与温度数据所有者架构
 
-适用版本：2.0.0.12
+适用版本：2.0.0.15
 
 本文说明 `PowerThermalForm` 作为永久 headless 数据所有者时的数据来源、采样、通知、缓存和快照边界。
 
 ## 1. 当前定位
 
-`PowerThermalForm` 不再是可见功耗温度窗口。`WidgetForm.OnShown` 构造它后调用 `StartHeadlessDataOwner()`，右侧 `PWR` 方块及其悬停详情通过 `BuildStripSnapshot()` 读取缓存。
+`PowerThermalForm` 不再是可见功耗温度窗口。`WidgetForm.OnShown` 构造它后调用 `StartHeadlessDataOwner()`，右侧 `PWR` 方块通过 `BuildStripSnapshot()` 读取当前电池与功耗缓存；悬停详情还复用 System Day 保存在 owner memory 中的近 24 小时投影，回答当前状态还能使用多久。
 
 相关源码：
 
@@ -14,10 +14,10 @@
 | --- | --- |
 | `Core/PowerThermalForm.cs` | headless 生命周期、电源通知、单飞采样、缓存和温度状态 |
 | `Core/PowerThermalForm.Snapshot.cs` | `PowerStripSnapshot` 只读投影与 `ThermalSummary` 数据汇总 |
-| `Core/WidgetForm.TileColumn.cs` | 把功耗快照装入共享 `MetricTileFeed` |
-| `Core/WidgetForm.SystemDay.cs` | 把同一缓存快照交给系统日记历史，不新增硬件采样 |
-| `Core/MetricTileModel.cs` | 把电池、温度和告警映射为 `PWR` 方块模型 |
-| `Core/MetricTileExpandForm.cs` | 绘制 `PWR` 悬停详情 |
+| `Core/WidgetForm.TileColumn.cs` | 把当前功耗快照与近 24 小时 System Day 投影装入共享 `MetricTileFeed` |
+| `Core/WidgetForm.SystemDay.cs` | 把同一缓存快照交给系统日记历史，并提供 5 秒缓存的 PWR 近 24 小时投影 |
+| `Core/MetricTileModel.cs` | 把电池映射为单环 `PWR` 方块模型 |
+| `Core/MetricTileExpandForm.cs` | 绘制电量、功耗趋势与续航预测；不显示温度 |
 | `Settings/WidgetSettings.cs` | 性能模式、测试模式和功耗数据设置 |
 | `Interop/NativeMethods.cs` | Windows 电源通知与 Effective Power Mode 接口 |
 
@@ -31,8 +31,11 @@ flowchart LR
     C --> E["启动采样 scheduler"]
     E --> F["更新功耗与温度缓存"]
     F --> G["BuildStripSnapshot"]
-    G --> H["MetricTileFeed"]
-    H --> I["右侧 PWR tile / expand"]
+    G --> H["MetricTileFeed 当前状态"]
+    F --> L["System Day owner-memory history"]
+    L --> M["5 秒缓存的近 24h 投影"]
+    M --> H
+    H --> I["右侧 PWR tile / 续航 expand"]
     A --> J["StopHeadlessDataOwner"]
     J --> K["停止 timer / 注销通知 / 释放资源"]
 ```
@@ -114,7 +117,7 @@ Win32_PerfFormattedData_Counters_ThermalZoneInformation
 
 普通告警使用迟滞：达到 70°C 进入告警，低于 67°C 退出。严重告警要求达到 95°C 并持续 3 秒，低于 92°C 清除；100°C 测试模式跳过等待，便于自动验证。
 
-这些状态投影到 `PowerStripSnapshot.AlertCount`、`MaxCelsius`、`AvgCelsius` 和 `HotZones`，由 `PWR` 方块/详情消费；状态变化不会创建额外显示表面。
+这些状态投影到 `PowerStripSnapshot.AlertCount`、`MaxCelsius`、`AvgCelsius`、`HotZones` 与完整 `ThermalZones`，继续供 System Day 历史、热区关联和诊断使用。`PWR` 方块与展开详情不再显示温度或温度告警；状态变化不会创建额外显示表面。
 
 ## 6. Cache-only 快照
 
@@ -124,7 +127,7 @@ Win32_PerfFormattedData_Counters_ThermalZoneInformation
 - 状态：energy saver、电池保养暂停、电源模式文本。
 - 温度：zone 数、告警数、最高/平均温度、告警热点列表，以及带固件原始名称的完整 `ThermalZones` 克隆。
 
-该方法不得触发采样、WMI、进程启动、磁盘或网络 I/O。`WidgetForm.BuildMetricTileFeed()` 每个控制 tick 至多取一次快照，再把同一 feed 推给 `PWR` 方块、展开详情和系统日记记录器；消费者不能修改 sampler-owned state。系统日记为何保留完整热区及其持久化边界见 `Docs/SystemDayBoard-Architecture.md`。
+该方法不得触发采样、WMI、进程启动、磁盘或网络 I/O。`WidgetForm.BuildMetricTileFeed()` 每个控制 tick 至多取一次当前快照；`WidgetForm.BuildMetricTilePowerProjection()` 最多每 5 秒从 `SystemDayHistoryStore` 的 owner memory 重建一次近 24 小时投影。两者进入同一个 feed 后供 `PWR` 方块与展开详情消费，消费者不能修改 sampler-owned state，也不能在 paint 中读取历史文件。系统日记为何保留完整热区及其持久化边界见 `Docs/SystemDayBoard-Architecture.md`。
 
 ## 7. 设置边界
 
@@ -150,4 +153,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-tilecolumn --out .\_build\tilecolumn
 ```
 
-验收重点是：owner 始终隐藏、Start/Stop 生命周期完整、全屏不停止采样、显示/会话/挂起门控正确、快照构建无 I/O、`PWR` 方块使用缓存，以及兼容设置不能恢复独立表面。
+验收重点是：owner 始终隐藏、Start/Stop 生命周期完整、全屏不停止采样、显示/会话/挂起门控正确、快照构建无 I/O、`PWR` 方块为单电量环、展开详情只显示电量/功耗/续航且不显示温度，以及兼容设置不能恢复独立表面。

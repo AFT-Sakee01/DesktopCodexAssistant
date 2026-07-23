@@ -26,8 +26,9 @@ internal sealed class PowerStripSnapshot
     public double MaxCelsius;
     public double AvgCelsius;
     // Full calibrated ACPI zone set for the System Day history. HotZones remains the alert-only
-    // compatibility projection used by the right-side power tile. RawName is retained because the
-    // short display label alone is insufficient for later peak/zone correlation and calibration.
+    // compatibility projection for diagnostics and older snapshot consumers; the PWR presentation
+    // no longer displays temperature. RawName is retained because the short display label alone is
+    // insufficient for later peak/zone correlation and calibration.
     public List<PowerStripZone> ThermalZones = new List<PowerStripZone>();
     public List<PowerStripZone> HotZones = new List<PowerStripZone>();
 }

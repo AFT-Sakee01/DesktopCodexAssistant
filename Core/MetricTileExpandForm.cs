@@ -417,9 +417,9 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     // all five and forced 8-10 px type; giving the chart the whole panel and floating the text over
     // it buys both a readable type size and a chart wide enough to read a shape off.
     //
-    // Two panels have no time series to spread across the ground and are adapted rather than faked:
-    // PWR has no watts history buffer, so its ground is the thermal zone wall; GUARD is four states,
-    // so its ground is four tinted bands. Drawing a curve through either would mean inventing data.
+    // GUARD has no time series to spread across the ground: it is four independent states, so its
+    // ground is four tinted bands rather than an invented curve. PWR now receives a cache-only
+    // System Day history projection and can draw real battery/watts series.
     //
     // Type scale, in design units (= physical px at compact scale):
     private const int LabelSize = 18;      // metric name
@@ -1084,90 +1084,378 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     }
 
     // ── Power ────────────────────────────────────────────────────────────
-    // No watts history buffer exists, so there is no curve to spread across the ground. Rather than
-    // invent one, the ground is the thermal zone wall: every reporting sensor as a column, height
-    // and brightness both tracking temperature. Battery level takes the bottom strip.
+    // PWR reuses the cache-only last-24-hour projection already owned by System Day. The hover
+    // panel must never start sampling or file I/O: its job is to translate battery, watts and the
+    // existing ETA into the same identity/chart/forecast hierarchy as the quota panels.
     private void DrawPower(Graphics g, RectangleF content, Color accent)
     {
         PowerStripSnapshot p = this.feed.Power;
-        DrawThermalWall(g, GroundRect(content, true), p);
-
-        int battery = p != null && p.BatteryPercentKnown ? p.BatteryPercent : -1;
-        DrawSegmentBar(g, StripRect(content),
-            new double[] { battery >= 0 ? battery : 0 },
-            new Color[] { battery >= 0 && battery <= 20 ? DesignTokens.Colors.DangerStrong : DesignTokens.Colors.Success },
-            new int[] { 225 });
-
-        string watts = p != null && p.WattsKnown ? p.Watts.ToString("0.0", CultureInfo.InvariantCulture) + " W" : "-- W";
-        string mode = p != null && !string.IsNullOrEmpty(p.PowerModeText) ? p.PowerModeText : "--";
-        DrawFloatingHeader(g, content, accent, "PWR",
-            battery >= 0 ? battery.ToString(CultureInfo.InvariantCulture) : "--", "%",
-            watts + " · " + mode + " · " + FormatRuntime(p));
-
-        string maxText = p != null && p.MaxCelsius > 0.0
-            ? Math.Round(p.MaxCelsius).ToString("0", CultureInfo.InvariantCulture) + "°C"
-            : "--";
-        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)),
-            p != null && p.ZoneCount > 0
-                ? string.Format(CultureInfo.InvariantCulture, "{0} 传感区 峰值 {1} · 底条=电池", p.ZoneCount, maxText)
-                : "无温度传感数据");
+        SystemDayBoardSnapshot day = this.feed.PowerDay;
+        DrawPowerHistory(g, GroundRect(content, true), p, day);
+        DrawRadarQuotaScrims(g, content);
+        DrawPowerIdentity(g, content, accent, p, day);
+        DrawPowerForecast(g, content, accent, p, day);
+        DrawPowerBatteryStrip(g, content, accent, p, day);
     }
 
-    private void DrawThermalWall(Graphics g, RectangleF rect, PowerStripSnapshot p)
+    private void DrawPowerHistory(
+        Graphics g,
+        RectangleF ground,
+        PowerStripSnapshot power,
+        SystemDayBoardSnapshot day)
     {
-        int count = p != null && p.ZoneCount > 0 ? p.ZoneCount : 0;
-        if (count <= 0 || rect.Height <= 2.0f)
+        List<double> watts = new List<double>();
+        List<double> battery = new List<double>();
+        double wattsPeak = 0.0;
+        if (day != null && day.Points != null)
+        {
+            for (int i = 0; i < day.Points.Count; i++)
+            {
+                SystemDayBoardPoint point = day.Points[i];
+                if (point == null)
+                {
+                    continue;
+                }
+
+                if (point.WattsKnown)
+                {
+                    double value = Math.Max(0.0, point.Watts);
+                    watts.Add(value);
+                    wattsPeak = Math.Max(wattsPeak, value);
+                }
+
+                if (point.BatteryKnown)
+                {
+                    battery.Add(MetricTileModel.Clamp(point.BatteryPercent, 0.0, 100.0));
+                }
+            }
+        }
+
+        Color wattsColor = MetricTileForm.ResolveBurnInRingColor(
+            DesignTokens.Colors.Warning,
+            this.burnInVisualLevel);
+        bool charging = power != null ? power.Charging : day != null && day.CurrentCharging;
+        Color batteryColor = MetricTileForm.ResolveBurnInRingColor(
+            charging ? DesignTokens.Colors.DangerStrong : DesignTokens.Colors.Accent,
+            this.burnInVisualLevel);
+        DrawSpark(g, ground, watts, wattsColor, Math.Max(1.0, wattsPeak), true, false);
+        DrawSparkLineOnly(g, ground, battery, batteryColor, 100.0, 205, true);
+    }
+
+    private void DrawPowerIdentity(
+        Graphics g,
+        RectangleF content,
+        Color accent,
+        PowerStripSnapshot power,
+        SystemDayBoardSnapshot day)
+    {
+        bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
+        Color dataAccent = MetricTileForm.ResolveBurnInRingColor(accent, this.burnInVisualLevel);
+        int battery = ResolvePowerBatteryPercent(power, day);
+        using (Font labelFont = new Font(DesignTokens.UiFontFamily, S(17), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font valueFont = new Font(DesignTokens.MonoFontFamily, S(30), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font suffixFont = new Font(DesignTokens.UiFontFamily, S(14), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.WithAlpha(dataAccent, 235)))
+        using (SolidBrush valueBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextStrong, 235)))
+        using (SolidBrush suffixBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 210)))
+        {
+            float labelY = content.Y + S(6);
+            g.DrawString("PWR", labelFont, labelBrush, content.X, labelY);
+            if (drawNeutral)
+            {
+                float labelWidth = g.MeasureString("PWR", labelFont).Width;
+                string value = battery >= 0 ? battery.ToString(CultureInfo.InvariantCulture) : "--";
+                float valueX = content.X + labelWidth + S(8);
+                g.DrawString(value, valueFont, valueBrush, valueX, content.Y);
+                float valueWidth = g.MeasureString(value, valueFont).Width;
+                if (battery >= 0)
+                {
+                    g.DrawString("%", suffixFont, suffixBrush, valueX + valueWidth - S(4), content.Y + S(13));
+                }
+            }
+        }
+
+        if (!drawNeutral)
         {
             return;
         }
 
-        // Hot zones carry real readings; the remaining sensors are known to be below the alert
-        // threshold, so they are drawn at the average rather than invented per-zone values.
-        List<double> temps = new List<double>();
-        if (p.HotZones != null)
+        bool wattsKnown = power != null && power.WattsKnown;
+        double watts = wattsKnown ? power.Watts : day != null ? day.CurrentWatts : 0.0;
+        wattsKnown = wattsKnown || day != null && day.CurrentWattsKnown;
+        string wattsText = wattsKnown
+            ? watts.ToString("0.0", CultureInfo.InvariantCulture) + " W"
+            : "-- W";
+        string mode = power != null && !string.IsNullOrEmpty(power.PowerModeText)
+            ? power.PowerModeText
+            : day != null && !string.IsNullOrEmpty(day.CurrentPowerModeText)
+                ? day.CurrentPowerModeText
+                : "--";
+        DrawText(g, "当前功耗 " + wattsText + " · " + mode, content.X, content.Y + S(36), S(12.5f),
+            DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 210), FontStyle.Regular);
+
+        bool charging = power != null ? power.Charging : day != null && day.CurrentCharging;
+        bool pluggedIn = power != null ? power.PluggedIn : day != null && day.CurrentPluggedIn;
+        string state = charging
+            ? "正在充电"
+            : pluggedIn
+                ? "外接电源 · 电池未放电"
+                : "正在使用电池";
+        DrawText(g, state + " · 近 24h 电量 / 功耗", content.X, content.Y + S(57), S(11),
+            DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 225), FontStyle.Regular);
+    }
+
+    private void DrawPowerForecast(
+        Graphics g,
+        RectangleF content,
+        Color accent,
+        PowerStripSnapshot power,
+        SystemDayBoardSnapshot day)
+    {
+        PowerForecastPresentation forecast = ResolvePowerForecast(power, day);
+        bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
+        float width = Math.Min(content.Width * 0.45f, S(205));
+        RectangleF rect = new RectangleF(content.Right - width, content.Y, width, S(74));
+        Color stateColor = ResolvePowerForecastColor(forecast.Tone, accent);
+        stateColor = MetricTileForm.ResolveBurnInRingColor(stateColor, this.burnInVisualLevel);
+
+        if (drawNeutral)
         {
-            for (int i = 0; i < p.HotZones.Count && temps.Count < count; i++)
-            {
-                temps.Add(p.HotZones[i].Celsius);
-            }
+            DrawRightAlignedText(g, "当前续航预测", rect, rect.Y, S(10),
+                DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 225), FontStyle.Regular);
         }
 
-        while (temps.Count < count)
+        if (forecast.Known || drawNeutral)
         {
-            temps.Add(p.AvgCelsius);
+            DrawRightAlignedText(g, forecast.Main, rect, rect.Y + S(14), S(21),
+                DesignTokens.WithAlpha(stateColor, forecast.Known ? 255 : 220), FontStyle.Bold);
+            DrawRightAlignedText(g, forecast.Status, rect, rect.Y + S(40), S(12),
+                DesignTokens.WithAlpha(stateColor, forecast.Known ? 245 : 210), FontStyle.Bold);
         }
 
-        float gap = Math.Max(1.0f, S(2));
-        float cellW = (rect.Width - gap * (count - 1)) / count;
-        for (int i = 0; i < count; i++)
+        if (drawNeutral)
         {
-            // Absolute 30-85 degree mapping, and the column height tracks temperature too, so the
-            // wall has a silhouette instead of being a flat block of equal bars. A cool machine
-            // honestly shows a low, dim, even row; a thermal event raises and lights its columns.
-            double ratio = MetricTileModel.Clamp((temps[i] - 30.0) / 55.0, 0.0, 1.0);
-            float h = Math.Max(rect.Height * 0.22f, (float)(0.35 + ratio * 0.65) * rect.Height);
-            int alpha = 55 + (int)(ratio * 185.0);
-            RectangleF cell = new RectangleF(rect.X + i * (cellW + gap), rect.Bottom - h, cellW, h);
-            using (GraphicsPath path = RoundedRectangle(cell, Math.Max(1.0f, S(2))))
-            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Warning, alpha)))
-            {
-                g.FillPath(brush, path);
-            }
+            DrawRightAlignedText(g, forecast.Source, rect, rect.Y + S(58), S(10),
+                DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 205), FontStyle.Regular);
         }
     }
 
-    private static string FormatRuntime(PowerStripSnapshot p)
+    private void DrawPowerBatteryStrip(
+        Graphics g,
+        RectangleF content,
+        Color accent,
+        PowerStripSnapshot power,
+        SystemDayBoardSnapshot day)
     {
-        if (p == null || !p.RuntimeSecondsKnown || p.RuntimeSeconds <= 0)
+        int battery = ResolvePowerBatteryPercent(power, day);
+        bool charging = power != null ? power.Charging : day != null && day.CurrentCharging;
+        Color fillColor = charging
+            ? DesignTokens.Colors.DangerStrong
+            : battery >= 0 && battery <= 20
+                ? DesignTokens.Colors.DangerStrong
+                : accent;
+        fillColor = MetricTileForm.ResolveBurnInRingColor(fillColor, this.burnInVisualLevel);
+        DrawSegmentBar(g, StripRect(content),
+            new double[] { battery >= 0 ? battery : 0 },
+            new Color[] { fillColor },
+            new int[] { 225 });
+
+        if (!ShouldDrawNeutralText(this.burnInVisualLevel))
         {
-            return p != null && p.PluggedIn ? "外接电源" : "剩余未知";
+            return;
         }
 
-        int minutes = p.RuntimeSeconds / 60;
+        bool wattsKnown = power != null && power.WattsKnown;
+        double watts = wattsKnown ? power.Watts : day != null ? day.CurrentWatts : 0.0;
+        wattsKnown = wattsKnown || day != null && day.CurrentWattsKnown;
+        double peak = ResolvePowerWattsPeak(day);
+        string label = "电池 " + (battery >= 0 ? battery.ToString(CultureInfo.InvariantCulture) + "%" : "--");
+        label += " · 当前 " + (wattsKnown ? watts.ToString("0.0", CultureInfo.InvariantCulture) + " W" : "-- W");
+        label += peak > 0.0
+            ? " · 近24h峰值 " + peak.ToString("0.0", CultureInfo.InvariantCulture) + " W"
+            : " · 近24h趋势采样中";
+        DrawText(g, label, content.X, content.Bottom - S(18), S(9.5f),
+            DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 205), FontStyle.Regular);
+    }
+
+    private static int ResolvePowerBatteryPercent(PowerStripSnapshot power, SystemDayBoardSnapshot day)
+    {
+        if (power != null && power.BatteryPercentKnown)
+        {
+            return Math.Max(0, Math.Min(100, power.BatteryPercent));
+        }
+
+        return day != null && day.CurrentBatteryKnown
+            ? Math.Max(0, Math.Min(100, day.CurrentBatteryPercent))
+            : -1;
+    }
+
+    private static double ResolvePowerWattsPeak(SystemDayBoardSnapshot day)
+    {
+        double peak = 0.0;
+        if (day == null || day.Points == null)
+        {
+            return peak;
+        }
+
+        for (int i = 0; i < day.Points.Count; i++)
+        {
+            SystemDayBoardPoint point = day.Points[i];
+            if (point != null && point.WattsKnown)
+            {
+                peak = Math.Max(peak, point.Watts);
+            }
+        }
+
+        return peak;
+    }
+
+    private static PowerForecastPresentation ResolvePowerForecast(
+        PowerStripSnapshot power,
+        SystemDayBoardSnapshot day)
+    {
+        int battery = ResolvePowerBatteryPercent(power, day);
+        if (battery < 0)
+        {
+            return new PowerForecastPresentation(
+                "电量未知",
+                "等待电池数据",
+                "续航预测尚不可用",
+                PowerForecastTone.Muted,
+                false);
+        }
+
+        bool charging = power != null ? power.Charging : day != null && day.CurrentCharging;
+        bool pluggedIn = power != null ? power.PluggedIn : day != null && day.CurrentPluggedIn;
+        if (charging)
+        {
+            int target = day != null && day.BatteryEtaTargetPercent > battery
+                ? day.BatteryEtaTargetPercent
+                : battery < 80 ? 80 : 100;
+            if (day != null && day.BatteryEtaKnown && day.BatteryEtaMinutes > 0)
+            {
+                return new PowerForecastPresentation(
+                    FormatPowerDuration(day.BatteryEtaMinutes) + " 到 " +
+                        target.ToString(CultureInfo.InvariantCulture) + "%",
+                    "正在充电",
+                    "按近 3h 电量趋势",
+                    PowerForecastTone.Charge,
+                    true);
+            }
+
+            return new PowerForecastPresentation(
+                "正在充电",
+                "目标 " + target.ToString(CultureInfo.InvariantCulture) + "%",
+                "等待充电趋势",
+                PowerForecastTone.Charge,
+                true);
+        }
+
+        if (pluggedIn)
+        {
+            return new PowerForecastPresentation(
+                "外接电源",
+                power != null && power.BatteryCarePauseActive ? "电池保护暂停" : "电池未放电",
+                "当前无需续航估算",
+                PowerForecastTone.Accent,
+                true);
+        }
+
+        if (power != null && power.RuntimeSecondsKnown && power.RuntimeSeconds > 0)
+        {
+            int minutes = Math.Max(1, (int)Math.Round(power.RuntimeSeconds / 60.0));
+            return new PowerForecastPresentation(
+                FormatPowerDuration(minutes) + " 后耗尽",
+                battery <= 20 ? "电量偏低" : "按当前状态估算",
+                "Windows 当前状态",
+                battery <= 20 ? PowerForecastTone.Danger : PowerForecastTone.Accent,
+                true);
+        }
+
+        if (day != null &&
+            day.BatteryEtaKnown &&
+            day.BatteryEtaMinutes > 0 &&
+            day.BatteryEtaTargetPercent <= 0)
+        {
+            return new PowerForecastPresentation(
+                FormatPowerDuration(day.BatteryEtaMinutes) + " 后耗尽",
+                battery <= 20 ? "电量偏低" : "按近期节奏估算",
+                "按近 3h 电量趋势",
+                battery <= 20 ? PowerForecastTone.Danger : PowerForecastTone.Accent,
+                true);
+        }
+
+        return new PowerForecastPresentation(
+            "续航估算中",
+            "等待电量变化",
+            "保持使用即可建立趋势",
+            PowerForecastTone.Muted,
+            false);
+    }
+
+    private static string FormatPowerDuration(int totalMinutes)
+    {
+        int minutes = Math.Max(1, totalMinutes);
         int hours = minutes / 60;
+        if (hours >= 24)
+        {
+            int days = hours / 24;
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}d{1}h",
+                days,
+                hours % 24);
+        }
+
         return hours > 0
-            ? string.Format(CultureInfo.InvariantCulture, "{0}h{1:00} 剩余", hours, minutes % 60)
-            : string.Format(CultureInfo.InvariantCulture, "{0}m 剩余", minutes);
+            ? string.Format(CultureInfo.InvariantCulture, "{0}h{1:00}", hours, minutes % 60)
+            : string.Format(CultureInfo.InvariantCulture, "{0}m", minutes);
+    }
+
+    private static Color ResolvePowerForecastColor(PowerForecastTone tone, Color accent)
+    {
+        switch (tone)
+        {
+            case PowerForecastTone.Charge:
+                return DesignTokens.Colors.DangerStrong;
+            case PowerForecastTone.Danger:
+                return DesignTokens.Colors.Danger;
+            case PowerForecastTone.Muted:
+                return DesignTokens.Colors.GlyphMuted;
+            default:
+                return accent;
+        }
+    }
+
+    private enum PowerForecastTone
+    {
+        Accent,
+        Charge,
+        Danger,
+        Muted
+    }
+
+    private sealed class PowerForecastPresentation
+    {
+        public PowerForecastPresentation(
+            string main,
+            string status,
+            string source,
+            PowerForecastTone tone,
+            bool known)
+        {
+            this.Main = main;
+            this.Status = status;
+            this.Source = source;
+            this.Tone = tone;
+            this.Known = known;
+        }
+
+        public string Main { get; private set; }
+        public string Status { get; private set; }
+        public string Source { get; private set; }
+        public PowerForecastTone Tone { get; private set; }
+        public bool Known { get; private set; }
     }
 
     // ── Radar: quota ─────────────────────────────────────────────────────
@@ -1814,6 +2102,49 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             throw new InvalidOperationException("A 100% CPU core must align with the 100% guide row.");
         }
 
+        PowerStripSnapshot discharging = new PowerStripSnapshot
+        {
+            BatteryPercentKnown = true,
+            BatteryPercent = 79,
+            RuntimeSecondsKnown = true,
+            RuntimeSeconds = 3 * 3600 + 42 * 60
+        };
+        PowerForecastPresentation dischargeForecast = ResolvePowerForecast(discharging, null);
+        if (!dischargeForecast.Known || dischargeForecast.Main.IndexOf("3h42", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("PWR must prefer the current Windows battery runtime.");
+        }
+
+        PowerStripSnapshot charging = new PowerStripSnapshot
+        {
+            BatteryPercentKnown = true,
+            BatteryPercent = 62,
+            Charging = true,
+            PluggedIn = true
+        };
+        SystemDayBoardSnapshot chargingDay = SystemDayBoardSnapshot.CreateEmpty(SystemDayRange.Last24Hours, DateTime.Now);
+        chargingDay.BatteryEtaKnown = true;
+        chargingDay.BatteryEtaMinutes = 55;
+        chargingDay.BatteryEtaTargetPercent = 80;
+        PowerForecastPresentation chargeForecast = ResolvePowerForecast(charging, chargingDay);
+        if (!chargeForecast.Known ||
+            chargeForecast.Main.IndexOf("55m", StringComparison.Ordinal) < 0 ||
+            chargeForecast.Main.IndexOf("80%", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("PWR charging forecast must show time and target.");
+        }
+
+        PowerStripSnapshot plugged = new PowerStripSnapshot
+        {
+            BatteryPercentKnown = true,
+            BatteryPercent = 80,
+            PluggedIn = true
+        };
+        if (ResolvePowerForecast(plugged, null).Main != "外接电源")
+        {
+            throw new InvalidOperationException("PWR must distinguish external power from battery runway.");
+        }
+
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.Normalize();
         using (MetricTileExpandForm panel = new MetricTileExpandForm(settings))
@@ -1856,7 +2187,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             }
         }
 
-        Console.WriteLine("Metric tile expand: PASS Radar-module size, placement, large mode, level-two neutral-text suppression");
+        Console.WriteLine("Metric tile expand: PASS Radar-module size, placement, large mode, level-two neutral-text suppression, PWR runway states");
     }
 
     // Geometry-only half of ShowForTile, so the self test can assert placement without creating a

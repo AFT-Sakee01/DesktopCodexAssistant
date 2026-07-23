@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.14
+适用版本：2.0.0.15
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -115,6 +115,8 @@ Cpu, Memory, Disk, Network, Gpu, Npu, Power, Guard, CodexQuota, ClaudeQuota, Dee
 `PushMetricTileFeed()` 把同一个 feed 推给全部 tile；方块不自行采样。鼠标悬停时 `MetricTileExpandForm` 使用同一 feed 和相同 tile ID 展开详情，也不建立 reader 或 timer。
 
 CPU、MEM、DISK 与 NET 展开详情使用现有 tile 角色色绘制标题和窗口边框。CPU 的总占用曲线与每核柱共用 `MetricTileExpandForm.ResolvePlotY()` 的 0–100 投影，100% 柱顶与 100 参考线落在同一像素行；频率、基准频率、核心数与峰值核心显示在标题下方，不再保留曲线/柱说明图例。MEM 外环和中心数字继续显示物理内存占用率；内环改为 `MemoryPressureTracker` 投影的绿/黄/红三态服务效率压力。压力以可用物理内存和 10 秒平滑后的 `Memory\\Pages Output/sec` 换出速率为主，Commit 低于 90% 不加分，90% 以上只作为接近分配上限的安全下限。展开窗仍以紫色显示已用历史、黄色显示 GPU/NPU 共享内存历史，底部改为按真实时间保留最近 60 秒状态的压力色带；当前状态、Commit 风险和换出速率分栏显示，不能把物理占用、文件映射页读入、页文件占用或 GPU/NPU 共享量直接等同于压力。NET 以蓝色下行、红色上行绘制镜像曲线，当前值使用 Kbps/Mbps/Gbps 位速率；DISK 以黄色写入、绿色读取绘制共享刻度曲线，当前值使用 KB/s/MB/s/GB/s 字节速率。两组当前值都在左侧连续显示。上述展开窗只读同一 `MetricTileFeed`，不得在绘制路径另行采样。
+
+PWR 小方块只保留电量单环，不再把温度混入第二个环或告警点。展开详情采用与额度面板一致的“左侧当前状态 / 背景趋势 / 右侧预测 / 底部余量”层级：左侧显示电量与当前瓦数，背景绘制近 24 小时黄色功耗曲线和红升/青降电量曲线，右侧优先显示 Windows 当前续航、再回退到 System Day 近三小时电量斜率，底部显示当前电量与近 24 小时功耗峰值。温度继续由 headless owner 采样并进入 System Day 历史，但不在 PWR tile 或展开详情呈现。PWR 绘制只读同一 `MetricTileFeed` 中的当前 `PowerStripSnapshot` 和 5 秒缓存的 `SystemDayBoardSnapshot`，不得同步采样或读历史文件。
 
 Codex/CLD 展开详情保留各自绿色/黄色角色色与边框。周额度历史占图表前 68%，右侧预测区显示预计耗尽或撑到 reset 的结论，5 小时额度在底条独立显示同类判断；两者仍只读同一 `MetricTileFeed`。DeepSeek 展开详情使用蓝色余额曲线、黄色 24 小时消耗和底条，并根据本地余额下降历史给出预计可用时长；UI 不在绘制路径发起 API 请求。二级防烧屏继续隐藏白色/中性色文字，并反转额度曲线、预测结论和底条的角色色。
 

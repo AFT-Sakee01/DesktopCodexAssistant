@@ -148,6 +148,7 @@ internal sealed partial class WidgetForm
             try
             {
                 feed.Power = this.powerThermalForm.BuildStripSnapshot();
+                feed.PowerDay = BuildMetricTilePowerProjection();
             }
             catch (Exception ex)
             {
