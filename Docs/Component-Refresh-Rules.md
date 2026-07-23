@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.16
+适用版本：2.0.0.17
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -76,7 +76,7 @@ hover/自动隐藏规则：
 - 两级防烧屏默认开启：`BurnInLevelOneIdleSeconds = 10` 后进入一级，随后 `BurnInLevelTwoDelaySeconds = 30` 后进入二级；允许范围分别为 1-300 秒和 1-600 秒。
 - 防烧屏复用 hidden `WidgetForm` 的静止交互轮询和七个 `EdgeDockTabForm` 的 120 ms hover tick，不新增 timer。一级/二级激活后，纯鼠标移动只驱动左 tab 局部恢复，或让右侧 tile/expand 整组恢复亮度与原始强调色；二级真实状态仍锁定，所以白色/中性文字继续隐藏，离开右侧组后重新反色。进入二级的边沿立即收起当前 hover expand。点击、滚轮、键盘输入、显示挂起与布局编辑会归零状态并重新计时。
 - 右侧 11 个 tile 与 hover expand 默认设置 `WS_EX_TRANSPARENT` 以穿透点击；hover 继续复用光标位置轮询，不新增 hook/timer。额度彩蛋状态机同样只消费已发布快照，已知空→恢复只登记一次，第一次展开后清除；彩蛋文字只由展开窗绘制，常驻 tile 不绘制。
-- Operation RadialDial 核心 keep-alive 复用共享交互 tick，不建立 timer；达到空闲阈值后只改变一次核心视觉。
+- Operation RadialDial 核心 keep-alive 复用共享交互 tick，不建立 timer。白圈持续直接悬停达到 `AutoHoverOpacityIdleSeconds` 后进入绿圈状态；仅绿圈存续期间，hidden host 锁定其余可见窗体、逐 tick 重置 hover 自动隐藏与防烧屏活动时间，离开核心后解除锁定并重新开始倒计时。
 - hidden host 只协调防烧屏状态，不提交像素；headless owners 不进入 hover、click-through、burn-in 或 Z-order 轮询。
 
 ## 4. Codex / Claude Radar headless owner

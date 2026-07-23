@@ -21,7 +21,7 @@ internal sealed partial class OperationForm
                 HideNetworkDockedPanelIfVisible();
             };
         }
-        this.resetSpeedBoardForm.PreparePresentationState(this.displaySuspended, this.hiddenForFullscreen);
+        this.resetSpeedBoardForm.PreparePresentationState(this.displaySuspended, AreLeftDockSurfacesHidden());
         this.resetSpeedBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
         return this.resetSpeedBoardForm;
     }
@@ -65,7 +65,6 @@ internal sealed partial class OperationForm
     internal void PrepareForResetSpeedBoardOverlayShow()
     {
         if (this.radialMenuOpen) CloseRadialMenu();
-        HideLauncherTrioIfVisible();
         CollapseLeftDockBoardsExcept(LeftDockBoardKind.ResetSpeed);
     }
 

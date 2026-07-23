@@ -7,7 +7,7 @@ using System.Net.NetworkInformation;
 // This is a native C# reimplementation of the CodexSleepGuard PowerShell utility
 // (E:\Codexproject\desktopdata\CodexSleepGuard). The board draws a live countdown ring, which an
 // out-of-process script cannot feed without an IPC channel, so the three power guards moved
-// in-process; the launcher entry in OperationForm.LauncherTrio still starts the standalone script
+// in-process; no external SleepGuard launcher is retained in the Operation surface
 // for users who want it outside this app.
 //
 // Thread affinity is the sharp edge here. SetThreadExecutionState registers against the *calling

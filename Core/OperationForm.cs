@@ -47,6 +47,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly Action restartAction;
     private readonly Action<string, string, ToolTipIcon> notificationAction;
     private readonly Func<bool> toggleHoverOpacityAction;
+    private readonly Func<bool> toggleSideSurfacesAction;
     private readonly Func<bool> pulseSeelenDockAction;
     private readonly Func<bool> manualAiBlockAction;
     private readonly Func<bool, bool> setAiBlockAction;
@@ -62,6 +63,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly bool isAsusZenbookDevice;
     private readonly UiFontCache fontCache = new UiFontCache();
     private bool hiddenForFullscreen;
+    private bool leftDockSurfacesHidden;
     private bool displaySuspended;
     private volatile bool formClosing;
     private bool myAsusInstalled;
@@ -89,7 +91,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private RectangleF[] buttonRects;
     private bool buttonRectsValid;
 
-    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction, Func<string, bool, bool> setBooleanSettingAction, Action<WidgetSettings> persistGuardStateAction = null)
+    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> toggleSideSurfacesAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction, Func<string, bool, bool> setBooleanSettingAction, Action<WidgetSettings> persistGuardStateAction = null)
     {
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
@@ -98,6 +100,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.restartAction = restartAction;
         this.notificationAction = notificationAction;
         this.toggleHoverOpacityAction = toggleHoverOpacityAction;
+        this.toggleSideSurfacesAction = toggleSideSurfacesAction;
         this.pulseSeelenDockAction = pulseSeelenDockAction;
         this.manualAiBlockAction = manualAiBlockAction;
         this.setAiBlockAction = setAiBlockAction;
@@ -192,7 +195,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.appSettingsSingleClickTimer.Tick -= OnAppSettingsSingleClickTimerTick;
         this.appSettingsSingleClickTimer.Dispose();
         DisposeSpecBoardForm();
-        DisposeLauncherTrioForm();
         DisposeCodexTaskBoardForm();
         DisposeGuardBoardForm();
         DisposeCodexIqBoardForm();
@@ -340,21 +342,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         EnsureResetSpeedBoardForm();
         EnsureSystemDayBoardForm();
 
-        if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed)
-        {
-            this.launcherTrioForm.ApplyRuntimeSettings(this.CurrentSettings);
-            if (!this.CurrentSettings.OperationDoubleClickSpecialMenuEnabled && this.launcherTrioForm.Visible)
-            {
-                this.launcherTrioForm.HideTrio();
-            }
-        }
-
         RenderLayeredWindow();
     }
 
     public void ClearTransientInteractionState()
     {
-        CancelSpecBoardEntryClick();
+        CancelOperationEntryClick();
         bool changed =
             this.hoveredButton != -1 ||
             this.pressedButton != -1 ||
@@ -385,28 +378,15 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     public void SetHiddenForFullscreen(bool hidden)
     {
-        if (this.specBoardForm != null && !this.specBoardForm.IsDisposed)
-        {
-            this.specBoardForm.SetHiddenForFullscreen(hidden);
-        }
-
-        if (this.codexTaskBoardForm != null && !this.codexTaskBoardForm.IsDisposed)
-        {
-            this.codexTaskBoardForm.SetDockTabHiddenForFullscreen(hidden);
-        }
-
-        SetGuardBoardHiddenForFullscreen(hidden);
-        SetCodexIqBoardHiddenForFullscreen(hidden);
-        SetResetSpeedBoardHiddenForFullscreen(hidden);
-        SetSystemDayBoardHiddenForFullscreen(hidden);
-
         if (this.hiddenForFullscreen == hidden &&
             ((hidden && !this.Visible) || (!hidden && this.Visible)))
         {
+            ApplyLeftDockSurfacesHiddenState();
             return;
         }
 
         this.hiddenForFullscreen = hidden;
+        ApplyLeftDockSurfacesHiddenState();
         if (hidden)
         {
             this.animationTimer.Stop();
@@ -427,6 +407,42 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         PositionOperationWindow();
         UpdateForegroundFpsTimer();
         RenderLayeredWindow();
+    }
+
+    internal void SetLeftDockSurfacesHidden(bool hidden)
+    {
+        if (this.leftDockSurfacesHidden == hidden)
+        {
+            ApplyLeftDockSurfacesHiddenState();
+            return;
+        }
+
+        this.leftDockSurfacesHidden = hidden;
+        ApplyLeftDockSurfacesHiddenState();
+    }
+
+    internal bool AreLeftDockSurfacesHidden()
+    {
+        return this.hiddenForFullscreen || this.leftDockSurfacesHidden;
+    }
+
+    private void ApplyLeftDockSurfacesHiddenState()
+    {
+        bool hidden = AreLeftDockSurfacesHidden();
+        if (this.specBoardForm != null && !this.specBoardForm.IsDisposed)
+        {
+            this.specBoardForm.SetHiddenForFullscreen(hidden);
+        }
+
+        if (this.codexTaskBoardForm != null && !this.codexTaskBoardForm.IsDisposed)
+        {
+            this.codexTaskBoardForm.SetDockTabHiddenForFullscreen(hidden);
+        }
+
+        SetGuardBoardHiddenForFullscreen(hidden);
+        SetCodexIqBoardHiddenForFullscreen(hidden);
+        SetResetSpeedBoardHiddenForFullscreen(hidden);
+        SetSystemDayBoardHiddenForFullscreen(hidden);
     }
 
     public void RecoverAfterDisplayResume()
@@ -722,10 +738,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         if (button == StartButtonIndex)
         {
-            string doubleClickAction = this.CurrentSettings.OperationDoubleClickSpecialMenuEnabled
-                ? "双击：特殊菜单"
-                : "双击：开关隐藏模式";
-            return "左键：Windows 开始菜单\r\n右键：Windows 系统工具菜单\r\n" + doubleClickAction + "\r\n设备管理器、磁盘管理等";
+            return "左键：Windows 开始菜单\r\n右键：Windows 系统工具菜单\r\n双击：隐藏或恢复两侧窗格\r\n设备管理器、磁盘管理等";
         }
 
         if (button == WindowsSettingsButtonIndex)
@@ -867,7 +880,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         if (button == StartButtonIndex && e.Button == MouseButtons.Left)
         {
-            HandleSpecBoardEntryMouseUp(SpecBoardEntryClickTarget.StartButton);
+            HandleOperationEntryMouseUp(OperationEntryClickTarget.StartButton);
             return;
         }
 
@@ -886,7 +899,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         {
             if (RadialHitTest(e.Location).Kind == RadialHitKind.Core)
             {
-                HandleSpecBoardEntryDoubleClick(SpecBoardEntryClickTarget.RadialCore);
+                HandleOperationEntryDoubleClick(OperationEntryClickTarget.RadialCore);
             }
 
             return;
@@ -894,7 +907,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
         if (HitTest(e.Location) == StartButtonIndex)
         {
-            HandleSpecBoardEntryDoubleClick(SpecBoardEntryClickTarget.StartButton);
+            HandleOperationEntryDoubleClick(OperationEntryClickTarget.StartButton);
         }
     }
 
@@ -2619,10 +2632,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     public void RefreshNightScheduleFromOwnerTick()
     {
         RefreshNightScheduleAtExistingTick();
-        if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed)
-        {
-            this.launcherTrioForm.RefreshNightScheduleFromOwnerTick();
-        }
     }
 
     protected override void DrawWindowContent(Graphics g)

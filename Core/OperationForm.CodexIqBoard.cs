@@ -23,7 +23,7 @@ internal sealed partial class OperationForm
             };
         }
 
-        this.codexIqBoardForm.PreparePresentationState(this.displaySuspended, this.hiddenForFullscreen);
+        this.codexIqBoardForm.PreparePresentationState(this.displaySuspended, AreLeftDockSurfacesHidden());
         this.codexIqBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
         return this.codexIqBoardForm;
     }
@@ -86,7 +86,6 @@ internal sealed partial class OperationForm
             CloseRadialMenu();
         }
 
-        HideLauncherTrioIfVisible();
         CollapseLeftDockBoardsExcept(LeftDockBoardKind.CodexIq);
     }
 

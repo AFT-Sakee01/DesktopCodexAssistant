@@ -537,7 +537,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         AddPageGrouped("\uE700", "操作面板", "左下角操作面板的按钮、透明度和外观。", new string[][]
         {
-            new string[] { "按钮与面板", "OperationButtonSize", "OperationPrimaryPanelMode", "OperationDoubleClickSpecialMenuEnabled", "OperationSettingsLogicExtensionEnabled", "OperationBackgroundTransparencyPercent", "OperationTransparencyOverridePercent" },
+            new string[] { "按钮与面板", "OperationButtonSize", "OperationPrimaryPanelMode", "OperationSettingsLogicExtensionEnabled", "OperationBackgroundTransparencyPercent", "OperationTransparencyOverridePercent" },
             new string[] { "Spec Board", "SpecBoardTransparencyOverridePercent", "SpecBoardLeftDockTabCenterY", "LeftDockOutsideClickCollapseEnabled", "SpecBoardAutoPopupEnabled", "SpecBoardAutoPopupSeconds", "SpecBoardAutoHideSeconds", "SpecBoardLedgerPath", "SpecBoardManagerWidth", "SpecBoardManagerHeight", "SpecBoardManagerDangerZoneRequiresTypedConfirm" },
             new string[] { "Codex 任务看板", "CodexTaskBoardTransparencyOverridePercent", "CodexTaskBoardLeftDockTabCenterY" },
             new string[] { "GUARD 看板", "GuardBoardTransparencyOverridePercent", "GuardBoardScaleOverridePercent", "GuardBoardLeftDockTabCenterY", "GuardBoardAutoHideSeconds" },
@@ -3205,7 +3205,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "FixedPingTargets",
             "OperationButtonSize",
             "OperationPrimaryPanelMode",
-            "OperationDoubleClickSpecialMenuEnabled",
             "OperationSettingsLogicExtensionEnabled"
         };
 
@@ -4093,7 +4092,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexRadarRandomTestAutoRefresh", "健康测试自动刷新" },
         { "CodexRadarRandomTestRefreshToken", "立即刷新健康测试" },
         { "OperationSettingsLogicExtensionEnabled", "设置扩展到操作逻辑" },
-        { "OperationDoubleClickSpecialMenuEnabled", "双击打开特殊菜单" },
         { "CodexRadarPublicJsonEnabled", "Codex 公开 JSON" },
         { "CodexRadarHtmlFallbackEnabled", "Codex 首页 HTML 回退" },
         { "CodexRadarRssFallbackEnabled", "Codex RSS 重置提醒" },
@@ -4161,12 +4159,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "BurnInProtectionEnabled", "开启后，无操作先进入一级低亮保护，再进入二级反色/文字抑制保护；点击会退出，悬停只临时恢复对应区域。" },
         { "BurnInLevelOneIdleSeconds", "无操作达到该时长后进入一级；范围 1-300 秒，默认 10 秒。" },
         { "BurnInLevelTwoDelaySeconds", "进入一级后再经过该时长进入二级；范围 1-600 秒，默认 30 秒。" },
-        { "OperationRadialCoreAutoHideKeepAliveEnabled", "鼠标停在左下角扇形速控盘核心圆圈上时，暂停并重置自动隐藏计时器，让所有隐藏透明度窗口保持显示。" },
+        { "OperationRadialCoreAutoHideKeepAliveEnabled", "鼠标持续停在左下角白色核心圆圈并达到自动隐藏阈值后，圆圈变绿；绿圈存续期间锁定其他窗口，同时重置自动隐藏与防烧屏倒计时，离开圆圈后解除。" },
         { "OperationRadialIdleCollapseSeconds", "范围 1-60 秒；设为 0 表示永不自动收回扇形速控盘。" },
         { "OperationRadialIdleResetOnInteractionEnabled", "开启后鼠标移动、按下或展开新分支会重新开始扇形速控盘自动收回计时。" },
         { "OperationRadialKeepOpenAfterLeafClickEnabled", "开启后点击扇形速控盘末端按钮不会自动收起菜单；关闭后恢复点击末端按钮即收起。" },
         { "OperationSettingsLogicExtensionEnabled", "开启后在扇形速控盘“设置”分支中增加常用逻辑和全部开关目录；关闭时保持原来的 3 项设置菜单。" },
-        { "OperationDoubleClickSpecialMenuEnabled", "开启后双击左下角主操作按钮会打开 Spec 管理、Codex 任务和睡眠防护特殊菜单；关闭时双击直接开关隐藏模式。" },
         { "CodexRadarSoftwareMode", "控制后台额度数据族自动按运行态选择，或固定使用 CODEX/CLAUDE；CLAUDE 只读取官方 Claude Code 用量。" },
         { "CodexRadarModelKey", "仅用于 CODEX 数据族的 CodexRadar 模型选择；CLAUDE 额度不区分模型。" },
         { "RadarClockAutoSwitchModelEnabled", "Codex Radar 跨过完整周期仍没有当前模型 IQ 更新时，自动切到站点当天最近刷新 IQ 的模型。" },

@@ -62,7 +62,6 @@
     "Core/OperationForm.CodexTasks.cs",
     "Core/OperationForm.cs",
     "Core/OperationForm.GuardBoard.cs",
-    "Core/OperationForm.LauncherTrio.cs",
     "Core/OperationForm.RadialDial.cs",
     "Core/OperationForm.RenderSample.cs",
     "Core/OperationForm.ResetSpeedBoard.cs",

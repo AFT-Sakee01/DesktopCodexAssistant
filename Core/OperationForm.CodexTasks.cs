@@ -7,11 +7,10 @@ using System.Globalization;
 using System.Text;
 using System.Windows.Forms;
 
-// Scheme 1 frontend: the launcher's Codex task node opens this standalone task board window, a
-// SpecBoard-style card list over CodexTaskPresentation. Read-only — no reader is constructed here
-// and no task state is mutated. The board joins the existing overlay mutex, refreshes itself on a
-// timer while visible, and positions itself so the operation core button and the launcher arc
-// (which fans up-right from the core) are never covered and never cover it.
+// The Codex task dock tab opens this standalone task board window, a SpecBoard-style card list over
+// CodexTaskPresentation. Read-only — no reader is constructed here and no task state is mutated.
+// The board joins the existing overlay mutex, refreshes itself on a timer while visible, and stays
+// clear of the operation core so the restore entry remains available.
 internal sealed partial class OperationForm
 {
     private const int CodexTaskBoardMaximumRows = 10;
@@ -38,7 +37,7 @@ internal sealed partial class OperationForm
         }
 
         this.codexTaskBoardForm.SetDockTabDisplaySuspended(this.displaySuspended);
-        this.codexTaskBoardForm.SetDockTabHiddenForFullscreen(this.hiddenForFullscreen);
+        this.codexTaskBoardForm.SetDockTabHiddenForFullscreen(AreLeftDockSurfacesHidden());
         this.codexTaskBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
         return this.codexTaskBoardForm;
     }
@@ -60,7 +59,6 @@ internal sealed partial class OperationForm
             CloseRadialMenu();
         }
 
-        HideLauncherTrioIfVisible();
         CollapseLeftDockBoardsExcept(LeftDockBoardKind.CodexTask);
     }
 
@@ -85,27 +83,57 @@ internal sealed partial class OperationForm
         }
     }
 
-    // Screen rect that the board must not overlap: the operation core button unioned with the
-    // launcher arc's up-right quadrant (the trio buttons sit on the RadialDial second-level radius
-    // between 8° and 82°). Geometry mirrors OperationLauncherTrioForm.ComputeArcCenterOffsets.
-    internal Rectangle GetLauncherObstructionScreenRect()
+    // Companion windows anchor to the live operation core so the radial and legacy variants share
+    // one placement contract after the retired double-click launcher was removed.
+    private RectangleF GetOperationAnchorScreenRect()
     {
-        RectangleF core = GetOperationAnchorScreenRect();
-        float coreSize = GetStartButtonSize();
-        float item = GetSmallButtonSize();
-        float coreRadius = coreSize / 2.0f;
-        float firstLevelRadius = coreRadius + coreSize * RadialGapScale + item / 2.0f;
-        float secondLevelRadius = firstLevelRadius + item * (RadialGapScale + 1.0f) * RadialLevelSpacingMultiplier;
-        float reach = secondLevelRadius + Math.Max(item, coreSize * 0.8f) / 2.0f;
-        float centerX = core.Left + core.Width / 2.0f;
-        float centerY = core.Top + core.Height / 2.0f;
-        RectangleF arcQuadrant = new RectangleF(centerX, centerY - reach, reach, reach);
-        return Rectangle.Round(RectangleF.Union(core, arcQuadrant));
+        RectangleF anchor = RectangleF.Empty;
+        if (IsRadialDialActive())
+        {
+            anchor = ComputeRadialLayout().Core;
+        }
+        else
+        {
+            RectangleF[] rects = GetButtonRects();
+            if (StartButtonIndex >= 0 &&
+                StartButtonIndex < rects.Length &&
+                IsButtonVisible(StartButtonIndex) &&
+                !rects[StartButtonIndex].IsEmpty)
+            {
+                anchor = rects[StartButtonIndex];
+            }
+            else
+            {
+                for (int i = 0; i < rects.Length; i++)
+                {
+                    if (IsButtonVisible(i) && !rects[i].IsEmpty)
+                    {
+                        anchor = rects[i];
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (anchor.IsEmpty)
+        {
+            anchor = new RectangleF(0.0f, 0.0f, GetStartButtonSize(), GetStartButtonSize());
+        }
+
+        Point topLeft = PointToScreen(new Point(
+            (int)Math.Round(anchor.Left),
+            (int)Math.Round(anchor.Top)));
+        return new RectangleF(topLeft.X, topLeft.Y, anchor.Width, anchor.Height);
+    }
+
+    internal Rectangle GetOperationObstructionScreenRect()
+    {
+        return Rectangle.Round(GetOperationAnchorScreenRect());
     }
 
     // Pure placement rule shared by the live board and the self-test. Slots in preference order:
-    // above the obstruction with the board's right edge at the core center (keeps the up-right
-    // launcher arc clear), left of the obstruction centered on the core, below the obstruction.
+    // above the obstruction with the board's right edge at the core center, left of the obstruction
+    // centered on the core, then below the obstruction.
     // Clamping into the work area runs last; if it reintroduced an overlap, shift away once more.
     internal static Point ComputeCodexTaskBoardPlacement(
         Rectangle workArea,
@@ -206,7 +234,7 @@ internal sealed partial class OperationForm
         Point placed = ComputeCodexTaskBoardPlacement(workArea, core, obstruction, board, margin);
         if (new Rectangle(placed, board).IntersectsWith(obstruction) || placed.Y + board.Height > obstruction.Top)
         {
-            throw new InvalidOperationException("Codex task board should sit above the launcher obstruction when space allows.");
+            throw new InvalidOperationException("Codex task board should sit above the operation obstruction when space allows.");
         }
 
         // Core near the top edge: no room above, the board must move to the left slot and stay clear.
@@ -224,7 +252,7 @@ internal sealed partial class OperationForm
         placed = ComputeCodexTaskBoardPlacement(workArea, core, obstruction, board, margin);
         if (new Rectangle(placed, board).IntersectsWith(obstruction) || placed.Y < obstruction.Bottom)
         {
-            throw new InvalidOperationException("Codex task board should drop below the launcher in the top-left corner.");
+            throw new InvalidOperationException("Codex task board should drop below the operation core in the top-left corner.");
         }
 
         // Every placement must stay inside the work area.
@@ -352,6 +380,7 @@ internal sealed partial class OperationForm
             delegate { },
             delegate { },
             delegate(string title, string message, ToolTipIcon icon) { },
+            delegate { return true; },
             delegate { return true; },
             delegate { return true; },
             delegate { return true; },
@@ -973,7 +1002,7 @@ internal sealed partial class OperationForm
             this.Location = ComputeCodexTaskBoardPlacement(
                 this.owner.CurrentSettings.GetWorkAreaForModule(WidgetSettings.ModuleOperation),
                 this.owner.GetOperationAnchorScreenRect(),
-                this.owner.GetLauncherObstructionScreenRect(),
+                this.owner.GetOperationObstructionScreenRect(),
                 this.Size,
                 S(8));
         }

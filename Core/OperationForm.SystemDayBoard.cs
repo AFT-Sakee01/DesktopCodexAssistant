@@ -21,7 +21,7 @@ internal sealed partial class OperationForm
                 HideNetworkDockedPanelIfVisible();
             };
         }
-        this.systemDayBoardForm.PreparePresentationState(this.displaySuspended, this.hiddenForFullscreen);
+        this.systemDayBoardForm.PreparePresentationState(this.displaySuspended, AreLeftDockSurfacesHidden());
         this.systemDayBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
         return this.systemDayBoardForm;
     }
@@ -65,7 +65,6 @@ internal sealed partial class OperationForm
     internal void PrepareForSystemDayBoardOverlayShow()
     {
         if (this.radialMenuOpen) CloseRadialMenu();
-        HideLauncherTrioIfVisible();
         CollapseLeftDockBoardsExcept(LeftDockBoardKind.SystemDay);
     }
 

@@ -1,6 +1,6 @@
 # Spec Board 架构
 
-适用版本：2.0.0.12
+适用版本：2.0.0.17
 
 本文负责跨项目 spec 账本读取、对账、看板窗口、交互和只读边界。
 
@@ -34,7 +34,7 @@
 
 ## 管理窗口
 
-主看板 footer 的“管理”按钮或双击启动器的“Spec 管理”按钮通过 `SpecBoardForm.ShowManagerWindow` 直接打开非模态的全自绘工作台 `SpecBoardManagerForm`。启动器入口不会先显示小看板。窗体 `FormBorderStyle.None` + 圆角 `Region` + 自绘标题栏（`WM_NCHITTEST` 返回 `HTCAPTION` 实现拖动、四边 `S(6)` 热区实现缩放、自绘关闭按钮），**刻意不继承 `LayeredWidgetFormBase`**——分层管线不合成子窗口，而备注/搜索/删除确认必须是可聚焦的原生 `TextBox`（全窗仅这 3 个原生子控件，无边框深色嵌入自绘卡片）。其余全部 OnPaint 自绘 + 命中矩形表（沿用主看板 hitTargets 模式）。管理窗与主看板生命周期独立，主看板自动收回不会关闭管理窗。管理窗的初始加载和每次写后刷新都在后台任务中调用有界 reader；新加载会取消旧 token，并以 generation 阻止旧结果覆盖，关闭窗口时取消在途读取。UI 线程只应用完整快照和更新控件。
+主看板 footer 的“管理”按钮通过 `SpecBoardForm.ShowManagerWindow` 打开非模态的全自绘工作台 `SpecBoardManagerForm`。窗体 `FormBorderStyle.None` + 圆角 `Region` + 自绘标题栏（`WM_NCHITTEST` 返回 `HTCAPTION` 实现拖动、四边 `S(6)` 热区实现缩放、自绘关闭按钮），**刻意不继承 `LayeredWidgetFormBase`**——分层管线不合成子窗口，而备注/搜索/删除确认必须是可聚焦的原生 `TextBox`（全窗仅这 3 个原生子控件，无边框深色嵌入自绘卡片）。其余全部 OnPaint 自绘 + 命中矩形表（沿用主看板 hitTargets 模式）。管理窗与主看板生命周期独立，主看板自动收回不会关闭管理窗。管理窗的初始加载和每次写后刷新都在后台任务中调用有界 reader；新加载会取消旧 token，并以 generation 阻止旧结果覆盖，关闭窗口时取消在途读取。UI 线程只应用完整快照和更新控件。
 
 交互：顶部为项目筛选（深色 `ContextMenuStrip`）、七枚互斥状态筛选胶囊、搜索框与"批量登记未登记项"；左列表（44% 宽）为色点+标题+项目行，Ctrl/Shift 多选；右详情为粗体标题（≤2 行省略）、"项目 · 文件名 ✓"元信息、`PathEllipsis` 全路径、时间线、**五枚状态胶囊（当前实心、其余描边，单击立即写账本）**、备注卡（脏时保存钮点亮、切换选择前弹未保存确认）、打开/定位/危险按钮。未登记行胶囊替换为"登记为未执行"；多选 N≥2 时右侧变批量模式（胶囊批量应用，含未登记项则登记为该状态；批量删除仅账本条目）。列表有焦点时数字键 1-5 直接应用五态，Esc 关窗。排序固定为状态优先级内按最近更新倒序。
 
@@ -46,7 +46,7 @@
 
 `SpecBoardLedgerStore` 是程序内唯一账本写入口。每次操作都通过同一有界 reader 重新整份读取并用 `id + 旧 UpdatedUtc` 校验，冲突即拒绝覆盖并刷新；序列化结果若超过 2 MiB、64 KiB/行或 5000 行，会在接触 `.bak` 和正式账本前拒绝。合法写入才滚动覆盖 `SPEC_BOARD.jsonl.bak`，同目录写 `.tmp` 后用 `File.Replace` 原子替换。状态、备注、登记、批量和删除共享该路径，人工修改固定写 `updated_by="User (SpecBoardManager)"`。AI 会话仍使用外部 `spec-board` skill，不调用管理服务。
 
-RadialDial 核心圆圈或 Start 按钮双击调用 `ToggleLauncherTrioWindow`；这两个入口的单击动作等待 `SystemInformation.DoubleClickTime` 后才提交，双击到达会取消待执行单击并吞掉第二次 MouseUp，避免一次双击同时开关 Radial 菜单或 Windows 开始菜单。Radial 单击菜单、双击启动器和 Spec 小看板三者互斥：每个入口在显示前关闭另外两个，后打开者覆盖先打开者；管理窗不参与互斥。生产路径中的 Spec 小看板始终有 `OperationForm` owner，并由固定左 Dock 的 `LeftDockLayout` 定位；`SpecBoardLeftX`、`SpecBoardBottomY` 仅保留为旧版 owner-null/未停靠回退坐标，当前设置 UI、全局布局编辑器和正常运行路径都不提供入口。
+RadialDial 核心圆圈或 Start 按钮的单击动作等待 `SystemInformation.DoubleClickTime` 后才提交；双击到达会取消待执行单击并吞掉第二次 MouseUp，避免一次双击同时开关 Radial 菜单或 Windows 开始菜单。双击现在由窗口运行时统一负责隐藏或恢复两侧表面，不再提供 Spec 管理入口。生产路径中的 Spec 小看板始终有 `OperationForm` owner，并由固定左 Dock 的 `LeftDockLayout` 定位；`SpecBoardLeftX`、`SpecBoardBottomY` 仅保留为旧版 owner-null/未停靠回退坐标，当前设置 UI、全局布局编辑器和正常运行路径都不提供入口。
 
 ## 左缘停靠（EdgeDockTab）
 
@@ -61,10 +61,6 @@ tab 自身用 120 ms 计时器轮询 `Cursor.Position` 判定 hover（不依赖�
 tab 中心 Y 由各自 `*LeftDockTabCenterY` 指定，`-1`（`AutoLeftDockTabCenterY`）表示交给 `LeftDockLayout`：按 `LeftDockButtonOrder` 对 Network、Spec、Codex Task、GUARD、Codex IQ、ResetSpeed、SystemDay 七个角色的实际缩放后高度累计排队，并按 0–100 分布值安排可用空白。七枚 tab 与对应看板统一使用 `ModuleOperation` 工作区和所属角色的透明度/缩放槽位。七个角色始终在启动时构造（即使收起）——tab 是其唯一常驻表面，由所属宿主的运行时设置链路负责建立；历史 `*LeftDockEnabled` 键只作兼容持久化，`Normalize` 强制为 `true`，设置 UI 不显示。挂起或全屏隐藏时 `ShowTab`/`ShowBoard` 不得重现窗口，恢复必须由 owner 显式重新显示。
 
 几何、自动槽位、边缘命中和普通/隐藏视觉层级有独立自测（`EdgeDockTabForm.RunSelfTest`：`5×30` 梯形方向、中央右箭头、七角色映射、七枚自动 tab 不重叠、主屏与负坐标副屏左缘可命中）；显示生命周期自测也逐一覆盖七角色。外部点击的边沿、多消费者、命中排除与回弹抑制由 `OutsideClickDismissalMonitor.RunSelfTest` 覆盖。两者都随 `--test-operation-panel` 运行；`--render-operation` 输出七角色 tab 状态条和 board 样张，`--render-resetspeedboard` / `--render-systemdayboard` 可单独输出第六、七看板。
-
-## 操作面板双击启动器（LauncherTrio）
-
-双击操作核心弹出 `OperationLauncherTrioForm`（`Core/OperationForm.LauncherTrio.cs`）：三个圆形按钮沿星座面板同款弧线排布在第二层级位置。按钮直径为主 Start 按钮的 0.80×；弧半径复用 RadialDial 的 8°–82° 稀疏弧与第二层半径公式。美术继续使用低透明度暗调圆盘、分类色外光环、极淡白内环、柔和字形和细灰连接线。自上而下：① Spec 管理（`OpenSpecBoardManagerWindow`，直接显示管理窗）② Codex 任务（`ToggleCodexTaskBoard`，见 `Docs/CodexRadar-Architecture.md` §5.2）③ 睡眠防护（`LaunchSleepGuard`，优先运行 E: 的 `Start-CodexSleepGuard.cmd`，再回退 D: 镜像）。`LauncherTrioAction`、`TrioLabels`、`TrioTints` 三者的下标顺序必须一致，索引 0 位于弧顶。旧版 QuickGrid/12 格窗体、renderer、样张和自测已在 2.0.0.0 物理删除；双击入口只使用 LauncherTrio。窗体继承 `LayeredWidgetFormBase`，点按钮外或选完即隐藏；`--render-operation` 产出 `operation-launcher-trio.png` 供美术验收。
 
 OLED Typographic、AmberHud、WarmCard、Phosphor 变体复用现有语义色，且使用灰度文字抗锯齿，避免 ClearType 在分层位图中生成蓝色子像素。
 

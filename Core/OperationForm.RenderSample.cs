@@ -28,6 +28,7 @@ internal sealed partial class OperationForm
                 () => true,
                 () => true,
                 () => true,
+                () => true,
                 (enabled) => enabled,
                 (enabled) => enabled,
                 (propertyName, enabled) => enabled))
@@ -50,8 +51,8 @@ internal sealed partial class OperationForm
             }
         }
 
-        // The launcher task node and the task flyout read live Codex sessions, which a sample run
-        // must not depend on. Publish a fixture snapshot for both, then restore the real provider.
+        // The task board reads live Codex sessions, which a sample run must not depend on. Publish a
+        // fixture snapshot for the board, then restore the real provider.
         Func<CodexTaskMonitorSnapshot> savedProvider = CodexTaskPresentation.SnapshotProvider;
         try
         {
@@ -60,7 +61,6 @@ internal sealed partial class OperationForm
             {
                 return CodexTaskPresentation.CreateFixtureSnapshot(sampleNow);
             };
-            RenderLauncherTrioSample(outputDir);
             RenderCodexTaskBoardSample(outputDir);
             RenderEdgeDockTabSample(outputDir);
             CodexIqBoardForm.RenderSample(outputDir);
@@ -84,6 +84,7 @@ internal sealed partial class OperationForm
             () => { },
             () => { },
             (title, message, icon) => { },
+            () => true,
             () => true,
             () => true,
             () => true,

@@ -73,6 +73,53 @@ internal sealed partial class WidgetForm
                     "WidgetForm.hiddenForFullscreen must stay false when policy allows tiles; it gates timers, sampling and the shared interaction tick.");
             }
 
+            if (!form.ToggleSideSurfacesFromOperationPanel())
+            {
+                throw new InvalidOperationException("Operation double-click host action must enter physical side-surface hide state.");
+            }
+
+            if (form.operationForm == null ||
+                form.operationForm.IsDisposed ||
+                !form.operationForm.Visible ||
+                !form.operationForm.AreLeftDockSurfacesHidden())
+            {
+                throw new InvalidOperationException(
+                    "Physical side-surface hide must keep Operation visible while blocking its seven left-dock surfaces.");
+            }
+
+            for (int i = 0; i < form.metricTileForms.Count; i++)
+            {
+                if (form.metricTileForms[i] != null && form.metricTileForms[i].Visible)
+                {
+                    throw new InvalidOperationException(
+                        "Physical side-surface hide left metric tile " + i + " visible and mouse-active.");
+                }
+            }
+
+            if (form.metricTileExpandForm.Visible)
+            {
+                throw new InvalidOperationException(
+                    "Physical side-surface hide must close the right-side expand panel.");
+            }
+
+            if (form.ToggleSideSurfacesFromOperationPanel() ||
+                !form.operationForm.Visible ||
+                form.operationForm.AreLeftDockSurfacesHidden())
+            {
+                throw new InvalidOperationException(
+                    "A second Operation host toggle must restore side surfaces without hiding Operation.");
+            }
+
+            form.SetBurnInVisualLevel(BurnInVisualLevel.LevelTwo, "self-test setup");
+            DateTime greenHoldUtc = new DateTime(2026, 7, 23, 0, 0, 0, DateTimeKind.Utc);
+            form.HoldVisibleSurfacesForGreenRadialCore(greenHoldUtc);
+            if (form.burnInVisualLevel != BurnInVisualLevel.Normal ||
+                form.lastBurnInActivityUtc != greenHoldUtc)
+            {
+                throw new InvalidOperationException(
+                    "Green Radial core lock must reset both burn-in levels and their shared countdown.");
+            }
+
             form.UpdateHoverAnimationTimer();
             if (!form.hoverTimer.Enabled)
             {

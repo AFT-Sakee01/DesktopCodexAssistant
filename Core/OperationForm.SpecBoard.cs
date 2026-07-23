@@ -3,7 +3,7 @@ using System.Windows.Forms;
 
 internal sealed partial class OperationForm
 {
-    private enum SpecBoardEntryClickTarget
+    private enum OperationEntryClickTarget
     {
         None,
         StartButton,
@@ -11,106 +11,84 @@ internal sealed partial class OperationForm
     }
 
     private SpecBoardForm specBoardForm;
-    private SpecBoardEntryClickTarget suppressedSpecBoardEntryMouseUp;
+    private OperationEntryClickTarget suppressedOperationEntryMouseUp;
 
-    private void HandleSpecBoardEntryMouseUp(SpecBoardEntryClickTarget target)
+    private void HandleOperationEntryMouseUp(OperationEntryClickTarget target)
     {
-        if (this.suppressedSpecBoardEntryMouseUp == target)
+        if (this.suppressedOperationEntryMouseUp == target)
         {
             // WinForms reports the second MouseUp after MouseDoubleClick. Consume that release so
             // the resolved double-click cannot enqueue a new single-click action.
-            this.suppressedSpecBoardEntryMouseUp = SpecBoardEntryClickTarget.None;
+            this.suppressedOperationEntryMouseUp = OperationEntryClickTarget.None;
             return;
         }
 
-        this.suppressedSpecBoardEntryMouseUp = SpecBoardEntryClickTarget.None;
-        ExecuteSpecBoardEntrySingleClick(target);
+        this.suppressedOperationEntryMouseUp = OperationEntryClickTarget.None;
+        ExecuteOperationEntrySingleClick(target);
     }
 
-    private void HandleSpecBoardEntryDoubleClick(SpecBoardEntryClickTarget target)
+    private void HandleOperationEntryDoubleClick(OperationEntryClickTarget target)
     {
-        this.suppressedSpecBoardEntryMouseUp = target;
-        if (target == SpecBoardEntryClickTarget.RadialCore && this.radialMenuOpen)
+        this.suppressedOperationEntryMouseUp = target;
+        if (target == OperationEntryClickTarget.RadialCore && this.radialMenuOpen)
         {
             // The first click is intentionally immediate. When a second click resolves the gesture
             // as a double-click, retract that first-click menu before running the double action.
             CloseRadialMenu();
         }
 
-        if (ShouldOpenOperationDoubleClickSpecialMenu(this.CurrentSettings))
-        {
-            ToggleLauncherTrioWindow();
-            return;
-        }
-
-        if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed && this.launcherTrioForm.Visible)
-        {
-            this.launcherTrioForm.HideTrio();
-        }
-
-        ToggleHiddenModeFromOperationDoubleClick();
-    }
-
-    private static bool ShouldOpenOperationDoubleClickSpecialMenu(WidgetSettings settings)
-    {
-        return settings != null && settings.OperationDoubleClickSpecialMenuEnabled;
-    }
-
-    private void ToggleHiddenModeFromOperationDoubleClick()
-    {
-        if (this.toggleHoverOpacityAction == null)
+        if (this.toggleSideSurfacesAction == null)
         {
             return;
         }
 
         try
         {
-            bool active = this.toggleHoverOpacityAction();
-            Program.LogInfo("Operation core double-click toggled hidden mode. Active=" + active.ToString());
+            bool hidden = this.toggleSideSurfacesAction();
+            Program.LogInfo("Operation core double-click toggled physical side-surface visibility. Hidden=" + hidden.ToString());
         }
         catch (Exception ex)
         {
             Program.LogException(ex);
-            ShowOperationNotification("隐藏模式", "切换隐藏模式失败。", ToolTipIcon.Warning);
+            ShowOperationNotification("两侧窗格", "切换两侧窗格显示状态失败。", ToolTipIcon.Warning);
         }
     }
 
     private static void RunOperationDoubleClickRoutingSelfTest()
     {
-        WidgetSettings settings = WidgetSettings.CreateDefaults();
-        AssertSelfTest(
-            !ShouldOpenOperationDoubleClickSpecialMenu(settings),
-            "operation core double-click defaults to hidden-mode toggle");
-        settings.OperationDoubleClickSpecialMenuEnabled = true;
-        AssertSelfTest(
-            ShouldOpenOperationDoubleClickSpecialMenu(settings),
-            "operation core double-click special menu opt-in");
-
-        using (OperationForm form = CreateRadialDialSelfTestForm())
+        bool sideSurfacesHidden = false;
+        using (OperationForm form = CreateRadialDialSelfTestForm(delegate
+        {
+            sideSurfacesHidden = !sideSurfacesHidden;
+            return sideSurfacesHidden;
+        }))
         {
             AssertSelfTest(!form.radialMenuOpen, "radial menu starts closed for immediate-click test");
-            form.HandleSpecBoardEntryMouseUp(SpecBoardEntryClickTarget.RadialCore);
+            form.HandleOperationEntryMouseUp(OperationEntryClickTarget.RadialCore);
             AssertSelfTest(form.radialMenuOpen, "radial core single click opens immediately");
-            form.HandleSpecBoardEntryDoubleClick(SpecBoardEntryClickTarget.RadialCore);
+            form.HandleOperationEntryDoubleClick(OperationEntryClickTarget.RadialCore);
             AssertSelfTest(!form.radialMenuOpen, "radial core double click retracts immediate single-click menu");
+            AssertSelfTest(sideSurfacesHidden, "radial core double click physically hides side surfaces through the host");
+            form.HandleOperationEntryDoubleClick(OperationEntryClickTarget.RadialCore);
+            AssertSelfTest(!sideSurfacesHidden, "a second radial core double click restores side surfaces through the host");
         }
     }
 
-    private void ExecuteSpecBoardEntrySingleClick(SpecBoardEntryClickTarget target)
+    private void ExecuteOperationEntrySingleClick(OperationEntryClickTarget target)
     {
-        if (target == SpecBoardEntryClickTarget.StartButton && !IsRadialDialActive())
+        if (target == OperationEntryClickTarget.StartButton && !IsRadialDialActive())
         {
             ExecuteButton(StartButtonIndex, MouseButtons.Left);
         }
-        else if (target == SpecBoardEntryClickTarget.RadialCore && IsRadialDialActive())
+        else if (target == OperationEntryClickTarget.RadialCore && IsRadialDialActive())
         {
             ExecuteRadialCoreSingleClick();
         }
     }
 
-    private void CancelSpecBoardEntryClick()
+    private void CancelOperationEntryClick()
     {
-        this.suppressedSpecBoardEntryMouseUp = SpecBoardEntryClickTarget.None;
+        this.suppressedOperationEntryMouseUp = OperationEntryClickTarget.None;
     }
 
     private void ToggleSpecBoardWindow()
@@ -123,11 +101,6 @@ internal sealed partial class OperationForm
         }
 
         form.ShowBoard();
-    }
-
-    private void OpenSpecBoardManagerWindow()
-    {
-        EnsureSpecBoardForm().ShowManagerWindow();
     }
 
     // Set by WidgetForm: collapses the network window's docked panel, the third member of the
@@ -263,14 +236,6 @@ internal sealed partial class OperationForm
             " boards share one collapse membership");
     }
 
-    private void HideLauncherTrioIfVisible()
-    {
-        if (this.launcherTrioForm != null && !this.launcherTrioForm.IsDisposed && this.launcherTrioForm.Visible)
-        {
-            this.launcherTrioForm.HideTrio();
-        }
-    }
-
     // Expanding the network docked panel collapses the other five boards; the panel's own
     // collapse is handled by the HideNetworkDockedPanelForOverlay callback in the inverse direction.
     internal void HideLeftDockBoardsForPeerOverlay()
@@ -285,23 +250,11 @@ internal sealed partial class OperationForm
             CloseRadialMenu();
         }
 
-        HideLauncherTrioIfVisible();
         CollapseLeftDockBoardsExcept(LeftDockBoardKind.Spec);
     }
 
     private void PrepareForRadialOverlayShow()
     {
-        HideLauncherTrioIfVisible();
-        CollapseLeftDockBoardsExcept(LeftDockBoardKind.None);
-    }
-
-    private void PrepareForLauncherOverlayShow()
-    {
-        if (this.radialMenuOpen)
-        {
-            CloseRadialMenu();
-        }
-
         CollapseLeftDockBoardsExcept(LeftDockBoardKind.None);
     }
 
@@ -312,7 +265,7 @@ internal sealed partial class OperationForm
             this.specBoardForm = new SpecBoardForm(this, this.CurrentSettings);
         }
 
-        this.specBoardForm.PreparePresentationState(this.displaySuspended, this.hiddenForFullscreen);
+        this.specBoardForm.PreparePresentationState(this.displaySuspended, AreLeftDockSurfacesHidden());
         this.specBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
         return this.specBoardForm;
     }

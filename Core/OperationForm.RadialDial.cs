@@ -907,6 +907,18 @@ internal sealed partial class OperationForm
         return IsPointInRadialCore(ComputeRadialLayout(), PointToClient(Cursor.Position));
     }
 
+    internal bool IsRadialCoreAutoHideLockActive()
+    {
+        return ShouldLockOtherSurfacesForRadialCore(
+            this.radialCoreAutoHideThresholdVisualActive,
+            IsRadialCoreAutoHideKeepAliveActive());
+    }
+
+    private static bool ShouldLockOtherSurfacesForRadialCore(bool greenVisualActive, bool pointerOnCore)
+    {
+        return greenVisualActive && pointerOnCore;
+    }
+
     private static bool IsPointInRadialCore(RadialLayout layout, Point point)
     {
         return layout != null && layout.Core.Contains(point.X, point.Y);
@@ -1009,7 +1021,7 @@ internal sealed partial class OperationForm
 
         if (hit.Kind == RadialHitKind.Core && corePressed)
         {
-            HandleSpecBoardEntryMouseUp(SpecBoardEntryClickTarget.RadialCore);
+            HandleOperationEntryMouseUp(OperationEntryClickTarget.RadialCore);
             return;
         }
 
@@ -1243,10 +1255,7 @@ internal sealed partial class OperationForm
         if (hit.Kind == RadialHitKind.Core)
         {
             string primary = this.radialMenuOpen ? "收起操作面板" : "展开操作面板";
-            string doubleClickAction = this.CurrentSettings.OperationDoubleClickSpecialMenuEnabled
-                ? "双击：特殊菜单"
-                : "双击：开关隐藏模式";
-            return primary + "\r\n" + doubleClickAction;
+            return primary + "\r\n双击：隐藏或恢复两侧窗格";
         }
 
         if (hit.Kind != RadialHitKind.Item || hit.Node == null)
@@ -2327,9 +2336,12 @@ internal sealed partial class OperationForm
             DateTime visualStartUtc = new DateTime(2026, 7, 9, 0, 0, 0, DateTimeKind.Utc);
             AssertSelfTest(!form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc, true), "core keep-alive threshold starts without an immediate visual change");
             AssertSelfTest(!form.radialCoreAutoHideThresholdVisualActive, "core keep-alive visual is inactive before the threshold");
+            AssertSelfTest(!ShouldLockOtherSurfacesForRadialCore(false, true), "core hover does not lock other surfaces before the green threshold");
             AssertSelfTest(!form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc.AddSeconds(1.9), true), "core keep-alive visual stays inactive before configured auto-hide seconds");
             AssertSelfTest(form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc.AddSeconds(2.0), true), "core keep-alive visual changes when configured auto-hide seconds elapse");
             AssertSelfTest(form.radialCoreAutoHideThresholdVisualActive, "core keep-alive visual is active at the threshold");
+            AssertSelfTest(ShouldLockOtherSurfacesForRadialCore(true, true), "green core threshold locks all other surfaces");
+            AssertSelfTest(!ShouldLockOtherSurfacesForRadialCore(true, false), "green core lock ends as soon as the pointer leaves");
             AssertSelfTest(form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc.AddSeconds(2.1), false), "core keep-alive visual clears after leaving the core");
             AssertSelfTest(!form.radialCoreAutoHideThresholdVisualActive, "core keep-alive visual is inactive after leaving the core");
             RunRadialCoreSourceAlphaSelfTest(form);
@@ -2534,7 +2546,7 @@ internal sealed partial class OperationForm
         }
     }
 
-    private static OperationForm CreateRadialDialSelfTestForm()
+    private static OperationForm CreateRadialDialSelfTestForm(Func<bool> toggleSideSurfacesAction = null)
     {
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.OperationRenderVariant = OperationRenderVariant.RadialDial;
@@ -2546,6 +2558,7 @@ internal sealed partial class OperationForm
             delegate { },
             delegate(string title, string message, ToolTipIcon icon) { },
             delegate { return true; },
+            toggleSideSurfacesAction ?? delegate { return true; },
             delegate { return true; },
             delegate { return true; },
             delegate(bool enabled) { return enabled; },

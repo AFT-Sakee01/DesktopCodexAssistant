@@ -46,7 +46,7 @@ internal sealed partial class OperationForm
             };
         }
 
-        this.guardBoardForm.PreparePresentationState(this.displaySuspended, this.hiddenForFullscreen);
+        this.guardBoardForm.PreparePresentationState(this.displaySuspended, AreLeftDockSurfacesHidden());
         this.guardBoardForm.ApplyRuntimeSettings(this.CurrentSettings);
         return this.guardBoardForm;
     }
@@ -143,7 +143,6 @@ internal sealed partial class OperationForm
             CloseRadialMenu();
         }
 
-        HideLauncherTrioIfVisible();
         CollapseLeftDockBoardsExcept(LeftDockBoardKind.Guard);
     }
 

@@ -75,6 +75,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool hiddenForFullscreen;
     private bool globalLayoutEditActive;
     private bool manualAllWindowsHidden;
+    private bool operationSideSurfacesHidden;
     private bool childWindowLifecycleStarted;
     private CodexRadarForm codexRadarForm;
     private PowerThermalForm powerThermalForm;
@@ -249,6 +250,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             delegate { RestartCurrentProcess(); },
             ShowWindowsNotification,
             delegate { return ToggleForcedHoverOpacity(); },
+            delegate { return ToggleSideSurfacesFromOperationPanel(); },
             delegate { return PulseSeelenDockToFront("operation panel", false, false); },
             delegate { return PromptToggleAiRequestBlockingFromOperationPanel(); },
             delegate(bool enabled) { return SetAiRequestBlockingFromOperationPanel(enabled); },
@@ -1900,6 +1902,22 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return true;
     }
 
+    internal bool ToggleSideSurfacesFromOperationPanel()
+    {
+        if (this.globalLayoutEditActive)
+        {
+            Program.LogInfo("Operation side-surface toggle ignored while global layout editing is active.");
+            return this.operationSideSurfacesHidden;
+        }
+
+        this.operationSideSurfacesHidden = !this.operationSideSurfacesHidden;
+        Program.LogInfo(
+            "Operation side-surface visibility changed. Hidden=" +
+            this.operationSideSurfacesHidden.ToString());
+        ApplyChildWindowsVisibilityMode();
+        return this.operationSideSurfacesHidden;
+    }
+
     internal bool SetAiRequestBlockingFromOperationPanel(bool enabled)
     {
         bool currentlyBlocked = this.CurrentSettings != null &&
@@ -2794,17 +2812,26 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.operationForm != null &&
             !this.operationForm.IsDisposed)
         {
-            active = this.operationForm.IsRadialCoreAutoHideKeepAliveActive();
+            active = this.operationForm.IsRadialCoreAutoHideLockActive();
         }
 
         if (active)
         {
-            this.lastMouseActivityPosition = Cursor.Position;
-            this.lastMouseButtonDown = NativeMethods.IsAnyMouseButtonDown();
-            this.lastMouseActivityUtc = nowUtc;
+            HoldVisibleSurfacesForGreenRadialCore(nowUtc);
         }
 
         return SetOperationRadialCoreAutoHideKeepAliveActive(active);
+    }
+
+    private void HoldVisibleSurfacesForGreenRadialCore(DateTime nowUtc)
+    {
+        this.lastMouseActivityPosition = Cursor.Position;
+        this.lastMouseButtonDown = NativeMethods.IsAnyMouseButtonDown();
+        this.lastMouseActivityUtc = nowUtc;
+        // The green core is an explicit "hold the desktop layout" gesture. Refresh the burn-in
+        // activity timestamp on every shared tick so both configured delays restart only after
+        // the pointer leaves and the green state is cleared.
+        ResetBurnInProtectionActivity(nowUtc);
     }
 
     private bool SetOperationRadialCoreAutoHideKeepAliveActive(bool active)
@@ -3171,6 +3198,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
             this.operationForm.SetHiddenForFullscreen(false);
+            this.operationForm.SetLeftDockSurfacesHidden(false);
             this.operationForm.HideLeftDockBoardsForPeerOverlay();
         }
 
@@ -3188,6 +3216,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         // Manual hide is an independent visibility source. Keeping it in the shared visibility
         // decision preserves fullscreen/overlap state so un-hiding restores the correct policy.
         if (this.manualAllWindowsHidden && !this.globalLayoutEditActive)
+        {
+            return true;
+        }
+
+        if (this.operationSideSurfacesHidden &&
+            !this.globalLayoutEditActive &&
+            !object.ReferenceEquals(form, this.operationForm))
         {
             return true;
         }
@@ -3235,6 +3270,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
             this.operationForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.operationForm));
+            this.operationForm.SetLeftDockSurfacesHidden(
+                this.operationSideSurfacesHidden && !this.globalLayoutEditActive);
         }
 
         ApplyMetricTilesVisibilityMode();
