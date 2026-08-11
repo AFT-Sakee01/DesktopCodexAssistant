@@ -6,7 +6,7 @@ using System.Globalization;
 
 // Scheme D rendering for the GUARD board, drawn in the same visual family as SpecBoardForm, the
 // Codex task board and NetworkMonitorForm.DockedLayout: AppBackground wash, DesignTokens.Border
-// hairlines, UiFontCache pixel fonts on the S(12)/S(9.2)/S(9)/S(7.8) ladder.
+// hairlines, UiFontCache pixel fonts on the S(13)/S(10)/S(9.5)/S(8.4) readability ladder.
 //
 // Every row height here is measured from the actual font via MeasureLineHeight — never a hand-typed
 // pixel count. The root AGENTS.md rule about this exists because guessed heights silently overlap on
@@ -66,13 +66,13 @@ internal sealed partial class GuardBoardForm
             g.DrawPath(border, shell);
         }
 
-        Font headerFont = this.fontCache.GetUi(S(12.0f), FontStyle.Bold);
-        Font monoFont = this.fontCache.GetMono(S(9.0f), FontStyle.Bold);
-        Font bodyFont = this.fontCache.GetUi(S(9.0f), FontStyle.Regular);
-        Font bodyBold = this.fontCache.GetUi(S(9.2f), FontStyle.Bold);
-        Font smallFont = this.fontCache.GetUi(S(7.8f), FontStyle.Regular);
-        Font smallBold = this.fontCache.GetUi(S(7.8f), FontStyle.Bold);
-        Font ringBigFont = this.fontCache.GetMono(S(19.0f), FontStyle.Bold);
+        Font headerFont = this.fontCache.GetUi(S(13.0f), FontStyle.Bold);
+        Font monoFont = this.fontCache.GetMono(S(10.0f), FontStyle.Bold);
+        Font bodyFont = this.fontCache.GetUi(S(9.5f), FontStyle.Regular);
+        Font bodyBold = this.fontCache.GetUi(S(10.0f), FontStyle.Bold);
+        Font smallFont = this.fontCache.GetUi(S(8.4f), FontStyle.Regular);
+        Font smallBold = this.fontCache.GetUi(S(8.4f), FontStyle.Bold);
+        Font ringBigFont = this.fontCache.GetMono(S(20.0f), FontStyle.Bold);
 
         int pad = S(10);
         int headerHeight = MeasureLineHeight(g, headerFont, S(6));
@@ -1022,15 +1022,15 @@ internal sealed partial class GuardBoardForm
         Rectangle panelBounds = new Rectangle(bounds.Left, bounds.Top, panelWidth, bounds.Height);
         Rectangle closeBounds = new Rectangle(panelBounds.Right + S(4), bounds.Top, closeWidth, bounds.Height);
 
-        DrawFooterPill(g, panelBounds, "设置", smallFont);
-        DrawFooterPill(g, closeBounds, "关闭", smallFont);
+        DrawFooterPill(g, panelBounds, "设置", DesignTokens.Colors.Success, smallFont);
+        DrawFooterPill(g, closeBounds, "关闭", DesignTokens.Colors.Danger, smallFont);
         if (recordHitTargets)
         {
             this.hitTargets.Add(new GuardHitTarget { Bounds = panelBounds, Action = GuardHitAction.Panel });
             this.hitTargets.Add(new GuardHitTarget { Bounds = closeBounds, Action = GuardHitAction.Close });
         }
 
-        int noticeLeft = closeBounds.Right + S(8);
+        int noticeLeft = closeBounds.Right + S(5);
         int noticeWidth = Math.Max(0, bounds.Right - noticeLeft);
         if (noticeWidth <= S(20))
         {
@@ -1157,13 +1157,15 @@ internal sealed partial class GuardBoardForm
         }
     }
 
-    private void DrawFooterPill(Graphics g, Rectangle bounds, string label, Font font)
+    private void DrawFooterPill(Graphics g, Rectangle bounds, string label, Color semanticColor, Font font)
     {
-        using (GraphicsPath path = RoundedRectangle(new RectangleF(bounds.Left, bounds.Top, bounds.Width, bounds.Height), S(5)))
-        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, 220)))
-        using (Pen border = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Border, 180), Math.Max(1.0f, this.LayerScale)))
-        using (SolidBrush text = new SolidBrush(DesignTokens.Colors.TextMuted))
-        using (StringFormat centered = CreateFormat(StringAlignment.Center, StringTrimming.EllipsisCharacter))
+        // Match the three established upper dock boards exactly: measured action width, 4px
+        // corners, Control fill, semantic outline, neutral text, and no persistent hover fill.
+        using (GraphicsPath path = RoundedRectangle(RectangleF.Inflate(bounds, -1.0f, -1.0f), S(4)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Control, 220)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(semanticColor, 170), Math.Max(1.0f, this.LayerScale)))
+        using (SolidBrush text = new SolidBrush(DesignTokens.Colors.Text))
+        using (StringFormat centered = CreateFormat(StringAlignment.Center, StringTrimming.None))
         {
             g.FillPath(fill, path);
             g.DrawPath(border, path);

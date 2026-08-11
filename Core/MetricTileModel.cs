@@ -209,9 +209,9 @@ internal sealed class MetricTileFeed
     }
 }
 
-// What one 60x60 tile draws: a label, up to two concentric rings and one centre value.
-// OuterPercent/InnerPercent below zero mean "no ring", which is how the guard tile suppresses both
-// and draws its dot pad instead.
+// What one 60x60 tile draws. Most roles use up to two concentric rings and one centre value; Network
+// instead carries two compact rate lanes and five recent pulse levels per direction, while Guard uses
+// its dot pad. OuterPercent/InnerPercent below zero suppress the shared ring renderer.
 internal sealed class MetricTileData
 {
     public MetricTileId Id;
@@ -226,6 +226,13 @@ internal sealed class MetricTileData
     // panel's red card background — a 60x60 tile has no background area worth tinting.
     public double AlertPercent;
     public bool AlertIconVisible;
+    public bool NetworkConnected;
+    public string NetworkDownValue = string.Empty;
+    public string NetworkDownUnit = string.Empty;
+    public string NetworkUpValue = string.Empty;
+    public string NetworkUpUnit = string.Empty;
+    public int[] NetworkDownPulses;
+    public int[] NetworkUpPulses;
     // Guard tile only: the four dots, in the same order as MetricTileFeed.Guards.
     public List<MetricTileGuardEntry> Guards;
     public QuotaEasterEggVisual EasterEggVisual;
@@ -389,24 +396,28 @@ internal static class MetricTileModel
 
             case MetricTileId.Network:
                 {
-                    // Rates have no natural 0-100 axis, so both rings are scaled against the recent
-                    // peak across both directions: a full ring means "as busy as this link has been
-                    // in the last minute", which is the only honest fixed-size reading available.
-                    double peak = Math.Max(
-                        PeakOf(feed.NetworkReceivedHistory),
-                        PeakOf(feed.NetworkSentHistory));
-                    double downKbps = ToKbps(s.NetworkReceivedBytesPerSecond);
-                    double upKbps = ToKbps(s.NetworkSentBytesPerSecond);
-                    peak = Math.Max(peak, Math.Max(downKbps, upKbps));
-                    tile.OuterPercent = peak > 0.0 ? Clamp(downKbps / peak * 100.0, 0.0, 100.0) : 0.0;
-                    tile.InnerPercent = peak > 0.0 ? Clamp(upKbps / peak * 100.0, 0.0, 100.0) : 0.0;
-                    string rate = FormatCompactRate(s.NetworkReceivedBytesPerSecond);
-                    tile.CenterValue = rate;
+                    tile.OuterPercent = -1.0;
+                    tile.InnerPercent = -1.0;
+                    tile.NetworkConnected = s.NetworkConnected;
+                    SplitCompactRate(
+                        s.NetworkConnected ? FormatCompactRate(s.NetworkReceivedBytesPerSecond) : "--",
+                        out tile.NetworkDownValue,
+                        out tile.NetworkDownUnit);
+                    SplitCompactRate(
+                        s.NetworkConnected ? FormatCompactRate(s.NetworkSentBytesPerSecond) : "--",
+                        out tile.NetworkUpValue,
+                        out tile.NetworkUpUnit);
+                    tile.NetworkDownPulses = BuildNetworkPulseLevels(
+                        feed.NetworkReceivedHistory,
+                        ToKbps(s.NetworkReceivedBytesPerSecond),
+                        s.NetworkConnected);
+                    tile.NetworkUpPulses = BuildNetworkPulseLevels(
+                        feed.NetworkSentHistory,
+                        ToKbps(s.NetworkSentBytesPerSecond),
+                        s.NetworkConnected);
+                    tile.CenterValue = tile.NetworkDownValue + tile.NetworkDownUnit;
                     if (!s.NetworkConnected)
                     {
-                        tile.CenterValue = "--";
-                        tile.OuterPercent = 0.0;
-                        tile.InnerPercent = 0.0;
                         tile.AlertPercent = 100.0;
                     }
 
@@ -686,23 +697,71 @@ internal static class MetricTileModel
         return Math.Max(0.0, bytesPerSecond) * 8.0 / 1000.0;
     }
 
-    private static double PeakOf(List<double> history)
+    private static void SplitCompactRate(string compact, out string value, out string unit)
     {
-        if (history == null || history.Count == 0)
+        compact = compact ?? string.Empty;
+        if (compact == "0")
         {
-            return 0.0;
+            value = compact;
+            unit = "K";
+            return;
         }
 
-        double peak = 0.0;
-        for (int i = 0; i < history.Count; i++)
+        if (compact.Length > 0)
         {
-            if (history[i] > peak)
+            char suffix = compact[compact.Length - 1];
+            if (suffix == 'K' || suffix == 'M' || suffix == 'G')
             {
-                peak = history[i];
+                value = compact.Substring(0, compact.Length - 1);
+                unit = suffix.ToString();
+                return;
             }
         }
 
-        return peak;
+        value = compact;
+        unit = string.Empty;
+    }
+
+    internal static int[] BuildNetworkPulseLevels(List<double> history, double currentKbps, bool connected)
+    {
+        const int pulseCount = 5;
+        int[] levels = new int[pulseCount];
+        if (!connected)
+        {
+            for (int i = 0; i < levels.Length; i++)
+            {
+                levels[i] = 1;
+            }
+
+            return levels;
+        }
+
+        double[] samples = new double[pulseCount];
+        int available = history == null ? 0 : Math.Min(pulseCount, history.Count);
+        int padding = pulseCount - available;
+        double peak = Math.Max(0.0, currentKbps);
+        for (int i = 0; i < available; i++)
+        {
+            double sample = Math.Max(0.0, history[history.Count - available + i]);
+            samples[padding + i] = sample;
+            peak = Math.Max(peak, sample);
+        }
+
+        if (available == 0)
+        {
+            samples[pulseCount - 1] = Math.Max(0.0, currentKbps);
+        }
+
+        // Each lane uses its own five-sample peak because these bars communicate recent rhythm, not
+        // a percentage of link capacity or a comparison between upload and download magnitudes.
+        for (int i = 0; i < pulseCount; i++)
+        {
+            levels[i] = peak <= 0.0
+                ? 1
+                : 1 + (int)Math.Round(Clamp(samples[i] / peak, 0.0, 1.0) * 8.0);
+        }
+
+        return levels;
     }
 
     private static string Round(double percent)
@@ -764,6 +823,8 @@ internal static class MetricTileModel
         feed.Snapshot.NetworkConnected = true;
         feed.Snapshot.NetworkReceivedBytesPerSecond = 58.0 * 1000.0 / 8.0;
         feed.Snapshot.NetworkSentBytesPerSecond = 17.0 * 1000.0 / 8.0;
+        feed.NetworkReceivedHistory = new List<double> { 12.0, 38.0, 22.0, 58.0, 49.0 };
+        feed.NetworkSentHistory = new List<double> { 4.0, 8.0, 6.0, 17.0, 13.0 };
         feed.Power = new PowerStripSnapshot
         {
             BatteryPercentKnown = true,
@@ -817,16 +878,36 @@ internal static class MetricTileModel
         }
 
         MetricTileData network = tiles[3];
-        // Down is the recent peak here, so its ring is full and up scales against the same peak.
-        if (Math.Abs(network.OuterPercent - 100.0) > 0.01 ||
-            Math.Abs(network.InnerPercent - (17.0 / 58.0 * 100.0)) > 0.01)
+        if (network.OuterPercent >= 0.0 ||
+            network.InnerPercent >= 0.0 ||
+            network.NetworkDownValue != "58" ||
+            network.NetworkDownUnit != "K" ||
+            network.NetworkUpValue != "17" ||
+            network.NetworkUpUnit != "K")
         {
-            throw new InvalidOperationException("Network tile rings must scale both directions against the shared recent peak.");
+            throw new InvalidOperationException(
+                "Network tile must suppress rings and split both compact rates into directional lanes.");
         }
 
-        if (network.CenterValue != "58K")
+        if (network.NetworkDownPulses == null ||
+            network.NetworkUpPulses == null ||
+            network.NetworkDownPulses.Length != 5 ||
+            network.NetworkUpPulses.Length != 5 ||
+            network.NetworkDownPulses[3] != 9 ||
+            network.NetworkUpPulses[3] != 9)
         {
-            throw new InvalidOperationException("Network tile centre must use the compact rate format.");
+            throw new InvalidOperationException(
+                "Network tile must derive five recent pulse levels independently for each direction.");
+        }
+
+        feed.Snapshot.NetworkConnected = false;
+        network = BuildTile(MetricTileId.Network, feed);
+        if (network.NetworkConnected ||
+            network.NetworkDownValue != "--" ||
+            network.NetworkUpValue != "--" ||
+            network.AlertPercent < 80.0)
+        {
+            throw new InvalidOperationException("Disconnected Network tile must show unavailable lanes and alert treatment.");
         }
 
         MetricTileData power = tiles[6];

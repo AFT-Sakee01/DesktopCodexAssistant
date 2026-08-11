@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.17
+适用版本：2.0.0.21
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -25,8 +25,8 @@
 | 主性能采样 | 500 ms | 1000 ms | 2500 ms | hidden `WidgetForm` 的 PDH 快照调度 |
 | 普通 owner/board 调度 | 500 ms | 1000 ms | 3000 ms | 只检查 deadline；显示字段未变时不重绘 |
 | GPU/NPU 昂贵采样 | 1000 ms | 2000 ms | 5000 ms | 与 CPU/内存快照独立节流 |
-| 悬停动画 | 16 ms | 33 ms | 100 ms | 只在透明度/按压动画未收敛时运行 |
-| 静止交互轮询 | 30 ms | 100 ms | 250 ms | 鼠标、自动穿透、自动隐藏、两级防烧屏和层级维护 |
+| 交互动效 | 16 ms | 33 ms | 100 ms | 只在控件 hover/按压动画未收敛时运行 |
+| 静止交互轮询 | 30 ms | 100 ms | 250 ms | 自动穿透、两级防烧屏、扇形盘闲置收起和层级维护 |
 | 本地网络信息 | 2 s | 5 s | 网络事件驱动 | 省电模式不做固定周期网卡枚举 |
 | 公网 IP | 5 min | 10 min | 15 min | 仅真实网络为 `Online` 时请求 |
 
@@ -56,7 +56,7 @@ DNS 检测：
 | --- | --- |
 | 主控制 tick | hidden `WidgetForm` 按主性能间隔检查设置热加载、全屏/显示状态、PDH 采样和 `MetricTileFeed` 推送；宿主自身不绘制。停止事件另由 ThreadPool 注册等待直接投递 `WM_CLOSE`，主 tick 轮询仅作兼容兜底。 |
 | 内存压力 | `PdhSampler` 在同一次主 PDH 采样读取 `Memory\\Committed Bytes`、`Memory\\Commit Limit` 与 `Memory\\Pages Output/sec`；只对换出量按 `MemoryPressureTracker.PageOutSmoothingSeconds = 10` 秒做时间 EWMA，不把 DLL/EXE/映射文件等页面读入当作压力。正常升黄色需 `WarningPromotionDelaySeconds = 10` 秒，升红色需 `CriticalPromotionDelaySeconds = 5` 秒；红转黄恢复需 `CriticalRecoveryDelaySeconds = 30` 秒，黄转绿需 `NormalRecoveryDelaySeconds = 60` 秒。Commit 达到 98% 或可用物理内存低于临界头寸时立即红色。`WidgetForm` 以时间戳保留最近 60 秒压力状态，不新增 timer。 |
-| 应用窗口事件 | 前台窗口 Hook 始终启用；只有最大化自动隐藏或全屏/最大化/遮挡可见性模式才启用对象 Hook 和主采样周期完整枚举。事件按 HWND 合并，125 ms 批处理，每批最多 64 项，队列上限 256 项；溢出退化为一次完整枚举。同产品测试/辅助进程的窗口事件按 PID 身份缓存过滤。 |
+| 应用窗口事件 | 前台窗口 Hook 始终启用；只有全屏/最大化/遮挡可见性模式才启用对象 Hook 和主采样周期完整枚举。事件按 HWND 合并，125 ms 批处理，每批最多 64 项，队列上限 256 项；溢出退化为一次完整枚举。同产品测试/辅助进程的窗口事件按 PID 身份缓存过滤。 |
 | 昂贵硬件 | GPU/NPU 按 1/2/5 s 独立 deadline；不能被更快的 CPU tick 放大。 |
 | 设置热加载 | `settings.ini` 由 `FileSystemWatcher` 与主 tick 的修改时间检查共同覆盖。 |
 | 右侧 tiles | 11 个 `MetricTileForm` 只消费同一次 feed；方块和 hover expand 不自行采样。 |
@@ -68,15 +68,11 @@ DNS 检测：
 | 强制刷新 | `ForceRefreshAllModules()` 使 PDH、磁盘用量、Radar、Power/Thermal 与 Network 到期；Network 同时请求共享 Clean IP reader。 |
 | 诊断 | 主采样与 12 h timing 摘要最多每 15 min 记录一次；UI watchdog 后台每 2 s 检查心跳，超过 10 s 记录，持续卡住每 30 s 重复，恢复后补一条 responsive 记录。快照包含 UI managed thread ID、窗口事件接收/合并/丢弃/溢出/处理/批次/完整刷新计数和当前待处理量。 |
 
-hover/自动隐藏规则：
+交互与防烧屏规则：
 
-- 敏感鼠标模式默认以鼠标为中心的 100 px 正方形与 visible surface 相交，范围 10-300 px；关闭后按点命中。
-- 离开判定区后延迟显现默认 1 s；倒计时内重新进入需连续停留默认 0.5 s 才重置。
-- 自动隐藏激活后普通鼠标移动不释放，必须进入任一 visible surface 的敏感范围。
 - 两级防烧屏默认开启：`BurnInLevelOneIdleSeconds = 10` 后进入一级，随后 `BurnInLevelTwoDelaySeconds = 30` 后进入二级；允许范围分别为 1-300 秒和 1-600 秒。
 - 防烧屏复用 hidden `WidgetForm` 的静止交互轮询和七个 `EdgeDockTabForm` 的 120 ms hover tick，不新增 timer。一级/二级激活后，纯鼠标移动只驱动左 tab 局部恢复，或让右侧 tile/expand 整组恢复亮度与原始强调色；二级真实状态仍锁定，所以白色/中性文字继续隐藏，离开右侧组后重新反色。进入二级的边沿立即收起当前 hover expand。点击、滚轮、键盘输入、显示挂起与布局编辑会归零状态并重新计时。
 - 右侧 11 个 tile 与 hover expand 默认设置 `WS_EX_TRANSPARENT` 以穿透点击；hover 继续复用光标位置轮询，不新增 hook/timer。额度彩蛋状态机同样只消费已发布快照，已知空→恢复只登记一次，第一次展开后清除；彩蛋文字只由展开窗绘制，常驻 tile 不绘制。
-- Operation RadialDial 核心 keep-alive 复用共享交互 tick，不建立 timer。白圈持续直接悬停达到 `AutoHoverOpacityIdleSeconds` 后进入绿圈状态；仅绿圈存续期间，hidden host 锁定其余可见窗体、逐 tick 重置 hover 自动隐藏与防烧屏活动时间，离开核心后解除锁定并重新开始倒计时。
 - hidden host 只协调防烧屏状态，不提交像素；headless owners 不进入 hover、click-through、burn-in 或 Z-order 轮询。
 
 ## 4. Codex / Claude Radar headless owner

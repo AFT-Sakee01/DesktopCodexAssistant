@@ -31,6 +31,14 @@ internal sealed class ResetSpeedBoardSnapshot
     public bool ResetCreditExpirationKnown { get; set; }
     public DateTime ResetCreditExpirationLocal { get; set; }
 
+    public bool ResetRadarKnown { get; set; }
+    public bool ResetRadarUpdatedAtKnown { get; set; }
+    public DateTime ResetRadarUpdatedAtLocal { get; set; }
+    public string ResetCardStatus { get; set; }
+    public string ResetCardDescription { get; set; }
+    public string HardResetStatus { get; set; }
+    public string HardResetDescription { get; set; }
+
     public List<ResetSpeedQuotaPoint> QuotaHistory { get; private set; }
     public List<ResetSpeedResetEvent> ResetEvents { get; private set; }
 
@@ -40,6 +48,10 @@ internal sealed class ResetSpeedBoardSnapshot
         {
             FiveHourRemainingPercent = 100,
             WeeklyRemainingPercent = 100,
+            ResetCardStatus = string.Empty,
+            ResetCardDescription = string.Empty,
+            HardResetStatus = string.Empty,
+            HardResetDescription = string.Empty,
             QuotaHistory = new List<ResetSpeedQuotaPoint>(),
             ResetEvents = new List<ResetSpeedResetEvent>()
         };
@@ -71,6 +83,13 @@ internal sealed class ResetSpeedBoardSnapshot
         clone.ResetCreditCount = this.ResetCreditCount;
         clone.ResetCreditExpirationKnown = this.ResetCreditExpirationKnown;
         clone.ResetCreditExpirationLocal = this.ResetCreditExpirationLocal;
+        clone.ResetRadarKnown = this.ResetRadarKnown;
+        clone.ResetRadarUpdatedAtKnown = this.ResetRadarUpdatedAtKnown;
+        clone.ResetRadarUpdatedAtLocal = this.ResetRadarUpdatedAtLocal;
+        clone.ResetCardStatus = this.ResetCardStatus;
+        clone.ResetCardDescription = this.ResetCardDescription;
+        clone.HardResetStatus = this.HardResetStatus;
+        clone.HardResetDescription = this.HardResetDescription;
         for (int i = 0; i < this.QuotaHistory.Count; i++)
         {
             if (this.QuotaHistory[i] != null) clone.QuotaHistory.Add(this.QuotaHistory[i].Clone());

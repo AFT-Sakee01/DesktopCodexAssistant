@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reset / Speed · 重置概率布局预览</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --app-bg: #121316;
+      --surface: #1a1f24;
+      --control: #2d2d30;
+      --border: #48484e;
+      --text: #e8ebee;
+      --text-strong: #ecf0f2;
+      --text-muted: #cad3da;
+      --glyph-muted: #808790;
+      --green: #4cd674;
+      --yellow: #ffe25c;
+      --orange: #e27531;
+      --cyan: #38bdf8;
+      --danger: #ff5c68;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-width: 780px;
+      min-height: 560px;
+      margin: 0;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 42%, rgba(56, 189, 248, 0.055), transparent 36%),
+        #090a0c;
+      color: var(--text);
+      font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    }
+
+    .stage {
+      display: grid;
+      justify-items: center;
+      gap: 18px;
+    }
+
+    .preview-heading {
+      display: flex;
+      width: 648px;
+      align-items: end;
+      justify-content: space-between;
+      color: #858b94;
+      font-size: 12px;
+      letter-spacing: 0.03em;
+    }
+
+    .preview-heading strong {
+      color: #dce2e6;
+      font-size: 14px;
+      font-weight: 620;
+    }
+
+    .board {
+      position: relative;
+      width: 648px;
+      height: 400px;
+      padding: 11px;
+      overflow: hidden;
+      border: 1px solid rgba(72, 72, 78, 0.46);
+      border-radius: 10px;
+      background: rgba(18, 19, 22, 0.965);
+      box-shadow:
+        0 24px 72px rgba(0, 0, 0, 0.52),
+        inset 0 0 0 1px rgba(255, 226, 92, 0.72);
+      isolation: isolate;
+    }
+
+    .board::after {
+      position: absolute;
+      inset: 3px;
+      z-index: -1;
+      border: 1px solid rgba(255, 226, 92, 0.16);
+      border-radius: 7px;
+      content: "";
+      pointer-events: none;
+    }
+
+    .board-header {
+      display: grid;
+      width: 626px;
+      height: 42px;
+      grid-template-columns: 1fr auto;
+      align-items: start;
+    }
+
+    .brand {
+      min-width: 0;
+      line-height: 1;
+    }
+
+    .brand-en {
+      margin-top: 1px;
+      color: var(--text-strong);
+      font-size: 17px;
+      font-weight: 730;
+      letter-spacing: 0.015em;
+    }
+
+    .brand-cn {
+      margin-top: 7px;
+      color: var(--yellow);
+      font-size: 11.5px;
+    }
+
+    .header-stats {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding-top: 2px;
+    }
+
+    .header-chip {
+      display: grid;
+      width: 76px;
+      height: 28px;
+      place-items: center;
+      border: 1px solid color-mix(in srgb, var(--chip-color) 36%, transparent);
+      border-radius: 5px;
+      background: color-mix(in srgb, var(--chip-color) 9%, transparent);
+      color: var(--chip-color);
+      font: 700 11.5px/1 "Cascadia Mono", "Consolas", monospace;
+      letter-spacing: 0.02em;
+    }
+
+    .updated {
+      width: 50px;
+      padding-top: 8px;
+      color: var(--glyph-muted);
+      text-align: right;
+      font: 700 11px/1 "Cascadia Mono", "Consolas", monospace;
+    }
+
+    .board-main {
+      display: grid;
+      width: 626px;
+      height: 301px;
+      margin-top: 4px;
+      grid-template-columns: 424px 194px;
+      gap: 8px;
+    }
+
+    .left-column {
+      display: grid;
+      min-width: 0;
+      grid-template-rows: 198px 96px;
+      gap: 7px;
+    }
+
+    .right-column {
+      display: grid;
+      min-width: 0;
+      grid-template-rows: 214px 80px;
+      gap: 7px;
+    }
+
+    .lower-pair {
+      display: grid;
+      min-width: 0;
+      grid-template-columns: 1fr 1fr;
+      gap: 7px;
+    }
+
+    .panel {
+      position: relative;
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--panel-accent) 23%, transparent);
+      border-radius: 7px;
+      background: rgba(26, 31, 36, 0.83);
+    }
+
+    .panel-title {
+      position: absolute;
+      top: 5px;
+      left: 8px;
+      z-index: 2;
+      color: var(--text-strong);
+      font-size: 12.2px;
+      font-weight: 690;
+      line-height: 17px;
+      white-space: nowrap;
+    }
+
+    .trend-current {
+      position: absolute;
+      top: 7px;
+      right: 8px;
+      color: var(--green);
+      font: 700 11.5px/1 "Cascadia Mono", "Consolas", monospace;
+    }
+
+    .trend-chart {
+      position: absolute;
+      inset: 28px 8px 5px 2px;
+      width: 413px;
+      height: 164px;
+    }
+
+    .chart-label {
+      fill: var(--glyph-muted);
+      font: 8px "Segoe UI", sans-serif;
+    }
+
+    .chart-date {
+      fill: var(--glyph-muted);
+      font: 7.7px "Segoe UI", sans-serif;
+      text-anchor: middle;
+    }
+
+    .reset-event-list,
+    .probability-list {
+      position: absolute;
+      top: 26px;
+      right: 8px;
+      bottom: 5px;
+      left: 8px;
+      display: grid;
+      grid-template-rows: repeat(2, 1fr);
+    }
+
+    .reset-event {
+      display: grid;
+      grid-template-columns: 6px 69px 1fr auto;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.035);
+      font-size: 9px;
+    }
+
+    .reset-event:first-child,
+    .probability-item:first-child {
+      border-top: 0;
+    }
+
+    .event-dot {
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: var(--event-color);
+      box-shadow: 0 0 8px color-mix(in srgb, var(--event-color) 48%, transparent);
+    }
+
+    .event-time,
+    .event-value,
+    .radar-time {
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      font-weight: 700;
+    }
+
+    .event-time {
+      overflow: hidden;
+      color: var(--text-muted);
+      font-size: 8.6px;
+      white-space: nowrap;
+    }
+
+    .event-kind {
+      overflow: hidden;
+      color: var(--event-color);
+      font-size: 8.6px;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .event-value {
+      color: var(--text-muted);
+      font-size: 8.8px;
+    }
+
+    .radar-meta {
+      position: absolute;
+      top: 7px;
+      right: 8px;
+      color: var(--glyph-muted);
+      font: 700 7.4px/1 "Cascadia Mono", "Consolas", monospace;
+      letter-spacing: 0.04em;
+    }
+
+    .probability-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-rows: 15px 14px;
+      align-content: center;
+      column-gap: 5px;
+      min-width: 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .probability-label {
+      align-self: end;
+      overflow: hidden;
+      color: var(--text-strong);
+      font-size: 9.1px;
+      font-weight: 650;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .probability-status {
+      align-self: center;
+      padding: 2px 5px 2.5px;
+      border: 1px solid color-mix(in srgb, var(--status-color) 43%, transparent);
+      border-radius: 4px;
+      background: color-mix(in srgb, var(--status-color) 11%, transparent);
+      color: var(--status-color);
+      font-size: 7.8px;
+      font-weight: 720;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .probability-desc {
+      grid-column: 1 / -1;
+      align-self: start;
+      overflow: hidden;
+      color: var(--glyph-muted);
+      font-size: 7.7px;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .speed-panel .panel-title {
+      right: 8px;
+      text-align: center;
+    }
+
+    .speed-dial {
+      position: absolute;
+      top: 31px;
+      left: 50%;
+      width: 127px;
+      height: 127px;
+      transform: translateX(-50%);
+      border-radius: 50%;
+      background:
+        radial-gradient(circle, var(--surface) 0 61%, transparent 62%),
+        conic-gradient(var(--cyan) 0 36%, rgba(255, 255, 255, 0.13) 36% 100%);
+      filter: drop-shadow(0 0 12px rgba(56, 189, 248, 0.11));
+    }
+
+    .speed-dial::after {
+      position: absolute;
+      inset: 8px;
+      border-radius: 50%;
+      background: var(--surface);
+      content: "";
+    }
+
+    .speed-copy {
+      position: absolute;
+      top: 74px;
+      right: 0;
+      left: 0;
+      z-index: 2;
+      text-align: center;
+    }
+
+    .speed-value {
+      color: var(--cyan);
+      font: 700 25px/1 "Cascadia Mono", "Consolas", monospace;
+      letter-spacing: -0.06em;
+    }
+
+    .speed-detail {
+      margin-top: 8px;
+      color: var(--text-muted);
+      font-size: 9px;
+    }
+
+    .speed-range {
+      position: absolute;
+      right: 5px;
+      bottom: 6px;
+      left: 5px;
+      overflow: hidden;
+      color: var(--glyph-muted);
+      text-align: center;
+      font-size: 8.2px;
+      white-space: nowrap;
+    }
+
+    .credits-title {
+      position: absolute;
+      top: 7px;
+      left: 8px;
+      color: var(--text-strong);
+      font-size: 12.2px;
+      font-weight: 690;
+    }
+
+    .credits-count {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      color: var(--yellow);
+      font: 700 12px/1 "Cascadia Mono", "Consolas", monospace;
+    }
+
+    .credits-expiry {
+      position: absolute;
+      top: 33px;
+      left: 8px;
+      color: var(--text-muted);
+      font-size: 10px;
+    }
+
+    .credits-date {
+      position: absolute;
+      bottom: 7px;
+      left: 8px;
+      color: var(--text-muted);
+      font: 700 9px/1 "Cascadia Mono", "Consolas", monospace;
+    }
+
+    .board-footer {
+      display: grid;
+      width: 626px;
+      height: 23px;
+      margin-top: 8px;
+      grid-template-columns: 48px 48px 1fr auto;
+      align-items: center;
+      gap: 4px;
+      color: var(--glyph-muted);
+      font-size: 8.4px;
+      white-space: nowrap;
+    }
+
+    .footer-action {
+      display: grid;
+      height: 21px;
+      place-items: center;
+      border: 1px solid color-mix(in srgb, var(--action-color) 65%, transparent);
+      border-radius: 4px;
+      background: rgba(45, 45, 48, 0.86);
+      color: var(--text);
+      font-size: 8.5px;
+    }
+
+    .footer-source {
+      overflow: hidden;
+      padding-left: 1px;
+      text-overflow: ellipsis;
+    }
+
+    .footer-reset {
+      text-align: right;
+    }
+
+    .change-note {
+      width: 648px;
+      color: #777f88;
+      font-size: 11px;
+      line-height: 1.6;
+    }
+
+    .change-note b {
+      color: var(--yellow);
+      font-weight: 650;
+    }
+
+    body.capture {
+      display: block;
+      min-width: 648px;
+      min-height: 400px;
+      background: #090a0c;
+    }
+
+    body.capture .stage {
+      display: block;
+    }
+
+    body.capture .preview-heading,
+    body.capture .change-note {
+      display: none;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .board {
+        animation: board-in 420ms cubic-bezier(.2, .8, .2, 1) both;
+      }
+
+      @keyframes board-in {
+        from {
+          opacity: 0;
+          transform: translateY(8px) scale(0.99);
+        }
+      }
+    }
+  </style>
+</head>
+<body>
+  <script>
+    if (new URLSearchParams(location.search).get("capture") === "1") {
+      document.body.classList.add("capture");
+    }
+  </script>
+  <main class="stage">
+    <div class="preview-heading">
+      <strong>Reset 面板 · HTML 结构样稿</strong>
+      <span>648 × 400 · 1:1 逻辑尺寸</span>
+    </div>
+
+    <section class="board" aria-label="重置与速蹬面板预览">
+      <header class="board-header">
+        <div class="brand">
+          <div class="brand-en">RESET / SPEED</div>
+          <div class="brand-cn">重置与速蹬</div>
+        </div>
+        <div class="header-stats">
+          <div class="header-chip" style="--chip-color: var(--green)">7D&nbsp;&nbsp;86%</div>
+          <div class="header-chip" style="--chip-color: var(--yellow)">RS&nbsp;&nbsp;03</div>
+          <div class="updated">23:40</div>
+        </div>
+      </header>
+
+      <div class="board-main">
+        <div class="left-column">
+          <section class="panel trend-panel" style="--panel-accent: var(--green)">
+            <div class="panel-title">过去 7 天 · 周额度余量</div>
+            <div class="trend-current">33%</div>
+            <svg class="trend-chart" viewBox="0 0 413 164" role="img" aria-label="最近七天周额度余量趋势">
+              <g>
+                <line x1="28" y1="12" x2="405" y2="12" stroke="rgba(255,255,255,.10)"/>
+                <line x1="28" y1="72" x2="405" y2="72" stroke="rgba(255,255,255,.10)"/>
+                <line x1="28" y1="132" x2="405" y2="132" stroke="rgba(255,255,255,.10)"/>
+                <text class="chart-label" x="22" y="15" text-anchor="end">100</text>
+                <text class="chart-label" x="22" y="75" text-anchor="end">50</text>
+                <text class="chart-label" x="22" y="135" text-anchor="end">0</text>
+
+                <line x1="91" y1="12" x2="91" y2="132" stroke="rgba(255,226,92,.62)" stroke-dasharray="3 3"/>
+                <text x="91" y="23" fill="#ffe25c" font-size="7.5" text-anchor="middle">RESET</text>
+                <line x1="217" y1="12" x2="217" y2="132" stroke="rgba(226,117,49,.76)" stroke-dasharray="3 3"/>
+                <text x="217" y="23" fill="#e27531" font-size="7.5" text-anchor="middle">CARD</text>
+
+                <polyline points="28,12 91,31 154,46 217,23 280,50 343,76 405,92"
+                  fill="none" stroke="#4cd674" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <g fill="#ffe25c">
+                  <circle cx="28" cy="12" r="2.7"/>
+                  <circle cx="91" cy="31" r="2.7"/>
+                  <circle cx="154" cy="46" r="2.7"/>
+                  <circle cx="217" cy="23" r="2.7"/>
+                  <circle cx="280" cy="50" r="2.7"/>
+                  <circle cx="343" cy="76" r="2.7"/>
+                  <circle cx="405" cy="92" r="2.7"/>
+                </g>
+
+                <text class="chart-date" x="28" y="151">07/17</text>
+                <text class="chart-date" x="91" y="151">07/18</text>
+                <text class="chart-date" x="154" y="151">07/19</text>
+                <text class="chart-date" x="217" y="151">07/20</text>
+                <text class="chart-date" x="280" y="151">07/21</text>
+                <text class="chart-date" x="343" y="151">07/22</text>
+                <text class="chart-date" x="405" y="151">07/23</text>
+              </g>
+            </svg>
+          </section>
+
+          <div class="lower-pair">
+            <section class="panel recent-panel" style="--panel-accent: var(--yellow)">
+              <div class="panel-title">近期重置</div>
+              <div class="reset-event-list">
+                <div class="reset-event" style="--event-color: var(--orange)">
+                  <span class="event-dot"></span>
+                  <span class="event-time">07/19 21:40</span>
+                  <span class="event-kind">重置卡</span>
+                  <span class="event-value">→ 91%</span>
+                </div>
+                <div class="reset-event" style="--event-color: var(--yellow)">
+                  <span class="event-dot"></span>
+                  <span class="event-time">07/17 23:40</span>
+                  <span class="event-kind">自然重置</span>
+                  <span class="event-value">→ 100%</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel probability-panel" style="--panel-accent: var(--cyan)">
+              <div class="panel-title">重置概率</div>
+              <div class="radar-meta">RADAR · 07/19</div>
+              <div class="probability-list">
+                <div class="probability-item" style="--status-color: var(--glyph-muted)">
+                  <span class="probability-label">发重置卡</span>
+                  <span class="probability-status">低</span>
+                  <span class="probability-desc">本轮为直接重置，未发新卡</span>
+                </div>
+                <div class="probability-item" style="--status-color: var(--green)">
+                  <span class="probability-label">硬重置</span>
+                  <span class="probability-status">已落地</span>
+                  <span class="probability-desc">全付费用户已重置 · 下次低</span>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <div class="right-column">
+          <section class="panel speed-panel" style="--panel-accent: var(--cyan)">
+            <div class="panel-title">速蹬窗口</div>
+            <div class="speed-dial" aria-hidden="true"></div>
+            <div class="speed-copy">
+              <div class="speed-value">36:00</div>
+              <div class="speed-detail">开放 · 剩余</div>
+            </div>
+            <div class="speed-range">07/22 19:40 → 07/24 11:40</div>
+          </section>
+
+          <section class="panel credits-panel" style="--panel-accent: var(--yellow)">
+            <div class="credits-title">重置卡</div>
+            <div class="credits-count">03</div>
+            <div class="credits-expiry">最近到期 17h</div>
+            <div class="credits-date">07/23 16:40</div>
+          </section>
+        </div>
+      </div>
+
+      <footer class="board-footer">
+        <div class="footer-action" style="--action-color: var(--green)">刷新</div>
+        <div class="footer-action" style="--action-color: var(--danger)">关闭</div>
+        <div class="footer-source">Codex Radar · cache-only</div>
+        <div class="footer-reset">周重置 07/24 23:40</div>
+      </footer>
+    </section>
+
+    <div class="change-note">
+      本稿只动左下区域：<b>“近期重置”收窄为半宽</b>，右侧加入 Radar 的两条重置信号；趋势、速蹬窗口和重置卡区域保持原位。
+    </div>
+  </main>
+</body>
+</html>

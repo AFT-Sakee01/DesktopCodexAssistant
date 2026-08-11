@@ -40,13 +40,13 @@ internal sealed partial class CodexIqBoardForm
             g.DrawPath(border, shell);
         }
 
-        Font titleFont = this.fontCache.GetUi(S(12.0f), FontStyle.Bold);
-        Font bodyBold = this.fontCache.GetUi(S(8.6f), FontStyle.Bold);
-        Font bodyFont = this.fontCache.GetUi(S(8.2f), FontStyle.Regular);
-        Font smallFont = this.fontCache.GetUi(S(7.2f), FontStyle.Regular);
-        Font smallBold = this.fontCache.GetUi(S(7.2f), FontStyle.Bold);
-        Font monoFont = this.fontCache.GetMono(S(8.0f), FontStyle.Bold);
-        Font leaderFont = this.fontCache.GetMono(S(18.0f), FontStyle.Bold);
+        Font titleFont = this.fontCache.GetUi(S(13.0f), FontStyle.Bold);
+        Font bodyBold = this.fontCache.GetUi(S(9.6f), FontStyle.Bold);
+        Font bodyFont = this.fontCache.GetUi(S(9.0f), FontStyle.Regular);
+        Font smallFont = this.fontCache.GetUi(S(8.0f), FontStyle.Regular);
+        Font smallBold = this.fontCache.GetUi(S(8.2f), FontStyle.Bold);
+        Font monoFont = this.fontCache.GetMono(S(9.0f), FontStyle.Bold);
+        Font leaderFont = this.fontCache.GetMono(S(20.0f), FontStyle.Bold);
 
         int pad = S(11);
         int headerHeight = MeasureLineHeight(g, titleFont, S(7));
@@ -257,21 +257,10 @@ internal sealed partial class CodexIqBoardForm
             float titleWidth = g.MeasureString("Model IQ 看板", titleFont).Width + S(8);
             g.DrawString("Model IQ 看板", titleFont, text, new RectangleF(titleLeft, bounds.Top, titleWidth, bounds.Height), near);
 
-            int closeSize = Math.Max(S(17), bounds.Height - S(2));
-            this.closeHitBounds = new Rectangle(bounds.Right - closeSize, bounds.Top, closeSize, closeSize);
-            using (SolidBrush closeBack = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.DangerClose, 36)))
-            using (Pen closePen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.DangerClose, 210), Math.Max(1.0f, this.LayerScale)))
-            {
-                g.FillEllipse(closeBack, this.closeHitBounds);
-                float inset = closeSize * 0.32f;
-                g.DrawLine(closePen, this.closeHitBounds.Left + inset, this.closeHitBounds.Top + inset, this.closeHitBounds.Right - inset, this.closeHitBounds.Bottom - inset);
-                g.DrawLine(closePen, this.closeHitBounds.Right - inset, this.closeHitBounds.Top + inset, this.closeHitBounds.Left + inset, this.closeHitBounds.Bottom - inset);
-            }
-
             Rectangle meta = new Rectangle(
                 (int)Math.Round(titleLeft + titleWidth),
                 bounds.Top,
-                Math.Max(0, this.closeHitBounds.Left - S(7) - (int)Math.Round(titleLeft + titleWidth)),
+                Math.Max(0, bounds.Right - (int)Math.Round(titleLeft + titleWidth)),
                 bounds.Height);
             string updated = this.snapshot.UpdatedKnown
                 ? this.snapshot.UpdatedLocal.ToString("MM.dd HH:mm", CultureInfo.InvariantCulture)
@@ -660,6 +649,23 @@ internal sealed partial class CodexIqBoardForm
 
     private void DrawFooter(Graphics g, Rectangle bounds, Font smallFont, Font monoFont)
     {
+        int refreshWidth = Math.Min(
+            bounds.Width,
+            Math.Max(S(42), (int)Math.Ceiling(g.MeasureString("刷新", smallFont).Width) + S(14)));
+        Rectangle refreshBounds = new Rectangle(bounds.Left, bounds.Top, refreshWidth, bounds.Height);
+        int closeLeft = Math.Min(bounds.Right, refreshBounds.Right + S(4));
+        int closeWidth = Math.Min(
+            Math.Max(0, bounds.Right - closeLeft),
+            Math.Max(S(42), (int)Math.Ceiling(g.MeasureString("关闭", smallFont).Width) + S(14)));
+        Rectangle closeBounds = new Rectangle(closeLeft, bounds.Top, closeWidth, bounds.Height);
+        int detailLeft = Math.Min(bounds.Right, closeBounds.Right + S(5));
+        Rectangle details = new Rectangle(detailLeft, bounds.Top, Math.Max(0, bounds.Right - detailLeft), bounds.Height);
+
+        this.refreshHitBounds = refreshBounds;
+        this.closeHitBounds = closeBounds;
+        DrawFooterAction(g, refreshBounds, "刷新", DesignTokens.Colors.Success, smallFont);
+        DrawFooterAction(g, closeBounds, "关闭", DesignTokens.Colors.Danger, smallFont);
+
         using (SolidBrush muted = new SolidBrush(DesignTokens.Colors.GlyphMuted))
         using (SolidBrush accent = new SolidBrush(DesignTokens.Colors.Accent))
         using (StringFormat near = CreateFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
@@ -668,8 +674,32 @@ internal sealed partial class CodexIqBoardForm
             string selected = string.IsNullOrEmpty(this.snapshot.SelectedModelLabel)
                 ? "当前模型未识别"
                 : this.snapshot.SelectedModelLabel;
-            g.DrawString("选中 · " + selected, smallFont, accent, new RectangleF(bounds.Left, bounds.Top, bounds.Width * 0.62f, bounds.Height), near);
-            g.DrawString(CodexRadarAttributionText, smallFont, muted, new RectangleF(bounds.Left + bounds.Width * 0.48f, bounds.Top, bounds.Width * 0.52f, bounds.Height), far);
+            g.DrawString(
+                "选中 · " + selected,
+                smallFont,
+                accent,
+                new RectangleF(details.Left, details.Top, details.Width * 0.58f, details.Height),
+                near);
+            g.DrawString(
+                CodexRadarAttributionText,
+                smallFont,
+                muted,
+                new RectangleF(details.Left + details.Width * 0.45f, details.Top, details.Width * 0.55f, details.Height),
+                far);
+        }
+    }
+
+    private void DrawFooterAction(Graphics g, Rectangle bounds, string text, Color semanticColor, Font font)
+    {
+        using (GraphicsPath action = RoundedRectangle(RectangleF.Inflate(bounds, -1.0f, -1.0f), S(4)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Control, 220)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(semanticColor, 170), Math.Max(1.0f, this.LayerScale)))
+        using (SolidBrush textBrush = new SolidBrush(DesignTokens.Colors.Text))
+        using (StringFormat centered = CreateFormat(StringAlignment.Center, StringTrimming.None))
+        {
+            g.FillPath(fill, action);
+            g.DrawPath(border, action);
+            g.DrawString(text, font, textBrush, bounds, centered);
         }
     }
 
@@ -737,7 +767,7 @@ internal sealed partial class CodexIqBoardForm
                 g.DrawLine(refPen, bounds.Left, refY, bounds.Right, refY);
             }
 
-            float tagSize = Math.Max(6.0f, bounds.Height * 0.32f);
+            float tagSize = Math.Max(7.0f, bounds.Height * 0.32f);
             using (Font tag = new Font("Segoe UI", tagSize, FontStyle.Regular, GraphicsUnit.Pixel))
             using (SolidBrush tagBrush = new SolidBrush(DesignTokens.WithAlpha(color, 165)))
             using (StringFormat fmt = new StringFormat(StringFormatFlags.NoWrap))

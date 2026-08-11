@@ -7,10 +7,10 @@ using System.Globalization;
 internal sealed partial class SystemDayBoardForm
 {
     private const int MetricRowCount = 8;
-    private const float SummaryTitleFontPixels = 8.0f;
-    private const float SummaryDetailFontPixels = 8.2f;
-    private const float SummaryNameFontPixels = 8.4f;
-    private const float SummaryValueFontPixels = 10.0f;
+    private const float SummaryTitleFontPixels = 8.8f;
+    private const float SummaryDetailFontPixels = 8.8f;
+    private const float SummaryNameFontPixels = 9.2f;
+    private const float SummaryValueFontPixels = 11.0f;
 
     protected override void DrawWindowContent(Graphics g)
     {
@@ -28,11 +28,11 @@ internal sealed partial class SystemDayBoardForm
         using (Pen border = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Border, 116), Math.Max(1.0f, this.LayerScale)))
             g.DrawPath(border, shell);
 
-        Font titleFont = this.fontCache.GetUi(S(11.5f), FontStyle.Bold);
-        Font bodyFont = this.fontCache.GetUi(S(7.3f), FontStyle.Regular);
-        Font smallFont = this.fontCache.GetUi(S(6.4f), FontStyle.Regular);
-        Font labelFont = this.fontCache.GetMono(S(7.0f), FontStyle.Bold);
-        Font valueFont = this.fontCache.GetMono(S(7.1f), FontStyle.Bold);
+        Font titleFont = this.fontCache.GetUi(S(13.0f), FontStyle.Bold);
+        Font bodyFont = this.fontCache.GetUi(S(8.2f), FontStyle.Regular);
+        Font smallFont = this.fontCache.GetUi(S(7.3f), FontStyle.Regular);
+        Font labelFont = this.fontCache.GetMono(S(8.0f), FontStyle.Bold);
+        Font valueFont = this.fontCache.GetMono(S(8.0f), FontStyle.Bold);
         Font summaryTitleFont = this.fontCache.GetUi(S(SummaryTitleFontPixels), FontStyle.Bold);
         Font summaryDetailFont = this.fontCache.GetUi(S(SummaryDetailFontPixels), FontStyle.Regular);
         Font summaryNameFont = this.fontCache.GetUi(S(SummaryNameFontPixels), FontStyle.Bold);
@@ -67,7 +67,6 @@ internal sealed partial class SystemDayBoardForm
                 ? "--:--"
                 : this.snapshot.UpdatedLocal.ToString("MM/dd HH:mm", CultureInfo.InvariantCulture);
             g.DrawString(updated, monoFont, muted, new Rectangle(bounds.Right - S(104), bounds.Top + S(2), S(84), S(18)), far);
-            g.DrawString("×", titleFont, muted, GetCloseBounds(), far);
         }
         DrawLegend(g, new Rectangle(bounds.Left, bounds.Bottom - S(12), S(210), S(12)), bodyFont);
     }
@@ -384,46 +383,45 @@ internal sealed partial class SystemDayBoardForm
 
     private void DrawFooter(Graphics g, Rectangle bounds, Font bodyFont, Font smallFont)
     {
-        DrawRangeButton(g, GetRangeButtonBounds(SystemDayRange.Today), "今天", SystemDayRange.Today, bodyFont);
-        DrawRangeButton(g, GetRangeButtonBounds(SystemDayRange.Last24Hours), "最近 24h", SystemDayRange.Last24Hours, bodyFont);
-        DrawRangeButton(g, GetRangeButtonBounds(SystemDayRange.LastWeek), "最近一周", SystemDayRange.LastWeek, bodyFont);
+        string rangeText = this.selectedRange == SystemDayRange.Today
+            ? "今天 ›"
+            : this.selectedRange == SystemDayRange.Last24Hours
+                ? "24小时 ›"
+                : "近一周 ›";
+        DrawFooterAction(g, GetRangeActionBounds(), rangeText, DesignTokens.Colors.Success, bodyFont);
+        DrawFooterAction(g, GetCloseBounds(), "关闭", DesignTokens.Colors.Danger, bodyFont);
         using (SolidBrush muted = new SolidBrush(DesignTokens.Colors.GlyphMuted))
         using (StringFormat far = CreateFormat(StringAlignment.Far))
         {
-            string log = "1 分钟采样 · 完整热区 JSONL";
-            g.DrawString(log, smallFont, muted, new Rectangle(bounds.Left + S(260), bounds.Top, bounds.Width - S(260), bounds.Height), far);
-        }
-    }
-
-    private void DrawRangeButton(Graphics g, Rectangle bounds, string text, SystemDayRange range, Font font)
-    {
-        bool selected = this.selectedRange == range;
-        Color accent = EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SystemDay);
-        using (GraphicsPath path = RoundedRectangle(bounds, S(5)))
-        using (SolidBrush fill = new SolidBrush(selected ? DesignTokens.WithAlpha(accent, 44) : DesignTokens.White(8)))
-        using (Pen border = new Pen(selected ? DesignTokens.WithAlpha(accent, 160) : DesignTokens.White(28), Math.Max(1.0f, this.LayerScale)))
-        using (SolidBrush label = new SolidBrush(selected ? accent : DesignTokens.Colors.TextMuted))
-        using (StringFormat center = CreateFormat(StringAlignment.Center))
-        {
-            g.FillPath(fill, path);
-            g.DrawPath(border, path);
-            g.DrawString(text, font, label, bounds, center);
+            string log = "点击切换范围 · 1 分钟采样 · 完整热区 JSONL";
+            int logLeft = Math.Min(bounds.Right, GetCloseBounds().Right + S(5));
+            g.DrawString(log, smallFont, muted, new Rectangle(logLeft, bounds.Top, Math.Max(0, bounds.Right - logLeft), bounds.Height), far);
         }
     }
 
     private Rectangle GetCloseBounds()
     {
-        return new Rectangle(this.Width - S(28), S(7), S(17), S(20));
+        Rectangle rangeAction = GetRangeActionBounds();
+        return new Rectangle(rangeAction.Right + S(4), rangeAction.Top, S(42), rangeAction.Height);
     }
 
-    private Rectangle GetRangeButtonBounds(SystemDayRange range)
+    private Rectangle GetRangeActionBounds()
     {
-        int y = this.Height - S(37);
-        int width = S(76);
-        int x = S(11);
-        if (range == SystemDayRange.Last24Hours) x += width + S(5);
-        else if (range == SystemDayRange.LastWeek) x += (width + S(5)) * 2;
-        return new Rectangle(x, y, width, S(24));
+        return new Rectangle(S(11), this.Height - S(37), S(76), S(24));
+    }
+
+    private void DrawFooterAction(Graphics g, Rectangle bounds, string text, Color semanticColor, Font font)
+    {
+        using (GraphicsPath action = RoundedRectangle(RectangleF.Inflate(bounds, -1.0f, -1.0f), S(4)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Control, 220)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(semanticColor, 170), Math.Max(1.0f, this.LayerScale)))
+        using (SolidBrush textBrush = new SolidBrush(DesignTokens.Colors.Text))
+        using (StringFormat centered = CreateFormat(StringAlignment.Center))
+        {
+            g.FillPath(fill, action);
+            g.DrawPath(border, action);
+            g.DrawString(text, font, textBrush, bounds, centered);
+        }
     }
 
     private void DrawPanel(Graphics g, Rectangle bounds, Color accent)

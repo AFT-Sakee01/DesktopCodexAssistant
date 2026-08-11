@@ -42,7 +42,6 @@
     "Core/GuardBoardForm.Layout.cs",
     "Core/GuardBoardForm.RenderSample.cs",
     "Core/GuardRuntime.cs",
-    "Core/HoverInteractionPolicy.cs",
     "Core/IdleCpuDiagnostics.cs",
     "Core/LayeredWidgetFormBase.cs",
     "Core/LeftDockLayout.cs",

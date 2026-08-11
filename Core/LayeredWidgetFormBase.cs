@@ -342,11 +342,6 @@ internal abstract class LayeredWidgetFormBase : Form
         get { return -1; }
     }
 
-    protected virtual int ApplyHoverAlpha(int alpha)
-    {
-        return alpha;
-    }
-
     protected byte GetApplicationOpacityAlpha()
     {
         int windowOverride = this.WindowTransparencyOverridePercent;
@@ -354,26 +349,24 @@ internal abstract class LayeredWidgetFormBase : Form
             ? windowOverride
             : (this.CurrentSettings == null ? 0 : this.CurrentSettings.ApplicationTransparencyPercent);
         transparencyPercent = Math.Max(0, Math.Min(WidgetSettings.MaxWindowTransparencyOverridePercent, transparencyPercent));
-        return (byte)DesignTokens.ClampByte(ApplyHoverAlpha(ComputeOpacityAlpha(transparencyPercent)));
+        return (byte)DesignTokens.ClampByte(ComputeOpacityAlpha(transparencyPercent));
     }
 
     internal static void RunOpacityPolicySelfTest()
     {
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.ApplicationTransparencyPercent = 50;
-        using (OpacityPolicyProbeForm followGlobal = new OpacityPolicyProbeForm(settings, -1, false))
-        using (OpacityPolicyProbeForm windowOverride = new OpacityPolicyProbeForm(settings, 60, false))
-        using (OpacityPolicyProbeForm hoverComposed = new OpacityPolicyProbeForm(settings, 60, true))
+        using (OpacityPolicyProbeForm followGlobal = new OpacityPolicyProbeForm(settings, -1))
+        using (OpacityPolicyProbeForm windowOverride = new OpacityPolicyProbeForm(settings, 60))
         {
             if (followGlobal.ReadApplicationAlpha() != ComputeOpacityAlpha(50) ||
-                windowOverride.ReadApplicationAlpha() != ComputeOpacityAlpha(60) ||
-                hoverComposed.ReadApplicationAlpha() != ComputeOpacityAlpha(60) / 2)
+                windowOverride.ReadApplicationAlpha() != ComputeOpacityAlpha(60))
             {
-                throw new InvalidOperationException("Layered window opacity policy did not apply global, override, and hover composition in order.");
+                throw new InvalidOperationException("Layered window opacity policy did not apply global and window override values in order.");
             }
         }
 
-        Console.WriteLine("Layered window opacity policy: PASS global=50 override=60 hover-composed");
+        Console.WriteLine("Layered window opacity policy: PASS global=50 override=60");
     }
 
     internal static void RunScalePolicySelfTest()
@@ -454,23 +447,16 @@ internal abstract class LayeredWidgetFormBase : Form
     private sealed class OpacityPolicyProbeForm : LayeredWidgetFormBase
     {
         private readonly int transparencyOverride;
-        private readonly bool halveForHover;
 
-        public OpacityPolicyProbeForm(WidgetSettings settings, int transparencyOverride, bool halveForHover)
+        public OpacityPolicyProbeForm(WidgetSettings settings, int transparencyOverride)
         {
             this.CurrentSettings = settings;
             this.transparencyOverride = transparencyOverride;
-            this.halveForHover = halveForHover;
         }
 
         protected override int WindowTransparencyOverridePercent
         {
             get { return this.transparencyOverride; }
-        }
-
-        protected override int ApplyHoverAlpha(int alpha)
-        {
-            return this.halveForHover ? alpha / 2 : alpha;
         }
 
         internal byte ReadApplicationAlpha()

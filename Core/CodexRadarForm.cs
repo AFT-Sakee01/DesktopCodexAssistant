@@ -36,6 +36,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     // Keep probes enabled because the compact one-line API summary consumes their states.
     private static readonly bool ServiceHealthProbeEnabled = true;
     private const int CodexModelIqNominalTasks = WidgetSettings.DefaultCodexModelIqBaselineValidTasks;
+    // The public distributed Radar can grow beyond the legacy manual-test setting cap (currently
+    // 112 tasks per cell). Keep source counts bounded for cache safety without truncating them to
+    // the old 100-task UI/test limit.
+    private const int MaxCodexModelIqSourceTasks = 10000;
     private const int MaxCodexModelIqScore = 1000;
     private const double CodexModelIqWebsiteScoreScale = 150.0;
     private const int CodexModelIqWebsiteNormalLowScore = 90;
@@ -405,6 +409,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public DateTime SpeedWindowClosedAtLocal { get; set; }
         public bool SpeedWindowOpenedAtKnown { get; set; }
         public bool SpeedWindowClosedAtKnown { get; set; }
+        public bool ResetRadarKnown { get; set; }
+        public DateTime ResetRadarUpdatedAtLocal { get; set; }
+        public bool ResetRadarUpdatedAtKnown { get; set; }
+        public string ResetCardStatus { get; set; }
+        public string ResetCardDescription { get; set; }
+        public string HardResetStatus { get; set; }
+        public string HardResetDescription { get; set; }
         public bool ResetEventKnown { get; set; }
         public string ResetEventId { get; set; }
         public string ResetEventTitle { get; set; }
@@ -459,6 +470,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 SpeedWindowClosedAtLocal = DateTime.MinValue,
                 SpeedWindowOpenedAtKnown = false,
                 SpeedWindowClosedAtKnown = false,
+                ResetRadarKnown = false,
+                ResetRadarUpdatedAtLocal = DateTime.MinValue,
+                ResetRadarUpdatedAtKnown = false,
+                ResetCardStatus = string.Empty,
+                ResetCardDescription = string.Empty,
+                HardResetStatus = string.Empty,
+                HardResetDescription = string.Empty,
                 ResetEventKnown = false,
                 ResetEventId = string.Empty,
                 ResetEventTitle = string.Empty,
@@ -515,6 +533,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 SpeedWindowClosedAtLocal = this.SpeedWindowClosedAtLocal,
                 SpeedWindowOpenedAtKnown = this.SpeedWindowOpenedAtKnown,
                 SpeedWindowClosedAtKnown = this.SpeedWindowClosedAtKnown,
+                ResetRadarKnown = this.ResetRadarKnown,
+                ResetRadarUpdatedAtLocal = this.ResetRadarUpdatedAtLocal,
+                ResetRadarUpdatedAtKnown = this.ResetRadarUpdatedAtKnown,
+                ResetCardStatus = this.ResetCardStatus,
+                ResetCardDescription = this.ResetCardDescription,
+                HardResetStatus = this.HardResetStatus,
+                HardResetDescription = this.HardResetDescription,
                 ResetEventKnown = this.ResetEventKnown,
                 ResetEventId = this.ResetEventId,
                 ResetEventTitle = this.ResetEventTitle,
@@ -2153,7 +2178,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         int rounded = (int)Math.Round(validTasks, MidpointRounding.AwayFromZero);
-        return Math.Max(WidgetSettings.MinCodexModelIqValidTasks, Math.Min(WidgetSettings.MaxCodexModelIqValidTasks, rounded));
+        return Math.Max(WidgetSettings.MinCodexModelIqValidTasks, Math.Min(MaxCodexModelIqSourceTasks, rounded));
     }
 
     private static int NormalizeCodexModelIqPassedCount(double passed, double validTasks)
@@ -3965,6 +3990,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                         MergeCodexModelIqHistory(snapshot, previousSnapshot);
                         ApplyCodexModelIqEfficiencyFromHistory(snapshot);
                         PreserveCodexModelIqSnapshot(snapshot, previousSnapshot);
+                        PreserveCodexRadarResetJudgement(snapshot, previousSnapshot);
                         PreserveCodexModelIqRefreshTimeIfContentUnchanged(snapshot, previousSnapshot);
                         requestedState.RadarSnapshot = snapshot;
                         requestedState.ModelKey = requestedModelKey;
@@ -4387,8 +4413,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                     snapshot = CodexRadarSnapshot.CreateDefault();
                 }
 
-                // Homepage HTML is not an IQ source. It may only fill fields which remained
-                // unknown after the schema-checked current.json adapter.
+                // Homepage HTML is not an IQ source. It may only fill speed-window and Reset Radar
+                // judgement fields which remained unknown after the schema-checked JSON adapter.
                 bool fallbackContributed = FillUnknownCodexRadarFields(snapshot, htmlSnapshot);
                 catalogUpdate = MergeCodexRadarModelCatalogUpdates(catalogUpdate, htmlCatalogUpdate);
                 parsed = parsed || fallbackContributed;
@@ -4414,7 +4440,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     {
         return !jsonParsed ||
             snapshot == null ||
-            !snapshot.SpeedWindowKnown;
+            !snapshot.SpeedWindowKnown ||
+            !snapshot.ResetRadarKnown;
     }
 
     private static bool FillUnknownCodexRadarFields(
@@ -4449,7 +4476,44 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             }
         }
 
+        if (!target.ResetRadarKnown && fallback.ResetRadarKnown)
+        {
+            CopyCodexRadarResetJudgementSnapshot(target, fallback);
+            contributed = true;
+        }
+
         return contributed;
+    }
+
+    private static void CopyCodexRadarResetJudgementSnapshot(
+        CodexRadarSnapshot target,
+        CodexRadarSnapshot source)
+    {
+        if (target == null || source == null)
+        {
+            return;
+        }
+
+        target.ResetRadarKnown = source.ResetRadarKnown;
+        target.ResetRadarUpdatedAtLocal = source.ResetRadarUpdatedAtLocal;
+        target.ResetRadarUpdatedAtKnown = source.ResetRadarUpdatedAtKnown;
+        target.ResetCardStatus = source.ResetCardStatus;
+        target.ResetCardDescription = source.ResetCardDescription;
+        target.HardResetStatus = source.HardResetStatus;
+        target.HardResetDescription = source.HardResetDescription;
+    }
+
+    private static void PreserveCodexRadarResetJudgement(
+        CodexRadarSnapshot target,
+        CodexRadarSnapshot previous)
+    {
+        if (target == null || target.ResetRadarKnown ||
+            previous == null || !previous.ResetRadarKnown)
+        {
+            return;
+        }
+
+        CopyCodexRadarResetJudgementSnapshot(target, previous);
     }
 
     private static bool TryReadCodexRadarHomeHtmlStatus(
@@ -4499,9 +4563,10 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         candidate.FetchedAtLocal = DateTime.Now;
         candidate.FetchedAtKnown = true;
         ApplyCodexRadarHtmlWindowStatus(content, candidate);
+        ApplyCodexRadarHtmlResetJudgement(content, candidate);
 
         // Dynamic placeholders and decorative HTML must not be reported as usable fallback data.
-        if (!candidate.SpeedWindowKnown)
+        if (!candidate.SpeedWindowKnown && !candidate.ResetRadarKnown)
         {
             return false;
         }
@@ -5192,7 +5257,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             snapshot = CodexRadarSnapshot.CreateDefault();
             snapshot.FetchedAtLocal = DateTime.Now;
             snapshot.FetchedAtKnown = true;
-            snapshot.CodexIqModels = ExtractCodexIqBoardModels(rootModelIq);
+            snapshot.CodexIqModels = ExtractCodexIqBoardModels(rootModelIq, modelKey);
 
             DateTime checkedAt;
             if (TryGetQuotaDate(root, "checked_at", out checkedAt) ||
@@ -5317,6 +5382,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             snapshot.CheckedAtLocal = DateTime.Now;
             snapshot.CheckedAtKnown = true;
             ApplyCodexRadarHtmlWindowStatus(content, snapshot);
+            ApplyCodexRadarHtmlResetJudgement(content, snapshot);
             snapshot.ModelIqRefreshedAtLocal = DateTime.Now;
             snapshot.ModelIqRefreshedAtKnown = true;
             snapshot.ModelIqRefreshSucceeded = true;
@@ -5426,6 +5492,182 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         ExpireCodexRadarSpeedWindowIfClosed(snapshot, DateTime.Now);
+    }
+
+    private static void ApplyCodexRadarHtmlResetJudgement(string content, CodexRadarSnapshot snapshot)
+    {
+        if (snapshot == null || string.IsNullOrEmpty(content))
+        {
+            return;
+        }
+
+        // Keep parsing bounded to the public Reset Radar section. This prevents unrelated page
+        // labels from being mistaken for status data if the surrounding homepage evolves.
+        Match sectionMatch = Regex.Match(
+            content,
+            "<section\\s+class=\"[^\"]*\\breset-judgement\\b[^\"]*\"[^>]*>(.*?)</section>",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        if (!sectionMatch.Success)
+        {
+            return;
+        }
+
+        string section = sectionMatch.Groups[1].Value;
+        string resetCardStatus = string.Empty;
+        string resetCardDescription = string.Empty;
+        string hardResetStatus = string.Empty;
+        string hardResetDescription = string.Empty;
+        MatchCollection cards = Regex.Matches(
+            section,
+            "<article\\s+class=\"[^\"]*\\breset-judgement-card\\b[^\"]*\"[^>]*>(.*?)</article>",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        for (int i = 0; i < cards.Count; i++)
+        {
+            string card = cards[i].Groups[1].Value;
+            Match labelMatch = Regex.Match(
+                card,
+                "<span[^>]*>(.*?)</span>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            Match judgementMatch = Regex.Match(
+                card,
+                "<strong[^>]*>(.*?)</strong>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            if (!labelMatch.Success || !judgementMatch.Success)
+            {
+                continue;
+            }
+
+            string label = NormalizeCodexRadarHtmlText(labelMatch.Groups[1].Value);
+            string status;
+            string description;
+            SplitCodexRadarResetJudgement(
+                NormalizeCodexRadarHtmlText(judgementMatch.Groups[1].Value),
+                out status,
+                out description);
+            if (description.Length == 0)
+            {
+                Match paragraphMatch = Regex.Match(
+                    card,
+                    "<p[^>]*>(.*?)</p>",
+                    RegexOptions.IgnoreCase | RegexOptions.Singleline);
+                if (paragraphMatch.Success)
+                {
+                    description = NormalizeCodexRadarHtmlText(paragraphMatch.Groups[1].Value);
+                }
+            }
+
+            status = ClampCodexRadarResetText(status, 20);
+            description = ClampCodexRadarResetText(description, 96);
+            if (string.Equals(label, "发重置卡", StringComparison.Ordinal))
+            {
+                resetCardStatus = status;
+                resetCardDescription = description;
+            }
+            else if (string.Equals(label, "硬重置", StringComparison.Ordinal))
+            {
+                hardResetStatus = status;
+                hardResetDescription = description;
+            }
+        }
+
+        // Publish the pair atomically so the board never combines one fresh row with one stale row.
+        if (resetCardStatus.Length == 0 || resetCardDescription.Length == 0 ||
+            hardResetStatus.Length == 0 || hardResetDescription.Length == 0)
+        {
+            return;
+        }
+
+        snapshot.ResetRadarKnown = true;
+        snapshot.ResetCardStatus = resetCardStatus;
+        snapshot.ResetCardDescription = resetCardDescription;
+        snapshot.HardResetStatus = hardResetStatus;
+        snapshot.HardResetDescription = hardResetDescription;
+
+        Match updatedMatch = Regex.Match(
+            section,
+            "重置雷达\\s*<em[^>]*>\\s*(\\d{1,2})月(\\d{1,2})日(\\d{1,2}):(\\d{2})更新",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        DateTime updatedLocal;
+        if (updatedMatch.Success &&
+            TryBuildCodexRadarResetUpdatedAtLocal(updatedMatch, out updatedLocal))
+        {
+            snapshot.ResetRadarUpdatedAtLocal = updatedLocal;
+            snapshot.ResetRadarUpdatedAtKnown = true;
+        }
+    }
+
+    private static void SplitCodexRadarResetJudgement(
+        string judgement,
+        out string status,
+        out string description)
+    {
+        status = string.Empty;
+        description = string.Empty;
+        string value = (judgement ?? string.Empty).Trim();
+        int separator = value.IndexOf('·');
+        if (separator < 0)
+        {
+            status = value;
+            return;
+        }
+
+        status = value.Substring(0, separator).Trim();
+        description = value.Substring(separator + 1).Trim();
+    }
+
+    private static string ClampCodexRadarResetText(string value, int maxLength)
+    {
+        string normalized = (value ?? string.Empty).Trim();
+        if (maxLength <= 0 || normalized.Length <= maxLength)
+        {
+            return normalized;
+        }
+
+        return normalized.Substring(0, maxLength);
+    }
+
+    private static bool TryBuildCodexRadarResetUpdatedAtLocal(Match match, out DateTime updatedLocal)
+    {
+        updatedLocal = DateTime.MinValue;
+        int month;
+        int day;
+        int hour;
+        int minute;
+        if (match == null || !match.Success ||
+            !int.TryParse(match.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out month) ||
+            !int.TryParse(match.Groups[2].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out day) ||
+            !int.TryParse(match.Groups[3].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out hour) ||
+            !int.TryParse(match.Groups[4].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute))
+        {
+            return false;
+        }
+
+        try
+        {
+            TimeZoneInfo beijingZone = TimeZoneUtilities.GetBeijingTimeZone();
+            DateTime beijingNow = TimeZoneInfo.ConvertTime(DateTime.UtcNow, beijingZone);
+            DateTime candidate = new DateTime(
+                beijingNow.Year,
+                month,
+                day,
+                hour,
+                minute,
+                0,
+                DateTimeKind.Unspecified);
+            // A December page observed in early January belongs to the previous year.
+            if (candidate > beijingNow.AddDays(7.0))
+            {
+                candidate = candidate.AddYears(-1);
+            }
+
+            updatedLocal = TimeZoneInfo.ConvertTimeToUtc(candidate, beijingZone).ToLocalTime();
+            return true;
+        }
+        catch
+        {
+            updatedLocal = DateTime.MinValue;
+            return false;
+        }
     }
 
     private static bool TryGetCodexRadarHtmlDateAttribute(
@@ -5920,7 +6162,48 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         Dictionary<string, object> comparisons = GetQuotaObject(modelIq, "comparisons");
-        return GetQuotaObject(comparisons, normalizedKey);
+        Dictionary<string, object> direct = GetQuotaObject(comparisons, normalizedKey);
+        if (direct != null)
+        {
+            return direct;
+        }
+
+        if (comparisons == null)
+        {
+            return null;
+        }
+
+        Dictionary<string, object> matched = null;
+        foreach (KeyValuePair<string, object> pair in comparisons)
+        {
+            Dictionary<string, object> comparison = pair.Value as Dictionary<string, object>;
+            if (comparison == null)
+            {
+                continue;
+            }
+
+            Dictionary<string, object> comparisonLatest =
+                GetQuotaObject(comparison, "latest") ?? comparison;
+            string comparisonKey = GetCodexRadarModelKeyFromNode(
+                comparisonLatest,
+                CodexRadarModelCatalog.NormalizeModelKey(pair.Key));
+            if (!string.Equals(comparisonKey, normalizedKey, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // The website may append transport/source qualifiers such as "_distributed" to the
+            // dictionary key while the model node retains the stable catalog identity. Do not pick
+            // an arbitrary node if a future payload maps two entries onto the same stable key.
+            if (matched != null && !object.ReferenceEquals(matched, comparison))
+            {
+                return null;
+            }
+
+            matched = comparison;
+        }
+
+        return matched;
     }
 
     private static List<CodexRadarModelInfo> ExtractCodexRadarModelCatalog(
@@ -5960,7 +6243,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     }
 
     private static List<CodexIqBoardModelPoint> ExtractCodexIqBoardModels(
-        Dictionary<string, object> modelIq)
+        Dictionary<string, object> modelIq,
+        string selectedModelKey)
     {
         List<CodexIqBoardModelPoint> points = new List<CodexIqBoardModelPoint>();
         if (modelIq == null)
@@ -5968,13 +6252,22 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return points;
         }
 
+        string normalizedSelectedKey = CodexRadarModelCatalog.NormalizeModelKey(selectedModelKey);
         Dictionary<string, object> latest = GetQuotaObject(modelIq, "latest") ?? modelIq;
+        string latestKey = GetCodexRadarModelKeyFromNode(
+            latest,
+            CodexRadarModelCatalog.DefaultModelKey);
+        if (normalizedSelectedKey.Length == 0)
+        {
+            normalizedSelectedKey = latestKey;
+        }
+
         AddCodexIqBoardModelPoint(
             points,
             modelIq,
             latest,
-            GetCodexRadarModelKeyFromNode(latest, CodexRadarModelCatalog.DefaultModelKey),
-            true);
+            latestKey,
+            string.Equals(latestKey, normalizedSelectedKey, StringComparison.OrdinalIgnoreCase));
 
         Dictionary<string, object> comparisons = GetQuotaObject(modelIq, "comparisons");
         if (comparisons != null)
@@ -5989,14 +6282,18 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
                 Dictionary<string, object> comparisonLatest =
                     GetQuotaObject(comparison, "latest") ?? comparison;
+                string comparisonKey = GetCodexRadarModelKeyFromNode(
+                    comparisonLatest,
+                    CodexRadarModelCatalog.NormalizeModelKey(pair.Key));
                 AddCodexIqBoardModelPoint(
                     points,
                     comparison,
                     comparisonLatest,
-                    GetCodexRadarModelKeyFromNode(
-                        comparisonLatest,
-                        CodexRadarModelCatalog.NormalizeModelKey(pair.Key)),
-                    false);
+                    comparisonKey,
+                    string.Equals(
+                        comparisonKey,
+                        normalizedSelectedKey,
+                        StringComparison.OrdinalIgnoreCase));
             }
         }
 
@@ -6081,10 +6378,6 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool dataKnown =
             TryGetCodexModelIqDataWindow(latest, "date", out dataLocal, out windowHour) ||
             TryGetCodexModelIqDataWindow(root, "date", out dataLocal, out windowHour);
-        if (dataKnown)
-        {
-            dataLocal = dataLocal.Date.AddHours(windowHour >= 12 ? 12 : 0);
-        }
 
         string model = GetQuotaString(latest, "model");
         string effort = GetQuotaString(latest, "reasoning_effort");
@@ -6633,6 +6926,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         string text = WebUtility.HtmlDecode(rawLabel).Trim();
+        if (text.IndexOf('T') > 0)
+        {
+            DateTime exactLocal;
+            if (TryReadQuotaDate(text, out exactLocal))
+            {
+                return exactLocal.ToString("M.d HH:mm", CultureInfo.InvariantCulture);
+            }
+        }
+
         Match match = Regex.Match(
             text,
             "^(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})(?:[-_\\s]*(.*?))?$",
@@ -6727,7 +7029,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         point = new CodexModelHistoryPoint
         {
-            DateLocal = NormalizeCodexModelHistoryKey(date.Date.AddHours(dataWindowHour >= 12 ? 12 : 0)),
+            DateLocal = NormalizeCodexModelHistoryKey(date),
             Score = score
         };
         double passed;
@@ -6894,7 +7196,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return DateTime.MinValue;
         }
 
-        return value.Date.AddHours(value.Hour >= 12 ? 12 : 0);
+        return value.AddTicks(-(value.Ticks % TimeSpan.TicksPerSecond));
     }
 
     private static List<CodexModelHistoryPoint> CloneCodexModelHistory(
@@ -8381,6 +8683,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         values[prefix + "DataWindowHour"] = snapshot.ModelIqDataWindowKnown
             ? (snapshot.ModelIqDataWindowStartHourLocal >= 12 ? 12 : 0).ToString(CultureInfo.InvariantCulture)
             : string.Empty;
+        values[prefix + "ResetRadarUpdatedAtUtc"] = snapshot.ResetRadarUpdatedAtKnown
+            ? snapshot.ResetRadarUpdatedAtLocal.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture)
+            : string.Empty;
+        values[prefix + "ResetCardStatus"] = snapshot.ResetRadarKnown ? snapshot.ResetCardStatus : string.Empty;
+        values[prefix + "ResetCardDescription"] = snapshot.ResetRadarKnown ? snapshot.ResetCardDescription : string.Empty;
+        values[prefix + "HardResetStatus"] = snapshot.ResetRadarKnown ? snapshot.HardResetStatus : string.Empty;
+        values[prefix + "HardResetDescription"] = snapshot.ResetRadarKnown ? snapshot.HardResetDescription : string.Empty;
     }
 
     private static void ApplyCodexRadarCacheHardeningValues(
@@ -8416,6 +8725,35 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         {
             snapshot.ModelIqDataWindowStartHourLocal = dataWindowHour >= 12 ? 12 : 0;
             snapshot.ModelIqDataWindowKnown = true;
+        }
+
+        string resetCardStatus = ClampCodexRadarResetText(
+            GetCacheValue(values, prefix + "ResetCardStatus", string.Empty),
+            20);
+        string resetCardDescription = ClampCodexRadarResetText(
+            GetCacheValue(values, prefix + "ResetCardDescription", string.Empty),
+            96);
+        string hardResetStatus = ClampCodexRadarResetText(
+            GetCacheValue(values, prefix + "HardResetStatus", string.Empty),
+            20);
+        string hardResetDescription = ClampCodexRadarResetText(
+            GetCacheValue(values, prefix + "HardResetDescription", string.Empty),
+            96);
+        if (resetCardStatus.Length > 0 && resetCardDescription.Length > 0 &&
+            hardResetStatus.Length > 0 && hardResetDescription.Length > 0)
+        {
+            snapshot.ResetRadarKnown = true;
+            snapshot.ResetCardStatus = resetCardStatus;
+            snapshot.ResetCardDescription = resetCardDescription;
+            snapshot.HardResetStatus = hardResetStatus;
+            snapshot.HardResetDescription = hardResetDescription;
+        }
+
+        DateTime resetRadarUpdatedAtUtc;
+        if (TryReadCacheUtc(values, prefix + "ResetRadarUpdatedAtUtc", out resetRadarUpdatedAtUtc))
+        {
+            snapshot.ResetRadarUpdatedAtLocal = resetRadarUpdatedAtUtc.ToLocalTime();
+            snapshot.ResetRadarUpdatedAtKnown = true;
         }
     }
 
@@ -8738,8 +9076,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private static string FormatCodexModelHistoryDate(DateTime value)
     {
         DateTime key = NormalizeCodexModelHistoryKey(value);
-        string suffix = key.Hour >= 12 ? "-pm" : "-am";
-        return key.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + suffix;
+        return key.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
     }
 
     private static bool TryParseCodexModelHistoryDate(string value, out DateTime date)
@@ -8751,10 +9088,21 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         DateTime parsed;
+        if (DateTime.TryParseExact(
+                value.Trim(),
+                "yyyy-MM-dd'T'HH:mm:ss",
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.None,
+                out parsed))
+        {
+            date = NormalizeCodexModelHistoryKey(parsed);
+            return true;
+        }
+
         int windowHour;
         if (TryReadCodexModelIqDataWindow(value.Trim(), out parsed, out windowHour))
         {
-            date = NormalizeCodexModelHistoryKey(parsed.Date.AddHours(windowHour));
+            date = NormalizeCodexModelHistoryKey(parsed);
             return true;
         }
 
@@ -10294,8 +10642,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
         if (TryReadQuotaDate(value, out localDate))
         {
-            localDate = localDate.Date;
-            windowStartHour = 0;
+            windowStartHour = localDate.Hour >= 12 ? 12 : 0;
             return true;
         }
 
@@ -10715,10 +11062,77 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             codex56Snapshot.ModelIqSourceUpdatedAtLocal.ToUniversalTime() !=
                 new DateTime(2026, 7, 10, 2, 15, 0, DateTimeKind.Utc) ||
             !codex56Snapshot.FetchedAtKnown ||
-            !codex56Snapshot.CodexIqModels[0].Current ||
+            codex56Snapshot.CodexIqModels[0].Current ||
+            !codex56Snapshot.CodexIqModels[1].Current ||
             Math.Abs(codex56Snapshot.CodexIqModels[1].AverageCostUsd - 3.5) > 0.001)
         {
             throw new InvalidOperationException("Codex Radar GPT-5.6 comparison selection did not use Sol medium data.");
+        }
+
+        CodexRadarSnapshot distributedSnapshot;
+        CodexRadarModelCatalogUpdate distributedUpdate;
+        string distributedJson =
+            "{\"schema_version\":\"2.0\",\"model_iq\":{\"updated_at\":\"2026-07-24T03:27:02+09:00\"," +
+            "\"latest\":{\"date\":\"2026-07-24T03:27:02+09:00\",\"score\":95.5,\"passed\":71,\"tasks\":112," +
+            "\"valid_tasks\":112,\"average_cost_usd\":9.82,\"average_task_seconds\":2159.7,\"total_tokens\":1517670145," +
+            "\"model\":\"gpt-5.6-sol\",\"reasoning_effort\":\"max\"}," +
+            "\"comparisons\":{\"gpt_56_terra_xhigh_distributed\":{\"label\":\"GPT-5.6 Terra xhigh\"," +
+            "\"latest\":{\"date\":\"2026-07-24T03:27:02+09:00\",\"score\":88.8,\"passed\":66,\"tasks\":112," +
+            "\"valid_tasks\":112,\"average_cost_usd\":2.42,\"average_task_seconds\":1152.3,\"total_tokens\":656210760," +
+            "\"model\":\"gpt-5.6-terra\",\"reasoning_effort\":\"xhigh\"}," +
+            "\"recent_days\":[" +
+            "{\"date\":\"2026-07-24T01:27:02+09:00\",\"score\":87.4,\"passed\":65,\"tasks\":112,\"wall_seconds\":130000,\"total_tokens\":650000000}," +
+            "{\"date\":\"2026-07-24T02:27:02+09:00\",\"score\":88.1,\"passed\":65,\"tasks\":112,\"wall_seconds\":129000,\"total_tokens\":653000000}]}}}}";
+        bool distributedParsed = TryParseCodexRadarStatus(
+                distributedJson,
+                "gpt_56_terra_xhigh",
+                false,
+                out distributedSnapshot,
+                out distributedUpdate);
+        if (!distributedParsed ||
+            distributedSnapshot == null ||
+            !distributedSnapshot.ModelIqKnown ||
+            distributedSnapshot.ModelIqPassed != 66 ||
+            distributedSnapshot.ModelIqValidTasks != 112 ||
+            distributedSnapshot.ModelIqHistory == null ||
+            distributedSnapshot.ModelIqHistory.Count != 3 ||
+            distributedSnapshot.CodexIqModels == null ||
+            distributedSnapshot.CodexIqModels.Count != 2 ||
+            distributedSnapshot.CodexIqModels[0].Current ||
+            !distributedSnapshot.CodexIqModels[1].Current ||
+            !string.Equals(
+                distributedSnapshot.CodexIqModels[1].Key,
+                "gpt_56_terra_xhigh",
+                StringComparison.Ordinal) ||
+            distributedSnapshot.ModelIqDataLabel.IndexOf("_t", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            distributedSnapshot.ModelIqDataLabel.IndexOf(':') < 0)
+        {
+            throw new InvalidOperationException(
+                "Codex Radar distributed-model alias, precise history, or source task-count parsing failed." +
+                " parsed=" + distributedParsed.ToString(CultureInfo.InvariantCulture) +
+                " snapshot=" + (distributedSnapshot != null ? "present" : "null") +
+                " known=" + (distributedSnapshot != null && distributedSnapshot.ModelIqKnown).ToString(CultureInfo.InvariantCulture) +
+                " passed=" + (distributedSnapshot != null ? distributedSnapshot.ModelIqPassed : -1).ToString(CultureInfo.InvariantCulture) +
+                " tasks=" + (distributedSnapshot != null ? distributedSnapshot.ModelIqValidTasks : -1).ToString(CultureInfo.InvariantCulture) +
+                " history=" + (distributedSnapshot != null && distributedSnapshot.ModelIqHistory != null ? distributedSnapshot.ModelIqHistory.Count : -1).ToString(CultureInfo.InvariantCulture) +
+                " models=" + (distributedSnapshot != null && distributedSnapshot.CodexIqModels != null ? distributedSnapshot.CodexIqModels.Count : -1).ToString(CultureInfo.InvariantCulture) +
+                " label=" + (distributedSnapshot != null ? distributedSnapshot.ModelIqDataLabel ?? string.Empty : string.Empty));
+        }
+
+        string distributedHistoryCache = FormatCodexModelHistory(distributedSnapshot.ModelIqHistory);
+        List<CodexModelHistoryPoint> distributedHistoryRoundTrip =
+            ParseCodexModelHistory(distributedHistoryCache);
+        if (distributedHistoryRoundTrip.Count != distributedSnapshot.ModelIqHistory.Count)
+        {
+            throw new InvalidOperationException("Codex Radar precise history cache round-trip collapsed timestamped samples.");
+        }
+
+        for (int i = 0; i < distributedHistoryRoundTrip.Count; i++)
+        {
+            if (distributedHistoryRoundTrip[i].DateLocal != distributedSnapshot.ModelIqHistory[i].DateLocal)
+            {
+                throw new InvalidOperationException("Codex Radar precise history cache round-trip changed a sample timestamp.");
+            }
         }
 
         DateTime beijingNow = TimeZoneInfo.ConvertTime(DateTime.UtcNow, TimeZoneUtilities.GetBeijingTimeZone());
@@ -10737,7 +11151,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             "<div class=\"model-iq-compare-row\"><span>耗时</span><strong class=\"model-iq-column-gpt_56_sol_medium\">3.4h</strong></div>" +
             "<div class=\"model-iq-compare-row\"><span>总tokens</span><strong class=\"model-iq-column-gpt_56_sol_medium\">42.3M</strong></div>" +
             "<title>" + monthText + "." + dayText + "_pm GPT-5.6 Sol medium: IQ指数 90.0, 6/10, 费用 $42.00, 耗时 204分钟, cache命中率 95.2%</title>" +
-            "<svg><text class=\"model-iq-band-label\">90-110常态区</text></svg>";
+            "<svg><text class=\"model-iq-band-label\">90-110常态区</text></svg>" +
+            "<section class=\"reset-judgement\" aria-label=\"重置雷达\">" +
+            "<div><h2>重置雷达 <em>" + monthText + "月" + dayText + "日10:24更新</em></h2></div>" +
+            "<article class=\"reset-judgement-card\"><span>发重置卡</span>" +
+            "<strong>低 · 本轮是直接重置，不是发新卡</strong><p>重置卡说明。</p></article>" +
+            "<article class=\"reset-judgement-card\"><span>硬重置</span>" +
+            "<strong>已落地 · 10M 里程碑重置完成 · 下一次低</strong><p>硬重置说明。</p></article>" +
+            "</section>";
         CodexRadarSnapshot htmlSnapshot;
         List<string> htmlFailures = new List<string>();
         if (!TryParseCodexRadarHtmlStatus(html, CodexRadarModelCatalog.DefaultModelKey, out htmlSnapshot) ||
@@ -10752,6 +11173,17 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             if (!htmlSnapshot.SpeedWindowOpen) htmlFailures.Add("SpeedWindowOpen=false");
             if (!htmlSnapshot.SpeedWindowOpenedAtKnown) htmlFailures.Add("SpeedWindowOpenedAtKnown=false");
             if (!htmlSnapshot.SpeedWindowClosedAtKnown) htmlFailures.Add("SpeedWindowClosedAtKnown=false");
+            if (!htmlSnapshot.ResetRadarKnown) htmlFailures.Add("ResetRadarKnown=false");
+            if (!htmlSnapshot.ResetRadarUpdatedAtKnown) htmlFailures.Add("ResetRadarUpdatedAtKnown=false");
+            if (!string.Equals(htmlSnapshot.ResetCardStatus, "低", StringComparison.Ordinal))
+            {
+                htmlFailures.Add("ResetCardStatus=" + htmlSnapshot.ResetCardStatus);
+            }
+
+            if (!string.Equals(htmlSnapshot.HardResetStatus, "已落地", StringComparison.Ordinal))
+            {
+                htmlFailures.Add("HardResetStatus=" + htmlSnapshot.HardResetStatus);
+            }
             if (Math.Abs(htmlSnapshot.ModelIqEfficiencyTotalTokens - 42300000.0) > 1.0)
             {
                 htmlFailures.Add("tokens=" + htmlSnapshot.ModelIqEfficiencyTotalTokens.ToString(CultureInfo.InvariantCulture));
@@ -10806,9 +11238,28 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (!FillUnknownCodexRadarFields(emptyFallbackTarget, speedFallback) ||
             !emptyFallbackTarget.SpeedWindowKnown ||
             emptyFallbackTarget.SpeedWindowOpen ||
+            !ShouldRequestCodexRadarHtmlFallback(true, emptyFallbackTarget))
+        {
+            throw new InvalidOperationException("Codex Radar HTML fallback must keep requesting missing Reset Radar judgement.");
+        }
+
+        CodexRadarSnapshot judgementFallback;
+        if (!TryParseCodexRadarHtmlFallbackStatus(html, out judgementFallback) ||
+            judgementFallback == null ||
+            !judgementFallback.ResetRadarKnown ||
+            !FillUnknownCodexRadarFields(emptyFallbackTarget, judgementFallback) ||
+            !emptyFallbackTarget.ResetRadarKnown ||
             ShouldRequestCodexRadarHtmlFallback(true, emptyFallbackTarget))
         {
-            throw new InvalidOperationException("Codex Radar HTML fallback speed-window routing failed.");
+            throw new InvalidOperationException("Codex Radar reset-judgement parsing or fallback routing failed.");
+        }
+
+        CodexRadarSnapshot preservedJudgement = CodexRadarSnapshot.CreateDefault();
+        PreserveCodexRadarResetJudgement(preservedJudgement, judgementFallback);
+        if (!preservedJudgement.ResetRadarKnown ||
+            !string.Equals(preservedJudgement.HardResetDescription, judgementFallback.HardResetDescription, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Codex Radar last-known reset judgement was not preserved.");
         }
 
         CodexRadarSnapshot staleSpeedWindow = CodexRadarSnapshot.CreateDefault();
@@ -11156,6 +11607,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         source.CheckedAtKnown = true;
         source.CheckedAtLocal = new DateTime(2026, 7, 7, 12, 5, 0, DateTimeKind.Local);
         source.ModelIqDataWindowKnown = false;
+        source.ResetRadarKnown = true;
+        source.ResetRadarUpdatedAtKnown = true;
+        source.ResetRadarUpdatedAtLocal = new DateTime(2026, 7, 7, 10, 24, 0, DateTimeKind.Local);
+        source.ResetCardStatus = "低";
+        source.ResetCardDescription = "本轮是直接重置，不是发新卡";
+        source.HardResetStatus = "已落地";
+        source.HardResetDescription = "10M 里程碑重置完成 · 下一次低";
         Dictionary<string, string> values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         WriteCodexRadarCacheHardeningValues(values, "Test.", source);
         CodexRadarSnapshot loaded = CodexRadarSnapshot.CreateDefault();
@@ -11163,6 +11621,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (loaded.ModelIqDataWindowKnown ||
             !loaded.CheckedAtKnown ||
             loaded.CheckedAtLocal != source.CheckedAtLocal ||
+            !loaded.ResetRadarKnown ||
+            !loaded.ResetRadarUpdatedAtKnown ||
+            loaded.ResetRadarUpdatedAtLocal != source.ResetRadarUpdatedAtLocal ||
+            !string.Equals(loaded.ResetCardDescription, source.ResetCardDescription, StringComparison.Ordinal) ||
+            !string.Equals(loaded.HardResetDescription, source.HardResetDescription, StringComparison.Ordinal) ||
             !string.Equals(loaded.ModelIqCachedContentSignature, BuildCodexModelIqContentSignature(source), StringComparison.Ordinal))
         {
             throw new InvalidOperationException("Codex Radar cache hardening values did not round-trip faithfully.");

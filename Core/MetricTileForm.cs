@@ -45,11 +45,6 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     private int pendingTicks;
     private bool displaySuspended;
     private bool hiddenForFullscreen;
-    private double hoverOpacityProgress;
-    private DateTime hoverOpacityLastUtc = DateTime.MinValue;
-    private DateTime reverseHoverRevealUntilUtc = DateTime.MinValue;
-    private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
-    private bool autoHideKeepAliveActive;
     private bool renderSampleHoverOverride;
     private BurnInVisualLevel burnInVisualLevel;
     // A right-group hover restores both luminance and original accent colours while leaving the
@@ -476,6 +471,11 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
 
         if (a.CenterValue != b.CenterValue ||
             a.CenterSuffix != b.CenterSuffix ||
+            a.NetworkConnected != b.NetworkConnected ||
+            a.NetworkDownValue != b.NetworkDownValue ||
+            a.NetworkDownUnit != b.NetworkDownUnit ||
+            a.NetworkUpValue != b.NetworkUpValue ||
+            a.NetworkUpUnit != b.NetworkUpUnit ||
             a.EasterEggVisual != b.EasterEggVisual ||
             a.EasterEggSecondLine != b.EasterEggSecondLine ||
             a.AlertIconVisible != b.AlertIconVisible ||
@@ -487,7 +487,32 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             return true;
         }
 
-        return !GuardsEqual(a.Guards, b.Guards);
+        return !PulseLevelsEqual(a.NetworkDownPulses, b.NetworkDownPulses) ||
+            !PulseLevelsEqual(a.NetworkUpPulses, b.NetworkUpPulses) ||
+            !GuardsEqual(a.Guards, b.Guards);
+    }
+
+    private static bool PulseLevelsEqual(int[] a, int[] b)
+    {
+        if (a == null || b == null)
+        {
+            return a == b;
+        }
+
+        if (a.Length != b.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < a.Length; i++)
+        {
+            if (a[i] != b[i])
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool GuardsEqual(List<MetricTileGuardEntry> a, List<MetricTileGuardEntry> b)
@@ -588,7 +613,13 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         if (hidden)
         {
             HideTile();
+            return;
         }
+
+        // Visibility policy transitions must be symmetric. HideTile() clears WinForms Visible and
+        // stops hover polling, so clearing only the policy flag would leave the tile permanently
+        // absent until a settings reload or display-recovery pass rebuilt the presentation.
+        ShowTile();
     }
 
     public void RefreshBurnInPosition()
@@ -700,31 +731,6 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             tileBounds.Top + runtimeGroupLocation.Y - groupBounds.Top);
     }
 
-    // ── Hover / opacity ──────────────────────────────────────────────────
-    // Hovering a tile must not hide it. The other layered windows fade to 5% because hidden mode
-    // exists to clear a path to whatever sits underneath them, but a tile *is* the pointer target:
-    // fading it out makes the button vanish under the cursor at the moment it is being aimed at.
-    // Tiles dim to this floor instead — quieter, still legible, and paired with the accent border
-    // DrawTile paints in the hovered state.
-    private const double HoverDimAlphaScale = 0.6;
-
-    protected override int ApplyHoverAlpha(int alpha)
-    {
-        if (!IsHoverOpacityRuntimeEnabled() || this.hoverOpacityProgress <= 0.0)
-        {
-            return alpha;
-        }
-
-        int hoverAlpha = (int)Math.Round(alpha * HoverDimAlphaScale);
-        if (alpha <= hoverAlpha)
-        {
-            return alpha;
-        }
-
-        double animated = alpha + (hoverAlpha - alpha) * this.hoverOpacityProgress;
-        return Math.Max(0, Math.Min(255, (int)Math.Round(animated)));
-    }
-
     protected override int PresentationLuminancePercent
     {
         get
@@ -753,77 +759,6 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         }
 
         return true;
-    }
-
-    private bool IsHoverOpacityRuntimeEnabled()
-    {
-        return this.CurrentSettings.HoverOpacityEnabled ||
-            this.CurrentSettings.ForceHoverOpacityActive ||
-            this.CurrentSettings.AutoHoverOpacityIdleEnabled ||
-            this.CurrentSettings.AutoHoverOpacityMaximizedEnabled;
-    }
-
-    // Evaluated against this tile's own bounds, which is the whole point of splitting the column:
-    // the pointer sitting on the CPU tile must not fade the other seven.
-    private bool IsHoverOpacityTargetActive()
-    {
-        return HoverInteractionPolicy.IsHoverOpacityTargetActive(
-            this.CurrentSettings,
-            this.Bounds,
-            this.hiddenForFullscreen,
-            this.Visible,
-            ref this.reverseHoverRevealUntilUtc,
-            this.hoverOpacityDelayState,
-            this.autoHideKeepAliveActive,
-            // Exact bounds, not the sensitive-mouse square: tiles sit 68 px apart, so the ~100 px
-            // activation square would put every neighbour into hidden mode along with the tile the
-            // pointer is actually on.
-            true);
-    }
-
-    public bool ProcessSharedInteractionTick()
-    {
-        if (this.hiddenForFullscreen || this.displaySuspended || !IsHoverOpacityRuntimeEnabled())
-        {
-            return false;
-        }
-
-        DateTime now = DateTime.UtcNow;
-        double elapsed = this.hoverOpacityLastUtc == DateTime.MinValue
-            ? 0.03
-            : (now - this.hoverOpacityLastUtc).TotalSeconds;
-        this.hoverOpacityLastUtc = now;
-
-        bool hovered = IsHoverOpacityTargetActive();
-        double target = hovered ? 1.0 : 0.0;
-        double previous = this.hoverOpacityProgress;
-        double step = Math.Max(0.0, Math.Min(1.0, elapsed / 0.15));
-        this.hoverOpacityProgress = this.hoverOpacityProgress < target
-            ? Math.Min(target, this.hoverOpacityProgress + step)
-            : Math.Max(target, this.hoverOpacityProgress - step);
-
-        bool changed = Math.Abs(previous - this.hoverOpacityProgress) > 0.001;
-        if (changed && this.Visible)
-        {
-            RenderLayeredWindow(false);
-        }
-
-        return Math.Abs(this.hoverOpacityProgress - target) > 0.001;
-    }
-
-    public void SetAutoHideKeepAliveActive(bool active)
-    {
-        if (this.autoHideKeepAliveActive == active)
-        {
-            return;
-        }
-
-        this.autoHideKeepAliveActive = active;
-        if (active)
-        {
-            this.hoverOpacityDelayState.Reset();
-            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
-        }
     }
 
     // The expand panel counts as part of this tile: moving the pointer onto it must not collapse it.
@@ -932,6 +867,12 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             g.DrawString(data.Label, labelFont, labelBrush, labelRect, format);
         }
 
+        if (data.Id == MetricTileId.Network)
+        {
+            DrawNetworkTrafficTile(g, bounds, data);
+            return;
+        }
+
         float ringTop = bounds.Y + bounds.Height * 0.235f;
         float ringSize = Math.Min(bounds.Width * 0.78f, bounds.Height - (ringTop - bounds.Y) - bounds.Height * 0.045f);
         RectangleF ringBox = new RectangleF(
@@ -982,6 +923,170 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         if (data.AlertIconVisible)
         {
             DrawAlertDot(g, bounds);
+        }
+    }
+
+    private void DrawNetworkTrafficTile(Graphics g, RectangleF bounds, MetricTileData data)
+    {
+        Color down = data.NetworkConnected ? DesignTokens.Colors.NetworkDown : DesignTokens.Colors.GlyphMuted;
+        Color up = data.NetworkConnected ? DesignTokens.Colors.NetworkUp : DesignTokens.Colors.GlyphMuted;
+        down = ResolveBurnInRingColor(down, this.burnInVisualLevel, this.burnInPresentationRestored);
+        up = ResolveBurnInRingColor(up, this.burnInVisualLevel, this.burnInPresentationRestored);
+
+        float left = bounds.X + S(4.0f);
+        float top = bounds.Y + S(16.0f);
+        float bottom = bounds.Bottom - S(4.0f);
+        float width = bounds.Width - S(8.0f);
+        float gap = S(2.0f);
+        float laneHeight = (bottom - top - gap) / 2.0f;
+        RectangleF downLane = new RectangleF(left, top, width, laneHeight);
+        RectangleF upLane = new RectangleF(left, top + laneHeight + gap, width, laneHeight);
+
+        // Two horizontal rows make direction + value the primary reading order at 60 px.
+        // The split line encodes the down/up boundary without implying a percentage scale.
+        float dividerY = downLane.Bottom + gap / 2.0f;
+        float dividerMid = left + width / 2.0f;
+        using (Pen downDivider = new Pen(DesignTokens.WithAlpha(down, 105), Math.Max(1.0f, S(1.0f))))
+        using (Pen upDivider = new Pen(DesignTokens.WithAlpha(up, 90), Math.Max(1.0f, S(1.0f))))
+        {
+            g.DrawLine(downDivider, left + S(1.0f), dividerY, dividerMid, dividerY);
+            g.DrawLine(upDivider, dividerMid, dividerY, left + width - S(1.0f), dividerY);
+        }
+
+        DrawNetworkLane(
+            g,
+            downLane,
+            "↓",
+            data.NetworkDownValue,
+            data.NetworkDownUnit,
+            data.NetworkDownPulses,
+            down);
+        DrawNetworkLane(
+            g,
+            upLane,
+            "↑",
+            data.NetworkUpValue,
+            data.NetworkUpUnit,
+            data.NetworkUpPulses,
+            up);
+
+        float dot = Math.Max(2.0f, S(3.0f));
+        RectangleF statusDot = new RectangleF(
+            bounds.X + bounds.Width * 0.65f,
+            bounds.Y + bounds.Height * 0.095f,
+            dot,
+            dot);
+        Color status = data.NetworkConnected ? data.Accent : DesignTokens.Colors.DangerStrong;
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(status, 240)))
+        {
+            g.FillEllipse(brush, statusDot);
+        }
+    }
+
+    private void DrawNetworkLane(
+        Graphics g,
+        RectangleF lane,
+        string direction,
+        string value,
+        string unit,
+        int[] pulses,
+        Color color)
+    {
+        float directionWidth = S(9.0f);
+        RectangleF directionRect = new RectangleF(lane.X, lane.Y, directionWidth, lane.Height);
+        using (Font directionFont = new Font(
+            DesignTokens.MonoFontFamily,
+            Math.Max(7.0f, S(10.0f)),
+            FontStyle.Bold,
+            GraphicsUnit.Pixel))
+        using (SolidBrush directionBrush = new SolidBrush(DesignTokens.WithAlpha(color, 255)))
+        using (StringFormat format = CenterFormat())
+        {
+            g.DrawString(direction, directionFont, directionBrush, directionRect, format);
+        }
+
+        if (ShouldDrawCenterText(this.burnInVisualLevel))
+        {
+            float pulseReserve = S(15.0f);
+            RectangleF rateArea = new RectangleF(
+                lane.X + directionWidth,
+                lane.Y,
+                Math.Max(S(20.0f), lane.Width - directionWidth - pulseReserve),
+                lane.Height);
+            DrawNetworkRate(g, rateArea, value, unit, color);
+        }
+
+        int pulseCount = 5;
+        float barWidth = Math.Max(1.0f, S(1.5f));
+        float barGap = Math.Max(1.0f, S(1.0f));
+        float pulseWidth = pulseCount * barWidth + (pulseCount - 1) * barGap;
+        float pulseLeft = lane.Right - pulseWidth - S(1.0f);
+        float baseline = lane.Bottom - S(2.0f);
+        float maxHeight = Math.Max(5.0f, lane.Height - S(5.0f));
+        using (Pen baselinePen = new Pen(DesignTokens.WithAlpha(color, 80), Math.Max(1.0f, S(1.0f))))
+        {
+            g.DrawLine(baselinePen, pulseLeft, baseline, pulseLeft + pulseWidth, baseline);
+        }
+
+        for (int i = 0; i < pulseCount; i++)
+        {
+            int level = pulses != null && i < pulses.Length
+                ? (int)MetricTileModel.Clamp(pulses[i], 1.0, 9.0)
+                : 1;
+            float height = Math.Max(1.0f, maxHeight * level / 9.0f);
+            RectangleF bar = new RectangleF(
+                pulseLeft + i * (barWidth + barGap),
+                baseline - height,
+                barWidth,
+                height);
+            int alpha = 90 + level * 17;
+            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, Math.Min(243, alpha))))
+            {
+                g.FillRectangle(brush, bar);
+            }
+        }
+    }
+
+    private void DrawNetworkRate(Graphics g, RectangleF rateArea, string value, string unit, Color unitColor)
+    {
+        value = string.IsNullOrEmpty(value) ? "--" : value;
+        unit = unit ?? string.Empty;
+        float valueSize = value.Length >= 4
+            ? S(9.5f)
+            : (value.Length >= 3 ? S(11.0f) : S(13.0f));
+        using (Font valueFont = new Font(
+            DesignTokens.MonoFontFamily,
+            Math.Max(7.0f, valueSize),
+            FontStyle.Bold,
+            GraphicsUnit.Pixel))
+        using (Font unitFont = new Font(
+            DesignTokens.MonoFontFamily,
+            Math.Max(5.5f, S(6.5f)),
+            FontStyle.Bold,
+            GraphicsUnit.Pixel))
+        using (SolidBrush valueBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
+        using (SolidBrush unitBrush = new SolidBrush(DesignTokens.WithAlpha(unitColor, 255)))
+        using (StringFormat near = new StringFormat(StringFormatFlags.NoWrap))
+        {
+            near.Alignment = StringAlignment.Near;
+            near.LineAlignment = StringAlignment.Center;
+            SizeF valueMeasure = g.MeasureString(value, valueFont, PointF.Empty, StringFormat.GenericTypographic);
+            SizeF unitMeasure = unit.Length == 0
+                ? SizeF.Empty
+                : g.MeasureString(unit, unitFont, PointF.Empty, StringFormat.GenericTypographic);
+            float total = valueMeasure.Width + unitMeasure.Width;
+            float start = rateArea.X + Math.Max(0.0f, (rateArea.Width - total) / 2.0f);
+            RectangleF rateRect = new RectangleF(start, rateArea.Y, rateArea.Width, rateArea.Height);
+            g.DrawString(value, valueFont, valueBrush, rateRect, near);
+            if (unit.Length > 0)
+            {
+                RectangleF unitRect = new RectangleF(
+                    start + valueMeasure.Width,
+                    rateArea.Y + S(0.5f),
+                    unitMeasure.Width + S(1.0f),
+                    rateArea.Height);
+                g.DrawString(unit, unitFont, unitBrush, unitRect, near);
+            }
         }
     }
 
@@ -1044,7 +1149,9 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         string text = string.IsNullOrEmpty(data.CenterValue) ? "--" : data.CenterValue;
         string suffix = data.CenterSuffix ?? string.Empty;
         Color color = alert ? DesignTokens.Colors.DangerText : DesignTokens.Colors.TextStrong;
-        float basis = ringBox.Height * (text.Length >= 3 ? 0.31f : 0.42f);
+        float basis = ringBox.Height * (suffix.Length > 0
+            ? (text.Length >= 3 ? 0.31f : 0.36f)
+            : (text.Length >= 3 ? 0.31f : 0.42f));
         using (Font font = new Font("Segoe UI", Math.Max(7.0f, basis), FontStyle.Bold, GraphicsUnit.Pixel))
         using (SolidBrush brush = new SolidBrush(color))
         using (StringFormat format = CenterFormat())
@@ -1055,20 +1162,19 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
                 return;
             }
 
-            RectangleF valueRect = new RectangleF(
-                ringBox.X,
-                ringBox.Y + ringBox.Height * 0.12f,
-                ringBox.Width,
-                ringBox.Height * 0.52f);
+            // A suffix must not move the primary reading away from the physical centre of the
+            // ring. The unit uses the otherwise empty lower interior, with enough inset to avoid
+            // touching the battery arc at the fixed 60 px tile size.
+            RectangleF valueRect = ringBox;
             RectangleF suffixRect = new RectangleF(
                 ringBox.X,
-                ringBox.Y + ringBox.Height * 0.58f,
+                ringBox.Y + ringBox.Height * 0.70f,
                 ringBox.Width,
-                ringBox.Height * 0.22f);
+                ringBox.Height * 0.20f);
             g.DrawString(text, font, brush, valueRect, format);
             using (Font suffixFont = new Font(
                 "Segoe UI",
-                Math.Max(5.0f, ringBox.Height * 0.16f),
+                Math.Max(5.0f, ringBox.Height * 0.14f),
                 FontStyle.Bold,
                 GraphicsUnit.Pixel))
             {
@@ -1215,6 +1321,34 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         {
             throw new InvalidOperationException(
                 "Metric tile level-two protection must restore original ring colours on hover without restoring center text.");
+        }
+
+        MetricTileData networkBefore = new MetricTileData
+        {
+            Id = MetricTileId.Network,
+            NetworkConnected = true,
+            NetworkDownValue = "58",
+            NetworkDownUnit = "K",
+            NetworkUpValue = "17",
+            NetworkUpUnit = "K",
+            NetworkDownPulses = new int[] { 2, 4, 3, 9, 7 },
+            NetworkUpPulses = new int[] { 2, 3, 2, 9, 7 }
+        };
+        MetricTileData networkAfter = new MetricTileData
+        {
+            Id = MetricTileId.Network,
+            NetworkConnected = true,
+            NetworkDownValue = "58",
+            NetworkDownUnit = "K",
+            NetworkUpValue = "18",
+            NetworkUpUnit = "K",
+            NetworkDownPulses = new int[] { 2, 4, 3, 9, 7 },
+            NetworkUpPulses = new int[] { 2, 3, 2, 9, 8 }
+        };
+        if (!HasVisibleChange(networkBefore, networkAfter))
+        {
+            throw new InvalidOperationException(
+                "Network upload rate or pulse changes must invalidate the independent tile render buffer.");
         }
 
         // Spec: 60x60 real screen pixels, independent of display DPI.
@@ -1395,36 +1529,6 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
                 throw new InvalidOperationException(
                     "The production burn-in resolver must distribute one envelope-clamped Y delta to every tile.");
             }
-        }
-
-        // The reason the column was split into separate windows: the pointer resting on one tile
-        // must not put its neighbours into hidden mode. Each tile evaluates the hover target against its
-        // own bounds, so a cursor inside tile 0 must leave tile 1 unaffected.
-        WidgetSettings hover = WidgetSettings.CreateDefaults();
-        hover.HoverOpacityEnabled = true;
-        hover.HoverOpacityRevealDelayEnabled = false;
-        hover.Normalize();
-        Rectangle firstBounds = GetTileBounds(hover, 0);
-        Rectangle secondBounds = GetTileBounds(hover, 1);
-        Point cursorOnFirst = new Point(firstBounds.Left + firstBounds.Width / 2, firstBounds.Top + firstBounds.Height / 2);
-        DateTime nowUtc = DateTime.UtcNow;
-        DateTime revealA = DateTime.MinValue;
-        DateTime revealB = DateTime.MinValue;
-        HoverInteractionPolicy.HoverOpacityDelayState stateA = new HoverInteractionPolicy.HoverOpacityDelayState();
-        HoverInteractionPolicy.HoverOpacityDelayState stateB = new HoverInteractionPolicy.HoverOpacityDelayState();
-        bool firstHidden = HoverInteractionPolicy.IsHoverOpacityTargetActiveAt(
-            hover, cursorOnFirst, firstBounds, false, true, nowUtc, ref revealA, stateA, false, true);
-        bool secondHidden = HoverInteractionPolicy.IsHoverOpacityTargetActiveAt(
-            hover, cursorOnFirst, secondBounds, false, true, nowUtc, ref revealB, stateB, false, true);
-        if (!firstHidden)
-        {
-            throw new InvalidOperationException("The hovered tile must enter hidden opacity.");
-        }
-
-        if (secondHidden)
-        {
-            throw new InvalidOperationException(
-                "Hovering one tile must not put its neighbours into hidden mode; each tile evaluates hover against its own bounds.");
         }
 
         // Presentation modes were retired: every metric and Radar tile is now part of the single

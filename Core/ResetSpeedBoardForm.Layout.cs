@@ -31,17 +31,17 @@ internal sealed partial class ResetSpeedBoardForm
             g.DrawPath(border, shell);
         }
 
-        Font titleFont = this.fontCache.GetUi(S(12.0f), FontStyle.Bold);
-        Font sectionFont = this.fontCache.GetUi(S(8.2f), FontStyle.Bold);
-        Font bodyFont = this.fontCache.GetUi(S(7.7f), FontStyle.Regular);
-        Font smallFont = this.fontCache.GetUi(S(6.8f), FontStyle.Regular);
-        Font monoFont = this.fontCache.GetMono(S(8.0f), FontStyle.Bold);
-        Font heroFont = this.fontCache.GetMono(S(18.0f), FontStyle.Bold);
+        Font titleFont = this.fontCache.GetUi(S(13.0f), FontStyle.Bold);
+        Font sectionFont = this.fontCache.GetUi(S(9.2f), FontStyle.Bold);
+        Font bodyFont = this.fontCache.GetUi(S(8.5f), FontStyle.Regular);
+        Font smallFont = this.fontCache.GetUi(S(7.8f), FontStyle.Regular);
+        Font monoFont = this.fontCache.GetMono(S(8.8f), FontStyle.Bold);
+        Font heroFont = this.fontCache.GetMono(S(20.0f), FontStyle.Bold);
 
         int pad = S(11);
         Rectangle content = new Rectangle(pad, pad, Math.Max(1, this.Width - pad * 2), Math.Max(1, this.Height - pad * 2));
         int headerHeight = S(42);
-        int footerHeight = S(18);
+        int footerHeight = MeasureLineHeight(g, smallFont, S(5));
         Rectangle header = new Rectangle(content.Left, content.Top, content.Width, headerHeight);
         Rectangle footer = new Rectangle(content.Left, content.Bottom - footerHeight, content.Width, footerHeight);
         Rectangle body = new Rectangle(content.Left, header.Bottom + S(4), content.Width, Math.Max(1, footer.Top - header.Bottom - S(8)));
@@ -50,7 +50,12 @@ internal sealed partial class ResetSpeedBoardForm
         Rectangle right = new Rectangle(left.Right + S(8), body.Top, Math.Max(1, body.Right - left.Right - S(8)), body.Height);
         int resetListHeight = S(96);
         Rectangle trend = new Rectangle(left.Left, left.Top, left.Width, Math.Max(1, left.Height - resetListHeight - S(7)));
-        Rectangle recent = new Rectangle(left.Left, trend.Bottom + S(7), left.Width, Math.Max(1, left.Bottom - trend.Bottom - S(7)));
+        Rectangle resetRow = new Rectangle(left.Left, trend.Bottom + S(7), left.Width, Math.Max(1, left.Bottom - trend.Bottom - S(7)));
+        int resetPanelGap = S(7);
+        int recentWidth = Math.Max(1, (resetRow.Width - resetPanelGap) / 2);
+        Rectangle recent = new Rectangle(resetRow.Left, resetRow.Top, recentWidth, resetRow.Height);
+        Rectangle probability = new Rectangle(recent.Right + resetPanelGap, resetRow.Top,
+            Math.Max(1, resetRow.Right - recent.Right - resetPanelGap), resetRow.Height);
         int cardHeight = S(80);
         Rectangle speed = new Rectangle(right.Left, right.Top, right.Width, Math.Max(1, right.Height - cardHeight - S(7)));
         Rectangle credits = new Rectangle(right.Left, speed.Bottom + S(7), right.Width, Math.Max(1, right.Bottom - speed.Bottom - S(7)));
@@ -58,6 +63,7 @@ internal sealed partial class ResetSpeedBoardForm
         DrawHeader(g, header, titleFont, bodyFont, monoFont);
         DrawTrendPanel(g, trend, sectionFont, bodyFont, smallFont, monoFont);
         DrawRecentResetPanel(g, recent, sectionFont, smallFont, monoFont);
+        DrawResetProbabilityPanel(g, probability, sectionFont, smallFont, monoFont);
         DrawSpeedPanel(g, speed, sectionFont, smallFont, monoFont, heroFont);
         DrawCreditsPanel(g, credits, sectionFont, bodyFont, monoFont);
         DrawFooter(g, footer, smallFont);
@@ -88,7 +94,6 @@ internal sealed partial class ResetSpeedBoardForm
             DrawHeaderChip(g, rsRect, cards, monoFont, accent);
             string updated = this.snapshot.UpdatedKnown ? this.snapshot.UpdatedLocal.ToString("HH:mm", CultureInfo.InvariantCulture) : "--:--";
             g.DrawString(updated, monoFont, mutedBrush, new Rectangle(rsRect.Right + S(5), bounds.Top + S(7), S(50), S(18)), far);
-            g.DrawString("×", titleFont, mutedBrush, new Rectangle(bounds.Right - S(14), bounds.Top - S(2), S(14), S(18)), far);
         }
     }
 
@@ -211,8 +216,8 @@ internal sealed partial class ResetSpeedBoardForm
             g.DrawString("近期重置", sectionFont, titleBrush, new Rectangle(bounds.Left + pad, bounds.Top + S(5), bounds.Width - pad * 2, S(17)), near);
         }
         int rowTop = bounds.Top + S(27);
-        int rowHeight = Math.Max(S(18), (bounds.Bottom - S(5) - rowTop) / 3);
-        int count = Math.Min(3, this.snapshot.ResetEvents.Count);
+        int rowHeight = Math.Max(S(18), (bounds.Bottom - S(5) - rowTop) / 2);
+        int count = Math.Min(2, this.snapshot.ResetEvents.Count);
         if (count == 0)
         {
             using (SolidBrush muted = new SolidBrush(DesignTokens.Colors.GlyphMuted))
@@ -236,11 +241,81 @@ internal sealed partial class ResetSpeedBoardForm
             {
                 g.FillEllipse(dot, row.Left, row.Top + row.Height / 2 - S(2), S(4), S(4));
                 g.DrawString(item.TimestampLocal.ToString("MM/dd HH:mm", CultureInfo.InvariantCulture), monoFont, text,
-                    new Rectangle(row.Left + S(10), row.Top, S(84), row.Height), near);
+                    new Rectangle(row.Left + S(10), row.Top, S(76), row.Height), near);
                 g.DrawString(GetResetKindLabel(item.Kind), smallFont, strong,
-                    new Rectangle(row.Left + S(99), row.Top, S(72), row.Height), near);
+                    new Rectangle(row.Left + S(89), row.Top, S(45), row.Height), near);
                 g.DrawString("→ " + item.WeeklyRemainingPercent.ToString(CultureInfo.InvariantCulture) + "%", monoFont, text,
-                    new Rectangle(row.Right - S(58), row.Top, S(58), row.Height), far);
+                    new Rectangle(row.Right - S(46), row.Top, S(46), row.Height), far);
+            }
+        }
+    }
+
+    private void DrawResetProbabilityPanel(Graphics g, Rectangle bounds, Font sectionFont, Font smallFont, Font monoFont)
+    {
+        DrawPanel(g, bounds, DesignTokens.Colors.WarningDeep);
+        int pad = S(8);
+        using (SolidBrush title = new SolidBrush(DesignTokens.Colors.TextStrong))
+        using (SolidBrush meta = new SolidBrush(DesignTokens.Colors.GlyphMuted))
+        using (StringFormat near = CreateFormat(StringAlignment.Near))
+        using (StringFormat far = CreateFormat(StringAlignment.Far))
+        {
+            g.DrawString("重置概率", sectionFont, title,
+                new Rectangle(bounds.Left + pad, bounds.Top + S(5), S(74), S(17)), near);
+            string updated = this.snapshot.ResetRadarUpdatedAtKnown
+                ? "RADAR · " + this.snapshot.ResetRadarUpdatedAtLocal.ToString("MM/dd", CultureInfo.InvariantCulture)
+                : "RADAR";
+            g.DrawString(updated, smallFont, meta,
+                new Rectangle(bounds.Left + S(82), bounds.Top + S(6), Math.Max(1, bounds.Width - S(90)), S(16)), far);
+        }
+
+        int rowTop = bounds.Top + S(26);
+        int rowHeight = Math.Max(S(25), (bounds.Bottom - S(5) - rowTop) / 2);
+        if (!this.snapshot.ResetRadarKnown)
+        {
+            using (SolidBrush muted = new SolidBrush(DesignTokens.Colors.GlyphMuted))
+            using (StringFormat near = CreateFormat(StringAlignment.Near))
+            {
+                g.DrawString("等待 Codex Radar 判断", smallFont, muted,
+                    new Rectangle(bounds.Left + pad, rowTop + S(7), bounds.Width - pad * 2, rowHeight), near);
+            }
+            return;
+        }
+
+        DrawResetProbabilityRow(g, new Rectangle(bounds.Left + pad, rowTop, bounds.Width - pad * 2, rowHeight),
+            "发重置卡", this.snapshot.ResetCardStatus, this.snapshot.ResetCardDescription,
+            DesignTokens.Colors.Warning, true, smallFont, monoFont);
+        DrawResetProbabilityRow(g, new Rectangle(bounds.Left + pad, rowTop + rowHeight, bounds.Width - pad * 2, rowHeight),
+            "硬重置", this.snapshot.HardResetStatus, this.snapshot.HardResetDescription,
+            DesignTokens.Colors.QuotaGood, false, smallFont, monoFont);
+    }
+
+    private void DrawResetProbabilityRow(
+        Graphics g,
+        Rectangle row,
+        string label,
+        string status,
+        string description,
+        Color statusColor,
+        bool drawDivider,
+        Font smallFont,
+        Font monoFont)
+    {
+        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
+        using (SolidBrush statusBrush = new SolidBrush(statusColor))
+        using (SolidBrush descriptionBrush = new SolidBrush(DesignTokens.Colors.TextMuted))
+        using (Pen divider = new Pen(DesignTokens.White(22), Math.Max(1.0f, this.LayerScale)))
+        using (StringFormat near = CreateFormat(StringAlignment.Near))
+        using (StringFormat far = CreateFormat(StringAlignment.Far))
+        {
+            g.DrawString(label, smallFont, labelBrush,
+                new Rectangle(row.Left, row.Top, Math.Max(1, row.Width - S(72)), S(15)), near);
+            g.DrawString(status ?? string.Empty, monoFont, statusBrush,
+                new Rectangle(row.Right - S(70), row.Top, S(70), S(15)), far);
+            g.DrawString(description ?? string.Empty, smallFont, descriptionBrush,
+                new Rectangle(row.Left, row.Top + S(14), row.Width, Math.Max(S(13), row.Height - S(14))), near);
+            if (drawDivider)
+            {
+                g.DrawLine(divider, row.Left, row.Bottom - 1, row.Right, row.Bottom - 1);
             }
         }
     }
@@ -324,15 +399,56 @@ internal sealed partial class ResetSpeedBoardForm
 
     private void DrawFooter(Graphics g, Rectangle bounds, Font font)
     {
+        int refreshWidth = Math.Min(
+            bounds.Width,
+            Math.Max(S(42), (int)Math.Ceiling(g.MeasureString("刷新", font).Width) + S(14)));
+        Rectangle refreshBounds = new Rectangle(bounds.Left, bounds.Top, refreshWidth, bounds.Height);
+        int closeLeft = Math.Min(bounds.Right, refreshBounds.Right + S(4));
+        int closeWidth = Math.Min(
+            Math.Max(0, bounds.Right - closeLeft),
+            Math.Max(S(42), (int)Math.Ceiling(g.MeasureString("关闭", font).Width) + S(14)));
+        Rectangle closeBounds = new Rectangle(closeLeft, bounds.Top, closeWidth, bounds.Height);
+        int detailsLeft = Math.Min(bounds.Right, closeBounds.Right + S(5));
+        Rectangle details = new Rectangle(detailsLeft, bounds.Top, Math.Max(0, bounds.Right - detailsLeft), bounds.Height);
+
+        this.refreshHitBounds = refreshBounds;
+        this.closeHitBounds = closeBounds;
+        DrawFooterAction(g, refreshBounds, "刷新", DesignTokens.Colors.Success, font);
+        DrawFooterAction(g, closeBounds, "关闭", DesignTokens.Colors.Danger, font);
+
         using (SolidBrush muted = new SolidBrush(DesignTokens.Colors.GlyphMuted))
         using (StringFormat near = CreateFormat(StringAlignment.Near))
         using (StringFormat far = CreateFormat(StringAlignment.Far))
         {
-            g.DrawString(AttributionText, font, muted, bounds, near);
+            Rectangle sourceBounds = new Rectangle(
+                details.Left,
+                details.Top,
+                Math.Max(0, (int)Math.Floor(details.Width * 0.55)),
+                details.Height);
+            Rectangle resetBounds = new Rectangle(
+                sourceBounds.Right,
+                details.Top,
+                Math.Max(0, details.Right - sourceBounds.Right),
+                details.Height);
+            g.DrawString(AttributionText, font, muted, sourceBounds, near);
             string reset = this.snapshot.WeeklyResetKnown
                 ? "周重置 " + this.snapshot.WeeklyResetLocal.ToString("MM/dd HH:mm", CultureInfo.InvariantCulture)
                 : "周重置 --";
-            g.DrawString(reset, font, muted, bounds, far);
+            g.DrawString(reset, font, muted, resetBounds, far);
+        }
+    }
+
+    private void DrawFooterAction(Graphics g, Rectangle bounds, string text, Color semanticColor, Font font)
+    {
+        using (GraphicsPath action = RoundedRectangle(RectangleF.Inflate(bounds, -1.0f, -1.0f), S(4)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Control, 220)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(semanticColor, 170), Math.Max(1.0f, this.LayerScale)))
+        using (SolidBrush textBrush = new SolidBrush(DesignTokens.Colors.Text))
+        using (StringFormat centered = CreateFormat(StringAlignment.Center))
+        {
+            g.FillPath(fill, action);
+            g.DrawPath(border, action);
+            g.DrawString(text, font, textBrush, bounds, centered);
         }
     }
 
@@ -375,6 +491,14 @@ internal sealed partial class ResetSpeedBoardForm
             case ResetSpeedResetKind.Hard: return DesignTokens.Colors.SpeedWindowCountdown;
             default: return DesignTokens.Colors.Warning;
         }
+    }
+
+    private static int MeasureLineHeight(Graphics g, Font font, int padding)
+    {
+        return Math.Max(
+            1,
+            (int)Math.Ceiling(
+                g.MeasureString("Ag国", font, int.MaxValue, StringFormat.GenericTypographic).Height) + padding);
     }
 
     private static string GetResetKindLabel(ResetSpeedResetKind kind)

@@ -30,6 +30,7 @@ internal sealed partial class CodexIqBoardForm : LayeredWidgetFormBase
     private bool hiddenForFullscreen;
     private bool restoreAfterFullscreen;
     private string visibleSignature = string.Empty;
+    private Rectangle refreshHitBounds = Rectangle.Empty;
     private Rectangle closeHitBounds = Rectangle.Empty;
 
     internal Action CollapseOtherLeftDockOverlays;
@@ -652,12 +653,28 @@ internal sealed partial class CodexIqBoardForm : LayeredWidgetFormBase
     {
         base.OnMouseUp(e);
         ResetAutoHideClock();
-        if (e.Button == MouseButtons.Left)
+        if (e.Button != MouseButtons.Left)
         {
-            // This board is read-only. A click either hits the explicit close control or blank data
-            // space, so both intentionally collapse it like the Spec and task boards.
-            HideBoard();
+            return;
         }
+
+        if (!this.closeHitBounds.IsEmpty && this.closeHitBounds.Contains(e.Location))
+        {
+            HideBoard();
+            return;
+        }
+
+        if (!this.refreshHitBounds.IsEmpty && this.refreshHitBounds.Contains(e.Location))
+        {
+            // The provider is a cache-only projection from the headless owner. Manual refresh must
+            // never start Radar I/O; it only clones the newest already-published snapshot.
+            RefreshSnapshot(true);
+            RenderLayeredWindow();
+            return;
+        }
+
+        // Data rows remain read-only and retain the established blank-click dismissal contract.
+        HideBoard();
     }
 
     protected override void Dispose(bool disposing)

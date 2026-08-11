@@ -5,8 +5,8 @@ using System.Drawing.Drawing2D;
 using System.Globalization;
 
 // The docked layout, drawn in the same visual family as SpecBoardForm and the Codex task board:
-// AppBackground fill, DesignTokens.Border hairlines, UiFontCache pixel fonts at the S(12)/S(9)/
-// S(7.8) ladder, and every row height measured from the actual font (never hand-guessed pixels —
+// AppBackground fill, DesignTokens.Border hairlines, UiFontCache pixel fonts at the S(13)/S(9.5)/
+// S(8.4) readability ladder, and every row height measured from the actual font (never hand-guessed pixels —
 // the first version of this file hard-coded row heights and overlapped at runtime, which is the
 // exact failure the root AGENTS.md layout rule exists to prevent).
 internal sealed partial class NetworkMonitorForm
@@ -107,13 +107,13 @@ internal sealed partial class NetworkMonitorForm
             g.DrawPath(border, shell);
         }
 
-        Font headerFont = this.dockFonts.GetUi(S(12.0f), FontStyle.Bold);
-        Font monoFont = this.dockFonts.GetMono(S(9.0f), FontStyle.Bold);
-        Font bodyFont = this.dockFonts.GetUi(S(9.0f), FontStyle.Regular);
-        Font bodyBold = this.dockFonts.GetUi(S(9.2f), FontStyle.Bold);
-        Font smallFont = this.dockFonts.GetUi(S(7.8f), FontStyle.Regular);
-        Font smallBold = this.dockFonts.GetUi(S(7.8f), FontStyle.Bold);
-        Font hopFont = this.dockFonts.GetMono(S(8.6f), FontStyle.Regular);
+        Font headerFont = this.dockFonts.GetUi(S(13.0f), FontStyle.Bold);
+        Font monoFont = this.dockFonts.GetMono(S(9.4f), FontStyle.Bold);
+        Font bodyFont = this.dockFonts.GetUi(S(9.5f), FontStyle.Regular);
+        Font bodyBold = this.dockFonts.GetUi(S(10.0f), FontStyle.Bold);
+        Font smallFont = this.dockFonts.GetUi(S(8.4f), FontStyle.Regular);
+        Font smallBold = this.dockFonts.GetUi(S(8.4f), FontStyle.Bold);
+        Font hopFont = this.dockFonts.GetMono(S(9.0f), FontStyle.Regular);
 
         int pad = S(10);
         int headerHeight = MeasureDockLineHeight(g, headerFont, S(6));

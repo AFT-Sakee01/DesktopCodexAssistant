@@ -407,6 +407,18 @@ internal sealed partial class SystemDayBoardForm : LayeredWidgetFormBase
         RenderLayeredWindow();
     }
 
+    private void SelectNextRange()
+    {
+        // The shared footer contract allows one primary action beside Close. Cycling preserves
+        // all three time views without introducing hidden I/O or extra footer controls.
+        SystemDayRange next = this.selectedRange == SystemDayRange.Today
+            ? SystemDayRange.Last24Hours
+            : this.selectedRange == SystemDayRange.Last24Hours
+                ? SystemDayRange.LastWeek
+                : SystemDayRange.Today;
+        SelectRange(next);
+    }
+
     private void ResetAutoHideClock()
     {
         this.lastInteractionUtc = DateTime.UtcNow;
@@ -446,9 +458,7 @@ internal sealed partial class SystemDayBoardForm : LayeredWidgetFormBase
         ResetAutoHideClock();
         if (e.Button != MouseButtons.Left) return;
         if (GetCloseBounds().Contains(e.Location)) { HideBoard(); return; }
-        if (GetRangeButtonBounds(SystemDayRange.Today).Contains(e.Location)) SelectRange(SystemDayRange.Today);
-        else if (GetRangeButtonBounds(SystemDayRange.Last24Hours).Contains(e.Location)) SelectRange(SystemDayRange.Last24Hours);
-        else if (GetRangeButtonBounds(SystemDayRange.LastWeek).Contains(e.Location)) SelectRange(SystemDayRange.LastWeek);
+        if (GetRangeActionBounds().Contains(e.Location)) SelectNextRange();
     }
 
     protected override void Dispose(bool disposing)

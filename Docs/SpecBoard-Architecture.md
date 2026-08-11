@@ -1,6 +1,6 @@
 # Spec Board 架构
 
-适用版本：2.0.0.17
+适用版本：2.0.0.26
 
 本文负责跨项目 spec 账本读取、对账、看板窗口、交互和只读边界。
 
@@ -16,7 +16,7 @@
 
 ## 窗口与交互
 
-`SpecBoardForm` 继承 `LayeredWidgetFormBase`，复用 `NativeMethods.LayeredBitmapSurface`、`UiFontCache`、`DesignTokens` 和 `BurnInProtection`。窗口无任务栏按钮、无激活显示。`SpecBoardWidth/Height`（默认 648×400）是 96-DPI 逻辑尺寸：`GetDesiredSize` 按 `LayerScale`（DPI × 生效窗口缩放）放大成物理窗口尺寸；`SpecBoardScaleOverridePercent=-1` 时生效值来自全局分辨率兼容缩放，显式 `40..200` 时覆盖全局并由左缘 tab 共同跟随。内容和画布必须走同一缩放系数，否则高 DPI/独立缩放下内容会拥挤或裁切。标题、项目行、段头、卡片和 footer 高度均来自当前字体实测；卡片副行的项目名按实测可用宽度显示全名，放不下才从尾部截断（保住右侧事件时间，`FitProjectLabel`）。
+`SpecBoardForm` 继承 `LayeredWidgetFormBase`，复用 `NativeMethods.LayeredBitmapSurface`、`UiFontCache`、`DesignTokens` 和 `BurnInProtection`。窗口无任务栏按钮、无激活显示。`SpecBoardWidth/Height`（默认 648×400）是 96-DPI 逻辑尺寸：`GetDesiredSize` 按 `LayerScale`（DPI × 生效窗口缩放）放大成物理窗口尺寸；`SpecBoardScaleOverridePercent=-1` 时生效值来自全局分辨率兼容缩放，显式 `40..200` 时覆盖全局并由左缘 tab 共同跟随。内容和画布必须走同一缩放系数，否则高 DPI/独立缩放下内容会拥挤或裁切。标题 `S(13)`、计数与正文 `S(9.5)`、强调正文 `S(10)`、辅助文字 `S(8.4)`；标题、项目行、段头、卡片和 footer 高度均来自当前字体实测。卡片副行的项目名按实测可用宽度显示全名，放不下才从尾部截断（保住右侧事件时间，`FitProjectLabel`）。
 
 `SpecBoardWidth` 允许 240–700：逻辑宽小于 `SpecBoardForm.CompactRailMinimumLogicalWidth = 360` 时进入**紧凑单列模式**——项目栏、项目过滤与新鲜度点隐藏（卡片副行本就带项目名，信息不丢；粘滞的项目过滤自动复位为"全部"），行动流占满全宽，footer（管理/关闭/统计）由两种布局共享的 `DrawBoardFooter` 绘制、始终保留。紧凑模式有独立自测（`RunCompactLayoutSelfTest`：栏隐藏、过滤复位、卡片近全宽不越界不压 footer），`--render-specboard sample` 额外产出 `specboard-compact.png`。
 

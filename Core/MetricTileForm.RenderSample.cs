@@ -216,6 +216,7 @@ internal sealed partial class MetricTileForm
         power.RuntimeSecondsKnown = true;
         power.RuntimeSeconds = 3 * 3600 + 42 * 60;
         power.PowerModeText = "平衡";
+        power.EnergySaverActive = true;
         power.ZoneCount = 14;
         power.AlertCount = 0;
         power.MaxCelsius = 33.0;

@@ -13,7 +13,7 @@ internal static class ProductIdentity
 {
     public const string SupportedDeviceLabel = "UX3407N / UX3607O";
     public const string DisplayName = "Desktop Codex Assistant UX3407N/UX3607O";
-    public const string Version = "2.0.0.17";
+    public const string Version = "2.0.0.31";
     public const string MachineName = "DesktopCodexAssistant";
     public const string ExecutableName = MachineName + ".exe";
     public const string LogFileName = MachineName + ".log";

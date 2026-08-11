@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Drawing;
 using System.Windows.Forms;
 
 internal sealed partial class OperationForm
@@ -45,12 +46,27 @@ internal sealed partial class OperationForm
         try
         {
             bool hidden = this.toggleSideSurfacesAction();
+            SetSideSurfacesHiddenVisualState(hidden);
             Program.LogInfo("Operation core double-click toggled physical side-surface visibility. Hidden=" + hidden.ToString());
         }
         catch (Exception ex)
         {
             Program.LogException(ex);
             ShowOperationNotification("两侧窗格", "切换两侧窗格显示状态失败。", ToolTipIcon.Warning);
+        }
+    }
+
+    private void SetSideSurfacesHiddenVisualState(bool hidden)
+    {
+        if (this.sideSurfacesHiddenByOperationToggle == hidden)
+        {
+            return;
+        }
+
+        this.sideSurfacesHiddenByOperationToggle = hidden;
+        if (this.IsHandleCreated && !this.IsDisposed)
+        {
+            RenderLayeredWindow();
         }
     }
 
@@ -69,8 +85,21 @@ internal sealed partial class OperationForm
             form.HandleOperationEntryDoubleClick(OperationEntryClickTarget.RadialCore);
             AssertSelfTest(!form.radialMenuOpen, "radial core double click retracts immediate single-click menu");
             AssertSelfTest(sideSurfacesHidden, "radial core double click physically hides side surfaces through the host");
+            AssertSelfTest(form.sideSurfacesHiddenByOperationToggle, "radial core mirrors the host hide mode for dimmed rendering");
+            Color normalCore = ResolveRadialCoreSurfaceColor(Color.FromArgb(250, 248, 244), false);
+            Color dimmedCore = ResolveRadialCoreSurfaceColor(Color.FromArgb(250, 248, 244), true);
+            AssertSelfTest(
+                dimmedCore.R < normalCore.R &&
+                dimmedCore.G < normalCore.G &&
+                dimmedCore.B < normalCore.B,
+                "hidden side-surface mode dims the radial core surface");
+            form.HandleOperationEntryMouseUp(OperationEntryClickTarget.RadialCore);
+            AssertSelfTest(!form.radialMenuOpen, "post-double-click mouse-up remains suppressed");
+            form.HandleOperationEntryMouseUp(OperationEntryClickTarget.RadialCore);
+            AssertSelfTest(form.radialMenuOpen, "radial expansion remains available while side surfaces are hidden");
             form.HandleOperationEntryDoubleClick(OperationEntryClickTarget.RadialCore);
             AssertSelfTest(!sideSurfacesHidden, "a second radial core double click restores side surfaces through the host");
+            AssertSelfTest(!form.sideSurfacesHiddenByOperationToggle, "restoring side surfaces restores the normal radial core surface");
         }
     }
 

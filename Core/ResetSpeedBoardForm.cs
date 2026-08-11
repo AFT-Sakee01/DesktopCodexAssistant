@@ -29,6 +29,8 @@ internal sealed partial class ResetSpeedBoardForm : LayeredWidgetFormBase
     private bool hiddenForFullscreen;
     private bool restoreAfterFullscreen;
     private string visibleSignature = string.Empty;
+    private Rectangle refreshHitBounds = Rectangle.Empty;
+    private Rectangle closeHitBounds = Rectangle.Empty;
 
     internal Action CollapseOtherLeftDockOverlays;
 
@@ -320,7 +322,7 @@ internal sealed partial class ResetSpeedBoardForm : LayeredWidgetFormBase
     private static string BuildSnapshotSignature(ResetSpeedBoardSnapshot value)
     {
         if (value == null) return string.Empty;
-        StringBuilder key = new StringBuilder(256);
+        StringBuilder key = new StringBuilder(512);
         key.Append(value.QuotaKnown ? '1' : '0').Append(':')
             .Append(value.FiveHourRemainingPercent).Append(':')
             .Append(value.WeeklyRemainingPercent).Append(':')
@@ -329,7 +331,13 @@ internal sealed partial class ResetSpeedBoardForm : LayeredWidgetFormBase
             .Append(value.SpeedWindowRemainingMinutes).Append('|')
             .Append(value.ResetCreditsKnown ? '1' : '0').Append(':')
             .Append(value.ResetCreditCount).Append(':')
-            .Append(value.ResetCreditExpirationKnown ? value.ResetCreditExpirationLocal.Ticks : 0L).Append('|');
+            .Append(value.ResetCreditExpirationKnown ? value.ResetCreditExpirationLocal.Ticks : 0L).Append('|')
+            .Append(value.ResetRadarKnown ? '1' : '0').Append(':')
+            .Append(value.ResetRadarUpdatedAtKnown ? value.ResetRadarUpdatedAtLocal.Ticks : 0L).Append(':')
+            .Append(value.ResetCardStatus).Append('\u001f')
+            .Append(value.ResetCardDescription).Append('\u001f')
+            .Append(value.HardResetStatus).Append('\u001f')
+            .Append(value.HardResetDescription).Append('|');
         for (int i = 0; i < value.QuotaHistory.Count; i++)
         {
             ResetSpeedQuotaPoint point = value.QuotaHistory[i];
@@ -444,7 +452,21 @@ internal sealed partial class ResetSpeedBoardForm : LayeredWidgetFormBase
     {
         base.OnMouseUp(e);
         ResetAutoHideClock();
-        if (e.Button == MouseButtons.Left) HideBoard();
+        if (e.Button != MouseButtons.Left) return;
+        if (!this.closeHitBounds.IsEmpty && this.closeHitBounds.Contains(e.Location))
+        {
+            HideBoard();
+            return;
+        }
+        if (!this.refreshHitBounds.IsEmpty && this.refreshHitBounds.Contains(e.Location))
+        {
+            // Reset/Speed consumes a cache-only Radar projection. This button clones the current
+            // published state and intentionally does not bypass the owner's network schedule.
+            RefreshSnapshot(true);
+            RenderLayeredWindow();
+            return;
+        }
+        HideBoard();
     }
 
     protected override void Dispose(bool disposing)

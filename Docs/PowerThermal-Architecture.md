@@ -1,6 +1,6 @@
 # 功耗与温度数据所有者架构
 
-适用版本：2.0.0.16
+适用版本：2.0.0.28
 
 本文说明 `PowerThermalForm` 作为永久 headless 数据所有者时的数据来源、采样、通知、缓存和快照边界。
 
@@ -16,7 +16,7 @@
 | `Core/PowerThermalForm.Snapshot.cs` | `PowerStripSnapshot` 只读投影与 `ThermalSummary` 数据汇总 |
 | `Core/WidgetForm.TileColumn.cs` | 把当前功耗快照与近 24 小时 System Day 投影装入共享 `MetricTileFeed` |
 | `Core/WidgetForm.SystemDay.cs` | 把同一缓存快照交给系统日记历史，并提供 5 秒缓存的 PWR 近 24 小时投影 |
-| `Core/MetricTileModel.cs` | 把电池映射为单环，并把实时电池功率映射为中心数字与小号 `W` |
+| `Core/MetricTileModel.cs` / `Core/MetricTileForm.cs` | 把电池映射为单环；功率数字绘制在几何圆心，小号 `W` 独立放在数字下方的环内留白区 |
 | `Core/MetricTileExpandForm.cs` | 绘制电量、功耗趋势与续航预测；不显示温度 |
 | `Settings/WidgetSettings.cs` | 性能模式、测试模式和功耗数据设置 |
 | `Interop/NativeMethods.cs` | Windows 电源通知与 Effective Power Mode 接口 |
@@ -77,6 +77,8 @@ flowchart LR
 结果归一化为性能、平衡或省电。全局节能状态优先读取 `Windows.System.Power.PowerManager.EnergySaverStatus`，并用 `GetSystemPowerStatus().SystemStatusFlag` 兼容兜底。
 
 `PowerThermalManualEnergySaverThresholdPercent` 只根据最近一次电池快照决定 `EnergySaverActive` 的展示兜底，不修改 Windows 电源模式，也不让全局性能档位强制进入省电。
+
+PWR 展开详情采用图形化仪表层次：左侧电池轮廓显示电量，下面只保留实时电池功率；中部三段轨用叶片、仪表和闪电分别表示省电、平衡与性能档位，轨道下方的独立叶片开关表示系统省电模式；右侧状态图标、紧凑时长和目标词显示耗尽、充到 80%/100%、外接供电或估算状态；近 24 小时峰值使用三角标记叠在历史曲线上，底部 9 px 电量条带十等分刻度。若快照只有节能状态而不知道基础电源模式，三段轨不选择任何档位，不能把节能兜底冒充为已知基础档位。
 
 ### 3.3 温度
 
@@ -154,4 +156,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-tilecolumn --out .\_build\tilecolumn
 ```
 
-验收重点是：owner 始终隐藏、Start/Stop 生命周期完整、全屏不停止采样、显示/会话/挂起门控正确、快照构建无 I/O、`PWR` 方块保持单电量环且中心显示实时电池功率与小号 `W`、展开详情只显示电量/功耗/续航且不显示温度，以及兼容设置不能恢复独立表面。
+验收重点是：owner 始终隐藏、Start/Stop 生命周期完整、全屏不停止采样、显示/会话/挂起门控正确、快照构建无 I/O、`PWR` 方块保持单电量环，实时电池功率数字位于环的几何中心，小号 `W` 位于数字下方的环内留白且不碰环；展开详情在 522×120 内能辨认电池、三档轨、独立省电开关、峰值、续航和带刻度底条，且不显示温度；兼容设置不能恢复独立表面。

@@ -1,6 +1,6 @@
 # Codex / Claude Radar 数据所有者架构
 
-适用版本：2.0.0.12
+适用版本：2.0.0.31
 
 本文说明 `CodexRadarForm` 作为永久 headless owner 时的 Codex 公共 Radar、Codex/Claude 官方额度、服务健康、任务状态和只读投影。
 
@@ -35,7 +35,7 @@
 | 右侧 Codex tile / expand | `BuildRadarTileSnapshot(Codex)` | Codex 模型、额度、重置与 5 小时/周趋势预测 |
 | 右侧 CLD tile / expand | `BuildRadarTileSnapshot(Claude)` | 固定 Claude/CLD 标签、官方额度、重置与同构趋势预测 |
 | 左侧 Codex IQ board | `BuildCodexIqBoardSnapshot()` / `BuildServiceHealth()` | Codex 全模型 IQ、成本、耗时、token、额度趋势、名册与四项服务健康 |
-| 左侧重置与速蹬 board | `BuildResetSpeedBoardSnapshot()` | 7 天周额度余量、重置事件、速蹬窗口、重置卡余量和最近到期 |
+| 左侧重置与速蹬 board | `BuildResetSpeedBoardSnapshot()` | 7 天周额度余量、重置事件、速蹬窗口、重置卡余量、最近到期，以及 Radar 的发重置卡/硬重置判断 |
 | Codex Task board / Operation | `CodexTaskPresentation.SnapshotProvider` | 本地 Codex 会话任务状态 |
 
 Claude tile 不生成模型 IQ 或效率；其 `IqKnown`、`EfficiencyKnown` 恒为 `false`，且没有社区评分字段。
@@ -102,7 +102,9 @@ family 选择只影响 provider 调度优先级和相关服务语义，不决定
 
 ## 6. Codex 公共 Radar 与模型目录
 
-只有 Codex family 读取公共 Radar 数据与模型目录。`current.json` schema 2 是模型 IQ 和数据时间的权威来源；内容签名未变化时保留 source timestamp，fetch timestamp 不能伪造新批次。HTML 只允许在结构化数据缺少速蹬窗口时补该窗口，不能回填模型评分、额度雷达或覆盖 JSON。完整目录才能推进模型缺失计数；部分损坏数据只能补充已见模型，不能证明其它模型消失。
+只有 Codex family 读取公共 Radar 数据与模型目录。`current.json` schema 2 是模型 IQ 和数据时间的权威来源；内容签名未变化时保留 source timestamp，fetch timestamp 不能伪造新批次。首页 HTML 只允许补结构化数据缺少的速蹬窗口，以及首页“重置雷达”区成对发布的“发重置卡/硬重置”状态、短说明和更新时间；这些字段有界解析、缓存并保留 last-good，不能回填模型评分、额度雷达或覆盖 JSON。完整目录才能推进模型缺失计数；部分损坏数据只能补充已见模型，不能证明其它模型消失。
+
+分布式 Radar 的 `comparisons` 键可能附加 `_distributed` 等来源后缀。适配器先尝试精确键，再根据节点自身的 model 与 reasoning effort 生成稳定模型键；只有唯一匹配才接受，重复歧义时 fail closed。看板的 `Current` 标记跟随用户选择的稳定模型键，而不是固定跟随 `latest` 根节点。上游 `recent_days` ISO 时间戳按秒保留并以本地 ISO 秒精度写入缓存，旧版 `yyyy-MM-dd-am/pm` 历史仍可读取；来源任务数使用 10000 的防御上限，不再受手动校验设置的 100 条上限截断。
 
 Codex 的模型选择、IQ、评分、效率、通知状态与 `Codex IQ` board 均留在 Codex 侧。Claude family 不参与公共 Radar 请求、模型目录、模型自动切换或数据周期判定。刷新周期与重试规则只在 `Docs/Component-Refresh-Rules.md` 维护。
 
@@ -144,7 +146,7 @@ CLD tile 的固定模型标签为 `Claude`，紧凑标题为 `CLD`；额度与�
 
 `CodexQuotaHistoryStore` 仅接收 `ApplyQuotaSnapshot()` 已接受且允许记录 decision 的 Codex family 快照。内存立即更新，磁盘由 15 秒 ThreadPool timer 批量写入；普通样本至少间隔 15 分钟，或周余量变化达到 3%，周余量回升达到 5% 时立即登记。旧 reset anchor 前 15 分钟至后 6 小时内的回升标记为自然重置；重置卡计数同时减少时标记为重置卡；其余标记为硬重置。每 6 小时和 owner 退出时原子裁剪到最近 7 天、最多 2048 行。
 
-`BuildResetSpeedBoardSnapshot()` 从同代 Codex published projection、reset-credit 缓存和 store 内存生成 7 个日点及最近事件。`ResetSpeedBoardForm` 每 5 秒 clone 一次；绘制路径和 snapshot 构建都不读取磁盘、凭据或网络。该持久历史只服务 Codex board，不改变 Claude family 的官方额度趋势和右侧续航计算。
+`BuildResetSpeedBoardSnapshot()` 从同代 Codex published projection、reset-credit 缓存和 store 内存生成 7 个日点、最近事件及缓存的 Radar 重置判断。`ResetSpeedBoardForm` 每 5 秒 clone 一次；绘制路径和 snapshot 构建都不读取磁盘、凭据或网络。该持久历史与 Radar 判断只服务 Codex board，不改变 Claude family 的官方额度趋势和右侧续航计算。
 
 ## 8. 服务健康
 
@@ -180,7 +182,11 @@ owner 停止时清除 provider，避免消费者调用已销毁实例。
 
 IQ board 的 tab、展开/收起和渲染属于左侧停靠运行时，不改变 owner 的业务周期。
 
-`BuildResetSpeedBoardSnapshot()` 同样只复制 Codex published quota/Radar、reset-credit 缓存和已载入的 7 天历史。`ResetSpeedBoardForm` 与 Spec Board 保持相同逻辑尺寸，其黄色角色边框、绿色额度轨迹、青色速蹬圆环和重置类型标记只承担展示语义。
+`BuildResetSpeedBoardSnapshot()` 同样只复制 Codex published quota/Radar、reset-credit 缓存和已载入的 7 天历史。`ResetSpeedBoardForm` 与 Spec Board 保持相同逻辑尺寸；底部“近期重置”缩为左半区并最多列两条事件，右半区“重置概率”显示 Radar 日期及“发重置卡/硬重置”的状态和短说明。黄色角色边框、绿色额度轨迹、青色速蹬圆环、重置类型与判断色只承担展示语义。
+
+Codex IQ 与重置/速蹬 board 的底部操作轨都提供绿色“刷新”和红色“关闭”。刷新只重新克隆已发布快照并重绘，不触发 owner 调度周期、网络访问或持久化读取；顶部不再绘制第二个关闭入口。
+
+三块 Codex 派生 board 使用各自空间约束下的可读性字号层级。Codex Task 卡片标题/行/副行/底栏为 `S(11.5)/S(9.6)/S(8.2)/S(8.4)`，token 与时间轴标签为 `S(7.4)`；Codex IQ 标题 `S(13)`、正文 `S(9)`、强调正文 `S(9.6)`、辅助文字 `S(8)`、等宽数值 `S(9)`、leader 数值 `S(20)`，迷你趋势的 `100` 标签下限为 7 像素；重置与速蹬标题 `S(13)`、段头 `S(9.2)`、正文 `S(8.5)`、辅助文字 `S(7.8)`、等宽数值 `S(8.8)`、表盘主数值 `S(20)`。布局仍以实测文字尺寸、卡片可用宽度和省略规则为边界，不因放大字号改变快照或调度语义。
 
 ## 11. Cache-only 展示边界
 
@@ -221,4 +227,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-resetspeedboard --out .\_build\reset-speed
 ```
 
-验收重点是：owner 始终隐藏、Start/Stop 完整、两套额度与四条趋势历史按 family/window 隔离、重置与速蹬投影无同步 I/O、Codex/CLD 展开窗给出 5 小时和周额度的耗尽/重置判断、Codex 第六 board 提供 7 天历史/重置/速蹬/重置卡信息、CLD 仍只使用官方额度源、DeepSeek 服务健康与账户余额严格分离、Key 只以 DPAPI 密文落盘，以及 11 tile / 7 dock 布局完整。
+验收重点是：owner 始终隐藏、Start/Stop 完整、两套额度与四条趋势历史按 family/window 隔离、重置与速蹬投影无同步 I/O、Codex/CLD 展开窗给出 5 小时和周额度的耗尽/重置判断、Codex 第六 board 提供 7 天历史/重置/速蹬/重置卡及两条 Radar 重置判断、CLD 仍只使用官方额度源、DeepSeek 服务健康与账户余额严格分离、Key 只以 DPAPI 密文落盘，以及 11 tile / 7 dock 布局完整。

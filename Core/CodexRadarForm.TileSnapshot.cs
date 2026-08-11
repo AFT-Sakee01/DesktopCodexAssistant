@@ -178,8 +178,8 @@ internal sealed partial class CodexRadarForm
     }
 
     // Cache-only projection for the sixth left-dock board. Seven-day rows come from the owner's
-    // already-loaded history store; reset credits and the speed window are cloned from their
-    // current caches. This method never reads disk, credentials, or the network.
+    // already-loaded history store; reset credits, speed-window state, and Reset Radar judgement
+    // are cloned from their current caches. This method never reads disk, credentials, or the network.
     internal ResetSpeedBoardSnapshot BuildResetSpeedBoardSnapshot()
     {
         ResetSpeedBoardSnapshot board = ResetSpeedBoardSnapshot.CreateEmpty();
@@ -215,6 +215,13 @@ internal sealed partial class CodexRadarForm
                 board.SpeedWindowOpenedAtLocal = radar.SpeedWindowOpenedAtLocal;
                 board.SpeedWindowClosedAtKnown = radar.SpeedWindowClosedAtKnown;
                 board.SpeedWindowClosedAtLocal = radar.SpeedWindowClosedAtLocal;
+                board.ResetRadarKnown = radar.ResetRadarKnown;
+                board.ResetRadarUpdatedAtKnown = radar.ResetRadarUpdatedAtKnown;
+                board.ResetRadarUpdatedAtLocal = radar.ResetRadarUpdatedAtLocal;
+                board.ResetCardStatus = radar.ResetCardStatus;
+                board.ResetCardDescription = radar.ResetCardDescription;
+                board.HardResetStatus = radar.HardResetStatus;
+                board.HardResetDescription = radar.HardResetDescription;
                 int remainingMinutes;
                 float remainingRatio;
                 if (TryGetCodexRadarSpeedWindowCountdown(radar, nowLocal, out remainingMinutes, out remainingRatio))

@@ -59,6 +59,13 @@ internal sealed partial class ResetSpeedBoardForm
         snapshot.ResetCreditCount = 3;
         snapshot.ResetCreditExpirationKnown = true;
         snapshot.ResetCreditExpirationLocal = now.AddHours(17.0);
+        snapshot.ResetRadarKnown = true;
+        snapshot.ResetRadarUpdatedAtKnown = true;
+        snapshot.ResetRadarUpdatedAtLocal = new DateTime(2026, 7, 22, 10, 24, 0, DateTimeKind.Local);
+        snapshot.ResetCardStatus = "低";
+        snapshot.ResetCardDescription = "本轮是直接重置，不是发新卡";
+        snapshot.HardResetStatus = "已落地";
+        snapshot.HardResetDescription = "10M 里程碑重置完成 · 下一次低";
         return snapshot;
     }
 
@@ -68,6 +75,9 @@ internal sealed partial class ResetSpeedBoardForm
         ResetSpeedBoardSnapshot clone = fixture.Clone();
         if (clone.QuotaHistory.Count != 7 || clone.ResetEvents.Count != 2 ||
             clone.ResetCreditCount != 3 || !clone.SpeedWindowOpen ||
+            !clone.ResetRadarKnown ||
+            !string.Equals(clone.ResetCardStatus, "低", StringComparison.Ordinal) ||
+            !string.Equals(clone.HardResetStatus, "已落地", StringComparison.Ordinal) ||
             ComputeSevenDayUsedPercent(clone.QuotaHistory) != 86)
         {
             throw new InvalidOperationException("Reset / Speed board snapshot or seven-day usage self-test failed.");
@@ -88,6 +98,6 @@ internal sealed partial class ResetSpeedBoardForm
                 }
             }
         }
-        Console.WriteLine("Reset / Speed board: PASS snapshot, seven-day trace, reset gates, speed dial and reset cards");
+        Console.WriteLine("Reset / Speed board: PASS snapshot, seven-day trace, reset gates, Radar judgement, speed dial and reset cards");
     }
 }

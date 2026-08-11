@@ -982,7 +982,6 @@ internal static class Program
             Application.SetCompatibleTextRenderingDefault(false);
             WidgetSettings.RunCompatibilitySelfTest();
             WidgetSettings.RunFullRoundTripSelfTest();
-            HoverInteractionPolicy.RunSelfTest();
             IdleCpuDiagnostics.RunSelfTest();
             Win11SettingsForm.RunSettingsBindingSelfTest();
             Console.WriteLine("Settings binding policy: PASS");

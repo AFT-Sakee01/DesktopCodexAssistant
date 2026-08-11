@@ -274,20 +274,6 @@ internal sealed partial class WidgetForm
         }
     }
 
-    private bool ProcessMetricTileInteractionTick()
-    {
-        bool active = false;
-        for (int i = 0; i < this.metricTileForms.Count; i++)
-        {
-            if (this.metricTileForms[i] != null && !this.metricTileForms[i].IsDisposed)
-            {
-                active |= this.metricTileForms[i].ProcessSharedInteractionTick();
-            }
-        }
-
-        return active;
-    }
-
     private bool UpdateMetricTileBurnInPresentation(BurnInVisualLevel level)
     {
         BurnInVisualLevel normalized = BurnInProtection.NormalizeVisualLevel(level);
@@ -357,17 +343,6 @@ internal sealed partial class WidgetForm
             if (this.metricTileForms[i] != null && !this.metricTileForms[i].IsDisposed)
             {
                 this.metricTileForms[i].RefreshBurnInPosition();
-            }
-        }
-    }
-
-    private void SetMetricTileAutoHideKeepAlive(bool active)
-    {
-        for (int i = 0; i < this.metricTileForms.Count; i++)
-        {
-            if (this.metricTileForms[i] != null && !this.metricTileForms[i].IsDisposed)
-            {
-                this.metricTileForms[i].SetAutoHideKeepAliveActive(active);
             }
         }
     }

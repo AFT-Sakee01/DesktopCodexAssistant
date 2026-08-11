@@ -11,7 +11,7 @@ using System.Windows.Forms;
 
 internal sealed partial class OperationForm : LayeredWidgetFormBase
 {
-    private const int ButtonCount = 13;
+    private const int ButtonCount = 12;
     private const int StartButtonIndex = 0;
     private const int WindowsSettingsButtonIndex = 1;
     private const int WindowsPowerMenuButtonIndex = 2;
@@ -24,9 +24,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private const int WindowsAiStudioButtonIndex = 9;
     private const int WindowsQuickSettingsButtonIndex = 10;
     private const int LiveCaptionsButtonIndex = 11;
-    private const int HoverOpacityToggleButtonIndex = 12;
     private const int SmallColumnCount = 6;
-    private const int ForcedOperationOpacityAlpha = 48;
     private const string AsusAssistantPackagePrefix = "B9ECED6F.ASUSPCAssistant_";
     private const string AsusAssistantPackageSuffix = "_qmba6cd70vzyy";
     private const string AsusKeyboardHostRelativePath = @"HwAdjustPage\ATK Package\AsusKeyboardHost.exe";
@@ -46,7 +44,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly Action forceRefreshAction;
     private readonly Action restartAction;
     private readonly Action<string, string, ToolTipIcon> notificationAction;
-    private readonly Func<bool> toggleHoverOpacityAction;
     private readonly Func<bool> toggleSideSurfacesAction;
     private readonly Func<bool> pulseSeelenDockAction;
     private readonly Func<bool> manualAiBlockAction;
@@ -80,18 +77,15 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private int foregroundFpsReadRunning;
     private DateTime animationLastUtc;
     private DateTime pressAnimationStartUtc;
-    private DateTime reverseHoverRevealUntilUtc;
     private DateTime seelenStatusNextRefreshUtc;
     private DateTime memoryPieNextRefreshUtc;
-    private bool lastReverseHoverRevealActive;
-    private bool suppressReverseHoverRevealUntilCursorLeaves;
     private int? foregroundFrameRate;
     private MemoryPieSnapshot memoryPieSnapshot = MemoryPieSnapshot.Empty;
     private readonly double[] hoverProgress = new double[ButtonCount];
     private RectangleF[] buttonRects;
     private bool buttonRectsValid;
 
-    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleHoverOpacityAction, Func<bool> toggleSideSurfacesAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction, Func<string, bool, bool> setBooleanSettingAction, Action<WidgetSettings> persistGuardStateAction = null)
+    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleSideSurfacesAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction, Func<string, bool, bool> setBooleanSettingAction, Action<WidgetSettings> persistGuardStateAction = null)
     {
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
@@ -99,7 +93,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.forceRefreshAction = forceRefreshAction;
         this.restartAction = restartAction;
         this.notificationAction = notificationAction;
-        this.toggleHoverOpacityAction = toggleHoverOpacityAction;
         this.toggleSideSurfacesAction = toggleSideSurfacesAction;
         this.pulseSeelenDockAction = pulseSeelenDockAction;
         this.manualAiBlockAction = manualAiBlockAction;
@@ -244,35 +237,11 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     public void ApplyRuntimeSettings(WidgetSettings settings)
     {
-        bool wasManualHoverOpacityActive =
-            this.CurrentSettings != null &&
-            this.CurrentSettings.ManualHoverOpacityActive;
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
         this.MinimumSize = ScaleWindowSize(new Size(WidgetSettings.MinOperationButtonSize, WidgetSettings.MinOperationButtonSize));
         this.MaximumSize = new Size(4000, 4000);
-        if (this.CurrentSettings.ForceHoverOpacityActive &&
-            this.CurrentSettings.ManualHoverOpacityActive &&
-            !wasManualHoverOpacityActive)
-        {
-            this.suppressReverseHoverRevealUntilCursorLeaves = true;
-            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
-            this.lastReverseHoverRevealActive = false;
-        }
-        else if (!this.CurrentSettings.ForceHoverOpacityActive ||
-            !this.CurrentSettings.ManualHoverOpacityActive)
-        {
-            this.suppressReverseHoverRevealUntilCursorLeaves = false;
-            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
-            this.lastReverseHoverRevealActive = false;
-        }
-
-        if (!IsRadialDialActive() || !this.CurrentSettings.OperationRadialCoreAutoHideKeepAliveEnabled)
-        {
-            ClearRadialCoreAutoHideThresholdVisual();
-        }
-
         ResetLayoutCaches();
         int animationInterval = WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode);
         if (this.animationTimer.Interval != animationInterval)
@@ -634,29 +603,12 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             return false;
         }
 
-        bool radialVisualChanged = false;
         if (IsRadialDialActive())
         {
-            DateTime nowUtc = DateTime.UtcNow;
-            radialVisualChanged = UpdateRadialCoreAutoHideThresholdVisual(nowUtc);
             if (TickRadialIdleCollapse())
             {
                 return true;
             }
-        }
-
-        if (radialVisualChanged)
-        {
-            RenderLayeredWindow();
-            return true;
-        }
-
-        bool active = IsReverseHoverRevealActive();
-        if (active != this.lastReverseHoverRevealActive)
-        {
-            this.lastReverseHoverRevealActive = active;
-            RenderLayeredWindow();
-            return true;
         }
 
         return false;
@@ -794,13 +746,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         if (button == LiveCaptionsButtonIndex)
         {
             return "打开实时字幕";
-        }
-
-        if (button == HoverOpacityToggleButtonIndex)
-        {
-            return this.CurrentSettings.ForceHoverOpacityActive
-                ? "恢复模块透明度"
-                : "切换到悬停透明度";
         }
 
         return string.Empty;
@@ -1057,11 +1002,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             return;
         }
 
-        if (button == HoverOpacityToggleButtonIndex && this.toggleHoverOpacityAction != null)
-        {
-            this.toggleHoverOpacityAction();
-            return;
-        }
     }
 
     private void OpenWindowsSystemToolsMenu()
@@ -2327,16 +2267,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         return false;
     }
 
-    private bool IsStateButtonActive(int button)
-    {
-        if (button == HoverOpacityToggleButtonIndex)
-        {
-            return this.CurrentSettings.ForceHoverOpacityActive;
-        }
-
-        return false;
-    }
-
     private bool ShouldShowStartButton()
     {
         return GetResolvedPrimaryPanelMode() == OperationPrimaryPanelMode.WindowsButton;
@@ -2449,24 +2379,23 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         rects[WindowsPowerMenuButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
 
         columnLeft += smallSize;
-        rects[HoverOpacityToggleButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
-        rects[RefreshButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+        rects[RefreshButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+        rects[AppSettingsButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
 
         columnLeft += smallSize;
-        rects[AppSettingsButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
-        rects[TaskManagerButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+        rects[TaskManagerButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+        rects[RestartButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
 
         columnLeft += smallSize;
-        rects[RestartButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
-        rects[WindowsQuickSettingsButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+        rects[WindowsQuickSettingsButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+        rects[BatteryCarePauseButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
 
         columnLeft += smallSize;
-        rects[BatteryCarePauseButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
-        rects[LiveCaptionsButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+        rects[LiveCaptionsButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
+        rects[BatteryLimitRestoreButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
 
         columnLeft += smallSize;
-        rects[BatteryLimitRestoreButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
-        rects[WindowsAiStudioButtonIndex] = new RectangleF(columnLeft, margin + smallSize, smallSize, smallSize);
+        rects[WindowsAiStudioButtonIndex] = new RectangleF(columnLeft, margin, smallSize, smallSize);
         this.buttonRects = rects;
         this.buttonRectsValid = true;
         return this.buttonRects;
@@ -2647,11 +2576,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     protected override int WindowScaleOverridePercent
     {
         get { return this.CurrentSettings.OperationScaleOverridePercent; }
-    }
-
-    protected override int ApplyHoverAlpha(int alpha)
-    {
-        return DesignTokens.ClampByte((int)Math.Round(alpha * GetLayeredWindowOpacityAlpha() / 255.0));
     }
 
     private RectangleF GetIconRect(RectangleF tileRect)
@@ -3148,58 +3072,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         }
     }
 
-    private void DrawHoverOpacityGlyph(Graphics g, RectangleF rect)
-    {
-        DrawHoverOpacityGlyph(g, rect, DesignTokens.Colors.Accent);
-    }
-
-    // inactiveSlashColor lets the four OLED-safe restyle schemes (added in 1.0.3.44) swap this
-    // glyph's inactive-state slash away from its classic blue - the 2-arg overload keeps Classic's
-    // exact color (the active state already uses TextOnAccent/black, which is not a blue-safety concern).
-    private void DrawHoverOpacityGlyph(Graphics g, RectangleF rect, Color inactiveSlashColor)
-    {
-        float size = Math.Min(rect.Width, rect.Height);
-        float stroke = Math.Max(1.0f, 1.1f * this.LayerScale);
-        RectangleF backPanel = new RectangleF(
-            rect.Left + size * 0.18f,
-            rect.Top + size * 0.16f,
-            size * 0.50f,
-            size * 0.50f);
-        RectangleF frontPanel = new RectangleF(
-            rect.Left + size * 0.32f,
-            rect.Top + size * 0.31f,
-            size * 0.50f,
-            size * 0.50f);
-        using (GraphicsPath backPath = RoundedRectangle(backPanel, Math.Max(1.5f, size * 0.09f)))
-        using (GraphicsPath frontPath = RoundedRectangle(frontPanel, Math.Max(1.5f, size * 0.09f)))
-        using (Pen backPen = new Pen(DesignTokens.White(150), stroke))
-        using (Pen frontPen = new Pen(DesignTokens.White(238), stroke))
-        using (Pen slashPen = new Pen(
-            this.CurrentSettings.ForceHoverOpacityActive
-                ? DesignTokens.WithAlpha(DesignTokens.Colors.TextOnAccent, 232)
-                : DesignTokens.WithAlpha(inactiveSlashColor, 248),
-            Math.Max(1.0f, 1.35f * this.LayerScale)))
-        using (SolidBrush frontBrush = new SolidBrush(DesignTokens.White(this.CurrentSettings.ForceHoverOpacityActive ? 90 : 42)))
-        {
-            backPen.StartCap = LineCap.Round;
-            backPen.EndCap = LineCap.Round;
-            frontPen.StartCap = LineCap.Round;
-            frontPen.EndCap = LineCap.Round;
-            slashPen.StartCap = LineCap.Round;
-            slashPen.EndCap = LineCap.Round;
-
-            g.DrawPath(backPen, backPath);
-            g.FillPath(frontBrush, frontPath);
-            g.DrawPath(frontPen, frontPath);
-            g.DrawLine(
-                slashPen,
-                rect.Left + size * 0.23f,
-                rect.Bottom - size * 0.23f,
-                rect.Right - size * 0.18f,
-                rect.Top + size * 0.18f);
-        }
-    }
-
     private static void DrawSparkle(Graphics g, Pen pen, Brush brush, PointF center, float radius)
     {
         float shortRadius = radius * 0.45f;
@@ -3324,32 +3196,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         }
 
         return 2000;
-    }
-
-    private byte GetLayeredWindowOpacityAlpha()
-    {
-        return (byte)(this.CurrentSettings.ForceHoverOpacityActive && !IsReverseHoverRevealActive()
-            ? ForcedOperationOpacityAlpha
-            : 255);
-    }
-
-    private bool IsReverseHoverRevealActive()
-    {
-        if (this.suppressReverseHoverRevealUntilCursorLeaves)
-        {
-            if (HoverInteractionPolicy.IsCursorInActivationRange(this.CurrentSettings, this.Bounds))
-            {
-                this.reverseHoverRevealUntilUtc = DateTime.MinValue;
-                return false;
-            }
-
-            this.suppressReverseHoverRevealUntilCursorLeaves = false;
-        }
-
-        return HoverInteractionPolicy.IsReverseRevealActive(
-            this.CurrentSettings,
-            this.Bounds,
-            ref this.reverseHoverRevealUntilUtc);
     }
 
     private void ResetLayoutCaches()

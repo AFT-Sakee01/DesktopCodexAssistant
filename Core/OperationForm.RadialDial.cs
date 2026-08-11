@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
@@ -47,8 +46,6 @@ internal sealed partial class OperationForm
     private const float RadialDenseArcEndDeg = 90.0f;
     private const int RadialMediumArcMinItems = 4;
     private const int RadialDenseArcMinItems = 7;
-    private const int RadialCoreAutoHideThresholdDimAlpha = 13;
-    private const int RadialCoreAutoHideThresholdRingAlpha = 77;
     private const float RadialGapScale = 0.34f;
     private const float RadialLevelSpacingMultiplier = 2.0f;
     private const float RadialMinItemSpacingScale = 1.22f;
@@ -70,8 +67,7 @@ internal sealed partial class OperationForm
     private int radialPressedIndex = -1;
     private bool radialCoreHovered;
     private bool radialCorePressed;
-    private DateTime radialCoreHoverStartedUtc = DateTime.MinValue;
-    private bool radialCoreAutoHideThresholdVisualActive;
+    private bool sideSurfacesHiddenByOperationToggle;
     private DateTime radialLastInteractionUtc = DateTime.MinValue;
     private int radialCtfRestartRunning;
     private bool cachedRadialRootsSettingsLogicExtension;
@@ -159,7 +155,6 @@ internal sealed partial class OperationForm
         this.radialPressedIndex = -1;
         this.radialCoreHovered = false;
         this.radialCorePressed = false;
-        ClearRadialCoreAutoHideThresholdVisual();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -367,14 +362,6 @@ internal sealed partial class OperationForm
                 ? "打开实时字幕"
                 : "实时字幕当前不可用\r\n未检测到系统实时字幕入口",
             isUnavailable: () => !this.liveCaptionsAvailable));
-        assist.Children.Add(NewToggle(
-            "hover_opacity",
-            "悬停透明度",
-            RadialAssistColor,
-            this.DrawHalfMoonGlyph,
-            () => this.CurrentSettings.ForceHoverOpacityActive,
-            () => ExecuteButton(HoverOpacityToggleButtonIndex, MouseButtons.Left),
-            () => this.CurrentSettings.ForceHoverOpacityActive ? "恢复模块透明度" : "切换到悬停透明度"));
         if (includeBattery)
         {
             assist.Children.Add(NewLeaf(
@@ -401,20 +388,6 @@ internal sealed partial class OperationForm
     private RadialNode BuildRadialCommonLogicBranch(bool includeBattery)
     {
         RadialNode common = NewBranch("common_logic", "常用逻辑", RadialSettingsColor, this.DrawTogglesGlyph);
-
-        RadialNode visibility = NewBranch("common_visibility", "显示隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph);
-        visibility.Children.Add(NewLeaf(
-            "common_hover_opacity_action",
-            "悬停透明度",
-            RadialAssistColor,
-            this.DrawHalfMoonGlyph,
-            () => ExecuteButton(HoverOpacityToggleButtonIndex, MouseButtons.Left),
-            () => this.CurrentSettings.ForceHoverOpacityActive ? "恢复模块透明度" : "切换到悬停透明度"));
-        visibility.Children.Add(NewSettingToggle("HoverOpacityEnabled", "common_hover_hide", "靠近隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.HoverOpacityEnabled));
-        visibility.Children.Add(NewSettingToggle("AutoHoverOpacityIdleEnabled", "common_idle_hide", "空闲隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.AutoHoverOpacityIdleEnabled));
-        visibility.Children.Add(NewSettingToggle("AutoHoverOpacityMaximizedEnabled", "common_max_hide", "最大化隐藏", RadialSettingsColor, this.DrawAppWindowGlyph, s => s.AutoHoverOpacityMaximizedEnabled));
-        visibility.Children.Add(NewSettingToggle("OperationRadialCoreAutoHideKeepAliveEnabled", "common_core_keepalive", "圆圈保持", RadialSettingsColor, this.DrawPowerRingGlyph, s => s.OperationRadialCoreAutoHideKeepAliveEnabled));
-        common.Children.Add(visibility);
 
         RadialNode aiQuota = NewBranch("common_ai_quota", "AI/额度", RadialAdvancedColor, this.DrawPieWedgeGlyph);
         aiQuota.Children.Add(NewToggle(
@@ -492,19 +465,9 @@ internal sealed partial class OperationForm
         system.Children.Add(NewSettingToggle("PowerResumeRestartEnabled", "all_resume_restart", "唤醒重启", RadialPowerColor, this.DrawRestartLoopGlyph, s => s.PowerResumeRestartEnabled));
         all.Children.Add(system);
 
-        RadialNode visibility = NewBranch("all_visibility", "显示隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph);
-        visibility.Children.Add(NewSettingToggle("HoverOpacityEnabled", "all_hover_hide", "靠近隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.HoverOpacityEnabled));
-        visibility.Children.Add(NewSettingToggle("SensitiveMouseModeEnabled", "all_sensitive_mouse", "敏感鼠标", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.SensitiveMouseModeEnabled));
-        visibility.Children.Add(NewSettingToggle("HoverOpacityRevealDelayEnabled", "all_reveal_delay", "延迟显现", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.HoverOpacityRevealDelayEnabled));
-        visibility.Children.Add(NewSettingToggle("HoverOpacityCoverEnabled", "all_hover_cover", "覆盖开启", RadialSettingsColor, this.DrawAppWindowGlyph, s => s.HoverOpacityCoverEnabled));
-        visibility.Children.Add(NewSettingToggle("ReverseHoverOpacityRevealEnabled", "all_reverse_reveal", "反向隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.ReverseHoverOpacityRevealEnabled));
-        RadialNode autoHide = NewBranch("all_auto_hide", "自动隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph);
-        autoHide.Children.Add(NewSettingToggle("AutoHoverOpacityIdleEnabled", "all_idle_hide", "空闲隐藏", RadialSettingsColor, this.DrawHalfMoonGlyph, s => s.AutoHoverOpacityIdleEnabled));
-        autoHide.Children.Add(NewSettingToggle("AutoHoverOpacityMaximizedEnabled", "all_max_hide", "最大化隐藏", RadialSettingsColor, this.DrawAppWindowGlyph, s => s.AutoHoverOpacityMaximizedEnabled));
-        autoHide.Children.Add(NewSettingToggle("OperationRadialCoreAutoHideKeepAliveEnabled", "all_core_keepalive", "圆圈保持", RadialSettingsColor, this.DrawPowerRingGlyph, s => s.OperationRadialCoreAutoHideKeepAliveEnabled));
-        autoHide.Children.Add(NewSettingToggle("OperationRadialKeepOpenAfterLeafClickEnabled", "all_radial_leaf_keepopen", "末端保持", RadialSettingsColor, this.DrawTogglesGlyph, s => s.OperationRadialKeepOpenAfterLeafClickEnabled));
-        visibility.Children.Add(autoHide);
-        all.Children.Add(visibility);
+        RadialNode radial = NewBranch("all_radial", "扇形速控盘", RadialSettingsColor, this.DrawTogglesGlyph);
+        radial.Children.Add(NewSettingToggle("OperationRadialKeepOpenAfterLeafClickEnabled", "all_radial_leaf_keepopen", "末端保持", RadialSettingsColor, this.DrawTogglesGlyph, s => s.OperationRadialKeepOpenAfterLeafClickEnabled));
+        all.Children.Add(radial);
 
         RadialNode radar = NewBranch("all_radar_common", "Radar 通用", RadialAssistColor, (g, r) => DrawSparkleGlyph(g, r, 4));
         radar.Children.Add(NewSettingToggle("RadarClockAutoSwitchModelEnabled", "all_radar_auto_model", "自动模型", RadialAssistColor, this.DrawRefreshLoopGlyph, s => s.RadarClockAutoSwitchModelEnabled));
@@ -891,43 +854,9 @@ internal sealed partial class OperationForm
         return new RadialHitResult { Kind = RadialHitKind.None, Level = -1, Index = -1 };
     }
 
-    internal bool IsRadialCoreAutoHideKeepAliveActive()
-    {
-        if (!IsRadialDialActive() ||
-            this.formClosing ||
-            this.hiddenForFullscreen ||
-            this.displaySuspended ||
-            !this.Visible ||
-            this.IsDisposed ||
-            !this.IsHandleCreated)
-        {
-            return false;
-        }
-
-        return IsPointInRadialCore(ComputeRadialLayout(), PointToClient(Cursor.Position));
-    }
-
-    internal bool IsRadialCoreAutoHideLockActive()
-    {
-        return ShouldLockOtherSurfacesForRadialCore(
-            this.radialCoreAutoHideThresholdVisualActive,
-            IsRadialCoreAutoHideKeepAliveActive());
-    }
-
-    private static bool ShouldLockOtherSurfacesForRadialCore(bool greenVisualActive, bool pointerOnCore)
-    {
-        return greenVisualActive && pointerOnCore;
-    }
-
     private static bool IsPointInRadialCore(RadialLayout layout, Point point)
     {
         return layout != null && layout.Core.Contains(point.X, point.Y);
-    }
-
-    internal void ClearRadialCoreAutoHideThresholdVisual()
-    {
-        this.radialCoreHoverStartedUtc = DateTime.MinValue;
-        this.radialCoreAutoHideThresholdVisualActive = false;
     }
 
     private void HandleRadialMouseMove(MouseEventArgs e)
@@ -946,11 +875,6 @@ internal sealed partial class OperationForm
         }
 
         this.radialCoreHovered = coreHover;
-        if (!coreHover)
-        {
-            ClearRadialCoreAutoHideThresholdVisual();
-        }
-
         this.radialHoveredLevel = hoverLevel;
         this.radialHoveredIndex = hoverIndex;
         UpdateRadialHoverToolTip(hit, e.Location);
@@ -967,7 +891,6 @@ internal sealed partial class OperationForm
         this.radialCoreHovered = false;
         this.radialHoveredLevel = -1;
         this.radialHoveredIndex = -1;
-        ClearRadialCoreAutoHideThresholdVisual();
         HideHoverToolTip();
         RenderLayeredWindow();
     }
@@ -1137,59 +1060,6 @@ internal sealed partial class OperationForm
 
         CloseRadialMenu();
         return true;
-    }
-
-    private bool UpdateRadialCoreAutoHideThresholdVisual(DateTime nowUtc)
-    {
-        bool coreKeepAliveActive =
-            this.CurrentSettings != null &&
-            this.CurrentSettings.OperationRadialCoreAutoHideKeepAliveEnabled &&
-            IsRadialCoreAutoHideKeepAliveActive();
-
-        return UpdateRadialCoreAutoHideThresholdVisual(nowUtc, coreKeepAliveActive);
-    }
-
-    private bool UpdateRadialCoreAutoHideThresholdVisual(DateTime nowUtc, bool coreKeepAliveActive)
-    {
-        if (!coreKeepAliveActive)
-        {
-            bool wasActive = this.radialCoreAutoHideThresholdVisualActive;
-            ClearRadialCoreAutoHideThresholdVisual();
-            return wasActive;
-        }
-
-        if (this.radialCoreHoverStartedUtc == DateTime.MinValue)
-        {
-            this.radialCoreHoverStartedUtc = nowUtc;
-        }
-
-        bool shouldBeActive =
-            (nowUtc - this.radialCoreHoverStartedUtc).TotalSeconds >= GetRadialCoreAutoHideThresholdSeconds();
-        if (shouldBeActive == this.radialCoreAutoHideThresholdVisualActive)
-        {
-            return false;
-        }
-
-        this.radialCoreAutoHideThresholdVisualActive = shouldBeActive;
-        return true;
-    }
-
-    private int GetRadialCoreAutoHideThresholdSeconds()
-    {
-        int seconds = this.CurrentSettings == null
-            ? WidgetSettings.DefaultAutoHoverOpacityIdleSeconds
-            : this.CurrentSettings.AutoHoverOpacityIdleSeconds;
-        if (seconds < WidgetSettings.MinAutoHoverOpacityIdleSeconds)
-        {
-            return WidgetSettings.MinAutoHoverOpacityIdleSeconds;
-        }
-
-        if (seconds > WidgetSettings.MaxAutoHoverOpacityIdleSeconds)
-        {
-            return WidgetSettings.MaxAutoHoverOpacityIdleSeconds;
-        }
-
-        return seconds;
     }
 
     private bool ShouldRadialIdleCollapse(DateTime nowUtc)
@@ -1566,12 +1436,21 @@ internal sealed partial class OperationForm
         double press = this.radialCorePressed ? 1.0 : 0.0;
         Color? tint = resolvedPath.Count > 0 ? (Color?)resolvedPath[0].BaseColor : null;
 
-        Color baseLight = tint.HasValue
-            ? DesignTokens.WithAlpha(Lighten(MutedCategoryTint(tint.Value), 0.22), ScaleAlpha(ClampByte((int)Math.Round(150 + hover * 60 + press * 30)), backgroundAlpha))
-            : DesignTokens.WithAlpha(Color.FromArgb(250, 248, 244), ScaleAlpha(ClampByte((int)Math.Round(130 + hover * 60 + press * 30)), backgroundAlpha));
-        Color baseDeep = tint.HasValue
-            ? DesignTokens.WithAlpha(Darken(MutedCategoryTint(tint.Value), 0.16), ScaleAlpha(ClampByte((int)Math.Round(96 + hover * 40 + press * 24)), backgroundAlpha))
-            : DesignTokens.WithAlpha(Color.FromArgb(214, 208, 198), ScaleAlpha(ClampByte((int)Math.Round(74 + hover * 40 + press * 24)), backgroundAlpha));
+        Color baseLightSeed = tint.HasValue
+            ? Lighten(MutedCategoryTint(tint.Value), 0.22)
+            : Color.FromArgb(250, 248, 244);
+        Color baseDeepSeed = tint.HasValue
+            ? Darken(MutedCategoryTint(tint.Value), 0.16)
+            : Color.FromArgb(214, 208, 198);
+        baseLightSeed = ResolveRadialCoreSurfaceColor(baseLightSeed, this.sideSurfacesHiddenByOperationToggle);
+        baseDeepSeed = ResolveRadialCoreSurfaceColor(baseDeepSeed, this.sideSurfacesHiddenByOperationToggle);
+
+        Color baseLight = DesignTokens.WithAlpha(
+            baseLightSeed,
+            ScaleAlpha(ClampByte((int)Math.Round(150 + hover * 60 + press * 30)), backgroundAlpha));
+        Color baseDeep = DesignTokens.WithAlpha(
+            baseDeepSeed,
+            ScaleAlpha(ClampByte((int)Math.Round(96 + hover * 40 + press * 24)), backgroundAlpha));
 
         RectangleF outer = rect;
         RectangleF ring = RectangleF.Inflate(rect, -Math.Max(1.5f, rect.Width * 0.09f), -Math.Max(1.5f, rect.Height * 0.09f));
@@ -1607,42 +1486,6 @@ internal sealed partial class OperationForm
         if (this.radialMenuOpen && resolvedPath.Count > 0)
         {
             DrawRadialCoreDepthDots(g, ring, resolvedPath.Count + 1);
-        }
-
-        if (this.radialCoreAutoHideThresholdVisualActive)
-        {
-            DrawRadialCoreAutoHideThresholdVisual(g, outer);
-        }
-    }
-
-    private void DrawRadialCoreAutoHideThresholdVisual(Graphics g, RectangleF rect)
-    {
-        if (rect.Width <= 0.0f || rect.Height <= 0.0f)
-        {
-            return;
-        }
-
-        CompositingMode previousMode = g.CompositingMode;
-        try
-        {
-            // SourceCopy changes the final layered-window pixel alpha. SourceOver would only tint
-            // the already drawn core and leave it opaque against the desktop.
-            g.CompositingMode = CompositingMode.SourceCopy;
-            using (SolidBrush dimBrush = new SolidBrush(Color.FromArgb(RadialCoreAutoHideThresholdDimAlpha, 0, 0, 0)))
-            {
-                g.FillEllipse(dimBrush, rect);
-            }
-
-            float borderWidth = Math.Max(1.0f, 3.0f * this.LayerScale);
-            RectangleF borderRect = RectangleF.Inflate(rect, -borderWidth / 2.0f, -borderWidth / 2.0f);
-            using (Pen borderPen = new Pen(Color.FromArgb(RadialCoreAutoHideThresholdRingAlpha, 90, 235, 140), borderWidth))
-            {
-                g.DrawEllipse(borderPen, borderRect);
-            }
-        }
-        finally
-        {
-            g.CompositingMode = previousMode;
         }
     }
 
@@ -1749,6 +1592,14 @@ internal sealed partial class OperationForm
         int g = (int)Math.Round(c.G * (1.0 - amount));
         int b = (int)Math.Round(c.B * (1.0 - amount));
         return Color.FromArgb(ClampByte(r), ClampByte(g), ClampByte(b));
+    }
+
+    private static Color ResolveRadialCoreSurfaceColor(Color color, bool sideSurfacesHidden)
+    {
+        // This is only a visual acknowledgement of the host-owned hide mode. Keeping the state out
+        // of layout, hit-testing and click routing ensures the radial expansion remains available as
+        // the sole control surface while both edge groups are physically hidden.
+        return sideSurfacesHidden ? Darken(color, 0.48) : color;
     }
 
     // Blends a category hue into a warm-neutral base at restrained saturation, matching the
@@ -2240,13 +2091,13 @@ internal sealed partial class OperationForm
                 (int)Math.Round(rootLayout.Core.Left + rootLayout.Core.Width / 2.0f),
                 (int)Math.Round(rootLayout.Core.Top + rootLayout.Core.Height / 2.0f));
             Point outsideCore = new Point((int)Math.Ceiling(rootLayout.Core.Right + 8.0f), coreCenter.Y);
-            AssertSelfTest(IsPointInRadialCore(rootLayout, coreCenter), "radial core keep-alive hit test should include the core center");
-            AssertSelfTest(!IsPointInRadialCore(rootLayout, outsideCore), "radial core keep-alive hit test should reject points outside the core");
+            AssertSelfTest(IsPointInRadialCore(rootLayout, coreCenter), "radial core hit test should include the core center");
+            AssertSelfTest(!IsPointInRadialCore(rootLayout, outsideCore), "radial core hit test should reject points outside the core");
             AssertRadialQuadrant(rootLayout);
 
             form.radialSelectionPathIds = new List<string> { "settings" };
             RadialLayout settingsLayout = form.ComputeRadialLayout();
-            AssertSelfTest(settingsLayout.Levels.Count == 2, "the root ring stays visible alongside the settings children ring (no auto-hide on drill-in)");
+            AssertSelfTest(settingsLayout.Levels.Count == 2, "the root ring stays visible alongside the settings children ring while drilling in");
             AssertSelfTest(settingsLayout.Levels[1].Nodes.Count == 3, "settings has three children");
             AssertSelfTest(settingsLayout.Levels[1].Nodes.Exists(n => n.Id == "special_settings"), "settings children include the special-settings branch");
             AssertRadialQuadrant(settingsLayout);
@@ -2330,66 +2181,10 @@ internal sealed partial class OperationForm
             AssertSelfTest(form.ShouldKeepRadialMenuOpenAfterLeafClick(), "default leaf click setting keeps the radial menu open");
             form.CurrentSettings.OperationRadialKeepOpenAfterLeafClickEnabled = false;
             AssertSelfTest(!form.ShouldKeepRadialMenuOpenAfterLeafClick(), "disabled leaf click setting closes the radial menu");
-
-            form.CurrentSettings.OperationRadialCoreAutoHideKeepAliveEnabled = true;
-            form.CurrentSettings.AutoHoverOpacityIdleSeconds = 2;
-            DateTime visualStartUtc = new DateTime(2026, 7, 9, 0, 0, 0, DateTimeKind.Utc);
-            AssertSelfTest(!form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc, true), "core keep-alive threshold starts without an immediate visual change");
-            AssertSelfTest(!form.radialCoreAutoHideThresholdVisualActive, "core keep-alive visual is inactive before the threshold");
-            AssertSelfTest(!ShouldLockOtherSurfacesForRadialCore(false, true), "core hover does not lock other surfaces before the green threshold");
-            AssertSelfTest(!form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc.AddSeconds(1.9), true), "core keep-alive visual stays inactive before configured auto-hide seconds");
-            AssertSelfTest(form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc.AddSeconds(2.0), true), "core keep-alive visual changes when configured auto-hide seconds elapse");
-            AssertSelfTest(form.radialCoreAutoHideThresholdVisualActive, "core keep-alive visual is active at the threshold");
-            AssertSelfTest(ShouldLockOtherSurfacesForRadialCore(true, true), "green core threshold locks all other surfaces");
-            AssertSelfTest(!ShouldLockOtherSurfacesForRadialCore(true, false), "green core lock ends as soon as the pointer leaves");
-            AssertSelfTest(form.UpdateRadialCoreAutoHideThresholdVisual(visualStartUtc.AddSeconds(2.1), false), "core keep-alive visual clears after leaving the core");
-            AssertSelfTest(!form.radialCoreAutoHideThresholdVisualActive, "core keep-alive visual is inactive after leaving the core");
-            RunRadialCoreSourceAlphaSelfTest(form);
         }
         finally
         {
             form.Dispose();
-        }
-    }
-
-    private static void RunRadialCoreSourceAlphaSelfTest(OperationForm form)
-    {
-        using (Bitmap bitmap = new Bitmap(80, 80, PixelFormat.Format32bppPArgb))
-        using (Graphics graphics = Graphics.FromImage(bitmap))
-        using (SolidBrush opaqueBrush = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-        {
-            RectangleF rect = new RectangleF(16.0f, 16.0f, 48.0f, 48.0f);
-            graphics.Clear(Color.Transparent);
-            graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            graphics.FillEllipse(opaqueBrush, rect);
-
-            form.DrawRadialCoreAutoHideThresholdVisual(graphics, rect);
-
-            Color center = bitmap.GetPixel(40, 40);
-            AssertSelfTest(center.A == RadialCoreAutoHideThresholdDimAlpha, "core keep-alive center alpha must be transparent to desktop");
-
-            int maxAlpha = 0;
-            int ringPixels = 0;
-            for (int y = 0; y < bitmap.Height; y++)
-            {
-                for (int x = 0; x < bitmap.Width; x++)
-                {
-                    int alpha = bitmap.GetPixel(x, y).A;
-                    if (alpha > maxAlpha)
-                    {
-                        maxAlpha = alpha;
-                    }
-
-                    if (alpha > RadialCoreAutoHideThresholdDimAlpha)
-                    {
-                        ringPixels++;
-                    }
-                }
-            }
-
-            AssertSelfTest(maxAlpha <= RadialCoreAutoHideThresholdRingAlpha, "core keep-alive ring must not inherit opaque pixels underneath");
-            AssertSelfTest(ringPixels > 0, "core keep-alive ring pixels are present");
-            AssertSelfTest(bitmap.GetPixel(0, 0).A == 0, "core keep-alive visual leaves exterior pixels transparent");
         }
     }
 
@@ -2466,17 +2261,9 @@ internal sealed partial class OperationForm
             "ForceShowForegroundFpsEnabled",
             "ResolutionCompatibilityModeEnabled",
             "FallbackDisconnectedDisplaysEnabled",
-            "HoverOpacityEnabled",
-            "SensitiveMouseModeEnabled",
-            "AutoHoverOpacityIdleEnabled",
-            "AutoHoverOpacityMaximizedEnabled",
-            "OperationRadialCoreAutoHideKeepAliveEnabled",
             "OperationRadialKeepOpenAfterLeafClickEnabled",
             "OperationSettingsLogicExtensionEnabled",
             "SpecBoardAutoPopupEnabled",
-            "HoverOpacityRevealDelayEnabled",
-            "HoverOpacityCoverEnabled",
-            "ReverseHoverOpacityRevealEnabled",
             "RadarClockAutoSwitchModelEnabled",
             "CodexRadarPublicJsonEnabled",
             "CodexRadarHtmlFallbackEnabled",
@@ -2557,7 +2344,6 @@ internal sealed partial class OperationForm
             delegate { },
             delegate { },
             delegate(string title, string message, ToolTipIcon icon) { },
-            delegate { return true; },
             toggleSideSurfacesAction ?? delegate { return true; },
             delegate { return true; },
             delegate { return true; },

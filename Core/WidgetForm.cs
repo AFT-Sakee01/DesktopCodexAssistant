@@ -28,14 +28,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private const int ApplicationWindowEventBatchLimit = 64;
     private const int ApplicationWindowEventQueueLimit = 256;
     private const int HotkeyToggleAllWindowsId = 0x51A1;
-    private const int HotkeyToggleHoverOpacityId = 0x51A2;
     private const int HotkeyOpenSettingsId = 0x51A3;
     private const int ChinaEgressWarningCooldownSeconds = 60;
     private readonly PdhSampler sampler;
     private readonly EventWaitHandle stopEvent;
     private readonly bool useDesktopParent;
     private readonly System.Windows.Forms.Timer timer;
-    private readonly System.Windows.Forms.Timer hoverTimer;
+    private readonly System.Windows.Forms.Timer interactionTimer;
     private readonly System.Windows.Forms.Timer displayRecoveryTimer;
     private readonly System.Windows.Forms.Timer seelenDockPulseTimer;
     private readonly System.Windows.Forms.Timer winDRecoveryTimer;
@@ -81,28 +80,15 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private PowerThermalForm powerThermalForm;
     private NetworkMonitorForm networkMonitorForm;
     private OperationForm operationForm;
-    private double hoverOpacityProgress;
-    private DateTime hoverOpacityLastUtc;
-    private DateTime reverseHoverRevealUntilUtc;
-    private readonly HoverInteractionPolicy.HoverOpacityDelayState hoverOpacityDelayState = new HoverInteractionPolicy.HoverOpacityDelayState();
-    private bool manualForceHoverOpacityActive;
-    private bool autoIdleHoverOpacityActive;
-    private bool autoMaximizedHoverOpacityActive;
-    private bool operationRadialCoreAutoHideKeepAliveActive;
-    private bool autoHideKeepAliveActive;
     private ApplicationWindowStateTracker applicationWindowStateTracker;
     private RegisteredWaitHandle stopEventRegistration;
     private IntPtr stopEventTargetHandle;
     private int applicationWindowEventTimerStartPosted;
-    private Point lastMouseActivityPosition;
-    private bool lastMouseButtonDown;
-    private DateTime lastMouseActivityUtc;
     private Point lastBurnInActivityPosition;
     private bool lastBurnInMouseButtonDown;
     private DateTime lastBurnInActivityUtc;
     private BurnInVisualLevel burnInVisualLevel;
     private uint lastBurnInInputTick;
-    private bool applyingAutomaticHoverOpacityState;
     private DateTime lastSettingsWriteUtc;
     private DateTime lastSampleDiagnosticUtc;
     private FileSystemWatcher settingsWatcher;
@@ -138,12 +124,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.savedSettings = settings.Clone();
         this.CurrentSettings = settings.Clone();
         this.codexQuotaGoalPlanner = new CodexQuotaGoalPlanner();
-        this.manualForceHoverOpacityActive = this.CurrentSettings.ForceHoverOpacityActive;
-        this.CurrentSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
-        this.lastMouseActivityPosition = Cursor.Position;
-        this.lastMouseActivityUtc = DateTime.UtcNow;
-        this.lastBurnInActivityPosition = this.lastMouseActivityPosition;
-        this.lastBurnInActivityUtc = this.lastMouseActivityUtc;
+        this.lastBurnInActivityPosition = Cursor.Position;
+        this.lastBurnInActivityUtc = DateTime.UtcNow;
         NativeMethods.TryGetLastInputTickCount(out this.lastBurnInInputTick);
         BurnInProtection.SetCurrentVisualLevel(BurnInVisualLevel.Normal);
         this.lastSettingsWriteUtc = GetSettingsWriteUtc();
@@ -204,9 +186,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.timer = new System.Windows.Forms.Timer();
         this.timer.Interval = WidgetSettings.GetWidgetSampleIntervalMs(this.CurrentSettings.PerformanceMode);
         this.timer.Tick += OnTimerTick;
-        this.hoverTimer = new System.Windows.Forms.Timer();
-        this.hoverTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
-        this.hoverTimer.Tick += OnHoverTimerTick;
+        this.interactionTimer = new System.Windows.Forms.Timer();
+        this.interactionTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
+        this.interactionTimer.Tick += OnInteractionTimerTick;
         SystemEvents.SessionSwitch += OnSystemSessionSwitch;
     }
 
@@ -241,7 +223,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.powerThermalForm.StartHeadlessDataOwner();
         InitializeSystemDayHistory();
         this.networkMonitorForm = new NetworkMonitorForm(this.CurrentSettings);
-        this.networkMonitorForm.SetSharedInteractionPolling(true);
         this.networkMonitorForm.StartDockedOwner(this);
         this.operationForm = new OperationForm(
             this.CurrentSettings,
@@ -249,7 +230,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             delegate { ForceRefreshAllModules(); },
             delegate { RestartCurrentProcess(); },
             ShowWindowsNotification,
-            delegate { return ToggleForcedHoverOpacity(); },
             delegate { return ToggleSideSurfacesFromOperationPanel(); },
             delegate { return PulseSeelenDockToFront("operation panel", false, false); },
             delegate { return PromptToggleAiRequestBlockingFromOperationPanel(); },
@@ -515,10 +495,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         if (detailedTracking && (batch.FullRefresh || processedCount > 0))
         {
             UpdateVisibilityForMode();
-            if (this.CurrentSettings != null && this.CurrentSettings.AutoHoverOpacityMaximizedEnabled)
-            {
-                UpdateAutomaticHoverOpacityTriggers();
-            }
         }
 
         if (batch.HasForegroundEvent &&
@@ -555,8 +531,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return false;
         }
 
-        return settings.AutoHoverOpacityMaximizedEnabled ||
-            settings.VisibilityMode == WidgetVisibilityMode.HideWhenFullscreen ||
+        return settings.VisibilityMode == WidgetVisibilityMode.HideWhenFullscreen ||
             settings.VisibilityMode == WidgetVisibilityMode.HideWhenMaximized ||
             settings.VisibilityMode == WidgetVisibilityMode.HideWhenOverlapped;
     }
@@ -709,9 +684,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.timer.Stop();
         this.timer.Tick -= OnTimerTick;
         this.timer.Dispose();
-        this.hoverTimer.Stop();
-        this.hoverTimer.Tick -= OnHoverTimerTick;
-        this.hoverTimer.Dispose();
+        this.interactionTimer.Stop();
+        this.interactionTimer.Tick -= OnInteractionTimerTick;
+        this.interactionTimer.Dispose();
         StopApplicationWindowStateTracking();
         DisposeSettingsWatcher();
         if (this.settingsForm != null)
@@ -1633,9 +1608,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     {
         WidgetSettings nextSettings = settings.Clone();
         nextSettings.Normalize();
-        nextSettings.ForceHoverOpacityActive = false;
-        nextSettings.ManualHoverOpacityActive = false;
-        this.manualForceHoverOpacityActive = false;
         nextSettings.Save();
         Program.SetStartupEnabled(nextSettings.StartupEnabled, false);
         this.savedSettings = nextSettings.Clone();
@@ -1719,11 +1691,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         WidgetSettings runtimeSettings = settings.Clone();
         runtimeSettings.Normalize();
         runtimeSettings.VisibilityMode = WidgetVisibilityMode.AlwaysVisible;
-        runtimeSettings.HoverOpacityEnabled = false;
-        runtimeSettings.ForceHoverOpacityActive = false;
-        runtimeSettings.ManualHoverOpacityActive = false;
-        runtimeSettings.AutoHoverOpacityIdleEnabled = false;
-        runtimeSettings.AutoHoverOpacityMaximizedEnabled = false;
         runtimeSettings.ResolutionCompatibilityModeEnabled = false;
         return runtimeSettings;
     }
@@ -1764,16 +1731,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     }
 
-    internal bool ToggleForcedHoverOpacity()
-    {
-        this.manualForceHoverOpacityActive = !this.manualForceHoverOpacityActive;
-        Program.LogInfo(
-            "Forced hover opacity toggled from shared action. ManualActive=" +
-            this.manualForceHoverOpacityActive.ToString());
-        ApplyCombinedHoverOpacityState("operation panel toggle");
-        return this.CurrentSettings.ForceHoverOpacityActive;
-    }
-
     internal bool TryGetGlobalHotkeyRegistrationFailure(string settingName, out string failure)
     {
         return this.globalHotkeyRegistrationFailures.TryGetValue(settingName ?? string.Empty, out failure);
@@ -1789,7 +1746,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         string signature = string.Join(
             "\n",
             this.CurrentSettings.HotkeyToggleAllWindows ?? string.Empty,
-            this.CurrentSettings.HotkeyToggleHoverOpacity ?? string.Empty,
             this.CurrentSettings.HotkeyOpenSettings ?? string.Empty);
         if (this.globalHotkeyConfigurationApplied &&
             string.Equals(signature, this.globalHotkeyConfigurationSignature, StringComparison.Ordinal))
@@ -1806,10 +1762,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             HotkeyToggleAllWindowsId,
             "HotkeyToggleAllWindows",
             this.CurrentSettings.HotkeyToggleAllWindows);
-        RegisterGlobalHotkey(
-            HotkeyToggleHoverOpacityId,
-            "HotkeyToggleHoverOpacity",
-            this.CurrentSettings.HotkeyToggleHoverOpacity);
         RegisterGlobalHotkey(
             HotkeyOpenSettingsId,
             "HotkeyOpenSettings",
@@ -1879,13 +1831,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 "Global hotkey action. Action=toggle_all_windows Hidden=" +
                 this.manualAllWindowsHidden.ToString());
             UpdateVisibilityForMode();
-            return;
-        }
-
-        if (id == HotkeyToggleHoverOpacityId)
-        {
-            Program.LogInfo("Global hotkey action. Action=toggle_hover_opacity");
-            ToggleForcedHoverOpacity();
             return;
         }
 
@@ -2219,28 +2164,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.CurrentSettings.BurnInProtectionEnabled;
         WidgetSettings nextSettings = settings.Clone();
         nextSettings.Normalize();
-        if (!this.applyingAutomaticHoverOpacityState)
-        {
-            this.manualForceHoverOpacityActive = nextSettings.ForceHoverOpacityActive;
-        }
-
-        if (!nextSettings.AutoHoverOpacityIdleEnabled)
-        {
-            this.autoIdleHoverOpacityActive = false;
-        }
-
-        if (!nextSettings.AutoHoverOpacityMaximizedEnabled)
-        {
-            this.autoMaximizedHoverOpacityActive = false;
-        }
-
-        if (this.manualForceHoverOpacityActive || !nextSettings.OperationRadialCoreAutoHideKeepAliveEnabled)
-        {
-            SetOperationRadialCoreAutoHideKeepAliveActive(false);
-        }
-
-        nextSettings.ForceHoverOpacityActive = IsCombinedHoverOpacityActive();
-        nextSettings.ManualHoverOpacityActive = this.manualForceHoverOpacityActive;
         this.CurrentSettings = nextSettings;
         if (!this.CurrentSettings.BurnInProtectionEnabled || !burnInWasEnabled)
         {
@@ -2276,8 +2199,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:click_through");
         ApplyClickThroughStyle();
-        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:hover_timer");
-        UpdateHoverAnimationTimer();
+        UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:interaction_timer");
+        UpdateInteractionTimer();
 
         UiHangWatchdog.MarkUiCheckpoint("apply_runtime_settings:set_window_pos");
         NativeMethods.SetWindowPos(
@@ -2342,10 +2265,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.timer.Interval = sampleInterval;
         }
 
-        int hoverInterval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
-        if (this.hoverTimer.Interval != hoverInterval)
+        int interactionInterval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
+        if (this.interactionTimer.Interval != interactionInterval)
         {
-            this.hoverTimer.Interval = hoverInterval;
+            this.interactionTimer.Interval = interactionInterval;
         }
     }
 
@@ -2620,106 +2543,38 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return DateTime.MinValue;
     }
 
-    private void OnHoverTimerTick(object sender, EventArgs e)
+    private void OnInteractionTimerTick(object sender, EventArgs e)
     {
-        UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:start");
+        UiHangWatchdog.MarkUiCheckpoint("widget.interaction_tick:start");
         try
         {
-            UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:update_automatic_triggers");
+            UiHangWatchdog.MarkUiCheckpoint("widget.interaction_tick:update_burn_in");
             bool burnInStateChanged = UpdateBurnInProtectionTriggers(DateTime.UtcNow);
-            bool automaticStateChanged = UpdateAutomaticHoverOpacityTriggers();
-            UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:apply_click_through");
+            UiHangWatchdog.MarkUiCheckpoint("widget.interaction_tick:apply_click_through");
             ApplyClickThroughStyle();
-            UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:update_animation");
-            UpdateHoverOpacityAnimation();
-            bool hoverTarget = IsHoverOpacityTargetActive();
+            UiHangWatchdog.MarkUiCheckpoint("widget.interaction_tick:metric_tile_burn_in");
             bool animationActive =
                 burnInStateChanged ||
-                automaticStateChanged ||
-                Math.Abs(this.hoverOpacityProgress - (hoverTarget ? 1.0 : 0.0)) > 0.001;
-            // Visible passive panels share this UI-thread timer. Headless Radar/Power owners are
-            // deliberately excluded from interaction polling.
-            if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
-            {
-                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:network_shared_tick");
-                animationActive |= this.networkMonitorForm.ProcessSharedInteractionTick();
-            }
-
-            UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:metric_tile_shared_tick");
-            animationActive |= UpdateMetricTileBurnInPresentation(this.burnInVisualLevel);
-            animationActive |= ProcessMetricTileInteractionTick();
+                UpdateMetricTileBurnInPresentation(this.burnInVisualLevel);
 
             if (this.operationForm != null && !this.operationForm.IsDisposed)
             {
-                UiHangWatchdog.MarkUiCheckpoint("widget.hover_tick:operation_shared_tick");
+                UiHangWatchdog.MarkUiCheckpoint("widget.interaction_tick:operation_shared_tick");
                 animationActive |= this.operationForm.ProcessSharedInteractionTick();
             }
 
             int desiredInterval = animationActive
                 ? WidgetSettings.GetHoverAnimationIntervalMs(this.CurrentSettings.PerformanceMode)
                 : WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
-            if (this.hoverTimer.Interval != desiredInterval)
+            if (this.interactionTimer.Interval != desiredInterval)
             {
-                this.hoverTimer.Interval = desiredInterval;
+                this.interactionTimer.Interval = desiredInterval;
             }
-
         }
         finally
         {
-            UiHangWatchdog.MarkUiHeartbeat("widget.hover_tick:complete");
+            UiHangWatchdog.MarkUiHeartbeat("widget.interaction_tick:complete");
         }
-    }
-
-    private bool UpdateAutomaticHoverOpacityTriggers()
-    {
-        if (this.CurrentSettings == null)
-        {
-            return false;
-        }
-
-        DateTime nowUtc = DateTime.UtcNow;
-        UpdateMouseActivityState(nowUtc);
-        bool keepAliveStateChanged = UpdateOperationRadialCoreAutoHideKeepAlive(nowUtc);
-
-        bool idleActive = false;
-        if (this.CurrentSettings.AutoHoverOpacityIdleEnabled)
-        {
-            int idleSeconds = Math.Max(
-                WidgetSettings.MinAutoHoverOpacityIdleSeconds,
-                Math.Min(
-                    WidgetSettings.MaxAutoHoverOpacityIdleSeconds,
-                    this.CurrentSettings.AutoHoverOpacityIdleSeconds));
-            idleActive = (nowUtc - this.lastMouseActivityUtc).TotalSeconds >= idleSeconds;
-        }
-
-        bool maximizedActive =
-            this.CurrentSettings.AutoHoverOpacityMaximizedEnabled &&
-            IsAnyApplicationWindowMaximizedOrFullscreen();
-
-        if (this.operationRadialCoreAutoHideKeepAliveActive)
-        {
-            idleActive = false;
-            maximizedActive = false;
-        }
-
-        if (idleActive == this.autoIdleHoverOpacityActive &&
-            maximizedActive == this.autoMaximizedHoverOpacityActive)
-        {
-            return keepAliveStateChanged;
-        }
-
-        this.autoIdleHoverOpacityActive = idleActive;
-        this.autoMaximizedHoverOpacityActive = maximizedActive;
-        Program.LogInfo(
-            "Automatic hover opacity state changed. IdleActive=" +
-            idleActive.ToString() +
-            ", MaximizedActive=" +
-            maximizedActive.ToString() +
-            ", ManualActive=" +
-            this.manualForceHoverOpacityActive.ToString());
-        UiHangWatchdog.MarkUiCheckpoint("hover.apply_combined:automatic trigger");
-        ApplyCombinedHoverOpacityState("automatic trigger");
-        return true;
     }
 
     private bool UpdateBurnInProtectionTriggers(DateTime nowUtc)
@@ -2803,72 +2658,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return true;
     }
 
-    private bool UpdateOperationRadialCoreAutoHideKeepAlive(DateTime nowUtc)
-    {
-        bool active = false;
-        if (this.CurrentSettings != null &&
-            this.CurrentSettings.OperationRadialCoreAutoHideKeepAliveEnabled &&
-            !this.manualForceHoverOpacityActive &&
-            this.operationForm != null &&
-            !this.operationForm.IsDisposed)
-        {
-            active = this.operationForm.IsRadialCoreAutoHideLockActive();
-        }
-
-        if (active)
-        {
-            HoldVisibleSurfacesForGreenRadialCore(nowUtc);
-        }
-
-        return SetOperationRadialCoreAutoHideKeepAliveActive(active);
-    }
-
-    private void HoldVisibleSurfacesForGreenRadialCore(DateTime nowUtc)
-    {
-        this.lastMouseActivityPosition = Cursor.Position;
-        this.lastMouseButtonDown = NativeMethods.IsAnyMouseButtonDown();
-        this.lastMouseActivityUtc = nowUtc;
-        // The green core is an explicit "hold the desktop layout" gesture. Refresh the burn-in
-        // activity timestamp on every shared tick so both configured delays restart only after
-        // the pointer leaves and the green state is cleared.
-        ResetBurnInProtectionActivity(nowUtc);
-    }
-
-    private bool SetOperationRadialCoreAutoHideKeepAliveActive(bool active)
-    {
-        if (this.operationRadialCoreAutoHideKeepAliveActive == active)
-        {
-            return false;
-        }
-
-        this.operationRadialCoreAutoHideKeepAliveActive = active;
-        SetAutoHideKeepAliveActive(active);
-
-        SetMetricTileAutoHideKeepAlive(active);
-
-        if (this.networkMonitorForm != null && !this.networkMonitorForm.IsDisposed)
-        {
-            this.networkMonitorForm.SetAutoHideKeepAliveActive(active);
-        }
-
-        return true;
-    }
-
-    private void SetAutoHideKeepAliveActive(bool active)
-    {
-        if (this.autoHideKeepAliveActive == active)
-        {
-            return;
-        }
-
-        this.autoHideKeepAliveActive = active;
-        if (active)
-        {
-            this.hoverOpacityDelayState.Reset();
-            this.reverseHoverRevealUntilUtc = DateTime.MinValue;
-        }
-    }
-
     private bool IsAnyApplicationWindowMaximizedOrFullscreen()
     {
         if (this.applicationWindowStateTracker == null)
@@ -2879,165 +2668,22 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         return this.applicationWindowStateTracker.HasMaximizedOrFullscreenWindow();
     }
 
-    private void UpdateMouseActivityState(DateTime nowUtc)
+    private void UpdateInteractionTimer()
     {
-        Point cursor = Cursor.Position;
-        bool mouseButtonDown = NativeMethods.IsAnyMouseButtonDown();
-        if (cursor != this.lastMouseActivityPosition || mouseButtonDown != this.lastMouseButtonDown || mouseButtonDown)
+        if (!this.hiddenForFullscreen)
         {
-            this.lastMouseActivityPosition = cursor;
-            this.lastMouseButtonDown = mouseButtonDown;
-            if (ShouldSuppressAutomaticHoverOpacityRelease(cursor, mouseButtonDown))
+            if (!this.interactionTimer.Enabled)
             {
-                return;
-            }
-
-            this.lastMouseActivityUtc = nowUtc;
-        }
-    }
-
-    private bool ShouldSuppressAutomaticHoverOpacityRelease(Point cursor, bool mouseButtonDown)
-    {
-        if (this.CurrentSettings == null ||
-            !this.CurrentSettings.HoverOpacityCoverEnabled ||
-            (!this.autoIdleHoverOpacityActive && !this.autoMaximizedHoverOpacityActive))
-        {
-            return false;
-        }
-
-        // Cover mode suppresses stray mouse movement while automatic hiding is active.
-        // Actual interaction still exits hidden state once the cursor reaches any app window.
-        if (mouseButtonDown)
-        {
-            return false;
-        }
-
-        return !IsPointInAnyManagedWindowActivationRange(cursor);
-    }
-
-    private bool IsPointInAnyManagedWindowActivationRange(Point cursor)
-    {
-        return IsPointInFormActivationRange(this.CurrentSettings, this.networkMonitorForm, cursor) ||
-            IsPointInFormActivationRange(this.CurrentSettings, this.operationForm, cursor);
-    }
-
-    private static bool IsPointInFormActivationRange(WidgetSettings settings, Form form, Point cursor)
-    {
-        return form != null &&
-            !form.IsDisposed &&
-            form.Visible &&
-            HoverInteractionPolicy.IsPointInActivationRange(settings, cursor, form.Bounds);
-    }
-
-    private void ApplyCombinedHoverOpacityState(string reason)
-    {
-        if (this.CurrentSettings == null)
-        {
-            return;
-        }
-
-        bool combined = IsCombinedHoverOpacityActive();
-        bool manualStateChanged = this.CurrentSettings.ManualHoverOpacityActive != this.manualForceHoverOpacityActive;
-        if (this.CurrentSettings.ForceHoverOpacityActive == combined && !manualStateChanged)
-        {
-            return;
-        }
-
-        WidgetSettings nextSettings = this.CurrentSettings.Clone();
-        nextSettings.ForceHoverOpacityActive = combined;
-        UiHangWatchdog.MarkUiCheckpoint("hover.apply_combined:" + reason);
-        this.applyingAutomaticHoverOpacityState = true;
-        try
-        {
-            ApplyRuntimeSettings(nextSettings);
-        }
-        finally
-        {
-            this.applyingAutomaticHoverOpacityState = false;
-        }
-
-        Program.LogInfo("Hover opacity runtime state applied. Active=" + combined.ToString() + ", Reason=" + reason);
-    }
-
-    private bool IsCombinedHoverOpacityActive()
-    {
-        if (this.globalLayoutEditActive)
-        {
-            return false;
-        }
-
-        return this.manualForceHoverOpacityActive ||
-            this.autoIdleHoverOpacityActive ||
-            this.autoMaximizedHoverOpacityActive;
-    }
-
-    private void UpdateHoverAnimationTimer()
-    {
-        if (!this.hiddenForFullscreen &&
-            (IsHoverOpacityRuntimeEnabled() || NeedsClickThroughPolling()))
-        {
-            if (!this.hoverTimer.Enabled)
-            {
-                this.hoverOpacityLastUtc = DateTime.UtcNow;
-                this.hoverTimer.Start();
+                this.interactionTimer.Start();
             }
 
             return;
         }
 
-        if (this.hoverTimer.Enabled)
+        if (this.interactionTimer.Enabled)
         {
-            this.hoverTimer.Stop();
+            this.interactionTimer.Stop();
         }
-
-        if (this.hoverOpacityProgress > 0.0)
-        {
-            this.hoverOpacityProgress = 0.0;
-        }
-    }
-
-    private bool UpdateHoverOpacityAnimation()
-    {
-        DateTime now = DateTime.UtcNow;
-        double elapsed = this.hoverOpacityLastUtc == DateTime.MinValue ? 0.03 : (now - this.hoverOpacityLastUtc).TotalSeconds;
-        this.hoverOpacityLastUtc = now;
-
-        bool hovered = IsHoverOpacityTargetActive();
-
-        double target = hovered ? 1.0 : 0.0;
-        double old = this.hoverOpacityProgress;
-        double step = Math.Max(0.0, Math.Min(1.0, elapsed / 0.15));
-        if (this.hoverOpacityProgress < target)
-        {
-            this.hoverOpacityProgress = Math.Min(target, this.hoverOpacityProgress + step);
-        }
-        else if (this.hoverOpacityProgress > target)
-        {
-            this.hoverOpacityProgress = Math.Max(target, this.hoverOpacityProgress - step);
-        }
-
-        return Math.Abs(old - this.hoverOpacityProgress) > 0.001;
-    }
-
-    private bool IsHoverOpacityTargetActive()
-    {
-        return HoverInteractionPolicy.IsHoverOpacityTargetActive(
-            this.CurrentSettings,
-            this.Bounds,
-            this.hiddenForFullscreen,
-            this.Visible,
-            ref this.reverseHoverRevealUntilUtc,
-            this.hoverOpacityDelayState,
-            this.autoHideKeepAliveActive);
-    }
-
-    private bool IsHoverOpacityRuntimeEnabled()
-    {
-        return this.CurrentSettings.HoverOpacityEnabled ||
-            this.CurrentSettings.ForceHoverOpacityActive ||
-            this.CurrentSettings.AutoHoverOpacityIdleEnabled ||
-            this.CurrentSettings.AutoHoverOpacityMaximizedEnabled ||
-            this.CurrentSettings.BurnInProtectionEnabled;
     }
 
     private void ApplyClickThroughStyle()
@@ -3108,7 +2754,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             if (hiddenChanged)
             {
                 ApplyPerformanceTimerIntervals();
-                UpdateHoverAnimationTimer();
+                UpdateInteractionTimer();
             }
 
             RestoreApplicationTopMostPriority();
@@ -3137,7 +2783,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             {
                 ApplyChildWindowsVisibilityMode();
                 ApplyPerformanceTimerIntervals();
-                UpdateHoverAnimationTimer();
+                UpdateInteractionTimer();
             }
             else
             {
@@ -3163,7 +2809,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         if (shownChanged)
         {
             ApplyPerformanceTimerIntervals();
-            UpdateHoverAnimationTimer();
+            UpdateInteractionTimer();
         }
 
         ApplyChildWindowsVisibilityMode();
@@ -3440,28 +3086,6 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     protected override int WindowScaleOverridePercent
     {
         get { return this.CurrentSettings.MainWidgetScaleOverridePercent; }
-    }
-
-    protected override int ApplyHoverAlpha(int alpha)
-    {
-        return ApplyHoverTransparencyTarget(alpha);
-    }
-
-    private int ApplyHoverTransparencyTarget(int alpha)
-    {
-        if (!IsHoverOpacityRuntimeEnabled() || this.hoverOpacityProgress <= 0.0)
-        {
-            return alpha;
-        }
-
-        int hoverAlpha = (int)Math.Round(255.0 * 0.05);
-        if (alpha <= hoverAlpha)
-        {
-            return alpha;
-        }
-
-        double animated = alpha + (hoverAlpha - alpha) * this.hoverOpacityProgress;
-        return Math.Max(0, Math.Min(255, (int)Math.Round(animated)));
     }
 
 }

@@ -1,6 +1,6 @@
 # Guard Board 架构
 
-适用版本：2.0.0.12
+适用版本：2.0.0.26
 
 本文负责电源守护状态机（睡眠防护、亮屏计时、断网自动睡眠、电池保护暂停窗口）、GUARD 看板窗口的布局与交互，以及该窗口与「特殊设置」三项程序守护的共用边界。
 
@@ -69,7 +69,7 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 
 ## 窗口与布局
 
-`GuardBoardForm` 继承 `LayeredWidgetFormBase`，绘制在 `GuardBoardForm.Layout.cs`。视觉家族与 SpecBoardForm / NetworkMonitorForm.DockedLayout 一致：`AppBackground` 底色 @238、`Border` 发丝线、`S(12)/S(9.2)/S(9)/S(7.8)` 字号阶梯。所有行高经 `MeasureLineHeight` 实测，不写死像素。
+`GuardBoardForm` 继承 `LayeredWidgetFormBase`，绘制在 `GuardBoardForm.Layout.cs`。视觉家族与 SpecBoardForm / NetworkMonitorForm.DockedLayout 一致：`AppBackground` 底色 @238、`Border` 发丝线、标题 `S(13)`、强调正文/等宽数值 `S(10)`、正文 `S(9.5)`、辅助文字 `S(8.4)`，环内主倒计时使用 `S(20)`。所有行高经 `MeasureLineHeight` 实测，不写死像素。
 
 ### 左栏：计时环与两条轨道
 
@@ -91,6 +91,8 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 ### 交互
 
 命中区在绘制时登记（`recordHitTargets`），`OnMouseUp` 线性匹配。档位 `+/-` 走 `StepValue`，到达阶梯两端停住而不回绕：多点一下就从 8 小时跳回 30 分会静默终结一次长守护。
+
+底部操作轨与其余六个左缘 board 共用同一尺寸和间距：左起为绿色“设置”和红色“关闭”，按钮按实际字体测量、左右各留 14 逻辑像素且不窄于 42，按钮间距 4、状态区间距 5。语义色只作用于边框，文字保持统一中性色，紧凑单列模式也不改变这组交互。
 
 `GuardBoardForm.RunSelfTest` 在两种宽度下校验全部命中区存在、面积非零且两两不重叠——控件画得出来却点不到、或两个控件共用像素（先登记者静默获胜），都是截图上看不出来的故障。
 

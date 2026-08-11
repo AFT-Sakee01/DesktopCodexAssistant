@@ -686,7 +686,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             return;
         }
 
-        Font font = this.fontCache.GetUi(S(8.4f), FontStyle.Bold);
+        Font font = this.fontCache.GetUi(S(9.0f), FontStyle.Bold);
         SizeF measured = g.MeasureString(this.copySuccessNotice, font, int.MaxValue, StringFormat.GenericTypographic);
         int horizontalPadding = S(10);
         int verticalPadding = S(5);
@@ -709,12 +709,12 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private void DrawBoard(Graphics g, SpecBoardPalette palette, bool recordHitTargets)
     {
         int pad = S(10);
-        Font headerFont = this.fontCache.GetUi(S(12.0f), FontStyle.Bold);
-        Font countFont = this.fontCache.GetMono(S(9.0f), FontStyle.Bold);
-        Font bodyFont = this.fontCache.GetUi(S(9.0f), FontStyle.Regular);
-        Font bodyBold = this.fontCache.GetUi(S(9.2f), FontStyle.Bold);
-        Font smallFont = this.fontCache.GetUi(S(7.8f), FontStyle.Regular);
-        Font smallBold = this.fontCache.GetUi(S(7.8f), FontStyle.Bold);
+        Font headerFont = this.fontCache.GetUi(S(13.0f), FontStyle.Bold);
+        Font countFont = this.fontCache.GetMono(S(9.5f), FontStyle.Bold);
+        Font bodyFont = this.fontCache.GetUi(S(9.5f), FontStyle.Regular);
+        Font bodyBold = this.fontCache.GetUi(S(10.0f), FontStyle.Bold);
+        Font smallFont = this.fontCache.GetUi(S(8.4f), FontStyle.Regular);
+        Font smallBold = this.fontCache.GetUi(S(8.4f), FontStyle.Bold);
         int headerHeight = MeasureLineHeight(g, headerFont, S(6));
         int footerHeight = MeasureLineHeight(g, smallFont, S(5));
         int projectRowHeight = MeasureLineHeight(g, bodyFont, S(7));

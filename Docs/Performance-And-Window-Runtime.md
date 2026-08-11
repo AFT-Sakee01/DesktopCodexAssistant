@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.17
+适用版本：2.0.0.29
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -66,7 +66,7 @@ flowchart LR
 - `ForceRefreshAllModules()`、设置预览和正式保存分发。
 - 统一 Z-order、Win+D/SeelenUI 恢复和退出。
 
-`ApplicationWindowStateTracker` 始终只保留低频前台窗口 Hook；最大化自动隐藏或全屏/最大化/遮挡可见性策略启用时才动态注册对象 Hook，并执行主采样周期的完整窗口枚举。回调只进入有界合并器，`WidgetForm` 每 125 ms 在 UI 线程批量消费并至多执行一次可见性更新；同产品辅助进程会在入队前过滤。命名停止事件由 ThreadPool 注册等待直接向宿主 HWND 投递 `WM_CLOSE`，退出不依赖可能被消息风暴饿死的 `WM_TIMER`。
+`ApplicationWindowStateTracker` 始终只保留低频前台窗口 Hook；全屏/最大化/遮挡可见性策略启用时才动态注册对象 Hook，并执行主采样周期的完整窗口枚举。回调只进入有界合并器，`WidgetForm` 每 125 ms 在 UI 线程批量消费并至多执行一次可见性更新；同产品辅助进程会在入队前过滤。命名停止事件由 ThreadPool 注册等待直接向宿主 HWND 投递 `WM_CLOSE`，退出不依赖可能被消息风暴饿死的 `WM_TIMER`。
 
 隐藏宿主不创建 layered bitmap，不参与屏幕定位、hover、burn-in 或全局布局编辑，也不能被桌面宿主模式重新设为 `WS_VISIBLE`。
 
@@ -114,15 +114,15 @@ Cpu, Memory, Disk, Network, Gpu, Npu, Power, Guard, CodexQuota, ClaudeQuota, Dee
 
 `PushMetricTileFeed()` 把同一个 feed 推给全部 tile；方块不自行采样。鼠标悬停时 `MetricTileExpandForm` 使用同一 feed 和相同 tile ID 展开详情，也不建立 reader 或 timer。
 
-CPU、MEM、DISK 与 NET 展开详情使用现有 tile 角色色绘制标题和窗口边框。CPU 的总占用曲线与每核柱共用 `MetricTileExpandForm.ResolvePlotY()` 的 0–100 投影，100% 柱顶与 100 参考线落在同一像素行；频率、基准频率、核心数与峰值核心显示在标题下方，不再保留曲线/柱说明图例。MEM 外环和中心数字继续显示物理内存占用率；内环改为 `MemoryPressureTracker` 投影的绿/黄/红三态服务效率压力。压力以可用物理内存和 10 秒平滑后的 `Memory\\Pages Output/sec` 换出速率为主，Commit 低于 90% 不加分，90% 以上只作为接近分配上限的安全下限。展开窗仍以紫色显示已用历史、黄色显示 GPU/NPU 共享内存历史，底部改为按真实时间保留最近 60 秒状态的压力色带；当前状态、Commit 风险和换出速率分栏显示，不能把物理占用、文件映射页读入、页文件占用或 GPU/NPU 共享量直接等同于压力。NET 以蓝色下行、红色上行绘制镜像曲线，当前值使用 Kbps/Mbps/Gbps 位速率；DISK 以黄色写入、绿色读取绘制共享刻度曲线，当前值使用 KB/s/MB/s/GB/s 字节速率。两组当前值都在左侧连续显示。上述展开窗只读同一 `MetricTileFeed`，不得在绘制路径另行采样。
+CPU、MEM、DISK 与 NET 展开详情使用现有 tile 角色色绘制标题和窗口边框。CPU 的总占用曲线与每核柱共用 `MetricTileExpandForm.ResolvePlotY()` 的 0–100 投影，100% 柱顶与 100 参考线落在同一像素行；频率、基准频率、核心数与峰值核心显示在标题下方，不再保留曲线/柱说明图例。MEM 外环和中心数字继续显示物理内存占用率；内环改为 `MemoryPressureTracker` 投影的绿/黄/红三态服务效率压力。压力以可用物理内存和 10 秒平滑后的 `Memory\\Pages Output/sec` 换出速率为主，Commit 低于 90% 不加分，90% 以上只作为接近分配上限的安全下限。展开窗仍以紫色显示已用历史、黄色显示 GPU/NPU 共享内存历史，底部改为按真实时间保留最近 60 秒状态的压力色带；当前状态、Commit 风险和换出速率分栏显示，不能把物理占用、文件映射页读入、页文件占用或 GPU/NPU 共享量直接等同于压力。NET 小 tile 不进入通用圆环分支：上方蓝色下行、下方红色上行组成两条横向通道，每行从左到右依次绘制方向箭头、放大的 K/M/G 位速率和五段微脉冲；微脉冲只按该方向最近五个样本的局部峰值表达节奏，不表示链路容量占比，也不用于比较上下行绝对大小。断网时双通道失色、读数显示 `--` 并启用红色告警边框。NET 展开窗继续以蓝色下行、红色上行绘制镜像曲线，当前值使用 Kbps/Mbps/Gbps 位速率；DISK 以黄色写入、绿色读取绘制共享刻度曲线，当前值使用 KB/s/MB/s/GB/s 字节速率。两组当前值都在左侧连续显示。上述 tile/展开窗只读同一 `MetricTileFeed`，不得在绘制路径另行采样。
 
-PWR 小方块只保留电量单环，不再把温度混入第二个环或告警点；环内改为当前电池充放电功率数字，并在数字下方单独绘制小号 `W`。功率精度沿用 v1：100 W 以下一位小数、100 W 及以上整数；unknown 显示 `--`，可读的电池空闲状态显示 `0.0 W`。展开详情采用与额度面板一致的“左侧当前状态 / 背景趋势 / 右侧预测 / 底部余量”层级：左侧显示电量与当前瓦数，背景绘制近 24 小时黄色功耗曲线和红升/青降电量曲线，右侧优先显示 Windows 当前续航、再回退到 System Day 近三小时电量斜率，底部显示当前电量与近 24 小时功耗峰值。温度继续由 headless owner 采样并进入 System Day 历史，但不在 PWR tile 或展开详情呈现。PWR 绘制只读同一 `MetricTileFeed` 中的当前 `PowerStripSnapshot` 和 5 秒缓存的 `SystemDayBoardSnapshot`，不得同步采样或读历史文件。
+PWR 小方块只保留电量单环，不再把温度混入第二个环或告警点；当前电池充放电功率数字锚定环的几何中心，小号 `W` 独立放在数字下方的环内留白区，单位不能把主数值整体上推。功率精度沿用 v1：100 W 以下一位小数、100 W 及以上整数；unknown 显示 `--`，可读的电池空闲状态显示 `0.0 W`。展开详情采用与额度面板一致的“左侧当前状态 / 背景趋势 / 右侧预测 / 底部余量”层级：左侧显示电量与当前瓦数，背景绘制近 24 小时黄色功耗曲线和红升/青降电量曲线，右侧优先显示 Windows 当前续航、再回退到 System Day 近三小时电量斜率，底部显示当前电量与近 24 小时功耗峰值。温度继续由 headless owner 采样并进入 System Day 历史，但不在 PWR tile 或展开详情呈现。PWR 绘制只读同一 `MetricTileFeed` 中的当前 `PowerStripSnapshot` 和 5 秒缓存的 `SystemDayBoardSnapshot`，不得同步采样或读历史文件。
 
 Codex/CLD 展开详情保留各自绿色/黄色角色色与边框。周额度历史占图表前 68%，右侧预测区显示预计耗尽或撑到 reset 的结论，5 小时额度在底条独立显示同类判断；两者仍只读同一 `MetricTileFeed`。DeepSeek 展开详情使用蓝色余额曲线、黄色 24 小时消耗和底条，并根据本地余额下降历史给出预计可用时长；UI 不在绘制路径发起 API 请求。二级防烧屏继续隐藏白色/中性色文字，并反转额度曲线、预测结论和底条的角色色。
 
 `QuotaEasterEggTracker` 只在 Codex/Claude 已知额度从空恢复到非空时登记一次复活；启动时的 unknown→known、仅绑定凭据或未绑定状态不会误触发。常驻 tile 不绘制彩蛋文字，继续只显示本身的额度环和中心值；只有展开详情会先降低原内容亮度，再以占满可用高度的左对齐大字显示黄色单方“陨落”或红色双方“已经陨落”。恢复后只在第一次展开该 family 时显示同样布局的蓝色斜体复活提示。`GeniusProgrammerEasterEggEnabled` 默认开启并可整体关闭。
 
-两级防烧屏由 `WidgetForm.UpdateBurnInProtectionTriggers()` 统一发布。一级通过 `LayeredWidgetFormBase.PresentationLuminancePercent` 把 11 个 tile 与当前展开窗按同一亮度策略处理；`WidgetForm.UpdateMetricTileBurnInPresentation()` 命中任意一个右侧 tile 或展开窗时，整组临时恢复亮度和原始强调色。进入二级的边沿会立即调用 `HideMetricTileExpand()` 收起当前展开窗并清除其 tile owner；非悬停时仍由 `MetricTileForm.ResolveBurnInRingColor()` 只反转环形强调色，悬停时同一 helper 跳过反色，但真实二级状态保持锁定，因此 `MetricTileForm.ShouldDrawCenterText()` 仍抑制 tile 中心白字、`MetricTileExpandForm.ShouldDrawNeutralText()` 仍抑制展开窗的白色/中性色文字，避免把整个位图做全局反色。
+两级防烧屏由 `WidgetForm.UpdateBurnInProtectionTriggers()` 统一发布。一级通过 `LayeredWidgetFormBase.PresentationLuminancePercent` 把 11 个 tile 与当前展开窗按同一亮度策略处理；`WidgetForm.UpdateMetricTileBurnInPresentation()` 命中任意一个右侧 tile 或展开窗时，整组临时恢复亮度和原始强调色。进入二级的边沿会立即调用 `HideMetricTileExpand()` 收起当前展开窗并清除其 tile owner；非悬停时仍由 `MetricTileForm.ResolveBurnInRingColor()` 反转圆环或 NET 双通道的角色色，悬停时同一 helper 跳过反色，但真实二级状态保持锁定，因此 `MetricTileForm.ShouldDrawCenterText()` 仍抑制 tile 中心/NET 速率白字、`MetricTileExpandForm.ShouldDrawNeutralText()` 仍抑制展开窗的白色/中性色文字，避免把整个位图做全局反色。
 
 右列排列由 `RightTileButtonOrder`、启用状态、0–100 分布间距、整组 Y 偏移和目标工作区解析。分布值 0 时相邻 tile 紧贴；100 时首个 tile 贴工作区顶部、末个贴底部，其余可用空白在 10 个间隔间均匀分摊；中间值线性使用对应比例的可用空白。自动排列保持整列贴住工作区右缘；防烧屏只对整组应用共享 Y 偏移，不能让 11 个方块各自漂移而破坏列结构。`RightTileMouseClickThroughEnabled` 默认开启，通过 layered window 的 `WS_EX_TRANSPARENT` 同时覆盖 11 个小窗与展开窗；悬停仍由共享光标轮询判定。
 
@@ -146,15 +146,19 @@ Network, SpecBoard, CodexTask, Guard, CodexIq, ResetSpeed, SystemDay
 
 展开 board 的 X 统一固定为 `workArea.Left + tab.Width`，因此七块 board 水平对齐。board 之间按产品规则互斥；后打开者收起其它 board。每个 board 仍拥有自己的数据和显示 tick，tab 不复制业务 reader。重置与速蹬看板只读取 `CodexRadarForm.BuildResetSpeedBoardSnapshot()` 的缓存投影；系统日记复用现有性能与 Power/Thermal 快照，细节见 `Docs/SystemDayBoard-Architecture.md`。
 
+七块 board 的底部操作轨统一从左缘开始，且都只保留一枚主操作和一枚关闭：主操作使用 `Success` 语义绿色，关闭使用 `Danger` 红色，按钮按实测字体宽度加左右各 14 逻辑像素留白且不窄于 42，按钮间距为 4，状态区再留 5。Network、Spec Board、Codex Task 保留刷新、管理和视图切换；GUARD 使用设置；Codex IQ 与重置/速蹬使用 cache-only 刷新；System Day 的单枚范围按钮按“今天 → 24 小时 → 近一周”循环切换。各 board 不再保留顶部重复关闭符号。
+
+七块 board 共同采用提高后的可读性下限：标题、正文、辅助信息、图表标签和底栏分别按所在 board 的真实宽度分级放大；固定 648×400、Network 240×400、Spec 480×640、GUARD 640×800 与 Codex Task 300×400 样张必须保持无串栏。字号仍从窗口级 `UiFontCache` 取得，行高和按钮宽度按字体实测，长文本只在自己的矩形内省略；放大字号不改变 board footprint、命中区语义、数据 owner 或刷新周期。
+
 Network 是 Dock-only；其采样、PathPing、固定 Ping、Clean IP 和 board 缓存规则见 `Docs/NetworkMonitor-Architecture.md`。
 
 ## 7. Operation 与 Settings
 
 `OperationForm` 是常驻可见表面，拥有 RadialDial、快速开关、刷新、设置入口和 GUARD 联动。动画 timer 只在按压或悬停状态尚未收敛时运行；静止交互复用 `WidgetForm` 的共享 tick。
 
-RadialDial 核心圆圈和经典 Start 按钮的双击统一进入 `WidgetForm.ToggleSideSurfacesFromOperationPanel()`：第一次真实隐藏七个左侧 tab/board、十一项右侧 tile 与 hover expand，第二次恢复；`OperationForm` 自身保留为恢复入口。隐藏通过各窗体的可见性 API 完成，因此隐藏表面不再参与命中、悬停展开或鼠标遮挡。旧 `OperationLauncherTrioForm` 及其双击分支已移除。
+RadialDial 核心圆圈和经典 Start 按钮的双击统一进入 `WidgetForm.ToggleSideSurfacesFromOperationPanel()`：第一次真实隐藏七个左侧 tab/board、十一项右侧 tile 与 hover expand，第二次恢复；`OperationForm` 自身保留为恢复入口。RadialDial 圆心在隐藏态降低表面亮度作为状态反馈，但该状态不参与菜单布局、命中或点击路由，隐藏后单击圆心仍可弹出全部扩展按钮。隐藏通过各窗体的可见性 API 完成，因此隐藏表面不再参与命中、悬停展开或鼠标遮挡。右侧 tile 的可见性转换是对称的：进入隐藏态调用 `MetricTileForm.HideTile()`，退出隐藏态由 `MetricTileForm.SetHiddenForFullscreen(false)` 调用 `ShowTile()`，同步恢复 WinForms 可见性、hover timer、定位和 layered render。旧 `OperationLauncherTrioForm` 及其双击分支已移除。
 
-`Win11SettingsForm` 按需创建，`ShowInTaskbar=true`。设置预览经 75 ms debounce 应用；保存写 `settings.ini`，取消或异常关闭恢复打开时 baseline。设置窗口不是 layered edge surface，不参加 burn-in，也不进入 19 项全局布局清单。
+`Win11SettingsForm` 按需创建，`ShowInTaskbar=true`。设置预览经 75 ms debounce 应用；保存写 `settings.ini`，取消或异常关闭恢复打开时 baseline。设置窗口不是 layered edge surface，不参加 burn-in，也不进入 19 项全局布局清单。布局与位置页在左右列间距/偏移调节项下方提供“侦测并对齐”：`Win11SettingsForm.TryResolveSideColumnBalance()` 每次按当前两列的实际成员数量、尺寸、显示器工作区和 0–100 分布包络重新求解，在上下边缘最多 1 像素视觉误差的解中优先选择对现有间距改动最小者，并同步两列整组偏移；执行该命令会开启左右自动排列，但不新增持久化设置键。
 
 ## 8. 性能模式
 
@@ -171,18 +175,18 @@ RadialDial 核心圆圈和经典 Start 按钮的双击统一进入 `WidgetForm.T
 
 ## 9. 可见性与全屏
 
-`WidgetForm` 统一计算全屏、遮挡、自动隐藏、手动隐藏和反向恢复。规则按表面类型分开：
+`WidgetForm` 统一计算全屏、最大化、遮挡和手动物理隐藏。规则按表面类型分开：
 
 | 类型 | 全屏/隐藏行为 |
 | --- | --- |
 | 右侧 tile / expand | 隐藏可见表面；feed owner 可继续维护必要缓存 |
 | 左侧 tab / board | 隐藏或收起可见表面；board 自身按模块规则停止不必要绘制 |
 | Operation | 停止动画/FPS 等展示工作并隐藏 |
-| Settings | 用户任务窗口，不被 edge-widget 自动隐藏规则当作布局表面 |
+| Settings | 用户任务窗口，不被 edge-widget 物理可见性规则当作布局表面 |
 | headless Radar/Power owners | 不因全屏标志停止 backend；仍服从显示关闭、会话锁定和系统挂起 |
 | hidden Widget host | 始终保持消息循环与协调职责 |
 
-hover、click-through、敏感鼠标范围、延迟显现和反向隐藏只作用于有命中表面的可见 layered forms。不得把 headless owner 或 hidden host 加入交互轮询清单。
+普通 hover 命中、click-through 和防烧屏局部显现只作用于有命中表面的可见 layered forms。不得把 headless owner 加入展示交互轮询清单；hidden host 只协调共享状态。
 
 ## 10. 显示挂起与恢复
 
@@ -221,7 +225,6 @@ headless owners 不拥有展示缓冲。Codex/Power 的旧 renderer 已删除，
 - 一级下，左侧 `EdgeDockTabForm` 静止态绘制深灰色梯形与角色色箭头，悬停只恢复当前梯形的角色色；右侧 tile/expand 使用 `BurnInProtection.LevelOneLuminancePercent = 45`，命中任意右侧窗口时整组恢复亮度和原始强调色。
 - 进入二级时先强制收起当前右侧展开窗并清除其 tile owner；二级视觉保持一级结构，非悬停时只反转左箭头与右 tile 环形强调色。鼠标命中任意右侧小窗或展开窗时，整个右侧组临时取消反色并恢复亮度，但不退出二级，因此右 tile 中心白字及重新悬停打开的展开窗白色/中性色文字仍不绘制；离开后立即重新反色。角色色标签、灰色轨道、board 内容和 Operation 不做全位图反相。
 - 鼠标移动在保护激活后是局部显现手势，不退出状态；点击、滚轮或键盘输入会退出并重启两级计时。显示挂起、布局编辑和关闭也归零状态。
-- 白色 RadialDial 核心持续直接悬停达到自动隐藏阈值后变为绿色提示圈。只有绿色状态存续期间，hidden host 才锁定其余窗体的 hover 自动隐藏并在每个共享交互 tick 重置防烧屏活动时间；光标离开核心后绿圈与锁定同时解除，两个倒计时重新开始。
 - 夜间计划与防烧屏亮度在 `LayeredWidgetFormBase` 内相乘，任一策略都不能把另一策略已压低的像素重新提亮。
 - 旧 `BurnInHiddenModeColorProtectionEnabled` 永久保留为 schema 88 退休输入；schema 89 的 `BurnInProtectionEnabled`、`BurnInLevelOneIdleSeconds` 与 `BurnInLevelTwoDelaySeconds` 是独立新设置，迁移不读取旧布尔值。
 

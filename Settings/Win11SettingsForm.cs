@@ -29,6 +29,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private const int CompactNavWidth = 220;
     private const int NavItemHeight = 60;
     private const string GlobalLayoutEditCommandName = "GlobalLayoutEditCommand";
+    private const string SideColumnBalanceCommandName = "SideColumnBalanceCommand";
     private const string ClaudeSetupTokenCommandName = "ClaudeSetupTokenCommand";
     private const string DeepSeekApiKeyCommandName = "DeepSeekApiKeyCommand";
 
@@ -457,7 +458,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             new string[] { "启动与性能", "StartupEnabled", "PerformanceMode" },
             new string[] { "窗口行为", "VisibilityMode", "CodexPetZOrderProtectionEnabled", "VisibilityOverlapIgnoresOperationPanelEnabled" },
-            new string[] { "全局快捷键", "HotkeyToggleAllWindows", "HotkeyToggleHoverOpacity", "HotkeyOpenSettings" },
+            new string[] { "全局快捷键", "HotkeyToggleAllWindows", "HotkeyOpenSettings" },
             new string[] { "AI 请求阻断", "AiRequestProtectionAutoEnabled", "AiRequestProtectionManualBlockEnabled", "AiChinaEgressGuardEnabled" },
             new string[] { "!Codex 额度计划", "CodexQuotaPlanEnabled", "CodexQuotaPlanWeeklyComparison", "CodexQuotaPlanWeeklyThresholdPercent",
                            "CodexQuotaPlanFiveHourComparison", "CodexQuotaPlanFiveHourThresholdPercent", "CodexQuotaPlanResumeConditionMode",
@@ -471,6 +472,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "可视化编辑", GlobalLayoutEditCommandName },
             new string[] { "左侧面板列", "LeftDockAutoArrangeEnabled", "LeftDockButtonOrder", "LeftDockButtonGapPixels", "LeftDockGroupOffsetY" },
             new string[] { "右侧窗口列", "RightTileAutoArrangeEnabled", "RightTileButtonOrder", "RightTileButtonGapPixels", "RightTileGroupOffsetY" },
+            new string[] { "两侧边缘平衡", SideColumnBalanceCommandName },
             new string[] { "分辨率兼容", "ResolutionCompatibilityModeEnabled", "ResolutionCompatibilityScalePercent" },
             new string[] { "可见面缩放", "NetworkMonitorScaleOverridePercent", "OperationScaleOverridePercent", "SpecBoardScaleOverridePercent", "CodexTaskBoardScaleOverridePercent" },
             new string[] { "显示器分配", "FallbackDisconnectedDisplaysEnabled", "MainDisplayDeviceName", "OperationDisplayDeviceName" },
@@ -478,15 +480,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "!操作面板位置", "OperationLeftOffset", "OperationBottomOffset" }
         });
 
-        AddPageGrouped("\uE7B3", "显示与隐藏", "配置鼠标靠近、空闲和窗口状态触发的隐藏行为。", new string[][]
+        AddPageGrouped("\uE7B3", "显示与保护", "配置夜间亮度、提醒、防烧屏和扇形速控盘行为。", new string[][]
         {
             new string[] { "夜间时段", "NightScheduleEnabled", "NightScheduleStartMinutes", "NightScheduleEndMinutes", "NightDimLuminancePercent", "NightQuietHoursEnabled" },
             new string[] { "提醒分类", "AlertQuotaEnabled", "AlertResetProtectionEnabled", "AlertServiceHealthEnabled", "AlertCodexTaskEnabled" },
             new string[] { "防烧屏", "BurnInProtectionEnabled", "BurnInLevelOneIdleSeconds", "BurnInLevelTwoDelaySeconds" },
-            new string[] { "鼠标靠近时隐藏", "HoverOpacityEnabled", "SensitiveMouseModeEnabled", "SensitiveMouseRangePixels" },
-            new string[] { "自动隐藏", "AutoHoverOpacityIdleEnabled", "AutoHoverOpacityIdleSeconds", "AutoHoverOpacityMaximizedEnabled", "OperationRadialCoreAutoHideKeepAliveEnabled", "OperationRadialIdleCollapseSeconds", "OperationRadialIdleResetOnInteractionEnabled", "OperationRadialKeepOpenAfterLeafClickEnabled" },
-            new string[] { "!延迟显现", "HoverOpacityRevealDelayEnabled", "HoverOpacityRevealDelaySeconds", "HoverOpacityRevealResetSeconds" },
-            new string[] { "!覆盖与反向", "HoverOpacityCoverEnabled", "ReverseHoverOpacityRevealEnabled", "ReverseHoverOpacityRestoreDelaySeconds" }
+            new string[] { "扇形速控盘", "OperationRadialIdleCollapseSeconds", "OperationRadialIdleResetOnInteractionEnabled", "OperationRadialKeepOpenAfterLeafClickEnabled" }
         });
 
         AddPageGrouped("\uE737", "右侧磁贴", "性能与 Radar 磁贴列的尺寸和透明度。", new string[][]
@@ -768,6 +767,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             return BuildGlobalLayoutEditEditor();
         }
 
+        if (string.Equals(propertyName, SideColumnBalanceCommandName, StringComparison.Ordinal))
+        {
+            return BuildSideColumnBalanceEditor();
+        }
+
         if (string.Equals(propertyName, ClaudeSetupTokenCommandName, StringComparison.Ordinal))
         {
             return BuildClaudeSetupTokenEditor();
@@ -817,6 +821,22 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         card.HintLabel.Text = GetSettingHint(GlobalLayoutEditCommandName);
         card.BackColor = Color.Transparent;
         return new SettingEditor(GlobalLayoutEditCommandName, card, button);
+    }
+
+    private SettingEditor BuildSideColumnBalanceEditor()
+    {
+        Button button = BuildCommandButton("侦测并对齐", false, AccentClr);
+        button.Width = 227;
+        button.Height = 54;
+        button.Click += delegate { DetectAndApplySideColumnBalance(); };
+
+        SettingRow card = new SettingRow(button, GetUiFont(10.0f), GetUiFont(8.5f));
+        card.Width = 1152;
+        card.Margin = new Padding(0);
+        card.TitleLabel.Text = GetSettingTitle(SideColumnBalanceCommandName);
+        card.HintLabel.Text = GetSettingHint(SideColumnBalanceCommandName);
+        card.BackColor = Color.Transparent;
+        return new SettingEditor(SideColumnBalanceCommandName, card, button);
     }
 
     private SettingEditor BuildClaudeSetupTokenEditor()
@@ -2350,7 +2370,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         string[] names =
         {
             "HotkeyToggleAllWindows",
-            "HotkeyToggleHoverOpacity",
             "HotkeyOpenSettings"
         };
         this.initializing = true;
@@ -2376,7 +2395,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         string[] names =
         {
             "HotkeyToggleAllWindows",
-            "HotkeyToggleHoverOpacity",
             "HotkeyOpenSettings"
         };
         for (int i = 0; i < names.Length; i++)
@@ -2423,6 +2441,250 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         this.owner.PreviewSettings(ReadSettings());
         ShowStatus("全局编辑已取消", SettingsStatusSeverity.Warning);
+    }
+
+    private void DetectAndApplySideColumnBalance()
+    {
+        WidgetSettings settings = ReadSettings();
+        Rectangle leftWorkArea = LeftDockLayout.ResolveWorkArea(settings);
+        Rectangle rightWorkArea = settings.GetWorkAreaForModule(WidgetSettings.ModuleMain);
+        SideColumnBalanceResult result;
+        if (!TryResolveSideColumnBalance(
+            settings,
+            leftWorkArea,
+            rightWorkArea,
+            GetCurrentSystemDpiScale(),
+            out result))
+        {
+            ShowStatus("无法对齐：左右目标显示器没有足够的共同垂直区域。", SettingsStatusSeverity.Error);
+            return;
+        }
+
+        this.initializing = true;
+        try
+        {
+            SetEditorValue(this.editors["LeftDockAutoArrangeEnabled"], true);
+            SetEditorValue(this.editors["RightTileAutoArrangeEnabled"], true);
+            SetEditorValue(this.editors["LeftDockButtonGapPixels"], result.LeftSpacingPercent);
+            SetEditorValue(this.editors["RightTileButtonGapPixels"], result.RightSpacingPercent);
+            SetEditorValue(this.editors["LeftDockGroupOffsetY"], result.LeftOffsetY);
+            SetEditorValue(this.editors["RightTileGroupOffsetY"], result.RightOffsetY);
+        }
+        finally
+        {
+            this.initializing = false;
+        }
+
+        RefreshColumnArrangementEditorEnabledStates();
+        OnSettingChanged();
+        int edgeError = Math.Max(result.TopEdgeErrorPixels, result.BottomEdgeErrorPixels);
+        ShowStatus(
+            string.Format(
+                CultureInfo.CurrentCulture,
+                "已找到平衡点：左 {0}% / 右 {1}%，边缘误差 {2} px。",
+                result.LeftSpacingPercent,
+                result.RightSpacingPercent,
+                edgeError),
+            SettingsStatusSeverity.Success);
+    }
+
+    private static bool TryResolveSideColumnBalance(
+        WidgetSettings settings,
+        Rectangle leftWorkArea,
+        Rectangle rightWorkArea,
+        float leftDpiScale,
+        out SideColumnBalanceResult result)
+    {
+        result = new SideColumnBalanceResult();
+        if (settings == null ||
+            leftWorkArea.Height <= 0 ||
+            rightWorkArea.Height <= 0 ||
+            Math.Min(leftWorkArea.Bottom, rightWorkArea.Bottom) <= Math.Max(leftWorkArea.Top, rightWorkArea.Top))
+        {
+            return false;
+        }
+
+        WidgetSettings working = settings.Clone();
+        working.LeftDockAutoArrangeEnabled = true;
+        working.RightTileAutoArrangeEnabled = true;
+        int currentLeftSpacing = Math.Max(
+            WidgetSettings.MinColumnButtonGapPixels,
+            Math.Min(WidgetSettings.MaxColumnButtonGapPixels, working.LeftDockButtonGapPixels));
+        int currentRightSpacing = Math.Max(
+            WidgetSettings.MinColumnButtonGapPixels,
+            Math.Min(WidgetSettings.MaxColumnButtonGapPixels, working.RightTileButtonGapPixels));
+
+        Rectangle currentLeftGroup = LeftDockLayout.ResolveAutoTabGroupBounds(
+            working,
+            leftWorkArea,
+            Math.Max(0.25f, leftDpiScale));
+        Rectangle currentRightGroup = MetricTileForm.ResolveAutoTileGroupBounds(working, rightWorkArea);
+        if (currentLeftGroup.IsEmpty || currentRightGroup.IsEmpty)
+        {
+            return false;
+        }
+
+        working.LeftDockGroupOffsetY = 0;
+        working.RightTileGroupOffsetY = 0;
+        int valueCount = WidgetSettings.MaxColumnButtonGapPixels - WidgetSettings.MinColumnButtonGapPixels + 1;
+        int[] leftHeights = new int[valueCount];
+        int[] rightHeights = new int[valueCount];
+        for (int value = WidgetSettings.MinColumnButtonGapPixels;
+             value <= WidgetSettings.MaxColumnButtonGapPixels;
+             value++)
+        {
+            int index = value - WidgetSettings.MinColumnButtonGapPixels;
+            working.LeftDockButtonGapPixels = value;
+            leftHeights[index] = LeftDockLayout.ResolveAutoTabGroupBounds(
+                working,
+                leftWorkArea,
+                Math.Max(0.25f, leftDpiScale)).Height;
+            working.RightTileButtonGapPixels = value;
+            rightHeights[index] = MetricTileForm.ResolveAutoTileGroupBounds(working, rightWorkArea).Height;
+        }
+
+        int leftSpacing;
+        int rightSpacing;
+        FindClosestSideColumnSpacingPair(
+            leftHeights,
+            rightHeights,
+            currentLeftSpacing,
+            currentRightSpacing,
+            out leftSpacing,
+            out rightSpacing);
+
+        working.LeftDockButtonGapPixels = leftSpacing;
+        working.RightTileButtonGapPixels = rightSpacing;
+        Rectangle leftBaseline = LeftDockLayout.ResolveAutoTabGroupBounds(
+            working,
+            leftWorkArea,
+            Math.Max(0.25f, leftDpiScale));
+        Rectangle rightBaseline = MetricTileForm.ResolveAutoTileGroupBounds(working, rightWorkArea);
+
+        int minimumTop = Math.Max(leftWorkArea.Top, rightWorkArea.Top);
+        int maximumTop = Math.Min(
+            leftWorkArea.Bottom - leftBaseline.Height,
+            rightWorkArea.Bottom - rightBaseline.Height);
+        if (maximumTop < minimumTop)
+        {
+            return false;
+        }
+
+        double preferredCenter =
+            (currentLeftGroup.Top + currentLeftGroup.Height / 2.0 +
+             currentRightGroup.Top + currentRightGroup.Height / 2.0) / 2.0;
+        double balancedHeight = (leftBaseline.Height + rightBaseline.Height) / 2.0;
+        int targetTop = (int)Math.Round(preferredCenter - balancedHeight / 2.0);
+        targetTop = Math.Max(minimumTop, Math.Min(maximumTop, targetTop));
+
+        working.LeftDockGroupOffsetY = Math.Max(
+            WidgetSettings.MinColumnGroupOffsetY,
+            Math.Min(WidgetSettings.MaxColumnGroupOffsetY, targetTop - leftBaseline.Top));
+        working.RightTileGroupOffsetY = Math.Max(
+            WidgetSettings.MinColumnGroupOffsetY,
+            Math.Min(WidgetSettings.MaxColumnGroupOffsetY, targetTop - rightBaseline.Top));
+
+        Rectangle finalLeft = LeftDockLayout.ResolveAutoTabGroupBounds(
+            working,
+            leftWorkArea,
+            Math.Max(0.25f, leftDpiScale));
+        Rectangle finalRight = MetricTileForm.ResolveAutoTileGroupBounds(working, rightWorkArea);
+        result.LeftSpacingPercent = leftSpacing;
+        result.RightSpacingPercent = rightSpacing;
+        result.LeftOffsetY = working.LeftDockGroupOffsetY;
+        result.RightOffsetY = working.RightTileGroupOffsetY;
+        result.TopEdgeErrorPixels = Math.Abs(finalLeft.Top - finalRight.Top);
+        result.BottomEdgeErrorPixels = Math.Abs(finalLeft.Bottom - finalRight.Bottom);
+        return true;
+    }
+
+    private static void FindClosestSideColumnSpacingPair(
+        int[] leftHeights,
+        int[] rightHeights,
+        int currentLeftSpacing,
+        int currentRightSpacing,
+        out int leftSpacing,
+        out int rightSpacing)
+    {
+        const int VisualAlignmentTolerancePixels = 1;
+        leftSpacing = WidgetSettings.MinColumnButtonGapPixels;
+        rightSpacing = WidgetSettings.MinColumnButtonGapPixels;
+        bool foundVisualMatch = false;
+        int bestHeightError = int.MaxValue;
+        int bestChange = int.MaxValue;
+        int bestSpread = int.MaxValue;
+
+        for (int leftIndex = 0; leftIndex < leftHeights.Length; leftIndex++)
+        {
+            for (int rightIndex = 0; rightIndex < rightHeights.Length; rightIndex++)
+            {
+                int candidateLeft = leftIndex + WidgetSettings.MinColumnButtonGapPixels;
+                int candidateRight = rightIndex + WidgetSettings.MinColumnButtonGapPixels;
+                int heightError = Math.Abs(leftHeights[leftIndex] - rightHeights[rightIndex]);
+                bool visualMatch = heightError <= VisualAlignmentTolerancePixels;
+                int change =
+                    Math.Abs(candidateLeft - currentLeftSpacing) +
+                    Math.Abs(candidateRight - currentRightSpacing);
+                int spread = Math.Max(candidateLeft, candidateRight);
+
+                bool better;
+                if (visualMatch != foundVisualMatch)
+                {
+                    better = visualMatch;
+                }
+                else if (visualMatch)
+                {
+                    better =
+                        change < bestChange ||
+                        change == bestChange && heightError < bestHeightError ||
+                        change == bestChange && heightError == bestHeightError && spread < bestSpread;
+                }
+                else
+                {
+                    better =
+                        heightError < bestHeightError ||
+                        heightError == bestHeightError && change < bestChange ||
+                        heightError == bestHeightError && change == bestChange && spread < bestSpread;
+                }
+
+                if (!better)
+                {
+                    continue;
+                }
+
+                foundVisualMatch = visualMatch;
+                bestHeightError = heightError;
+                bestChange = change;
+                bestSpread = spread;
+                leftSpacing = candidateLeft;
+                rightSpacing = candidateRight;
+            }
+        }
+    }
+
+    private static float GetCurrentSystemDpiScale()
+    {
+        try
+        {
+            using (Graphics graphics = Graphics.FromHwnd(IntPtr.Zero))
+            {
+                return Math.Max(0.25f, graphics.DpiY / 96.0f);
+            }
+        }
+        catch
+        {
+            return 1.0f;
+        }
+    }
+
+    private struct SideColumnBalanceResult
+    {
+        public int LeftSpacingPercent;
+        public int RightSpacingPercent;
+        public int LeftOffsetY;
+        public int RightOffsetY;
+        public int TopEdgeErrorPixels;
+        public int BottomEdgeErrorPixels;
     }
 
     // ── Status Toast ─────────────────────────────────────────────────────
@@ -3112,14 +3374,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "PerformanceMode",
             "CodexPetZOrderProtectionEnabled",
             "HotkeyToggleAllWindows",
-            "HotkeyToggleHoverOpacity",
             "HotkeyOpenSettings",
-            "HoverOpacityEnabled",
-            "HoverOpacityRevealDelayEnabled",
             "BurnInProtectionEnabled",
             "BurnInLevelOneIdleSeconds",
             "BurnInLevelTwoDelaySeconds",
-            "OperationRadialCoreAutoHideKeepAliveEnabled",
             "OperationRadialIdleCollapseSeconds",
             "OperationRadialIdleResetOnInteractionEnabled",
             "OperationRadialKeepOpenAfterLeafClickEnabled",
@@ -3167,6 +3425,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "ResolutionCompatibilityScalePercent",
             "MainDisplayDeviceName",
             GlobalLayoutEditCommandName,
+            SideColumnBalanceCommandName,
             "MainWidgetTileLargeModeEnabled",
             "MetricTileExpandWidth",
             "MetricTileExpandHeight",
@@ -3401,6 +3660,65 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             }
 
             SetEditorValue(editor, original);
+        }
+
+        SettingEditor balanceEditor = this.editors[SideColumnBalanceCommandName];
+        Button balanceButton = balanceEditor.Control as Button;
+        if (balanceButton == null ||
+            !string.Equals(balanceButton.Text, "侦测并对齐", StringComparison.Ordinal) ||
+            string.IsNullOrEmpty(balanceEditor.Card.HintLabel.Text))
+        {
+            throw new InvalidOperationException("WinUI side-column balance command binding failed.");
+        }
+
+        WidgetSettings balanceSettings = WidgetSettings.CreateDefaults();
+        Rectangle balanceWorkArea = new Rectangle(0, 40, 1440, 1740);
+        SideColumnBalanceResult balanceResult;
+        if (!TryResolveSideColumnBalance(
+                balanceSettings,
+                balanceWorkArea,
+                balanceWorkArea,
+                1.0f,
+                out balanceResult) ||
+            Math.Max(balanceResult.TopEdgeErrorPixels, balanceResult.BottomEdgeErrorPixels) > 1)
+        {
+            throw new InvalidOperationException("Side-column automatic balance geometry failed.");
+        }
+
+        // Exercise the spacing-pair solver with different hypothetical member counts. The command
+        // must continue deriving its answer from each column's measured envelope if panes are added.
+        int spacingValueCount =
+            WidgetSettings.MaxColumnButtonGapPixels - WidgetSettings.MinColumnButtonGapPixels + 1;
+        int[] futureLeftHeights = new int[spacingValueCount];
+        int[] futureRightHeights = new int[spacingValueCount];
+        for (int value = WidgetSettings.MinColumnButtonGapPixels;
+             value <= WidgetSettings.MaxColumnButtonGapPixels;
+             value++)
+        {
+            int index = value - WidgetSettings.MinColumnButtonGapPixels;
+            futureLeftHeights[index] =
+                9 * EdgeDockTabForm.LogicalHeight +
+                EdgeColumnSpacing.ResolveDistributedWhitespacePixels(value, 1740 - 9 * EdgeDockTabForm.LogicalHeight);
+            futureRightHeights[index] =
+                14 * MetricTileForm.TileCompactPixels +
+                EdgeColumnSpacing.ResolveDistributedWhitespacePixels(value, 1740 - 14 * MetricTileForm.TileCompactPixels);
+        }
+
+        int futureLeftSpacing;
+        int futureRightSpacing;
+        FindClosestSideColumnSpacingPair(
+            futureLeftHeights,
+            futureRightHeights,
+            WidgetSettings.DefaultLeftDockButtonGapPixels,
+            WidgetSettings.DefaultRightTileButtonGapPixels,
+            out futureLeftSpacing,
+            out futureRightSpacing);
+        int futureHeightError = Math.Abs(
+            futureLeftHeights[futureLeftSpacing - WidgetSettings.MinColumnButtonGapPixels] -
+            futureRightHeights[futureRightSpacing - WidgetSettings.MinColumnButtonGapPixels]);
+        if (futureHeightError > 1)
+        {
+            throw new InvalidOperationException("Side-column balance solver did not adapt to changed pane counts.");
         }
 
         VerifyColumnArrangementDependentEnabledState("LeftDockAutoArrangeEnabled", "LeftDockButtonOrder");
@@ -3747,10 +4065,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "GuardSleepEnabled", "GuardSleepSinceUtcTicks", "GuardDisplayMinutes", "GuardOfflineThresholdMinutes",
             "GuardDisplayUntilUtcTicks", "GuardBatteryCarePauseUntilUtcTicks"
         });
-        AddSettingsUiBindingExemptions(exemptions, "transient action state controlled by the operation panel or hotkey, not a preference row", new string[]
-        {
-            "ForceHoverOpacityActive", "ManualHoverOpacityActive"
-        });
         AddSettingsUiBindingExemptions(exemptions, "derived legacy compatibility value; OperationPrimaryPanelMode is the sole editor", new string[]
         {
             "OperationWindowsButtonEnabled", "OperationMemoryPieEnabled"
@@ -3955,11 +4269,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "NightScheduleStartMinutes", new NumericRange(WidgetSettings.MinNightScheduleMinutes, WidgetSettings.MaxNightScheduleMinutes) },
         { "NightScheduleEndMinutes", new NumericRange(WidgetSettings.MinNightScheduleMinutes, WidgetSettings.MaxNightScheduleMinutes) },
         { "NightDimLuminancePercent", new NumericRange(WidgetSettings.MinNightDimLuminancePercent, WidgetSettings.MaxNightDimLuminancePercent) },
-        { "SensitiveMouseRangePixels", new NumericRange(WidgetSettings.MinSensitiveMouseRangePixels, WidgetSettings.MaxSensitiveMouseRangePixels) },
-        { "HoverOpacityRevealDelaySeconds", new NumericRange((decimal)WidgetSettings.MinHoverOpacityRevealDelaySeconds, (decimal)WidgetSettings.MaxHoverOpacityRevealDelaySeconds) },
-        { "HoverOpacityRevealResetSeconds", new NumericRange((decimal)WidgetSettings.MinHoverOpacityRevealResetSeconds, (decimal)WidgetSettings.MaxHoverOpacityRevealResetSeconds) },
-        { "ReverseHoverOpacityRestoreDelaySeconds", new NumericRange(WidgetSettings.MinReverseHoverOpacityRestoreDelaySeconds, WidgetSettings.MaxReverseHoverOpacityRestoreDelaySeconds) },
-        { "AutoHoverOpacityIdleSeconds", new NumericRange(WidgetSettings.MinAutoHoverOpacityIdleSeconds, WidgetSettings.MaxAutoHoverOpacityIdleSeconds) },
         { "BurnInLevelOneIdleSeconds", new NumericRange(WidgetSettings.MinBurnInLevelOneIdleSeconds, WidgetSettings.MaxBurnInLevelOneIdleSeconds) },
         { "BurnInLevelTwoDelaySeconds", new NumericRange(WidgetSettings.MinBurnInLevelTwoDelaySeconds, WidgetSettings.MaxBurnInLevelTwoDelaySeconds) },
         { "OperationRadialIdleCollapseSeconds", new NumericRange(WidgetSettings.NeverOperationRadialIdleCollapseSeconds, WidgetSettings.MaxOperationRadialIdleCollapseSeconds) },
@@ -3999,6 +4308,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ResolutionCompatibilityModeEnabled", "分辨率兼容模式" },
         { "ResolutionCompatibilityScalePercent", "兼容缩放比例" },
         { GlobalLayoutEditCommandName, "全局编辑" },
+        { SideColumnBalanceCommandName, "自动侦测两侧平衡点" },
         { "LeftDockAutoArrangeEnabled", "自动排列左侧面板列" },
         { "LeftDockButtonOrder", "左侧按钮顺序" },
         { "LeftDockButtonGapPixels", "左侧按钮分布间距（0–100）" },
@@ -4062,24 +4372,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "AlertServiceHealthEnabled", "服务健康提醒" },
         { "AlertCodexTaskEnabled", "Codex 任务提醒" },
         { "HotkeyToggleAllWindows", "隐藏/显示全部挂件" },
-        { "HotkeyToggleHoverOpacity", "切换悬停透明度" },
         { "HotkeyOpenSettings", "打开设置" },
-        { "HoverOpacityEnabled", "鼠标靠近时隐藏" },
-        { "SensitiveMouseModeEnabled", "敏感鼠标模式" },
-        { "SensitiveMouseRangePixels", "触发距离（像素）" },
-        { "HoverOpacityRevealDelayEnabled", "延迟显现" },
-        { "HoverOpacityRevealDelaySeconds", "显现延迟秒数" },
-        { "HoverOpacityRevealResetSeconds", "重置秒数" },
-        { "HoverOpacityCoverEnabled", "覆盖开启" },
-        { "ReverseHoverOpacityRevealEnabled", "反向隐藏" },
-        { "ReverseHoverOpacityRestoreDelaySeconds", "移开后恢复秒数" },
-        { "AutoHoverOpacityIdleEnabled", "空闲自动隐藏" },
-        { "AutoHoverOpacityIdleSeconds", "空闲隐藏秒数" },
-        { "AutoHoverOpacityMaximizedEnabled", "最大化自动隐藏" },
         { "BurnInProtectionEnabled", "启用两级防烧屏" },
         { "BurnInLevelOneIdleSeconds", "一级进入秒数" },
         { "BurnInLevelTwoDelaySeconds", "二级追加秒数" },
-        { "OperationRadialCoreAutoHideKeepAliveEnabled", "圆圈悬停保持显示" },
         { "OperationRadialIdleCollapseSeconds", "扇形盘自动收回秒数" },
         { "OperationRadialIdleResetOnInteractionEnabled", "操作后重置收回计时" },
         { "OperationRadialKeepOpenAfterLeafClickEnabled", "末端按钮后保持展开" },
@@ -4144,22 +4440,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CodexQuotaPlanAutoResumePausedGoals", "额度恢复时优先恢复本程序上次因额度计划暂停的 goal；关闭后使用恢复列表。" },
         { "CodexQuotaPlanPauseGoalIds", "达到额度计划触发条件时暂停的 Codex goal ID，用 | 分隔；可从本地 goal 管理记录复制。" },
         { "CodexQuotaPlanResumeGoalIds", "关闭“恢复上次暂停”时使用，额度恢复后启用这些 Codex goal ID，用 | 分隔。" },
-        { "HoverOpacityEnabled", "鼠标接近窗口时进入隐藏透明度。" },
-        { "SensitiveMouseModeEnabled", "使用鼠标周围方形区域判断命中。" },
-        { "SensitiveMouseRangePixels", "范围 10-300，值越大越容易触发。" },
-        { "HoverOpacityRevealDelayEnabled", "鼠标离开后延迟恢复显示。" },
-        { "HoverOpacityRevealDelaySeconds", "鼠标离开后继续隐藏的秒数。" },
-        { "HoverOpacityRevealResetSeconds", "短时间重新靠近时，保持隐藏的重置秒数。" },
-        { "HoverOpacityCoverEnabled", "自动隐藏时只在移到窗口上方后恢复。" },
-        { "ReverseHoverOpacityRevealEnabled", "手动隐藏下鼠标移入窗口临时恢复。" },
-        { "ReverseHoverOpacityRestoreDelaySeconds", "反向隐藏临时恢复后，鼠标移开多久回到隐藏。" },
-        { "AutoHoverOpacityIdleEnabled", "鼠标一段时间不动时自动进入隐藏透明度。" },
-        { "AutoHoverOpacityIdleSeconds", "范围 1-300 秒，达到后自动隐藏。" },
-        { "AutoHoverOpacityMaximizedEnabled", "窗口状态缓存检测到非本程序、非 SeelenUI 应用最大化或全屏时自动进入隐藏透明度。" },
         { "BurnInProtectionEnabled", "开启后，无操作先进入一级低亮保护，再进入二级反色/文字抑制保护；点击会退出，悬停只临时恢复对应区域。" },
         { "BurnInLevelOneIdleSeconds", "无操作达到该时长后进入一级；范围 1-300 秒，默认 10 秒。" },
         { "BurnInLevelTwoDelaySeconds", "进入一级后再经过该时长进入二级；范围 1-600 秒，默认 30 秒。" },
-        { "OperationRadialCoreAutoHideKeepAliveEnabled", "鼠标持续停在左下角白色核心圆圈并达到自动隐藏阈值后，圆圈变绿；绿圈存续期间锁定其他窗口，同时重置自动隐藏与防烧屏倒计时，离开圆圈后解除。" },
         { "OperationRadialIdleCollapseSeconds", "范围 1-60 秒；设为 0 表示永不自动收回扇形速控盘。" },
         { "OperationRadialIdleResetOnInteractionEnabled", "开启后鼠标移动、按下或展开新分支会重新开始扇形速控盘自动收回计时。" },
         { "OperationRadialKeepOpenAfterLeafClickEnabled", "开启后点击扇形速控盘末端按钮不会自动收起菜单；关闭后恢复点击末端按钮即收起。" },
@@ -4210,6 +4493,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ResolutionCompatibilityModeEnabled", "默认关闭。开启后按 2880x1800 参考布局投影 Operation、七个 Dock 与十一枚磁贴/展开面板。" },
         { "ResolutionCompatibilityScalePercent", "运行时输出比例，低于 100% 压缩，高于 100% 放大；不会改写保存的真实布局坐标。" },
         { GlobalLayoutEditCommandName, "打开全屏布局编辑遮罩，显示 Operation、固定七个左侧停靠按钮与固定十一枚右侧磁贴；Enter 保存，Esc 放弃。自动排列开启时拖动列成员会整体上下移动。" },
+        { SideColumnBalanceCommandName, "根据当前窗格数量、尺寸、间距、整列偏移与目标工作区寻找改动最小的平衡点，使左右两列最上端和最下端在允许 1 像素舍入误差内水平对齐；执行时会开启两侧自动排列。" },
         { "LeftDockAutoArrangeEnabled", "开启后按下方顺序和分布间距自动排列固定七个左侧梯形按钮；关闭后保留全局编辑器写入的单项位置。" },
         { "LeftDockButtonOrder", "用上下箭头调整 Network、Spec、Codex Task、GUARD、Codex IQ、重置/速蹬与系统日记七个固定按钮的排列顺序。" },
         { "LeftDockButtonGapPixels", "可拖动滑块或直接输入 0–100；0 让按钮紧挨，100 让整列从工作区顶部到底部均匀分布，中间值按比例展开。" },
@@ -4271,7 +4555,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "AlertServiceHealthEnabled", "控制 Radar、OpenAI、Claude 与 DeepSeek 服务健康提示；探测仍继续。" },
         { "AlertCodexTaskEnabled", "控制 Codex 任务待处理数量、强调色和提醒文本；任务监控仍继续。" },
         { "HotkeyToggleAllWindows", "格式如 Ctrl+Alt+H；至少包含一个修饰键，留空表示不绑定。" },
-        { "HotkeyToggleHoverOpacity", "切换悬停透明度动作；格式如 Ctrl+Shift+O。" },
         { "HotkeyOpenSettings", "从任意应用打开设置窗口；格式如 Ctrl+Alt+S。" },
         { "OperationBackgroundTransparencyPercent", "影响左下角操作面板背景透明度。" },
         { "OperationPrimaryPanelMode", "自动模式会按 SeelenUI 运行态在 Windows 按钮和内存饼图之间切换；隐藏会让小按钮移到最左侧。" },

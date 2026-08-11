@@ -22,9 +22,7 @@ internal sealed partial class WidgetForm
     private static void AssertRuntimeAlive(PdhSampler sampler, EventWaitHandle stopEvent)
     {
         WidgetSettings settings = WidgetSettings.CreateDefaults();
-        // Hover opacity must be on for the shared interaction timer to have anything to do; this is
-        // the subsystem whose death made hidden mode inescapable.
-        settings.HoverOpacityEnabled = true;
+        settings.BurnInProtectionEnabled = true;
         settings.Normalize();
 
         using (WidgetForm form = new WidgetForm(sampler, stopEvent, settings, false))
@@ -110,21 +108,21 @@ internal sealed partial class WidgetForm
                     "A second Operation host toggle must restore side surfaces without hiding Operation.");
             }
 
-            form.SetBurnInVisualLevel(BurnInVisualLevel.LevelTwo, "self-test setup");
-            DateTime greenHoldUtc = new DateTime(2026, 7, 23, 0, 0, 0, DateTimeKind.Utc);
-            form.HoldVisibleSurfacesForGreenRadialCore(greenHoldUtc);
-            if (form.burnInVisualLevel != BurnInVisualLevel.Normal ||
-                form.lastBurnInActivityUtc != greenHoldUtc)
+            for (int i = 0; i < form.metricTileForms.Count; i++)
             {
-                throw new InvalidOperationException(
-                    "Green Radial core lock must reset both burn-in levels and their shared countdown.");
+                if (MetricTileForm.IsTileEnabled(settings, i) &&
+                    (form.metricTileForms[i] == null || !form.metricTileForms[i].Visible))
+                {
+                    throw new InvalidOperationException(
+                        "A second Operation host toggle did not restore enabled metric tile " + i + ".");
+                }
             }
 
-            form.UpdateHoverAnimationTimer();
-            if (!form.hoverTimer.Enabled)
+            form.UpdateInteractionTimer();
+            if (!form.interactionTimer.Enabled)
             {
                 throw new InvalidOperationException(
-                    "Shared interaction timer must run for the hidden host; without it auto-hide never clears and hidden mode cannot be exited.");
+                    "Shared interaction timer must run for burn-in, click-through polling and radial idle collapse.");
             }
 
             // The control tick must also stay at the interactive rate rather than the hidden-window

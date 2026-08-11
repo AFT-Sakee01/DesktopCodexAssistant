@@ -383,7 +383,6 @@ internal sealed partial class OperationForm
             delegate { return true; },
             delegate { return true; },
             delegate { return true; },
-            delegate { return true; },
             delegate(bool enabled) { return enabled; },
             delegate(bool enabled) { return enabled; },
             delegate(string propertyName, bool enabled) { return enabled; }))
@@ -1112,12 +1111,12 @@ internal sealed partial class OperationForm
             }
 
             int padding = BoardPadding();
-            Font titleFont = GetCrispUiFont(9.0f, 8.0f, FontStyle.Bold);
-            Font rowFont = GetCrispUiFont(8.4f, 7.5f, FontStyle.Bold);
-            Font subFont = GetCrispUiFont(7.0f, 6.5f, FontStyle.Regular);
-            // Match the Spec Board footer's small-text role; these sibling boards should not use
-            // different button typography for the same view/close actions.
-            Font footFont = GetCrispUiFont(7.8f, 6.5f, FontStyle.Regular);
+            Font titleFont = GetCrispUiFont(11.5f, 9.0f, FontStyle.Bold);
+            Font rowFont = GetCrispUiFont(9.6f, 8.0f, FontStyle.Bold);
+            Font subFont = GetCrispUiFont(8.2f, 7.0f, FontStyle.Regular);
+            // Match the enlarged sibling-board footer role so the view and Close actions remain
+            // readable without changing their shared geometry.
+            Font footFont = GetCrispUiFont(8.4f, 7.0f, FontStyle.Regular);
 
             bool timeline = this.ActiveView == CodexTaskBoardView.Timeline;
             using (SolidBrush titleBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Text, ScaleAlpha(240, backgroundAlpha))))
@@ -1212,7 +1211,7 @@ internal sealed partial class OperationForm
             int cardHeight = BubbleCardHeight();
             int contentWidth = this.Width - padding * 2;
             int cardWidth = columns <= 1 ? contentWidth : (contentWidth - gap * (columns - 1)) / columns;
-            Font tokenFont = GetCrispUiFont(6.4f, 6.0f, FontStyle.Regular);
+            Font tokenFont = GetCrispUiFont(7.4f, 6.5f, FontStyle.Regular);
             for (int i = 0; i < rows.Count; i++)
             {
                 int col = i % columns;
@@ -1428,7 +1427,7 @@ internal sealed partial class OperationForm
             using (StringFormat near = new StringFormat { FormatFlags = StringFormatFlags.NoWrap })
             using (StringFormat far = new StringFormat { Alignment = StringAlignment.Far, FormatFlags = StringFormatFlags.NoWrap })
             {
-                Font axisFont = GetCrispUiFont(6.6f, 6.0f, FontStyle.Regular);
+                Font axisFont = GetCrispUiFont(7.4f, 6.5f, FontStyle.Regular);
                 g.DrawString(model.StartLocal.ToString("HH:mm", CultureInfo.CurrentCulture), axisFont, axisBrush, new PointF(laneLeft, y), near);
                 g.DrawString("NOW", axisFont, axisBrush, new RectangleF(laneRight - S(30), y, S(30), S(11)), far);
             }

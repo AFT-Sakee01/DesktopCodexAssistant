@@ -324,21 +324,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return Math.Max(50, Math.Min(targetInterval + 100, interval));
     }
 
-    // Compatibility hooks retained until the host traversal is cleaned in phase 5. Dock boards do
-    // not participate in floating-window hover opacity or shared click-through polling.
-    public void SetSharedInteractionPolling(bool shared)
-    {
-    }
-
-    public void SetAutoHideKeepAliveActive(bool active)
-    {
-    }
-
-    public bool ProcessSharedInteractionTick()
-    {
-        return false;
-    }
-
     private void ApplyClickThroughStyle()
     {
         if (!this.IsHandleCreated)
@@ -1961,11 +1946,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
         return !this.displaySuspended;
     }
 
-    protected override int ApplyHoverAlpha(int alpha)
-    {
-        return alpha;
-    }
-
     internal static void RunNetworkMonitorDisplaySelfTest()
     {
         CleanIpConnectionSnapshot cleanIp = new CleanIpConnectionSnapshot
@@ -2260,8 +2240,8 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
                 throw new InvalidOperationException("Network monitor docked self-test: the default width must keep two columns.");
             }
 
-            // Style contract: the board keeps the Network role's transparency/scale slots and has
-            // no floating hover/click-through state. Settings are assigned directly so the test
+            // Style contract: the board keeps the Network role's transparency/scale slots.
+            // Settings are assigned directly so the test
             // never materialises a real dock tab window.
             WidgetSettings overrides = settings.Clone();
             overrides.SpecBoardTransparencyOverridePercent = 40;
@@ -2270,7 +2250,6 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
             overrides.NetworkMonitorScaleOverridePercent = 80;
             overrides.VisibilityMode = WidgetVisibilityMode.AlwaysVisible;
             overrides.ClickThroughMode = ClickThroughMode.Auto;
-            overrides.HoverOpacityEnabled = true;
             overrides.Normalize();
             form.CurrentSettings = overrides;
             if (form.WindowTransparencyOverridePercent != overrides.NetworkMonitorTransparencyOverridePercent ||
@@ -2279,15 +2258,9 @@ internal sealed partial class NetworkMonitorForm : LayeredWidgetFormBase
                 throw new InvalidOperationException("Network monitor docked self-test: docked overrides must use the Network role slots.");
             }
 
-            if (form.ApplyHoverAlpha(255) != 255)
+            if (!form.ShouldUseTopMostPlacement())
             {
-                throw new InvalidOperationException("Network monitor docked self-test: hover fade must not apply to the docked panel.");
-            }
-
-            if (form.ProcessSharedInteractionTick() ||
-                !form.ShouldUseTopMostPlacement())
-            {
-                throw new InvalidOperationException("Network monitor docked self-test: floating hover and click-through policies must be isolated from the board.");
+                throw new InvalidOperationException("Network monitor docked self-test: docked visibility policy must remain active.");
             }
 
             WidgetSettings narrow = settings.Clone();

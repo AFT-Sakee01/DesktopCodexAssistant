@@ -1,6 +1,6 @@
 # 接口与复用资源汇总
 
-适用版本：2.0.0.12
+适用版本：2.0.0.21
 
 ## 1. 文档用途
 
@@ -149,7 +149,6 @@ JSONL 中每行是一个独立对象，稳定 ID 用于后续检索、更新和�
 | `internal_api.burn_in_protection` | 像素微迁移和夜间亮度 | 新窗口分配独立 salt；自动列共享相位，左缘表面固定 X；不得在此重新引入隐藏颜色变换 |
 | `internal_api.application_window_state_tracker` | 前台/对象窗口状态跟踪 | 按可见性策略动态启停对象 Hook，事件先按 HWND 有界合并再由 UI 线程批量消费 |
 | `internal_api.ui_hang_watchdog` | UI 心跳与窗口事件诊断 | 卡死、重复卡死和恢复均写独立 JSONL，并携带队列累计计数 |
-| `internal_api.hover_interaction_policy` | 鼠标隐藏命中策略 | 敏感鼠标范围、延迟显现、覆盖开启和反向隐藏统一复用，不在窗口中重复点命中或倒计时逻辑 |
 | `internal_api.time_zone_utilities` | 北京时间调度和显示时区 | 区分业务时间与显示时间 |
 | `internal_api.secret_store` | DPAPI CurrentUser 密钥文件保护 | 统一读写 `dpapi-v1:` envelope；旧格式只有严格 validator 通过后才原子迁移，损坏/未知 Base64 fail-closed 且原字节不变 |
 | `internal_api.window_runtime_contract` | 设置、刷新、全屏、挂起、恢复和共享维护 | 新模块实现同等生命周期方法，低频维护复用主协调 tick |

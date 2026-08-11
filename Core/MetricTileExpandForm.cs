@@ -80,11 +80,6 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         ApplyMouseClickThroughStyle(this.CurrentSettings.RightTileMouseClickThroughEnabled);
     }
 
-    protected override int ApplyHoverAlpha(int alpha)
-    {
-        return alpha;
-    }
-
     protected override int PresentationLuminancePercent
     {
         get
@@ -1099,7 +1094,9 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         DrawPowerHistory(g, GroundRect(content, true), p, day);
         DrawRadarQuotaScrims(g, content);
         DrawPowerIdentity(g, content, accent, p);
+        DrawPowerModeRail(g, content, p);
         DrawPowerForecast(g, content, accent, p, day);
+        DrawPowerPeakBadge(g, content, day);
         DrawPowerBatteryStrip(g, content, accent, p, day);
     }
 
@@ -1161,54 +1158,259 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             this.burnInVisualLevel,
             this.burnInPresentationRestored);
         int battery = ResolvePowerBatteryPercent(power);
-        using (Font labelFont = new Font(DesignTokens.UiFontFamily, S(17), FontStyle.Bold, GraphicsUnit.Pixel))
-        using (Font valueFont = new Font(DesignTokens.MonoFontFamily, S(30), FontStyle.Bold, GraphicsUnit.Pixel))
-        using (Font suffixFont = new Font(DesignTokens.UiFontFamily, S(14), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font labelFont = new Font(DesignTokens.UiFontFamily, S(15), FontStyle.Bold, GraphicsUnit.Pixel))
         using (SolidBrush labelBrush = new SolidBrush(DesignTokens.WithAlpha(dataAccent, 235)))
-        using (SolidBrush valueBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextStrong, 235)))
-        using (SolidBrush suffixBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 210)))
         {
-            float labelY = content.Y + S(6);
-            g.DrawString("PWR", labelFont, labelBrush, content.X, labelY);
-            if (drawNeutral)
-            {
-                float labelWidth = g.MeasureString("PWR", labelFont).Width;
-                string value = battery >= 0 ? battery.ToString(CultureInfo.InvariantCulture) : "--";
-                float valueX = content.X + labelWidth + S(8);
-                g.DrawString(value, valueFont, valueBrush, valueX, content.Y);
-                float valueWidth = g.MeasureString(value, valueFont).Width;
-                if (battery >= 0)
-                {
-                    g.DrawString("%", suffixFont, suffixBrush, valueX + valueWidth - S(4), content.Y + S(13));
-                }
-            }
+            g.DrawString("PWR", labelFont, labelBrush, content.X, content.Y);
         }
 
-        if (!drawNeutral)
-        {
-            return;
-        }
+        RectangleF batteryRect = new RectangleF(
+            content.X,
+            content.Y + S(23),
+            S(69),
+            S(29));
+        Color batteryColor = power != null && power.Charging
+            ? DesignTokens.Colors.DangerStrong
+            : battery >= 0 && battery <= 20
+                ? DesignTokens.Colors.DangerStrong
+                : dataAccent;
+        DrawPowerBatteryGlyph(g, batteryRect, battery, batteryColor, drawNeutral);
 
         double watts;
         bool wattsKnown = TryResolveLivePowerWatts(power, out watts);
         string wattsText = wattsKnown
             ? watts.ToString("0.0", CultureInfo.InvariantCulture) + " W"
             : "-- W";
-        string mode = power != null && !string.IsNullOrEmpty(power.PowerModeText)
-            ? power.PowerModeText
-            : "--";
-        DrawText(g, "电池功率 " + wattsText + " · " + mode, content.X, content.Y + S(36), S(12.5f),
-            DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 210), FontStyle.Regular);
+        DrawText(g, wattsText, content.X + S(3), content.Y + S(57), S(13.5f),
+            DesignTokens.WithAlpha(DesignTokens.Colors.TextStrong, 230), FontStyle.Bold);
+    }
 
-        bool charging = power != null && power.Charging;
-        bool pluggedIn = power != null && power.PluggedIn;
-        string state = charging
-            ? "正在充电"
-            : pluggedIn
-                ? "外接电源 · 电池未放电"
-                : "正在使用电池";
-        DrawText(g, state + " · 近 24h 电量 / 功耗", content.X, content.Y + S(57), S(11),
-            DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 225), FontStyle.Regular);
+    private void DrawPowerBatteryGlyph(
+        Graphics g,
+        RectangleF rect,
+        int battery,
+        Color color,
+        bool drawValue)
+    {
+        RectangleF body = new RectangleF(rect.X, rect.Y, rect.Width - S(6), rect.Height);
+        RectangleF nub = new RectangleF(body.Right + S(1), body.Y + body.Height * 0.32f, S(5), body.Height * 0.36f);
+        using (GraphicsPath bodyPath = RoundedRectangle(body, Math.Max(2.0f, S(5))))
+        using (SolidBrush trackBrush = new SolidBrush(DesignTokens.White(22)))
+        using (Pen outline = new Pen(DesignTokens.WithAlpha(color, 230), Math.Max(1.0f, S(1.2f))))
+        using (SolidBrush nubBrush = new SolidBrush(DesignTokens.WithAlpha(color, 215)))
+        {
+            g.FillPath(trackBrush, bodyPath);
+            if (battery >= 0)
+            {
+                RectangleF inner = RectangleF.Inflate(body, -S(3), -S(3));
+                float fillWidth = inner.Width * (float)(battery / 100.0);
+                GraphicsState clipState = g.Save();
+                g.SetClip(bodyPath, CombineMode.Intersect);
+                using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 88)))
+                {
+                    g.FillRectangle(fill, inner.X, inner.Y, Math.Max(0.0f, fillWidth), inner.Height);
+                }
+
+                g.Restore(clipState);
+            }
+
+            g.DrawPath(outline, bodyPath);
+            g.FillRectangle(nubBrush, nub);
+        }
+
+        if (!drawValue)
+        {
+            return;
+        }
+
+        string value = battery >= 0
+            ? battery.ToString(CultureInfo.InvariantCulture) + "%"
+            : "--";
+        using (Font font = new Font(DesignTokens.MonoFontFamily, S(14), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextStrong, 238)))
+        using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
+        {
+            format.Alignment = StringAlignment.Center;
+            format.LineAlignment = StringAlignment.Center;
+            g.DrawString(value, font, brush, body, format);
+        }
+    }
+
+    private void DrawPowerModeRail(Graphics g, RectangleF content, PowerStripSnapshot power)
+    {
+        PowerModeVisual active = ResolvePowerModeVisual(power);
+        RectangleF rail = new RectangleF(content.X + S(96), content.Y + S(10), S(228), S(34));
+        float segmentWidth = rail.Width / 3.0f;
+        using (GraphicsPath track = RoundedRectangle(rail, Math.Max(2.0f, S(8))))
+        using (SolidBrush trackBrush = new SolidBrush(DesignTokens.White(18)))
+        using (Pen trackPen = new Pen(DesignTokens.White(42), Math.Max(1.0f, S(1))))
+        {
+            g.FillPath(trackBrush, track);
+            g.DrawPath(trackPen, track);
+        }
+
+        for (int i = 0; i < 3; i++)
+        {
+            PowerModeVisual mode = i == 0
+                ? PowerModeVisual.Saver
+                : i == 1
+                    ? PowerModeVisual.Balanced
+                    : PowerModeVisual.Performance;
+            RectangleF segment = new RectangleF(
+                rail.X + i * segmentWidth,
+                rail.Y,
+                segmentWidth,
+                rail.Height);
+            Color modeColor = ResolvePowerModeColor(mode);
+            bool selected = mode == active;
+            if (selected)
+            {
+                RectangleF selectedRect = RectangleF.Inflate(segment, -S(2), -S(2));
+                using (GraphicsPath selectedPath = RoundedRectangle(selectedRect, Math.Max(2.0f, S(6))))
+                using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(modeColor, 42)))
+                using (Pen outline = new Pen(DesignTokens.WithAlpha(modeColor, 180), Math.Max(1.0f, S(1))))
+                {
+                    g.FillPath(fill, selectedPath);
+                    g.DrawPath(outline, selectedPath);
+                }
+            }
+
+            if (i > 0)
+            {
+                using (Pen separator = new Pen(DesignTokens.White(28), Math.Max(1.0f, S(1))))
+                {
+                    g.DrawLine(separator, segment.Left, segment.Top + S(7), segment.Left, segment.Bottom - S(7));
+                }
+            }
+
+            Color glyphColor = selected
+                ? modeColor
+                : DesignTokens.Colors.GlyphMuted;
+            RectangleF icon = new RectangleF(segment.X + S(14), segment.Y + S(9), S(16), S(16));
+            DrawPowerModeGlyph(g, icon, mode, glyphColor);
+            if (ShouldDrawNeutralText(this.burnInVisualLevel))
+            {
+                string label = mode == PowerModeVisual.Saver
+                    ? "省"
+                    : mode == PowerModeVisual.Balanced
+                        ? "衡"
+                        : "性";
+                using (Font font = new Font(DesignTokens.UiFontFamily, S(12), FontStyle.Bold, GraphicsUnit.Pixel))
+                using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(glyphColor, selected ? 245 : 190)))
+                using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
+                {
+                    format.LineAlignment = StringAlignment.Center;
+                    g.DrawString(label, font, brush,
+                        new RectangleF(icon.Right + S(6), segment.Y, S(26), segment.Height), format);
+                }
+            }
+        }
+
+        bool saverActive = power != null && power.EnergySaverActive;
+        Color saverColor = saverActive
+            ? MetricTileForm.ResolveBurnInRingColor(
+                DesignTokens.Colors.Success,
+                this.burnInVisualLevel,
+                this.burnInPresentationRestored)
+            : DesignTokens.Colors.GlyphMuted;
+        RectangleF leaf = new RectangleF(rail.X + S(12), rail.Bottom + S(8), S(15), S(15));
+        DrawPowerLeafGlyph(g, leaf, saverColor);
+        DrawPowerSaverToggle(
+            g,
+            new RectangleF(leaf.Right + S(8), leaf.Y + S(1), S(31), S(13)),
+            saverActive,
+            saverColor);
+    }
+
+    private void DrawPowerModeGlyph(Graphics g, RectangleF rect, PowerModeVisual mode, Color color)
+    {
+        if (mode == PowerModeVisual.Saver)
+        {
+            DrawPowerLeafGlyph(g, rect, color);
+            return;
+        }
+
+        using (Pen pen = new Pen(DesignTokens.WithAlpha(color, 235), Math.Max(1.0f, S(1.4f))))
+        {
+            pen.StartCap = LineCap.Round;
+            pen.EndCap = LineCap.Round;
+            if (mode == PowerModeVisual.Balanced)
+            {
+                RectangleF gauge = RectangleF.Inflate(rect, -S(1), -S(1));
+                g.DrawArc(pen, gauge, 205.0f, 130.0f);
+                PointF center = new PointF(gauge.X + gauge.Width / 2.0f, gauge.Y + gauge.Height * 0.72f);
+                g.DrawLine(pen, center, new PointF(gauge.Right - S(3), gauge.Y + S(4)));
+                return;
+            }
+        }
+
+        PointF[] bolt = new PointF[]
+        {
+            new PointF(rect.X + rect.Width * 0.58f, rect.Y),
+            new PointF(rect.X + rect.Width * 0.20f, rect.Y + rect.Height * 0.56f),
+            new PointF(rect.X + rect.Width * 0.48f, rect.Y + rect.Height * 0.56f),
+            new PointF(rect.X + rect.Width * 0.34f, rect.Bottom),
+            new PointF(rect.X + rect.Width * 0.82f, rect.Y + rect.Height * 0.42f),
+            new PointF(rect.X + rect.Width * 0.55f, rect.Y + rect.Height * 0.42f)
+        };
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 235)))
+        {
+            g.FillPolygon(brush, bolt);
+        }
+    }
+
+    private void DrawPowerLeafGlyph(Graphics g, RectangleF rect, Color color)
+    {
+        using (GraphicsPath leaf = new GraphicsPath())
+        {
+            leaf.StartFigure();
+            leaf.AddBezier(
+                rect.X + rect.Width * 0.12f, rect.Bottom - rect.Height * 0.10f,
+                rect.X + rect.Width * 0.03f, rect.Y + rect.Height * 0.18f,
+                rect.X + rect.Width * 0.62f, rect.Y,
+                rect.Right - rect.Width * 0.05f, rect.Y + rect.Height * 0.12f);
+            leaf.AddBezier(
+                rect.Right - rect.Width * 0.05f, rect.Y + rect.Height * 0.12f,
+                rect.Right, rect.Y + rect.Height * 0.62f,
+                rect.X + rect.Width * 0.55f, rect.Bottom,
+                rect.X + rect.Width * 0.12f, rect.Bottom - rect.Height * 0.10f);
+            leaf.CloseFigure();
+            using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 72)))
+            using (Pen outline = new Pen(DesignTokens.WithAlpha(color, 225), Math.Max(1.0f, S(1.1f))))
+            {
+                g.FillPath(fill, leaf);
+                g.DrawPath(outline, leaf);
+                g.DrawLine(
+                    outline,
+                    rect.X + rect.Width * 0.16f,
+                    rect.Bottom - rect.Height * 0.12f,
+                    rect.Right - rect.Width * 0.18f,
+                    rect.Y + rect.Height * 0.25f);
+            }
+        }
+    }
+
+    private void DrawPowerSaverToggle(Graphics g, RectangleF rect, bool active, Color color)
+    {
+        float radius = rect.Height / 2.0f;
+        using (GraphicsPath track = RoundedRectangle(rect, Math.Max(2.0f, radius)))
+        using (SolidBrush trackBrush = new SolidBrush(active
+            ? DesignTokens.WithAlpha(color, 118)
+            : DesignTokens.White(26)))
+        {
+            g.FillPath(trackBrush, track);
+        }
+
+        float knobSize = Math.Max(S(7), rect.Height - S(4));
+        float knobX = active
+            ? rect.Right - knobSize - S(2)
+            : rect.X + S(2);
+        using (SolidBrush knob = new SolidBrush(active
+            ? DesignTokens.WithAlpha(color, 245)
+            : DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 210)))
+        {
+            g.FillEllipse(knob, knobX, rect.Y + (rect.Height - knobSize) / 2.0f, knobSize, knobSize);
+        }
     }
 
     private void DrawPowerForecast(
@@ -1220,33 +1422,119 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     {
         PowerForecastPresentation forecast = ResolvePowerForecast(power, day);
         bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
-        float width = Math.Min(content.Width * 0.45f, S(205));
-        RectangleF rect = new RectangleF(content.Right - width, content.Y, width, S(74));
+        float width = Math.Min(content.Width * 0.30f, S(138));
+        RectangleF rect = new RectangleF(content.Right - width, content.Y + S(8), width, S(62));
         Color stateColor = ResolvePowerForecastColor(forecast.Tone, accent);
         stateColor = MetricTileForm.ResolveBurnInRingColor(
             stateColor,
             this.burnInVisualLevel,
             this.burnInPresentationRestored);
 
-        if (drawNeutral)
-        {
-            DrawRightAlignedText(g, "当前续航预测", rect, rect.Y, S(10),
-                DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 225), FontStyle.Regular);
-        }
+        DrawPowerForecastGlyph(
+            g,
+            new RectangleF(rect.X + S(2), rect.Y + S(10), S(30), S(30)),
+            power,
+            forecast,
+            stateColor);
 
         if (forecast.Known || drawNeutral)
         {
-            DrawRightAlignedText(g, forecast.Main, rect, rect.Y + S(14), S(21),
+            DrawRightAlignedText(g, forecast.Main, rect, rect.Y + S(5), S(24),
                 DesignTokens.WithAlpha(stateColor, forecast.Known ? 255 : 220), FontStyle.Bold);
-            DrawRightAlignedText(g, forecast.Status, rect, rect.Y + S(40), S(12),
+            DrawRightAlignedText(g, forecast.Status, rect, rect.Y + S(35), S(12),
                 DesignTokens.WithAlpha(stateColor, forecast.Known ? 245 : 210), FontStyle.Bold);
         }
+    }
 
-        if (drawNeutral)
+    private void DrawPowerForecastGlyph(
+        Graphics g,
+        RectangleF rect,
+        PowerStripSnapshot power,
+        PowerForecastPresentation forecast,
+        Color color)
+    {
+        using (SolidBrush halo = new SolidBrush(DesignTokens.WithAlpha(color, 24)))
+        using (Pen pen = new Pen(DesignTokens.WithAlpha(color, 225), Math.Max(1.0f, S(1.4f))))
         {
-            DrawRightAlignedText(g, forecast.Source, rect, rect.Y + S(58), S(10),
-                DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 205), FontStyle.Regular);
+            g.FillEllipse(halo, rect);
+            pen.StartCap = LineCap.Round;
+            pen.EndCap = LineCap.Round;
+            bool charging = power != null && power.Charging;
+            bool pluggedIn = power != null && power.PluggedIn;
+            if (!charging && !pluggedIn && forecast.Known)
+            {
+                RectangleF clock = RectangleF.Inflate(rect, -S(4), -S(4));
+                g.DrawEllipse(pen, clock);
+                PointF center = new PointF(clock.X + clock.Width / 2.0f, clock.Y + clock.Height / 2.0f);
+                g.DrawLine(pen, center, new PointF(center.X, clock.Y + S(5)));
+                g.DrawLine(pen, center, new PointF(clock.Right - S(5), center.Y + S(3)));
+                return;
+            }
+
+            RectangleF body = new RectangleF(
+                rect.X + S(4),
+                rect.Y + S(8),
+                rect.Width - S(11),
+                rect.Height - S(16));
+            g.DrawRectangle(pen, body.X, body.Y, body.Width, body.Height);
+            g.DrawLine(pen, body.Right + S(2), body.Y + body.Height * 0.35f,
+                body.Right + S(2), body.Bottom - body.Height * 0.35f);
+            if (charging)
+            {
+                DrawPowerModeGlyph(
+                    g,
+                    RectangleF.Inflate(body, -S(4), -S(2)),
+                    PowerModeVisual.Performance,
+                    color);
+            }
+            else if (pluggedIn)
+            {
+                g.DrawLine(pen, body.X + S(4), body.Y + body.Height * 0.55f,
+                    body.X + body.Width * 0.44f, body.Bottom - S(3));
+                g.DrawLine(pen, body.X + body.Width * 0.44f, body.Bottom - S(3),
+                    body.Right - S(3), body.Y + S(3));
+            }
+            else
+            {
+                g.DrawLine(pen, body.X + S(5), body.Y + body.Height / 2.0f,
+                    body.Right - S(5), body.Y + body.Height / 2.0f);
+            }
         }
+    }
+
+    private void DrawPowerPeakBadge(Graphics g, RectangleF content, SystemDayBoardSnapshot day)
+    {
+        double peak = ResolvePowerWattsPeak(day);
+        if (peak <= 0.0)
+        {
+            return;
+        }
+
+        Color color = MetricTileForm.ResolveBurnInRingColor(
+            DesignTokens.Colors.Warning,
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
+        float x = content.X + S(188);
+        float y = content.Bottom - S(30);
+        PointF[] marker = new PointF[]
+        {
+            new PointF(x, y + S(7)),
+            new PointF(x + S(4), y),
+            new PointF(x + S(8), y + S(7))
+        };
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 240)))
+        {
+            g.FillPolygon(brush, marker);
+        }
+
+        DrawText(
+            g,
+            peak.ToString("0.0", CultureInfo.InvariantCulture) + " W",
+            x + S(12),
+            y - S(3),
+            S(10.5f),
+            DesignTokens.WithAlpha(color, 230),
+            FontStyle.Bold);
     }
 
     private void DrawPowerBatteryStrip(
@@ -1271,22 +1559,87 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             new double[] { battery >= 0 ? battery : 0 },
             new Color[] { fillColor },
             new int[] { 225 });
-
-        if (!ShouldDrawNeutralText(this.burnInVisualLevel))
+        RectangleF strip = StripRect(content);
+        using (Pen tick = new Pen(DesignTokens.Black(105), Math.Max(1.0f, S(1))))
         {
-            return;
+            for (int i = 1; i < 10; i++)
+            {
+                float x = strip.X + strip.Width * i / 10.0f;
+                g.DrawLine(tick, x, strip.Y + S(1), x, strip.Bottom - S(1));
+            }
+        }
+    }
+
+    private static string ResolvePowerModeForDisplay(PowerStripSnapshot power)
+    {
+        if (power == null || string.IsNullOrWhiteSpace(power.PowerModeText))
+        {
+            return "--";
         }
 
-        double watts;
-        bool wattsKnown = TryResolveLivePowerWatts(power, out watts);
-        double peak = ResolvePowerWattsPeak(day);
-        string label = "电池 " + (battery >= 0 ? battery.ToString(CultureInfo.InvariantCulture) + "%" : "--");
-        label += " · 当前电池功率 " + (wattsKnown ? watts.ToString("0.0", CultureInfo.InvariantCulture) + " W" : "-- W");
-        label += peak > 0.0
-            ? " · 近24h峰值 " + peak.ToString("0.0", CultureInfo.InvariantCulture) + " W"
-            : " · 近24h趋势采样中";
-        DrawText(g, label, content.X, content.Bottom - S(18), S(9.5f),
-            DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 205), FontStyle.Regular);
+        string text = power.PowerModeText.Trim();
+        if (power.EnergySaverActive)
+        {
+            const string energySaverSuffix = "（节能）";
+            if (text.EndsWith(energySaverSuffix, StringComparison.Ordinal))
+            {
+                text = text.Substring(0, text.Length - energySaverSuffix.Length).Trim();
+            }
+
+            // The snapshot uses "节能" when the base Windows power mode is unknown.
+            // Keep the two independent states honest instead of presenting that fallback as the base mode.
+            if (string.Equals(text, "节能", StringComparison.Ordinal))
+            {
+                return "--";
+            }
+        }
+
+        return string.IsNullOrEmpty(text) ? "--" : text;
+    }
+
+    private static PowerModeVisual ResolvePowerModeVisual(PowerStripSnapshot power)
+    {
+        string text = ResolvePowerModeForDisplay(power);
+        if (string.IsNullOrEmpty(text) || string.Equals(text, "--", StringComparison.Ordinal))
+        {
+            return PowerModeVisual.Unknown;
+        }
+
+        if (text.IndexOf("性能", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            text.IndexOf("performance", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return PowerModeVisual.Performance;
+        }
+
+        if (text.IndexOf("省电", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            text.IndexOf("节能", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            text.IndexOf("battery", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            text.IndexOf("efficiency", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return PowerModeVisual.Saver;
+        }
+
+        if (text.IndexOf("平衡", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            text.IndexOf("推荐", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            text.IndexOf("balanced", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return PowerModeVisual.Balanced;
+        }
+
+        return PowerModeVisual.Unknown;
+    }
+
+    private static Color ResolvePowerModeColor(PowerModeVisual mode)
+    {
+        switch (mode)
+        {
+            case PowerModeVisual.Saver:
+                return DesignTokens.Colors.Success;
+            case PowerModeVisual.Performance:
+                return DesignTokens.Colors.DangerStrong;
+            default:
+                return DesignTokens.Colors.Warning;
+        }
     }
 
     private static int ResolvePowerBatteryPercent(PowerStripSnapshot power)
@@ -1343,8 +1696,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         if (battery < 0)
         {
             return new PowerForecastPresentation(
-                "电量未知",
-                "等待电池数据",
+                "--",
+                "电量",
                 "续航预测尚不可用",
                 PowerForecastTone.Muted,
                 false);
@@ -1360,17 +1713,16 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             if (day != null && day.BatteryEtaKnown && day.BatteryEtaMinutes > 0)
             {
                 return new PowerForecastPresentation(
-                    FormatPowerDuration(day.BatteryEtaMinutes) + " 到 " +
-                        target.ToString(CultureInfo.InvariantCulture) + "%",
-                    "正在充电",
+                    FormatPowerDuration(day.BatteryEtaMinutes),
+                    "到" + target.ToString(CultureInfo.InvariantCulture) + "%",
                     "按近 3h 电量趋势",
                     PowerForecastTone.Charge,
                     true);
             }
 
             return new PowerForecastPresentation(
-                "正在充电",
-                "目标 " + target.ToString(CultureInfo.InvariantCulture) + "%",
+                "充电",
+                "到" + target.ToString(CultureInfo.InvariantCulture) + "%",
                 "等待充电趋势",
                 PowerForecastTone.Charge,
                 true);
@@ -1379,8 +1731,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         if (pluggedIn)
         {
             return new PowerForecastPresentation(
-                "外接电源",
-                power != null && power.BatteryCarePauseActive ? "电池保护暂停" : "电池未放电",
+                "AC",
+                power != null && power.BatteryCarePauseActive ? "保养" : "供电",
                 "当前无需续航估算",
                 PowerForecastTone.Accent,
                 true);
@@ -1390,8 +1742,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         {
             int minutes = Math.Max(1, (int)Math.Round(power.RuntimeSeconds / 60.0));
             return new PowerForecastPresentation(
-                FormatPowerDuration(minutes) + " 后耗尽",
-                battery <= 20 ? "电量偏低" : "按当前状态估算",
+                FormatPowerDuration(minutes),
+                "耗尽",
                 "Windows 当前状态",
                 battery <= 20 ? PowerForecastTone.Danger : PowerForecastTone.Accent,
                 true);
@@ -1403,16 +1755,16 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             day.BatteryEtaTargetPercent <= 0)
         {
             return new PowerForecastPresentation(
-                FormatPowerDuration(day.BatteryEtaMinutes) + " 后耗尽",
-                battery <= 20 ? "电量偏低" : "按近期节奏估算",
+                FormatPowerDuration(day.BatteryEtaMinutes),
+                "耗尽",
                 "按近 3h 电量趋势",
                 battery <= 20 ? PowerForecastTone.Danger : PowerForecastTone.Accent,
                 true);
         }
 
         return new PowerForecastPresentation(
-            "续航估算中",
-            "等待电量变化",
+            "--",
+            "估算",
             "保持使用即可建立趋势",
             PowerForecastTone.Muted,
             false);
@@ -1458,6 +1810,14 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         Charge,
         Danger,
         Muted
+    }
+
+    private enum PowerModeVisual
+    {
+        Unknown,
+        Saver,
+        Balanced,
+        Performance
     }
 
     private sealed class PowerForecastPresentation
@@ -2160,7 +2520,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         PowerForecastPresentation chargeForecast = ResolvePowerForecast(charging, chargingDay);
         if (!chargeForecast.Known ||
             chargeForecast.Main.IndexOf("55m", StringComparison.Ordinal) < 0 ||
-            chargeForecast.Main.IndexOf("80%", StringComparison.Ordinal) < 0)
+            chargeForecast.Status.IndexOf("80%", StringComparison.Ordinal) < 0)
         {
             throw new InvalidOperationException("PWR charging forecast must show time and target.");
         }
@@ -2173,7 +2533,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             WattsKnown = true,
             Watts = 0.0
         };
-        if (ResolvePowerForecast(plugged, null).Main != "外接电源")
+        if (ResolvePowerForecast(plugged, null).Main != "AC")
         {
             throw new InvalidOperationException("PWR must distinguish external power from battery runway.");
         }
@@ -2193,6 +2553,35 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         if (TryResolveLivePowerWatts(unknownWatts, out ignoredWatts))
         {
             throw new InvalidOperationException("PWR must not present a non-live or unknown watt value as current.");
+        }
+
+        PowerStripSnapshot energySaver = new PowerStripSnapshot
+        {
+            EnergySaverActive = true,
+            PowerModeText = "性能（节能）"
+        };
+        if (!string.Equals(ResolvePowerModeForDisplay(energySaver), "性能", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("PWR must present the base power mode separately from energy saver.");
+        }
+
+        energySaver.PowerModeText = "节能";
+        if (!string.Equals(ResolvePowerModeForDisplay(energySaver), "--", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("PWR must not present the energy-saver fallback as a known base mode.");
+        }
+
+        energySaver.PowerModeText = "平衡（节能）";
+        if (ResolvePowerModeVisual(energySaver) != PowerModeVisual.Balanced)
+        {
+            throw new InvalidOperationException("PWR graphical rail must highlight the base mode independently from energy saver.");
+        }
+
+        energySaver.PowerModeText = "最佳性能";
+        energySaver.EnergySaverActive = false;
+        if (ResolvePowerModeVisual(energySaver) != PowerModeVisual.Performance)
+        {
+            throw new InvalidOperationException("PWR graphical rail must recognize the Windows performance mode.");
         }
 
         WidgetSettings settings = WidgetSettings.CreateDefaults();
@@ -2237,7 +2626,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             }
         }
 
-        Console.WriteLine("Metric tile expand: PASS Radar-module size, placement, large mode, level-two neutral-text suppression, PWR runway states");
+        Console.WriteLine("Metric tile expand: PASS Radar-module size, placement, large mode, level-two neutral-text suppression, PWR graphical runway states");
     }
 
     // Geometry-only half of ShowForTile, so the self test can assert placement without creating a

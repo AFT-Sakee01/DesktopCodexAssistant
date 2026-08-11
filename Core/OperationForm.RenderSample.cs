@@ -28,7 +28,6 @@ internal sealed partial class OperationForm
                 () => true,
                 () => true,
                 () => true,
-                () => true,
                 (enabled) => enabled,
                 (enabled) => enabled,
                 (propertyName, enabled) => enabled))
@@ -84,7 +83,6 @@ internal sealed partial class OperationForm
             () => { },
             () => { },
             (title, message, icon) => { },
-            () => true,
             () => true,
             () => true,
             () => true,

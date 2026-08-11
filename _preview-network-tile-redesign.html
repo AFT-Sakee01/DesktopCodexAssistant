@@ -1,0 +1,882 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NET 右侧小窗格改版预览</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --canvas: #090d12;
+      --canvas-2: #0d1319;
+      --surface: #14191f;
+      --surface-2: #192028;
+      --track: #29323b;
+      --line: #303b46;
+      --text: #f2f6f8;
+      --muted: #8c9aa7;
+      --net: #8fd98a;
+      --down: #49b8ff;
+      --up: #ff6473;
+      --danger: #ff5c69;
+      --mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+      --display: "Bahnschrift Condensed", "Segoe UI Variable Display", "Segoe UI", sans-serif;
+      --body: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { min-height: 100%; background: var(--canvas); }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--text);
+      font-family: var(--body);
+      background:
+        radial-gradient(circle at 76% 18%, rgba(73, 184, 255, .075), transparent 29rem),
+        radial-gradient(circle at 17% 82%, rgba(255, 100, 115, .05), transparent 26rem),
+        linear-gradient(135deg, var(--canvas), var(--canvas-2));
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .23;
+      background-image:
+        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 32px 32px;
+      mask-image: linear-gradient(to bottom, black, transparent 88%);
+    }
+
+    button { font: inherit; }
+
+    .board {
+      width: min(1180px, calc(100vw - 48px));
+      margin: 0 auto;
+      padding: 54px 0 72px;
+    }
+
+    .masthead {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 40px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 13px;
+      color: var(--net);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .16em;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 24px;
+      height: 2px;
+      background: linear-gradient(90deg, var(--down) 0 48%, var(--up) 52% 100%);
+    }
+
+    h1 {
+      max-width: 760px;
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(42px, 6vw, 74px);
+      font-stretch: condensed;
+      font-weight: 600;
+      letter-spacing: -.045em;
+      line-height: .96;
+    }
+
+    .lede {
+      max-width: 590px;
+      margin: 18px 0 0;
+      color: #a8b3bd;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+
+    .spec-stamp {
+      min-width: 164px;
+      padding: 14px 16px;
+      border-left: 2px solid var(--net);
+      background: rgba(20, 25, 31, .64);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.8;
+    }
+
+    .spec-stamp strong { color: var(--text); font-weight: 700; }
+
+    .review-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.26fr) minmax(320px, .74fr);
+      gap: 20px;
+      margin-top: 20px;
+    }
+
+    .panel {
+      position: relative;
+      min-width: 0;
+      border: 1px solid rgba(255,255,255,.09);
+      border-radius: 18px;
+      background: rgba(15, 20, 26, .78);
+      box-shadow: 0 24px 70px rgba(0,0,0,.28);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 18px 20px 0;
+    }
+
+    .panel-kicker {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    .panel-title {
+      margin: 5px 0 0;
+      font-family: var(--display);
+      font-size: 24px;
+      font-weight: 600;
+      letter-spacing: -.02em;
+    }
+
+    .stage {
+      position: relative;
+      min-height: 500px;
+      display: grid;
+      place-items: center;
+      padding: 54px 28px 44px;
+      background:
+        linear-gradient(90deg, transparent calc(100% - 15px), rgba(73,184,255,.055) calc(100% - 15px)),
+        linear-gradient(180deg, rgba(255,255,255,.012), transparent 38%);
+    }
+
+    .stage::after {
+      content: "SCREEN EDGE";
+      position: absolute;
+      right: -25px;
+      top: 50%;
+      color: rgba(143,217,138,.44);
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .16em;
+      transform: rotate(90deg);
+    }
+
+    .zoom-wrap {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 38px;
+    }
+
+    .zoom-note {
+      width: 190px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .zoom-note strong { color: var(--text); }
+
+    .zoom-note .legend {
+      display: grid;
+      gap: 8px;
+      margin-top: 18px;
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
+    .legend span { display: flex; align-items: center; gap: 8px; }
+    .legend i { width: 18px; height: 2px; background: currentColor; }
+    .legend .down-key { color: var(--down); }
+    .legend .up-key { color: var(--up); }
+
+    .pixel-zoom {
+      position: relative;
+      width: 300px;
+      height: 300px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(255,255,255,.06);
+      border-radius: 24px;
+      background:
+        repeating-linear-gradient(0deg, rgba(255,255,255,.028) 0 1px, transparent 1px 5px),
+        repeating-linear-gradient(90deg, rgba(255,255,255,.028) 0 1px, transparent 1px 5px),
+        #0b1015;
+    }
+
+    .pixel-zoom::before {
+      content: "5× 结构预览";
+      position: absolute;
+      left: 12px;
+      top: 10px;
+      color: #66737f;
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: .12em;
+    }
+
+    .scale-5 { transform: scale(5); transform-origin: center; }
+
+    .net-tile {
+      --tile-down: var(--down);
+      --tile-up: var(--up);
+      position: relative;
+      width: 60px;
+      height: 60px;
+      flex: 0 0 60px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.15);
+      border-radius: 10px;
+      background: rgba(20,25,31,.92);
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,.2);
+      isolation: isolate;
+    }
+
+    .net-tile::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      opacity: .52;
+      background:
+        radial-gradient(circle at 24% 84%, color-mix(in srgb, var(--tile-down) 20%, transparent), transparent 38%),
+        radial-gradient(circle at 76% 84%, color-mix(in srgb, var(--tile-up) 16%, transparent), transparent 38%);
+    }
+
+    .net-tile.is-focus {
+      border-color: rgba(143,217,138,.92);
+      box-shadow: 0 0 0 1px rgba(143,217,138,.2), 0 0 22px rgba(143,217,138,.08);
+    }
+
+    .tile-label {
+      position: absolute;
+      inset: 3px 0 auto;
+      color: var(--net);
+      font-family: "Segoe UI", sans-serif;
+      font-size: 9px;
+      font-weight: 800;
+      line-height: 11px;
+      text-align: center;
+    }
+
+    .tile-live {
+      display: inline-block;
+      width: 4px;
+      height: 4px;
+      margin-left: 3px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 5px currentColor;
+      vertical-align: 1px;
+    }
+
+    .lane-grid {
+      position: absolute;
+      left: 5px;
+      right: 5px;
+      top: 16px;
+      bottom: 4px;
+      display: grid;
+      grid-template-rows: 1fr 1fr;
+      gap: 2px;
+    }
+
+    .lane-grid::before {
+      content: "";
+      position: absolute;
+      top: 50%;
+      left: 1px;
+      right: 1px;
+      height: 1px;
+      background: linear-gradient(to right, rgba(73,184,255,.42), rgba(255,255,255,.08) 50%, rgba(255,100,115,.38));
+      transform: translateY(-.5px);
+    }
+
+    .lane {
+      position: relative;
+      min-width: 0;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+    }
+
+    .direction {
+      flex: 0 0 9px;
+      height: 100%;
+      display: grid;
+      place-items: center;
+      color: var(--lane-color);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 800;
+      line-height: 1;
+    }
+
+    .rate {
+      flex: 0 0 27px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 18px;
+      letter-spacing: -.7px;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    .rate small {
+      margin-left: 0;
+      color: var(--lane-color);
+      font-size: 6.5px;
+      letter-spacing: -.4px;
+    }
+
+    .pulses {
+      width: 14px;
+      height: 14px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 1px;
+      margin-left: auto;
+      padding-bottom: 2px;
+      border-bottom: 1px solid color-mix(in srgb, var(--lane-color) 32%, transparent);
+    }
+
+    .pulses i {
+      width: 1.5px;
+      height: calc(var(--v) * 1px);
+      max-height: 11px;
+      min-height: 1px;
+      border-radius: 1px 1px 0 0;
+      background: var(--lane-color);
+      opacity: calc(.35 + var(--v) * .065);
+      transform-origin: bottom;
+      transition: height .24s ease, opacity .24s ease;
+    }
+
+    .lane.down { --lane-color: var(--tile-down); }
+    .lane.up { --lane-color: var(--tile-up); }
+
+    .net-tile.offline {
+      --tile-down: #66717b;
+      --tile-up: #66717b;
+      border-color: rgba(255,92,105,.58);
+    }
+
+    .net-tile.offline .tile-label { color: var(--danger); }
+    .net-tile.offline .tile-live { box-shadow: none; }
+    .net-tile.offline .lane-grid::before { background: rgba(255,92,105,.28); }
+
+    .scenario-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 0 20px 20px;
+    }
+
+    .scenario-button {
+      min-height: 34px;
+      padding: 0 13px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: #9ba8b3;
+      background: #11171d;
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: 10px;
+      transition: border-color .18s ease, color .18s ease, background .18s ease;
+    }
+
+    .scenario-button:hover { border-color: #536270; color: var(--text); }
+    .scenario-button:focus-visible { outline: 2px solid var(--down); outline-offset: 2px; }
+    .scenario-button[aria-pressed="true"] {
+      border-color: rgba(143,217,138,.65);
+      color: var(--net);
+      background: rgba(143,217,138,.08);
+    }
+
+    .actual-panel { min-height: 100%; }
+
+    .actual-stage {
+      min-height: 305px;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 28px;
+      padding: 34px 28px 30px;
+    }
+
+    .right-edge-column {
+      position: relative;
+      width: 60px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .right-edge-column::after {
+      content: "";
+      position: absolute;
+      top: -12px;
+      bottom: -12px;
+      right: -13px;
+      width: 2px;
+      background: linear-gradient(var(--down), rgba(143,217,138,.38), transparent);
+      box-shadow: 0 0 14px rgba(73,184,255,.25);
+    }
+
+    .ghost-tile {
+      position: relative;
+      width: 60px;
+      height: 60px;
+      border: 1px solid rgba(255,255,255,.13);
+      border-radius: 10px;
+      background: rgba(20,25,31,.88);
+    }
+
+    .ghost-tile span {
+      display: block;
+      margin-top: 4px;
+      color: var(--ghost);
+      font-size: 9px;
+      font-weight: 800;
+      text-align: center;
+    }
+
+    .ghost-ring {
+      position: absolute;
+      left: 13px;
+      top: 20px;
+      width: 34px;
+      height: 34px;
+      border: 4px solid rgba(255,255,255,.08);
+      border-right-color: var(--ghost);
+      border-radius: 50%;
+      transform: rotate(-28deg);
+    }
+
+    .ghost-ring::after {
+      content: attr(data-value);
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: #dbe2e6;
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 800;
+      transform: rotate(28deg);
+    }
+
+    .actual-copy h3 {
+      margin: 0 0 10px;
+      font-family: var(--display);
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: -.025em;
+    }
+
+    .actual-copy p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .actual-copy code {
+      color: var(--net);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .compare {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      padding: 22px;
+    }
+
+    .compare-item {
+      min-width: 0;
+      padding: 20px;
+      border-radius: 14px;
+      background: rgba(255,255,255,.025);
+    }
+
+    .compare-item h3 {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    .compare-body {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .old-tile {
+      position: relative;
+      width: 60px;
+      height: 60px;
+      flex: 0 0 60px;
+      border: 1px solid rgba(255,255,255,.15);
+      border-radius: 10px;
+      background: rgba(20,25,31,.92);
+    }
+
+    .old-tile b {
+      display: block;
+      margin-top: 3px;
+      color: var(--net);
+      font-size: 9px;
+      text-align: center;
+    }
+
+    .old-ring, .old-ring::before {
+      position: absolute;
+      border-radius: 50%;
+    }
+
+    .old-ring {
+      left: 8px;
+      top: 16px;
+      width: 44px;
+      height: 44px;
+      border: 5px solid #283038;
+      border-right-color: var(--net);
+      border-bottom-color: var(--net);
+      transform: rotate(24deg);
+    }
+
+    .old-ring::before {
+      content: "";
+      inset: 5px;
+      border: 3px solid #252d34;
+      border-top-color: #557d55;
+    }
+
+    .old-ring::after {
+      content: "58K";
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 800;
+      transform: rotate(-24deg);
+    }
+
+    .compare-copy { min-width: 0; }
+    .compare-copy strong { display: block; margin-bottom: 6px; font-size: 14px; }
+    .compare-copy p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+
+    .decision-strip {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      margin-top: 20px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 16px;
+      background: rgba(255,255,255,.08);
+    }
+
+    .decision {
+      min-height: 130px;
+      padding: 22px;
+      background: #10161c;
+    }
+
+    .decision span {
+      color: var(--net);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .12em;
+    }
+
+    .decision h3 {
+      margin: 10px 0 7px;
+      font-family: var(--display);
+      font-size: 21px;
+      font-weight: 600;
+    }
+
+    .decision p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+
+    .footer-note {
+      margin: 16px 2px 0;
+      color: #66737f;
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 900px) {
+      .masthead { grid-template-columns: 1fr; }
+      .spec-stamp { width: fit-content; }
+      .review-grid { grid-template-columns: 1fr; }
+      .zoom-wrap { grid-template-columns: 1fr; justify-items: center; }
+      .zoom-note { width: min(100%, 390px); }
+      .compare { grid-template-columns: 1fr; }
+      .decision-strip { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 560px) {
+      .board { width: min(100% - 24px, 1180px); padding-top: 30px; }
+      .stage { padding-inline: 12px; }
+      .pixel-zoom { width: 270px; height: 270px; }
+      .scale-5 { transform: scale(4.5); }
+      .actual-stage { grid-template-columns: auto 1fr; padding-inline: 18px; }
+      .compare-body { align-items: flex-start; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .001ms !important; animation-duration: .001ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="board">
+    <header class="masthead">
+      <div>
+        <div class="eyebrow">DESIGN REVIEW / RIGHT EDGE</div>
+        <h1>网络不是百分比，<br>它是一进一出的流。</h1>
+        <p class="lede">把 NET 的双圆环换成上下两条横向吞吐通道：方向、放大的实时速率和五段微脉冲从左到右读取。没有伪造“链路占用率”，也不需要猜圆环到底代表什么。</p>
+      </div>
+      <div class="spec-stamp">
+        SURFACE&nbsp; <strong>MetricTile.NET</strong><br>
+        SIZE&nbsp;&nbsp;&nbsp;&nbsp; <strong>60 × 60 px</strong><br>
+        DATA&nbsp;&nbsp;&nbsp;&nbsp; <strong>same feed</strong><br>
+        SCOPE&nbsp;&nbsp;&nbsp; <strong>visual only</strong>
+      </div>
+    </header>
+
+    <section class="review-grid" aria-label="NET 小窗格设计预览">
+      <article class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-kicker">Primary proposal</div>
+            <h2 class="panel-title">横向吞吐双行</h2>
+          </div>
+          <div class="panel-kicker" id="scenario-caption">NORMAL / 58K ↓ · 17K ↑</div>
+        </div>
+
+        <div class="stage">
+          <div class="zoom-wrap">
+            <div class="zoom-note">
+              <strong>上下分行，单行从左向右读完。</strong><br>
+              放大的数字承担当前读数，右侧五根短柱只表达最近五个样本的起伏；它不是固定容量百分比。
+              <div class="legend">
+                <span class="down-key"><i></i>DOWNLINK / 下行</span>
+                <span class="up-key"><i></i>UPLINK / 上行</span>
+              </div>
+            </div>
+            <div class="pixel-zoom" aria-label="5倍放大的 NET 小窗格">
+              <div class="scale-5">
+                <div class="net-tile is-focus" data-net-tile>
+                  <div class="tile-label">NET<span class="tile-live"></span></div>
+                  <div class="lane-grid">
+                    <div class="lane down">
+                      <div class="direction">↓</div>
+                      <div class="rate"><span data-down-value>58</span><small data-down-unit>K</small></div>
+                      <div class="pulses" data-down-bars>
+                        <i style="--v:3"></i><i style="--v:5"></i><i style="--v:4"></i><i style="--v:8"></i><i style="--v:6"></i>
+                      </div>
+                    </div>
+                    <div class="lane up">
+                      <div class="direction">↑</div>
+                      <div class="rate"><span data-up-value>17</span><small data-up-unit>K</small></div>
+                      <div class="pulses" data-up-bars>
+                        <i style="--v:2"></i><i style="--v:3"></i><i style="--v:2"></i><i style="--v:5"></i><i style="--v:4"></i>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="scenario-bar" role="group" aria-label="预览网络状态">
+          <button class="scenario-button" type="button" data-scenario="normal" aria-pressed="true">正常流量</button>
+          <button class="scenario-button" type="button" data-scenario="burst" aria-pressed="false">突发流量</button>
+          <button class="scenario-button" type="button" data-scenario="idle" aria-pressed="false">近乎空闲</button>
+          <button class="scenario-button" type="button" data-scenario="offline" aria-pressed="false">断开连接</button>
+        </div>
+      </article>
+
+      <aside class="panel actual-panel">
+        <div class="panel-head">
+          <div>
+            <div class="panel-kicker">Actual size</div>
+            <h2 class="panel-title">放回右侧列</h2>
+          </div>
+          <div class="panel-kicker">1 : 1</div>
+        </div>
+
+        <div class="actual-stage">
+          <div class="right-edge-column" aria-label="右侧窗格列实际尺寸">
+            <div class="ghost-tile" style="--ghost:#d879e0"><span>MEM</span><div class="ghost-ring" data-value="63"></div></div>
+            <div class="net-tile" data-net-tile>
+              <div class="tile-label">NET<span class="tile-live"></span></div>
+              <div class="lane-grid">
+                <div class="lane down">
+                  <div class="direction">↓</div>
+                  <div class="rate"><span data-down-value>58</span><small data-down-unit>K</small></div>
+                  <div class="pulses" data-down-bars><i style="--v:3"></i><i style="--v:5"></i><i style="--v:4"></i><i style="--v:8"></i><i style="--v:6"></i></div>
+                </div>
+                <div class="lane up">
+                  <div class="direction">↑</div>
+                  <div class="rate"><span data-up-value>17</span><small data-up-unit>K</small></div>
+                  <div class="pulses" data-up-bars><i style="--v:2"></i><i style="--v:3"></i><i style="--v:2"></i><i style="--v:5"></i><i style="--v:4"></i></div>
+                </div>
+              </div>
+            </div>
+            <div class="ghost-tile" style="--ghost:#6ba6f5"><span>GPU</span><div class="ghost-ring" data-value="11"></div></div>
+          </div>
+          <div class="actual-copy">
+            <h3>仍然是 60 像素。</h3>
+            <p>不改右列拓扑，不增加新窗口。现有 <code>NetworkReceivedHistory</code> 与 <code>NetworkSentHistory</code> 足够驱动五段微脉冲。</p>
+          </div>
+        </div>
+      </aside>
+
+      <article class="panel compare">
+        <div class="compare-item">
+          <h3>Current / 双圆环</h3>
+          <div class="compare-body">
+            <div class="old-tile" aria-label="当前双圆环 NET 小窗格"><b>NET</b><div class="old-ring"></div></div>
+            <div class="compare-copy">
+              <strong>视觉上像“完成度”</strong>
+              <p>峰值随时间漂移，满环并不等于带宽跑满；上传也只能靠第二圈的位置去猜。</p>
+            </div>
+          </div>
+        </div>
+        <div class="compare-item">
+          <h3>Proposed / 横向双行</h3>
+          <div class="compare-body">
+            <div class="net-tile" data-net-tile>
+              <div class="tile-label">NET<span class="tile-live"></span></div>
+              <div class="lane-grid">
+                <div class="lane down"><div class="direction">↓</div><div class="rate"><span data-down-value>58</span><small data-down-unit>K</small></div><div class="pulses" data-down-bars><i style="--v:3"></i><i style="--v:5"></i><i style="--v:4"></i><i style="--v:8"></i><i style="--v:6"></i></div></div>
+                <div class="lane up"><div class="direction">↑</div><div class="rate"><span data-up-value>17</span><small data-up-unit>K</small></div><div class="pulses" data-up-bars><i style="--v:2"></i><i style="--v:3"></i><i style="--v:2"></i><i style="--v:5"></i><i style="--v:4"></i></div></div>
+              </div>
+            </div>
+            <div class="compare-copy">
+              <strong>数字更大，一行完成读取</strong>
+              <p>蓝色下行、红色上行；方向、速率、短柱依次横排，短柱不会冒充容量百分比。</p>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="decision-strip" aria-label="设计原则">
+      <div class="decision">
+        <span>01 / MEANING</span>
+        <h3>数字先于图形</h3>
+        <p>小窗格第一任务是报实时速率，因此上下行数字都是一级信息。</p>
+      </div>
+      <div class="decision">
+        <span>02 / MOTION</span>
+        <h3>变化，不是占比</h3>
+        <p>微脉冲取最近五个样本，只提示流量节奏，不制造虚假的固定量程。</p>
+      </div>
+      <div class="decision">
+        <span>03 / FAILURE</span>
+        <h3>断网直接失色</h3>
+        <p>连接断开时双通道变灰、边框与 NET 标签转红，数值统一显示 “--”。</p>
+      </div>
+    </section>
+
+    <p class="footer-note">HTML REVIEW ARTIFACT · 与正式 WinForms NET 小窗同步维护。</p>
+  </main>
+
+  <script>
+    const scenarios = {
+      normal: {
+        caption: "NORMAL / 58K ↓ · 17K ↑",
+        down: ["58", "K", [3, 5, 4, 8, 6]],
+        up: ["17", "K", [2, 3, 2, 5, 4]],
+        offline: false
+      },
+      burst: {
+        caption: "BURST / 12M ↓ · 3.8M ↑",
+        down: ["12", "M", [4, 7, 9, 8, 9]],
+        up: ["3.8", "M", [2, 5, 7, 6, 8]],
+        offline: false
+      },
+      idle: {
+        caption: "IDLE / 2K ↓ · 0K ↑",
+        down: ["2", "K", [1, 2, 1, 1, 2]],
+        up: ["0", "K", [1, 1, 1, 1, 1]],
+        offline: false
+      },
+      offline: {
+        caption: "OFFLINE / LINK LOST",
+        down: ["--", "", [1, 1, 1, 1, 1]],
+        up: ["--", "", [1, 1, 1, 1, 1]],
+        offline: true
+      }
+    };
+
+    function setBars(container, values) {
+      container.querySelectorAll("i").forEach((bar, index) => {
+        bar.style.setProperty("--v", values[index] ?? 1);
+      });
+    }
+
+    function applyScenario(name) {
+      const scenario = scenarios[name];
+      document.querySelectorAll("[data-net-tile]").forEach(tile => {
+        tile.classList.toggle("offline", scenario.offline);
+        tile.querySelector("[data-down-value]").textContent = scenario.down[0];
+        tile.querySelector("[data-down-unit]").textContent = scenario.down[1];
+        tile.querySelector("[data-up-value]").textContent = scenario.up[0];
+        tile.querySelector("[data-up-unit]").textContent = scenario.up[1];
+        setBars(tile.querySelector("[data-down-bars]"), scenario.down[2]);
+        setBars(tile.querySelector("[data-up-bars]"), scenario.up[2]);
+      });
+      document.getElementById("scenario-caption").textContent = scenario.caption;
+      document.querySelectorAll("[data-scenario]").forEach(button => {
+        button.setAttribute("aria-pressed", String(button.dataset.scenario === name));
+      });
+    }
+
+    document.querySelectorAll("[data-scenario]").forEach(button => {
+      button.addEventListener("click", () => applyScenario(button.dataset.scenario));
+    });
+  </script>
+</body>
+</html>
