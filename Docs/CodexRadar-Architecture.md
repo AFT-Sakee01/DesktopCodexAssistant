@@ -1,6 +1,6 @@
 # Codex / Claude Radar 数据所有者架构
 
-适用版本：2.0.0.31
+适用版本：2.0.0.32
 
 本文说明 `CodexRadarForm` 作为永久 headless owner 时的 Codex 公共 Radar、Codex/Claude 官方额度、服务健康、任务状态和只读投影。
 
@@ -102,7 +102,7 @@ family 选择只影响 provider 调度优先级和相关服务语义，不决定
 
 ## 6. Codex 公共 Radar 与模型目录
 
-只有 Codex family 读取公共 Radar 数据与模型目录。`current.json` schema 2 是模型 IQ 和数据时间的权威来源；内容签名未变化时保留 source timestamp，fetch timestamp 不能伪造新批次。首页 HTML 只允许补结构化数据缺少的速蹬窗口，以及首页“重置雷达”区成对发布的“发重置卡/硬重置”状态、短说明和更新时间；这些字段有界解析、缓存并保留 last-good，不能回填模型评分、额度雷达或覆盖 JSON。完整目录才能推进模型缺失计数；部分损坏数据只能补充已见模型，不能证明其它模型消失。
+只有 Codex family 读取公共 Radar 数据与模型目录。`current.json` schema 2 是模型 IQ 和数据时间的权威来源；内容签名未变化时保留 source timestamp，fetch timestamp 不能伪造新批次。首页 HTML 只允许补结构化数据缺少的速蹬窗口，以及首页“重置雷达”区成对发布的“发重置卡/硬重置”状态、短结论和更新时间；`ApplyCodexRadarHtmlResetJudgement()` 优先按 `data-reset-track` 定位两条判断、读取 `reset-judgement-state` 状态、`strong` 短结论及 `data-reset-radar-updated-at` ISO 时间，同时兼容旧版“状态 · 结论”和标题时间。这些字段有界解析、缓存并保留 last-good，不能回填模型评分、额度雷达或覆盖 JSON。首页 IQ 改为动态装载时，服务探测明确报告静态模型标记不存在，IQ 与目录仍以 `current.json` 为准；完整目录才能推进模型缺失计数，部分损坏数据只能补充已见模型，不能证明其它模型消失。
 
 分布式 Radar 的 `comparisons` 键可能附加 `_distributed` 等来源后缀。适配器先尝试精确键，再根据节点自身的 model 与 reasoning effort 生成稳定模型键；只有唯一匹配才接受，重复歧义时 fail closed。看板的 `Current` 标记跟随用户选择的稳定模型键，而不是固定跟随 `latest` 根节点。上游 `recent_days` ISO 时间戳按秒保留并以本地 ISO 秒精度写入缓存，旧版 `yyyy-MM-dd-am/pm` 历史仍可读取；来源任务数使用 10000 的防御上限，不再受手动校验设置的 100 条上限截断。
 
@@ -182,7 +182,7 @@ owner 停止时清除 provider，避免消费者调用已销毁实例。
 
 IQ board 的 tab、展开/收起和渲染属于左侧停靠运行时，不改变 owner 的业务周期。
 
-`BuildResetSpeedBoardSnapshot()` 同样只复制 Codex published quota/Radar、reset-credit 缓存和已载入的 7 天历史。`ResetSpeedBoardForm` 与 Spec Board 保持相同逻辑尺寸；底部“近期重置”缩为左半区并最多列两条事件，右半区“重置概率”显示 Radar 日期及“发重置卡/硬重置”的状态和短说明。黄色角色边框、绿色额度轨迹、青色速蹬圆环、重置类型与判断色只承担展示语义。
+`BuildResetSpeedBoardSnapshot()` 同样只复制 Codex published quota/Radar、reset-credit 缓存和已载入的 7 天历史。`ResetSpeedBoardForm` 与 Spec Board 保持相同逻辑尺寸；底部“近期重置”缩为左半区并最多列两条事件，右半区“重置概率”显示 Radar 日期及“发重置卡/硬重置”的状态和短结论。状态宽度由实际等宽字体测量，短结论独占下一行完整宽度，使“本轮是硬重置”“官方重置窗口”等结论不被固定 70 像素状态槽截断。黄色角色边框、绿色额度轨迹、青色速蹬圆环、重置类型与判断色只承担展示语义。
 
 Codex IQ 与重置/速蹬 board 的底部操作轨都提供绿色“刷新”和红色“关闭”。刷新只重新克隆已发布快照并重绘，不触发 owner 调度周期、网络访问或持久化读取；顶部不再绘制第二个关闭入口。
 

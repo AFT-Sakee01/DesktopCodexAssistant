@@ -307,12 +307,20 @@ internal sealed partial class ResetSpeedBoardForm
         using (StringFormat near = CreateFormat(StringAlignment.Near))
         using (StringFormat far = CreateFormat(StringAlignment.Far))
         {
+            int titleHeight = Math.Min(row.Height, MeasureLineHeight(g, monoFont, 0));
+            int measuredStatusWidth = (int)Math.Ceiling(
+                g.MeasureString(status ?? string.Empty, monoFont, int.MaxValue, StringFormat.GenericTypographic).Width) + S(4);
+            int statusWidth = Math.Min(
+                Math.Max(1, row.Width - S(56)),
+                Math.Max(S(70), measuredStatusWidth));
+            int gap = S(4);
+            int labelWidth = Math.Max(1, row.Width - statusWidth - gap);
             g.DrawString(label, smallFont, labelBrush,
-                new Rectangle(row.Left, row.Top, Math.Max(1, row.Width - S(72)), S(15)), near);
+                new Rectangle(row.Left, row.Top, labelWidth, titleHeight), near);
             g.DrawString(status ?? string.Empty, monoFont, statusBrush,
-                new Rectangle(row.Right - S(70), row.Top, S(70), S(15)), far);
+                new Rectangle(row.Right - statusWidth, row.Top, statusWidth, titleHeight), far);
             g.DrawString(description ?? string.Empty, smallFont, descriptionBrush,
-                new Rectangle(row.Left, row.Top + S(14), row.Width, Math.Max(S(13), row.Height - S(14))), near);
+                new Rectangle(row.Left, row.Top + titleHeight, row.Width, Math.Max(1, row.Height - titleHeight)), near);
             if (drawDivider)
             {
                 g.DrawLine(divider, row.Left, row.Bottom - 1, row.Right, row.Bottom - 1);

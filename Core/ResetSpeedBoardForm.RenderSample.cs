@@ -62,10 +62,10 @@ internal sealed partial class ResetSpeedBoardForm
         snapshot.ResetRadarKnown = true;
         snapshot.ResetRadarUpdatedAtKnown = true;
         snapshot.ResetRadarUpdatedAtLocal = new DateTime(2026, 7, 22, 10, 24, 0, DateTimeKind.Local);
-        snapshot.ResetCardStatus = "低";
-        snapshot.ResetCardDescription = "本轮是直接重置，不是发新卡";
-        snapshot.HardResetStatus = "已落地";
-        snapshot.HardResetDescription = "10M 里程碑重置完成 · 下一次低";
+        snapshot.ResetCardStatus = "未宣布";
+        snapshot.ResetCardDescription = "本轮是硬重置，不会发新卡";
+        snapshot.HardResetStatus = "已官宣";
+        snapshot.HardResetDescription = "官方重置窗口已开启";
         return snapshot;
     }
 
@@ -76,8 +76,10 @@ internal sealed partial class ResetSpeedBoardForm
         if (clone.QuotaHistory.Count != 7 || clone.ResetEvents.Count != 2 ||
             clone.ResetCreditCount != 3 || !clone.SpeedWindowOpen ||
             !clone.ResetRadarKnown ||
-            !string.Equals(clone.ResetCardStatus, "低", StringComparison.Ordinal) ||
-            !string.Equals(clone.HardResetStatus, "已落地", StringComparison.Ordinal) ||
+            !string.Equals(clone.ResetCardStatus, "未宣布", StringComparison.Ordinal) ||
+            !string.Equals(clone.ResetCardDescription, "本轮是硬重置，不会发新卡", StringComparison.Ordinal) ||
+            !string.Equals(clone.HardResetStatus, "已官宣", StringComparison.Ordinal) ||
+            !string.Equals(clone.HardResetDescription, "官方重置窗口已开启", StringComparison.Ordinal) ||
             ComputeSevenDayUsedPercent(clone.QuotaHistory) != 86)
         {
             throw new InvalidOperationException("Reset / Speed board snapshot or seven-day usage self-test failed.");

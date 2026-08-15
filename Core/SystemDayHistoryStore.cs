@@ -790,7 +790,9 @@ internal sealed class SystemDayHistoryStore : IDisposable
         Directory.CreateDirectory(root);
         try
         {
-            DateTime now = new DateTime(2026, 7, 23, 1, 0, 0, DateTimeKind.Utc);
+            // Keep the fixture within the active retention horizon so normal cleanup cannot
+            // erase the rows before the persistence assertions run.
+            DateTime now = DateTime.UtcNow;
             using (SystemDayHistoryStore store = new SystemDayHistoryStore(root))
             {
                 store.RecordSuspend(now.AddHours(-25));

@@ -4795,8 +4795,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         CodexRadarSnapshot snapshot;
         bool parsed = TryParseCodexRadarHtmlStatus(response.Content, modelKey, out snapshot);
         List<CodexRadarModelInfo> models = ExtractCodexRadarHtmlModelCatalog(response.Content);
-        builder.AppendLine("  selected_model_parse=" + (parsed && snapshot != null && snapshot.ModelIqKnown ? "ok" : "failed"));
-        builder.AppendLine("  discovered_models=" + models.Count.ToString(CultureInfo.InvariantCulture));
+        string html = response.Content ?? string.Empty;
+        bool staticModelMarkupPresent =
+            html.IndexOf("model-iq-score-chip", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            html.IndexOf("data-model-key", StringComparison.OrdinalIgnoreCase) >= 0;
+        builder.AppendLine("  selected_model_parse=" +
+            (parsed && snapshot != null && snapshot.ModelIqKnown
+                ? "legacy_static_ok"
+                : staticModelMarkupPresent ? "failed" : "not_present_dynamic_home"));
+        builder.AppendLine("  discovered_static_models=" + models.Count.ToString(CultureInfo.InvariantCulture));
         if (parsed && snapshot != null)
         {
             builder.AppendLine("  iq=" + snapshot.ModelIqPassRatePercent.ToString(CultureInfo.InvariantCulture));
@@ -4804,6 +4811,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 ? snapshot.ModelIqDataDateLocal.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) + " " +
                     (snapshot.ModelIqDataWindowStartHourLocal >= 12 ? "pm" : "am")
                 : "missing"));
+        }
+
+        CodexRadarSnapshot fallback;
+        if (TryParseCodexRadarHtmlFallbackStatus(html, out fallback) && fallback != null)
+        {
+            builder.AppendLine("  speed_window_parse=" + (fallback.SpeedWindowKnown ? "ok" : "missing"));
+            builder.AppendLine("  reset_radar_parse=" + (fallback.ResetRadarKnown ? "ok" : "missing"));
         }
 
         return builder.ToString().TrimEnd();
@@ -5505,25 +5519,27 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         // labels from being mistaken for status data if the surrounding homepage evolves.
         Match sectionMatch = Regex.Match(
             content,
-            "<section\\s+class=\"[^\"]*\\breset-judgement\\b[^\"]*\"[^>]*>(.*?)</section>",
+            "<section\\s+([^>]*class=\"[^\"]*\\breset-judgement\\b[^\"]*\"[^>]*)>(.*?)</section>",
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
         if (!sectionMatch.Success)
         {
             return;
         }
 
-        string section = sectionMatch.Groups[1].Value;
+        string sectionAttributes = sectionMatch.Groups[1].Value;
+        string section = sectionMatch.Groups[2].Value;
         string resetCardStatus = string.Empty;
         string resetCardDescription = string.Empty;
         string hardResetStatus = string.Empty;
         string hardResetDescription = string.Empty;
         MatchCollection cards = Regex.Matches(
             section,
-            "<article\\s+class=\"[^\"]*\\breset-judgement-card\\b[^\"]*\"[^>]*>(.*?)</article>",
+            "<article\\s+([^>]*class=\"[^\"]*\\breset-judgement-card\\b[^\"]*\"[^>]*)>(.*?)</article>",
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
         for (int i = 0; i < cards.Count; i++)
         {
-            string card = cards[i].Groups[1].Value;
+            string cardAttributes = cards[i].Groups[1].Value;
+            string card = cards[i].Groups[2].Value;
             Match labelMatch = Regex.Match(
                 card,
                 "<span[^>]*>(.*?)</span>",
@@ -5532,28 +5548,51 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 card,
                 "<strong[^>]*>(.*?)</strong>",
                 RegexOptions.IgnoreCase | RegexOptions.Singleline);
-            if (!labelMatch.Success || !judgementMatch.Success)
+            if (!judgementMatch.Success)
             {
                 continue;
             }
 
-            string label = NormalizeCodexRadarHtmlText(labelMatch.Groups[1].Value);
+            string track = GetCodexRadarHtmlAttribute(cardAttributes, "data-reset-track");
+            string label = labelMatch.Success
+                ? NormalizeCodexRadarHtmlText(labelMatch.Groups[1].Value)
+                : string.Empty;
+            if (string.Equals(track, "banked_reset", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "发重置卡";
+            }
+            else if (string.Equals(track, "hard_reset", StringComparison.OrdinalIgnoreCase))
+            {
+                label = "硬重置";
+            }
+
+            string summary = NormalizeCodexRadarHtmlText(judgementMatch.Groups[1].Value);
+            Match stateMatch = Regex.Match(
+                card,
+                "<em\\s+[^>]*class=\"[^\"]*\\breset-judgement-state\\b[^\"]*\"[^>]*>(.*?)</em>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            Match paragraphMatch = Regex.Match(
+                card,
+                "<p[^>]*>(.*?)</p>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
             string status;
             string description;
-            SplitCodexRadarResetJudgement(
-                NormalizeCodexRadarHtmlText(judgementMatch.Groups[1].Value),
-                out status,
-                out description);
-            if (description.Length == 0)
+            if (stateMatch.Success)
             {
-                Match paragraphMatch = Regex.Match(
-                    card,
-                    "<p[^>]*>(.*?)</p>",
-                    RegexOptions.IgnoreCase | RegexOptions.Singleline);
-                if (paragraphMatch.Success)
-                {
-                    description = NormalizeCodexRadarHtmlText(paragraphMatch.Groups[1].Value);
-                }
+                // The current site separates the compact state badge from the strong summary.
+                // Keep the summary as the board's short description so it gets the full row width.
+                status = NormalizeCodexRadarHtmlText(stateMatch.Groups[1].Value);
+                description = summary;
+            }
+            else
+            {
+                // Legacy pages encoded both values in one strong element as "state · summary".
+                SplitCodexRadarResetJudgement(summary, out status, out description);
+            }
+
+            if (description.Length == 0 && paragraphMatch.Success)
+            {
+                description = NormalizeCodexRadarHtmlText(paragraphMatch.Groups[1].Value);
             }
 
             status = ClampCodexRadarResetText(status, 20);
@@ -5583,16 +5622,27 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         snapshot.HardResetStatus = hardResetStatus;
         snapshot.HardResetDescription = hardResetDescription;
 
-        Match updatedMatch = Regex.Match(
-            section,
-            "重置雷达\\s*<em[^>]*>\\s*(\\d{1,2})月(\\d{1,2})日(\\d{1,2}):(\\d{2})更新",
-            RegexOptions.IgnoreCase | RegexOptions.Singleline);
         DateTime updatedLocal;
-        if (updatedMatch.Success &&
-            TryBuildCodexRadarResetUpdatedAtLocal(updatedMatch, out updatedLocal))
+        if (TryGetCodexRadarHtmlDateAttribute(
+            sectionAttributes,
+            "data-reset-radar-updated-at",
+            out updatedLocal))
         {
             snapshot.ResetRadarUpdatedAtLocal = updatedLocal;
             snapshot.ResetRadarUpdatedAtKnown = true;
+        }
+        else
+        {
+            Match updatedMatch = Regex.Match(
+                section,
+                "重置雷达\\s*<em[^>]*>\\s*(?:事件更新\\s*)?(\\d{1,2})月(\\d{1,2})日\\s*(\\d{1,2})[:：](\\d{2})(?:\\s*更新)?",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            if (updatedMatch.Success &&
+                TryBuildCodexRadarResetUpdatedAtLocal(updatedMatch, out updatedLocal))
+            {
+                snapshot.ResetRadarUpdatedAtLocal = updatedLocal;
+                snapshot.ResetRadarUpdatedAtKnown = true;
+            }
         }
     }
 
@@ -5681,16 +5731,29 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return false;
         }
 
-        Match match = Regex.Match(
-            content,
-            Regex.Escape(attributeName) + "\\s*=\\s*\"([^\"]+)\"",
-            RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        if (!match.Success)
+        string rawValue = GetCodexRadarHtmlAttribute(content, attributeName);
+        if (rawValue.Length == 0)
         {
             return false;
         }
 
-        return TryReadQuotaDate(WebUtility.HtmlDecode(match.Groups[1].Value), out localDate);
+        return TryReadQuotaDate(rawValue, out localDate);
+    }
+
+    private static string GetCodexRadarHtmlAttribute(string content, string attributeName)
+    {
+        if (string.IsNullOrEmpty(content) || string.IsNullOrEmpty(attributeName))
+        {
+            return string.Empty;
+        }
+
+        Match match = Regex.Match(
+            content,
+            Regex.Escape(attributeName) + "\\s*=\\s*([\"'])(.*?)\\1",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        return match.Success
+            ? WebUtility.HtmlDecode(match.Groups[2].Value).Trim()
+            : string.Empty;
     }
 
     private static string GetCodexRadarHtmlCompareValue(
@@ -11140,6 +11203,8 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         string dayText = beijingNow.Day.ToString(CultureInfo.InvariantCulture);
         string windowClosesAtText = beijingNow.AddHours(1.0).ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture) + "+08:00";
         string windowOpenedAtText = beijingNow.AddHours(-1.0).ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture) + "+08:00";
+        string resetUpdatedAtText = new DateTime(beijingNow.Year, beijingNow.Month, beijingNow.Day, 10, 24, 0)
+            .ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture) + "+08:00";
         string html =
             "<!-- codex-radar:summary:start -->" +
             "<span class=\"window-source-kicker\">速蹬窗口开启</span>" +
@@ -11152,12 +11217,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             "<div class=\"model-iq-compare-row\"><span>总tokens</span><strong class=\"model-iq-column-gpt_56_sol_medium\">42.3M</strong></div>" +
             "<title>" + monthText + "." + dayText + "_pm GPT-5.6 Sol medium: IQ指数 90.0, 6/10, 费用 $42.00, 耗时 204分钟, cache命中率 95.2%</title>" +
             "<svg><text class=\"model-iq-band-label\">90-110常态区</text></svg>" +
-            "<section class=\"reset-judgement\" aria-label=\"重置雷达\">" +
-            "<div><h2>重置雷达 <em>" + monthText + "月" + dayText + "日10:24更新</em></h2></div>" +
-            "<article class=\"reset-judgement-card\"><span>发重置卡</span>" +
-            "<strong>低 · 本轮是直接重置，不是发新卡</strong><p>重置卡说明。</p></article>" +
-            "<article class=\"reset-judgement-card\"><span>硬重置</span>" +
-            "<strong>已落地 · 10M 里程碑重置完成 · 下一次低</strong><p>硬重置说明。</p></article>" +
+            "<section class=\"reset-judgement\" data-reset-radar-updated-at=\"" + resetUpdatedAtText + "\" aria-label=\"重置雷达\">" +
+            "<div><h2>重置雷达 <em>事件更新 " + monthText + "月" + dayText + "日 10:24</em></h2></div>" +
+            "<article class=\"reset-judgement-card\" data-reset-track=\"banked_reset\" data-reset-track-state=\"not_announced\">" +
+            "<span>发重置卡</span><em class=\"reset-judgement-state\">未宣布</em>" +
+            "<strong>本轮是直接重置</strong><p>本轮官方信号不代表新增可储存的重置卡。</p></article>" +
+            "<article class=\"reset-judgement-card\" data-reset-track=\"hard_reset\" data-reset-track-state=\"active\">" +
+            "<span>硬重置</span><em class=\"reset-judgement-state\">已官宣</em>" +
+            "<strong>官方重置窗口开启</strong><p>等待官方完成信号。</p></article>" +
             "</section>";
         CodexRadarSnapshot htmlSnapshot;
         List<string> htmlFailures = new List<string>();
@@ -11175,14 +11242,23 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             if (!htmlSnapshot.SpeedWindowClosedAtKnown) htmlFailures.Add("SpeedWindowClosedAtKnown=false");
             if (!htmlSnapshot.ResetRadarKnown) htmlFailures.Add("ResetRadarKnown=false");
             if (!htmlSnapshot.ResetRadarUpdatedAtKnown) htmlFailures.Add("ResetRadarUpdatedAtKnown=false");
-            if (!string.Equals(htmlSnapshot.ResetCardStatus, "低", StringComparison.Ordinal))
+            if (!string.Equals(htmlSnapshot.ResetCardStatus, "未宣布", StringComparison.Ordinal))
             {
                 htmlFailures.Add("ResetCardStatus=" + htmlSnapshot.ResetCardStatus);
             }
 
-            if (!string.Equals(htmlSnapshot.HardResetStatus, "已落地", StringComparison.Ordinal))
+            if (!string.Equals(htmlSnapshot.ResetCardDescription, "本轮是直接重置", StringComparison.Ordinal))
+            {
+                htmlFailures.Add("ResetCardDescription=" + htmlSnapshot.ResetCardDescription);
+            }
+
+            if (!string.Equals(htmlSnapshot.HardResetStatus, "已官宣", StringComparison.Ordinal))
             {
                 htmlFailures.Add("HardResetStatus=" + htmlSnapshot.HardResetStatus);
+            }
+            if (!string.Equals(htmlSnapshot.HardResetDescription, "官方重置窗口开启", StringComparison.Ordinal))
+            {
+                htmlFailures.Add("HardResetDescription=" + htmlSnapshot.HardResetDescription);
             }
             if (Math.Abs(htmlSnapshot.ModelIqEfficiencyTotalTokens - 42300000.0) > 1.0)
             {

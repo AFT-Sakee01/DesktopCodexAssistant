@@ -296,7 +296,9 @@ internal sealed class CodexQuotaHistoryStore : IDisposable
         Directory.CreateDirectory(root);
         try
         {
-            DateTime now = new DateTime(2026, 7, 22, 12, 0, 0, DateTimeKind.Utc);
+            // Keep the fixture inside the seven-day retention window; a fixed historical date
+            // makes the persistence assertion expire as wall time advances.
+            DateTime now = DateTime.UtcNow;
             using (CodexQuotaHistoryStore store = new CodexQuotaHistoryStore(path))
             {
                 store.Record(80, 40, true, now.ToLocalTime().AddDays(1), true, 3, now.AddHours(-2));
