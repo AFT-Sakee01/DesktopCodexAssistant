@@ -50,6 +50,8 @@ internal sealed partial class CodexRadarForm
                 tile.QuotaKnown = state.QuotaSourceKnown &&
                     (state.Family != CodexRadarSoftwareMode.Claude ||
                      IsClaudeQuotaSnapshotFresh(quota, DateTime.UtcNow));
+                tile.QuotaSourceUpdatedKnown = quota.SourceUpdatedKnown;
+                tile.QuotaSourceUpdatedUtc = quota.SourceUpdatedUtc;
                 tile.FiveHourPercent = quota.FiveHourPercent;
                 tile.FiveHourResetKnown = quota.FiveHourResetKnown;
                 tile.FiveHourResetLocal = quota.FiveHourResetLocal;

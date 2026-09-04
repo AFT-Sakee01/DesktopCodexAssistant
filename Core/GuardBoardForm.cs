@@ -808,6 +808,21 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         return steps[next];
     }
 
+    internal void ObserveBatteryPercent(bool known, int percent, DateTime nowUtc)
+    {
+        if (this.runtime.ObserveBatteryPercent(known, percent, nowUtc))
+        {
+            PersistRuntimeState();
+        }
+    }
+
+    internal void RecordBatteryCareCommand(bool pause, DateTime requestedUtc)
+    {
+        if (pause) this.runtime.NoteBatteryCarePaused(requestedUtc);
+        else this.runtime.NoteBatteryCareRestored();
+        PersistRuntimeState();
+    }
+
     private void RequestBatteryCareToggle()
     {
         if (this.owner == null)
@@ -832,16 +847,12 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
             {
                 if (pauseActive)
                 {
-                    this.runtime.NoteBatteryCareRestored();
-                    this.statusNotice = "已恢复 80% 充电上限。";
+                    this.statusNotice = "已发送恢复 80% 充电上限指令。";
                 }
                 else
                 {
-                    this.runtime.NoteBatteryCarePaused(DateTime.UtcNow);
-                    this.statusNotice = "电池保护已暂停 24 小时。";
+                    this.statusNotice = "已发送暂停指令，按点击时间记录 24 小时。";
                 }
-
-                PersistRuntimeState();
             }
             else
             {

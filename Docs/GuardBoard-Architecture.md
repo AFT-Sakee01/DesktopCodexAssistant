@@ -1,6 +1,6 @@
 # Guard Board 架构
 
-适用版本：2.0.0.26
+适用版本：2.0.0.34
 
 本文负责电源守护状态机（睡眠防护、亮屏计时、断网自动睡眠、电池保护暂停窗口）、GUARD 看板窗口的布局与交互，以及该窗口与「特殊设置」三项程序守护的共用边界。
 
@@ -43,7 +43,9 @@ GUARD 是左缘七角色停靠队列的第四个成员，与 Network、Spec Boar
 
 ### 电池保护倒计时
 
-MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePauseHours = 24`），之后自行恢复 80% 上限。**本程序无法回读 MyASUS 的真实剩余时间**，`GuardBatteryCarePauseUntilUtcTicks` 记录的是我们成功发出 `acin_set` 的时刻加 24 小时；窗口文案按此口径书写，不宣称读取了 MyASUS 内部状态。倒计时只在命令确实离开进程后才起算——`RequestBatteryCareFromGuardBoard` 的完成回调在失败时不写时钟。
+MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePauseHours = 24`），之后自行恢复 80% 上限。**本程序无法回读 MyASUS 的真实剩余时间**，`GuardBatteryCarePauseUntilUtcTicks` 是本地记账。GUARD、操作盘和 PWR 共用 `OperationForm.RequestBatteryCareFromGuardBoard`：以点击时刻加 24 小时作为截止时间，只在成功启动厂商进程后经 `GuardBoardForm.RecordBatteryCareCommand` 保存；失败保持原记录，成功发送恢复指令清除记录。启动成功不等同于厂商已应用设置。
+
+`GuardRuntime.ObserveBatteryPercent` 在有效读数从不高于 80% 跳到高于 80% 时、且没有有效暂停记录时，以首次观察时刻补记 24 小时。连续高电量、有效窗口内再次跨越均不续期；未知读数中断基线。首次启动已高于 80% 不凭空推定起点；重启读取原截止时间而非重置 24 小时。到期只清本地记录，不自动发送额外厂商指令；挂起期间未观察到的精确跨越时刻不可回溯。PWR 和 GUARD 均以“约”标明本地推算，默认按设备 80% 上限显示，不宣称读到了 MyASUS 状态。调度归属见 `Docs/Component-Refresh-Rules.md`。
 
 ## 持久化
 

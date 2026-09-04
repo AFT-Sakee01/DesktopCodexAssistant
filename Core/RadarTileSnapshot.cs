@@ -24,6 +24,8 @@ internal sealed class RadarTileSnapshot
 
     // Quota. Percent values are REMAINING, matching what the Radar rings show.
     public bool QuotaKnown;
+    public bool QuotaSourceUpdatedKnown;
+    public DateTime QuotaSourceUpdatedUtc;
     public int FiveHourPercent;
     public bool FiveHourResetKnown;
     public DateTime FiveHourResetLocal;

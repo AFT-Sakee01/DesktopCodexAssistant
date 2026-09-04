@@ -452,10 +452,16 @@ internal sealed class SystemDayHistoryStore : IDisposable
             snapshot.BatteryEtaText = "电量未知";
             return;
         }
-        if (current.BatteryCarePauseActive && current.BatteryPercent >= 79)
+        int chargeTarget = current.BatteryCarePauseActive ? 100 : 80;
+        if ((current.PluggedIn || current.Charging) && current.BatteryPercent >= chargeTarget)
         {
-            snapshot.BatteryEtaTargetPercent = 80;
-            snapshot.BatteryEtaText = "80% 保护已到";
+            snapshot.BatteryEtaTargetPercent = chargeTarget;
+            snapshot.BatteryEtaText = chargeTarget == 80 ? "80% 保护已到" : "已充满";
+            return;
+        }
+        if (current.PluggedIn && !current.Charging)
+        {
+            snapshot.BatteryEtaText = "外接电源，未充电";
             return;
         }
         if (!current.Charging && current.RuntimeSecondsKnown && current.RuntimeSeconds > 0)
@@ -467,13 +473,16 @@ internal sealed class SystemDayHistoryStore : IDisposable
             return;
         }
 
-        int target = current.Charging && current.BatteryCarePauseActive ? 80 : current.Charging ? 100 : 0;
+        int target = current.Charging ? chargeTarget : 0;
         DateTime cutoff = current.TimestampUtc.AddHours(-3.0);
         SystemDayHistoryEntry baseline = null;
         for (int i = samples.Count - 2; i >= 0; i--)
         {
             SystemDayHistoryEntry candidate = samples[i];
-            if (!candidate.BatteryKnown || candidate.TimestampUtc < cutoff) break;
+            // Never extrapolate across a direction/AC change: a discharge segment before plugging
+            // in can otherwise turn into a fictitious charging slope (and vice versa).
+            if (!candidate.BatteryKnown || candidate.TimestampUtc < cutoff ||
+                candidate.Charging != current.Charging || candidate.PluggedIn != current.PluggedIn) break;
             int delta = current.BatteryPercent - candidate.BatteryPercent;
             if ((current.Charging && delta >= 1) || (!current.Charging && delta <= -1)) baseline = candidate;
         }
@@ -786,6 +795,48 @@ internal sealed class SystemDayHistoryStore : IDisposable
 
     internal static void RunSelfTest()
     {
+        DateTime etaNow = DateTime.UtcNow;
+        SystemDayHistoryEntry start = new SystemDayHistoryEntry
+        {
+            TimestampUtc = etaNow.AddMinutes(-10), BatteryKnown = true, BatteryPercent = 60,
+            Charging = true, PluggedIn = true
+        };
+        SystemDayHistoryEntry current = new SystemDayHistoryEntry
+        {
+            TimestampUtc = etaNow, BatteryKnown = true, BatteryPercent = 70,
+            Charging = true, PluggedIn = true
+        };
+        List<SystemDayHistoryEntry> etaSamples = new List<SystemDayHistoryEntry> { start, current };
+        SystemDayBoardSnapshot eta = SystemDayBoardSnapshot.CreateEmpty(SystemDayRange.Last24Hours, etaNow.ToLocalTime());
+        BuildBatteryEta(eta, etaSamples, current);
+        if (!eta.BatteryEtaKnown || eta.BatteryEtaTargetPercent != 80 || eta.BatteryEtaMinutes != 10)
+            throw new InvalidOperationException("Protected charging must estimate to 80%.");
+        current.BatteryCarePauseActive = true;
+        eta = SystemDayBoardSnapshot.CreateEmpty(SystemDayRange.Last24Hours, etaNow.ToLocalTime());
+        BuildBatteryEta(eta, etaSamples, current);
+        if (!eta.BatteryEtaKnown || eta.BatteryEtaTargetPercent != 100 || eta.BatteryEtaMinutes != 30)
+            throw new InvalidOperationException("Paused protection must estimate to 100%.");
+        current.BatteryCarePauseActive = false;
+        current.BatteryPercent = 80;
+        eta = SystemDayBoardSnapshot.CreateEmpty(SystemDayRange.Last24Hours, etaNow.ToLocalTime());
+        BuildBatteryEta(eta, etaSamples, current);
+        if (eta.BatteryEtaKnown || eta.BatteryEtaTargetPercent != 80 || eta.BatteryEtaText != "80% 保护已到")
+            throw new InvalidOperationException("80% protected charge must be complete.");
+        current.Charging = false;
+        current.PluggedIn = false;
+        current.RuntimeSecondsKnown = true;
+        current.RuntimeSeconds = 7200;
+        eta = SystemDayBoardSnapshot.CreateEmpty(SystemDayRange.Last24Hours, etaNow.ToLocalTime());
+        BuildBatteryEta(eta, etaSamples, current);
+        if (!eta.BatteryEtaKnown || eta.BatteryEtaTargetPercent != 0 || eta.BatteryEtaMinutes != 120)
+            throw new InvalidOperationException("Unplugged at 80% must estimate discharge, not report charge complete.");
+        current.PluggedIn = true;
+        current.BatteryPercent = 75;
+        eta = SystemDayBoardSnapshot.CreateEmpty(SystemDayRange.Last24Hours, etaNow.ToLocalTime());
+        BuildBatteryEta(eta, etaSamples, current);
+        if (eta.BatteryEtaKnown || eta.BatteryEtaText != "外接电源，未充电")
+            throw new InvalidOperationException("Idle AC must not use a cached discharge runtime.");
+
         string root = Path.Combine(Path.GetTempPath(), ProductIdentity.MachineName + "-system-day-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try

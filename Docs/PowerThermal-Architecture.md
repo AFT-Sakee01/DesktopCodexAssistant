@@ -1,6 +1,6 @@
 # 功耗与温度数据所有者架构
 
-适用版本：2.0.0.28
+适用版本：2.0.0.34
 
 本文说明 `PowerThermalForm` 作为永久 headless 数据所有者时的数据来源、采样、通知、缓存和快照边界。
 
@@ -64,7 +64,7 @@ flowchart LR
 
 基础电池信息优先从 `SystemInformation.PowerStatus` 读取，包括电池百分比、AC 状态和是否存在系统电池。没有系统电池时跳过 BatteryStatus WMI 查询。
 
-电池保养暂停没有厂商无关的 Windows 标准字段；只有当前设备专用链路已经明确提供状态时，`BatteryCarePauseActive` 才为真，不能根据充电百分比猜测。
+电池保养暂停没有厂商无关的 Windows 标准字段；sampler 不宣称读取厂商状态。`WidgetForm.ApplyBatteryCareRecord` 在交给 PWR 和 System Day 的克隆快照上叠加 `GuardRuntime` 的本地暂停记录及 `BatteryCarePauseUntilUtc`。默认按本设备 80% 保护上限，记录有效期间按 100%；记录口径及跨越检测边界见 `Docs/GuardBoard-Architecture.md`。
 
 ### 3.2 系统电源模式与节能
 
@@ -79,6 +79,8 @@ flowchart LR
 `PowerThermalManualEnergySaverThresholdPercent` 只根据最近一次电池快照决定 `EnergySaverActive` 的展示兜底，不修改 Windows 电源模式，也不让全局性能档位强制进入省电。
 
 PWR 展开详情采用图形化仪表层次：左侧电池轮廓显示电量，下面只保留实时电池功率；中部三段轨用叶片、仪表和闪电分别表示省电、平衡与性能档位，轨道下方的独立叶片开关表示系统省电模式；右侧状态图标、紧凑时长和目标词显示耗尽、充到 80%/100%、外接供电或估算状态；近 24 小时峰值使用三角标记叠在历史曲线上，底部 9 px 电量条带十等分刻度。若快照只有节能状态而不知道基础电源模式，三段轨不选择任何档位，不能把节能兜底冒充为已知基础档位。
+
+`MetricTileExpandForm.DrawBatteryCareControl` 在三档轨下方提供可点击的“80%保护”开关；开启时副行“点击暂停24h”，暂停时“恢复约 HH:MM:SS”。它与 GUARD、操作盘共用 `OperationForm.RequestBatteryCareFromGuardBoard`，在指令执行中禁止重复点击，失败可重试；不开额外 ASUS 调用路径。两行文字按实际字体高度排列；开关遵守右侧点击穿透设置，开启穿透时需先在设置中关闭穿透才能点击。右侧充电预测用当前记录选择 80%/100% 目标，达到上限显示“已到”；历史 ETA 的目标若与当前目标不一致或是放电 ETA，暂显示“充电”而不复用错误时长。
 
 ### 3.3 温度
 

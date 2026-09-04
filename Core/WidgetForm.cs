@@ -115,6 +115,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         new Dictionary<string, string>(StringComparer.Ordinal);
     private string globalHotkeyConfigurationSignature = string.Empty;
     private bool globalHotkeyConfigurationApplied;
+    private bool aiBalanceShareServerEnabled;
+    private AiBalanceShareServer aiBalanceShareServer;
 
     public WidgetForm(PdhSampler sampler, EventWaitHandle stopEvent, WidgetSettings settings, bool useDesktopParent)
     {
@@ -192,6 +194,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         SystemEvents.SessionSwitch += OnSystemSessionSwitch;
     }
 
+    internal void EnableAiBalanceShareServer()
+    {
+        this.aiBalanceShareServerEnabled = true;
+    }
+
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
@@ -219,6 +226,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         this.childWindowLifecycleStarted = true;
         EnsureRadarChildWindows();
+        StartAiBalanceShareServer();
         this.powerThermalForm = new PowerThermalForm(this.CurrentSettings);
         this.powerThermalForm.StartHeadlessDataOwner();
         InitializeSystemDayHistory();
@@ -588,6 +596,53 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         Program.LogInfo("Codex/Claude Radar headless data owner stopped.");
     }
 
+    private void StartAiBalanceShareServer()
+    {
+        if (!this.aiBalanceShareServerEnabled || this.aiBalanceShareServer != null)
+        {
+            return;
+        }
+
+        this.aiBalanceShareServer = new AiBalanceShareServer(
+            AiBalanceShareProtocol.CurrentUserPipeName,
+            BuildAiBalanceShareSnapshot);
+        this.aiBalanceShareServer.Start();
+        Program.LogInfo("AI balance share pipe started.");
+    }
+
+    private void StopAiBalanceShareServer()
+    {
+        AiBalanceShareServer server = this.aiBalanceShareServer;
+        this.aiBalanceShareServer = null;
+        if (server == null)
+        {
+            return;
+        }
+
+        server.Dispose();
+        Program.LogInfo("AI balance share pipe stopped.");
+    }
+
+    private AiBalanceShareSnapshot BuildAiBalanceShareSnapshot()
+    {
+        RadarTileSnapshot codex = RadarTileSnapshot.CreateEmpty(CodexRadarSoftwareMode.Codex);
+        RadarTileSnapshot claude = RadarTileSnapshot.CreateEmpty(CodexRadarSoftwareMode.Claude);
+        CodexRadarForm owner = this.codexRadarForm;
+        if (owner != null && !owner.IsDisposed)
+        {
+            codex = owner.BuildRadarTileSnapshot(CodexRadarSoftwareMode.Codex);
+            claude = owner.BuildRadarTileSnapshot(CodexRadarSoftwareMode.Claude);
+        }
+
+        return new AiBalanceShareSnapshot
+        {
+            GeneratedAtUtc = DateTime.UtcNow,
+            Codex = codex,
+            Claude = claude,
+            DeepSeek = DeepSeekBalanceMonitor.GetSnapshot()
+        };
+    }
+
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
@@ -663,6 +718,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         this.formClosing = true;
+        StopAiBalanceShareServer();
         BurnInProtection.SetCurrentVisualLevel(BurnInVisualLevel.Normal);
         this.childWindowLifecycleStarted = false;
         UnregisterStopEventWait();
@@ -1457,10 +1513,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             AddHistory(this.npuMemoryHistory, this.snapshot.NpuMemoryPercent);
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:update_alerts");
             UpdateAlertIconStates();
-            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:metric_tiles");
-            PushMetricTileFeed();
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:system_day_history");
             RecordSystemDaySample();
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:metric_tiles");
+            PushMetricTileFeed();
 
             DateTime nowUtc = DateTime.UtcNow;
             if (this.lastSampleDiagnosticUtc == DateTime.MinValue ||

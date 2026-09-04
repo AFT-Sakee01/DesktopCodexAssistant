@@ -7,9 +7,11 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
+using System.IO.Pipes;
 using System.Management;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
@@ -52,6 +54,11 @@ internal static class Program
         if (HasArg(args, CtfmonRestartHelperArgument))
         {
             return RunCtfmonRestartHelperCommand(args);
+        }
+
+        if (HasArg(args, "--balances"))
+        {
+            return DumpAiBalances();
         }
 
         if (HasArg(args, "--stop"))
@@ -220,6 +227,7 @@ internal static class Program
             using (PdhSampler sampler = new PdhSampler())
             using (WidgetForm form = new WidgetForm(sampler, stopEvent, settings, useDesktopParent))
             {
+                form.EnableAiBalanceShareServer();
                 Application.Run(form);
             }
 
@@ -831,6 +839,7 @@ internal static class Program
             RunNamedSelfTest("StatuspageMonitor", StatuspageMonitor.RunSelfTest);
             RunNamedSelfTest("DeepSeekServiceMonitor", DeepSeekServiceMonitor.RunSelfTest);
             RunNamedSelfTest("DeepSeekBalanceMonitor", DeepSeekBalanceMonitor.RunSelfTest);
+            RunNamedSelfTest("AiBalanceShareProtocol", AiBalanceShareProtocol.RunSelfTest);
             RunNamedSelfTest("ServiceAlertDebouncer", ServiceAlertDebouncer.RunSelfTest);
             RunNamedSelfTest("ClaudeCodeUsageReader", ClaudeCodeUsageReader.RunSelfTest);
             RunNamedSelfTest("ClaudeCodeUsageScheduler", ClaudeCodeUsageScheduler.RunSelfTest);
@@ -922,6 +931,21 @@ internal static class Program
             LogException(ex);
             return 1;
         }
+    }
+
+    private static int DumpAiBalances()
+    {
+        NativeMethods.AttachToParentConsole();
+        string json;
+        string errorCode;
+        if (AiBalanceShareClient.TryReadCurrent(2000, out json, out errorCode))
+        {
+            Console.WriteLine(json);
+            return 0;
+        }
+
+        Console.Error.WriteLine(AiBalanceShareProtocol.SerializeError(errorCode));
+        return 2;
     }
 
     private static int TestLoggerStoragePolicy()
@@ -1812,5 +1836,521 @@ internal static class Program
     internal static void LogException(Exception ex)
     {
         Logger.Error(ex);
+    }
+}
+
+internal sealed class AiBalanceShareSnapshot
+{
+    public DateTime GeneratedAtUtc { get; set; }
+    public RadarTileSnapshot Codex { get; set; }
+    public RadarTileSnapshot Claude { get; set; }
+    public DeepSeekBalanceSnapshot DeepSeek { get; set; }
+}
+
+internal static class AiBalanceShareProtocol
+{
+    internal const int SchemaVersion = 1;
+    private const string PipePrefix = ProductIdentity.MachineName + ".AiBalances.v1.";
+
+    internal static string CurrentUserPipeName
+    {
+        get
+        {
+            string identity = string.Empty;
+            try
+            {
+                WindowsIdentity current = WindowsIdentity.GetCurrent();
+                if (current != null && current.User != null)
+                {
+                    identity = current.User.Value;
+                }
+            }
+            catch
+            {
+            }
+
+            if (string.IsNullOrWhiteSpace(identity))
+            {
+                identity = Environment.UserName ?? "user";
+            }
+
+            return PipePrefix + NormalizePipeNamePart(identity);
+        }
+    }
+
+    internal static string Serialize(AiBalanceShareSnapshot snapshot)
+    {
+        if (snapshot == null)
+        {
+            throw new ArgumentNullException("snapshot");
+        }
+
+        Dictionary<string, object> root = new Dictionary<string, object>();
+        root["schema_version"] = SchemaVersion;
+        root["product"] = ProductIdentity.MachineName;
+        root["product_version"] = ProductIdentity.Version;
+        root["generated_at_utc"] = FormatUtc(snapshot.GeneratedAtUtc);
+        root["codex"] = BuildQuotaPayload(snapshot.Codex, "codex");
+        root["claude"] = BuildQuotaPayload(snapshot.Claude, "claude");
+        root["deepseek"] = BuildDeepSeekPayload(snapshot.DeepSeek);
+        return new JavaScriptSerializer().Serialize(root);
+    }
+
+    internal static string SerializeError(string errorCode)
+    {
+        string normalizedCode = string.IsNullOrWhiteSpace(errorCode)
+            ? "PIPE_ERROR"
+            : errorCode.Trim().ToUpperInvariant();
+        Dictionary<string, object> error = new Dictionary<string, object>();
+        error["code"] = normalizedCode;
+        error["message"] = GetErrorMessage(normalizedCode);
+        Dictionary<string, object> root = new Dictionary<string, object>();
+        root["schema_version"] = SchemaVersion;
+        root["error"] = error;
+        return new JavaScriptSerializer().Serialize(root);
+    }
+
+    internal static bool IsSuccessPayload(string json, out string errorCode)
+    {
+        errorCode = string.Empty;
+        Dictionary<string, object> root;
+        try
+        {
+            root = new JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>;
+        }
+        catch
+        {
+            errorCode = "INVALID_RESPONSE";
+            return false;
+        }
+
+        if (root == null || !root.ContainsKey("schema_version"))
+        {
+            errorCode = "INVALID_RESPONSE";
+            return false;
+        }
+
+        object errorObject;
+        Dictionary<string, object> error = root.TryGetValue("error", out errorObject)
+            ? errorObject as Dictionary<string, object>
+            : null;
+        if (error != null)
+        {
+            object codeObject;
+            errorCode = error.TryGetValue("code", out codeObject)
+                ? Convert.ToString(codeObject, CultureInfo.InvariantCulture)
+                : "PIPE_ERROR";
+            return false;
+        }
+
+        if (!root.ContainsKey("codex") || !root.ContainsKey("claude") || !root.ContainsKey("deepseek"))
+        {
+            errorCode = "INVALID_RESPONSE";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static Dictionary<string, object> BuildQuotaPayload(RadarTileSnapshot quota, string provider)
+    {
+        RadarTileSnapshot value = quota ?? RadarTileSnapshot.CreateEmpty(
+            string.Equals(provider, "claude", StringComparison.Ordinal)
+                ? CodexRadarSoftwareMode.Claude
+                : CodexRadarSoftwareMode.Codex);
+        Dictionary<string, object> payload = new Dictionary<string, object>();
+        payload["provider"] = provider;
+        payload["unit"] = "percent_remaining";
+        payload["known"] = value.QuotaKnown;
+        payload["source_updated_at_utc"] = value.QuotaSourceUpdatedKnown
+            ? (object)FormatUtc(value.QuotaSourceUpdatedUtc)
+            : null;
+        payload["five_hour_remaining_percent"] = value.QuotaKnown
+            ? (object)value.FiveHourPercent
+            : null;
+        payload["five_hour_limit_absent"] = value.QuotaKnown
+            ? (object)value.FiveHourLimitAbsent
+            : null;
+        payload["five_hour_reset_at_utc"] = value.QuotaKnown && value.FiveHourResetKnown
+            ? (object)FormatUtc(value.FiveHourResetLocal)
+            : null;
+        payload["weekly_remaining_percent"] = value.QuotaKnown
+            ? (object)value.WeeklyPercent
+            : null;
+        payload["weekly_reset_at_utc"] = value.QuotaKnown && value.WeeklyResetKnown
+            ? (object)FormatUtc(value.WeeklyResetLocal)
+            : null;
+        return payload;
+    }
+
+    private static Dictionary<string, object> BuildDeepSeekPayload(DeepSeekBalanceSnapshot balance)
+    {
+        DeepSeekBalanceSnapshot value = balance ?? DeepSeekBalanceSnapshot.CreateEmpty();
+        Dictionary<string, object> payload = new Dictionary<string, object>();
+        payload["provider"] = "deepseek";
+        payload["unit"] = string.IsNullOrWhiteSpace(value.Currency) ? "CNY" : value.Currency;
+        payload["api_key_configured"] = value.ApiKeyConfigured;
+        payload["known"] = value.Known;
+        payload["available"] = value.Known ? (object)value.IsAvailable : null;
+        payload["balance"] = value.Known ? (object)value.Balance : null;
+        payload["source_updated_at_utc"] = value.CheckedAtUtc != DateTime.MinValue
+            ? (object)FormatUtc(value.CheckedAtUtc)
+            : null;
+        payload["last_24_hours_usage"] = value.Last24HourUsageKnown
+            ? (object)value.Last24HourUsage
+            : null;
+        payload["runway_hours"] = value.RunwayKnown ? (object)value.RunwayHours : null;
+        payload["refreshing"] = value.RequestRunning;
+        payload["error_code"] = string.IsNullOrWhiteSpace(value.ErrorCode)
+            ? null
+            : (object)value.ErrorCode;
+        return payload;
+    }
+
+    private static string FormatUtc(DateTime value)
+    {
+        DateTime normalized = value == DateTime.MinValue ? DateTime.UtcNow : value.ToUniversalTime();
+        return normalized.ToString("O", CultureInfo.InvariantCulture);
+    }
+
+    private static string NormalizePipeNamePart(string value)
+    {
+        StringBuilder builder = new StringBuilder();
+        string source = value ?? string.Empty;
+        for (int i = 0; i < source.Length; i++)
+        {
+            char current = source[i];
+            builder.Append(char.IsLetterOrDigit(current) || current == '-' || current == '.'
+                ? current
+                : '_');
+        }
+
+        return builder.Length == 0 ? "user" : builder.ToString();
+    }
+
+    private static string GetErrorMessage(string errorCode)
+    {
+        if (string.Equals(errorCode, "HOST_UNAVAILABLE", StringComparison.Ordinal))
+        {
+            return "DesktopCodexAssistant is not running or did not expose the balance pipe.";
+        }
+
+        if (string.Equals(errorCode, "ACCESS_DENIED", StringComparison.Ordinal))
+        {
+            return "The current Windows user cannot access the balance pipe.";
+        }
+
+        if (string.Equals(errorCode, "INVALID_RESPONSE", StringComparison.Ordinal))
+        {
+            return "The balance pipe returned an invalid response.";
+        }
+
+        if (string.Equals(errorCode, "SNAPSHOT_FAILED", StringComparison.Ordinal))
+        {
+            return "The running instance could not build a balance snapshot.";
+        }
+
+        return "The balance pipe request failed.";
+    }
+
+    internal static void RunSelfTest()
+    {
+        DateTime sourceUtc = new DateTime(2026, 8, 24, 1, 2, 3, DateTimeKind.Utc);
+        RadarTileSnapshot codex = RadarTileSnapshot.CreateEmpty(CodexRadarSoftwareMode.Codex);
+        codex.QuotaKnown = true;
+        codex.QuotaSourceUpdatedKnown = true;
+        codex.QuotaSourceUpdatedUtc = sourceUtc;
+        codex.FiveHourPercent = 73;
+        codex.FiveHourResetKnown = true;
+        codex.FiveHourResetLocal = sourceUtc.AddHours(2).ToLocalTime();
+        codex.WeeklyPercent = 61;
+        codex.WeeklyResetKnown = true;
+        codex.WeeklyResetLocal = sourceUtc.AddDays(3).ToLocalTime();
+
+        RadarTileSnapshot claude = RadarTileSnapshot.CreateEmpty(CodexRadarSoftwareMode.Claude);
+        claude.QuotaKnown = true;
+        claude.QuotaSourceUpdatedKnown = true;
+        claude.QuotaSourceUpdatedUtc = sourceUtc;
+        claude.FiveHourPercent = 84;
+        claude.WeeklyPercent = 52;
+
+        DeepSeekBalanceSnapshot deepSeek = DeepSeekBalanceSnapshot.CreateEmpty();
+        deepSeek.ApiKeyConfigured = true;
+        deepSeek.Known = true;
+        deepSeek.IsAvailable = true;
+        deepSeek.Currency = "CNY";
+        deepSeek.Balance = 88.5;
+        deepSeek.CheckedAtUtc = sourceUtc;
+        deepSeek.Last24HourUsageKnown = true;
+        deepSeek.Last24HourUsage = 4.25;
+
+        AiBalanceShareSnapshot fixture = new AiBalanceShareSnapshot
+        {
+            GeneratedAtUtc = sourceUtc,
+            Codex = codex,
+            Claude = claude,
+            DeepSeek = deepSeek
+        };
+        string pipeName = ProductIdentity.MachineName + ".AiBalances.SelfTest." + Guid.NewGuid().ToString("N");
+        using (AiBalanceShareServer server = new AiBalanceShareServer(pipeName, delegate { return fixture; }))
+        {
+            server.Start();
+            string json;
+            string errorCode;
+            if (!AiBalanceShareClient.TryRead(pipeName, 2000, out json, out errorCode) ||
+                !IsSuccessPayload(json, out errorCode))
+            {
+                throw new InvalidOperationException("AI balance share round-trip failed: " + errorCode);
+            }
+
+            Dictionary<string, object> root = new JavaScriptSerializer().DeserializeObject(json)
+                as Dictionary<string, object>;
+            Dictionary<string, object> codexPayload = root["codex"] as Dictionary<string, object>;
+            Dictionary<string, object> deepSeekPayload = root["deepseek"] as Dictionary<string, object>;
+            if (codexPayload == null || deepSeekPayload == null ||
+                Convert.ToInt32(codexPayload["weekly_remaining_percent"], CultureInfo.InvariantCulture) != 61 ||
+                Math.Abs(Convert.ToDouble(deepSeekPayload["balance"], CultureInfo.InvariantCulture) - 88.5) > 0.001)
+            {
+                throw new InvalidOperationException("AI balance share JSON schema self-test failed.");
+            }
+        }
+
+        Console.WriteLine("AI balance share protocol: PASS current-user pipe + stable JSON + no network read");
+    }
+}
+
+internal sealed class AiBalanceShareServer : IDisposable
+{
+    private readonly object syncRoot = new object();
+    private readonly string pipeName;
+    private readonly Func<AiBalanceShareSnapshot> snapshotProvider;
+    private Task worker;
+    private bool stopping;
+
+    internal AiBalanceShareServer(string pipeName, Func<AiBalanceShareSnapshot> snapshotProvider)
+    {
+        if (string.IsNullOrWhiteSpace(pipeName))
+        {
+            throw new ArgumentException("A pipe name is required.", "pipeName");
+        }
+
+        this.pipeName = pipeName;
+        this.snapshotProvider = snapshotProvider ?? throw new ArgumentNullException("snapshotProvider");
+    }
+
+    internal void Start()
+    {
+        lock (this.syncRoot)
+        {
+            if (this.worker != null)
+            {
+                return;
+            }
+
+            this.stopping = false;
+            // A dedicated blocking worker avoids coupling external CLI waits to the WinForms UI
+            // thread. The provider only clones already-published snapshots and must never sample.
+            this.worker = Task.Factory.StartNew(
+                RunServerLoop,
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
+        }
+    }
+
+    public void Dispose()
+    {
+        Task running;
+        lock (this.syncRoot)
+        {
+            if (this.worker == null)
+            {
+                return;
+            }
+
+            this.stopping = true;
+            running = this.worker;
+        }
+
+        // WaitForConnection is deliberately synchronous for .NET Framework compatibility. A local
+        // wake-up connection is bounded and carries no data; it lets shutdown join the worker.
+        try
+        {
+            using (NamedPipeClientStream wake = new NamedPipeClientStream(
+                ".",
+                this.pipeName,
+                PipeDirection.In,
+                PipeOptions.None))
+            {
+                wake.Connect(250);
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            running.Wait(2000);
+        }
+        catch (AggregateException ex)
+        {
+            Program.LogException(ex.Flatten());
+        }
+
+        lock (this.syncRoot)
+        {
+            this.worker = null;
+        }
+    }
+
+    private void RunServerLoop()
+    {
+        while (!IsStopping())
+        {
+            try
+            {
+                using (NamedPipeServerStream pipe = CreateServerPipe())
+                {
+                    pipe.WaitForConnection();
+                    if (IsStopping())
+                    {
+                        continue;
+                    }
+
+                    string response;
+                    try
+                    {
+                        response = AiBalanceShareProtocol.Serialize(this.snapshotProvider());
+                    }
+                    catch (Exception ex)
+                    {
+                        Program.LogException(ex);
+                        response = AiBalanceShareProtocol.SerializeError("SNAPSHOT_FAILED");
+                    }
+
+                    using (StreamWriter writer = new StreamWriter(pipe, new UTF8Encoding(false)))
+                    {
+                        writer.WriteLine(response);
+                        writer.Flush();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!IsStopping())
+                {
+                    Program.LogException(ex);
+                    Thread.Sleep(100);
+                }
+            }
+        }
+    }
+
+    private NamedPipeServerStream CreateServerPipe()
+    {
+        SecurityIdentifier currentUser;
+        using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+        {
+            currentUser = identity == null ? null : identity.User;
+        }
+
+        if (currentUser == null)
+        {
+            throw new UnauthorizedAccessException("The current Windows user SID is unavailable.");
+        }
+
+        // Balance numbers are personal account metadata. The pipe name is user-derived for stable
+        // discovery, while the DACL is the actual boundary: only that SID may open the endpoint.
+        PipeSecurity security = new PipeSecurity();
+        security.SetOwner(currentUser);
+        security.AddAccessRule(new PipeAccessRule(
+            currentUser,
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+        return new NamedPipeServerStream(
+            this.pipeName,
+            PipeDirection.Out,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.None,
+            0,
+            4096,
+            security);
+    }
+
+    private bool IsStopping()
+    {
+        lock (this.syncRoot)
+        {
+            return this.stopping;
+        }
+    }
+}
+
+internal static class AiBalanceShareClient
+{
+    internal static bool TryReadCurrent(int timeoutMilliseconds, out string json, out string errorCode)
+    {
+        return TryRead(
+            AiBalanceShareProtocol.CurrentUserPipeName,
+            timeoutMilliseconds,
+            out json,
+            out errorCode);
+    }
+
+    internal static bool TryRead(
+        string pipeName,
+        int timeoutMilliseconds,
+        out string json,
+        out string errorCode)
+    {
+        json = string.Empty;
+        errorCode = string.Empty;
+        try
+        {
+            using (NamedPipeClientStream pipe = new NamedPipeClientStream(
+                ".",
+                pipeName,
+                PipeDirection.In,
+                PipeOptions.None))
+            {
+                int boundedTimeout = Math.Max(50, Math.Min(10000, timeoutMilliseconds));
+                pipe.Connect(boundedTimeout);
+                using (StreamReader reader = new StreamReader(pipe, Encoding.UTF8, false, 4096))
+                {
+                    Task<string> readTask = reader.ReadLineAsync();
+                    if (!readTask.Wait(boundedTimeout))
+                    {
+                        errorCode = "PIPE_TIMEOUT";
+                        return false;
+                    }
+
+                    json = readTask.Result ?? string.Empty;
+                }
+            }
+
+            return AiBalanceShareProtocol.IsSuccessPayload(json, out errorCode);
+        }
+        catch (TimeoutException)
+        {
+            errorCode = "HOST_UNAVAILABLE";
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            errorCode = "ACCESS_DENIED";
+            return false;
+        }
+        catch (IOException)
+        {
+            errorCode = "PIPE_ERROR";
+            return false;
+        }
+        catch
+        {
+            errorCode = "PIPE_ERROR";
+            return false;
+        }
     }
 }

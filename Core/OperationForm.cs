@@ -1484,79 +1484,21 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     private void BeginInvokeBatteryCarePause()
     {
-        if (this.batteryCarePauseRunning)
+        RequestBatteryCareFromGuardBoard(true, delegate(bool success, string detail)
         {
-            return;
-        }
-
-        this.batteryCarePauseRunning = true;
-        Program.LogInfo("ASUS battery care pause requested from operation panel.");
-        RenderLayeredWindow();
-        Task.Run((Action)delegate
-        {
-            string detail;
-            bool success = TryInvokeAsusBatteryCarePause(out detail);
-            Program.LogInfo("ASUS battery care pause invocation finished. Success=" + success + ", Detail=" + detail);
-            try
-            {
-                if (!this.IsDisposed && this.IsHandleCreated)
-                {
-                    this.BeginInvoke((MethodInvoker)delegate
-                    {
-                        if (!this.IsDisposed)
-                        {
-                            this.batteryCarePauseRunning = false;
-                            ShowOperationNotification(
-                                "电池保养",
-                                success ? "已发送解除 80% 充电限制指令。" : "解除 80% 限制失败：" + detail,
-                                success ? ToolTipIcon.Info : ToolTipIcon.Warning);
-                            RenderLayeredWindow();
-                        }
-                    });
-                }
-            }
-            catch (InvalidOperationException)
-            {
-            }
+            ShowOperationNotification("电池保养",
+                success ? "已发送解除 80% 充电限制指令，已记录 24 小时。" : "解除 80% 限制失败：" + detail,
+                success ? ToolTipIcon.Info : ToolTipIcon.Warning);
         });
     }
 
     private void BeginInvokeBatteryLimitRestore()
     {
-        if (this.batteryLimitRestoreRunning)
+        RequestBatteryCareFromGuardBoard(false, delegate(bool success, string detail)
         {
-            return;
-        }
-
-        this.batteryLimitRestoreRunning = true;
-        Program.LogInfo("ASUS battery 80 percent limit restore requested from operation panel.");
-        RenderLayeredWindow();
-        Task.Run((Action)delegate
-        {
-            string detail;
-            bool success = TryInvokeAsusBatteryLimitRestore(out detail);
-            Program.LogInfo("ASUS battery 80 percent limit restore invocation finished. Success=" + success + ", Detail=" + detail);
-            try
-            {
-                if (!this.IsDisposed && this.IsHandleCreated)
-                {
-                    this.BeginInvoke((MethodInvoker)delegate
-                    {
-                        if (!this.IsDisposed)
-                        {
-                            this.batteryLimitRestoreRunning = false;
-                            ShowOperationNotification(
-                                "电池保养",
-                                success ? "已发送恢复 80% 充电限制指令。" : "恢复 80% 限制失败：" + detail,
-                                success ? ToolTipIcon.Info : ToolTipIcon.Warning);
-                            RenderLayeredWindow();
-                        }
-                    });
-                }
-            }
-            catch (InvalidOperationException)
-            {
-            }
+            ShowOperationNotification("电池保养",
+                success ? "已发送恢复 80% 充电限制指令。" : "恢复 80% 限制失败：" + detail,
+                success ? ToolTipIcon.Info : ToolTipIcon.Warning);
         });
     }
 

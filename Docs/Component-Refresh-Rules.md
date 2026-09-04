@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.21
+适用版本：2.0.0.34
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -146,6 +146,7 @@ DNS 检测：
 - 严重温度采样优先于省电策略。
 - `BuildStripSnapshot()` 只读缓存，不触发 WMI、注册表或 `powercfg`。
 - `WidgetForm.BuildMetricTilePowerProjection()` 不建立 timer；只在组装 `MetricTileFeed` 时按 `MetricTilePowerProjectionRefreshIntervalMs = 5000` 最多每 5 秒 clone 一次 System Day 的 `Last24Hours` owner-memory 投影，供 PWR 展开详情绘制趋势与 ETA。
+- `WidgetForm.RecordSystemDaySample()` 在既有主采样 tick 中、推送 tile feed 之前，将缓存电量交给 GUARD 检测向上跨越 80%；只在形成新暂停记录时保存设置，不改变历史样本节奏，不新增 timer。PWR 倒计时随既有 feed 刷新，以绝对 UTC 截止时间计算；GUARD 的既有维护 tick 清理到期记录。手动暂停/恢复成功后立即刷新 PWR；与新目标不符的旧历史 ETA 暂不使用。隐藏 tile 不停止检测；休眠期间不采样，恢复后只能用首次可见读数检测跨越，不能重建睡眠期间的精确起点。
 - 全屏标志不停止采样；显示器关闭、会话锁定或系统挂起停止，恢复后清空时间戳并立即采样。
 - `PowerThermalManualEnergySaverThresholdPercent` 只根据最近电池快照影响 `EnergySaverActive`，不新增轮询。
 - `PowerThermalIntegratedEnabled` 只兼容读取且 UI 隐藏，不控制 owner、采样或可见性。

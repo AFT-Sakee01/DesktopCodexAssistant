@@ -18,8 +18,7 @@ internal sealed class GuardRuntime
 {
     // MyASUS pauses battery care for a fixed 24 hours per acin_set invocation, then restores the
     // 80% ceiling on its own. We cannot read that deadline back from MyASUS, so this clock is our
-    // own record of when we sent the pause — the board labels it as such rather than claiming to
-    // report MyASUS's true internal state.
+    // own record of the command request or an observed <=80 -> >80 edge, never vendor readback.
     internal const int BatteryCarePauseHours = 24;
 
     // The inner ring gauges how long the sleep guard has been held. There is no natural maximum for
@@ -33,6 +32,7 @@ internal sealed class GuardRuntime
     private DateTime sleepGuardSinceUtc = DateTime.MinValue;
     private DateTime displayGuardUntilUtc = DateTime.MinValue;
     private DateTime batteryCarePauseUntilUtc = DateTime.MinValue;
+    private int? lastBatteryPercent;
     private DateTime offlineSinceUtc = DateTime.MinValue;
     private DateTime lastAutoSleepUtc = DateTime.MinValue;
     private int displayGuardMinutes = WidgetSettings.DefaultGuardDisplayMinutes;
@@ -406,14 +406,32 @@ internal sealed class GuardRuntime
         return true;
     }
 
-    // Called by OperationForm right after a successful acin_set (pause) or acin80 (restore), so
-    // this clock always reflects a command we actually managed to send.
+    // Command callers pass the click time only after a successful launch. Observations pass the
+    // first crossing time. Neither path claims the vendor process actually applied the command.
     internal void NoteBatteryCarePaused(DateTime nowUtc)
     {
         this.batteryCarePauseUntilUtc = nowUtc.AddHours(BatteryCarePauseHours);
         Program.LogInfo(
             "Guard battery care pause recorded. UntilUtc=" +
             this.batteryCarePauseUntilUtc.ToString("o", CultureInfo.InvariantCulture));
+    }
+
+    internal bool ObserveBatteryPercent(bool known, int percent, DateTime nowUtc)
+    {
+        // An unknown/startup reading cannot establish an edge. Retaining only an in-memory
+        // baseline prevents restart above 80% from inventing a fresh 24-hour pause window.
+        int? previous = this.lastBatteryPercent;
+        this.lastBatteryPercent = known && percent >= 0 && percent <= 100 ? (int?)percent : null;
+        if (!previous.HasValue || !this.lastBatteryPercent.HasValue || previous.Value > 80 ||
+            percent <= 80 || this.batteryCarePauseUntilUtc > nowUtc)
+        {
+            return false;
+        }
+
+        // Do not extend an active window for repeated samples or a later discharge/recharge.
+        NoteBatteryCarePaused(nowUtc);
+        Program.LogInfo("Battery care pause inferred from an observed upward 80 percent crossing.");
+        return true;
     }
 
     // Render-harness only. The sample PNGs have to show a guard that has been held for hours, and
@@ -770,6 +788,26 @@ internal sealed class GuardRuntime
             "battery care pause expiry reports a repaint");
         AssertSelfTest(!battery.BatteryCarePauseActive, "battery care pause clears itself after 24h");
 
+        AssertSelfTest(!battery.ObserveBatteryPercent(true, 85, now), "startup above 80 does not invent a deadline");
+        battery.ObserveBatteryPercent(true, 80, now);
+        AssertSelfTest(battery.ObserveBatteryPercent(true, 81, now), "80 to 81 starts the inferred window");
+        DateTime edgeDeadline = battery.BatteryCarePauseUntilUtc;
+        battery.ObserveBatteryPercent(true, 90, now.AddHours(1));
+        battery.ObserveBatteryPercent(true, 79, now.AddHours(2));
+        battery.ObserveBatteryPercent(true, 82, now.AddHours(3));
+        AssertSelfTest(battery.BatteryCarePauseUntilUtc == edgeDeadline, "active window never extends from observations");
+        battery.NoteBatteryCareRestored();
+        AssertSelfTest(!battery.ObserveBatteryPercent(true, 90, now.AddHours(4)), "restore above 80 stays restored");
+        battery.ObserveBatteryPercent(true, 80, now.AddHours(4));
+        battery.ObserveBatteryPercent(false, 0, now.AddHours(4));
+        AssertSelfTest(!battery.ObserveBatteryPercent(true, 81, now.AddHours(4)), "unknown breaks the edge baseline");
+        battery.NoteBatteryCarePaused(now);
+        battery.Tick(now.AddHours(24));
+        AssertSelfTest(!battery.BatteryCarePauseActive &&
+            !battery.ObserveBatteryPercent(true, 82, now.AddHours(24)), "expiry at high charge does not restart the clock");
+        battery.NoteBatteryCarePaused(now.AddHours(25));
+        AssertSelfTest(battery.BatteryCarePauseUntilUtc == now.AddHours(49), "explicit command restarts 24 hours");
+
         AssertSelfTest(FormatCountdown(TimeSpan.FromSeconds(0)) == "0:00:00", "countdown zero format");
         AssertSelfTest(
             FormatCountdown(new TimeSpan(4, 32, 10)) == "4:32:10",
@@ -792,6 +830,11 @@ internal sealed class GuardRuntime
         AssertSelfTest(loaded.OfflineThresholdMinutes == 30, "offline threshold round trips");
         AssertSelfTest(loaded.SleepGuardEnabled, "sleep guard preference round trips");
         AssertSelfTest(loaded.BatteryCarePauseActive, "battery care deadline round trips");
+        AssertSelfTest(loaded.BatteryCarePauseUntilUtc == saved.BatteryCarePauseUntilUtc,
+            "restart preserves the exact deadline instead of extending it");
+        loaded.ObserveBatteryPercent(true, 95, DateTime.UtcNow);
+        AssertSelfTest(loaded.BatteryCarePauseUntilUtc == saved.BatteryCarePauseUntilUtc,
+            "startup above 80 preserves the saved deadline");
         loaded.ReleaseAll();
         saved.ReleaseAll();
 

@@ -68,11 +68,30 @@ internal sealed partial class WidgetForm
             try { power = this.powerThermalForm.BuildStripSnapshot(); }
             catch (Exception ex) { Program.LogException(ex); }
         }
+        // Observe from the existing sampling bridge even when every tile is hidden. Snapshot
+        // builders and paint remain cache-only; only an actual edge causes settings persistence.
+        if (this.operationForm != null && !this.operationForm.IsDisposed)
+        {
+            this.operationForm.ObserveBatteryPercent(
+                power != null && power.BatteryPercentKnown,
+                power == null ? 0 : power.BatteryPercent, DateTime.UtcNow);
+        }
+        ApplyBatteryCareRecord(power);
         int idleSeconds = ResolveSystemIdleSeconds();
         SystemDayWorkState state = idleSeconds >= SystemDayActiveIdleThresholdSeconds
             ? SystemDayWorkState.Idle
             : SystemDayWorkState.Active;
         store.RecordSample(this.snapshot, power, state, idleSeconds, DateTime.UtcNow);
+    }
+
+    private void ApplyBatteryCareRecord(PowerStripSnapshot power)
+    {
+        if (power == null) return;
+        GuardRuntime runtime = this.operationForm == null || this.operationForm.IsDisposed
+            ? null : this.operationForm.PeekGuardRuntime();
+        DateTime deadline = runtime == null ? DateTime.MinValue : runtime.BatteryCarePauseUntilUtc;
+        power.BatteryCarePauseActive = deadline > DateTime.UtcNow;
+        power.BatteryCarePauseUntilUtc = power.BatteryCarePauseActive ? deadline : DateTime.MinValue;
     }
 
     private static int ResolveSystemIdleSeconds()

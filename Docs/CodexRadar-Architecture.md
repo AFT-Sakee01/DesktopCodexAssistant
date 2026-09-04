@@ -1,6 +1,6 @@
 # Codex / Claude Radar 数据所有者架构
 
-适用版本：2.0.0.32
+适用版本：2.0.0.33
 
 本文说明 `CodexRadarForm` 作为永久 headless owner 时的 Codex 公共 Radar、Codex/Claude 官方额度、服务健康、任务状态和只读投影。
 
@@ -37,6 +37,7 @@
 | 左侧 Codex IQ board | `BuildCodexIqBoardSnapshot()` / `BuildServiceHealth()` | Codex 全模型 IQ、成本、耗时、token、额度趋势、名册与四项服务健康 |
 | 左侧重置与速蹬 board | `BuildResetSpeedBoardSnapshot()` | 7 天周额度余量、重置事件、速蹬窗口、重置卡余量、最近到期，以及 Radar 的发重置卡/硬重置判断 |
 | Codex Task board / Operation | `CodexTaskPresentation.SnapshotProvider` | 本地 Codex 会话任务状态 |
+| 本机 `--balances` CLI | `WidgetForm.BuildAiBalanceShareSnapshot()` | 同一运行实例内的 Codex/Claude 额度与 DeepSeek 余额，只读 JSON |
 
 Claude tile 不生成模型 IQ 或效率；其 `IqKnown`、`EfficiencyKnown` 恒为 `false`，且没有社区评分字段。
 
@@ -67,6 +68,8 @@ flowchart LR
     M --> N
     J --> O["CodexTaskPresentation snapshot"]
     N --> P["right tiles / Codex IQ / Reset-Speed boards"]
+    N --> T["current-user balance pipe"]
+    T --> U["--balances JSON"]
     O --> Q["Codex Task board / Operation"]
 ```
 
@@ -197,8 +200,11 @@ Codex IQ 与重置/速蹬 board 的底部操作轨都提供绿色“刷新”和
 - `BuildResetSpeedBoardSnapshot()`
 - `BuildServiceHealth()`
 - `CodexTaskPresentation.SnapshotProvider`
+- `WidgetForm.BuildAiBalanceShareSnapshot()`
 
 它们从一次原子发布的 `RadarPublishedProjectionState` clone 后再格式化和映射，不得跨锁读取可变 owner 字段，也不得发起 HTTP/provider 请求、读取凭据或磁盘缓存、修改 deadline、触发模型切换，或修改 reader-owned state。模型目录只在 owner 启动、成功刷新或显式 cache reload 时载入内存；5 秒 IQ 投影不轮询磁盘。
+
+常驻 `WidgetForm` 只在正式应用生命周期内启动当前 Windows 用户命名空间的 `AiBalanceShareServer`。每次客户端连接只克隆上述已发布额度与 `DeepSeekBalanceMonitor.GetSnapshot()`，按 schema 1 输出一行 JSON；服务端不接受刷新命令或输入数据。`DesktopCodexAssistant.exe --balances` 在获取成功时退出 `0`，常驻实例未运行、访问被拒绝、超时或响应无效时退出 `2` 并把机器可读错误写到 stderr。管道响应不含 token、Cookie、API Key、Authorization、provider 原文或账户标识。
 
 ## 12. 设置边界
 
@@ -214,6 +220,7 @@ Codex IQ 与重置/速蹬 board 的底部操作轨都提供绿色“刷新”和
 - 所有活动 HTTP 文本路径使用 `BoundedHttpTextReader` 的大小、总时限、取消、解压和严格 UTF-8 边界；Radar 可配置 URL 必须通过 `CodexRadarUrlPolicy` 的精确 HTTPS endpoint 与 DNS 私网拒绝。
 - 随机测试状态不能写真实额度缓存、模型目录或历史。
 - snapshot 构建异常降级为空/旧快照，不能阻塞 Widget UI tick。
+- 余额共享管道使用当前用户身份派生的版本化名称，后台阻塞线程与 UI 消息循环隔离；退出先以有界本机连接唤醒并停止管道，再释放 headless owner。
 
 建议验证：
 
@@ -225,6 +232,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 .\_build\DesktopCodexAssistant-arm64-test.exe --test-radar-display-lifecycle --iterations 20
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-tilecolumn --out .\_build\tilecolumn
 .\_build\DesktopCodexAssistant-arm64-test.exe --render-resetspeedboard --out .\_build\reset-speed
+.\_build\DesktopCodexAssistant-arm64-test.exe --balances
 ```
 
-验收重点是：owner 始终隐藏、Start/Stop 完整、两套额度与四条趋势历史按 family/window 隔离、重置与速蹬投影无同步 I/O、Codex/CLD 展开窗给出 5 小时和周额度的耗尽/重置判断、Codex 第六 board 提供 7 天历史/重置/速蹬/重置卡及两条 Radar 重置判断、CLD 仍只使用官方额度源、DeepSeek 服务健康与账户余额严格分离、Key 只以 DPAPI 密文落盘，以及 11 tile / 7 dock 布局完整。
+验收重点是：owner 始终隐藏、Start/Stop 完整、两套额度与四条趋势历史按 family/window 隔离、重置与速蹬投影无同步 I/O、Codex/CLD 展开窗给出 5 小时和周额度的耗尽/重置判断、Codex 第六 board 提供 7 天历史/重置/速蹬/重置卡及两条 Radar 重置判断、CLD 仍只使用官方额度源、DeepSeek 服务健康与账户余额严格分离、`--balances` 只返回同实例快照且不触发网络/凭据读取、Key 只以 DPAPI 密文落盘，以及 11 tile / 7 dock 布局完整。

@@ -1,6 +1,6 @@
 # Claude CLD 官方额度链架构
 
-适用版本：2.0.0.14
+适用版本：2.0.0.33
 
 本文说明共享 headless owner 内的 Claude 官方额度读取、缓存、调度、服务健康和 CLD tile 投影；Claude 不拥有公共 Radar 模型链或独立窗口。
 
@@ -103,6 +103,8 @@ Claude 服务健康由 `StatuspageMonitor` 和 Claude usage 状态共同形成�
 - `WidgetForm.BuildMetricTileFeed()` 中的 Claude tile 投影
 
 这些路径不得启动 HTTP/provider 请求、读取 token 或缓存文件、修改 quota deadline，或写入 owner state。手动刷新必须走共享刷新 token 与 owner 调度入口。
+
+同一只读边界也供 `DesktopCodexAssistant.exe --balances` 使用；跨进程 JSON 与管道生命周期的唯一事实源见 `Docs/CodexRadar-Architecture.md`，Claude 分支只输出当前已发布的官方额度快照，不另读 token、缓存或网络。
 
 ## 9. 设置与安全边界
 

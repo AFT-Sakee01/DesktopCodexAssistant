@@ -18,6 +18,8 @@ internal sealed class PowerStripSnapshot
     public int RuntimeSeconds;
     public bool EnergySaverActive;
     public bool BatteryCarePauseActive;
+    // WidgetForm overlays the GUARD local record on this cloned snapshot, never on sampler state.
+    public DateTime BatteryCarePauseUntilUtc;
     public string PowerModeText = string.Empty;
 
     // Every thermal zone that reports a real reading, plus the subset past the alert threshold.

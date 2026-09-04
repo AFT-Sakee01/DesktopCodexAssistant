@@ -73,6 +73,32 @@ internal sealed partial class MetricTileForm
         }
 
         RenderQuotaEasterEggSamples(outputDir, settings, feed);
+        RenderPowerCareSamples(outputDir, settings);
+    }
+
+    private static void RenderPowerCareSamples(string outputDir, WidgetSettings settings)
+    {
+        MetricTileFeed feed = BuildSampleFeed();
+        feed.Power.Charging = true;
+        feed.Power.PluggedIn = true;
+        feed.Power.BatteryPercent = 70;
+        feed.PowerDay.BatteryEtaTargetPercent = 80;
+        feed.PowerDay.BatteryEtaMinutes = 25;
+        RenderExpandedSample(outputDir, settings, feed, MetricTileId.Power, false, "tileexpand-power-protected.png");
+        feed.Power.BatteryCarePauseActive = true;
+        feed.Power.BatteryCarePauseUntilUtc = DateTime.UtcNow.AddHours(23).AddMinutes(42);
+        feed.PowerDay.BatteryEtaTargetPercent = 100;
+        feed.PowerDay.BatteryEtaMinutes = 75;
+        RenderExpandedSample(outputDir, settings, feed, MetricTileId.Power, false, "tileexpand-power-paused.png");
+        WidgetSettings large = settings.Clone();
+        large.MainWidgetTileLargeModeEnabled = true;
+        large.Normalize();
+        RenderExpandedSample(outputDir, large, feed, MetricTileId.Power, false, "tileexpand-power-paused-large.png");
+        feed.Power.BatteryPercent = 80;
+        feed.Power.Charging = false;
+        feed.Power.BatteryCarePauseActive = false;
+        feed.Power.BatteryCarePauseUntilUtc = DateTime.MinValue;
+        RenderExpandedSample(outputDir, settings, feed, MetricTileId.Power, false, "tileexpand-power-ceiling.png");
     }
 
     private static void RenderColumn(

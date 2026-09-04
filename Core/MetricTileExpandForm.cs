@@ -33,6 +33,10 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     // level-two state; white/neutral text therefore remains hidden until burn-in protection exits.
     private bool burnInPresentationRestored;
     private bool quotaRevivalVisible;
+    private RectangleF batteryCareHitBounds;
+    private bool batteryCareRequestPending;
+    private string batteryCareNotice = string.Empty;
+    internal Action<bool, Action<bool, string>> BatteryCareRequest;
 
     public MetricTileExpandForm(WidgetSettings settings)
     {
@@ -78,6 +82,31 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     {
         base.OnHandleCreated(e);
         ApplyMouseClickThroughStyle(this.CurrentSettings.RightTileMouseClickThroughEnabled);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button != MouseButtons.Left || this.metricId != MetricTileId.Power ||
+            this.displaySuspended || this.batteryCareRequestPending ||
+            !this.batteryCareHitBounds.Contains(e.Location) || this.BatteryCareRequest == null)
+        {
+            return;
+        }
+
+        bool pause = this.feed.Power == null || !this.feed.Power.BatteryCarePauseActive;
+        this.batteryCareRequestPending = true;
+        this.batteryCareNotice = string.Empty;
+        InvalidateLayeredRenderBuffer();
+        RenderLayeredWindow();
+        this.BatteryCareRequest(pause, delegate(bool success, string detail)
+        {
+            if (this.IsDisposed) return;
+            this.batteryCareRequestPending = false;
+            this.batteryCareNotice = success ? string.Empty : "指令失败 · 请重试";
+            InvalidateLayeredRenderBuffer();
+            if (this.Visible) RenderLayeredWindow();
+        });
     }
 
     protected override int PresentationLuminancePercent
@@ -1095,6 +1124,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         DrawRadarQuotaScrims(g, content);
         DrawPowerIdentity(g, content, accent, p);
         DrawPowerModeRail(g, content, p);
+        DrawBatteryCareControl(g, content, p);
         DrawPowerForecast(g, content, accent, p, day);
         DrawPowerPeakBadge(g, content, day);
         DrawPowerBatteryStrip(g, content, accent, p, day);
@@ -1446,6 +1476,34 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         }
     }
 
+    private void DrawBatteryCareControl(Graphics g, RectangleF content, PowerStripSnapshot power)
+    {
+        bool paused = power != null && power.BatteryCarePauseActive;
+        Color color = MetricTileForm.ResolveBurnInRingColor(
+            paused ? DesignTokens.Colors.Warning : DesignTokens.Colors.Success,
+            this.burnInVisualLevel, this.burnInPresentationRestored);
+        using (Font font = new Font(DesignTokens.UiFontFamily, S(10), FontStyle.Regular, GraphicsUnit.Pixel))
+        using (SolidBrush brush = new SolidBrush(color))
+        using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
+        {
+            // Font-derived rows keep the label/countdown apart at both normal and large scale.
+            float lineHeight = (float)Math.Ceiling(font.GetHeight(g));
+            RectangleF row = new RectangleF(content.X + S(182), content.Y + S(47), S(142), lineHeight);
+            this.batteryCareHitBounds = new RectangleF(row.X, row.Y, row.Width, lineHeight * 2 + S(2));
+            g.DrawString("80%保护", font, brush, row, format);
+            DrawPowerSaverToggle(g,
+                new RectangleF(row.Right - S(31), row.Y + Math.Max(0, (lineHeight - S(13)) / 2), S(31), S(13)),
+                !paused, color);
+            string detail = this.batteryCareRequestPending ? "指令发送中…"
+                : !string.IsNullOrEmpty(this.batteryCareNotice) ? this.batteryCareNotice
+                : paused ? "恢复约 " + GuardRuntime.FormatCountdown(TimeSpan.FromSeconds(
+                    Math.Max(0, (power.BatteryCarePauseUntilUtc - DateTime.UtcNow).TotalSeconds)))
+                : "点击暂停24h";
+            row.Y += lineHeight + S(2);
+            g.DrawString(detail, font, brush, row, format);
+        }
+    }
+
     private void DrawPowerForecastGlyph(
         Graphics g,
         RectangleF rect,
@@ -1705,12 +1763,19 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
 
         bool charging = power != null && power.Charging;
         bool pluggedIn = power != null && power.PluggedIn;
+        int chargeTarget = power != null && power.BatteryCarePauseActive ? 100 : 80;
+        if ((charging || pluggedIn) && battery >= chargeTarget)
+        {
+            return new PowerForecastPresentation("已到", chargeTarget + "%", "已达到当前充电上限",
+                PowerForecastTone.Accent, true);
+        }
         if (charging)
         {
-            int target = day != null && day.BatteryEtaTargetPercent > battery
-                ? day.BatteryEtaTargetPercent
-                : battery < 80 ? 80 : 100;
-            if (day != null && day.BatteryEtaKnown && day.BatteryEtaMinutes > 0)
+            int target = chargeTarget;
+            // A cached ETA may describe discharge or the previous protection limit. Never relabel
+            // that duration as time to a different target; wait for the next history projection.
+            if (day != null && day.BatteryEtaKnown && day.BatteryEtaMinutes > 0 &&
+                day.BatteryEtaTargetPercent == target)
             {
                 return new PowerForecastPresentation(
                     FormatPowerDuration(day.BatteryEtaMinutes),
@@ -1732,7 +1797,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         {
             return new PowerForecastPresentation(
                 "AC",
-                power != null && power.BatteryCarePauseActive ? "保养" : "供电",
+                "供电",
                 "当前无需续航估算",
                 PowerForecastTone.Accent,
                 true);
@@ -2533,10 +2598,28 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             WattsKnown = true,
             Watts = 0.0
         };
-        if (ResolvePowerForecast(plugged, null).Main != "AC")
+        if (ResolvePowerForecast(plugged, null).Main != "已到" ||
+            ResolvePowerForecast(plugged, null).Status != "80%")
         {
-            throw new InvalidOperationException("PWR must distinguish external power from battery runway.");
+            throw new InvalidOperationException("PWR must show the 80% ceiling as reached, not time to 100%.");
         }
+
+        charging.BatteryCarePauseActive = true;
+        if (ResolvePowerForecast(charging, chargingDay).Status != "到100%" ||
+            ResolvePowerForecast(charging, chargingDay).Main != "充电")
+            throw new InvalidOperationException("A changed charge target must not reuse a stale 80% duration.");
+        chargingDay.BatteryEtaTargetPercent = 100;
+        if (ResolvePowerForecast(charging, chargingDay).Main != "55m")
+            throw new InvalidOperationException("Paused care must use the 100% ETA.");
+        chargingDay.BatteryEtaTargetPercent = 0;
+        if (ResolvePowerForecast(charging, chargingDay).Main != "充电")
+            throw new InvalidOperationException("Charging must never reuse a cached discharge ETA.");
+        plugged.BatteryPercent = 75;
+        if (ResolvePowerForecast(plugged, null).Main != "AC")
+            throw new InvalidOperationException("Idle AC must not be described as discharging.");
+        discharging.BatteryPercent = 85;
+        if (ResolvePowerForecast(discharging, null).Status != "耗尽")
+            throw new InvalidOperationException("Battery operation above 80% must still predict runtime.");
 
         double idleWatts;
         if (!TryResolveLivePowerWatts(plugged, out idleWatts) || Math.Abs(idleWatts) > 0.0001)
@@ -2612,6 +2695,41 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             {
                 throw new InvalidOperationException("Expand panel must open to the left of the hovered tile.");
             }
+
+            panel.PrepareForRenderSample(MetricTileId.Power, new MetricTileFeed { Power = charging });
+            using (Bitmap bitmap = new Bitmap(panel.Width, panel.Height))
+            using (Graphics graphics = Graphics.FromImage(bitmap)) panel.DrawPanel(graphics);
+            RectangleF careBounds = panel.batteryCareHitBounds;
+            if (careBounds.IsEmpty ||
+                !new RectangleF(0, 0, panel.Width, panel.Height).Contains(careBounds))
+                throw new InvalidOperationException("PWR battery protection must have a visible, in-bounds hit target.");
+            int requests = 0;
+            bool requestedPause = true;
+            Action<bool, string> finish = null;
+            panel.BatteryCareRequest = delegate(bool pause, Action<bool, string> done)
+            {
+                requests++;
+                requestedPause = pause;
+                finish = done;
+            };
+            int hitX = (int)careBounds.Left + 2;
+            int hitY = (int)careBounds.Top + 2;
+            MouseEventArgs click = new MouseEventArgs(MouseButtons.Left, 1, hitX, hitY, 0);
+            panel.OnMouseUp(new MouseEventArgs(MouseButtons.Left, 1, 0, 0, 0));
+            panel.OnMouseUp(click);
+            panel.OnMouseUp(click);
+            if (requests != 1 || requestedPause || finish == null)
+                throw new InvalidOperationException("PWR paused protection must request restore once, ignoring outside/pending clicks.");
+            finish(false, "fixture failure");
+            charging.BatteryCarePauseActive = false;
+            panel.OnMouseUp(click);
+            if (requests != 2 || !requestedPause)
+                throw new InvalidOperationException("PWR enabled protection must request pause and allow retry after failure.");
+            finish(true, "fixture only; no hardware command");
+            panel.PrepareForRenderSample(MetricTileId.Cpu, new MetricTileFeed());
+            panel.OnMouseUp(click);
+            if (requests != 2)
+                throw new InvalidOperationException("Battery controls must not respond on another tile.");
         }
 
         WidgetSettings large = WidgetSettings.CreateDefaults();

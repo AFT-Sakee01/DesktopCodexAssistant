@@ -32,6 +32,14 @@ internal sealed partial class OperationForm
         return this.guardBoardForm.Runtime;
     }
 
+    internal void ObserveBatteryPercent(bool known, int percent, DateTime nowUtc)
+    {
+        // The hidden board already exists for guard lifetime; sampling must not reapply settings
+        // or create a presentation surface just to observe a cached battery reading.
+        if (this.guardBoardForm != null && !this.guardBoardForm.IsDisposed)
+            this.guardBoardForm.ObserveBatteryPercent(known, percent, nowUtc);
+    }
+
     internal GuardBoardForm EnsureGuardBoardForm()
     {
         if (this.guardBoardForm == null || this.guardBoardForm.IsDisposed)
@@ -253,7 +261,8 @@ internal sealed partial class OperationForm
             this.batteryLimitRestoreRunning = true;
         }
 
-        Program.LogInfo("Guard board battery care requested. Pause=" + pause.ToString());
+        DateTime requestedUtc = DateTime.UtcNow;
+        Program.LogInfo("Battery care requested. Pause=" + pause.ToString());
         RenderLayeredWindow();
         Task.Run((Action)delegate
         {
@@ -299,6 +308,12 @@ internal sealed partial class OperationForm
                             this.batteryLimitRestoreRunning = false;
                         }
 
+                        // All entrypoints share one clock and the same mutual exclusion. A failed
+                        // launch leaves the previous clock intact; success uses the original click.
+                        if (success)
+                        {
+                            EnsureGuardBoardForm().RecordBatteryCareCommand(pause, requestedUtc);
+                        }
                         RenderLayeredWindow();
                         if (completion != null)
                         {

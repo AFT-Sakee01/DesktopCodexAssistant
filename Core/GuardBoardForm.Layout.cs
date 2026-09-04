@@ -517,8 +517,8 @@ internal sealed partial class GuardBoardForm
         float progress = this.runtime.GetBatteryCarePauseProgress(nowUtc);
         Color accent = paused ? DesignTokens.Colors.Warning : DesignTokens.Colors.Success;
         string stateText = paused
-            ? "已暂停 " + GuardRuntime.FormatCountdown(this.runtime.GetBatteryCarePauseRemaining(nowUtc))
-            : "80% 上限生效";
+            ? "暂停约 " + GuardRuntime.FormatCountdown(this.runtime.GetBatteryCarePauseRemaining(nowUtc))
+            : "按 80% 上限";
         string rightScale = paused
             ? this.runtime.BatteryCarePauseUntilUtc.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture) + " 自动恢复"
             : "24 小时暂停窗口";
@@ -733,8 +733,8 @@ internal sealed partial class GuardBoardForm
                 new Rectangle(bounds.Left, y, bounds.Width, cardHeight),
                 "电池保护",
                 paused
-                    ? "已暂停 " + GuardRuntime.FormatCountdown(this.runtime.GetBatteryCarePauseRemaining(nowUtc)) + " 后自动恢复"
-                    : "80% 充电上限生效中",
+                    ? "暂停约 " + GuardRuntime.FormatCountdown(this.runtime.GetBatteryCarePauseRemaining(nowUtc)) + " 后恢复"
+                    : "按 80% 充电上限",
                 GuardCardControl.Button,
                 paused,
                 paused ? "恢复" : "暂停",
