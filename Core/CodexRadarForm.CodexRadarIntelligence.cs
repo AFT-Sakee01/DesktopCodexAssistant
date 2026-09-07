@@ -11,6 +11,10 @@ internal sealed partial class CodexRadarForm
         "https://codexradar.com/api/intelligence-efficiency-metrics";
     private const string CodexRadarInsightsUrl =
         "https://codexradar.com/api/radar-insights";
+    private const string CodexRadarArithmeticRecommendationMode =
+        "comprehensive_arithmetic_mean";
+    private const string CodexRadarWeightedRecommendationMode =
+        "comprehensive_weighted_mean";
 
     private static bool TryReadCodexRadarIntelligenceStatus(
         string modelKey,
@@ -84,10 +88,7 @@ internal sealed partial class CodexRadarForm
                 serializer.DeserializeObject(insightsContent) as Dictionary<string, object>;
             if (!HasCodexRadarIntelligenceSchema(metricsRoot, 3) ||
                 !HasCodexRadarIntelligenceSchema(insightsRoot, 1) ||
-                !string.Equals(
-                    GetQuotaString(insightsRoot, "recommendation_mode"),
-                    "comprehensive_arithmetic_mean",
-                    StringComparison.OrdinalIgnoreCase))
+                !IsSupportedCodexRadarRecommendationMode(insightsRoot))
             {
                 return false;
             }
@@ -204,6 +205,23 @@ internal sealed partial class CodexRadarForm
         return root != null &&
             TryGetQuotaNumber(root, "schema", out schema) &&
             Math.Abs(schema - expectedSchema) < 0.001;
+    }
+
+    private static bool IsSupportedCodexRadarRecommendationMode(
+        Dictionary<string, object> root)
+    {
+        string mode = GetQuotaString(root, "recommendation_mode").Trim();
+        // The site changed its published aggregate from arithmetic to weighted mean without
+        // changing schema 1. Both modes expose the same authoritative comprehensive_points
+        // contract; unknown algorithms still fail closed until their semantics are reviewed.
+        return string.Equals(
+                mode,
+                CodexRadarArithmeticRecommendationMode,
+                StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(
+                mode,
+                CodexRadarWeightedRecommendationMode,
+                StringComparison.OrdinalIgnoreCase);
     }
 
     private static string GetCodexRadarIntelligencePointKey(Dictionary<string, object> point)
@@ -381,7 +399,7 @@ internal sealed partial class CodexRadarForm
             "{\"model\":\"gpt-5.6-sol\",\"effort\":\"medium\",\"passed\":72,\"total\":112,\"iq\":96.43," +
             "\"average_price_usd\":1.5,\"average_minutes\":8,\"average_total_tokens\":800000}]}";
         string insights =
-            "{\"schema\":1,\"recommendation_mode\":\"comprehensive_arithmetic_mean\"," +
+            "{\"schema\":1,\"recommendation_mode\":\"comprehensive_weighted_mean\"," +
             "\"software_source_updated_at\":\"2026-09-07T11:20:00+09:00\"," +
             "\"visual_source_updated_at\":\"2026-09-07T11:10:00+09:00\"," +
             "\"comprehensive_points\":[" +
@@ -433,6 +451,32 @@ internal sealed partial class CodexRadarForm
                 out update))
         {
             throw new InvalidOperationException("Codex Radar intelligence adapter accepted an unsupported schema.");
+        }
+
+        if (!TryParseCodexRadarIntelligenceStatus(
+                metrics,
+                insights.Replace(
+                    CodexRadarWeightedRecommendationMode,
+                    CodexRadarArithmeticRecommendationMode),
+                "gpt_6_astra_medium",
+                false,
+                out snapshot,
+                out update))
+        {
+            throw new InvalidOperationException("Codex Radar intelligence adapter rejected the legacy arithmetic mode.");
+        }
+
+        if (TryParseCodexRadarIntelligenceStatus(
+                metrics,
+                insights.Replace(
+                    CodexRadarWeightedRecommendationMode,
+                    "comprehensive_unknown_mean"),
+                "gpt_6_astra_medium",
+                false,
+                out snapshot,
+                out update))
+        {
+            throw new InvalidOperationException("Codex Radar intelligence adapter accepted an unknown recommendation mode.");
         }
     }
 }

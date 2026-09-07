@@ -1,6 +1,6 @@
 # Desktop Codex Assistant（UX3407N / UX3607O 专调版）
 
-适用版本：2.0.0.36
+适用版本：2.0.0.37
 
 A Windows-on-Arm desktop workspace for AI-assisted development: eleven right-edge metric/quota tiles, seven left-edge dock tabs and boards, an operation panel, and an on-demand settings window. Sampling and Radar coordination run in hidden owners. Tuned for ASUS UX3407N / UX3607O; ARM64 is the formal build target.
 
@@ -72,7 +72,7 @@ DesktopCodexAssistant.exe --stop   # 停止正在运行的实例
 
 | 服务 | 用途 |
 |---|---|
-| [Codex Radar](https://codexradar.com/)（codexradar.com） | Codex 公共状态、模型 IQ、速蹬窗口、重置雷达与 RSS；结构化 `current.json` 为 IQ 主源，首页仅补缺失的速蹬窗口及成对重置判断 |
+| [Codex Radar](https://codexradar.com/)（codexradar.com） | Codex 公共状态、模型 IQ、速蹬窗口、重置雷达与 RSS；`/api/radar-insights` 的综合智能与 `/api/intelligence-efficiency-metrics` 的工程效率为 IQ 主源，`current.json` 保留窗口、RSS 和兼容回退，首页仅补缺失的速蹬窗口及成对重置判断 |
 | [OpenAI Status](https://status.openai.com/) | OpenAI 官方服务状态（Statuspage v2 API） |
 | [Anthropic Status](https://status.claude.com/) | Claude 官方服务状态（Statuspage v2 API） |
 | [DeepSeek API](https://api.deepseek.com/) | 无凭据服务可达性探测；另可选使用用户配置的 DPAPI 加密 API Key 读取官方余额 |

@@ -1,6 +1,6 @@
 # Codex / Claude Radar 数据所有者架构
 
-适用版本：2.0.0.36
+适用版本：2.0.0.37
 
 本文说明 `CodexRadarForm` 作为永久 headless owner 时的 Codex 公共 Radar、Codex/Claude 官方额度、服务健康、任务状态和只读投影。
 
@@ -106,7 +106,7 @@ family 选择只影响 provider 调度优先级和相关服务语义，不决定
 
 ## 6. Codex 公共 Radar 与模型目录
 
-只有 Codex family 读取公共 Radar 数据与模型目录。`/api/radar-insights` schema 1 的 `comprehensive_points` 是综合 IQ 权威来源，`/api/intelligence-efficiency-metrics` schema 3 为同模型补充工程通过数、任务数、平均成本、平均耗时和平均 token；adapter 按 `model + effort` 原子配对并把平均 token 转为既有投影所需的总量，任一重复键、缺项、schema 或综合算法标识不匹配即拒绝整批。`current.json` schema 2 继续负责速蹬窗口、RSS 地址和兼容性 IQ 回退；内容签名未变化时保留 source timestamp，fetch timestamp 不能伪造新批次。首页 HTML 只允许补结构化数据缺少的速蹬窗口，以及首页“重置雷达”区成对发布的“发重置卡/硬重置”状态、短结论和更新时间；这些字段有界解析、缓存并保留最多 7 天，TTL 必须按上游判断时间计算，不能由后续 IQ 抓取续期。首页撤下该区块或时间缺失、过期时清空两行并显示官网暂无判断，不能继续展示历史结论。完整综合模型目录才能推进模型缺失计数，部分损坏数据只能补充已见模型，不能证明其它模型消失。
+只有 Codex family 读取公共 Radar 数据与模型目录。`/api/radar-insights` schema 1 的 `comprehensive_points` 是综合 IQ 权威来源，adapter 接受网站已发布且保持同一 points 契约的 `comprehensive_arithmetic_mean` 与 `comprehensive_weighted_mean`，未知算法仍拒绝整批；`/api/intelligence-efficiency-metrics` schema 3 为同模型补充工程通过数、任务数、平均成本、平均耗时和平均 token。adapter 按 `model + effort` 原子配对并把平均 token 转为既有投影所需的总量，任一重复键、缺项或 schema 不匹配即拒绝整批。`current.json` schema 2 继续负责速蹬窗口、RSS 地址和兼容性 IQ 回退；内容签名未变化时保留 source timestamp，fetch timestamp 不能伪造新批次。首页 HTML 只允许补结构化数据缺少的速蹬窗口，以及首页“重置雷达”区成对发布的“发重置卡/硬重置”状态、短结论和更新时间；这些字段有界解析、缓存并保留最多 7 天，TTL 必须按上游判断时间计算，不能由后续 IQ 抓取续期。首页撤下该区块或时间缺失、过期时清空两行并显示官网暂无判断，不能继续展示历史结论。完整综合模型目录才能推进模型缺失计数，部分损坏数据只能补充已见模型，不能证明其它模型消失。
 
 分布式 Radar 的 `comparisons` 键可能附加 `_distributed` 等来源后缀。适配器先尝试精确键，再根据节点自身的 model 与 reasoning effort 生成稳定模型键；只有唯一匹配才接受，重复歧义时 fail closed。看板的 `Current` 标记跟随用户选择的稳定模型键，而不是固定跟随 `latest` 根节点。上游 `recent_days` ISO 时间戳按秒保留并以本地 ISO 秒精度写入缓存，旧版 `yyyy-MM-dd-am/pm` 历史仍可读取；来源任务数使用 10000 的防御上限，不再受手动校验设置的 100 条上限截断。
 
