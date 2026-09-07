@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -34,6 +34,10 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     private bool burnInPresentationRestored;
     private bool quotaRevivalVisible;
     private RectangleF batteryCareHitBounds;
+    // Where the last-24-hour watts peak landed on the curve, so the badge annotates the data point
+    // instead of floating at a hard-coded x in the middle of the panel.
+    private PointF powerPeakAnchor;
+    private bool powerPeakAnchorKnown;
     private bool batteryCareRequestPending;
     private string batteryCareNotice = string.Empty;
     internal Action<bool, Action<bool, string>> BatteryCareRequest;
@@ -517,7 +521,18 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     // clipped by an opaque scrim.
     private RectangleF GroundRect(RectangleF content, bool hasStrip)
     {
+        return GroundRect(content, hasStrip, false);
+    }
+
+    // hasFooter pulls the chart's lower edge above the footer band so no series runs behind it.
+    private RectangleF GroundRect(RectangleF content, bool hasStrip, bool hasFooter)
+    {
         float bottom = hasStrip ? content.Bottom - S(13) : content.Bottom;
+        if (hasFooter)
+        {
+            bottom = FooterRect(content, hasStrip).Y - S(3);
+        }
+
         float top = content.Y + content.Height * 0.16f;
         return new RectangleF(content.X, top, content.Width, Math.Max(1.0f, bottom - top));
     }
@@ -525,6 +540,241 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     private RectangleF StripRect(RectangleF content)
     {
         return new RectangleF(content.X, content.Bottom - S(9), content.Width, S(9));
+    }
+
+    // -- Footer band ------------------------------------------------------
+    // One secondary row shared by every chart panel (2.0.0.35). Legends, secondary numbers and the
+    // single interactive control live here instead of floating over the curve, so the chart band
+    // above stays clear of text and all the panels read as one family.
+    //
+    // Segment widths are measured from the actual fonts, never from guessed constants: rendered
+    // metrics on the user's machine are routinely wider than assumed and segments would silently
+    // collide. Segments flow left to right with a hairline divider between them, and a panel may
+    // reserve the right end of the band for its own control via rightLimit.
+    private const int FooterBandHeight = 24;
+    private const int FooterValueSize = 12;
+    private const int FooterKeySize = 11;
+    private const int FooterSwatchSize = 8;
+    private const int FooterSegmentPadding = 9;
+
+    private sealed class FooterSegment
+    {
+        internal string Key;
+        internal string Value;
+        internal string Text;
+        internal Color ValueColor;
+        internal bool ValueColorSet;
+        internal Color SwatchColor;
+        internal bool HasSwatch;
+        internal bool Tight;
+
+        internal static FooterSegment Make(string key, string value, string text)
+        {
+            FooterSegment segment = new FooterSegment();
+            segment.Key = key;
+            segment.Value = value;
+            segment.Text = text;
+            return segment;
+        }
+
+        internal FooterSegment WithValueColor(Color color)
+        {
+            this.ValueColor = color;
+            this.ValueColorSet = true;
+            return this;
+        }
+
+        internal FooterSegment WithSwatch(Color color)
+        {
+            this.SwatchColor = color;
+            this.HasSwatch = true;
+            return this;
+        }
+
+        // Legend entries belong to one another; a divider between them would read as two topics.
+        internal FooterSegment WithTight()
+        {
+            this.Tight = true;
+            return this;
+        }
+    }
+
+    private RectangleF FooterRect(RectangleF content, bool hasStrip)
+    {
+        float bottom = hasStrip ? content.Bottom - S(13) : content.Bottom - S(2);
+        return new RectangleF(content.X, bottom - S(FooterBandHeight), content.Width, S(FooterBandHeight));
+    }
+
+    private void DrawFooterBand(Graphics g, RectangleF content, bool hasStrip, FooterSegment[] segments)
+    {
+        DrawFooterBand(g, content, hasStrip, segments, 0.0f);
+    }
+
+    private void DrawFooterBand(Graphics g, RectangleF content, bool hasStrip, FooterSegment[] segments, float rightLimit)
+    {
+        DrawFooterBand(g, content, hasStrip, segments, rightLimit, 0.0f);
+    }
+
+    private void DrawFooterBand(Graphics g, RectangleF content, bool hasStrip, FooterSegment[] segments,
+        float rightLimit, float leftStart)
+    {
+        if (segments == null || segments.Length == 0)
+        {
+            return;
+        }
+
+        RectangleF band = FooterRect(content, hasStrip);
+        float limit = rightLimit > 0.0f ? rightLimit : band.Right;
+        bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
+        float x = leftStart > band.X ? leftStart : band.X;
+        using (Font keyFont = new Font("Segoe UI", S(FooterKeySize), FontStyle.Regular, GraphicsUnit.Pixel))
+        using (Font valueFont = new Font("Segoe UI", S(FooterValueSize), FontStyle.Bold, GraphicsUnit.Pixel))
+        {
+            for (int i = 0; i < segments.Length; i++)
+            {
+                FooterSegment segment = segments[i];
+                if (segment == null)
+                {
+                    continue;
+                }
+
+                float width = LayoutFooterSegment(g, segment, band, 0.0f, keyFont, valueFont, drawNeutral, false);
+                if (width <= 0.0f)
+                {
+                    continue;
+                }
+
+                bool tight = segment.Tight && x > band.X;
+                float leading = x > band.X
+                    ? (tight ? S(FooterSegmentPadding) : S(FooterSegmentPadding) * 2.0f + 1.0f)
+                    : 0.0f;
+                // Drop a whole segment rather than clipping it: a half-drawn number reads as a wrong
+                // number, and the user can scale this panel down.
+                if (x + leading + width > limit)
+                {
+                    break;
+                }
+
+                if (leading > 0.0f)
+                {
+                    if (!tight)
+                    {
+                        float dividerX = x + S(FooterSegmentPadding);
+                        using (Pen divider = new Pen(DesignTokens.White(28), 1.0f))
+                        {
+                            g.DrawLine(divider, dividerX, band.Y + S(5), dividerX, band.Bottom - S(5));
+                        }
+                    }
+
+                    x += leading;
+                }
+
+                x = LayoutFooterSegment(g, segment, band, x, keyFont, valueFont, drawNeutral, true);
+            }
+        }
+    }
+
+    // Measures when draw is false and paints when it is true, so the two can never disagree.
+    private float LayoutFooterSegment(Graphics g, FooterSegment segment, RectangleF band, float x,
+        Font keyFont, Font valueFont, bool drawNeutral, bool draw)
+    {
+        float cursor = x;
+        float centerY = band.Y + band.Height / 2.0f;
+        if (segment.HasSwatch)
+        {
+            float size = S(FooterSwatchSize);
+            if (draw)
+            {
+                RectangleF chipRect = new RectangleF(cursor, centerY - size / 2.0f, size, size);
+                using (GraphicsPath chip = RoundedRectangle(chipRect, Math.Max(1.0f, S(2))))
+                using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(segment.SwatchColor, 235)))
+                {
+                    g.FillPath(brush, chip);
+                }
+            }
+
+            cursor += size + S(5);
+        }
+
+        // Burn-in level two hides neutral text across the whole panel; the swatches still carry the
+        // legend, so the band degrades to colour instead of vanishing.
+        if (!drawNeutral)
+        {
+            return draw ? cursor : cursor - x;
+        }
+
+        Color keyColor = DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 215);
+        Color valueColor = segment.ValueColorSet
+            ? segment.ValueColor
+            : DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 240);
+        cursor = DrawFooterText(g, segment.Key, keyFont, keyColor, band, cursor, draw, S(5));
+        cursor = DrawFooterText(g, segment.Value, valueFont, valueColor, band, cursor, draw, S(4));
+        cursor = DrawFooterText(g, segment.Text, keyFont, keyColor, band, cursor, draw, 0.0f);
+        return draw ? cursor : cursor - x;
+    }
+
+    private static float DrawFooterText(Graphics g, string text, Font font, Color color, RectangleF band,
+        float x, bool draw, float trailingGap)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return x;
+        }
+
+        SizeF size = g.MeasureString(text, font);
+        if (draw)
+        {
+            using (SolidBrush brush = new SolidBrush(color))
+            using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
+            {
+                format.LineAlignment = StringAlignment.Center;
+                g.DrawString(text, font, brush, new RectangleF(x, band.Y, size.Width + 2.0f, band.Height), format);
+            }
+        }
+
+        return x + size.Width + trailingGap;
+    }
+
+    // -- Conclusion slot --------------------------------------------------
+    // The right-hand answer, in the same place on every panel: exactly one conclusion, the big line
+    // is the value and the small line names what it is. It starts below the caption row so the two
+    // right-aligned blocks cannot collide.
+    private const int ConclusionMainSize = 24;
+    private const int ConclusionStatusSize = 12;
+
+    private RectangleF ConclusionRect(RectangleF content)
+    {
+        float width = Math.Min(content.Width * 0.40f, S(196));
+        return new RectangleF(content.Right - width, content.Y + S(19), width, S(46));
+    }
+
+    private void DrawConclusion(Graphics g, RectangleF content, Color color, string main, string status)
+    {
+        if (!ShouldDrawNeutralText(this.burnInVisualLevel) || string.IsNullOrEmpty(main))
+        {
+            return;
+        }
+
+        RectangleF rect = ConclusionRect(content);
+        // The same light veil the header floats on. The conclusion sits over the chart, and its
+        // small status line was losing against the curve running behind it.
+        using (Font mainFont = new Font("Segoe UI", S(ConclusionMainSize), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font statusFont = new Font("Segoe UI", S(ConclusionStatusSize), FontStyle.Bold, GraphicsUnit.Pixel))
+        {
+            float veilWidth = Math.Max(
+                g.MeasureString(main, mainFont).Width,
+                string.IsNullOrEmpty(status) ? 0.0f : g.MeasureString(status, statusFont).Width);
+            veilWidth = Math.Min(veilWidth + S(6), rect.Width + S(8));
+            using (SolidBrush veil = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 60)))
+            {
+                g.FillRectangle(veil, rect.Right - veilWidth + S(4), rect.Y - S(3), veilWidth, S(48));
+            }
+        }
+
+        DrawRightAlignedText(g, main, rect, rect.Y, S(ConclusionMainSize),
+            DesignTokens.WithAlpha(color, 250), FontStyle.Bold);
+        DrawRightAlignedText(g, status, rect, rect.Y + S(28), S(ConclusionStatusSize),
+            DesignTokens.WithAlpha(color, 228), FontStyle.Bold);
     }
 
     private void DrawCaption(Graphics g, RectangleF rect, string text)
@@ -652,20 +902,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             g.DrawLine(guide, rect.Left, y, rect.Right, y);
         }
 
-        // Label right-aligned at the edge: the top-left is where the header value lives, so a
-        // left-edge "100" would hide behind it once the chart runs full-height behind the text.
-        if (ShouldDrawNeutralText(this.burnInVisualLevel))
-        {
-            float labelSize = Math.Max(6.0f, S(SubSize) * 0.66f);
-            using (Font font = new Font("Segoe UI", labelSize, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 220)))
-            using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
-            {
-                format.Alignment = StringAlignment.Far;
-                g.DrawString(((int)value).ToString(CultureInfo.InvariantCulture), font, brush,
-                    new RectangleF(rect.Right - S(34), y + S(1), S(32), labelSize + S(2)), format);
-            }
-        }
+        // No numeric label: the top-right caption and the conclusion slot both live at that edge,
+        // and the headline value already states the reading the label duplicated.
     }
 
     // Curves, guides and per-core bars must share this exact projection. In particular, a core at
@@ -763,15 +1001,30 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         // Per-core bars and the load curve share one 0-100 ground and the same bottom baseline: the
         // bars are drawn first as a background histogram of the current spread, then the filled
         // 60 s curve rides over them so both are read against one scale.
-        RectangleF ground = GroundRect(content, false);
+        RectangleF ground = GroundRect(content, false, true);
         DrawCoreBars(g, ground, cores, accent);
         DrawSpark(g, ground, this.feed.CpuHistory, accent, 100.0, true, true);
 
         DrawFloatingHeader(g, content, accent, "CPU",
-            Math.Round(s.CpuPercent).ToString("0", CultureInfo.InvariantCulture), "%",
-            string.Format(CultureInfo.InvariantCulture, "{0:0.00} / {1:0.00} GHz · {2} 核 · 峰值核心 {3:0}%",
-                s.CpuFrequencyGhz, s.CpuBaseFrequencyGhz, cores.Length, PeakOf(cores)));
+            Math.Round(s.CpuPercent).ToString("0", CultureInfo.InvariantCulture), "%", null);
         DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒");
+
+        // The hottest core is this panel's one conclusion: the average curve stays calm while a
+        // single maxed core is what actually stalls a build.
+        double peakCore = PeakOf(cores);
+        Color peakColor = peakCore >= CoreLoadDangerPercent
+            ? DesignTokens.Colors.DangerStrong
+            : (peakCore >= CoreLoadWarningPercent ? DesignTokens.Colors.Warning : accent);
+        DrawConclusion(g, content, peakColor,
+            peakCore.ToString("0", CultureInfo.InvariantCulture) + "%", "峰值核心");
+        DrawFooterBand(g, content, false, new FooterSegment[]
+        {
+            FooterSegment.Make("频率", s.CpuFrequencyGhz.ToString("0.00", CultureInfo.InvariantCulture),
+                "/ " + s.CpuBaseFrequencyGhz.ToString("0.00", CultureInfo.InvariantCulture) + " GHz"),
+            FooterSegment.Make("核心", cores.Length.ToString(CultureInfo.InvariantCulture), null),
+            FooterSegment.Make(null, null, "每核占用").WithSwatch(DesignTokens.WithAlpha(accent, 170)),
+            FooterSegment.Make(null, null, "满载核").WithSwatch(DesignTokens.Colors.DangerStrong).WithTight()
+        });
     }
 
     // Per-core bars, one per core across the shared ground, rising from the baseline. Each bar warns
@@ -817,78 +1070,42 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         double availableGb = s.MemoryAvailableGb > 0.0
             ? s.MemoryAvailableGb
             : Math.Max(0.0, s.MemoryTotalGb - s.MemoryUsedGb);
-        RectangleF ground = GroundRect(content, true);
+        RectangleF ground = GroundRect(content, true, true);
         DrawSpark(g, ground, this.feed.MemoryHistory, accent, 100.0, true, true);
         DrawSparkLineOnly(g, ground, this.feed.MemoryHardwareReservedHistory,
             DesignTokens.Colors.Warning, 100.0, 225, true);
-        DrawMemoryPressureSummary(g, content, s);
         DrawMemoryPressureHistory(g, StripRect(content), this.feed.MemoryPressureHistory, s);
 
         DrawFloatingHeader(g, content, accent, "MEM",
             Math.Round(s.MemoryPercent).ToString("0", CultureInfo.InvariantCulture), "%",
             string.Format(CultureInfo.InvariantCulture,
-                "{0:0.0}/{1:0.0} GB · 可用 {2:0.0} · GPU/NPU {3:0.0}",
+                "{0:0.0}/{1:0.0} GB · 可用 {2:0.0}",
                 s.MemoryUsedGb,
                 s.MemoryTotalGb,
-                availableGb,
-                reservedGb));
+                availableGb));
         DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒");
-    }
 
-    private void DrawMemoryPressureSummary(Graphics g, RectangleF content, PerfSnapshot s)
-    {
-        if (!ShouldDrawNeutralText(this.burnInVisualLevel))
-        {
-            return;
-        }
-
+        // Pressure moves off the coloured history strip and into the conclusion slot: text over the
+        // green/yellow/red band was unreadable at every level of that band.
         Color pressureColor = MetricTileModel.GetMemoryPressureColor(s.MemoryPressureLevel);
-        string pressureText = "压力 " + MetricTileModel.GetMemoryPressureLabel(s.MemoryPressureLevel);
-        string commitText = s.MemoryCommitLimitGb > 0.0
-            ? string.Format(
-                CultureInfo.InvariantCulture,
-                "提交 {0:0}%{1}",
-                s.MemoryCommitPercent,
-                s.MemoryCommitPercent >= 80.0 ? " 偏高" : string.Empty)
-            : "提交 --";
-        string pageOutText = string.Format(
-            CultureInfo.InvariantCulture,
-            "换出 {0}/s",
-            FormatPageOutRate(s.MemoryPageOutMegabytesPerSecond));
+        DrawConclusion(g, content, pressureColor,
+            MetricTileModel.GetMemoryPressureLabel(s.MemoryPressureLevel), "内存压力");
 
-        float y = content.Bottom - S(25);
-        float fontSize = Math.Max(7.0f, S(11.5f));
-        using (SolidBrush scrim = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 118)))
+        Color commitColor = s.MemoryCommitPercent >= 98.0
+            ? DesignTokens.Colors.DangerStrong
+            : (s.MemoryCommitPercent >= 80.0 ? DesignTokens.Colors.Warning : DesignTokens.Colors.TextMuted);
+        FooterSegment commit = s.MemoryCommitLimitGb > 0.0
+            ? FooterSegment.Make("提交",
+                s.MemoryCommitPercent.ToString("0", CultureInfo.InvariantCulture) + "%",
+                s.MemoryCommitPercent >= 80.0 ? "偏高" : null).WithValueColor(
+                    DesignTokens.WithAlpha(commitColor, 240))
+            : FooterSegment.Make("提交", "--", null);
+        DrawFooterBand(g, content, true, new FooterSegment[]
         {
-            g.FillRectangle(
-                scrim,
-                content.X,
-                y - S(1),
-                content.Width,
-                fontSize + S(5));
-        }
-
-        using (Font font = new Font("Segoe UI", fontSize, FontStyle.Bold, GraphicsUnit.Pixel))
-        using (Font detailFont = new Font("Segoe UI", fontSize, FontStyle.Regular, GraphicsUnit.Pixel))
-        using (SolidBrush pressureBrush = new SolidBrush(DesignTokens.WithAlpha(pressureColor, 235)))
-        using (SolidBrush detailBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 190)))
-        using (SolidBrush commitBrush = new SolidBrush(DesignTokens.WithAlpha(
-            s.MemoryCommitPercent >= 98.0
-                ? DesignTokens.Colors.DangerStrong
-                : (s.MemoryCommitPercent >= 80.0 ? DesignTokens.Colors.Warning : DesignTokens.Colors.TextMuted),
-            220)))
-        {
-            g.DrawString(pressureText, font, pressureBrush, content.X, y);
-            SizeF pageOutSize = g.MeasureString(pageOutText, detailFont);
-            SizeF separatorSize = g.MeasureString(" · ", detailFont);
-            SizeF commitSize = g.MeasureString(commitText, detailFont);
-            float pageOutX = content.Right - pageOutSize.Width;
-            float separatorX = pageOutX - separatorSize.Width;
-            float commitX = separatorX - commitSize.Width;
-            g.DrawString(commitText, detailFont, commitBrush, commitX, y);
-            g.DrawString(" · ", detailFont, detailBrush, separatorX, y);
-            g.DrawString(pageOutText, detailFont, detailBrush, pageOutX, y);
-        }
+            commit,
+            FooterSegment.Make("换出", FormatPageOutRate(s.MemoryPageOutMegabytesPerSecond) + "/s", null),
+            FooterSegment.Make("GPU/NPU", reservedGb.ToString("0.0", CultureInfo.InvariantCulture) + " GB", null)
+        });
     }
 
     private void DrawMemoryPressureHistory(
@@ -963,7 +1180,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     // ── Disk ─────────────────────────────────────────────────────────────
     private void DrawDisk(Graphics g, RectangleF content, Color accent, PerfSnapshot s)
     {
-        RectangleF ground = GroundRect(content, true);
+        RectangleF ground = GroundRect(content, true, true);
         // Write and read share one auto-scaled axis so their relative magnitude stays honest; the
         // read line usually hugs the floor because Windows serves most reads from cache.
         double max = Math.Max(PeakOf(this.feed.DiskWriteHistory), PeakOf(this.feed.DiskReadHistory)) * 1.15;
@@ -975,12 +1192,21 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         DrawSegmentBar(g, StripRect(content), new double[] { capacityPercent }, new Color[] { accent }, new int[] { 215 });
 
         DrawFloatingHeader(g, content, accent, "DISK",
-            Math.Round(s.DiskPercent).ToString("0", CultureInfo.InvariantCulture), "%",
-            string.Format(CultureInfo.InvariantCulture, "W 写入 {0}    R 读取 {1}",
-                NetworkRateFormatter.FormatStorage(s.DiskWriteBytesPerSecond),
-                NetworkRateFormatter.FormatStorage(s.DiskReadBytesPerSecond)));
-        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)),
-            string.Format(CultureInfo.InvariantCulture, "{0:0} / {1:0} GB", s.DiskUsedGb, s.DiskTotalGb));
+            Math.Round(s.DiskPercent).ToString("0", CultureInfo.InvariantCulture), "%", null);
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒");
+
+        // Free space is the question a disk panel actually answers; the right half used to be empty.
+        double freeGb = Math.Max(0.0, s.DiskTotalGb - s.DiskUsedGb);
+        DrawConclusion(g, content, accent, freeGb.ToString("0", CultureInfo.InvariantCulture), "GB 可用");
+        DrawFooterBand(g, content, true, new FooterSegment[]
+        {
+            FooterSegment.Make("写", NetworkRateFormatter.FormatStorage(s.DiskWriteBytesPerSecond), null)
+                .WithSwatch(DesignTokens.Colors.Warning),
+            FooterSegment.Make("读", NetworkRateFormatter.FormatStorage(s.DiskReadBytesPerSecond), null)
+                .WithSwatch(DesignTokens.Colors.Success),
+            FooterSegment.Make("容量",
+                string.Format(CultureInfo.InvariantCulture, "{0:0} / {1:0} GB", s.DiskUsedGb, s.DiskTotalGb), null)
+        });
     }
 
     // ── Network ──────────────────────────────────────────────────────────
@@ -993,7 +1219,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         // current product while down/up remain identifiable without a legend.
         DrawMirrorChart(
             g,
-            GroundRect(content, false),
+            GroundRect(content, false, true),
             this.feed.NetworkReceivedHistory,
             this.feed.NetworkSentHistory,
             DesignTokens.Colors.AccentSoft,
@@ -1007,10 +1233,44 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             ? s.NetworkRssiDbm.ToString(CultureInfo.InvariantCulture) + " dBm"
             : (s.NetworkConnected ? "正常" : "断开");
 
-        DrawFloatingHeader(g, content, accent, "NET", string.Empty, null,
-            "↓ 下行 " + FormatRate(s.NetworkReceivedBytesPerSecond) +
-            "    ↑ 上行 " + FormatRate(s.NetworkSentBytesPerSecond));
-        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), link + " · " + signal);
+        // NET was the only panel with no headline number, leaving its top-left blank. Downstream
+        // throughput is what the tile is watched for, so it takes the headline; the footer keeps
+        // both directions explicit with the same colours the mirror chart uses.
+        string downValue;
+        string downUnit;
+        SplitRate(s.NetworkReceivedBytesPerSecond, out downValue, out downUnit);
+        DrawFloatingHeader(g, content, accent, "NET", downValue, "↓ " + downUnit, null);
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒");
+
+        Color signalColor = s.NetworkConnected ? accent : DesignTokens.Colors.DangerStrong;
+        DrawConclusion(g, content, signalColor,
+            s.NetworkRssiKnown ? s.NetworkRssiDbm.ToString(CultureInfo.InvariantCulture) : signal,
+            s.NetworkRssiKnown ? "dBm 信号" : "链路状态");
+        DrawFooterBand(g, content, false, new FooterSegment[]
+        {
+            FooterSegment.Make("下行", FormatRate(s.NetworkReceivedBytesPerSecond), null)
+                .WithSwatch(DesignTokens.Colors.AccentSoft),
+            FooterSegment.Make("上行", FormatRate(s.NetworkSentBytesPerSecond), null)
+                .WithSwatch(DesignTokens.Colors.Danger),
+            FooterSegment.Make("链路", link, null)
+        });
+    }
+
+    // The header needs the number and its unit separately; the shared rate formatter returns them
+    // as one string, so split on the last space instead of duplicating the unit ladder here.
+    private static void SplitRate(double bytesPerSecond, out string value, out string unit)
+    {
+        string text = FormatRate(bytesPerSecond);
+        int space = text.LastIndexOf(' ');
+        if (space <= 0)
+        {
+            value = text;
+            unit = string.Empty;
+            return;
+        }
+
+        value = text.Substring(0, space);
+        unit = text.Substring(space + 1);
     }
 
     private void DrawMirrorChart(Graphics g, RectangleF rect, List<double> down, List<double> up, Color downColor, Color upColor)
@@ -1085,31 +1345,52 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     {
         DrawAcceleratorPanel(g, content, accent, "GPU", s.GpuPercent, s.GpuMemoryPercent,
             this.feed.GpuHistory, this.feed.GpuMemoryHistory,
-            string.Format(CultureInfo.InvariantCulture, "VRAM {0:0.0} / {1:0.0} GB · 占用 {2:0.0}%",
-                s.GpuMemoryUsedGb, s.GpuMemoryTotalGb, s.GpuMemoryPercent),
-            "60 秒 亮=占用 淡=显存 · 底条=显存");
+            s.GpuMemoryPercent.ToString("0.0", CultureInfo.InvariantCulture) + "%", "显存占用",
+            new FooterSegment[]
+            {
+                FooterSegment.Make(null, null, "占用").WithSwatch(accent),
+                FooterSegment.Make(null, null, "显存")
+                    .WithSwatch(DesignTokens.WithAlpha(accent, 115)).WithTight(),
+                FooterSegment.Make("VRAM", string.Format(CultureInfo.InvariantCulture,
+                    "{0:0.0} / {1:0.0} GB", s.GpuMemoryUsedGb, s.GpuMemoryTotalGb), null),
+                FooterSegment.Make("底条", null, "显存占比")
+            });
     }
 
     private void DrawNpu(Graphics g, RectangleF content, Color accent, PerfSnapshot s)
     {
+        // The NPU idles at 0% almost all the time, which left the panel visually empty; the idle
+        // verdict fills the conclusion slot instead of hiding at the end of a sub line.
+        bool npuIdle = s.NpuPercent <= 0.5;
         DrawAcceleratorPanel(g, content, accent, "NPU", s.NpuPercent, s.NpuMemoryPercent,
             this.feed.NpuHistory, this.feed.NpuMemoryHistory,
-            string.Format(CultureInfo.InvariantCulture, "内存 {0:0.0} / {1:0.0} GB · {2}",
-                s.NpuMemoryUsedGb, s.NpuMemoryTotalGb, s.NpuPercent <= 0.5 ? "当前空闲" : "推理中"),
-            "60 秒 亮=占用 淡=内存 · 底条=内存");
+            npuIdle ? "空闲" : "推理中",
+            npuIdle ? "近 60 秒无负载" : "当前推理",
+            new FooterSegment[]
+            {
+                FooterSegment.Make(null, null, "占用").WithSwatch(accent),
+                FooterSegment.Make(null, null, "内存")
+                    .WithSwatch(DesignTokens.WithAlpha(accent, 115)).WithTight(),
+                FooterSegment.Make("内存", string.Format(CultureInfo.InvariantCulture,
+                    "{0:0.0} / {1:0.0} GB", s.NpuMemoryUsedGb, s.NpuMemoryTotalGb), null)
+            });
     }
 
-    private void DrawAcceleratorPanel(Graphics g, RectangleF content, Color accent, string label, double percent, double memoryPercent, List<double> load, List<double> memory, string subLine, string caption)
+    private void DrawAcceleratorPanel(Graphics g, RectangleF content, Color accent, string label,
+        double percent, double memoryPercent, List<double> load, List<double> memory,
+        string conclusionMain, string conclusionStatus, FooterSegment[] footer)
     {
-        RectangleF ground = GroundRect(content, true);
+        RectangleF ground = GroundRect(content, true, true);
         DrawSpark(g, ground, load, accent, 100.0, true, true);
         DrawSparkLineOnly(g, ground, memory, accent, 100.0, 115, false);
         DrawSegmentBar(g, StripRect(content), new double[] { memoryPercent }, new Color[] { accent }, new int[] { 200 });
 
         DrawFloatingHeader(g, content, accent, label,
             Math.Round(MetricTileModel.Clamp(percent, 0.0, 100.0)).ToString("0", CultureInfo.InvariantCulture), "%",
-            subLine);
-        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), caption);
+            null);
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), "60 秒");
+        DrawConclusion(g, content, accent, conclusionMain, conclusionStatus);
+        DrawFooterBand(g, content, true, footer);
     }
 
     // ── Power ────────────────────────────────────────────────────────────
@@ -1120,13 +1401,15 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     {
         PowerStripSnapshot p = this.feed.Power;
         SystemDayBoardSnapshot day = this.feed.PowerDay;
-        DrawPowerHistory(g, GroundRect(content, true), p, day);
+        DrawPowerHistory(g, GroundRect(content, true, true), p, day);
         DrawRadarQuotaScrims(g, content);
         DrawPowerIdentity(g, content, accent, p);
-        DrawPowerModeRail(g, content, p);
-        DrawBatteryCareControl(g, content, p);
         DrawPowerForecast(g, content, accent, p, day);
         DrawPowerPeakBadge(g, content, day);
+        // The care chip owns the right end of the footer band and is the only thing on this panel
+        // that reacts to a click, so the mode and saver indicators next to it are drawn flat.
+        float careLeft = DrawBatteryCareControl(g, content, p);
+        DrawPowerFooter(g, content, p, careLeft);
         DrawPowerBatteryStrip(g, content, accent, p, day);
     }
 
@@ -1172,184 +1455,258 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             charging ? DesignTokens.Colors.DangerStrong : DesignTokens.Colors.Accent,
             this.burnInVisualLevel,
             this.burnInPresentationRestored);
+        this.powerPeakAnchorKnown = false;
+        if (watts.Count >= 2 && wattsPeak > 0.0)
+        {
+            int peakIndex = 0;
+            for (int i = 1; i < watts.Count; i++)
+            {
+                if (watts[i] > watts[peakIndex])
+                {
+                    peakIndex = i;
+                }
+            }
+
+            // Same projection DrawSpark uses, so the marker cannot drift off the point it labels.
+            float step = ground.Width / (watts.Count - 1);
+            this.powerPeakAnchor = new PointF(
+                ground.X + peakIndex * step,
+                ResolvePlotY(ground, wattsPeak, Math.Max(1.0, wattsPeak)));
+            this.powerPeakAnchorKnown = true;
+        }
+
         DrawSpark(g, ground, watts, wattsColor, Math.Max(1.0, wattsPeak), true, false);
         DrawSparkLineOnly(g, ground, battery, batteryColor, 100.0, 205, true);
     }
 
+    // Same headline shape as every other panel. The battery outline this replaces carried only the
+    // percentage, which the ten-tick strip along the bottom edge already shows full width.
     private void DrawPowerIdentity(
         Graphics g,
         RectangleF content,
         Color accent,
         PowerStripSnapshot power)
     {
-        bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
         Color dataAccent = MetricTileForm.ResolveBurnInRingColor(
             accent,
             this.burnInVisualLevel,
             this.burnInPresentationRestored);
         int battery = ResolvePowerBatteryPercent(power);
-        using (Font labelFont = new Font(DesignTokens.UiFontFamily, S(15), FontStyle.Bold, GraphicsUnit.Pixel))
-        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.WithAlpha(dataAccent, 235)))
-        {
-            g.DrawString("PWR", labelFont, labelBrush, content.X, content.Y);
-        }
-
-        RectangleF batteryRect = new RectangleF(
-            content.X,
-            content.Y + S(23),
-            S(69),
-            S(29));
-        Color batteryColor = power != null && power.Charging
-            ? DesignTokens.Colors.DangerStrong
-            : battery >= 0 && battery <= 20
-                ? DesignTokens.Colors.DangerStrong
-                : dataAccent;
-        DrawPowerBatteryGlyph(g, batteryRect, battery, batteryColor, drawNeutral);
-
         double watts;
         bool wattsKnown = TryResolveLivePowerWatts(power, out watts);
-        string wattsText = wattsKnown
-            ? watts.ToString("0.0", CultureInfo.InvariantCulture) + " W"
-            : "-- W";
-        DrawText(g, wattsText, content.X + S(3), content.Y + S(57), S(13.5f),
-            DesignTokens.WithAlpha(DesignTokens.Colors.TextStrong, 230), FontStyle.Bold);
+        DrawFloatingHeader(g, content, dataAccent, "PWR",
+            battery >= 0 ? battery.ToString(CultureInfo.InvariantCulture) : "--",
+            battery >= 0 ? "%" : null,
+            wattsKnown ? watts.ToString("0.0", CultureInfo.InvariantCulture) + " W" : "-- W");
     }
 
-    private void DrawPowerBatteryGlyph(
+    private void DrawPowerForecast(
         Graphics g,
-        RectangleF rect,
-        int battery,
-        Color color,
-        bool drawValue)
+        RectangleF content,
+        Color accent,
+        PowerStripSnapshot power,
+        SystemDayBoardSnapshot day)
     {
-        RectangleF body = new RectangleF(rect.X, rect.Y, rect.Width - S(6), rect.Height);
-        RectangleF nub = new RectangleF(body.Right + S(1), body.Y + body.Height * 0.32f, S(5), body.Height * 0.36f);
-        using (GraphicsPath bodyPath = RoundedRectangle(body, Math.Max(2.0f, S(5))))
-        using (SolidBrush trackBrush = new SolidBrush(DesignTokens.White(22)))
-        using (Pen outline = new Pen(DesignTokens.WithAlpha(color, 230), Math.Max(1.0f, S(1.2f))))
-        using (SolidBrush nubBrush = new SolidBrush(DesignTokens.WithAlpha(color, 215)))
-        {
-            g.FillPath(trackBrush, bodyPath);
-            if (battery >= 0)
-            {
-                RectangleF inner = RectangleF.Inflate(body, -S(3), -S(3));
-                float fillWidth = inner.Width * (float)(battery / 100.0);
-                GraphicsState clipState = g.Save();
-                g.SetClip(bodyPath, CombineMode.Intersect);
-                using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 88)))
-                {
-                    g.FillRectangle(fill, inner.X, inner.Y, Math.Max(0.0f, fillWidth), inner.Height);
-                }
-
-                g.Restore(clipState);
-            }
-
-            g.DrawPath(outline, bodyPath);
-            g.FillRectangle(nubBrush, nub);
-        }
-
-        if (!drawValue)
+        PowerForecastPresentation forecast = ResolvePowerForecast(power, day);
+        if (!forecast.Known && !ShouldDrawNeutralText(this.burnInVisualLevel))
         {
             return;
         }
 
-        string value = battery >= 0
-            ? battery.ToString(CultureInfo.InvariantCulture) + "%"
-            : "--";
-        using (Font font = new Font(DesignTokens.MonoFontFamily, S(14), FontStyle.Bold, GraphicsUnit.Pixel))
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.TextStrong, 238)))
-        using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
+        Color stateColor = MetricTileForm.ResolveBurnInRingColor(
+            ResolvePowerForecastColor(forecast.Tone, accent),
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
+        // The qualifier moves to the caption slot so the conclusion itself stays a single answer.
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)),
+            power != null && power.Charging ? "按当前充电功率" : "按近 24h 趋势");
+        DrawConclusion(g, content, stateColor, forecast.Main, forecast.Status);
+    }
+
+    // Anchored to the peak sample and clamped inside the content box, so it reads as a chart
+    // annotation rather than a fourth line of text in the middle of the panel.
+    private void DrawPowerPeakBadge(Graphics g, RectangleF content, SystemDayBoardSnapshot day)
+    {
+        double peak = ResolvePowerWattsPeak(day);
+        if (peak <= 0.0 || !this.powerPeakAnchorKnown || !ShouldDrawNeutralText(this.burnInVisualLevel))
         {
-            format.Alignment = StringAlignment.Center;
-            format.LineAlignment = StringAlignment.Center;
-            g.DrawString(value, font, brush, body, format);
+            return;
+        }
+
+        Color color = MetricTileForm.ResolveBurnInRingColor(
+            DesignTokens.Colors.Warning,
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
+        string text = "▲ " + peak.ToString("0.0", CultureInfo.InvariantCulture) + " W";
+        float size = S(10.5f);
+        using (Font font = new Font("Segoe UI", size, FontStyle.Bold, GraphicsUnit.Pixel))
+        {
+            float width = g.MeasureString(text, font).Width;
+            // The peak always resolves to the top of its own scale, so the label goes just below the
+            // point: placing it above would drop it straight into the caption row.
+            float y = Math.Max(this.powerPeakAnchor.Y + S(2), content.Y + S(CaptionSize) + S(3));
+            RectangleF conclusion = ConclusionRect(content);
+            float rightBound = y + size >= conclusion.Y && y <= conclusion.Bottom
+                ? conclusion.X - S(6)
+                : content.Right;
+            float x = this.powerPeakAnchor.X - width / 2.0f;
+            x = Math.Max(content.X, Math.Min(x, rightBound - width));
+            using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 240)))
+            {
+                g.DrawString(text, font, brush, x, y);
+            }
         }
     }
 
-    private void DrawPowerModeRail(Graphics g, RectangleF content, PowerStripSnapshot power)
+    private void DrawPowerFooter(Graphics g, RectangleF content, PowerStripSnapshot power, float rightLimit)
     {
-        PowerModeVisual active = ResolvePowerModeVisual(power);
-        RectangleF rail = new RectangleF(content.X + S(96), content.Y + S(10), S(228), S(34));
-        float segmentWidth = rail.Width / 3.0f;
-        using (GraphicsPath track = RoundedRectangle(rail, Math.Max(2.0f, S(8))))
-        using (SolidBrush trackBrush = new SolidBrush(DesignTokens.White(18)))
-        using (Pen trackPen = new Pen(DesignTokens.White(42), Math.Max(1.0f, S(1))))
-        {
-            g.FillPath(trackBrush, track);
-            g.DrawPath(trackPen, track);
-        }
-
-        for (int i = 0; i < 3; i++)
-        {
-            PowerModeVisual mode = i == 0
-                ? PowerModeVisual.Saver
-                : i == 1
-                    ? PowerModeVisual.Balanced
-                    : PowerModeVisual.Performance;
-            RectangleF segment = new RectangleF(
-                rail.X + i * segmentWidth,
-                rail.Y,
-                segmentWidth,
-                rail.Height);
-            Color modeColor = ResolvePowerModeColor(mode);
-            bool selected = mode == active;
-            if (selected)
-            {
-                RectangleF selectedRect = RectangleF.Inflate(segment, -S(2), -S(2));
-                using (GraphicsPath selectedPath = RoundedRectangle(selectedRect, Math.Max(2.0f, S(6))))
-                using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(modeColor, 42)))
-                using (Pen outline = new Pen(DesignTokens.WithAlpha(modeColor, 180), Math.Max(1.0f, S(1))))
-                {
-                    g.FillPath(fill, selectedPath);
-                    g.DrawPath(outline, selectedPath);
-                }
-            }
-
-            if (i > 0)
-            {
-                using (Pen separator = new Pen(DesignTokens.White(28), Math.Max(1.0f, S(1))))
-                {
-                    g.DrawLine(separator, segment.Left, segment.Top + S(7), segment.Left, segment.Bottom - S(7));
-                }
-            }
-
-            Color glyphColor = selected
-                ? modeColor
-                : DesignTokens.Colors.GlyphMuted;
-            RectangleF icon = new RectangleF(segment.X + S(14), segment.Y + S(9), S(16), S(16));
-            DrawPowerModeGlyph(g, icon, mode, glyphColor);
-            if (ShouldDrawNeutralText(this.burnInVisualLevel))
-            {
-                string label = mode == PowerModeVisual.Saver
-                    ? "省"
-                    : mode == PowerModeVisual.Balanced
-                        ? "衡"
-                        : "性";
-                using (Font font = new Font(DesignTokens.UiFontFamily, S(12), FontStyle.Bold, GraphicsUnit.Pixel))
-                using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(glyphColor, selected ? 245 : 190)))
-                using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
-                {
-                    format.LineAlignment = StringAlignment.Center;
-                    g.DrawString(label, font, brush,
-                        new RectangleF(icon.Right + S(6), segment.Y, S(26), segment.Height), format);
-                }
-            }
-        }
-
+        RectangleF band = FooterRect(content, true);
+        float x = DrawPowerModeIndicator(g, band, power);
         bool saverActive = power != null && power.EnergySaverActive;
         Color saverColor = saverActive
             ? MetricTileForm.ResolveBurnInRingColor(
-                DesignTokens.Colors.Success,
-                this.burnInVisualLevel,
-                this.burnInPresentationRestored)
+                DesignTokens.Colors.Success, this.burnInVisualLevel, this.burnInPresentationRestored)
             : DesignTokens.Colors.GlyphMuted;
-        RectangleF leaf = new RectangleF(rail.X + S(12), rail.Bottom + S(8), S(15), S(15));
-        DrawPowerLeafGlyph(g, leaf, saverColor);
-        DrawPowerSaverToggle(
-            g,
-            new RectangleF(leaf.Right + S(8), leaf.Y + S(1), S(31), S(13)),
-            saverActive,
-            saverColor);
+        DrawFooterBand(g, content, true, new FooterSegment[]
+        {
+            FooterSegment.Make("省电", saverActive ? "开" : "关", null)
+                .WithValueColor(DesignTokens.WithAlpha(saverColor, 245))
+                .WithSwatch(saverColor)
+        }, rightLimit, x);
+    }
+
+    // Flat by design. The previous rail drew a rounded track, a filled selection block and a pill
+    // switch, so two of the three things in this band looked pressable while only the battery-care
+    // chip actually was; power mode and energy saver are read-only projections of Windows state.
+    private float DrawPowerModeIndicator(Graphics g, RectangleF band, PowerStripSnapshot power)
+    {
+        PowerModeVisual active = ResolvePowerModeVisual(power);
+        bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
+        float x = band.X;
+        float centerY = band.Y + band.Height / 2.0f;
+        using (Font keyFont = new Font("Segoe UI", S(FooterKeySize), FontStyle.Regular, GraphicsUnit.Pixel))
+        using (Font labelFont = new Font("Segoe UI", S(FooterValueSize), FontStyle.Bold, GraphicsUnit.Pixel))
+        {
+            if (drawNeutral)
+            {
+                x = DrawFooterText(g, "档位", keyFont,
+                    DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 215), band, x, true, S(6));
+            }
+
+            for (int i = 0; i < 3; i++)
+            {
+                PowerModeVisual mode = i == 0
+                    ? PowerModeVisual.Saver
+                    : (i == 1 ? PowerModeVisual.Balanced : PowerModeVisual.Performance);
+                bool selected = mode == active;
+                Color color = selected
+                    ? MetricTileForm.ResolveBurnInRingColor(
+                        ResolvePowerModeColor(mode), this.burnInVisualLevel, this.burnInPresentationRestored)
+                    : DesignTokens.Colors.GlyphMuted;
+                float glyph = S(12);
+                DrawPowerModeGlyph(g, new RectangleF(x, centerY - glyph / 2.0f, glyph, glyph),
+                    mode, DesignTokens.WithAlpha(color, selected ? 245 : 150));
+                x += glyph + S(3);
+                if (!drawNeutral)
+                {
+                    x += S(6);
+                    continue;
+                }
+
+                string label = mode == PowerModeVisual.Saver
+                    ? "省"
+                    : (mode == PowerModeVisual.Balanced ? "衡" : "性");
+                float labelStart = x;
+                float trailing = i < 2 ? S(8) : S(2);
+                x = DrawFooterText(g, label, labelFont,
+                    DesignTokens.WithAlpha(color, selected ? 250 : 165), band, x, true, trailing);
+                if (selected)
+                {
+                    using (Pen underline = new Pen(DesignTokens.WithAlpha(color, 175), Math.Max(1.0f, S(1.4f))))
+                    {
+                        g.DrawLine(underline, labelStart, band.Bottom - S(4), x - trailing, band.Bottom - S(4));
+                    }
+                }
+            }
+        }
+
+        return x;
+    }
+
+    // The one interactive element on the panel. The whole chip is the hit target — roughly twice the
+    // old two-line text block — and it is the only raised shape here, so "this one is pressable"
+    // needs no explanation. Returns its left edge so the flat indicators stop before it.
+    private float DrawBatteryCareControl(Graphics g, RectangleF content, PowerStripSnapshot power)
+    {
+        RectangleF band = FooterRect(content, true);
+        bool paused = power != null && power.BatteryCarePauseActive;
+        Color color = MetricTileForm.ResolveBurnInRingColor(
+            paused ? DesignTokens.Colors.Warning : DesignTokens.Colors.Success,
+            this.burnInVisualLevel,
+            this.burnInPresentationRestored);
+        bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
+        string title = paused ? "已暂停" : "80%保护";
+        string detail = this.batteryCareRequestPending
+            ? "指令发送中…"
+            : (!string.IsNullOrEmpty(this.batteryCareNotice)
+                ? this.batteryCareNotice
+                : (paused
+                    ? FormatCompactCountdown(power.BatteryCarePauseUntilUtc - DateTime.UtcNow)
+                    : "点击暂停 24h"));
+        float pillWidth = S(26);
+        float pillHeight = S(12);
+        float padding = S(9);
+        float width = padding * 2.0f + pillWidth;
+        using (Font titleFont = new Font("Segoe UI", S(FooterValueSize), FontStyle.Bold, GraphicsUnit.Pixel))
+        using (Font detailFont = new Font("Segoe UI", S(FooterKeySize), FontStyle.Regular, GraphicsUnit.Pixel))
+        {
+            if (drawNeutral)
+            {
+                width += g.MeasureString(title, titleFont).Width + S(7)
+                    + g.MeasureString(detail, detailFont).Width + S(7);
+            }
+
+            RectangleF chip = new RectangleF(band.Right - width, band.Y, width, band.Height);
+            this.batteryCareHitBounds = chip;
+            using (GraphicsPath path = RoundedRectangle(chip, Math.Max(2.0f, S(7))))
+            using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 26)))
+            using (Pen border = new Pen(DesignTokens.WithAlpha(color, 120), Math.Max(1.0f, S(1))))
+            {
+                g.FillPath(fill, path);
+                g.DrawPath(border, path);
+            }
+
+            float x = chip.X + padding;
+            if (drawNeutral)
+            {
+                x = DrawFooterText(g, title, titleFont, DesignTokens.WithAlpha(color, 250), band, x, true, S(7));
+            }
+
+            DrawPowerSaverToggle(g,
+                new RectangleF(x, band.Y + (band.Height - pillHeight) / 2.0f, pillWidth, pillHeight),
+                !paused, color);
+            x += pillWidth + S(7);
+            if (drawNeutral)
+            {
+                DrawFooterText(g, detail, detailFont, DesignTokens.WithAlpha(color, 228), band, x, true, 0.0f);
+            }
+
+            return chip.X;
+        }
+    }
+
+    // Minute resolution: this is a 24-hour window, and a per-second field was both visually noisy
+    // and wide enough to force the old two-line block. GuardRuntime.FormatCountdown stays
+    // second-level for the GUARD board, which is watched while it runs out.
+    private static string FormatCompactCountdown(TimeSpan value)
+    {
+        int minutes = (int)Math.Round(Math.Max(0.0, value.TotalMinutes));
+        int hours = minutes / 60;
+        minutes = minutes % 60;
+        return hours > 0
+            ? hours.ToString(CultureInfo.InvariantCulture) + "h"
+                + minutes.ToString("00", CultureInfo.InvariantCulture) + "m"
+            : minutes.ToString(CultureInfo.InvariantCulture) + "m";
     }
 
     private void DrawPowerModeGlyph(Graphics g, RectangleF rect, PowerModeVisual mode, Color color)
@@ -1441,158 +1798,6 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         {
             g.FillEllipse(knob, knobX, rect.Y + (rect.Height - knobSize) / 2.0f, knobSize, knobSize);
         }
-    }
-
-    private void DrawPowerForecast(
-        Graphics g,
-        RectangleF content,
-        Color accent,
-        PowerStripSnapshot power,
-        SystemDayBoardSnapshot day)
-    {
-        PowerForecastPresentation forecast = ResolvePowerForecast(power, day);
-        bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
-        float width = Math.Min(content.Width * 0.30f, S(138));
-        RectangleF rect = new RectangleF(content.Right - width, content.Y + S(8), width, S(62));
-        Color stateColor = ResolvePowerForecastColor(forecast.Tone, accent);
-        stateColor = MetricTileForm.ResolveBurnInRingColor(
-            stateColor,
-            this.burnInVisualLevel,
-            this.burnInPresentationRestored);
-
-        DrawPowerForecastGlyph(
-            g,
-            new RectangleF(rect.X + S(2), rect.Y + S(10), S(30), S(30)),
-            power,
-            forecast,
-            stateColor);
-
-        if (forecast.Known || drawNeutral)
-        {
-            DrawRightAlignedText(g, forecast.Main, rect, rect.Y + S(5), S(24),
-                DesignTokens.WithAlpha(stateColor, forecast.Known ? 255 : 220), FontStyle.Bold);
-            DrawRightAlignedText(g, forecast.Status, rect, rect.Y + S(35), S(12),
-                DesignTokens.WithAlpha(stateColor, forecast.Known ? 245 : 210), FontStyle.Bold);
-        }
-    }
-
-    private void DrawBatteryCareControl(Graphics g, RectangleF content, PowerStripSnapshot power)
-    {
-        bool paused = power != null && power.BatteryCarePauseActive;
-        Color color = MetricTileForm.ResolveBurnInRingColor(
-            paused ? DesignTokens.Colors.Warning : DesignTokens.Colors.Success,
-            this.burnInVisualLevel, this.burnInPresentationRestored);
-        using (Font font = new Font(DesignTokens.UiFontFamily, S(10), FontStyle.Regular, GraphicsUnit.Pixel))
-        using (SolidBrush brush = new SolidBrush(color))
-        using (StringFormat format = new StringFormat(StringFormatFlags.NoWrap))
-        {
-            // Font-derived rows keep the label/countdown apart at both normal and large scale.
-            float lineHeight = (float)Math.Ceiling(font.GetHeight(g));
-            RectangleF row = new RectangleF(content.X + S(182), content.Y + S(47), S(142), lineHeight);
-            this.batteryCareHitBounds = new RectangleF(row.X, row.Y, row.Width, lineHeight * 2 + S(2));
-            g.DrawString("80%保护", font, brush, row, format);
-            DrawPowerSaverToggle(g,
-                new RectangleF(row.Right - S(31), row.Y + Math.Max(0, (lineHeight - S(13)) / 2), S(31), S(13)),
-                !paused, color);
-            string detail = this.batteryCareRequestPending ? "指令发送中…"
-                : !string.IsNullOrEmpty(this.batteryCareNotice) ? this.batteryCareNotice
-                : paused ? "恢复约 " + GuardRuntime.FormatCountdown(TimeSpan.FromSeconds(
-                    Math.Max(0, (power.BatteryCarePauseUntilUtc - DateTime.UtcNow).TotalSeconds)))
-                : "点击暂停24h";
-            row.Y += lineHeight + S(2);
-            g.DrawString(detail, font, brush, row, format);
-        }
-    }
-
-    private void DrawPowerForecastGlyph(
-        Graphics g,
-        RectangleF rect,
-        PowerStripSnapshot power,
-        PowerForecastPresentation forecast,
-        Color color)
-    {
-        using (SolidBrush halo = new SolidBrush(DesignTokens.WithAlpha(color, 24)))
-        using (Pen pen = new Pen(DesignTokens.WithAlpha(color, 225), Math.Max(1.0f, S(1.4f))))
-        {
-            g.FillEllipse(halo, rect);
-            pen.StartCap = LineCap.Round;
-            pen.EndCap = LineCap.Round;
-            bool charging = power != null && power.Charging;
-            bool pluggedIn = power != null && power.PluggedIn;
-            if (!charging && !pluggedIn && forecast.Known)
-            {
-                RectangleF clock = RectangleF.Inflate(rect, -S(4), -S(4));
-                g.DrawEllipse(pen, clock);
-                PointF center = new PointF(clock.X + clock.Width / 2.0f, clock.Y + clock.Height / 2.0f);
-                g.DrawLine(pen, center, new PointF(center.X, clock.Y + S(5)));
-                g.DrawLine(pen, center, new PointF(clock.Right - S(5), center.Y + S(3)));
-                return;
-            }
-
-            RectangleF body = new RectangleF(
-                rect.X + S(4),
-                rect.Y + S(8),
-                rect.Width - S(11),
-                rect.Height - S(16));
-            g.DrawRectangle(pen, body.X, body.Y, body.Width, body.Height);
-            g.DrawLine(pen, body.Right + S(2), body.Y + body.Height * 0.35f,
-                body.Right + S(2), body.Bottom - body.Height * 0.35f);
-            if (charging)
-            {
-                DrawPowerModeGlyph(
-                    g,
-                    RectangleF.Inflate(body, -S(4), -S(2)),
-                    PowerModeVisual.Performance,
-                    color);
-            }
-            else if (pluggedIn)
-            {
-                g.DrawLine(pen, body.X + S(4), body.Y + body.Height * 0.55f,
-                    body.X + body.Width * 0.44f, body.Bottom - S(3));
-                g.DrawLine(pen, body.X + body.Width * 0.44f, body.Bottom - S(3),
-                    body.Right - S(3), body.Y + S(3));
-            }
-            else
-            {
-                g.DrawLine(pen, body.X + S(5), body.Y + body.Height / 2.0f,
-                    body.Right - S(5), body.Y + body.Height / 2.0f);
-            }
-        }
-    }
-
-    private void DrawPowerPeakBadge(Graphics g, RectangleF content, SystemDayBoardSnapshot day)
-    {
-        double peak = ResolvePowerWattsPeak(day);
-        if (peak <= 0.0)
-        {
-            return;
-        }
-
-        Color color = MetricTileForm.ResolveBurnInRingColor(
-            DesignTokens.Colors.Warning,
-            this.burnInVisualLevel,
-            this.burnInPresentationRestored);
-        float x = content.X + S(188);
-        float y = content.Bottom - S(30);
-        PointF[] marker = new PointF[]
-        {
-            new PointF(x, y + S(7)),
-            new PointF(x + S(4), y),
-            new PointF(x + S(8), y + S(7))
-        };
-        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, 240)))
-        {
-            g.FillPolygon(brush, marker);
-        }
-
-        DrawText(
-            g,
-            peak.ToString("0.0", CultureInfo.InvariantCulture) + " W",
-            x + S(12),
-            y - S(3),
-            S(10.5f),
-            DesignTokens.WithAlpha(color, 230),
-            FontStyle.Bold);
     }
 
     private void DrawPowerBatteryStrip(
@@ -1937,10 +2142,10 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             }
         }
 
-        RectangleF ground = GroundRect(content, true);
+        RectangleF ground = GroundRect(content, true, true);
         double max = Math.Max(d.ReferenceBalance, d.Balance);
         DrawSpark(g, ground, balances, chartColor, max <= 0.0 ? 1.0 : max, true, false);
-        DrawCaption(g, content, "DEEPSEEK · 48h 余额");
+        DrawCaption(g, content, d.RunwayKnown ? "按近 24h 趋势" : "DEEPSEEK · 48h 余额");
 
         string balance = d.Known ? d.Balance.ToString("0.##", CultureInfo.InvariantCulture) : "--";
         string currency = string.IsNullOrWhiteSpace(d.Currency) ? "CNY" : d.Currency;
@@ -1968,34 +2173,47 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         using (Font usageFont = new Font(DesignTokens.UiFontFamily, S(14), FontStyle.Bold, GraphicsUnit.Pixel))
         using (SolidBrush usageBrush = new SolidBrush(DesignTokens.WithAlpha(usageColor, 245)))
         {
-            g.DrawString(usage, usageFont, usageBrush, content.X, content.Y + S(45));
+            g.DrawString(usage, usageFont, usageBrush, content.X, content.Y + S(36));
         }
 
-        if (ShouldDrawNeutralText(this.burnInVisualLevel))
+        // Runway becomes the single conclusion; account state, refresh time and the service verdict
+        // drop into the footer band instead of stacking in the right-hand column.
+        string status = d.RequestRunning
+            ? "正在刷新"
+            : (!string.IsNullOrEmpty(d.ErrorCode)
+                ? (d.ErrorMessage ?? "刷新失败，保留上次余额")
+                : (d.Known ? (d.IsAvailable ? "账户可用" : "账户暂不可用") : "等待数据"));
+        Color statusColor = d.Known && d.IsAvailable && string.IsNullOrEmpty(d.ErrorCode)
+            ? DesignTokens.Colors.Success
+            : (string.IsNullOrEmpty(d.ErrorCode) ? DesignTokens.Colors.GlyphMuted : DesignTokens.Colors.Warning);
+        if (d.RunwayKnown)
         {
-            string runway = d.RunwayKnown
-                ? "按近 24h 趋势约 " + FormatForecastHours(d.RunwayHours) + " 可用"
-                : (d.ApiKeyConfigured ? "等待余额下降后估算可用时长" : "未配置 DeepSeek API Key");
-            string status = d.RequestRunning
-                ? "正在刷新"
-                : (!string.IsNullOrEmpty(d.ErrorCode)
-                    ? (d.ErrorMessage ?? "刷新失败，保留上次余额")
-                    : (d.Known ? (d.IsAvailable ? "账户可用" : "账户暂不可用") : "等待数据"));
-            if (service.Known)
-            {
-                status += service.IsAvailable ? " · API 正常" : " · API 服务异常";
-            }
-            DrawRightAlignedText(g, runway, content, content.Y + S(26), S(13),
-                DesignTokens.WithAlpha(DesignTokens.Colors.TextStrong, 225), FontStyle.Bold);
-            DrawRightAlignedText(g, status, content, content.Y + S(48), S(11),
-                DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 215), FontStyle.Regular);
-            if (d.CheckedAtLocal != DateTime.MinValue)
-            {
-                DrawRightAlignedText(g, "更新 " + d.CheckedAtLocal.ToString("HH:mm", CultureInfo.CurrentCulture),
-                    content, content.Y + S(65), S(10),
-                    DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 205), FontStyle.Regular);
-            }
+            DrawConclusion(g, content, DesignTokens.WithAlpha(chartColor, 255),
+                FormatForecastHours(d.RunwayHours), "余额可用");
         }
+        else
+        {
+            DrawConclusion(g, content, DesignTokens.Colors.GlyphMuted,
+                d.ApiKeyConfigured ? "估算中" : "未配置",
+                d.ApiKeyConfigured ? "等余额下降" : "DeepSeek API Key");
+        }
+
+        FooterSegment[] footer = new FooterSegment[]
+        {
+            FooterSegment.Make(null, status, null)
+                .WithValueColor(DesignTokens.WithAlpha(statusColor, 240))
+                .WithSwatch(statusColor),
+            d.CheckedAtLocal != DateTime.MinValue
+                ? FooterSegment.Make("更新", d.CheckedAtLocal.ToString("HH:mm", CultureInfo.CurrentCulture), null)
+                : null,
+            service.Known
+                ? FooterSegment.Make("API", service.IsAvailable ? "正常" : "服务异常", null)
+                    .WithValueColor(DesignTokens.WithAlpha(
+                        service.IsAvailable ? DesignTokens.Colors.TextMuted : DesignTokens.Colors.Warning, 240))
+                : null,
+            FooterSegment.Make("曲线", null, "近 48h 余额")
+        };
+        DrawFooterBand(g, content, true, footer);
 
         RectangleF strip = StripRect(content);
         using (GraphicsPath track = RoundedRectangle(strip, Math.Max(1.0f, strip.Height / 2.0f)))
@@ -2023,7 +2241,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     private void DrawRadarQuota(Graphics g, RectangleF content, Color accent, bool claude)
     {
         RadarTileSnapshot r = this.feed.GetRadar(claude);
-        RectangleF ground = GroundRect(content, true);
+        RectangleF ground = GroundRect(content, true, true);
         Color dataAccent = BurnInProtection.NormalizeVisualLevel(this.burnInVisualLevel) == BurnInVisualLevel.LevelTwo
             ? BurnInProtection.InvertColor(accent)
             : accent;
@@ -2036,7 +2254,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         DrawRadarQuotaScrims(g, content);
         DrawRadarQuotaIdentity(g, content, dataAccent, r);
         DrawRadarQuotaForecast(g, content, dataAccent, r);
-        DrawFiveHourForecastStrip(g, content, dataAccent, r);
+        DrawRadarQuotaFooter(g, content, r);
+        DrawQuotaWindowStrip(g, content, dataAccent, r);
     }
 
     private void DrawRadarQuotaScrims(Graphics g, RectangleF content)
@@ -2096,21 +2315,6 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             return;
         }
 
-        string fiveHour = r.FiveHourLimitAbsent
-            ? "∞"
-            : r.FiveHourPercent.ToString(CultureInfo.InvariantCulture) + "%";
-        string quotaLine = r.QuotaKnown
-            ? string.Format(
-                CultureInfo.InvariantCulture,
-                "5h {0}@{1} · 周 {2}%@{3}",
-                fiveHour,
-                r.FiveHourResetKnown ? r.FiveHourResetLocal.ToString("HH:mm", CultureInfo.CurrentCulture) : "未知",
-                r.WeeklyPercent,
-                r.WeeklyResetKnown ? r.WeeklyResetLocal.ToString("MM/dd HH:mm", CultureInfo.CurrentCulture) : "未知")
-            : "额度未知";
-        DrawText(g, quotaLine, content.X, content.Y + S(36), S(12.5f),
-            DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 210), FontStyle.Regular);
-
         string model = string.IsNullOrEmpty(r.ModelName) ? r.FamilyLabel : r.ModelName;
         string sampleText = r.BurnRateKnown
             ? string.Format(
@@ -2119,169 +2323,8 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
                 model,
                 FormatForecastHours(r.BurnObservedHours))
             : (r.CalendarRunwayKnown ? model + " · 近 24h 节奏已建立" : model + " · 趋势采样中");
-        DrawText(g, sampleText, content.X, content.Y + S(57), S(11),
-            DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 225), FontStyle.Regular);
-    }
-
-    private void DrawRadarQuotaForecast(Graphics g, RectangleF content, Color accent, RadarTileSnapshot r)
-    {
-        bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
-        float width = Math.Min(content.Width * 0.45f, S(205));
-        RectangleF rect = new RectangleF(content.Right - width, content.Y, width, S(74));
-        bool activeForecast = r.BurnRateKnown;
-        bool forecastKnown = activeForecast || r.CalendarRunwayKnown;
-        double forecastRunway = activeForecast ? r.RunwayHours : r.CalendarRunwayHours;
-        bool comparisonKnown = forecastKnown && r.HoursToReset > 0.0;
-        bool exhaustsBeforeReset = comparisonKnown && forecastRunway < r.HoursToReset;
-        Color dangerColor = BurnInProtection.NormalizeVisualLevel(this.burnInVisualLevel) == BurnInVisualLevel.LevelTwo
-            ? BurnInProtection.InvertColor(DesignTokens.Colors.Danger)
-            : DesignTokens.Colors.Danger;
-        Color stateColor = exhaustsBeforeReset ? dangerColor : accent;
-        string main;
-        string status;
-        if (!r.QuotaKnown)
-        {
-            main = "额度未知";
-            status = "等待额度来源";
-            stateColor = DesignTokens.Colors.GlyphMuted;
-        }
-        else if (!forecastKnown)
-        {
-            main = "趋势采样中";
-            status = r.HoursToReset > 0.0
-                ? "距周重置 " + FormatForecastHours(r.HoursToReset)
-                : "等待至少 1% 变化";
-            stateColor = DesignTokens.Colors.GlyphMuted;
-        }
-        else if (exhaustsBeforeReset)
-        {
-            main = FormatForecastHours(forecastRunway) + " 后用完";
-            status = "比周重置早 " + FormatForecastHours(r.HoursToReset - forecastRunway);
-        }
-        else if (comparisonKnown)
-        {
-            main = "可撑到重置";
-            status = "按趋势多余 " + FormatForecastHours(forecastRunway - r.HoursToReset);
-        }
-        else
-        {
-            main = "约 " + FormatForecastHours(forecastRunway) + " 可用";
-            status = "周重置时间未知";
-        }
-
-        if (drawNeutral)
-        {
-            DrawRightAlignedText(g, activeForecast ? "按当前活跃趋势" : "按近 24h 节奏", rect, rect.Y, S(10),
-                DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 225), FontStyle.Regular);
-        }
-
-        string confidence = forecastKnown
-            ? FormatQuotaForecastConfidence(activeForecast ? r.BurnConfidence : r.CalendarConfidence)
-            : string.Empty;
-        float statusRightInset = drawNeutral && !string.IsNullOrEmpty(confidence) ? S(48) : 0.0f;
-        if (forecastKnown || drawNeutral)
-        {
-            DrawRightAlignedText(g, main, rect, rect.Y + S(14), S(21),
-                DesignTokens.WithAlpha(stateColor, forecastKnown ? 255 : 220), FontStyle.Bold);
-            DrawRightAlignedText(g, status, rect, rect.Y + S(40), S(12),
-                DesignTokens.WithAlpha(stateColor, forecastKnown ? 245 : 210), FontStyle.Bold,
-                statusRightInset);
-        }
-
-        if (drawNeutral)
-        {
-            if (!string.IsNullOrEmpty(confidence))
-            {
-                DrawRightAlignedText(g, confidence, rect, rect.Y + S(40), S(10),
-                    DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 220), FontStyle.Regular);
-            }
-
-            string rhythm = activeForecast
-                ? (r.CalendarRunwayKnown
-                    ? "按近 24h 节奏：约 " + FormatForecastHours(r.CalendarRunwayHours)
-                    : "近 24h 节奏：采样中")
-                : "当前活跃趋势：采样中";
-            DrawRightAlignedText(g, rhythm, rect, rect.Y + S(58), S(10),
-                DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 205), FontStyle.Regular);
-        }
-    }
-
-    private void DrawFiveHourForecastStrip(Graphics g, RectangleF content, Color accent, RadarTileSnapshot r)
-    {
-        RectangleF bar = new RectangleF(content.X, content.Bottom - S(4), content.Width, S(4));
-        using (GraphicsPath track = RoundedRectangle(bar, Math.Max(1.0f, bar.Height / 2.0f)))
-        using (SolidBrush trackBrush = new SolidBrush(DesignTokens.White(28)))
-        {
-            g.FillPath(trackBrush, track);
-            if (r.QuotaKnown && !r.FiveHourLimitAbsent)
-            {
-                float fillWidth = (float)(bar.Width * MetricTileModel.Clamp(r.FiveHourPercent, 0.0, 100.0) / 100.0);
-                if (fillWidth > 0.0f)
-                {
-                    Region previous = g.Clip;
-                    g.SetClip(track, CombineMode.Intersect);
-                    using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(accent, 225)))
-                    {
-                        g.FillRectangle(fill, bar.X, bar.Y, fillWidth, bar.Height);
-                    }
-                    g.Clip = previous;
-                }
-            }
-        }
-
-        if (!ShouldDrawNeutralText(this.burnInVisualLevel) || !r.QuotaKnown)
-        {
-            return;
-        }
-
-        string prefix = r.FiveHourLimitAbsent
-            ? "5h ∞"
-            : "5h " + r.FiveHourPercent.ToString(CultureInfo.InvariantCulture) + "%";
-        string detail;
-        Color detailColor = DesignTokens.Colors.TextMuted;
-        if (r.FiveHourLimitAbsent)
-        {
-            detail = " · 当前计划无短窗";
-        }
-        else if (!r.FiveHourBurnRateKnown)
-        {
-            detail = r.FiveHourHoursToReset > 0.0
-                ? " · 趋势采样中，" + FormatForecastHours(r.FiveHourHoursToReset) + " 后重置"
-                : " · 趋势采样中";
-        }
-        else if (r.FiveHourHoursToReset > 0.0 && r.FiveHourRunwayHours < r.FiveHourHoursToReset)
-        {
-            detail = " · 预计 " + FormatForecastHours(r.FiveHourRunwayHours) + " 用完，早 " +
-                FormatForecastHours(r.FiveHourHoursToReset - r.FiveHourRunwayHours);
-            detailColor = BurnInProtection.NormalizeVisualLevel(this.burnInVisualLevel) == BurnInVisualLevel.LevelTwo
-                ? BurnInProtection.InvertColor(DesignTokens.Colors.Danger)
-                : DesignTokens.Colors.Danger;
-        }
-        else if (r.FiveHourHoursToReset > 0.0)
-        {
-            detail = " · 可撑到本轮重置";
-        }
-        else
-        {
-            detail = " · 约 " + FormatForecastHours(r.FiveHourRunwayHours) + " 可用";
-        }
-
-        float y = content.Bottom - S(20);
-        using (Font font = new Font(DesignTokens.UiFontFamily, S(10.5f), FontStyle.Bold, GraphicsUnit.Pixel))
-        using (Font detailFont = new Font(DesignTokens.UiFontFamily, S(10.5f), FontStyle.Regular, GraphicsUnit.Pixel))
-        using (SolidBrush prefixBrush = new SolidBrush(DesignTokens.WithAlpha(accent, 245)))
-        using (SolidBrush detailBrush = new SolidBrush(DesignTokens.WithAlpha(detailColor, 225)))
-        {
-            g.DrawString(prefix, font, prefixBrush, content.X, y);
-            float prefixWidth = g.MeasureString(prefix, font).Width - S(2);
-            g.DrawString(detail, detailFont, detailBrush, content.X + prefixWidth, y);
-        }
-
-        if (r.WeeklyResetKnown)
-        {
-            DrawRightAlignedText(g, "周重置", content, y, S(9),
-                DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 210), FontStyle.Regular);
-        }
+        DrawText(g, sampleText, content.X, content.Y + S(36), S(12.5f),
+            DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 210), FontStyle.Regular);
     }
 
     private void DrawRightAlignedText(
@@ -2343,6 +2386,147 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         return remainder == 0
             ? days.ToString(CultureInfo.InvariantCulture) + "天"
             : string.Format(CultureInfo.InvariantCulture, "{0}天{1}h", days, remainder);
+    }
+
+    // One conclusion only. The qualifier moves to the caption slot and the two secondary forecasts
+    // (five-hour window, recent-24h rhythm) move to the footer band, so the right-hand column stops
+    // being a four-line paragraph competing with the curve.
+    private void DrawRadarQuotaForecast(Graphics g, RectangleF content, Color accent, RadarTileSnapshot r)
+    {
+        bool activeForecast = r.BurnRateKnown;
+        bool forecastKnown = activeForecast || r.CalendarRunwayKnown;
+        double forecastRunway = activeForecast ? r.RunwayHours : r.CalendarRunwayHours;
+        bool comparisonKnown = forecastKnown && r.HoursToReset > 0.0;
+        bool exhaustsBeforeReset = comparisonKnown && forecastRunway < r.HoursToReset;
+        Color dangerColor = BurnInProtection.NormalizeVisualLevel(this.burnInVisualLevel) == BurnInVisualLevel.LevelTwo
+            ? BurnInProtection.InvertColor(DesignTokens.Colors.Danger)
+            : DesignTokens.Colors.Danger;
+        Color stateColor = exhaustsBeforeReset ? dangerColor : accent;
+        string main;
+        string status;
+        if (!r.QuotaKnown)
+        {
+            main = "额度未知";
+            status = "等待额度来源";
+            stateColor = DesignTokens.Colors.GlyphMuted;
+        }
+        else if (!forecastKnown)
+        {
+            main = "趋势采样中";
+            status = r.HoursToReset > 0.0
+                ? "距周重置 " + FormatForecastHours(r.HoursToReset)
+                : "等待至少 1% 变化";
+            stateColor = DesignTokens.Colors.GlyphMuted;
+        }
+        else if (exhaustsBeforeReset)
+        {
+            main = FormatForecastHours(forecastRunway) + " 后用完";
+            status = "比周重置早 " + FormatForecastHours(r.HoursToReset - forecastRunway);
+        }
+        else if (comparisonKnown)
+        {
+            main = "可撑到重置";
+            status = "按趋势多余 " + FormatForecastHours(forecastRunway - r.HoursToReset);
+        }
+        else
+        {
+            main = "约 " + FormatForecastHours(forecastRunway) + " 可用";
+            status = "周重置时间未知";
+        }
+
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)),
+            activeForecast ? "按当前活跃趋势" : "按近 24h 节奏");
+        DrawConclusion(g, content, stateColor, main, status);
+    }
+
+    private void DrawRadarQuotaFooter(Graphics g, RectangleF content, RadarTileSnapshot r)
+    {
+        string fiveHour = r.FiveHourLimitAbsent
+            ? "∞"
+            : r.FiveHourPercent.ToString(CultureInfo.InvariantCulture) + "%";
+        string fiveHourReset = r.FiveHourResetKnown
+            ? "@" + r.FiveHourResetLocal.ToString("HH:mm", CultureInfo.CurrentCulture)
+            : "@未知";
+        string weeklyReset = r.WeeklyResetKnown
+            ? "@" + r.WeeklyResetLocal.ToString("MM/dd HH:mm", CultureInfo.CurrentCulture)
+            : "@未知";
+        // The five-hour window turns red on the same condition the retired text row used, so the
+        // colour still calls out "this window runs out before it resets".
+        Color fiveHourColor = !r.FiveHourLimitAbsent && r.FiveHourBurnRateKnown
+            && r.FiveHourHoursToReset > 0.0 && r.FiveHourRunwayHours < r.FiveHourHoursToReset
+            ? MetricTileForm.ResolveBurnInRingColor(
+                DesignTokens.Colors.Danger, this.burnInVisualLevel, this.burnInPresentationRestored)
+            : DesignTokens.Colors.TextMuted;
+        string rhythm = r.CalendarRunwayKnown
+            ? FormatForecastHours(r.CalendarRunwayHours)
+            : "采样中";
+        string confidence = r.BurnRateKnown || r.CalendarRunwayKnown
+            ? FormatQuotaForecastConfidence(r.BurnRateKnown ? r.BurnConfidence : r.CalendarConfidence)
+            : null;
+        DrawFooterBand(g, content, true, new FooterSegment[]
+        {
+            FooterSegment.Make("5h 窗口", r.QuotaKnown ? fiveHour : "--", r.QuotaKnown ? fiveHourReset : null)
+                .WithValueColor(DesignTokens.WithAlpha(fiveHourColor, 240)),
+            FooterSegment.Make("周窗口",
+                r.QuotaKnown ? r.WeeklyPercent.ToString(CultureInfo.InvariantCulture) + "%" : "--",
+                r.QuotaKnown ? weeklyReset : null),
+            FooterSegment.Make("近 24h 节奏", rhythm, confidence)
+        });
+    }
+
+    // Two plain windows, no text on top: the left half is the five-hour window and the right half
+    // the weekly one, split by a hairline so they cannot be read as a single bar.
+    private void DrawQuotaWindowStrip(Graphics g, RectangleF content, Color accent, RadarTileSnapshot r)
+    {
+        RectangleF strip = StripRect(content);
+        float half = (strip.Width - S(2)) / 2.0f;
+        RectangleF left = new RectangleF(strip.X, strip.Y, half, strip.Height);
+        RectangleF right = new RectangleF(strip.Right - half, strip.Y, half, strip.Height);
+        DrawQuotaWindowSegment(g, left, accent,
+            r.QuotaKnown && !r.FiveHourLimitAbsent ? r.FiveHourPercent : (r.FiveHourLimitAbsent ? 100.0 : -1.0));
+        DrawQuotaWindowSegment(g, right, accent, r.QuotaKnown ? r.WeeklyPercent : -1.0);
+    }
+
+    private void DrawQuotaWindowSegment(Graphics g, RectangleF rect, Color accent, double percent)
+    {
+        using (GraphicsPath track = RoundedRectangle(rect, Math.Max(1.0f, rect.Height / 2.0f)))
+        using (SolidBrush trackBrush = new SolidBrush(DesignTokens.White(28)))
+        {
+            g.FillPath(trackBrush, track);
+            if (percent < 0.0)
+            {
+                return;
+            }
+
+            float width = (float)(rect.Width * MetricTileModel.Clamp(percent, 0.0, 100.0) / 100.0);
+            if (width <= 0.0f)
+            {
+                return;
+            }
+
+            Region previous = g.Clip;
+            g.SetClip(track, CombineMode.Intersect);
+            using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(accent, 225)))
+            {
+                g.FillRectangle(fill, rect.X, rect.Y, width, rect.Height);
+            }
+
+            g.Clip = previous;
+        }
+    }
+
+    // Labels the two vertical references the burn-down already draws, so the weekly reset stops
+    // being an orphan word in the bottom-right corner of the panel.
+    private void DrawBurnDownMarker(Graphics g, RectangleF rect, float x, string text)
+    {
+        float size = S(9);
+        using (Font font = new Font("Segoe UI", size, FontStyle.Regular, GraphicsUnit.Pixel))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, 210)))
+        {
+            float width = g.MeasureString(text, font).Width;
+            float left = Math.Max(rect.X, Math.Min(x - width / 2.0f, rect.Right - width));
+            g.DrawString(text, font, brush, left, rect.Bottom - size - S(2));
+        }
     }
 
     private void DrawBurnDown(Graphics g, RectangleF rect, RadarTileSnapshot r, Color accent)
@@ -2422,6 +2606,15 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             {
                 resetLine.DashStyle = DashStyle.Dot;
                 g.DrawLine(resetLine, rect.Right - S(2), rect.Y, rect.Right - S(2), rect.Bottom);
+            }
+        }
+
+        if (ShouldDrawNeutralText(this.burnInVisualLevel))
+        {
+            DrawBurnDownMarker(g, rect, historyRight, "现在");
+            if (r.WeeklyResetKnown && r.HoursToReset > 0.0)
+            {
+                DrawBurnDownMarker(g, rect, rect.Right - S(2), "周重置");
             }
         }
 

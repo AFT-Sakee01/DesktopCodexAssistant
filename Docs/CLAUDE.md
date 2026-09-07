@@ -1,0 +1,3 @@
+# Docs rules
+
+@AGENTS.md

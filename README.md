@@ -1,6 +1,6 @@
 # Desktop Codex Assistant（UX3407N / UX3607O 专调版）
 
-适用版本：2.0.0.34
+适用版本：2.0.0.35
 
 A Windows-on-Arm desktop workspace for AI-assisted development: eleven right-edge metric/quota tiles, seven left-edge dock tabs and boards, an operation panel, and an on-demand settings window. Sampling and Radar coordination run in hidden owners. Tuned for ASUS UX3407N / UX3607O; ARM64 is the formal build target.
 
@@ -10,7 +10,7 @@ A Windows-on-Arm desktop workspace for AI-assisted development: eleven right-edg
 
 | 类别 | 当前内容 |
 |---|---|
-| 右侧 11 个方块 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度、DeepSeek 余额；每项是独立 `MetricTileForm`，悬停详情只消费同一份快照；MEM 展示物理占用与绿/黄/红三态压力，NET 以上下两条横向通道显示蓝色下行与红色上行，每行从左到右依次是方向、放大的实时位速率和最近五个样本的微脉冲，不再用圆环伪装链路占比；PWR 保持电量外圈，功率数字锚定环的几何中心，小号 `W` 独立放在数字下方的环内留白区，展开后以电池图标、三档轨、独立省电开关、峰值标记和续航时钟呈现近 24 小时状态 |
+| 右侧 11 个方块 | CPU、MEM、DISK、NET、GPU、NPU、PWR、GUARD、Codex 额度、Claude 额度、DeepSeek 余额；每项是独立 `MetricTileForm`；悬停详情共用一套栅格——左上标签与主数值、右上限定语、右侧唯一结论、全宽曲线、底部脚注条承载次要数值与图例、最下一条纯色带，文字一律不压在曲线或色带上；MEM 展示物理占用与绿/黄/红三态压力，NET 以上下两条横向通道显示蓝色下行与红色上行，每行从左到右依次是方向、放大的实时位速率和最近五个样本的微脉冲，不再用圆环伪装链路占比；PWR 保持电量外圈，功率数字锚定环的几何中心，小号 `W` 独立放在数字下方的环内留白区，展开后以电量主数值、锚在曲线峰值上的功率标记、续航结论和一条脚注条呈现近 24 小时状态，脚注条按「档位 │ 省电 │ 80%保护」分段——档位与省电是扁平只读指示器，只有 80% 保护是可点击的抬起式开关，暂停时显示分钟级恢复倒计时 |
 | 左侧 7 个停靠位 | Network、Spec Board、Codex Task、GUARD、Codex IQ、重置与速蹬、系统日记；常驻 tab 与展开 board 组成一套停靠拓扑 |
 | 重置与速蹬看板 | 展示 Codex 最近 7 天周额度余量、自然/硬/重置卡事件、速蹬窗口倒计时、重置卡余量与最近到期时间，并在近期重置右半区显示 Codex Radar 的“发重置卡/硬重置”状态和说明；只读 Radar owner 的缓存投影 |
 | 系统日记看板 | 用统一时间轴查看今天、最近 24 小时或最近一周的工作/空闲/睡眠、性能峰值、电量红升青降、功耗、预计充满/耗尽时间与命名热区；顶部摘要卡以放大的标题、主数值和说明字号突出当天概况，完整相关样本按日保存在本机 JSONL |
