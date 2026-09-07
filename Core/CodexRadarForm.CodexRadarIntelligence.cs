@@ -442,6 +442,17 @@ internal sealed partial class CodexRadarForm
                 " source=" + (snapshot != null && snapshot.ModelIqSourceUpdatedAtKnown ? snapshot.ModelIqSourceUpdatedAtLocal.ToString("o", CultureInfo.InvariantCulture) : "unknown"));
         }
 
+        CodexRadarSnapshot overlaid = CodexRadarSnapshot.CreateDefault();
+        overlaid.ModelIqSourceUpdatedAtLocal = new DateTime(2026, 7, 13, 0, 0, 0, DateTimeKind.Local);
+        overlaid.ModelIqSourceUpdatedAtKnown = true;
+        CopyCodexModelIqSnapshot(overlaid, snapshot);
+        if (!overlaid.ModelIqSourceUpdatedAtKnown ||
+            overlaid.ModelIqSourceUpdatedAtLocal != snapshot.ModelIqSourceUpdatedAtLocal)
+        {
+            throw new InvalidOperationException(
+                "Codex Radar intelligence overlay retained the compatibility source timestamp.");
+        }
+
         if (TryParseCodexRadarIntelligenceStatus(
                 metrics.Replace("\"schema\":3", "\"schema\":4"),
                 insights,

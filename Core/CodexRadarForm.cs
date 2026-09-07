@@ -4293,6 +4293,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
+        // IQ values and their upstream source time form one atomic projection. Keeping the
+        // current.json timestamp while overlaying comprehensive points would label fresh Astra
+        // data as an older compatibility batch.
+        target.ModelIqSourceUpdatedAtLocal = source.ModelIqSourceUpdatedAtLocal;
+        target.ModelIqSourceUpdatedAtKnown = source.ModelIqSourceUpdatedAtKnown;
         target.ModelIqStatus = source.ModelIqStatus;
         target.ModelIqPassRatePercent = source.ModelIqPassRatePercent;
         target.ModelIqPassed = source.ModelIqPassed;
