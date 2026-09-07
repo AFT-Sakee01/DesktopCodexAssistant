@@ -47,6 +47,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private const int CodexRadarStatusTimeoutMs = 10000;
     private const int CodexModelHistoryDays = 366;
     private const int CodexModelCacheRetentionDays = 7;
+    private const int CodexRadarResetJudgementRetentionDays = 7;
     private const double QuotaIdentityToleranceMinutes = 2.0;
     private const double QuotaNewbornToleranceMinutes = 8.0;
     private const double QuotaResetEventCorroborationHours = 6.0;
@@ -4394,6 +4395,35 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                     primaryHealth = ServiceHealthState.Unavailable;
                 }
             }
+
+            CodexRadarSnapshot intelligenceSnapshot;
+            CodexRadarModelCatalogUpdate intelligenceCatalogUpdate;
+            ServiceHealthState intelligenceHealth;
+            if (TryReadCodexRadarIntelligenceStatus(
+                    modelKey,
+                    out intelligenceSnapshot,
+                    out intelligenceHealth,
+                    out intelligenceCatalogUpdate,
+                    cancellationToken))
+            {
+                if (snapshot == null)
+                {
+                    snapshot = CodexRadarSnapshot.CreateDefault();
+                    snapshot.FetchedAtLocal = intelligenceSnapshot.FetchedAtLocal;
+                    snapshot.FetchedAtKnown = intelligenceSnapshot.FetchedAtKnown;
+                    snapshot.CheckedAtLocal = intelligenceSnapshot.CheckedAtLocal;
+                    snapshot.CheckedAtKnown = intelligenceSnapshot.CheckedAtKnown;
+                }
+
+                // current.json still owns reset-window state, while the website's current
+                // comprehensive-IQ endpoints now own model scores and efficiency inputs.
+                CopyCodexModelIqSnapshot(snapshot, intelligenceSnapshot);
+                catalogUpdate = MergeCodexRadarModelCatalogUpdates(
+                    catalogUpdate,
+                    intelligenceCatalogUpdate);
+                parsed = true;
+                primaryHealth = ServiceHealthState.Normal;
+            }
         }
 
         if (htmlFallbackEnabled && ShouldRequestCodexRadarHtmlFallback(parsed, snapshot))
@@ -4432,6 +4462,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return false;
         }
 
+        ExpireCodexRadarResetJudgementIfStale(snapshot, DateTime.Now);
         health = GetCodexRadarSnapshotHealth(snapshot);
         return true;
     }
@@ -4508,12 +4539,49 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         CodexRadarSnapshot previous)
     {
         if (target == null || target.ResetRadarKnown ||
-            previous == null || !previous.ResetRadarKnown)
+            !IsCodexRadarResetJudgementFresh(previous, DateTime.Now))
         {
             return;
         }
 
         CopyCodexRadarResetJudgementSnapshot(target, previous);
+    }
+
+    private static bool IsCodexRadarResetJudgementFresh(
+        CodexRadarSnapshot snapshot,
+        DateTime nowLocal)
+    {
+        if (snapshot == null || !snapshot.ResetRadarKnown ||
+            !snapshot.ResetRadarUpdatedAtKnown ||
+            snapshot.ResetRadarUpdatedAtLocal == DateTime.MinValue)
+        {
+            return false;
+        }
+
+        TimeSpan age = nowLocal - snapshot.ResetRadarUpdatedAtLocal;
+        return age >= TimeSpan.FromHours(-24.0) &&
+            age <= TimeSpan.FromDays(CodexRadarResetJudgementRetentionDays);
+    }
+
+    private static void ExpireCodexRadarResetJudgementIfStale(
+        CodexRadarSnapshot snapshot,
+        DateTime nowLocal)
+    {
+        if (snapshot == null || !snapshot.ResetRadarKnown ||
+            IsCodexRadarResetJudgementFresh(snapshot, nowLocal))
+        {
+            return;
+        }
+
+        // The homepage may remove this section entirely. Do not let the frequently refreshed IQ
+        // cache renew an old judgement forever after its source timestamp has expired.
+        snapshot.ResetRadarKnown = false;
+        snapshot.ResetRadarUpdatedAtKnown = false;
+        snapshot.ResetRadarUpdatedAtLocal = DateTime.MinValue;
+        snapshot.ResetCardStatus = string.Empty;
+        snapshot.ResetCardDescription = string.Empty;
+        snapshot.HardResetStatus = string.Empty;
+        snapshot.HardResetDescription = string.Empty;
     }
 
     private static bool TryReadCodexRadarHomeHtmlStatus(
@@ -4679,6 +4747,20 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             "application/json,text/plain,*/*",
             cancellationToken);
         builder.AppendLine(FormatCodexRadarCurrentProbe(current, ref fullApiUrl));
+        builder.AppendLine();
+
+        CodexRadarProbeResponse intelligenceMetrics = ReadCodexRadarProbeEndpoint(
+            AddCacheBuster(CodexRadarIntelligenceMetricsUrl),
+            "application/json,text/plain,*/*",
+            cancellationToken);
+        CodexRadarProbeResponse intelligenceInsights = ReadCodexRadarProbeEndpoint(
+            AddCacheBuster(CodexRadarInsightsUrl),
+            "application/json,text/plain,*/*",
+            cancellationToken);
+        builder.AppendLine(FormatCodexRadarIntelligenceProbe(
+            intelligenceMetrics,
+            intelligenceInsights,
+            modelKey));
         builder.AppendLine();
 
         CodexRadarProbeResponse fullApi = ReadCodexRadarFullApiProbeEndpoint(
@@ -5267,7 +5349,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             List<CodexRadarModelInfo> discoveredModels = ExtractCodexRadarModelCatalog(rootModelIq);
             catalogUpdate = CodexRadarModelCatalog.MergeAndSave(
                 discoveredModels,
-                IsCodexRadarCompleteCatalog(rootModelIq, discoveredModels));
+                false);
             snapshot = CodexRadarSnapshot.CreateDefault();
             snapshot.FetchedAtLocal = DateTime.Now;
             snapshot.FetchedAtKnown = true;
@@ -6466,6 +6548,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     private static string ResolveCodexIqFamily(string model, string key)
     {
         string value = ((model ?? string.Empty) + " " + (key ?? string.Empty)).ToLowerInvariant();
+        if (value.IndexOf("astra", StringComparison.Ordinal) >= 0)
+        {
+            return "Astra";
+        }
+
         if (value.IndexOf("terra", StringComparison.Ordinal) >= 0)
         {
             return "Terra";
@@ -6492,7 +6579,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return normalized;
         }
 
-        string[] known = { "max", "xhigh", "high", "medium", "low" };
+        string[] known = { "ultra", "max", "xhigh", "high", "medium", "low" };
         string value = (key ?? string.Empty).ToLowerInvariant();
         for (int i = 0; i < known.Length; i++)
         {
@@ -8633,6 +8720,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 snapshot.ModelIqHistory = NormalizeCodexModelHistory(snapshot.ModelIqHistory);
                 snapshot.ModelIqRefreshSucceeded = false;
                 snapshot.ModelIqKnown = true;
+                ExpireCodexRadarResetJudgementIfStale(snapshot, DateTime.Now);
                 return snapshot;
             }
             catch (Exception ex)
@@ -10805,6 +10893,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     internal static void RunStatusAndQuotaSelfTest()
     {
         RadarClockDial.RunSelfTest();
+        RunCodexRadarIntelligenceAdapterSelfTest();
         RunCodexModelIqRefreshMarkerSelfTest();
         RunCodexRadarCacheHardeningSelfTest();
         RunClaudeQuotaCacheCompletenessSelfTest();

@@ -21,6 +21,7 @@
     "Core/CodexRadarForm.ClaudeUsage.cs",
     "Core/CodexRadarForm.CodexUsage.cs",
     "Core/CodexRadarForm.cs",
+    "Core/CodexRadarForm.CodexRadarIntelligence.cs",
     "Core/CodexRadarForm.ProjectionState.cs",
     "Core/CodexRadarForm.RuntimeState.cs",
     "Core/CodexRadarForm.TileSnapshot.cs",

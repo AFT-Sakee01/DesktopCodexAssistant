@@ -275,7 +275,7 @@ internal sealed partial class ResetSpeedBoardForm
             using (SolidBrush muted = new SolidBrush(DesignTokens.Colors.GlyphMuted))
             using (StringFormat near = CreateFormat(StringAlignment.Near))
             {
-                g.DrawString("等待 Codex Radar 判断", smallFont, muted,
+                g.DrawString("官网暂未提供重置判断", smallFont, muted,
                     new Rectangle(bounds.Left + pad, rowTop + S(7), bounds.Width - pad * 2, rowHeight), near);
             }
             return;
@@ -306,8 +306,9 @@ internal sealed partial class ResetSpeedBoardForm
         using (Pen divider = new Pen(DesignTokens.White(22), Math.Max(1.0f, this.LayerScale)))
         using (StringFormat near = CreateFormat(StringAlignment.Near))
         using (StringFormat far = CreateFormat(StringAlignment.Far))
+        using (StringFormat descriptionFormat = CreateUntrimmedFormat(StringAlignment.Near))
         {
-            int titleHeight = Math.Min(row.Height, MeasureLineHeight(g, monoFont, 0));
+            int titleHeight = Math.Min(row.Height, MeasureLineHeight(g, monoFont, S(1)));
             int measuredStatusWidth = (int)Math.Ceiling(
                 g.MeasureString(status ?? string.Empty, monoFont, int.MaxValue, StringFormat.GenericTypographic).Width) + S(4);
             int statusWidth = Math.Min(
@@ -319,8 +320,18 @@ internal sealed partial class ResetSpeedBoardForm
                 new Rectangle(row.Left, row.Top, labelWidth, titleHeight), near);
             g.DrawString(status ?? string.Empty, monoFont, statusBrush,
                 new Rectangle(row.Right - statusWidth, row.Top, statusWidth, titleHeight), far);
-            g.DrawString(description ?? string.Empty, smallFont, descriptionBrush,
-                new Rectangle(row.Left, row.Top + titleHeight, row.Width, Math.Max(1, row.Height - titleHeight)), near);
+            Rectangle descriptionBounds = new Rectangle(
+                row.Left,
+                row.Top + titleHeight,
+                row.Width,
+                Math.Max(1, row.Height - titleHeight));
+            DrawFittedSingleLine(
+                g,
+                description ?? string.Empty,
+                smallFont,
+                descriptionBrush,
+                descriptionBounds,
+                descriptionFormat);
             if (drawDivider)
             {
                 g.DrawLine(divider, row.Left, row.Bottom - 1, row.Right, row.Bottom - 1);
@@ -552,5 +563,49 @@ internal sealed partial class ResetSpeedBoardForm
             Trimming = StringTrimming.EllipsisCharacter,
             FormatFlags = StringFormatFlags.NoWrap
         };
+    }
+
+    private static StringFormat CreateUntrimmedFormat(StringAlignment alignment)
+    {
+        return new StringFormat(StringFormat.GenericTypographic)
+        {
+            Alignment = alignment,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.None,
+            FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces
+        };
+    }
+
+    private static void DrawFittedSingleLine(
+        Graphics g,
+        string text,
+        Font preferredFont,
+        Brush brush,
+        Rectangle bounds,
+        StringFormat format)
+    {
+        string value = text ?? string.Empty;
+        float measuredWidth = g.MeasureString(
+            value,
+            preferredFont,
+            int.MaxValue,
+            StringFormat.GenericTypographic).Width;
+        if (measuredWidth <= Math.Max(1, bounds.Width - 1))
+        {
+            g.DrawString(value, preferredFont, brush, bounds, format);
+            return;
+        }
+
+        // Keep the source sentence intact on narrow/scaled boards. This row is intentionally
+        // single-line, so shrink only as much as the measured text requires instead of ellipsizing.
+        float ratio = Math.Max(0.72f, (bounds.Width - 1.0f) / Math.Max(1.0f, measuredWidth));
+        using (Font fitted = new Font(
+            preferredFont.FontFamily,
+            Math.Max(5.5f, preferredFont.Size * ratio),
+            preferredFont.Style,
+            GraphicsUnit.Point))
+        {
+            g.DrawString(value, fitted, brush, bounds, format);
+        }
     }
 }

@@ -430,6 +430,27 @@ internal static class CodexRadarModelCatalog
                 " " + string.Join(" ", segments);
         }
 
+        Match majorOnly = Regex.Match(
+            normalized,
+            "^gpt_([0-9]+)_(.+)$",
+            RegexOptions.IgnoreCase);
+        if (majorOnly.Success)
+        {
+            string[] segments = majorOnly.Groups[2].Value.Split('_');
+            for (int i = 0; i < segments.Length; i++)
+            {
+                string segment = (segments[i] ?? string.Empty).ToLowerInvariant();
+                if (!IsReasoningEffortSegment(segment) && segment.Length > 0)
+                {
+                    segment = char.ToUpperInvariant(segment[0]) + segment.Substring(1);
+                }
+
+                segments[i] = segment;
+            }
+
+            return "GPT-" + majorOnly.Groups[1].Value + " " + string.Join(" ", segments);
+        }
+
         return normalized.Length == 0 ? "--" : normalized.Replace('_', ' ');
     }
 
@@ -487,6 +508,7 @@ internal static class CodexRadarModelCatalog
         AssertCatalog(GetDisplayLabel(string.Empty, "gpt_56_sol_medium") == "GPT-5.6 Sol medium", "Sol label casing");
         AssertCatalog(GetDisplayLabel(string.Empty, "gpt_56_terra_medium") == "GPT-5.6 Terra medium", "Terra label casing");
         AssertCatalog(GetDisplayLabel(string.Empty, "gpt_57_nova_high") == "GPT-5.7 Nova high", "Nova label casing");
+        AssertCatalog(GetDisplayLabel(string.Empty, "gpt_6_astra_ultra") == "GPT-6 Astra ultra", "Astra label casing");
         AssertCatalog(GetDisplayLabel(string.Empty, "gpt_55_xhigh") == "GPT-5.5 xhigh", "effort-only label casing");
 
         List<CodexRadarModelInfo> baseline = new List<CodexRadarModelInfo>
@@ -559,6 +581,7 @@ internal static class CodexRadarModelCatalog
     {
         return string.Equals(value, "xhigh", StringComparison.Ordinal) ||
             string.Equals(value, "ultra", StringComparison.Ordinal) ||
+            string.Equals(value, "max", StringComparison.Ordinal) ||
             string.Equals(value, "high", StringComparison.Ordinal) ||
             string.Equals(value, "medium", StringComparison.Ordinal) ||
             string.Equals(value, "low", StringComparison.Ordinal);
