@@ -1,6 +1,6 @@
 # Desktop Codex Assistant（UX3407N / UX3607O 专调版）
 
-适用版本：2.0.0.38
+适用版本：2.0.0.39
 
 A Windows-on-Arm desktop workspace for AI-assisted development: eleven right-edge metric/quota tiles, seven left-edge dock tabs and boards, an operation panel, and an on-demand settings window. Sampling and Radar coordination run in hidden owners. Tuned for ASUS UX3407N / UX3607O; ARM64 is the formal build target.
 
@@ -47,6 +47,7 @@ DesktopCodexAssistant.exe --stop   # 停止正在运行的实例
 
 | 类别 | 参数 |
 |---|---|
+| 帮助 | `help` / `--help` / `-h` / `/?`：显示全局入口；`--guard help` / `--guard --help`：显示 GUARD 命令、退出码与自动化检查要点；均不要求常驻实例运行 |
 | 运行模式 | `--desktop-parent` / `--workerw`（桌面宿主层）、`--night-proof`、`--restart-after-pid <pid>` |
 | 自检 | `--test`、`--test-logger`、`--test-layout`、`--test-settings-bindings`、`--test-display-recovery`、`--test-operation-panel`、`--test-codex-task-monitor`、`--test-specboard-manager`、`--test-settings-open-close [--iterations N]`、`--test-radar-display-lifecycle [--iterations N]` |
 | 渲染采样（离屏出 PNG） | `--render-networkmonitor` / `--render-operation` / `--render-tilecolumn` / `--render-resetspeedboard` / `--render-systemdayboard`，以及带模式参数的 `--render-specboard <sample|current>`、`--render-specboardmanager <sample|current>`、`--render-guard <sample|current>`；均支持 `--out <目录>` |
@@ -67,7 +68,7 @@ DesktopCodexAssistant.exe --guard display stop
 DesktopCodexAssistant.exe --guard sleep off
 ```
 
-亮屏与防睡眠彼此独立：`display start` 只阻止屏幕熄灭，不会隐式开启 `sleep on`；若两者都需要，代理应分别开启。`display start` 不带小时数时使用已保存的预设；设置或启动时长只接受 1–24 的整数小时。成功退出码为 `0`，参数或管道错误为 `2`，主进程拒绝执行为 `3`；所有成功响应均含 `state` 和三项实际电源请求状态。
+亮屏与防睡眠彼此独立：`display start` 只阻止屏幕熄灭，不会隐式开启 `sleep on`；若两者都需要，代理应分别开启。`display start` 不带小时数时使用已保存的预设；设置或启动时长只接受 1–24 的整数小时。完整命令、退出码、JSON 字段与代理调用示例见 [GUARD CLI 使用说明](Docs/Guard-CLI.md)。
 
 ## 数据与隐私
 

@@ -1,6 +1,6 @@
 # Guard Board 架构
 
-适用版本：2.0.0.38
+适用版本：2.0.0.39
 
 本文负责电源守护状态机（睡眠防护、亮屏计时、断网自动睡眠、电池保护暂停窗口）、GUARD 看板窗口的布局与交互，以及该窗口与「特殊设置」三项程序守护的共用边界。
 
@@ -102,7 +102,7 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 
 `OperationForm.GuardBoard.cs` 持有窗口并转发所有对外命令。启动时即构造隐藏窗口及其固定左缘 tab；状态机住在窗口里，若窗口不存在或维护 timer 随看板收起而停掉，已持久化的守护和到期动作都会失效。
 
-`DesktopCodexAssistant.exe --guard ...` 是同一状态机的代理控制入口。一次性 CLI 在主实例 mutex 之前解析命令，经当前用户 SID 派生的双向命名管道发送 allow-list 请求；服务端将命令 marshal 回 `WidgetForm` UI 线程，再由 `OperationForm.ExecuteGuardControl` 进入现有 `GuardBoardForm` 状态和持久化路径。CLI 不自行持有电源请求，也不能提交任意命令。协议 schema 1 支持 `status`、`sleep on/off`、`display start [hours]`、`display stop`、`display hours N`；小时限定 1–24，响应包含独立开关、截止时间、剩余秒数、AC 状态以及三项实际请求状态。
+`DesktopCodexAssistant.exe --guard ...` 是同一状态机的代理控制入口。一次性 CLI 在主实例 mutex 之前解析命令，经当前用户 SID 派生的双向命名管道发送 allow-list 请求；服务端将命令 marshal 回 `WidgetForm` UI 线程，再由 `OperationForm.ExecuteGuardControl` 进入现有 `GuardBoardForm` 状态和持久化路径。CLI 不自行持有电源请求，也不能提交任意命令。命令、帮助、退出码和 schema 1 字段的唯一说明见 `Docs/Guard-CLI.md`。
 
 七个停靠板互斥：展开任一板收起其余六个。全部展开路径共用 `OperationForm.CollapseLeftDockBoardsExcept(LeftDockBoardKind)`，成员表由 `GetLeftDockBoardMembership` 单点维护——早期各路径手写同伴列表，`PrepareForCodexTaskOverlayShow` 因此漏掉了 GUARD，从 GUARD 梯形移到任务梯形时两板会叠在一起。互斥不是观感问题：梯形间距 40 逻辑像素而板高 400，两板大面积重叠，被盖住的那块的 `UpdateDockCollapse` 会把落在重叠区的光标读成仍悬停在自己身上，收起计时器永不启动。`RunLeftDockMutualExclusionSelfTest` 断言成员表覆盖枚举全部取值，后续新增看板漏登记会直接让 `--test` 失败。全屏隐藏、显示挂起/恢复分别经 `SetGuardBoardHiddenForFullscreen`、`PrepareGuardBoardForDisplaySuspend`、`RecoverGuardBoardAfterDisplayResume`。
 

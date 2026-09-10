@@ -45,6 +45,125 @@ internal sealed class GuardControlResponse
     public GuardControlSnapshot State;
 }
 
+// Help is resolved before storage migration and before any IPC connection so it remains available
+// when the resident host is stopped. Exact argument shapes also prevent a help token from silently
+// suppressing another one-shot command in a mixed command line.
+internal static class CommandLineHelp
+{
+    internal static bool IsGeneralHelpRequest(string[] args)
+    {
+        return args != null && args.Length == 1 && IsHelpToken(args[0], true);
+    }
+
+    internal static bool IsGuardHelpRequest(string[] args)
+    {
+        return args != null && args.Length == 2 &&
+            string.Equals(args[0], "--guard", StringComparison.OrdinalIgnoreCase) &&
+            IsHelpToken(args[1], true);
+    }
+
+    internal static string BuildGeneralHelp()
+    {
+        return string.Join(Environment.NewLine, new[]
+        {
+            ProductIdentity.DisplayName + " " + ProductIdentity.Version,
+            "用法: DesktopCodexAssistant.exe <命令> [参数]",
+            string.Empty,
+            "帮助",
+            "  help | --help | -h | /?                 显示本页（无需主程序运行）",
+            "  --guard help                            显示 GUARD 完整控制说明",
+            string.Empty,
+            "本机数据与控制",
+            "  --balances                              输出 Codex / Claude / DeepSeek 余额 JSON",
+            "  --guard status                          查询 GUARD 状态 JSON",
+            "  --guard sleep <on|off>                  开关防睡眠",
+            "  --guard display <start [1..24]|stop>    启停亮屏计时",
+            "  --guard display hours <1..24>           设置亮屏小时预设",
+            string.Empty,
+            "程序管理",
+            "  --install [--no-start]                  安装开机启动",
+            "  --uninstall                             移除开机启动",
+            "  --stop                                  停止常驻实例",
+            string.Empty,
+            "诊断与开发",
+            "  --test                                  运行完整自检",
+            "  --test-layout | --test-settings-bindings | --test-display-recovery",
+            "  --diagnose-idle-cpu | --diagnose-radar-runtime | --dump-codex-tasks",
+            "  --render-networkmonitor | --render-tilecolumn | --render-operation",
+            "  --render-specboard | --render-specboardmanager | --render-guard",
+            "  --render-resetspeedboard | --render-systemdayboard",
+            string.Empty,
+            "GUARD 文档: Docs\\Guard-CLI.md"
+        });
+    }
+
+    internal static string BuildGuardHelp()
+    {
+        return string.Join(Environment.NewLine, new[]
+        {
+            "GUARD CLI - 睡眠防护与亮屏计时代理控制",
+            "用法: DesktopCodexAssistant.exe --guard <命令>",
+            string.Empty,
+            "命令",
+            "  --guard help                            显示本页；主程序可不运行",
+            "  --guard status                          查询状态，不修改设置",
+            "  --guard sleep on                        开启防睡眠",
+            "  --guard sleep off                       关闭防睡眠",
+            "  --guard display start                   按已保存的小时预设启动亮屏",
+            "  --guard display start <1..24>           设置预设并启动亮屏",
+            "  --guard display stop                    停止亮屏；不改变防睡眠",
+            "  --guard display hours <1..24>           只修改小时预设",
+            string.Empty,
+            "行为",
+            "  sleep 与 display 相互独立；display start 不会自动 sleep on。",
+            "  除 help 外，命令要求同一 Windows 用户的常驻实例正在运行。",
+            "  成功结果写 stdout；错误 JSON 写 stderr。所有协议响应为单行 JSON。",
+            string.Empty,
+            "退出码",
+            "  0  成功",
+            "  2  参数错误、主程序不可用或管道错误",
+            "  3  主程序收到请求但拒绝或执行失败",
+            string.Empty,
+            "自动化提示",
+            "  修改后再次执行 --guard status，并检查 sleep_power_request_ready",
+            "  或 display_power_request_ready；不要只把开关值当作 OS 请求已生效。",
+            string.Empty,
+            "完整字段与调用示例: Docs\\Guard-CLI.md"
+        });
+    }
+
+    internal static void RunSelfTest()
+    {
+        if (!IsGeneralHelpRequest(new[] { "help" }) ||
+            !IsGeneralHelpRequest(new[] { "--help" }) ||
+            !IsGeneralHelpRequest(new[] { "-h" }) ||
+            !IsGeneralHelpRequest(new[] { "/?" }) ||
+            IsGeneralHelpRequest(new[] { "--stop", "--help" }))
+            throw new InvalidOperationException("General CLI help routing failed.");
+        if (!IsGuardHelpRequest(new[] { "--guard", "help" }) ||
+            !IsGuardHelpRequest(new[] { "--guard", "--help" }) ||
+            IsGuardHelpRequest(new[] { "--guard", "help", "extra" }))
+            throw new InvalidOperationException("GUARD CLI help routing failed.");
+        string general = BuildGeneralHelp();
+        string guard = BuildGuardHelp();
+        if (general.IndexOf("--balances", StringComparison.Ordinal) < 0 ||
+            general.IndexOf("--guard help", StringComparison.Ordinal) < 0 ||
+            guard.IndexOf("display_power_request_ready", StringComparison.Ordinal) < 0 ||
+            guard.IndexOf("1..24", StringComparison.Ordinal) < 0)
+            throw new InvalidOperationException("CLI help content is incomplete.");
+        Console.WriteLine("Command-line help: PASS aliases, routing, documented GUARD readiness");
+    }
+
+    private static bool IsHelpToken(string value, bool allowBareHelp)
+    {
+        string token = (value ?? string.Empty).Trim();
+        return (allowBareHelp && string.Equals(token, "help", StringComparison.OrdinalIgnoreCase)) ||
+            string.Equals(token, "--help", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(token, "-h", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(token, "/?", StringComparison.OrdinalIgnoreCase);
+    }
+}
+
 internal static class GuardControlProtocol
 {
     internal const int SchemaVersion = 1;

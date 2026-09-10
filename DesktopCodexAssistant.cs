@@ -38,6 +38,16 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (CommandLineHelp.IsGuardHelpRequest(args))
+        {
+            return PrintCommandLineHelp(CommandLineHelp.BuildGuardHelp());
+        }
+
+        if (CommandLineHelp.IsGeneralHelpRequest(args))
+        {
+            return PrintCommandLineHelp(CommandLineHelp.BuildGeneralHelp());
+        }
+
         MigrateLegacyStorage();
         NetworkCheckHistoryLogger.Initialize();
         QuotaDecisionHistoryLogger.Initialize();
@@ -845,6 +855,7 @@ internal static class Program
             RunNamedSelfTest("DeepSeekServiceMonitor", DeepSeekServiceMonitor.RunSelfTest);
             RunNamedSelfTest("DeepSeekBalanceMonitor", DeepSeekBalanceMonitor.RunSelfTest);
             RunNamedSelfTest("AiBalanceShareProtocol", AiBalanceShareProtocol.RunSelfTest);
+            RunNamedSelfTest("CommandLineHelp", CommandLineHelp.RunSelfTest);
             RunNamedSelfTest("GuardControlProtocol", GuardControlProtocol.RunSelfTest);
             RunNamedSelfTest("ServiceAlertDebouncer", ServiceAlertDebouncer.RunSelfTest);
             RunNamedSelfTest("ClaudeCodeUsageReader", ClaudeCodeUsageReader.RunSelfTest);
@@ -952,6 +963,13 @@ internal static class Program
 
         Console.Error.WriteLine(AiBalanceShareProtocol.SerializeError(errorCode));
         return 2;
+    }
+
+    private static int PrintCommandLineHelp(string helpText)
+    {
+        NativeMethods.AttachToParentConsole();
+        Console.WriteLine(helpText ?? string.Empty);
+        return 0;
     }
 
     private static int RunGuardControlCommand(string[] args)
