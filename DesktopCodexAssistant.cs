@@ -61,6 +61,11 @@ internal static class Program
             return DumpAiBalances();
         }
 
+        if (HasArg(args, "--guard"))
+        {
+            return RunGuardControlCommand(args);
+        }
+
         if (HasArg(args, "--stop"))
         {
             LogInfo("Stop requested.");
@@ -227,7 +232,7 @@ internal static class Program
             using (PdhSampler sampler = new PdhSampler())
             using (WidgetForm form = new WidgetForm(sampler, stopEvent, settings, useDesktopParent))
             {
-                form.EnableAiBalanceShareServer();
+                form.EnableLocalControlServers();
                 Application.Run(form);
             }
 
@@ -840,6 +845,7 @@ internal static class Program
             RunNamedSelfTest("DeepSeekServiceMonitor", DeepSeekServiceMonitor.RunSelfTest);
             RunNamedSelfTest("DeepSeekBalanceMonitor", DeepSeekBalanceMonitor.RunSelfTest);
             RunNamedSelfTest("AiBalanceShareProtocol", AiBalanceShareProtocol.RunSelfTest);
+            RunNamedSelfTest("GuardControlProtocol", GuardControlProtocol.RunSelfTest);
             RunNamedSelfTest("ServiceAlertDebouncer", ServiceAlertDebouncer.RunSelfTest);
             RunNamedSelfTest("ClaudeCodeUsageReader", ClaudeCodeUsageReader.RunSelfTest);
             RunNamedSelfTest("ClaudeCodeUsageScheduler", ClaudeCodeUsageScheduler.RunSelfTest);
@@ -946,6 +952,37 @@ internal static class Program
 
         Console.Error.WriteLine(AiBalanceShareProtocol.SerializeError(errorCode));
         return 2;
+    }
+
+    private static int RunGuardControlCommand(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        GuardControlRequest request;
+        string parseError;
+        if (!GuardControlProtocol.TryParseArguments(args, out request, out parseError))
+        {
+            Console.Error.WriteLine(GuardControlProtocol.SerializeResponse(
+                GuardControlProtocol.Error("INVALID_ARGUMENTS", parseError)));
+            return 2;
+        }
+
+        string json;
+        string transportError;
+        if (!GuardControlClient.TrySendCurrent(request, 3000, out json, out transportError))
+        {
+            Console.Error.WriteLine(GuardControlProtocol.SerializeResponse(
+                GuardControlProtocol.Error(transportError, "The running GUARD host is unavailable.")));
+            return 2;
+        }
+
+        if (!GuardControlProtocol.IsSuccessfulResponse(json))
+        {
+            Console.Error.WriteLine(json);
+            return 3;
+        }
+
+        Console.WriteLine(json);
+        return 0;
     }
 
     private static int TestLoggerStoragePolicy()

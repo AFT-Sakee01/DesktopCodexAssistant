@@ -372,6 +372,9 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
     internal void RecoverAfterDisplayResume()
     {
         this.displaySuspended = false;
+        // A display transition can invalidate OS power requests while leaving our toggles intact.
+        // Reconcile immediately; the maintenance retry remains the fallback for transient failure.
+        this.runtime.RefreshExecutionState(true);
         ResetDisplayRenderResources();
         if (this.dockTab != null && !this.dockTab.IsDisposed)
         {
@@ -783,9 +786,64 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         RenderLayeredWindow();
     }
 
-    // Steps along a fixed ladder and stops at the ends rather than wrapping: wrapping from 8 hours
-    // straight back to 30 minutes on one extra click is the kind of surprise that silently ends a
-    // long guard.
+    internal GuardControlResponse ExecuteGuardControl(GuardControlRequest request)
+    {
+        if (request == null) return GuardControlProtocol.Error("INVALID_REQUEST", "Missing GUARD request.");
+        bool changed = false;
+        DateTime now = DateTime.UtcNow;
+        switch (request.Action)
+        {
+            case "status": break;
+            case "sleep_on":
+                changed = this.runtime.SetSleepGuard(true);
+                if (!changed) this.runtime.RefreshExecutionState(true);
+                break;
+            case "sleep_off": changed = this.runtime.SetSleepGuard(false); break;
+            case "display_stop": changed = this.runtime.StopDisplayGuard(); break;
+            case "display_hours":
+                changed = this.runtime.SetDisplayGuardMinutes(request.Hours * 60);
+                break;
+            case "display_start":
+                if (request.Hours > 0) changed |= this.runtime.SetDisplayGuardMinutes(request.Hours * 60);
+                changed |= this.runtime.StartDisplayGuard(now);
+                break;
+            default: return GuardControlProtocol.Error("INVALID_ACTION", "Unsupported GUARD action.");
+        }
+
+        if (request.Action != "status")
+        {
+            PersistRuntimeState();
+            if (this.Visible) RenderLayeredWindow();
+        }
+
+        bool onAc;
+        bool acKnown = NativeMethods.TryGetOnAcPower(out onAc);
+        TimeSpan remaining = this.runtime.GetDisplayGuardRemaining(now);
+        return new GuardControlResponse
+        {
+            Ok = true,
+            Changed = changed,
+            Action = request.Action,
+            State = new GuardControlSnapshot
+            {
+                GeneratedAtUtc = now,
+                SleepEnabled = this.runtime.SleepGuardEnabled,
+                SleepSinceUtc = this.runtime.SleepGuardSinceUtc,
+                DisplayActive = this.runtime.DisplayGuardActive,
+                DisplayHours = this.runtime.DisplayGuardMinutes / 60,
+                DisplayUntilUtc = this.runtime.DisplayGuardUntilUtc,
+                DisplayRemainingSeconds = Math.Max(0, (int)Math.Ceiling(remaining.TotalSeconds)),
+                SystemPowerRequestActive = this.runtime.SystemPowerRequestActive,
+                ExecutionPowerRequestActive = this.runtime.ExecutionPowerRequestActive,
+                DisplayPowerRequestActive = this.runtime.DisplayPowerRequestActive,
+                OnAcPower = acKnown ? (bool?)onAc : null,
+                LastActionDetail = this.runtime.LastActionDetail
+            }
+        };
+    }
+
+    // Steps along the hourly ladder and stops at the ends rather than wrapping: wrapping from 24
+    // hours straight back to 1 hour on one extra click could silently shorten a long guard.
     internal static int StepValue(int[] steps, int current, int direction)
     {
         if (steps == null || steps.Length == 0)

@@ -195,10 +195,9 @@ internal sealed class WidgetSettings
     public const int MinSystemDayBoardAutoHideSeconds = 0;
     public const int MaxSystemDayBoardAutoHideSeconds = 600;
     public const int DefaultSystemDayBoardAutoHideSeconds = 30;
-    // Display-guard steps mirror the CodexSleepGuard combo box (30 min / 1 / 2 / 5 / 8 hours) and
-    // the offline steps mirror its threshold list (1 / 5 / 10 / 30 min). Both are snapped to these
-    // ladders rather than clamped to a range, so the board's +/- stepper cannot land off-menu.
-    public static readonly int[] GuardDisplayMinuteSteps = { 30, 60, 120, 300, 480 };
+    // Display guard is deliberately an hourly dial. The 1..24 hour bound gives agents and the UI
+    // the same predictable contract; legacy half-hour values normalize to one hour.
+    public static readonly int[] GuardDisplayMinuteSteps = BuildHourlyMinuteSteps(1, 24);
     public static readonly int[] GuardOfflineThresholdMinuteSteps = { 1, 5, 10, 30 };
     public const int DefaultGuardDisplayMinutes = 300;
     public const int DefaultGuardOfflineThresholdMinutes = 10;
@@ -6866,6 +6865,14 @@ internal sealed class WidgetSettings
     public static int NormalizeGuardDisplayMinutes(int value)
     {
         return SnapToNearestStep(value, GuardDisplayMinuteSteps, DefaultGuardDisplayMinutes);
+    }
+
+    private static int[] BuildHourlyMinuteSteps(int minimumHours, int maximumHours)
+    {
+        int count = Math.Max(1, maximumHours - minimumHours + 1);
+        int[] values = new int[count];
+        for (int i = 0; i < count; i++) values[i] = (minimumHours + i) * 60;
+        return values;
     }
 
     public static int NormalizeGuardOfflineThresholdMinutes(int value)

@@ -35,6 +35,7 @@ internal sealed class GuardRuntime
     private int? lastBatteryPercent;
     private DateTime offlineSinceUtc = DateTime.MinValue;
     private DateTime lastAutoSleepUtc = DateTime.MinValue;
+    private DateTime nextExecutionRepairUtc = DateTime.MinValue;
     private int displayGuardMinutes = WidgetSettings.DefaultGuardDisplayMinutes;
     private int offlineThresholdMinutes = WidgetSettings.DefaultGuardOfflineThresholdMinutes;
     private string lastActionDetail = string.Empty;
@@ -263,9 +264,9 @@ internal sealed class GuardRuntime
         this.offlineThresholdMinutes = settings.GuardOfflineThresholdMinutes;
         this.batteryCarePauseUntilUtc = NormalizeDeadline(settings.GuardBatteryCarePauseUntilUtcTicks, nowUtc);
         this.displayGuardUntilUtc = NormalizeDeadline(settings.GuardDisplayUntilUtcTicks, nowUtc);
-        // A live display timer is a strict extension of the system guard. Repair a hand-edited or
-        // partially written settings file here instead of restoring DISPLAY_REQUIRED by itself.
-        this.sleepGuardEnabled = settings.GuardSleepEnabled || this.displayGuardUntilUtc != DateTime.MinValue;
+        // Display and sleep are independent. A legacy file may contain both, but a future display
+        // deadline must never silently arm sleep protection during load.
+        this.sleepGuardEnabled = settings.GuardSleepEnabled;
         // Unlike the two deadlines this is a *start* stamp, so it is only valid in the past. A
         // future or absent value falls back to now, which reads as "just armed" rather than
         // inventing an elapsed time the guard never actually held.
@@ -324,17 +325,24 @@ internal sealed class GuardRuntime
         {
             this.sleepGuardSinceUtc = DateTime.UtcNow;
         }
-        else
-        {
-            // Dropping the system guard must not silently keep the display awake: the display
-            // guard is a strict extension of the sleep guard, never an independent flag.
-            this.displayGuardUntilUtc = DateTime.MinValue;
-            this.sleepGuardSinceUtc = DateTime.MinValue;
-        }
+        else this.sleepGuardSinceUtc = DateTime.MinValue;
 
         ApplyExecutionState();
         Program.LogInfo("Guard sleep protection set. Enabled=" + enabled.ToString());
         return true;
+    }
+
+    // Reasserts the desired request set without changing user state. Display/session recovery and
+    // an idempotent CLI "on" command use this to repair an OS-side request that disappeared while
+    // the persisted toggle remained enabled.
+    internal void RefreshExecutionState(bool recreatePowerRequestHandle)
+    {
+        if (recreatePowerRequestHandle)
+        {
+            this.powerRequests.Release();
+        }
+
+        ApplyExecutionState();
     }
 
     internal bool StartDisplayGuard(DateTime nowUtc)
@@ -342,14 +350,6 @@ internal sealed class GuardRuntime
         if (this.displayGuardMinutes <= 0)
         {
             return false;
-        }
-
-        // Keeping the display on without keeping the system awake is incoherent, so starting the
-        // display timer implies the sleep guard.
-        if (!this.sleepGuardEnabled)
-        {
-            this.sleepGuardEnabled = true;
-            this.sleepGuardSinceUtc = nowUtc;
         }
 
         this.displayGuardUntilUtc = nowUtc.AddMinutes(this.displayGuardMinutes);
@@ -476,6 +476,13 @@ internal sealed class GuardRuntime
         }
 
         changed |= UpdateOfflineState(nowUtc);
+        if ((this.sleepGuardEnabled || this.displayGuardUntilUtc != DateTime.MinValue) &&
+            nowUtc >= this.nextExecutionRepairUtc)
+        {
+            // Retry transient PowerSetRequest failures and refresh the thread-affine ES flags.
+            // Sync is idempotent for requests already held, so this does not increment refcounts.
+            ApplyExecutionState();
+        }
         return changed;
     }
 
@@ -526,7 +533,7 @@ internal sealed class GuardRuntime
         // Match the original CodexSleepGuard contract: connectivity is observed all the time, but
         // an outage may request sleep only while the user has explicitly armed a power guard.
         // Without this gate, every default installation would sleep after ten offline minutes.
-        if (!this.sleepGuardEnabled && this.displayGuardUntilUtc == DateTime.MinValue)
+        if (!this.sleepGuardEnabled)
         {
             return true;
         }
@@ -632,6 +639,9 @@ internal sealed class GuardRuntime
         bool changed = this.offlineSinceUtc != DateTime.MinValue;
         this.offlineSinceUtc = DateTime.MinValue;
         this.lastAutoSleepUtc = nowUtc;
+        // Windows may invalidate request state across suspend/session transitions. Drop our cached
+        // handle state and rebuild both layers immediately on the long-lived UI thread.
+        RefreshExecutionState(true);
         if (changed)
         {
             this.lastActionDetail = "系统已唤醒，断网倒计时重新开始。";
@@ -643,12 +653,11 @@ internal sealed class GuardRuntime
     // Two layers, applied together. The persistent power request is the one that actually holds a
     // Modern Standby (S0) machine in the active phase on AC power; the ES_* flags are the
     // compatibility layer that S3 systems still honour, and ES_CONTINUOUS alone clears any previously
-    // registered requirement, so that one call covers both arming and releasing. SystemRequired
-    // without the sleep guard cannot happen (display implies sleep), but the wants are derived here
-    // rather than assumed so the request layer and the flag layer never disagree.
+    // registered requirement, so that one call covers both arming and releasing. DisplayRequired
+    // is intentionally independent: keeping the panel lit must not silently arm SystemRequired.
     private void ApplyExecutionState()
     {
-        bool wantSystem = this.sleepGuardEnabled || this.displayGuardUntilUtc != DateTime.MinValue;
+        bool wantSystem = this.sleepGuardEnabled;
         bool wantExecution = this.sleepGuardEnabled;
         bool wantDisplay = this.displayGuardUntilUtc != DateTime.MinValue;
 
@@ -676,6 +685,8 @@ internal sealed class GuardRuntime
             this.lastActionDetail = "设置电源守护状态失败：" + detail;
             Program.LogInfo("Guard SetThreadExecutionState failed. Detail=" + detail);
         }
+
+        this.nextExecutionRepairUtc = DateTime.UtcNow.AddSeconds(30);
     }
 
     // Releases the flags on shutdown. Without this the process can exit while Windows still holds
@@ -713,21 +724,32 @@ internal sealed class GuardRuntime
             online.GetDisplayGuardProgress(now.AddMinutes(online.DisplayGuardMinutes)) == 0.0f,
             "display guard progress empties at the deadline");
 
-        // Turning the system guard off must take the display guard with it.
+        // The two controls are independent: releasing system sleep protection must leave a live
+        // display timer intact, while dropping only the corresponding system/execution requests.
         online.SetSleepGuard(false);
-        AssertSelfTest(!online.DisplayGuardActive, "disabling sleep guard clears the display guard");
+        AssertSelfTest(online.DisplayGuardActive, "disabling sleep guard preserves the display guard");
         AssertSelfTest(!online.SystemPowerRequestActive, "disabling sleep guard clears the system power request");
-        AssertSelfTest(!online.DisplayPowerRequestActive, "disabling sleep guard clears the display power request");
+        AssertSelfTest(!online.ExecutionPowerRequestActive, "disabling sleep guard clears the execution power request");
+        AssertSelfTest(online.DisplayPowerRequestActive, "disabling sleep guard preserves the display power request");
+        online.StopDisplayGuard();
+        AssertSelfTest(!online.DisplayPowerRequestActive, "stopping display guard clears its own power request");
         online.ReleaseAll();
+
+        GuardRuntime displayOnly = new GuardRuntime(delegate { return true; });
+        AssertSelfTest(displayOnly.StartDisplayGuard(now), "display-only guard starts");
+        AssertSelfTest(!displayOnly.SleepGuardEnabled, "display-only guard does not arm sleep protection");
+        AssertSelfTest(!displayOnly.SystemPowerRequestActive && !displayOnly.ExecutionPowerRequestActive,
+            "display-only guard does not hold system or execution requests");
+        AssertSelfTest(displayOnly.DisplayPowerRequestActive, "display-only guard holds the display request");
+        displayOnly.ReleaseAll();
 
         // Expiry path.
         GuardRuntime expiry = new GuardRuntime(delegate { return true; });
-        expiry.SetDisplayGuardMinutes(30);
+        expiry.SetDisplayGuardMinutes(60);
         expiry.StartDisplayGuard(now);
-        AssertSelfTest(expiry.Tick(now.AddMinutes(31)), "display guard expiry reports a repaint");
+        AssertSelfTest(expiry.Tick(now.AddMinutes(61)), "display guard expiry reports a repaint");
         AssertSelfTest(!expiry.DisplayGuardActive, "display guard clears itself at the deadline");
-        // Display expiry leaves the sleep guard (and its system request) armed; release it so the
-        // --test run does not leave a real power request open on the developer's machine.
+        AssertSelfTest(!expiry.SleepGuardEnabled, "display expiry does not alter independent sleep state");
         expiry.ReleaseAll();
 
         // Unknown connectivity must not start the offline clock.
@@ -850,7 +872,8 @@ internal sealed class GuardRuntime
         inconsistent.GuardDisplayUntilUtcTicks = DateTime.UtcNow.AddMinutes(10).Ticks;
         GuardRuntime repaired = new GuardRuntime(delegate { return true; });
         repaired.LoadFromSettings(inconsistent, DateTime.UtcNow);
-        AssertSelfTest(repaired.DisplayGuardActive && repaired.SleepGuardEnabled, "display deadline restores its required sleep guard");
+        AssertSelfTest(repaired.DisplayGuardActive && !repaired.SleepGuardEnabled,
+            "display deadline restores without silently enabling sleep protection");
         repaired.ReleaseAll();
 
         Console.WriteLine("Guard runtime: PASS sleep/display/offline/battery state machine");

@@ -32,6 +32,11 @@ internal sealed partial class OperationForm
         return this.guardBoardForm.Runtime;
     }
 
+    internal GuardControlResponse ExecuteGuardControl(GuardControlRequest request)
+    {
+        return EnsureGuardBoardForm().ExecuteGuardControl(request);
+    }
+
     internal void ObserveBatteryPercent(bool known, int percent, DateTime nowUtc)
     {
         // The hidden board already exists for guard lifetime; sampling must not reapply settings

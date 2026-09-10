@@ -1,6 +1,6 @@
 # Guard Board 架构
 
-适用版本：2.0.0.34
+适用版本：2.0.0.38
 
 本文负责电源守护状态机（睡眠防护、亮屏计时、断网自动睡眠、电池保护暂停窗口）、GUARD 看板窗口的布局与交互，以及该窗口与「特殊设置」三项程序守护的共用边界。
 
@@ -22,16 +22,16 @@ GUARD 是左缘七角色停靠队列的第四个成员，与 Network、Spec Boar
 
 `ApplyExecutionState` 同时施加两层：
 
-- **持久电源请求（S0 唯一有效层）**：`NativeMethods.PowerRequestGuard` 用 `PowerCreateRequest` 建立一个贯穿守护生命周期的请求对象，按需 `PowerSetRequest` / `PowerClearRequest` 三类请求——`SystemRequired`（睡眠或亮屏时）、`ExecutionRequired`（睡眠时）、`DisplayRequired`（亮屏时）。这是本机 **S0 Modern Standby** 上真正把机器留在活动相位的机制，对应独立工具 `CodexSleepGuard` 的 1.0.0.2 修复。
+- **持久电源请求（S0 唯一有效层）**：`NativeMethods.PowerRequestGuard` 用 `PowerCreateRequest` 建立一个贯穿守护生命周期的请求对象，按需 `PowerSetRequest` / `PowerClearRequest` 三类请求——`SystemRequired` 与 `ExecutionRequired` 只跟随睡眠防护，`DisplayRequired` 只跟随亮屏计时。这是本机 **S0 Modern Standby** 上真正把机器留在活动相位的机制，对应独立工具 `CodexSleepGuard` 的 1.0.0.2 修复。
 - **兼容层 ES 标志**：单次 `SetThreadExecutionState`（`ES_CONTINUOUS` 可选叠加 `ES_SYSTEM_REQUIRED` / `ES_DISPLAY_REQUIRED`），S3 系统仍靠它。
 
 只用 `ES_SYSTEM_REQUIRED` 的旧实现在本机上随显示器熄灭与其它桌面应用一并被挂起，守护静默失效——这正是"旧的防止睡眠对本机无效"的根因，故补上持久电源请求层。`SetThreadExecutionState` 的标志按**调用线程**注册，线程退出即失效；电源请求对象本身不受线程亲和约束，但为与 ES 标志保持一致的调用次序，两层的所有变更都必须发生在 UI 线程，不得放进 `Task.Run`。`PowerRequestGuard.Sync` 先置位需要的请求再清除不需要的，收紧守护的过渡永不留下无保护空档；每个方法都是尽力而为且绝不抛出——电源 API 失败必须降级到 ES 标志，不能拖垮维护 tick。`GuardBoardForm.Dispose` 调用 `ReleaseAll`：清除三项请求、`CloseHandle` 请求对象、并用 `ES_CONTINUOUS` 归还标志，避免进程退出时把要求留在已消失的线程或未释放的请求对象上。
 
-`SystemPowerRequestActive` / `ExecutionPowerRequestActive` / `DisplayPowerRequestActive` 三个只读属性反映 OS **实际接受**的请求（API 失败即为 `false`，而非守护开关的镜像），供看板绘制电源请求状态块。
+`SystemPowerRequestActive` / `ExecutionPowerRequestActive` / `DisplayPowerRequestActive` 三个只读属性反映 OS **实际接受**的请求（API 失败即为 `false`，而非守护开关的镜像），供看板和 CLI 判断请求是否就绪。任一保护活动时，维护 tick 每 30 秒重新执行幂等同步，以重试瞬时 `PowerCreateRequest` / `PowerSetRequest` 失败并刷新线程亲和的 ES 标志；系统恢复或显示恢复会先释放旧句柄再完整重建。重复执行 `--guard sleep on` 也会重建请求，而不是因开关值未变直接跳过修复。
 
 五条不变量：
 
-- 亮屏计时是睡眠防护的**严格扩展**。`StartDisplayGuard` 隐含开启睡眠防护；`SetSleepGuard(false)` 同时清除亮屏计时。不存在「屏幕常亮但系统可休眠」的组合。
+- 亮屏计时与睡眠防护**彼此独立**。`StartDisplayGuard` 只申请 `DisplayRequired`，不会隐式开启睡眠防护；`SetSleepGuard(false)` 只释放 `SystemRequired` / `ExecutionRequired`，不会停止仍在运行的亮屏计时。因而「屏幕常亮但系统仍可按 Windows 设置休眠」是受支持且在界面中明确标注的组合。
 - 连通性未知**绝不**启动离线计时。`ResolveOnline` 返回 `null` 时按在线处理——误判离线的代价是在用户操作中途让机器睡过去。
 - 断网计时可以持续显示网络状态，但只有用户已开启睡眠防护时才允许请求系统睡眠。默认未武装状态绝不因离线自动睡眠。
 - 请求系统睡眠前先解除全部守护。持有 `ES_SYSTEM_REQUIRED` 的同时调用 `SetSuspendState` 是自相矛盾的，Windows 会忽略其中一个而文档未定义是哪个。
@@ -65,9 +65,9 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 | `GuardOfflineThresholdMinutes` | 断网自动睡眠阈值，取值必须落在 `GuardOfflineThresholdMinuteSteps` |
 | `GuardBatteryCarePauseUntilUtcTicks` | 电池保护暂停窗口终点 |
 
-两个档位是**阶梯**而非区间：`GuardDisplayMinuteSteps = {30, 60, 120, 300, 480}` 分、`GuardOfflineThresholdMinuteSteps = {1, 5, 10, 30}` 分，与 CodexSleepGuard 原下拉框一致。`NormalizeGuardDisplayMinutes` / `NormalizeGuardOfflineThresholdMinutes` 对越界值取最近档位而非夹到区间端点，手工改坏的 settings.ini 不会产生 UI 显示不出来的时长。
+两个档位是**阶梯**而非任意区间：亮屏阶梯覆盖 1–24 小时的每一个整点（`60, 120, ... 1440` 分），断网阶梯仍为 `GuardOfflineThresholdMinuteSteps = {1, 5, 10, 30}` 分。`NormalizeGuardDisplayMinutes` / `NormalizeGuardOfflineThresholdMinutes` 对旧值或越界值取最近档位，旧版 30 分自动归一为 1 小时；UI 的 `+/-` 每次只移动一小时。
 
-两个"终点"型 tick 过期即视为未武装，"起点"型 tick 落在未来时回退为当前时刻。窗口尺寸仍复用 `SpecBoardWidth/Height`（默认 648×400），使五个停靠板展开成同一矩形；透明度与缩放则由 `GuardBoardTransparencyOverridePercent` / `GuardBoardScaleOverridePercent` 独立控制，GUARD 左缘 tab 跟随同一组 GUARD 覆盖。Version 80 迁移会把旧设置中的 Spec Board 覆盖值一次性复制到 GUARD 槽位，未显式覆盖时继续保留 `-1` 跟随全局。
+两个"终点"型 tick 过期即视为未武装，"起点"型 tick 落在未来时回退为当前时刻。窗口尺寸仍复用 `SpecBoardWidth/Height`（默认 648×400），使七个停靠板展开成同一矩形；透明度与缩放则由 `GuardBoardTransparencyOverridePercent` / `GuardBoardScaleOverridePercent` 独立控制，GUARD 左缘 tab 跟随同一组 GUARD 覆盖。Version 80 迁移会把旧设置中的 Spec Board 覆盖值一次性复制到 GUARD 槽位，未显式覆盖时继续保留 `-1` 跟随全局。
 
 ## 窗口与布局
 
@@ -92,7 +92,7 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 
 ### 交互
 
-命中区在绘制时登记（`recordHitTargets`），`OnMouseUp` 线性匹配。档位 `+/-` 走 `StepValue`，到达阶梯两端停住而不回绕：多点一下就从 8 小时跳回 30 分会静默终结一次长守护。
+命中区在绘制时登记（`recordHitTargets`），`OnMouseUp` 线性匹配。亮屏档位 `+/-` 走 `StepValue`，按一小时一档移动，到 1 / 24 小时端点停住而不回绕。亮屏卡片副文案与顶栏会明确说明它不会自动开启睡眠防护；显示请求单独生效时，电源请求区显示「仅保持亮屏 · 系统仍按 Windows 电源设置休眠」。
 
 底部操作轨与其余六个左缘 board 共用同一尺寸和间距：左起为绿色“设置”和红色“关闭”，按钮按实际字体测量、左右各留 14 逻辑像素且不窄于 42，按钮间距 4、状态区间距 5。语义色只作用于边框，文字保持统一中性色，紧凑单列模式也不改变这组交互。
 
@@ -102,7 +102,9 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 
 `OperationForm.GuardBoard.cs` 持有窗口并转发所有对外命令。启动时即构造隐藏窗口及其固定左缘 tab；状态机住在窗口里，若窗口不存在或维护 timer 随看板收起而停掉，已持久化的守护和到期动作都会失效。
 
-五个停靠板互斥：展开任一板收起其余四个。全部展开路径共用 `OperationForm.CollapseLeftDockBoardsExcept(LeftDockBoardKind)`，成员表由 `GetLeftDockBoardMembership` 单点维护——早期各路径手写同伴列表，`PrepareForCodexTaskOverlayShow` 因此漏掉了 GUARD，从 GUARD 梯形移到任务梯形时两板会叠在一起。互斥不是观感问题：梯形间距 40 逻辑像素而板高 400，两板大面积重叠，被盖住的那块的 `UpdateDockCollapse` 会把落在重叠区的光标读成仍悬停在自己身上，收起计时器永不启动。`RunLeftDockMutualExclusionSelfTest` 断言成员表覆盖枚举全部取值，后续新增看板漏登记会直接让 `--test` 失败。全屏隐藏、显示挂起/恢复分别经 `SetGuardBoardHiddenForFullscreen`、`PrepareGuardBoardForDisplaySuspend`、`RecoverGuardBoardAfterDisplayResume`。
+`DesktopCodexAssistant.exe --guard ...` 是同一状态机的代理控制入口。一次性 CLI 在主实例 mutex 之前解析命令，经当前用户 SID 派生的双向命名管道发送 allow-list 请求；服务端将命令 marshal 回 `WidgetForm` UI 线程，再由 `OperationForm.ExecuteGuardControl` 进入现有 `GuardBoardForm` 状态和持久化路径。CLI 不自行持有电源请求，也不能提交任意命令。协议 schema 1 支持 `status`、`sleep on/off`、`display start [hours]`、`display stop`、`display hours N`；小时限定 1–24，响应包含独立开关、截止时间、剩余秒数、AC 状态以及三项实际请求状态。
+
+七个停靠板互斥：展开任一板收起其余六个。全部展开路径共用 `OperationForm.CollapseLeftDockBoardsExcept(LeftDockBoardKind)`，成员表由 `GetLeftDockBoardMembership` 单点维护——早期各路径手写同伴列表，`PrepareForCodexTaskOverlayShow` 因此漏掉了 GUARD，从 GUARD 梯形移到任务梯形时两板会叠在一起。互斥不是观感问题：梯形间距 40 逻辑像素而板高 400，两板大面积重叠，被盖住的那块的 `UpdateDockCollapse` 会把落在重叠区的光标读成仍悬停在自己身上，收起计时器永不启动。`RunLeftDockMutualExclusionSelfTest` 断言成员表覆盖枚举全部取值，后续新增看板漏登记会直接让 `--test` 失败。全屏隐藏、显示挂起/恢复分别经 `SetGuardBoardHiddenForFullscreen`、`PrepareGuardBoardForDisplaySuspend`、`RecoverGuardBoardAfterDisplayResume`。
 
 维护 tick 500 ms，从窗口构造完成起持续运行，与面板是否展开无关——守护要跨夜生效。守护状态色只在看板内容中表达；常驻 tab 固定使用队列第四位的紫色角色编码，不再因有守护、电池暂停或空闲而变色。窗口可见时每 tick 无条件重绘，因为板上每个倒计时都是秒级精度。
 
@@ -110,6 +112,6 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 
 ## 渲染取样
 
-`--render-guard sample --out <dir>` 产出四张 PNG：`guard-idle`（全空闲）、`guard-armed`（睡眠 2h18m + 亮屏剩余 4:32:10 + 电池暂停 8 小时）、`guard-offline`（离线 6/10 分，红条）、`guard-compact`（320 逻辑宽单列）。`--render-guard current` 按真实 settings.ini 出 `guard-current.png`。
+`--render-guard sample --out <dir>` 产出五张 PNG：`guard-idle`（全空闲）、`guard-armed`（睡眠 2h18m + 亮屏剩余 4:32:10 + 电池暂停 8 小时）、`guard-display-only`（仅亮屏、系统仍可休眠）、`guard-offline`（离线 6/10 分，红条）、`guard-compact`（320 逻辑宽单列）。`--render-guard current` 按真实 settings.ini 出 `guard-current.png`。
 
 取样状态需要「已持续数小时」的守护，`GuardRuntime.BackdateSleepGuardForRenderSample` 专供该用途；harness 在每个窗口析构前调用 `ReleaseAll`，避免一次渲染在调用进程上留下 `ES_SYSTEM_REQUIRED`。

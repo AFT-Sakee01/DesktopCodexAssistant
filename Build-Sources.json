@@ -42,6 +42,7 @@
     "Core/GuardBoardForm.cs",
     "Core/GuardBoardForm.Layout.cs",
     "Core/GuardBoardForm.RenderSample.cs",
+    "Core/GuardControlProtocol.cs",
     "Core/GuardRuntime.cs",
     "Core/IdleCpuDiagnostics.cs",
     "Core/LayeredWidgetFormBase.cs",

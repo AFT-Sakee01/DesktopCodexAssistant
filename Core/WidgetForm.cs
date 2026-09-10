@@ -117,6 +117,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool globalHotkeyConfigurationApplied;
     private bool aiBalanceShareServerEnabled;
     private AiBalanceShareServer aiBalanceShareServer;
+    private bool guardControlServerEnabled;
+    private GuardControlServer guardControlServer;
 
     public WidgetForm(PdhSampler sampler, EventWaitHandle stopEvent, WidgetSettings settings, bool useDesktopParent)
     {
@@ -194,9 +196,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         SystemEvents.SessionSwitch += OnSystemSessionSwitch;
     }
 
-    internal void EnableAiBalanceShareServer()
+    internal void EnableLocalControlServers()
     {
         this.aiBalanceShareServerEnabled = true;
+        this.guardControlServerEnabled = true;
     }
 
     protected override void OnShown(EventArgs e)
@@ -306,6 +309,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         // establish its own HWND safely. Build the canonical tile set only after every data owner
         // and board provider is connected; otherwise a cold start has no later creation path.
         ApplyMetricTilePresentation();
+        StartGuardControlServer();
         this.timer.Start();
         UpdateSeelenDockPulseTimer();
         UpdateWinDRecoveryWatcher();
@@ -643,6 +647,89 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         };
     }
 
+    private void StartGuardControlServer()
+    {
+        if (!this.guardControlServerEnabled || this.guardControlServer != null)
+        {
+            return;
+        }
+
+        // The pipe worker only transports validated messages. All GUARD mutations are marshalled
+        // back to this long-lived UI thread because SetThreadExecutionState is thread-affine.
+        this.guardControlServer = new GuardControlServer(
+            GuardControlProtocol.CurrentUserPipeName,
+            HandleGuardControlRequest);
+        this.guardControlServer.Start();
+        Program.LogInfo("GUARD control pipe started.");
+    }
+
+    private void StopGuardControlServer()
+    {
+        GuardControlServer server = this.guardControlServer;
+        this.guardControlServer = null;
+        if (server == null)
+        {
+            return;
+        }
+
+        server.Dispose();
+        Program.LogInfo("GUARD control pipe stopped.");
+    }
+
+    private GuardControlResponse HandleGuardControlRequest(GuardControlRequest request)
+    {
+        if (this.formClosing || this.IsDisposed)
+        {
+            return GuardControlProtocol.Error("HOST_SHUTTING_DOWN", "The GUARD host is shutting down.");
+        }
+
+        if (!this.InvokeRequired)
+        {
+            return ExecuteGuardControlOnUiThread(request);
+        }
+
+        TaskCompletionSource<GuardControlResponse> completion =
+            new TaskCompletionSource<GuardControlResponse>();
+        try
+        {
+            this.BeginInvoke(new MethodInvoker(delegate
+            {
+                completion.TrySetResult(ExecuteGuardControlOnUiThread(request));
+            }));
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return GuardControlProtocol.Error("UI_DISPATCH_FAILED", "The GUARD host could not dispatch the command.");
+        }
+
+        if (!completion.Task.Wait(5000))
+        {
+            return GuardControlProtocol.Error("UI_TIMEOUT", "The GUARD host did not process the command in time.");
+        }
+
+        return completion.Task.Result;
+    }
+
+    private GuardControlResponse ExecuteGuardControlOnUiThread(GuardControlRequest request)
+    {
+        try
+        {
+            OperationForm owner = this.operationForm;
+            if (this.formClosing || owner == null || owner.IsDisposed)
+            {
+                return GuardControlProtocol.Error("HOST_NOT_READY", "The GUARD runtime is not ready.");
+            }
+
+            return owner.ExecuteGuardControl(request);
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return GuardControlProtocol.Error("EXECUTION_FAILED", "The GUARD command could not be applied.");
+        }
+    }
+
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
@@ -718,6 +805,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         this.formClosing = true;
+        StopGuardControlServer();
         StopAiBalanceShareServer();
         BurnInProtection.SetCurrentVisualLevel(BurnInVisualLevel.Normal);
         this.childWindowLifecycleStarted = false;

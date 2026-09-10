@@ -156,7 +156,9 @@ internal sealed partial class GuardBoardForm
     {
         if (this.runtime.DisplayGuardActive)
         {
-            return "亮屏保持中 · 系统不休眠";
+            return this.runtime.SleepGuardEnabled
+                ? "亮屏保持中 · 系统不休眠"
+                : "亮屏保持中 · 系统仍可休眠";
         }
 
         if (this.runtime.SleepGuardEnabled)
@@ -287,6 +289,11 @@ internal sealed partial class GuardBoardForm
         {
             caption = "未守护 · 未持有电源请求";
             captionColor = DesignTokens.Colors.GlyphMuted;
+        }
+        else if (!this.runtime.SleepGuardEnabled)
+        {
+            caption = "仅保持亮屏 · 系统仍按 Windows 电源设置休眠";
+            captionColor = DesignTokens.Colors.Warning;
         }
         else if (ac == GuardAcState.OnBattery)
         {
@@ -693,7 +700,7 @@ internal sealed partial class GuardBoardForm
             "亮屏计时",
             this.runtime.DisplayGuardActive
                 ? "剩余 " + GuardRuntime.FormatCountdown(this.runtime.GetDisplayGuardRemaining(nowUtc)) + " · 到点自动解除"
-                : "限时保持屏幕常亮，到点自动解除",
+                : "按小时保持亮屏 · 不会自动开启防睡眠",
             GuardCardControl.StepperWithAction,
             this.runtime.DisplayGuardActive,
             FormatMinutesLabel(this.runtime.DisplayGuardMinutes),
@@ -1056,11 +1063,14 @@ internal sealed partial class GuardBoardForm
     internal static void RunSelfTest()
     {
         int[] ladder = WidgetSettings.GuardDisplayMinuteSteps;
-        AssertSelfTest(StepValue(ladder, 30, -1) == 30, "display ladder clamps at the low end");
-        AssertSelfTest(StepValue(ladder, 30, 1) == 60, "display ladder steps up");
-        AssertSelfTest(StepValue(ladder, 480, 1) == 480, "display ladder clamps at the high end");
-        AssertSelfTest(StepValue(ladder, 480, -1) == 300, "display ladder steps down");
-        AssertSelfTest(StepValue(ladder, 999, 1) == ladder[0], "off-ladder value snaps to the first step");
+        AssertSelfTest(StepValue(ladder, 60, -1) == 60, "display ladder clamps at the low end");
+        AssertSelfTest(StepValue(ladder, 60, 1) == 120, "display ladder steps up");
+        AssertSelfTest(ladder.Length == 24 && ladder[0] == 60 && ladder[23] == 1440,
+            "display ladder covers every hour from 1 through 24");
+        AssertSelfTest(StepValue(ladder, 480, 1) == 540, "display ladder steps up one hour");
+        AssertSelfTest(StepValue(ladder, 480, -1) == 420, "display ladder steps down one hour");
+        AssertSelfTest(StepValue(ladder, 1440, 1) == 1440, "display ladder clamps at 24 hours");
+        AssertSelfTest(StepValue(ladder, 999, 1) == ladder[0], "off-ladder value snaps to one hour");
 
         int[] offline = WidgetSettings.GuardOfflineThresholdMinuteSteps;
         AssertSelfTest(StepValue(offline, 1, -1) == 1, "offline ladder clamps at the low end");
@@ -1070,8 +1080,38 @@ internal sealed partial class GuardBoardForm
         // dropping the battery button with it would silently strip a feature at narrow widths.
         VerifyHitTargets(648, 400);
         VerifyHitTargets(320, 400);
+        VerifyControlContract();
 
-        Console.WriteLine("Guard board layout: PASS hit targets wide+compact, ladder clamping");
+        Console.WriteLine("Guard board layout: PASS hit targets, hourly ladder, independent CLI controls");
+    }
+
+    private static void VerifyControlContract()
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        using (GuardBoardForm form = new GuardBoardForm(null, settings, delegate { return (bool?)true; }))
+        {
+            GuardControlResponse response = form.ExecuteGuardControl(
+                new GuardControlRequest { Action = "display_start", Hours = 6 });
+            AssertSelfTest(response.Ok && response.State.DisplayActive && response.State.DisplayHours == 6,
+                "CLI starts display protection with an explicit preset");
+            AssertSelfTest(!response.State.SleepEnabled,
+                "CLI display start does not silently enable sleep protection");
+
+            response = form.ExecuteGuardControl(new GuardControlRequest { Action = "sleep_on" });
+            AssertSelfTest(response.Ok && response.State.SleepEnabled && response.State.DisplayActive,
+                "CLI sleep control composes with an active display timer");
+            response = form.ExecuteGuardControl(new GuardControlRequest { Action = "sleep_off" });
+            AssertSelfTest(response.Ok && !response.State.SleepEnabled && response.State.DisplayActive,
+                "CLI sleep off preserves the independent display timer");
+
+            response = form.ExecuteGuardControl(
+                new GuardControlRequest { Action = "display_hours", Hours = 7 });
+            AssertSelfTest(response.Ok && response.State.DisplayHours == 7 && response.State.DisplayActive,
+                "CLI preset update applies while display protection is active");
+            response = form.ExecuteGuardControl(new GuardControlRequest { Action = "display_stop" });
+            AssertSelfTest(response.Ok && !response.State.DisplayActive && !response.State.SleepEnabled,
+                "CLI stops display protection without changing sleep state");
+        }
     }
 
     private static void VerifyHitTargets(int logicalWidth, int logicalHeight)

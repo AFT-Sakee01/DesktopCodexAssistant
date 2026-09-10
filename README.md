@@ -1,6 +1,6 @@
 # Desktop Codex Assistant（UX3407N / UX3607O 专调版）
 
-适用版本：2.0.0.37
+适用版本：2.0.0.38
 
 A Windows-on-Arm desktop workspace for AI-assisted development: eleven right-edge metric/quota tiles, seven left-edge dock tabs and boards, an operation panel, and an on-demand settings window. Sampling and Radar coordination run in hidden owners. Tuned for ASUS UX3407N / UX3607O; ARM64 is the formal build target.
 
@@ -51,9 +51,23 @@ DesktopCodexAssistant.exe --stop   # 停止正在运行的实例
 | 自检 | `--test`、`--test-logger`、`--test-layout`、`--test-settings-bindings`、`--test-display-recovery`、`--test-operation-panel`、`--test-codex-task-monitor`、`--test-specboard-manager`、`--test-settings-open-close [--iterations N]`、`--test-radar-display-lifecycle [--iterations N]` |
 | 渲染采样（离屏出 PNG） | `--render-networkmonitor` / `--render-operation` / `--render-tilecolumn` / `--render-resetspeedboard` / `--render-systemdayboard`，以及带模式参数的 `--render-specboard <sample|current>`、`--render-specboardmanager <sample|current>`、`--render-guard <sample|current>`；均支持 `--out <目录>` |
 | 数据共享 | `--balances`：从正在运行的正式实例读取 Codex、Claude 与 DeepSeek 当前余额快照，stdout 输出单行 JSON；不刷新数据、不读取凭据 |
+| GUARD 控制 | `--guard status`、`--guard sleep <on\|off>`、`--guard display <start [1..24]\|stop\|hours 1..24>`：查询或控制正在运行实例的防睡眠、亮屏计时与小时预设，stdout 输出单行 JSON |
 | 诊断 | `--diagnose-idle-cpu [--diagnose-minutes N]`、`--diagnose-radar-runtime [--diagnose-seconds N]`、`--dump-codex-tasks`（只读，输出任务状态 / 模型 / token 数字与官方会话标题，不含提示词、回复或完整会话路径） |
 
 其他本机程序可直接调用：`DesktopCodexAssistant.exe --balances`。成功退出码为 `0`；常驻实例未运行或本机只读管道不可用时为 `2`。Codex/Claude 字段单位是 `percent_remaining`，DeepSeek 使用返回币种；未知值为 JSON `null`，并保留 `known` 与来源时间供调用方判断。
+
+GUARD CLI 也通过正在运行的实例执行，确保 Windows 电源请求由常驻 UI 线程持有。例如：
+
+```powershell
+DesktopCodexAssistant.exe --guard status
+DesktopCodexAssistant.exe --guard sleep on
+DesktopCodexAssistant.exe --guard display hours 6
+DesktopCodexAssistant.exe --guard display start 8
+DesktopCodexAssistant.exe --guard display stop
+DesktopCodexAssistant.exe --guard sleep off
+```
+
+亮屏与防睡眠彼此独立：`display start` 只阻止屏幕熄灭，不会隐式开启 `sleep on`；若两者都需要，代理应分别开启。`display start` 不带小时数时使用已保存的预设；设置或启动时长只接受 1–24 的整数小时。成功退出码为 `0`，参数或管道错误为 `2`，主进程拒绝执行为 `3`；所有成功响应均含 `state` 和三项实际电源请求状态。
 
 ## 数据与隐私
 

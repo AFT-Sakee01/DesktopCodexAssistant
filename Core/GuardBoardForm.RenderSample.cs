@@ -4,9 +4,9 @@ using System.Drawing.Imaging;
 using System.IO;
 
 // Test-only render harness for --render-guard, mirroring the other windows' harnesses. The guard
-// board's whole point is state, so the sample mode paints four different states rather than one
-// pretty frame: everything idle, everything armed, an outage part way to the auto-sleep deadline,
-// and the compact single-column fallback.
+// board's whole point is state, so the sample mode paints distinct combinations rather than one
+// pretty frame: idle, both guards armed, display-only, an outage part way to auto sleep, and the
+// compact single-column fallback.
 internal sealed partial class GuardBoardForm
 {
     internal static void RenderSamples(string outputDir, bool sample, bool current)
@@ -30,6 +30,12 @@ internal sealed partial class GuardBoardForm
                 form.runtime.BackdateSleepGuardForRenderSample(now.AddHours(-2).AddMinutes(-18));
                 form.runtime.NoteBatteryCarePaused(now.AddHours(-8));
                 form.CurrentSettings.CodexQuotaPlanEnabled = true;
+            });
+
+            RenderState(outputDir, "guard-display-only.png", 648, 400, delegate(GuardBoardForm form)
+            {
+                form.runtime.SetDisplayGuardMinutes(360);
+                form.runtime.StartDisplayGuard(now.AddMinutes(-17));
             });
 
             // Offline 6 of 10 minutes into the threshold: the bar marker has walked past the danger
