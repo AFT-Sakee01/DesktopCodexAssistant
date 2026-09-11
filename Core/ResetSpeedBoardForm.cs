@@ -14,6 +14,7 @@ internal sealed partial class ResetSpeedBoardForm : LayeredWidgetFormBase
 
     private readonly OperationForm owner;
     private readonly Func<ResetSpeedBoardSnapshot> snapshotProvider;
+    private readonly Func<string, CodexAccountSwitchResult> accountSwitchHandler;
     private readonly UiFontCache fontCache = new UiFontCache();
     private readonly System.Windows.Forms.Timer maintenanceTimer;
     private Func<Point> cursorPositionProvider;
@@ -31,16 +32,24 @@ internal sealed partial class ResetSpeedBoardForm : LayeredWidgetFormBase
     private string visibleSignature = string.Empty;
     private Rectangle refreshHitBounds = Rectangle.Empty;
     private Rectangle closeHitBounds = Rectangle.Empty;
+    // Account chips are rebuilt on every paint, so a stale bound can never route a click to an
+    // account that has since left the roster.
+    private readonly System.Collections.Generic.List<ResetSpeedAccountHitTarget> accountHitTargets =
+        new System.Collections.Generic.List<ResetSpeedAccountHitTarget>();
+    private string accountNoticeOverride = string.Empty;
+    private DateTime accountNoticeUntilUtc = DateTime.MinValue;
 
     internal Action CollapseOtherLeftDockOverlays;
 
     internal ResetSpeedBoardForm(
         OperationForm owner,
         WidgetSettings settings,
-        Func<ResetSpeedBoardSnapshot> snapshotProvider)
+        Func<ResetSpeedBoardSnapshot> snapshotProvider,
+        Func<string, CodexAccountSwitchResult> accountSwitchHandler)
     {
         this.owner = owner;
         this.snapshotProvider = snapshotProvider;
+        this.accountSwitchHandler = accountSwitchHandler;
         this.cursorPositionProvider = delegate { return Cursor.Position; };
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
@@ -466,7 +475,51 @@ internal sealed partial class ResetSpeedBoardForm : LayeredWidgetFormBase
             RenderLayeredWindow();
             return;
         }
+
+        // Account chips are checked before the click-anywhere-to-close fallback, otherwise choosing
+        // an account would dismiss the board instead of switching.
+        for (int i = 0; i < this.accountHitTargets.Count; i++)
+        {
+            ResetSpeedAccountHitTarget target = this.accountHitTargets[i];
+            if (target != null && target.Bounds.Contains(e.Location))
+            {
+                ExecuteAccountSwitch(target.AccountKey);
+                return;
+            }
+        }
+
         HideBoard();
+    }
+
+    // Switching rewrites the Codex CLI's auth.json for the whole user session, so it only ever runs
+    // from an explicit click on a chip the board itself marked switchable.
+    private void ExecuteAccountSwitch(string accountKey)
+    {
+        Func<string, CodexAccountSwitchResult> handler = this.accountSwitchHandler;
+        if (handler == null || string.IsNullOrWhiteSpace(accountKey))
+        {
+            return;
+        }
+
+        CodexAccountSwitchResult result;
+        try
+        {
+            result = handler(accountKey);
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            result = CodexAccountSwitchResult.CreateFailure("账户切换失败：" + ex.GetType().Name);
+        }
+
+        if (result != null)
+        {
+            this.accountNoticeOverride = result.Message ?? string.Empty;
+            this.accountNoticeUntilUtc = DateTime.UtcNow.AddSeconds(8.0);
+        }
+
+        RefreshSnapshot(true);
+        RenderLayeredWindow();
     }
 
     protected override void Dispose(bool disposing)

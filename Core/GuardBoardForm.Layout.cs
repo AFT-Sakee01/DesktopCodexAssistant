@@ -660,9 +660,12 @@ internal sealed partial class GuardBoardForm
         int sectionRow = MeasureLineHeight(g, smallBold, S(4));
         int cardTitleHeight = MeasureLineHeight(g, bodyBold, S(1));
         int cardSubtitleHeight = MeasureLineHeight(g, smallFont, S(1));
-        int cardHeight = cardTitleHeight + cardSubtitleHeight + S(8);
-        int cardGap = S(4);
-        int sectionGap = S(6);
+        // Padding and gaps are slightly tighter than before the power-mode card existed: the section
+        // now holds meaningfully more content in the same fixed board height, and the earlier, more
+        // generous spacing had room to give without any card becoming visually cramped.
+        int cardHeight = cardTitleHeight + cardSubtitleHeight + S(4);
+        int cardGap = S(3);
+        int sectionGap = S(4);
 
         // Battery care normally lives in the ring column next to its 24h bar. The compact layout has
         // no ring column, so it moves here as a fourth power card — dropping it would silently make
@@ -670,9 +673,21 @@ internal sealed partial class GuardBoardForm
         bool includeBattery = this.IsCompactLayout;
         int cardCount = includeBattery ? 7 : 6;
 
-        int required = sectionRow * 2 + cardHeight * cardCount + cardGap * (cardCount - 2) + sectionGap;
+        // Power mode folds its quick-switch row, schedule row and energy-saver toggle row into one
+        // card instead of three separate title/subtitle cards, so its height is computed directly
+        // from font metrics rather than approximated as a multiple of the uniform card height below
+        // — an earlier version that counted it as extra uniform-card slots understated its actual
+        // three-row content and clipped the last program-guard card off the bottom of the board.
+        int powerHeaderHeight = cardTitleHeight;
+        int powerRowHeight = MeasureLineHeight(g, smallBold, S(4));
+        int powerModeRowGap = S(2);
+        int powerModeCardHeight = S(2) + powerHeaderHeight + powerModeRowGap +
+            powerRowHeight + powerModeRowGap + powerRowHeight + powerModeRowGap + powerRowHeight + S(2);
+
+        int required = sectionRow * 2 + cardHeight * cardCount + cardGap * (cardCount - 2) + sectionGap +
+            powerModeCardHeight + cardGap;
         int slack = Math.Max(0, bounds.Height - required);
-        // Spread leftover height across the cards rather than inflating one of them.
+        // Spread leftover height across the uniform cards rather than inflating one of them.
         cardHeight += slack / cardCount;
 
         int y = bounds.Top;
@@ -727,6 +742,16 @@ internal sealed partial class GuardBoardForm
             GuardHitAction.None,
             GuardHitAction.OfflineMinus,
             GuardHitAction.OfflinePlus,
+            bodyBold,
+            smallFont,
+            smallBold,
+            recordHitTargets) + cardGap;
+
+        y = DrawPowerModeCard(
+            g,
+            new Rectangle(bounds.Left, y, bounds.Width, powerModeCardHeight),
+            GuardRuntime.GetLivePowerModeTier(),
+            nowUtc,
             bodyBold,
             smallFont,
             smallBold,
@@ -928,6 +953,155 @@ internal sealed partial class GuardBoardForm
         return bounds.Bottom;
     }
 
+    // Three-row card: a title/subtitle band, a three-segment quick-switch row (immediate,
+    // indefinite), a stepper+action row that arms/cancels the "lock current mode for N hours, then
+    // revert to balanced" schedule, and a compact energy-saver toggle row. Folding energy saver in
+    // here (instead of giving it its own title/subtitle card) is what keeps the section within the
+    // board's fixed height budget — a separate card for a single toggle costs a full title+subtitle
+    // band for one control, while a row costs only its own line height. These rows do not fit
+    // GuardCardControl's single-control DrawControlCard shape, so this is a bespoke sibling that
+    // reuses the same low-level primitives (DrawToggle, DrawActionButton, DrawStepper,
+    // MeasureLineHeight, hit-target registration) rather than a one-off layout.
+    private int DrawPowerModeCard(
+        Graphics g,
+        Rectangle bounds,
+        GuardPowerModeTier liveTier,
+        DateTime nowUtc,
+        Font titleFont,
+        Font smallFont,
+        Font smallBold,
+        bool recordHitTargets)
+    {
+        using (GraphicsPath path = RoundedRectangle(RectangleF.Inflate(bounds, -0.5f, -0.5f), S(5)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, 220)))
+        {
+            g.FillPath(fill, path);
+        }
+
+        int padX = S(9);
+        // A single merged header line ("电源模式 · 性能 · ...") replaces the usual separate
+        // title+subtitle band. Three content rows already cost more height than any sibling card
+        // (which floats its one control beside a two-line title/subtitle rather than stacking it
+        // below), so this card cannot also afford a full second text line without overflowing the
+        // board's fixed height budget - see DrawControlColumn's powerModeCardHeight computation.
+        int headerHeight = MeasureLineHeight(g, titleFont, S(1));
+        int rowHeight = MeasureLineHeight(g, smallBold, S(4));
+        int rowGap = S(2);
+        int textWidth = Math.Max(1, bounds.Width - padX * 2);
+
+        int textTop = bounds.Top + S(2);
+        bool scheduleActive = this.runtime.PowerModeOverrideActive;
+        string header = scheduleActive
+            ? "电源模式 · 剩余 " + GuardRuntime.FormatCountdown(this.runtime.GetPowerModeOverrideRemaining(nowUtc)) + " 后恢复至平衡"
+            : "电源模式 · 当前" + GuardRuntime.DescribeTier(liveTier) + " · 点击切换，不会自动还原";
+        using (SolidBrush titleBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
+        using (StringFormat near = CreateFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
+        {
+            g.DrawString(header, titleFont, titleBrush, new RectangleF(bounds.Left + padX, textTop, textWidth, headerHeight), near);
+        }
+
+        int tierRowTop = textTop + headerHeight + rowGap;
+        DrawPowerModeTierRow(g, new Rectangle(bounds.Left + padX, tierRowTop, textWidth, rowHeight), liveTier, smallBold, recordHitTargets);
+
+        int scheduleRowTop = tierRowTop + rowHeight + rowGap;
+        string scheduleActionLabel = scheduleActive ? "取消定时" : "定时锁定";
+        int scheduleActionWidth = Math.Max(S(52), (int)Math.Ceiling(g.MeasureString(scheduleActionLabel, smallBold).Width) + S(14));
+        Rectangle scheduleAction = new Rectangle(bounds.Right - padX - scheduleActionWidth, scheduleRowTop, scheduleActionWidth, rowHeight);
+        DrawActionButton(g, scheduleAction, scheduleActionLabel, scheduleActive ? DesignTokens.Colors.Warning : DesignTokens.Colors.Accent, smallBold);
+        if (recordHitTargets)
+        {
+            this.hitTargets.Add(new GuardHitTarget { Bounds = scheduleAction, Action = GuardHitAction.PowerScheduleToggle });
+        }
+
+        Rectangle stepper = DrawStepper(
+            g,
+            scheduleAction.Left - S(5),
+            scheduleRowTop,
+            rowHeight,
+            FormatHoursLabel(this.runtime.PowerModeOverrideHours),
+            smallBold,
+            smallFont,
+            GuardHitAction.PowerScheduleHoursMinus,
+            GuardHitAction.PowerScheduleHoursPlus,
+            recordHitTargets);
+
+        int scheduleLabelWidth = Math.Max(S(20), stepper.Left - S(6) - (bounds.Left + padX));
+        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
+        using (StringFormat near = CreateFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
+        {
+            g.DrawString("定时", smallFont, labelBrush, new RectangleF(bounds.Left + padX, scheduleRowTop, scheduleLabelWidth, rowHeight), near);
+        }
+
+        int energyRowTop = scheduleRowTop + rowHeight + rowGap;
+        bool energySaverOn = this.runtime.EnergySaverForcedOn;
+        int toggleWidth = S(32);
+        int toggleHeight = S(17);
+        Rectangle energyToggle = new Rectangle(
+            bounds.Right - padX - toggleWidth,
+            energyRowTop + Math.Max(0, (rowHeight - toggleHeight) / 2),
+            toggleWidth,
+            toggleHeight);
+        DrawToggle(g, energyToggle, energySaverOn);
+        if (recordHitTargets)
+        {
+            this.hitTargets.Add(new GuardHitTarget { Bounds = energyToggle, Action = GuardHitAction.EnergySaverToggle });
+        }
+
+        int energyLabelWidth = Math.Max(S(20), energyToggle.Left - S(6) - (bounds.Left + padX));
+        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
+        using (StringFormat near = CreateFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
+        {
+            g.DrawString(
+                energySaverOn ? "省电模式 · 已强制开启" : "省电模式 · 关闭",
+                smallFont,
+                labelBrush,
+                new RectangleF(bounds.Left + padX, energyRowTop, energyLabelWidth, rowHeight),
+                near);
+        }
+
+        return bounds.Bottom;
+    }
+
+    private void DrawPowerModeTierRow(Graphics g, Rectangle bounds, GuardPowerModeTier liveTier, Font font, bool recordHitTargets)
+    {
+        int gap = S(4);
+        int segmentWidth = (bounds.Width - gap * 2) / 3;
+        int x = bounds.Left;
+        DrawTierSegment(g, new Rectangle(x, bounds.Top, segmentWidth, bounds.Height), "省电", liveTier == GuardPowerModeTier.Saver, GuardHitAction.PowerModeSaver, font, recordHitTargets);
+        x += segmentWidth + gap;
+        DrawTierSegment(g, new Rectangle(x, bounds.Top, segmentWidth, bounds.Height), "平衡", liveTier == GuardPowerModeTier.Balanced, GuardHitAction.PowerModeBalanced, font, recordHitTargets);
+        x += segmentWidth + gap;
+        int lastWidth = Math.Max(1, bounds.Right - x);
+        DrawTierSegment(g, new Rectangle(x, bounds.Top, lastWidth, bounds.Height), "性能", liveTier == GuardPowerModeTier.Performance, GuardHitAction.PowerModePerformance, font, recordHitTargets);
+    }
+
+    private void DrawTierSegment(Graphics g, Rectangle bounds, string label, bool active, GuardHitAction action, Font font, bool recordHitTargets)
+    {
+        Color accent = active ? DesignTokens.Colors.Accent : DesignTokens.Colors.Border;
+        using (GraphicsPath path = RoundedRectangle(new RectangleF(bounds.Left, bounds.Top, bounds.Width, bounds.Height), S(5)))
+        using (SolidBrush fill = new SolidBrush(active
+            ? DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 56)
+            : DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 220)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(accent, active ? 205 : 150), Math.Max(1.0f, this.LayerScale)))
+        using (SolidBrush text = new SolidBrush(active ? DesignTokens.Colors.Accent : DesignTokens.Colors.GlyphMuted))
+        using (StringFormat centered = CreateFormat(StringAlignment.Center, StringTrimming.EllipsisCharacter))
+        {
+            g.FillPath(fill, path);
+            g.DrawPath(border, path);
+            g.DrawString(label, font, text, bounds, centered);
+        }
+
+        if (recordHitTargets)
+        {
+            this.hitTargets.Add(new GuardHitTarget { Bounds = bounds, Action = action });
+        }
+    }
+
+    private static string FormatHoursLabel(int hours)
+    {
+        return hours.ToString(CultureInfo.InvariantCulture) + " 小时";
+    }
+
     private void DrawToggle(Graphics g, Rectangle bounds, bool on)
     {
         float radius = bounds.Height / 2.0f;
@@ -1111,6 +1285,57 @@ internal sealed partial class GuardBoardForm
             response = form.ExecuteGuardControl(new GuardControlRequest { Action = "display_stop" });
             AssertSelfTest(response.Ok && !response.State.DisplayActive && !response.State.SleepEnabled,
                 "CLI stops display protection without changing sleep state");
+
+            // power_mode/energy_saver_* exercise real Windows APIs through the CLI dispatch layer
+            // (distinct code from GuardRuntime's own self-test), so the machine's prior state is
+            // captured and restored the same way — --test-layout must not leave a different power
+            // mode or Energy Saver threshold behind.
+            Guid originalOverlayGuid;
+            bool hadOriginalOverlay = NativeMethods.TryGetActivePowerOverlayScheme(out originalOverlayGuid);
+            int originalEnergySaverThreshold;
+            bool hadOriginalEnergySaverThreshold = NativeMethods.TryReadEnergySaverBatteryThresholdPercent(out originalEnergySaverThreshold);
+            try
+            {
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "power_mode", Mode = "balanced" });
+                AssertSelfTest(response.Ok && response.State.PowerModeCurrent == "balanced",
+                    "CLI power mode switch reports the resulting tier");
+
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "power_schedule_start", Hours = 2 });
+                AssertSelfTest(response.Ok && response.State.PowerScheduleActive && response.State.PowerScheduleHours == 2,
+                    "CLI power schedule start arms the override");
+
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "power_mode", Mode = "saver" });
+                AssertSelfTest(response.Ok && !response.State.PowerScheduleActive,
+                    "CLI power mode switch cancels a pending schedule");
+
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "power_schedule_start" });
+                AssertSelfTest(response.Ok && response.State.PowerScheduleActive,
+                    "CLI power schedule start reuses the saved hour preset when hours is omitted");
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "power_schedule_stop" });
+                AssertSelfTest(response.Ok && !response.State.PowerScheduleActive,
+                    "CLI power schedule stop cancels without an error");
+
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "energy_saver_on" });
+                AssertSelfTest(response.Ok && response.State.EnergySaverForcedByGuard,
+                    "CLI energy saver on reports forced");
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "energy_saver_off" });
+                AssertSelfTest(response.Ok && !response.State.EnergySaverForcedByGuard,
+                    "CLI energy saver off clears the forced flag");
+            }
+            finally
+            {
+                if (hadOriginalOverlay)
+                {
+                    string restoreOverlayDetail;
+                    NativeMethods.TrySetActivePowerOverlayScheme(originalOverlayGuid, out restoreOverlayDetail);
+                }
+
+                if (hadOriginalEnergySaverThreshold)
+                {
+                    string restoreThresholdDetail;
+                    NativeMethods.TryWriteEnergySaverBatteryThresholdPercent(originalEnergySaverThreshold, out restoreThresholdDetail);
+                }
+            }
         }
     }
 
@@ -1140,7 +1365,14 @@ internal sealed partial class GuardBoardForm
                 GuardHitAction.QuotaPlanToggle,
                 GuardHitAction.CtfRestart,
                 GuardHitAction.Close,
-                GuardHitAction.Panel
+                GuardHitAction.Panel,
+                GuardHitAction.PowerModeSaver,
+                GuardHitAction.PowerModeBalanced,
+                GuardHitAction.PowerModePerformance,
+                GuardHitAction.PowerScheduleHoursMinus,
+                GuardHitAction.PowerScheduleHoursPlus,
+                GuardHitAction.PowerScheduleToggle,
+                GuardHitAction.EnergySaverToggle
             };
 
             for (int i = 0; i < required.Length; i++)

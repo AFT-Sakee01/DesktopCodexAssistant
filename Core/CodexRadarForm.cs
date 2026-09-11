@@ -208,6 +208,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public string ProviderPlan { get; set; }
         public string ProviderPool { get; set; }
         public string ProviderCorrelationId { get; set; }
+        // Which Codex account this reading belongs to. Codex CLI keeps one account in auth.json, so
+        // a switch replaces every number below at once; without the key two accounts' remaining-%
+        // series merge and the burn forecast reads the switch as a huge consumption event.
+        public string AccountKey { get; set; }
+        public string AccountLabel { get; set; }
 
         public static CodexQuotaSnapshot CreateDefault()
         {
@@ -236,7 +241,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 ProviderResponseBodySha256 = string.Empty,
                 ProviderPlan = "unknown",
                 ProviderPool = "unknown",
-                ProviderCorrelationId = string.Empty
+                ProviderCorrelationId = string.Empty,
+                AccountKey = CodexAccountIdentity.UnknownAccountKey,
+                AccountLabel = string.Empty
             };
         }
 
@@ -267,7 +274,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 ProviderResponseBodySha256 = this.ProviderResponseBodySha256,
                 ProviderPlan = this.ProviderPlan,
                 ProviderPool = this.ProviderPool,
-                ProviderCorrelationId = this.ProviderCorrelationId
+                ProviderCorrelationId = this.ProviderCorrelationId,
+                AccountKey = this.AccountKey,
+                AccountLabel = this.AccountLabel
             };
         }
     }
@@ -1782,6 +1791,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
+        // Defence in depth behind the state swap: a reading may only extend the trend of the account
+        // it was actually read from. Claude keeps both keys unknown and is unaffected.
+        if (!CodexAccountIdentity.KeysEqual(quotaState.AccountKey, snapshot.AccountKey))
+        {
+            return;
+        }
+
         DateTime normalizedUtc = nowUtc.Kind == DateTimeKind.Utc ? nowUtc : nowUtc.ToUniversalTime();
         quotaState.WeeklyBurnTrackedResetLocal = RecordQuotaBurnWindow(
             quotaState.WeeklyBurnSamples,
@@ -1937,6 +1953,98 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         {
             samples.RemoveAt(0);
         }
+    }
+
+    // Codex account separation: the trend must follow the account, not the wall clock.
+    private static void RunCodexAccountSeparationSelfTest()
+    {
+        Dictionary<string, QuotaRuntimeState> parked = new Dictionary<string, QuotaRuntimeState>(
+            StringComparer.OrdinalIgnoreCase);
+        RadarFamilyRuntimeState family = new RadarFamilyRuntimeState(CodexRadarSoftwareMode.Codex);
+        DateTime baseUtc = new DateTime(2026, 9, 11, 3, 0, 0, DateTimeKind.Utc);
+
+        // Account A measures a drop, so its weekly trend holds two accepted samples.
+        if (!SwapCodexQuotaStateForAccount(parked, family, "acct-A"))
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: first account did not take the trend.");
+        }
+
+        QuotaRuntimeState stateA = family.Quota;
+        UpdateQuotaBurnObservationClock(stateA, true, baseUtc);
+        RecordQuotaBurnSamples(stateA, CreateAccountSeparationSnapshot("acct-A", 60, baseUtc), baseUtc);
+        UpdateQuotaBurnObservationClock(stateA, true, baseUtc.AddSeconds(60.0));
+        RecordQuotaBurnSamples(
+            stateA,
+            CreateAccountSeparationSnapshot("acct-A", 55, baseUtc.AddSeconds(60.0)),
+            baseUtc.AddSeconds(60.0));
+        if (stateA.WeeklyBurnSamples.Count != 2)
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: account A did not accumulate its own samples.");
+        }
+
+        // Switching to B must hand over a clean trend, not A's samples.
+        if (!SwapCodexQuotaStateForAccount(parked, family, "acct-B"))
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: switch to a new account was not detected.");
+        }
+
+        QuotaRuntimeState stateB = family.Quota;
+        if (ReferenceEquals(stateA, stateB) ||
+            stateB.WeeklyBurnSamples.Count != 0 ||
+            !string.Equals(stateB.AccountKey, "acct-B", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: account B inherited account A's trend.");
+        }
+
+        // A reading stamped with a foreign account must never extend the active trend.
+        UpdateQuotaBurnObservationClock(stateB, true, baseUtc.AddSeconds(120.0));
+        RecordQuotaBurnSamples(
+            stateB,
+            CreateAccountSeparationSnapshot("acct-A", 10, baseUtc.AddSeconds(120.0)),
+            baseUtc.AddSeconds(120.0));
+        if (stateB.WeeklyBurnSamples.Count != 0 || stateB.WeeklyWallBurnSamples.Count != 0)
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: a foreign reading extended the trend.");
+        }
+
+        // Switching back restores account A's own measurement instead of starting over.
+        if (!SwapCodexQuotaStateForAccount(parked, family, "acct-A") ||
+            !ReferenceEquals(family.Quota, stateA) ||
+            family.Quota.WeeklyBurnSamples.Count != 2)
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: returning to account A lost its trend.");
+        }
+
+        // Re-selecting the account already in place is not a switch.
+        if (SwapCodexQuotaStateForAccount(parked, family, "acct-A"))
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: same-account selection reported a switch.");
+        }
+
+        // Cache readings stamped with another account must not be presented as the current balance.
+        CodexQuotaSnapshot foreignCache = CreateAccountSeparationSnapshot("acct-A", 12, baseUtc);
+        if (CodexAccountIdentity.KeysEqual(foreignCache.AccountKey, "acct-B"))
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: account keys compared equal across accounts.");
+        }
+
+        Console.WriteLine("Codex account separation: PASS per-account trend park/restore, foreign-reading rejection, same-account no-op");
+    }
+
+    private static CodexQuotaSnapshot CreateAccountSeparationSnapshot(
+        string accountKey,
+        int weeklyPercent,
+        DateTime sourceUtc)
+    {
+        CodexQuotaSnapshot snapshot = CodexQuotaSnapshot.CreateDefault();
+        snapshot.AccountKey = accountKey;
+        snapshot.WeeklyPercent = weeklyPercent;
+        snapshot.WeeklyResetKnown = true;
+        snapshot.WeeklyResetLocal = sourceUtc.ToLocalTime().AddDays(3.0);
+        snapshot.FiveHourLimitAbsent = true;
+        snapshot.SourceUpdatedUtc = sourceUtc;
+        snapshot.SourceUpdatedKnown = true;
+        return snapshot;
     }
 
     private static void RunWeeklyBurnRateSelfTest()
@@ -2375,6 +2483,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool logDecision)
     {
         family = NormalizeEffectiveSoftwareMode(family);
+        // Park/restore before anything reads the trend: an account switch replaces every quota
+        // number at once, and charging the new account's balance against the old account's samples
+        // would be read as one enormous consumption event.
+        if (family == CodexRadarSoftwareMode.Codex && nextSnapshot != null)
+        {
+            EnsureCodexQuotaStateForAccount(nextSnapshot.AccountKey);
+        }
+
         QuotaRuntimeState quotaState = GetQuotaRuntimeState(family);
         MarkQuotaSnapshotSource(nextSnapshot, sourceKind);
         if (family == CodexRadarSoftwareMode.Codex && IsQuotaResetDue(nextSnapshot, nowLocal))
@@ -2399,6 +2515,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                     ? credits.GetActiveCount(detectedUtc.Kind == DateTimeKind.Utc ? detectedUtc : detectedUtc.ToUniversalTime())
                     : 0;
                 this.codexQuotaHistoryStore.Record(
+                    displaySnapshot.AccountKey,
                     displaySnapshot.FiveHourPercent,
                     displaySnapshot.WeeklyPercent,
                     displaySnapshot.WeeklyResetKnown,
@@ -9512,13 +9629,16 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private CodexQuotaSnapshot ReadQuotaSnapshot(out bool sourceKnown, out string sourceKind)
     {
+        // Resolve the account once per read so all three sources are stamped with the same identity
+        // and the caller can compare it against the account the running trend belongs to.
+        CodexAccountIdentity identity = RefreshCodexAccountIdentity();
         CodexQuotaSnapshot snapshot;
         if (TryGetCodexProviderQuotaSnapshot(out snapshot))
         {
             sourceKnown = true;
             sourceKind = "provider";
             MarkQuotaSnapshotSource(snapshot, sourceKind);
-            return NormalizeQuotaSnapshot(snapshot);
+            return StampQuotaAccount(NormalizeQuotaSnapshot(snapshot), identity);
         }
 
         if (TryReadCodexSessionQuota(out snapshot))
@@ -9526,7 +9646,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             sourceKnown = true;
             sourceKind = "session";
             MarkQuotaSnapshotSource(snapshot, sourceKind);
-            snapshot = NormalizeQuotaSnapshot(snapshot);
+            snapshot = StampQuotaAccount(NormalizeQuotaSnapshot(snapshot), identity);
             TryWriteQuotaIniSnapshot(snapshot);
             return snapshot;
         }
@@ -9536,12 +9656,46 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             sourceKnown = true;
             sourceKind = "cache";
             MarkQuotaSnapshotSource(snapshot, sourceKind);
-            return NormalizeQuotaSnapshot(snapshot);
+            snapshot = NormalizeQuotaSnapshot(snapshot);
+            // The cache is written per account; a cached reading whose stamp disagrees with the live
+            // account belongs to a previous sign-in and must not be shown as the current balance.
+            if (!CodexAccountIdentity.KeysEqual(snapshot.AccountKey, identity.AccountKey))
+            {
+                sourceKnown = false;
+                sourceKind = "default";
+                return StampQuotaAccount(CodexQuotaSnapshot.CreateDefault(), identity);
+            }
+
+            return StampQuotaAccount(snapshot, identity);
         }
 
         sourceKnown = false;
         sourceKind = "default";
-        return CodexQuotaSnapshot.CreateDefault();
+        return StampQuotaAccount(CodexQuotaSnapshot.CreateDefault(), identity);
+    }
+
+    private static CodexQuotaSnapshot StampQuotaAccount(
+        CodexQuotaSnapshot snapshot,
+        CodexAccountIdentity identity)
+    {
+        if (snapshot == null)
+        {
+            return null;
+        }
+
+        CodexAccountIdentity resolved = identity ?? CodexAccountIdentity.CreateUnknown();
+        snapshot.AccountKey = resolved.AccountKey;
+        snapshot.AccountLabel = resolved.ResolveDisplayLabel();
+        if (string.IsNullOrWhiteSpace(snapshot.ProviderPlan) ||
+            string.Equals(snapshot.ProviderPlan, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrEmpty(resolved.PlanType))
+            {
+                snapshot.ProviderPlan = resolved.PlanType;
+            }
+        }
+
+        return snapshot;
     }
 
     private static CodexQuotaSnapshot NormalizeQuotaSnapshot(CodexQuotaSnapshot snapshot)
@@ -9821,6 +9975,39 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return !string.IsNullOrEmpty(newestPath);
     }
 
+    // Two independent rejections for the account-blind rollout source:
+    //   1. the reading predates the moment the active account became active on this machine, and
+    //   2. the reading's plan disagrees with the active account's plan.
+    // Rule 1 only engages once this machine has actually seen more than one account, so a
+    // single-account install keeps its existing fallback behaviour untouched.
+    private bool IsSessionQuotaEventAttributable(CodexQuotaEvent quotaEvent)
+    {
+        if (quotaEvent == null)
+        {
+            return false;
+        }
+
+        CodexAccountIdentity identity = PeekCodexAccountIdentity();
+        DateTime boundaryUtc = CodexAccountStore.ResolveSessionTrustBoundaryUtc(identity.AccountKey);
+        if (boundaryUtc != DateTime.MinValue &&
+            quotaEvent.UpdatedUtc != DateTime.MinValue &&
+            quotaEvent.UpdatedUtc < boundaryUtc)
+        {
+            return false;
+        }
+
+        string eventPlan = quotaEvent.Snapshot == null ? string.Empty : quotaEvent.Snapshot.ProviderPlan;
+        if (!string.IsNullOrWhiteSpace(identity.PlanType) &&
+            !string.IsNullOrWhiteSpace(eventPlan) &&
+            !string.Equals(eventPlan, "unknown", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(eventPlan.Trim(), identity.PlanType.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private bool TryReadCodexSessionQuota(out CodexQuotaSnapshot snapshot)
     {
         snapshot = null;
@@ -9911,6 +10098,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         if (latestEvent == null)
+        {
+            return false;
+        }
+
+        // Rollout files are shared across sign-ins: one resumed session file was observed holding
+        // both a "prolite" and a "pro" rate_limits block months apart. Since the block itself has no
+        // account id, refuse any reading that cannot be attributed to the account that is active now.
+        if (!IsSessionQuotaEventAttributable(latestEvent))
         {
             return false;
         }
@@ -10027,13 +10222,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void InitializeQuotaSessionWatcher()
     {
-        string profilePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrEmpty(profilePath))
+        // Resolve through the shared Codex home so a CODEX_HOME switch moves the token, the rollout
+        // history and the task index together. Reading one account's token beside another account's
+        // sessions produced snapshots that belonged to neither.
+        this.quotaSessionsPath = CodexHome.ResolveSessionsPath();
+        if (string.IsNullOrEmpty(this.quotaSessionsPath))
         {
             return;
         }
 
-        this.quotaSessionsPath = Path.Combine(Path.Combine(profilePath, ".codex"), "sessions");
         if (!Directory.Exists(this.quotaSessionsPath))
         {
             return;
@@ -10241,6 +10438,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (found)
         {
             ApplyFiveHourLimitAbsence(snapshot);
+            // A rollout rate_limits block carries no account id at all - plan_type is the only
+            // attribution signal it offers, and it is kept so a plainly foreign reading can be
+            // rejected before it reaches the trend.
+            string plan = GetQuotaString(rateLimits, "plan_type");
+            if (!string.IsNullOrWhiteSpace(plan))
+            {
+                snapshot.ProviderPlan = plan.Trim();
+            }
         }
 
         return found;
@@ -10397,7 +10602,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 string value = line.Substring(split + 1).Trim();
                 int percent;
                 DateTime dateTime;
-                if (string.Equals(key, "FiveHourPercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out percent))
+                if (string.Equals(key, "AccountKey", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Identity alone must not make an otherwise empty cache count as a reading.
+                    snapshot.AccountKey = string.IsNullOrWhiteSpace(value)
+                        ? CodexAccountIdentity.UnknownAccountKey
+                        : value;
+                }
+                else if (string.Equals(key, "FiveHourPercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out percent))
                 {
                     snapshot.FiveHourPercent = ClampPercent(percent);
                     found = true;
@@ -10540,6 +10752,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             List<string> lines = new List<string>();
             lines.Add("Version=1");
+            // Stamp the owning account so a cached balance from a previous sign-in is recognised as
+            // foreign on the next start instead of being shown as the current account's balance.
+            lines.Add("AccountKey=" + (string.IsNullOrWhiteSpace(snapshot.AccountKey)
+                ? CodexAccountIdentity.UnknownAccountKey
+                : snapshot.AccountKey.Trim()));
             lines.Add("FiveHourPercent=" + ClampPercent(snapshot.FiveHourPercent).ToString(CultureInfo.InvariantCulture));
             lines.Add("WeeklyPercent=" + ClampPercent(snapshot.WeeklyPercent).ToString(CultureInfo.InvariantCulture));
             if (snapshot.FiveHourLimitAbsent)
@@ -10911,6 +11128,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         RunCodexResetCreditsSelfTest();
         CodexQuotaHistoryStore.RunSelfTest();
         RunCodexAuthJsonSelfTest();
+        CodexHome.RunSelfTest();
+        CodexAccountStore.RunSelfTest();
+        RunCodexAccountSeparationSelfTest();
         RunWeeklyBurnRateSelfTest();
 
         int baseline = GetNextFiveHourConsumptionRingBaseline(-1, 67, 57);

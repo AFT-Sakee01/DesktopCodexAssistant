@@ -299,6 +299,21 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
             return this.codexRadarForm.BuildResetSpeedBoardSnapshot();
         };
+        // Account switching rewrites the Codex CLI's auth.json, so it stays with the headless data
+        // owner: the board only forwards the user's explicit click and renders the returned message.
+        this.operationForm.CodexAccountSwitchHandler = delegate(string accountKey)
+        {
+            if (this.codexRadarForm == null || this.codexRadarForm.IsDisposed)
+            {
+                return CodexAccountSwitchResult.CreateFailure("Codex 数据源未运行。");
+            }
+
+            string message;
+            bool switched = this.codexRadarForm.TrySwitchCodexAccount(accountKey, out message);
+            return switched
+                ? CodexAccountSwitchResult.CreateSuccess(message)
+                : CodexAccountSwitchResult.CreateFailure(message);
+        };
         // The seventh board reads only the in-memory projection. Minute samples and suspend/resume
         // markers are owned by this hidden host and persisted independently of board visibility.
         this.operationForm.SystemDaySnapshotProvider = delegate(SystemDayRange range)
@@ -1782,6 +1797,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         merged.GuardOfflineThresholdMinutes = guardState.GuardOfflineThresholdMinutes;
         merged.GuardDisplayUntilUtcTicks = guardState.GuardDisplayUntilUtcTicks;
         merged.GuardBatteryCarePauseUntilUtcTicks = guardState.GuardBatteryCarePauseUntilUtcTicks;
+        merged.GuardPowerModeOverrideHours = guardState.GuardPowerModeOverrideHours;
+        merged.GuardPowerModeOverrideUntilUtcTicks = guardState.GuardPowerModeOverrideUntilUtcTicks;
+        merged.GuardEnergySaverForcedOn = guardState.GuardEnergySaverForcedOn;
+        merged.GuardEnergySaverRestoreThresholdPercent = guardState.GuardEnergySaverRestoreThresholdPercent;
         merged.Normalize();
         return merged;
     }
@@ -2790,7 +2809,17 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         BurnInVisualLevel normalized = BurnInProtection.NormalizeVisualLevel(level);
         bool localChanged = this.burnInVisualLevel != normalized;
         bool publishedChanged = BurnInProtection.SetCurrentVisualLevel(normalized);
-        if (!localChanged && !publishedChanged)
+        bool operationVisibilityChanged = false;
+        if (this.operationForm != null && !this.operationForm.IsDisposed)
+        {
+            // Operation is the brightest persistent surface. Both protection levels physically hide
+            // it; the independent flag prevents a fullscreen/manual-visibility update from reviving
+            // it until the shared burn-in state returns to Normal.
+            operationVisibilityChanged = this.operationForm.SetHiddenForBurnIn(
+                normalized != BurnInVisualLevel.Normal);
+        }
+
+        if (!localChanged && !publishedChanged && !operationVisibilityChanged)
         {
             return false;
         }
@@ -3059,6 +3088,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
+            this.operationForm.SetHiddenForBurnIn(
+                this.burnInVisualLevel != BurnInVisualLevel.Normal);
             this.operationForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.operationForm));
             this.operationForm.SetLeftDockSurfacesHidden(
                 this.operationSideSurfacesHidden && !this.globalLayoutEditActive);

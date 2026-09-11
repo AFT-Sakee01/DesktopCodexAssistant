@@ -60,6 +60,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly bool isAsusZenbookDevice;
     private readonly UiFontCache fontCache = new UiFontCache();
     private bool hiddenForFullscreen;
+    private bool hiddenForBurnIn;
     private bool leftDockSurfacesHidden;
     private bool displaySuspended;
     private volatile bool formClosing;
@@ -347,16 +348,29 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
 
     public void SetHiddenForFullscreen(bool hidden)
     {
-        if (this.hiddenForFullscreen == hidden &&
-            ((hidden && !this.Visible) || (!hidden && this.Visible)))
-        {
-            ApplyLeftDockSurfacesHiddenState();
-            return;
-        }
-
         this.hiddenForFullscreen = hidden;
         ApplyLeftDockSurfacesHiddenState();
-        if (hidden)
+        ApplyOperationWindowVisibility();
+    }
+
+    internal bool SetHiddenForBurnIn(bool hidden)
+    {
+        bool sourceChanged = this.hiddenForBurnIn != hidden;
+        bool shouldHide = hidden || this.hiddenForFullscreen;
+        bool visibilityDrifted = this.Visible == shouldHide;
+        if (!sourceChanged && !visibilityDrifted)
+        {
+            return false;
+        }
+
+        this.hiddenForBurnIn = hidden;
+        return ApplyOperationWindowVisibility() || sourceChanged;
+    }
+
+    private bool ApplyOperationWindowVisibility()
+    {
+        bool wasVisible = this.Visible;
+        if (this.hiddenForFullscreen || this.hiddenForBurnIn)
         {
             this.animationTimer.Stop();
             this.foregroundFpsTimer.Stop();
@@ -365,7 +379,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
                 this.Hide();
             }
 
-            return;
+            return wasVisible != this.Visible;
         }
 
         if (!this.Visible)
@@ -376,6 +390,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         PositionOperationWindow();
         UpdateForegroundFpsTimer();
         RenderLayeredWindow();
+        return wasVisible != this.Visible;
     }
 
     internal void SetLeftDockSurfacesHidden(bool hidden)

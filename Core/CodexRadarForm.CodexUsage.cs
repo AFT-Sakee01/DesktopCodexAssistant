@@ -31,6 +31,9 @@ internal sealed partial class CodexRadarForm
     private readonly object codexProviderUsageLock = new object();
     private readonly object codexAccountEndpointStaggerLock = new object();
     private readonly object codexResetCreditsLock = new object();
+    private readonly object codexAccountIdentityLock = new object();
+    private CodexAccountIdentity codexAccountIdentity = CodexAccountIdentity.CreateUnknown();
+    private List<CodexAccountRecord> codexAccountRoster;
     private DateTime nextCodexProviderUsageRefreshUtc;
     private DateTime nextCodexResetCreditsRefreshUtc;
     private bool codexProviderUsageRequestRunning;
@@ -1167,6 +1170,10 @@ internal sealed partial class CodexRadarForm
         snapshot.ProviderPlan = ResolveProviderDiagnosticValue(root, rateLimit, "plan_type", "account_plan");
         snapshot.ProviderPool = ResolveProviderDiagnosticValue(root, rateLimit, "pool_type", "pool");
         snapshot.ProviderCorrelationId = Guid.NewGuid().ToString("N");
+        // The usage endpoint names the account it answered for. This is the only source that carries
+        // the real sign-in address (id_token may only hold a private-relay alias), so it wins for the
+        // display label while auth.json remains the primary key source.
+        PublishCodexProviderIdentity(root, snapshot.ProviderPlan);
         return new CodexProviderUsageResult
         {
             TokenConfigured = tokenConfigured,
@@ -1429,36 +1436,203 @@ internal sealed partial class CodexRadarForm
         }
     }
 
-    private static string GetCodexAuthJsonPath()
+    // Last identity reported by the usage endpoint. Static because there is exactly one Codex owner
+    // and the parse path is static; it only ever holds identifiers, a plan name and an address.
+    private static readonly object codexProviderIdentityLock = new object();
+    private static CodexAccountIdentity codexProviderIdentity;
+
+    private static void PublishCodexProviderIdentity(Dictionary<string, object> root, string planFallback)
     {
-        string codexHome = GetEnvironmentVariableAnyTarget("CODEX_HOME");
-        if (!string.IsNullOrWhiteSpace(codexHome))
+        if (root == null)
         {
-            return Path.Combine(codexHome.Trim(), "auth.json");
+            return;
         }
 
-        string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return string.IsNullOrWhiteSpace(profile)
-            ? string.Empty
-            : Path.Combine(profile, ".codex", "auth.json");
+        string accountKey = GetQuotaString(root, "account_id");
+        string userId = GetQuotaString(root, "user_id");
+        string email = GetQuotaString(root, "email");
+        string plan = GetQuotaString(root, "plan_type");
+        if (string.IsNullOrWhiteSpace(plan))
+        {
+            plan = planFallback;
+        }
+
+        if (string.IsNullOrWhiteSpace(accountKey) &&
+            string.IsNullOrWhiteSpace(userId) &&
+            string.IsNullOrWhiteSpace(email))
+        {
+            return;
+        }
+
+        CodexAccountIdentity identity = CodexAccountIdentity.Create(
+            accountKey,
+            userId,
+            email,
+            plan,
+            string.Empty,
+            "provider",
+            DateTime.MinValue,
+            DateTime.MinValue);
+        lock (codexProviderIdentityLock)
+        {
+            codexProviderIdentity = identity;
+        }
+    }
+
+    private static CodexAccountIdentity PeekCodexProviderIdentity()
+    {
+        lock (codexProviderIdentityLock)
+        {
+            return codexProviderIdentity == null ? null : codexProviderIdentity.Clone();
+        }
+    }
+
+    // Single resolution point for "which Codex account is active right now". auth.json owns the key
+    // because it is what the CLI actually signs requests with; the usage endpoint only enriches the
+    // display fields, and only when both agree on the account.
+    private CodexAccountIdentity RefreshCodexAccountIdentity()
+    {
+        CodexAccountIdentity local = CodexHome.ReadCurrentIdentity();
+        CodexAccountIdentity provider = PeekCodexProviderIdentity();
+        CodexAccountIdentity resolved = local;
+        if (provider != null && (!local.Known || local.HasSameAccount(provider)))
+        {
+            resolved = local.MergeDisplayFrom(provider);
+        }
+
+        lock (this.codexAccountIdentityLock)
+        {
+            this.codexAccountIdentity = resolved;
+        }
+
+        // Passive roster capture: normal use builds the switch list without ever asking the user to
+        // register an account. Never captures during a switch, when disk and identity disagree.
+        //
+        // Store I/O happens here on the owner's refresh path, never during snapshot construction:
+        // the board projection stays cache-only and reads the roster cached below.
+        try
+        {
+            bool rosterChanged = CodexAccountStore.ObserveActiveIdentity(resolved);
+            bool needsInitialLoad;
+            lock (this.codexAccountIdentityLock)
+            {
+                needsInitialLoad = this.codexAccountRoster == null;
+            }
+
+            if (rosterChanged || needsInitialLoad)
+            {
+                List<CodexAccountRecord> roster = CodexAccountStore.ListAccounts();
+                lock (this.codexAccountIdentityLock)
+                {
+                    this.codexAccountRoster = roster;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+        }
+
+        return resolved;
+    }
+
+    // Owner-memory roster for the board. Returns a defensive copy; callers must not mutate it.
+    internal List<CodexAccountRecord> PeekCodexAccountRoster()
+    {
+        List<CodexAccountRecord> copy = new List<CodexAccountRecord>();
+        lock (this.codexAccountIdentityLock)
+        {
+            if (this.codexAccountRoster == null)
+            {
+                return copy;
+            }
+
+            for (int i = 0; i < this.codexAccountRoster.Count; i++)
+            {
+                CodexAccountRecord record = this.codexAccountRoster[i];
+                if (record != null)
+                {
+                    copy.Add(record.Clone());
+                }
+            }
+        }
+
+        return copy;
+    }
+
+    // Explicit, user-initiated switch. Rewrites auth.json, then forces the whole Codex chain to
+    // re-read so the tile and the board show the incoming account rather than stale numbers.
+    internal bool TrySwitchCodexAccount(string accountKey, out string message)
+    {
+        if (!CodexAccountStore.TrySwitchTo(accountKey, out message))
+        {
+            return false;
+        }
+
+        CodexAccountIdentity identity = RefreshCodexAccountIdentity();
+        try
+        {
+            List<CodexAccountRecord> roster = CodexAccountStore.ListAccounts();
+            lock (this.codexAccountIdentityLock)
+            {
+                this.codexAccountRoster = roster;
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+        }
+
+        // Swap the trend before any reading arrives so the incoming account starts on its own
+        // samples, then invalidate the schedule so the next tick fetches immediately.
+        EnsureCodexQuotaStateForAccount(identity.AccountKey);
+        QuotaRuntimeState quotaState = GetQuotaRuntimeState(CodexRadarSoftwareMode.Codex);
+        quotaState.LastRefreshUtc = DateTime.MinValue;
+        quotaState.NextInactiveRefreshUtc = DateTime.MinValue;
+        lock (this.codexProviderUsageLock)
+        {
+            this.nextCodexProviderUsageRefreshUtc = DateTime.MinValue;
+            this.codexProviderUsageRefreshTrigger = "账户切换";
+        }
+
+        lock (this.codexResetCreditsLock)
+        {
+            // Reset credits are per account; the outgoing account's count must not carry over.
+            this.nextCodexResetCreditsRefreshUtc = DateTime.MinValue;
+            this.codexResetCreditsSnapshot = CodexResetCreditsSnapshot.CreateDefault();
+            this.codexResetCreditsRefreshTrigger = "账户切换";
+        }
+
+        lock (codexProviderIdentityLock)
+        {
+            codexProviderIdentity = null;
+        }
+
+        GetRadarFamilyState(CodexRadarSoftwareMode.Codex).Touch();
+        PublishProjectionStateFromOwner();
+        message = "已切换到 " + identity.ResolveDisplayLabel();
+        Program.LogInfo("Codex account switched by user request. Account=" + identity.AccountKey);
+        return true;
+    }
+
+    internal CodexAccountIdentity PeekCodexAccountIdentity()
+    {
+        lock (this.codexAccountIdentityLock)
+        {
+            return this.codexAccountIdentity == null
+                ? CodexAccountIdentity.CreateUnknown()
+                : this.codexAccountIdentity.Clone();
+        }
+    }
+
+    private static string GetCodexAuthJsonPath()
+    {
+        return CodexHome.ResolveAuthJsonPath();
     }
 
     private static string GetEnvironmentVariableAnyTarget(string name)
     {
-        string value = Environment.GetEnvironmentVariable(name);
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            return value;
-        }
-
-        value = Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.User);
-        if (!string.IsNullOrWhiteSpace(value))
-        {
-            return value;
-        }
-
-        value = Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Machine);
-        return string.IsNullOrWhiteSpace(value) ? string.Empty : value;
+        return CodexHome.GetEnvironmentVariableAnyTarget(name);
     }
 
     private static bool TryReadCodexAccessTokenFile(string path, out string token)

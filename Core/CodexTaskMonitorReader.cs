@@ -1517,10 +1517,9 @@ public sealed class CodexTaskMonitorReader : IDisposable
     {
         try
         {
-            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return string.IsNullOrWhiteSpace(profile)
-                ? string.Empty
-                : Path.Combine(Path.Combine(profile, ".codex"), "session_index.jsonl");
+            // Shared Codex home resolution: honours CODEX_HOME like the auth.json reader does, so
+            // task titles cannot come from a different account's home than the quota chain.
+            return CodexHome.ResolveSessionIndexPath();
         }
         catch
         {

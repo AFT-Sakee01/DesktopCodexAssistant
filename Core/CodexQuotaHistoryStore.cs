@@ -43,6 +43,7 @@ internal sealed class CodexQuotaHistoryStore : IDisposable
     }
 
     internal void Record(
+        string accountKey,
         int fiveHourRemainingPercent,
         int weeklyRemainingPercent,
         bool weeklyResetKnown,
@@ -52,9 +53,11 @@ internal sealed class CodexQuotaHistoryStore : IDisposable
         DateTime nowUtc)
     {
         DateTime normalizedUtc = nowUtc.Kind == DateTimeKind.Utc ? nowUtc : nowUtc.ToUniversalTime();
+        string normalizedAccount = NormalizeAccountKey(accountKey);
         CodexQuotaHistoryEntry next = new CodexQuotaHistoryEntry
         {
             TimestampUtc = normalizedUtc,
+            AccountKey = normalizedAccount,
             FiveHourRemainingPercent = ClampPercent(fiveHourRemainingPercent),
             WeeklyRemainingPercent = ClampPercent(weeklyRemainingPercent),
             WeeklyResetKnown = weeklyResetKnown && weeklyResetLocal != DateTime.MinValue,
@@ -71,7 +74,9 @@ internal sealed class CodexQuotaHistoryStore : IDisposable
                 return;
             }
 
-            CodexQuotaHistoryEntry previous = this.entries.Count > 0 ? this.entries[this.entries.Count - 1] : null;
+            // Reset classification and the sampling-interval filter compare against this account's
+            // own last reading; the entry immediately before may belong to a different sign-in.
+            CodexQuotaHistoryEntry previous = FindLastEntryForAccountLocked(normalizedAccount);
             if (previous != null)
             {
                 int weeklyIncrease = next.WeeklyRemainingPercent - previous.WeeklyRemainingPercent;
@@ -102,16 +107,21 @@ internal sealed class CodexQuotaHistoryStore : IDisposable
         }
     }
 
-    internal CodexQuotaHistorySnapshot GetSnapshot(DateTime nowUtc)
+    // Account-scoped projection. The seven-day board must chart one account, otherwise two accounts'
+    // remaining-% points join into a single curve whose drops and jumps never happened.
+    internal CodexQuotaHistorySnapshot GetSnapshot(DateTime nowUtc, string accountKey)
     {
         DateTime cutoffUtc = (nowUtc.Kind == DateTimeKind.Utc ? nowUtc : nowUtc.ToUniversalTime()).AddDays(-RetentionDays);
+        string normalizedAccount = NormalizeAccountKey(accountKey);
         CodexQuotaHistorySnapshot snapshot = new CodexQuotaHistorySnapshot();
         lock (this.syncRoot)
         {
             for (int i = 0; i < this.entries.Count; i++)
             {
                 CodexQuotaHistoryEntry entry = this.entries[i];
-                if (entry != null && entry.TimestampUtc >= cutoffUtc)
+                if (entry != null &&
+                    entry.TimestampUtc >= cutoffUtc &&
+                    AccountKeysEqual(entry.AccountKey, normalizedAccount))
                 {
                     snapshot.Entries.Add(entry.Clone());
                 }
@@ -119,6 +129,35 @@ internal sealed class CodexQuotaHistoryStore : IDisposable
         }
 
         return snapshot;
+    }
+
+    private CodexQuotaHistoryEntry FindLastEntryForAccountLocked(string normalizedAccount)
+    {
+        for (int i = this.entries.Count - 1; i >= 0; i--)
+        {
+            CodexQuotaHistoryEntry entry = this.entries[i];
+            if (entry != null && AccountKeysEqual(entry.AccountKey, normalizedAccount))
+            {
+                return entry;
+            }
+        }
+
+        return null;
+    }
+
+    internal static string NormalizeAccountKey(string accountKey)
+    {
+        return string.IsNullOrWhiteSpace(accountKey)
+            ? CodexAccountIdentity.UnknownAccountKey
+            : accountKey.Trim();
+    }
+
+    private static bool AccountKeysEqual(string left, string right)
+    {
+        return string.Equals(
+            NormalizeAccountKey(left),
+            NormalizeAccountKey(right),
+            StringComparison.OrdinalIgnoreCase);
     }
 
     public void Dispose()
@@ -144,20 +183,56 @@ internal sealed class CodexQuotaHistoryStore : IDisposable
             string[] lines = File.ReadAllLines(this.path, SharedEncoding.Utf8NoBom);
             DateTime cutoff = DateTime.UtcNow.AddDays(-RetentionDays);
             JavaScriptSerializer serializer = new JavaScriptSerializer();
+            // Only discard unattributed rows on a machine that can actually name its account. Where
+            // no identity is resolvable at all, the board itself runs on the "unknown" key, so those
+            // rows are still the best available history and dropping them would just empty the chart.
+            bool canAttribute = CodexHome.ReadCurrentIdentity().Known;
+            int discardedUnattributed = 0;
             for (int i = Math.Max(0, lines.Length - MaximumEntries); i < lines.Length; i++)
             {
                 CodexQuotaHistoryEntry entry;
-                if (TryDeserialize(serializer, lines[i], out entry) && entry.TimestampUtc >= cutoff)
+                if (!TryDeserialize(serializer, lines[i], out entry) || entry.TimestampUtc < cutoff)
                 {
-                    this.entries.Add(entry);
+                    continue;
                 }
+
+                // One-time migration: rows written before account awareness carry no owning account
+                // and can mix two sign-ins on one curve. An unattributable row can never be charged
+                // to an account after the fact, so it is dropped rather than parked in a bucket the
+                // board can never show. The file rewrite below makes the drop permanent.
+                if (canAttribute && IsUnattributedAccountKey(entry.AccountKey))
+                {
+                    discardedUnattributed++;
+                    continue;
+                }
+
+                this.entries.Add(entry);
             }
+
             this.lastTrimUtc = DateTime.UtcNow;
+            if (discardedUnattributed > 0)
+            {
+                RewriteRetainedFile();
+                Program.LogInfo(
+                    "Codex quota seven-day history dropped " +
+                    discardedUnattributed.ToString(CultureInfo.InvariantCulture) +
+                    " rows without an owning account; " +
+                    this.entries.Count.ToString(CultureInfo.InvariantCulture) +
+                    " attributed rows retained.");
+            }
         }
         catch
         {
             // History is advisory. Corruption or an unavailable disk must not affect quota reads.
         }
+    }
+
+    internal static bool IsUnattributedAccountKey(string accountKey)
+    {
+        return string.Equals(
+            NormalizeAccountKey(accountKey),
+            CodexAccountIdentity.UnknownAccountKey,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private void Flush(bool forceTrim)
@@ -230,6 +305,7 @@ internal sealed class CodexQuotaHistoryStore : IDisposable
             { "timestamp_utc", entry.TimestampUtc.ToString("o", CultureInfo.InvariantCulture) },
             { "timestamp_local", entry.TimestampUtc.ToLocalTime().ToString("o", CultureInfo.InvariantCulture) },
             { "timezone", NetworkCheckHistoryLogger.GetTimezoneOffsetString() },
+            { "account_key", NormalizeAccountKey(entry.AccountKey) },
             { "five_hour_remaining_percent", entry.FiveHourRemainingPercent },
             { "weekly_remaining_percent", entry.WeeklyRemainingPercent },
             { "weekly_reset_known", entry.WeeklyResetKnown },
@@ -259,6 +335,10 @@ internal sealed class CodexQuotaHistoryStore : IDisposable
             entry = new CodexQuotaHistoryEntry
             {
                 TimestampUtc = timestamp.Kind == DateTimeKind.Utc ? timestamp : timestamp.ToUniversalTime(),
+                AccountKey = NormalizeAccountKey(
+                    data.ContainsKey("account_key")
+                        ? Convert.ToString(data["account_key"], CultureInfo.InvariantCulture)
+                        : null),
                 FiveHourRemainingPercent = ClampPercent(ReadInt(data, "five_hour_remaining_percent", 100)),
                 WeeklyRemainingPercent = ClampPercent(ReadInt(data, "weekly_remaining_percent", 100)),
                 WeeklyResetKnown = resetKnown && resetLocal != DateTime.MinValue,
@@ -301,19 +381,73 @@ internal sealed class CodexQuotaHistoryStore : IDisposable
             DateTime now = DateTime.UtcNow;
             using (CodexQuotaHistoryStore store = new CodexQuotaHistoryStore(path))
             {
-                store.Record(80, 40, true, now.ToLocalTime().AddDays(1), true, 3, now.AddHours(-2));
-                store.Record(99, 95, true, now.ToLocalTime().AddDays(7), true, 2, now);
-                CodexQuotaHistorySnapshot snapshot = store.GetSnapshot(now);
+                store.Record("acct-A", 80, 40, true, now.ToLocalTime().AddDays(1), true, 3, now.AddHours(-2));
+                store.Record("acct-A", 99, 95, true, now.ToLocalTime().AddDays(7), true, 2, now);
+                CodexQuotaHistorySnapshot snapshot = store.GetSnapshot(now, "acct-A");
                 if (snapshot.Entries.Count != 2 || !string.Equals(snapshot.Entries[1].ResetKind, "credit", StringComparison.Ordinal))
                 {
                     throw new InvalidOperationException("Codex seven-day history did not classify a reset-credit jump.");
                 }
+
+                // A second account writes into the same file but must never appear in, or influence
+                // the classification of, the first account's projection.
+                store.Record("acct-B", 10, 12, true, now.ToLocalTime().AddDays(3), true, 0, now.AddMinutes(1.0));
+                if (store.GetSnapshot(now.AddMinutes(2.0), "acct-A").Entries.Count != 2 ||
+                    store.GetSnapshot(now.AddMinutes(2.0), "acct-B").Entries.Count != 1 ||
+                    !string.Equals(
+                        store.GetSnapshot(now.AddMinutes(2.0), "acct-B").Entries[0].ResetKind,
+                        string.Empty,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("Codex seven-day history did not separate accounts.");
+                }
+
+                // Legacy rows without a key stay in their own bucket instead of joining an account.
+                if (store.GetSnapshot(now.AddMinutes(2.0), null).Entries.Count != 0)
+                {
+                    throw new InvalidOperationException("Codex seven-day history unknown-account bucket self-test failed.");
+                }
             }
             string[] lines = File.ReadAllLines(path, SharedEncoding.Utf8NoBom);
-            if (lines.Length != 2)
+            if (lines.Length != 3)
             {
                 throw new InvalidOperationException("Codex seven-day history did not persist buffered rows.");
             }
+
+            // Migration: a reload on a machine that can name its account must drop the rows that
+            // carry no owning account, rewrite the file, and keep every attributed row.
+            List<string> mixed = new List<string>(lines);
+            mixed.Insert(0, Serialize(new CodexQuotaHistoryEntry
+            {
+                TimestampUtc = now.AddHours(-3.0),
+                AccountKey = CodexAccountIdentity.UnknownAccountKey,
+                FiveHourRemainingPercent = 70,
+                WeeklyRemainingPercent = 70,
+                ResetKind = string.Empty
+            }).Trim());
+            File.WriteAllLines(path, mixed.ToArray(), SharedEncoding.Utf8NoBom);
+
+            bool canAttribute = CodexHome.ReadCurrentIdentity().Known;
+            using (CodexQuotaHistoryStore reloaded = new CodexQuotaHistoryStore(path))
+            {
+                int attributed = reloaded.GetSnapshot(now.AddMinutes(2.0), "acct-A").Entries.Count +
+                    reloaded.GetSnapshot(now.AddMinutes(2.0), "acct-B").Entries.Count;
+                int unattributed = reloaded.GetSnapshot(now.AddMinutes(2.0), null).Entries.Count;
+                if (attributed != 3 || unattributed != (canAttribute ? 0 : 1))
+                {
+                    throw new InvalidOperationException(
+                        "Codex seven-day history unattributed-row migration self-test failed.");
+                }
+            }
+
+            string[] migrated = File.ReadAllLines(path, SharedEncoding.Utf8NoBom);
+            if (migrated.Length != (canAttribute ? 3 : 4))
+            {
+                throw new InvalidOperationException(
+                    "Codex seven-day history migration did not rewrite the retained file.");
+            }
+
+            Console.WriteLine("Codex seven-day history: PASS reset-credit classification, per-account separation, unattributed-row migration");
         }
         finally
         {
@@ -330,6 +464,9 @@ internal sealed class CodexQuotaHistorySnapshot
 internal sealed class CodexQuotaHistoryEntry
 {
     public DateTime TimestampUtc { get; set; }
+    // Owning Codex account. Historical lines written before account awareness carry no key and stay
+    // in the "unknown" bucket rather than being attributed to whichever account is active now.
+    public string AccountKey { get; set; }
     public int FiveHourRemainingPercent { get; set; }
     public int WeeklyRemainingPercent { get; set; }
     public bool WeeklyResetKnown { get; set; }

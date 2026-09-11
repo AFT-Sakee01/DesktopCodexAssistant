@@ -13,7 +13,8 @@ internal sealed partial class ResetSpeedBoardForm
         settings.SpecBoardWidth = 648;
         settings.SpecBoardHeight = 400;
         ResetSpeedBoardSnapshot fixture = CreateFixtureSnapshot();
-        using (ResetSpeedBoardForm form = new ResetSpeedBoardForm(null, settings, delegate { return fixture; }))
+        using (ResetSpeedBoardForm form = new ResetSpeedBoardForm(
+            null, settings, delegate { return fixture; }, delegate { return null; }))
         {
             form.Size = form.GetDesiredSize();
             string path = Path.Combine(outputDir, "reset-speed-board.png");
@@ -66,6 +67,28 @@ internal sealed partial class ResetSpeedBoardForm
         snapshot.ResetCardDescription = "本轮是硬重置，不会发新卡";
         snapshot.HardResetStatus = "已官宣";
         snapshot.HardResetDescription = "官方重置窗口已开启";
+        // Three accounts exercise every chip state: the active one, a switchable one, and one whose
+        // credential snapshot is missing so it must render dimmed and un-clickable.
+        snapshot.ActiveAccountKnown = true;
+        snapshot.ActiveAccountKey = "acct-a";
+        snapshot.ActiveAccountLabel = "sa****@example.com";
+        snapshot.ActiveAccountLetter = "A";
+        snapshot.ActiveAccountPlan = "pro";
+        snapshot.Accounts.Add(new ResetSpeedAccountEntry
+        {
+            AccountKey = "acct-a", Letter = "A", Label = "sa****@example.com", PlanType = "pro",
+            IsActive = true, CanSwitch = false, LastSeenKnown = true, LastSeenLocal = now
+        });
+        snapshot.Accounts.Add(new ResetSpeedAccountEntry
+        {
+            AccountKey = "acct-b", Letter = "B", Label = "账户 B", PlanType = "prolite",
+            IsActive = false, CanSwitch = true, LastSeenKnown = true, LastSeenLocal = now.AddDays(-4.0)
+        });
+        snapshot.Accounts.Add(new ResetSpeedAccountEntry
+        {
+            AccountKey = "acct-c", Letter = "C", Label = "账户 C", PlanType = string.Empty,
+            IsActive = false, CanSwitch = false, LastSeenKnown = false, LastSeenLocal = DateTime.MinValue
+        });
         return snapshot;
     }
 
@@ -84,8 +107,16 @@ internal sealed partial class ResetSpeedBoardForm
         {
             throw new InvalidOperationException("Reset / Speed board snapshot or seven-day usage self-test failed.");
         }
+        if (clone.Accounts.Count != 3 ||
+            !clone.ActiveAccountKnown ||
+            !string.Equals(clone.ActiveAccountLetter, "A", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Reset / Speed board account roster clone self-test failed.");
+        }
+
         WidgetSettings settings = WidgetSettings.CreateDefaults();
-        using (ResetSpeedBoardForm form = new ResetSpeedBoardForm(null, settings, delegate { return fixture; }))
+        using (ResetSpeedBoardForm form = new ResetSpeedBoardForm(
+            null, settings, delegate { return fixture; }, delegate { return null; }))
         {
             form.Size = form.GetDesiredSize();
             using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
@@ -99,7 +130,16 @@ internal sealed partial class ResetSpeedBoardForm
                     throw new InvalidOperationException("Reset / Speed board renderer produced transparent output.");
                 }
             }
+
+            // Exactly one switchable chip must have registered a hit target: the active account is
+            // never a target, and the account without a stored credential must not be clickable.
+            if (form.accountHitTargets.Count != 1 ||
+                !string.Equals(form.accountHitTargets[0].AccountKey, "acct-b", StringComparison.Ordinal) ||
+                form.accountHitTargets[0].Bounds.Width <= 0)
+            {
+                throw new InvalidOperationException("Reset / Speed board account hit-target self-test failed.");
+            }
         }
-        Console.WriteLine("Reset / Speed board: PASS snapshot, seven-day trace, reset gates, Radar judgement, speed dial and reset cards");
+        Console.WriteLine("Reset / Speed board: PASS snapshot, seven-day trace, reset gates, Radar judgement, speed dial, reset cards and account switch targets");
     }
 }

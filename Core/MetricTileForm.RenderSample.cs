@@ -432,6 +432,11 @@ internal sealed partial class MetricTileForm
         r.FiveHourBurnConfidence = QuotaForecastConfidence.Medium;
         if (!claude)
         {
+            // The Codex tile always names the account these numbers belong to; Claude has no switch.
+            r.AccountKnown = true;
+            r.AccountKey = "acct-a";
+            r.AccountLabel = "sa****@example.com";
+            r.AccountLetter = "A";
             r.IqKnown = true;
             r.Iq = 141;
             r.IqUpdatedKnown = true;

@@ -28,6 +28,16 @@ internal sealed partial class CodexRadarForm
         public string ModelKey { get; set; }
         public CodexRadarSnapshot RadarSnapshot { get; set; }
         public QuotaRuntimeState Quota { get; private set; }
+
+        // Codex account switches replace the whole quota trend at once. Swapping the state object
+        // keeps each account's measurement intact instead of clearing and re-accumulating.
+        public void SwapQuota(QuotaRuntimeState next)
+        {
+            if (next != null)
+            {
+                this.Quota = next;
+            }
+        }
         public ServiceHealthState RadarSiteHealth { get; set; }
         public bool RadarStatusRequestRunning { get; set; }
         public DateTime LastRadarStatusRefreshUtc { get; set; }
@@ -73,8 +83,13 @@ internal sealed partial class CodexRadarForm
             this.FiveHourBurnTrackedResetLocal = DateTime.MinValue;
             this.WeeklyBurnTrackedResetLocal = DateTime.MinValue;
             this.WeeklyBurnClockUtc = DateTime.MinValue;
+            this.AccountKey = CodexAccountIdentity.UnknownAccountKey;
             this.Protection = new QuotaProtectionState();
         }
+
+        // The Codex account this whole trend belongs to. Claude has no equivalent switch and simply
+        // stays on the unknown key.
+        public string AccountKey { get; set; }
 
         public CodexQuotaSnapshot Snapshot { get; set; }
         public bool SourceKnown { get; set; }
@@ -165,6 +180,89 @@ internal sealed partial class CodexRadarForm
     private QuotaRuntimeState GetQuotaRuntimeState(CodexRadarSoftwareMode family)
     {
         return GetRadarFamilyState(family).Quota;
+    }
+
+    // Parked Codex quota trends, one per account seen this process lifetime. Switching accounts must
+    // not merge two accounts' remaining-% series into one burn rate, and switching back must not
+    // throw away what the previous account already measured.
+    private readonly Dictionary<string, QuotaRuntimeState> codexAccountQuotaStates =
+        new Dictionary<string, QuotaRuntimeState>(StringComparer.OrdinalIgnoreCase);
+
+    private static string NormalizeAccountStateKey(string accountKey)
+    {
+        return string.IsNullOrWhiteSpace(accountKey)
+            ? CodexAccountIdentity.UnknownAccountKey
+            : accountKey.Trim();
+    }
+
+    // Returns true when the active Codex account actually changed, so the caller can republish.
+    private bool EnsureCodexQuotaStateForAccount(string accountKey)
+    {
+        if (!SwapCodexQuotaStateForAccount(
+                this.codexAccountQuotaStates,
+                GetRadarFamilyState(CodexRadarSoftwareMode.Codex),
+                accountKey))
+        {
+            return false;
+        }
+
+        Program.LogInfo("Codex account switch observed. Account=" +
+            NormalizeAccountStateKey(accountKey) + ", parked=" +
+            this.codexAccountQuotaStates.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        return true;
+    }
+
+    private static bool SwapCodexQuotaStateForAccount(
+        Dictionary<string, QuotaRuntimeState> parked,
+        RadarFamilyRuntimeState family,
+        string accountKey)
+    {
+        string key = NormalizeAccountStateKey(accountKey);
+        QuotaRuntimeState current = family.Quota;
+        if (CodexAccountIdentity.KeysEqual(current.AccountKey, key))
+        {
+            return false;
+        }
+
+        parked[NormalizeAccountStateKey(current.AccountKey)] = current;
+
+        QuotaRuntimeState next;
+        if (parked.TryGetValue(key, out next) && next != null)
+        {
+            parked.Remove(key);
+        }
+        else
+        {
+            next = new QuotaRuntimeState();
+        }
+
+        // A resumed trend keeps its own timestamps: the burn clock's gap rule clears the active-time
+        // samples on the next tick, and the wall-clock window prunes whatever aged out meanwhile.
+        next.AccountKey = key;
+        family.SwapQuota(next);
+        family.Touch();
+
+        // Bound the parked set so a long-lived process cannot accumulate states without limit.
+        while (parked.Count > CodexAccountStore.MaxAccounts)
+        {
+            string oldest = null;
+            foreach (KeyValuePair<string, QuotaRuntimeState> pair in parked)
+            {
+                if (oldest == null || pair.Value.WeeklyBurnClockUtc < parked[oldest].WeeklyBurnClockUtc)
+                {
+                    oldest = pair.Key;
+                }
+            }
+
+            if (oldest == null)
+            {
+                break;
+            }
+
+            parked.Remove(oldest);
+        }
+
+        return true;
     }
 
     private QuotaRuntimeState GetActiveQuotaRuntimeState()

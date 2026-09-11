@@ -1,6 +1,6 @@
 # Codex / Claude Radar 数据所有者架构
 
-适用版本：2.0.0.37
+适用版本：2.0.0.41
 
 本文说明 `CodexRadarForm` 作为永久 headless owner 时的 Codex 公共 Radar、Codex/Claude 官方额度、服务健康、任务状态和只读投影。
 
@@ -126,31 +126,53 @@ Codex 的模型选择、IQ、评分、效率、通知状态与 `Codex IQ` board 
 
 大陆出口保护在冷启动/换网未知期会 fail-closed，因此敏感端点可能先得到 `AI_BLOCK`。`WidgetForm` 确认出口为境外后调用 `CodexRadarForm.RequestSensitiveAiRefreshAfterEgressAuthorization()`，仅把适用 Codex/Claude 额度、reset credits 与 OpenAI/Anthropic Statuspage 调度置为到期；公共 Radar、DeepSeek 与其它网络探测不受该边沿影响。
 
-### 7.2 Codex 额度
+### 7.2 Codex 账户身份
+
+Codex CLI 一次只持有一个账户：`<CODEX_HOME>/auth.json`（未设置时为 `%USERPROFILE%\.codex\auth.json`）。切换账户就是覆写该文件，因此身份必须随每次读取重新解析，不能在启动时确定一次。
+
+`CodexHome` 是 Codex CLI 路径的唯一解析点：`ResolveRoot()` / `ResolveAuthJsonPath()` / `ResolveSessionsPath()` / `ResolveSessionIndexPath()` 一律遵循 `CODEX_HOME`，令 token、rollout 历史与 `session_index.jsonl` 始终来自同一个 home。
+
+`CodexHome.ReadCurrentIdentity()` 按 auth.json 的写入时间与长度缓存解析结果，命中变化才重解析：主键取 `tokens.account_id`，缺失时在 `tokens.id_token` 的 JWT payload 里取 `https://api.openai.com/auth.chatgpt_account_id`，再缺失时回落到 `chatgpt_user_id`；`auth_mode = apikey` 归入固定的 `apikey` 键。展示字段取 JWT 的 `email` 与 `chatgpt_plan_type`，并由 usage 端点返回的 `email` / `plan_type` 覆盖（`RefreshCodexAccountIdentity()` 只在两侧账户键一致时合并）。JWT 只在内存中解码，access/refresh/id token 一律不落盘、不入日志；对外的显示名由 `CodexAccountIdentity.ResolveDisplayLabel()` 生成，邮箱本地部分打码。
+
+### 7.3 Codex 额度
 
 Codex provider 只读已配置的环境变量或 Codex `auth.json` 凭据，不写回。5 小时与周额度分别维护 reset anchor、余额、来源和消耗基线。只有通过窗口身份、漂移容差与异常跃迁保护的结果才提交到缓存。
 
+`ReadQuotaSnapshot()` 先解析一次身份，再把 provider / session / cache 三级回退的结果统一打上 `AccountKey` 与 `AccountLabel`。`codex-radar-cache.ini` 写入 `AccountKey=`；读回时账户不匹配的缓存直接降级为 default，不作为当前余额展示。
+
+rollout 的 `rate_limits` 块不含任何账户 id（同一个被续用的 session 文件里可以并存两个账户的记录），因此 `IsSessionQuotaEventAttributable()` 对该来源加两道拒绝：事件时间早于当前账户的 `active_since_utc` 时拒绝（本机只见过一个账户时该闸门不启用），事件 `plan_type` 与当前账户 plan 冲突时拒绝。
+
 `quota-decision-history.jsonl` 只记录额度判定所需摘要，不记录 token、提示词、响应正文或授权 header。另有 `codex-quota-seven-day-history.jsonl` 只保存通过保护链的时间、5 小时/周余量、reset anchor、重置卡计数与重置类型；同样不保存凭据、token、请求正文或身份信息。
 
-### 7.3 Claude 额度
+### 7.4 Claude 额度
 
 Claude Code 用量由进程级 `ClaudeCodeUsageScheduler` 单飞读取，结果一次提交到 Claude family，并由 `ClaudeCodeUsageReader` 原子写入 `claude-quota.ini`。只有同时包含 5 小时/周额度、两组 reset、可信更新时间且满足新鲜度规则的完整快照才会发布、落盘或在启动时恢复；部分结果保留 last-good。
 
 CLD tile 的固定模型标签为 `Claude`，紧凑标题为 `CLD`；额度与两个 reset 只来自官方 usage/statusline 链。详细边界见 `Docs/Codex-ClaudeRadar-Architecture.md`。
 
-### 7.4 双窗口趋势与续航
+### 7.5 双窗口趋势与续航
 
-`CodexRadarForm.ApplyQuotaSnapshot()` 只把通过既有 identity、漂移和异常跃迁保护的已接受快照交给 `RecordQuotaBurnSamples()`。每个 family 的 5 小时与周额度分别维护两条进程内历史：活跃时间轴用于回答“保持当前使用强度还能用多久”，近时钟时间轴用于在活跃样本不足时给出节奏估算。软件未运行、长时间 owner tick 间断或新活跃会话会重建活跃历史，但不会把这段时间计入活跃速率；reset identity 改变或余额上升只清除对应额度窗口的两条历史。
+`CodexRadarForm.ApplyQuotaSnapshot()` 先按快照的 `AccountKey` 调用 `EnsureCodexQuotaStateForAccount()`：Codex family 的 `QuotaRuntimeState` 按账户整体换出/换入，离开的账户被寄存在进程内（上限 `CodexAccountStore.MaxAccounts = 12`，按最旧 burn clock 淘汰），切回时恢复它自己的样本而不是从零重来。`RecordQuotaBurnSamples()` 另有一道防御：快照账户与当前 trend 账户不一致时直接丢弃。没有这层隔离，一次切换会被读成一次巨量消耗。
+
+随后只把通过既有 identity、漂移和异常跃迁保护的已接受快照交给 `RecordQuotaBurnSamples()`。每个 family 的 5 小时与周额度分别维护两条进程内历史：活跃时间轴用于回答“保持当前使用强度还能用多久”，近时钟时间轴用于在活跃样本不足时给出节奏估算。软件未运行、长时间 owner tick 间断或新活跃会话会重建活跃历史，但不会把这段时间计入活跃速率；reset identity 改变或余额上升只清除对应额度窗口的两条历史。
 
 `TryComputeQuotaBurnRate()` 对最近 1.5 个活跃小时的 5 小时额度、最近 6 个活跃小时的周额度，以及各自最近 5/24 个时钟小时进行估算。至少需要 10 个活跃分钟或 30 个时钟分钟，并且整数百分比来源必须出现至少 1% 的已接受下降；端点速率与 pairwise 中位速率组合以减轻单次整数跳变。样本跨度、下降幅度和点数共同形成低/中/高置信度。
 
 `BuildRadarTileSnapshot()` 只从同代 published projection 计算展示 DTO：优先发布活跃时间续航，活跃样本不足时才以近 24 小时节奏作为周额度主结论。`MetricTileExpandForm.DrawRadarQuota()` 将续航与 reset 距离比较，明确显示“预计多久用完并早于重置多久”或“可撑到重置并多余多久”；5 小时窗口在底部独立给出相同判断。周趋势实线只占图表前 68%，剩余区域用于虚线预测、耗尽交点和 reset 线。计算和绘制都不启动 provider、网络或磁盘读取，进程重启后重新积累样本。
 
-### 7.5 Codex 7 天重置与速蹬历史
+### 7.6 Codex 7 天重置与速蹬历史
 
-`CodexQuotaHistoryStore` 仅接收 `ApplyQuotaSnapshot()` 已接受且允许记录 decision 的 Codex family 快照。内存立即更新，磁盘由 15 秒 ThreadPool timer 批量写入；普通样本至少间隔 15 分钟，或周余量变化达到 3%，周余量回升达到 5% 时立即登记。旧 reset anchor 前 15 分钟至后 6 小时内的回升标记为自然重置；重置卡计数同时减少时标记为重置卡；其余标记为硬重置。每 6 小时和 owner 退出时原子裁剪到最近 7 天、最多 2048 行。
+`CodexQuotaHistoryStore` 仅接收 `ApplyQuotaSnapshot()` 已接受且允许记录 decision 的 Codex family 快照。每行带 `account_key`，`Record()` 的重置分类与采样间隔过滤只与**同账户**的上一条比较，`GetSnapshot(nowUtc, accountKey)` 只投影该账户的行；没有 `account_key` 的历史行留在 `unknown` 桶里，不并入任何账户。内存立即更新，磁盘由 15 秒 ThreadPool timer 批量写入；普通样本至少间隔 15 分钟，或周余量变化达到 3%，周余量回升达到 5% 时立即登记。旧 reset anchor 前 15 分钟至后 6 小时内的回升标记为自然重置；重置卡计数同时减少时标记为重置卡；其余标记为硬重置。每 6 小时和 owner 退出时原子裁剪到最近 7 天、最多 2048 行。
 
-`BuildResetSpeedBoardSnapshot()` 从同代 Codex published projection、reset-credit 缓存和 store 内存生成 7 个日点、最近事件及仍在 7 天来源 TTL 内的 Radar 重置判断。`ResetSpeedBoardForm` 每 5 秒 clone 一次；绘制路径和 snapshot 构建都不读取磁盘、凭据或网络。该持久历史与 Radar 判断只服务 Codex board，不改变 Claude family 的官方额度趋势和右侧续航计算。
+### 7.7 账户名单与切换
+
+`CodexAccountStore` 维护本机 Codex 账户名单。名单在正常使用中被动建立：`RefreshCodexAccountIdentity()` 每次解析出账户后调用 `ObserveActiveIdentity()`，首次见到的账户分配一个稳定的 A/B/C… 字母并登记，auth.json 变动时刷新其凭据快照。字母一经分配不再变动，读不到邮箱的账户就以字母作为全名显示。
+
+- `codex-accounts.jsonl`（明文索引）只存 `account_key`、`letter`、打码邮箱、`plan_type`、`user_id`、`auth_mode` 与时间戳，不存 token，也不存完整邮箱。
+- `<account_key>.bin` 存该账户 auth.json 的完整内容，经 `SecretStore` 的 DPAPI（CurrentUser）保护，与 DeepSeek key、Claude setup token 同一防护等级。
+- `TrySwitchTo()` 只在用户显式点击时执行：校验快照解析出的账户与目标一致后，先把现有 auth.json 复制为 `auth.json.dca-bak`，再原子替换。校验失败一律 fail closed。
+
+`BuildResetSpeedBoardSnapshot()` 从同代 Codex published projection、reset-credit 缓存和 store 内存生成 7 个日点、最近事件及仍在 7 天来源 TTL 内的 Radar 重置判断，并由 `FillResetSpeedAccounts()` 附上当前账户与名单。名单来自 owner 内存缓存（`PeekCodexAccountRoster()`），投影路径本身不读账户存储。右侧 Codex tile 恒定显示当前账户（`RadarTileSnapshot.AccountLabel` / `AccountLetter`），不提供切换入口；切换只在左侧 board 上。`ResetSpeedBoardForm` 每 5 秒 clone 一次；绘制路径和 snapshot 构建都不读取磁盘、凭据或网络。该持久历史与 Radar 判断只服务 Codex board，不改变 Claude family 的官方额度趋势和右侧续航计算。
 
 ## 8. 服务健康
 

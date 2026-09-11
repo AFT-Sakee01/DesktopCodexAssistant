@@ -632,6 +632,14 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         builder.Append(this.runtime.DisplayPowerRequestActive ? '1' : '0');
         builder.Append('|').Append(((int)ResolveAcState()).ToString(CultureInfo.InvariantCulture));
 
+        // Power mode is live OS state Windows (or the user, via its own Settings UI) can change at
+        // any time outside GUARD's control, so it is re-read every tick rather than cached.
+        builder.Append('|').Append((int)GuardRuntime.GetLivePowerModeTier());
+        builder.Append(this.runtime.EnergySaverForcedOn ? '1' : '0');
+        builder.Append(this.runtime.PowerModeOverrideActive ? '1' : '0');
+        builder.Append('|').Append(this.runtime.PowerModeOverrideHours.ToString(CultureInfo.InvariantCulture));
+        AppendSeconds(builder, this.runtime.GetPowerModeOverrideRemaining(nowUtc));
+
         return builder.ToString();
     }
 
@@ -762,6 +770,47 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
                 persist = false;
                 break;
 
+            case GuardHitAction.PowerModeSaver:
+                this.runtime.SetPowerMode(GuardPowerModeTier.Saver);
+                this.statusNotice = this.runtime.LastActionDetail;
+                break;
+
+            case GuardHitAction.PowerModeBalanced:
+                this.runtime.SetPowerMode(GuardPowerModeTier.Balanced);
+                this.statusNotice = this.runtime.LastActionDetail;
+                break;
+
+            case GuardHitAction.PowerModePerformance:
+                this.runtime.SetPowerMode(GuardPowerModeTier.Performance);
+                this.statusNotice = this.runtime.LastActionDetail;
+                break;
+
+            case GuardHitAction.PowerScheduleHoursMinus:
+                this.runtime.SetPowerModeOverrideHours(StepValue(WidgetSettings.GuardPowerModeOverrideHourSteps, this.runtime.PowerModeOverrideHours, -1));
+                break;
+
+            case GuardHitAction.PowerScheduleHoursPlus:
+                this.runtime.SetPowerModeOverrideHours(StepValue(WidgetSettings.GuardPowerModeOverrideHourSteps, this.runtime.PowerModeOverrideHours, 1));
+                break;
+
+            case GuardHitAction.PowerScheduleToggle:
+                if (this.runtime.PowerModeOverrideActive)
+                {
+                    this.runtime.StopPowerModeOverride();
+                }
+                else
+                {
+                    this.runtime.StartPowerModeOverride(this.runtime.PowerModeOverrideHours, now);
+                }
+
+                this.statusNotice = this.runtime.LastActionDetail;
+                break;
+
+            case GuardHitAction.EnergySaverToggle:
+                this.runtime.SetEnergySaverForced(!this.runtime.EnergySaverForcedOn);
+                this.statusNotice = this.runtime.LastActionDetail;
+                break;
+
             case GuardHitAction.Close:
                 HideBoard();
                 return;
@@ -807,6 +856,16 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
                 if (request.Hours > 0) changed |= this.runtime.SetDisplayGuardMinutes(request.Hours * 60);
                 changed |= this.runtime.StartDisplayGuard(now);
                 break;
+            case "power_mode":
+                changed = this.runtime.SetPowerMode(ParseTierToken(request.Mode));
+                break;
+            case "energy_saver_on": changed = this.runtime.SetEnergySaverForced(true); break;
+            case "energy_saver_off": changed = this.runtime.SetEnergySaverForced(false); break;
+            case "power_schedule_start":
+                if (request.Hours > 0) changed |= this.runtime.SetPowerModeOverrideHours(request.Hours);
+                changed |= this.runtime.StartPowerModeOverride(this.runtime.PowerModeOverrideHours, now);
+                break;
+            case "power_schedule_stop": changed = this.runtime.StopPowerModeOverride(); break;
             default: return GuardControlProtocol.Error("INVALID_ACTION", "Unsupported GUARD action.");
         }
 
@@ -819,6 +878,9 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         bool onAc;
         bool acKnown = NativeMethods.TryGetOnAcPower(out onAc);
         TimeSpan remaining = this.runtime.GetDisplayGuardRemaining(now);
+        TimeSpan scheduleRemaining = this.runtime.GetPowerModeOverrideRemaining(now);
+        bool energySaverActive;
+        NativeMethods.TryGetBatterySaverStatus(out energySaverActive);
         return new GuardControlResponse
         {
             Ok = true,
@@ -837,9 +899,31 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
                 ExecutionPowerRequestActive = this.runtime.ExecutionPowerRequestActive,
                 DisplayPowerRequestActive = this.runtime.DisplayPowerRequestActive,
                 OnAcPower = acKnown ? (bool?)onAc : null,
-                LastActionDetail = this.runtime.LastActionDetail
+                LastActionDetail = this.runtime.LastActionDetail,
+                PowerModeCurrent = GuardRuntime.DescribeTierForWire(GuardRuntime.GetLivePowerModeTier()),
+                EnergySaverActive = energySaverActive,
+                EnergySaverForcedByGuard = this.runtime.EnergySaverForcedOn,
+                PowerScheduleActive = this.runtime.PowerModeOverrideActive,
+                PowerScheduleHours = this.runtime.PowerModeOverrideHours,
+                PowerScheduleUntilUtc = this.runtime.PowerModeOverrideUntilUtc,
+                PowerScheduleRemainingSeconds = Math.Max(0, (int)Math.Ceiling(scheduleRemaining.TotalSeconds))
             }
         };
+    }
+
+    private static GuardPowerModeTier ParseTierToken(string mode)
+    {
+        if (string.Equals(mode, "saver", StringComparison.OrdinalIgnoreCase))
+        {
+            return GuardPowerModeTier.Saver;
+        }
+
+        if (string.Equals(mode, "performance", StringComparison.OrdinalIgnoreCase))
+        {
+            return GuardPowerModeTier.Performance;
+        }
+
+        return GuardPowerModeTier.Balanced;
     }
 
     // Steps along the hourly ladder and stops at the ends rather than wrapping: wrapping from 24
@@ -1015,7 +1099,14 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         QuotaPlanToggle,
         CtfRestart,
         Close,
-        Panel
+        Panel,
+        PowerModeSaver,
+        PowerModeBalanced,
+        PowerModePerformance,
+        PowerScheduleHoursMinus,
+        PowerScheduleHoursPlus,
+        PowerScheduleToggle,
+        EnergySaverToggle
     }
 
     private struct GuardHitTarget

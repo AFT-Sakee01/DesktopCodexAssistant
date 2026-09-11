@@ -201,6 +201,12 @@ internal sealed class WidgetSettings
     public static readonly int[] GuardOfflineThresholdMinuteSteps = { 1, 5, 10, 30 };
     public const int DefaultGuardDisplayMinutes = 300;
     public const int DefaultGuardOfflineThresholdMinutes = 10;
+    // Scheduled power-mode override dial. Stored as whole hours (not minutes, unlike the display
+    // guard) since the revert action only ever fires on an hourly cadence; 1..24 mirrors the
+    // display guard's range so the two "lock this for N hours" dials in GUARD feel consistent.
+    public static readonly int[] GuardPowerModeOverrideHourSteps = BuildHourSteps(1, 24);
+    public const int DefaultGuardPowerModeOverrideHours = 2;
+    public const int DefaultGuardEnergySaverRestoreThresholdPercent = -1;
     public const int MinLeftDockCollapseSeconds = 0;
     public const int MaxLeftDockCollapseSeconds = 30;
     public const int DefaultLeftDockCollapseSeconds = 1;
@@ -280,7 +286,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 95;
+    private const int CurrentSettingsVersion = 96;
     private const int RetiredCanonicalSettingsCount = 113;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -466,6 +472,15 @@ internal sealed class WidgetSettings
     public int GuardOfflineThresholdMinutes { get; set; }
     public long GuardDisplayUntilUtcTicks { get; set; }
     public long GuardBatteryCarePauseUntilUtcTicks { get; set; }
+    // Scheduled power-mode override: locks whichever tier is active when armed and always
+    // reverts to the Balanced overlay scheme when GuardPowerModeOverrideUntilUtcTicks elapses, so
+    // no separate "restore tier" needs to be remembered here. GuardEnergySaverForcedOn/
+    // RestoreThresholdPercent are independent of the schedule; the restore percent is only ever
+    // meaningful while Forced is true and holds the ESBATTTHRESHOLD value to put back on toggle-off.
+    public int GuardPowerModeOverrideHours { get; set; }
+    public long GuardPowerModeOverrideUntilUtcTicks { get; set; }
+    public bool GuardEnergySaverForcedOn { get; set; }
+    public int GuardEnergySaverRestoreThresholdPercent { get; set; }
     public int LeftDockCollapseSeconds { get; set; }
     public bool LeftDockOutsideClickCollapseEnabled { get; set; }
     public int CodexTaskBoardWidth { get; set; }
@@ -905,6 +920,10 @@ internal sealed class WidgetSettings
         this.GuardOfflineThresholdMinutes = defaults.GuardOfflineThresholdMinutes;
         this.GuardDisplayUntilUtcTicks = defaults.GuardDisplayUntilUtcTicks;
         this.GuardBatteryCarePauseUntilUtcTicks = defaults.GuardBatteryCarePauseUntilUtcTicks;
+        this.GuardPowerModeOverrideHours = defaults.GuardPowerModeOverrideHours;
+        this.GuardPowerModeOverrideUntilUtcTicks = defaults.GuardPowerModeOverrideUntilUtcTicks;
+        this.GuardEnergySaverForcedOn = defaults.GuardEnergySaverForcedOn;
+        this.GuardEnergySaverRestoreThresholdPercent = defaults.GuardEnergySaverRestoreThresholdPercent;
         this.LeftDockCollapseSeconds = defaults.LeftDockCollapseSeconds;
         this.LeftDockOutsideClickCollapseEnabled = defaults.LeftDockOutsideClickCollapseEnabled;
         this.CodexTaskBoardWidth = defaults.CodexTaskBoardWidth;
@@ -1112,6 +1131,10 @@ internal sealed class WidgetSettings
         settings.GuardOfflineThresholdMinutes = DefaultGuardOfflineThresholdMinutes;
         settings.GuardDisplayUntilUtcTicks = 0L;
         settings.GuardBatteryCarePauseUntilUtcTicks = 0L;
+        settings.GuardPowerModeOverrideHours = DefaultGuardPowerModeOverrideHours;
+        settings.GuardPowerModeOverrideUntilUtcTicks = 0L;
+        settings.GuardEnergySaverForcedOn = false;
+        settings.GuardEnergySaverRestoreThresholdPercent = DefaultGuardEnergySaverRestoreThresholdPercent;
         settings.LeftDockCollapseSeconds = DefaultLeftDockCollapseSeconds;
         settings.LeftDockOutsideClickCollapseEnabled = true;
         settings.CodexTaskBoardWidth = DefaultCodexTaskBoardWidth;
@@ -1321,6 +1344,10 @@ internal sealed class WidgetSettings
         settings.GuardOfflineThresholdMinutes = DefaultGuardOfflineThresholdMinutes;
         settings.GuardDisplayUntilUtcTicks = 0L;
         settings.GuardBatteryCarePauseUntilUtcTicks = 0L;
+        settings.GuardPowerModeOverrideHours = DefaultGuardPowerModeOverrideHours;
+        settings.GuardPowerModeOverrideUntilUtcTicks = 0L;
+        settings.GuardEnergySaverForcedOn = false;
+        settings.GuardEnergySaverRestoreThresholdPercent = DefaultGuardEnergySaverRestoreThresholdPercent;
         settings.LeftDockCollapseSeconds = DefaultLeftDockCollapseSeconds;
         settings.LeftDockOutsideClickCollapseEnabled = true;
         settings.CodexTaskBoardWidth = DefaultCodexTaskBoardWidth;
@@ -1526,6 +1553,10 @@ internal sealed class WidgetSettings
             GuardOfflineThresholdMinutes = this.GuardOfflineThresholdMinutes,
             GuardDisplayUntilUtcTicks = this.GuardDisplayUntilUtcTicks,
             GuardBatteryCarePauseUntilUtcTicks = this.GuardBatteryCarePauseUntilUtcTicks,
+            GuardPowerModeOverrideHours = this.GuardPowerModeOverrideHours,
+            GuardPowerModeOverrideUntilUtcTicks = this.GuardPowerModeOverrideUntilUtcTicks,
+            GuardEnergySaverForcedOn = this.GuardEnergySaverForcedOn,
+            GuardEnergySaverRestoreThresholdPercent = this.GuardEnergySaverRestoreThresholdPercent,
             LeftDockCollapseSeconds = this.LeftDockCollapseSeconds,
             LeftDockOutsideClickCollapseEnabled = this.LeftDockOutsideClickCollapseEnabled,
             CodexTaskBoardWidth = this.CodexTaskBoardWidth,
@@ -1732,6 +1763,11 @@ internal sealed class WidgetSettings
         this.GuardSleepSinceUtcTicks = NormalizeUtcTicks(this.GuardSleepSinceUtcTicks);
         this.GuardDisplayUntilUtcTicks = NormalizeUtcTicks(this.GuardDisplayUntilUtcTicks);
         this.GuardBatteryCarePauseUntilUtcTicks = NormalizeUtcTicks(this.GuardBatteryCarePauseUntilUtcTicks);
+        this.GuardPowerModeOverrideHours = NormalizeGuardPowerModeOverrideHours(this.GuardPowerModeOverrideHours);
+        this.GuardPowerModeOverrideUntilUtcTicks = NormalizeUtcTicks(this.GuardPowerModeOverrideUntilUtcTicks);
+        this.GuardEnergySaverRestoreThresholdPercent = this.GuardEnergySaverRestoreThresholdPercent < 0
+            ? -1
+            : Clamp(this.GuardEnergySaverRestoreThresholdPercent, MinPowerThermalManualEnergySaverThresholdPercent, MaxPowerThermalManualEnergySaverThresholdPercent);
         this.LeftDockCollapseSeconds = Clamp(this.LeftDockCollapseSeconds, MinLeftDockCollapseSeconds, MaxLeftDockCollapseSeconds);
         this.CodexTaskBoardWidth = Clamp(this.CodexTaskBoardWidth, MinCodexTaskBoardWidth, MaxCodexTaskBoardWidth);
         this.CodexTaskBoardHeight = Clamp(this.CodexTaskBoardHeight, MinCodexTaskBoardHeight, MaxCodexTaskBoardHeight);
@@ -2414,6 +2450,20 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 96)
+        {
+            // Version 96 adds GUARD power-mode quick-switch, the Energy Saver force toggle, and the
+            // scheduled "lock current mode for N hours, then revert to balanced" override. All four
+            // start disarmed/off on existing installs for the same reason version 79 left the sleep
+            // guard disarmed: silently inheriting a forced power mode or Energy Saver state the user
+            // never asked for would be a surprising, hard-to-notice change to real Windows settings.
+            settings.GuardPowerModeOverrideHours = DefaultGuardPowerModeOverrideHours;
+            settings.GuardPowerModeOverrideUntilUtcTicks = 0L;
+            settings.GuardEnergySaverForcedOn = false;
+            settings.GuardEnergySaverRestoreThresholdPercent = DefaultGuardEnergySaverRestoreThresholdPercent;
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2643,6 +2693,10 @@ internal sealed class WidgetSettings
             "GuardOfflineThresholdMinutes=" + this.GuardOfflineThresholdMinutes.ToString(CultureInfo.InvariantCulture),
             "GuardDisplayUntilUtcTicks=" + this.GuardDisplayUntilUtcTicks.ToString(CultureInfo.InvariantCulture),
             "GuardBatteryCarePauseUntilUtcTicks=" + this.GuardBatteryCarePauseUntilUtcTicks.ToString(CultureInfo.InvariantCulture),
+            "GuardPowerModeOverrideHours=" + this.GuardPowerModeOverrideHours.ToString(CultureInfo.InvariantCulture),
+            "GuardPowerModeOverrideUntilUtcTicks=" + this.GuardPowerModeOverrideUntilUtcTicks.ToString(CultureInfo.InvariantCulture),
+            "GuardEnergySaverForcedOn=" + this.GuardEnergySaverForcedOn,
+            "GuardEnergySaverRestoreThresholdPercent=" + this.GuardEnergySaverRestoreThresholdPercent.ToString(CultureInfo.InvariantCulture),
             "LeftDockCollapseSeconds=" + this.LeftDockCollapseSeconds.ToString(CultureInfo.InvariantCulture),
             "LeftDockOutsideClickCollapseEnabled=" + this.LeftDockOutsideClickCollapseEnabled,
             "CodexTaskBoardWidth=" + this.CodexTaskBoardWidth.ToString(CultureInfo.InvariantCulture),
@@ -3274,6 +3328,30 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "GuardBatteryCarePauseUntilUtcTicks", StringComparison.OrdinalIgnoreCase) && long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out guardTicks))
         {
             settings.GuardBatteryCarePauseUntilUtcTicks = guardTicks;
+            return;
+        }
+
+        if (string.Equals(key, "GuardPowerModeOverrideHours", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.GuardPowerModeOverrideHours = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "GuardPowerModeOverrideUntilUtcTicks", StringComparison.OrdinalIgnoreCase) && long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out guardTicks))
+        {
+            settings.GuardPowerModeOverrideUntilUtcTicks = guardTicks;
+            return;
+        }
+
+        if (string.Equals(key, "GuardEnergySaverForcedOn", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.GuardEnergySaverForcedOn = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "GuardEnergySaverRestoreThresholdPercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.GuardEnergySaverRestoreThresholdPercent = intValue;
             return;
         }
 
@@ -4694,6 +4772,7 @@ internal sealed class WidgetSettings
         RunWindowTransparencyOverrideSelfTest();
         RunWindowScaleOverrideSelfTest();
         RunGuardBoardOverrideMigrationSelfTest();
+        RunGuardPowerModeSchema96MigrationSelfTest();
         RunNetworkDockOverrideMigrationSelfTest();
         GlobalHotkeyParser.RunSelfTest();
         WidgetSettings legacy = CreateDefaults();
@@ -5154,6 +5233,7 @@ internal sealed class WidgetSettings
         // by Normalize on load and fail the comparison. These pick real off-default ladder steps.
         settings.GuardDisplayMinutes = 120;
         settings.GuardOfflineThresholdMinutes = 5;
+        settings.GuardPowerModeOverrideHours = 7;
         // Generic string-array sentinels are metric IDs and are invalid for the left dock (and
         // incomplete for the eleven-tile column). Full legal permutations keep Clone/Save/Load testing
         // focused on persistence instead of intentionally triggering order repair.
@@ -5964,6 +6044,42 @@ internal sealed class WidgetSettings
         }
 
         Console.WriteLine("GUARD override migration: PASS v79 spec=60 and global-follow sentinel");
+    }
+
+    private static void RunGuardPowerModeSchema96MigrationSelfTest()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-guard-power-mode-migration-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string legacyPath = Path.Combine(root, "legacy.ini");
+            File.WriteAllLines(legacyPath, new string[] { "Version=95" }, SharedEncoding.Utf8NoBom);
+            WidgetSettings migrated = LoadFromPath(legacyPath, false);
+            AssertLayout(
+                migrated.GuardPowerModeOverrideHours == DefaultGuardPowerModeOverrideHours &&
+                migrated.GuardPowerModeOverrideUntilUtcTicks == 0L &&
+                !migrated.GuardEnergySaverForcedOn &&
+                migrated.GuardEnergySaverRestoreThresholdPercent == DefaultGuardEnergySaverRestoreThresholdPercent,
+                "schema 96 migration should start power-mode override and energy-saver force disarmed");
+
+            string savedPath = Path.Combine(root, "saved.ini");
+            migrated.SaveToPath(savedPath, false);
+            string[] savedLines = File.ReadAllLines(savedPath);
+            AssertLayout(
+                Array.Exists(savedLines, line => string.Equals(line, "GuardEnergySaverForcedOn=False", StringComparison.Ordinal)),
+                "migrated settings should persist the disarmed energy-saver force flag");
+
+            AssertLayout(
+                NormalizeGuardPowerModeOverrideHours(0) == 1 && NormalizeGuardPowerModeOverrideHours(999) == 24,
+                "power-mode override hours should snap into the 1..24 ladder like the display guard");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); }
+            catch { }
+        }
+
+        Console.WriteLine("GUARD power mode schema 96 migration: PASS disarmed defaults and hour ladder");
     }
 
     private static void RunNetworkDockOverrideMigrationSelfTest()
@@ -6875,9 +6991,22 @@ internal sealed class WidgetSettings
         return values;
     }
 
+    private static int[] BuildHourSteps(int minimumHours, int maximumHours)
+    {
+        int count = Math.Max(1, maximumHours - minimumHours + 1);
+        int[] values = new int[count];
+        for (int i = 0; i < count; i++) values[i] = minimumHours + i;
+        return values;
+    }
+
     public static int NormalizeGuardOfflineThresholdMinutes(int value)
     {
         return SnapToNearestStep(value, GuardOfflineThresholdMinuteSteps, DefaultGuardOfflineThresholdMinutes);
+    }
+
+    public static int NormalizeGuardPowerModeOverrideHours(int value)
+    {
+        return SnapToNearestStep(value, GuardPowerModeOverrideHourSteps, DefaultGuardPowerModeOverrideHours);
     }
 
     private static int SnapToNearestStep(int value, int[] steps, int fallback)

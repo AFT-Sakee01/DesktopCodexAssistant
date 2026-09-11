@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.29
+适用版本：2.0.0.40
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -221,7 +221,7 @@ headless owners 不拥有展示缓冲。Codex/Power 的旧 renderer 已删除，
 - 左侧 7 个 tab 在自动模式使用同一个列 salt；X 始终钉住 work-area 左缘。
 - 展开 board 可以使用自己的 named salt，但固定相同展开 X。
 - Operation 使用自己的 named salt。
-- `WidgetForm` hidden host 只拥有两级空闲状态，不绘制防烧屏像素；headless owners 完全不参与。
+- `WidgetForm` hidden host 只拥有两级空闲状态，不绘制防烧屏像素；headless owners 完全不参与。`OperationForm` 在一级或二级时都通过独立的 `hiddenForBurnIn` 可见性来源执行 `Hide()`，不绘制也不占用鼠标；状态回到 `Normal` 后仅在 fullscreen/manual 等其他隐藏来源也已解除时恢复。
 - 一级下，左侧 `EdgeDockTabForm` 静止态绘制深灰色梯形与角色色箭头，悬停只恢复当前梯形的角色色；右侧 tile/expand 使用 `BurnInProtection.LevelOneLuminancePercent = 45`，命中任意右侧窗口时整组恢复亮度和原始强调色。
 - 进入二级时先强制收起当前右侧展开窗并清除其 tile owner；二级视觉保持一级结构，非悬停时只反转左箭头与右 tile 环形强调色。鼠标命中任意右侧小窗或展开窗时，整个右侧组临时取消反色并恢复亮度，但不退出二级，因此右 tile 中心白字及重新悬停打开的展开窗白色/中性色文字仍不绘制；离开后立即重新反色。角色色标签、灰色轨道、board 内容和 Operation 不做全位图反相。
 - 鼠标移动在保护激活后是局部显现手势，不退出状态；点击、滚轮或键盘输入会退出并重启两级计时。显示挂起、布局编辑和关闭也归零状态。
@@ -275,7 +275,7 @@ MetricTile.DeepSeekQuota
 - Network 始终按 Dock 结构运行；旧浮动展示选项不能改变 topology。
 - Radar 设置控制 Codex 公共数据、Codex/Claude 官方额度、DeepSeek DPAPI 凭据入口、服务健康和测试；不包含 Claude 社区模型/fallback，也不控制 owner 可见性。
 - 主显示/work-area 设置继续作为右 tile 列基线；不能因为 hidden host 没有画面而删除。
-- 两级防烧屏只作用于七个左 tab 与右侧 tile/expand；Operation、board、Settings、hidden host 和 headless owners 不进入配色投影。
+- 两级防烧屏的配色投影只作用于七个左 tab 与右侧 tile/expand；Operation 不参与配色而是在一级、二级均物理隐藏，board、Settings、hidden host 和 headless owners 不进入配色投影。
 - schema 91 保留 `LeftDockButtonGapPixels` / `RightTileButtonGapPixels` 旧键名以兼容既有 `settings.ini`，但语义为 0–100 分布值；设置页左右两项都提供滑块与数字输入，既有 0–80 数值迁移时原样保留。schema 91 同时补齐 ResetSpeed 的 tab、透明度、缩放和自动收回设置。
 - schema 92 补齐 SystemDay 的 tab、透明度、缩放和自动收回设置；schema 93 把 DeepSeek 余额 tile 追加到既有右列顺序。
 - schema 94 退休 `OperationDoubleClickSpecialMenuEnabled`；旧键只作为迁移输入识别并在规范化保存时移除，双击行为不再可切回已删除的启动器。

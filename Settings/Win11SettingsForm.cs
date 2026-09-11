@@ -3902,6 +3902,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             guard.GuardOfflineThresholdMinutes = 5;
             guard.GuardDisplayUntilUtcTicks = new DateTime(2026, 7, 20, 2, 0, 0, DateTimeKind.Utc).Ticks;
             guard.GuardBatteryCarePauseUntilUtcTicks = new DateTime(2026, 7, 21, 0, 0, 0, DateTimeKind.Utc).Ticks;
+            guard.GuardPowerModeOverrideHours = 4;
+            guard.GuardPowerModeOverrideUntilUtcTicks = new DateTime(2026, 7, 20, 4, 0, 0, DateTimeKind.Utc).Ticks;
+            guard.GuardEnergySaverForcedOn = true;
+            guard.GuardEnergySaverRestoreThresholdPercent = 25;
 
             WidgetSettings merged = WidgetForm.MergeGuardRuntimeFields(committedA, guard);
             merged.SaveToPathForSelfTest(path);
@@ -3915,7 +3919,11 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
                 disk.GuardDisplayMinutes != 120 ||
                 disk.GuardOfflineThresholdMinutes != 5 ||
                 disk.GuardDisplayUntilUtcTicks != guard.GuardDisplayUntilUtcTicks ||
-                disk.GuardBatteryCarePauseUntilUtcTicks != guard.GuardBatteryCarePauseUntilUtcTicks)
+                disk.GuardBatteryCarePauseUntilUtcTicks != guard.GuardBatteryCarePauseUntilUtcTicks ||
+                disk.GuardPowerModeOverrideHours != 4 ||
+                disk.GuardPowerModeOverrideUntilUtcTicks != guard.GuardPowerModeOverrideUntilUtcTicks ||
+                !disk.GuardEnergySaverForcedOn ||
+                disk.GuardEnergySaverRestoreThresholdPercent != 25)
             {
                 throw new InvalidOperationException("GUARD committed-snapshot persistence self-test failed.");
             }
@@ -4063,7 +4071,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         AddSettingsUiBindingExemptions(exemptions, "GUARD runtime or board-owned value; persisted for restart recovery and edited on the GUARD board", new string[]
         {
             "GuardSleepEnabled", "GuardSleepSinceUtcTicks", "GuardDisplayMinutes", "GuardOfflineThresholdMinutes",
-            "GuardDisplayUntilUtcTicks", "GuardBatteryCarePauseUntilUtcTicks"
+            "GuardDisplayUntilUtcTicks", "GuardBatteryCarePauseUntilUtcTicks",
+            "GuardPowerModeOverrideHours", "GuardPowerModeOverrideUntilUtcTicks",
+            "GuardEnergySaverForcedOn", "GuardEnergySaverRestoreThresholdPercent"
         });
         AddSettingsUiBindingExemptions(exemptions, "derived legacy compatibility value; OperationPrimaryPanelMode is the sole editor", new string[]
         {

@@ -2325,6 +2325,33 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             : (r.CalendarRunwayKnown ? model + " · 近 24h 节奏已建立" : model + " · 趋势采样中");
         DrawText(g, sampleText, content.X, content.Y + S(36), S(12.5f),
             DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 210), FontStyle.Regular);
+
+        // Name the owning Codex account. Balances and forecast are that account's alone, so a reader
+        // who switches accounts can tell at a glance which sign-in these numbers describe.
+        string accountText = ResolveRadarAccountText(r);
+        if (!string.IsNullOrEmpty(accountText))
+        {
+            DrawText(g, accountText, content.X, content.Y + S(52), S(11.5f),
+                DesignTokens.WithAlpha(DesignTokens.Colors.TextMuted, 170), FontStyle.Regular);
+        }
+    }
+
+    private static string ResolveRadarAccountText(RadarTileSnapshot r)
+    {
+        if (r == null || r.Family != CodexRadarSoftwareMode.Codex)
+        {
+            return string.Empty;
+        }
+
+        if (!r.AccountKnown)
+        {
+            return "账户 未识别 · 额度单独统计";
+        }
+
+        string label = string.IsNullOrEmpty(r.AccountLabel) ? "账户" : r.AccountLabel;
+        return string.IsNullOrEmpty(r.AccountLetter)
+            ? "账户 " + label
+            : "账户 " + r.AccountLetter + " · " + label;
     }
 
     private void DrawRightAlignedText(
