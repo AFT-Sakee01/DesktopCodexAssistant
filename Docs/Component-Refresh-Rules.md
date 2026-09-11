@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.41
+适用版本：2.0.0.43
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -241,7 +241,7 @@ DNS 检测：
 ### 8.5 重置与速蹬
 
 - `ResetSpeedBoardForm` 可见时每 5 s clone `BuildResetSpeedBoardSnapshot()`；500 ms maintenance tick 只负责 tab、外部点击、自动收回、定位与必要重绘。
-- `CodexQuotaHistoryStore.Record()` 只接收已通过额度保护链的 Codex 快照；15 分钟内且变化小于 3% 的普通样本合并，周余量回升至少 5% 才登记重置事件。合并与重置分类都只与**同一 `account_key`** 的上一条比较。
+- `CodexQuotaHistoryStore.Record()` 只经 `CodexRadarForm.RecordAcceptedQuotaHistory()` 写入，收到的是 `CaptureAcceptedQuotaForHistory()` 在 `ApplyQuotaResetProtections()` 之前留下的已接受读数；重置保护强制的 100 只作用于展示与缓存，不是一次新的额度采样，不进入历史。15 分钟内且变化小于 3% 的普通样本合并，周余量回升至少 5% 才登记重置事件。合并与重置分类都只与**同一 `account_key`** 的上一条比较。
 - 账户切换（board 上点击账户 chip）不是一个刷新周期：`TrySwitchCodexAccount()` 重写 auth.json 后立即换出/换入该账户的 `QuotaRuntimeState`，并把 Codex 额度、provider usage 与 reset-credit 的下次到期时间一起清零，使下一个 owner tick 立刻为新账户取数；reset-credit 快照同时被丢弃，不跨账户沿用。切换本身不绕过任何单飞或冷却。
 - 重置分类只使用无凭据摘要：旧 reset anchor 前 15 分钟到后 6 小时为自然重置；重置卡数同时下降为重置卡；其它确认回升为硬重置。
 - JSONL 后台批量写入 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-quota-seven-day-history.jsonl`；board 的 5 秒投影只 clone 已加载内存，不同步读文件。
