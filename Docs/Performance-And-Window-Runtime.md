@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.82
+适用版本：2.0.0.83
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -378,3 +378,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
   以免把「还没初始化完」误判成「采集不到」。
 
 结果：窗口前耗时 **2778ms → 109ms**，首个可见窗口 **5150ms → 1157ms**。
+
+## 11. 启动入场动画
+
+右侧十一枚磁贴自屏幕外缘依次滑入并淡入（每枚错开 32ms、单枚 280ms、缓出三次曲线），
+操作面板在级联过半时自下浮起，640ms 收尾。由 `StartupIntroAnimationEnabled` 控制，默认开启。
+
+代价被刻意压到最低：动画只改 `UpdateLayeredWindow` 的目标落点与整窗 alpha
+（`LayeredWidgetFormBase.ApplyIntroFrame` / `ClearIntroFrame`），`refreshNativeBitmap` 为 false，
+内容位图原样复用，因此没有任何表面在动画期间重绘。
+
+**帧由 `StartStartupIntro` 同步驱动，不要改回 WinForms 定时器。** 实测定时器方案的首帧要等 645ms：
+启动期这条 UI 线程被各看板的维护定时器和主采样定时器占满，16ms 的入场帧根本抢不到，
+磁贴会以起始帧（alpha 0）静止半秒以上——比没有动画更糟。分层窗口靠 `UpdateLayeredWindow` 直接更新、
+不经过 `WM_PAINT`，所以入场根本不需要消息循环。同步驱动期间 UI 线程被占住 640ms，
+那正是「入场」本身，之后启动工作立刻继续；`UiHangWatchdog` 的阈值是 10 秒，远不触发。
+
+`CompleteStartupAfterIntro()` 把 `StartGuardControlServer` / 主采样定时器 / Seelen 脉冲 / WinD 恢复监视
+推迟到入场收尾后再启动，避免它们和动画抢线程；PDH 计数器本来也要几秒才就绪，首次采样早跑只会拿到空快照。
+关闭动画时这几步立即执行，顺序不变。
+
+自检覆盖缓动端点精确为 0/1、单调性、缓出（中点过半）、按磁贴序号错开、总时长取两条线里晚的那条，
+以及同步入场的时长上限 900ms。
