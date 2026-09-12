@@ -401,6 +401,25 @@ internal abstract class LayeredWidgetFormBase : Form
         return NativeMethods.PrepareSeelenAwareTopMostInsertAfter(keepBelowCodexPet);
     }
 
+    // 自检要验证的正是真实的显示/隐藏策略，断言直接读 Visible，所以那些窗口不能改成
+    // 隐藏创建。但它们是回归测试而不是给用户看的界面：--test 系列一跑，桌面上就会依次闪过
+    // 巨大的右侧展开面板、左侧操作面板和设置窗口，看起来就像程序启动时的一串丑陋加载。
+    // 折中做法是自检期间把可见层整体平移出屏幕：Visible 仍为 true，断言不受影响，
+    // 用户什么也看不到。偏移量取 40000，远超任何多显示器桌面的坐标范围。
+    private const int OffscreenSelfTestShift = 40000;
+
+    internal static bool OffscreenPresentationForSelfTest { get; set; }
+
+    protected static Point ApplySelfTestOffscreenOffset(Point location)
+    {
+        if (!OffscreenPresentationForSelfTest)
+        {
+            return location;
+        }
+
+        return new Point(location.X - OffscreenSelfTestShift, location.Y - OffscreenSelfTestShift);
+    }
+
     protected int S(int value)
     {
         return (int)Math.Round(value * this.LayerScale);

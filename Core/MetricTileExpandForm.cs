@@ -193,7 +193,7 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
         int top = anchorTile.Top;
         top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
-        this.Location = new Point(left, top);
+        this.Location = ApplySelfTestOffscreenOffset(new Point(left, top));
 
         if (!CanRenderLayeredWindow())
         {

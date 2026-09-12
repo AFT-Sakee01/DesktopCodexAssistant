@@ -48,6 +48,19 @@ internal static class Program
             return PrintCommandLineHelp(CommandLineHelp.BuildGeneralHelp());
         }
 
+        // 自检会创建真实的可见层（磁贴列、展开面板、操作面板、设置窗口）来验证显示策略，
+        // 断言直接读 Visible，所以不能改成隐藏创建。但它们没有理由出现在用户桌面上：
+        // 每跑一次 --test 系列，屏幕上就会闪过一串窗口，看起来就像程序启动时的丑陋加载。
+        // 这里统一给所有 --test* 命令打开离屏呈现，可见层照常 Show，只是落在屏幕之外。
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] != null && args[i].StartsWith("--test", StringComparison.OrdinalIgnoreCase))
+            {
+                LayeredWidgetFormBase.OffscreenPresentationForSelfTest = true;
+                break;
+            }
+        }
+
         MigrateLegacyStorage();
         NetworkCheckHistoryLogger.Initialize();
         QuotaDecisionHistoryLogger.Initialize();

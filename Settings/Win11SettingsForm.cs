@@ -3183,6 +3183,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             warmup.StartPosition = FormStartPosition.Manual;
             warmup.Location = new Point(-30000, -30000);
+            MoveSelfTestWindowOffscreen(warmup);
             warmup.Show();
             Application.DoEvents();
             warmup.Close();
@@ -3198,6 +3199,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             {
                 form.StartPosition = FormStartPosition.Manual;
                 form.Location = new Point(-30000, -30000);
+                MoveSelfTestWindowOffscreen(form);
                 form.Show();
                 Application.DoEvents();
                 form.Close();
@@ -3251,6 +3253,16 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             hotkeyRegisterFinal.ToString(CultureInfo.InvariantCulture);
     }
 
+    // 绑定覆盖率自检必须真的 Show 出来才能枚举到已实例化的控件行，但它没有理由出现在
+    // 用户桌面上——之前每跑一次 --test-settings-bindings，设置窗口就会在屏幕左上角闪几下。
+    // 挪到屏幕外即可，枚举行为完全不变。
+    private static void MoveSelfTestWindowOffscreen(Form form)
+    {
+        form.StartPosition = FormStartPosition.Manual;
+        form.ShowInTaskbar = false;
+        form.Location = new Point(-40000, -40000);
+    }
+
     internal static void RunSettingsBindingSelfTest()
     {
         VerifySettingsWindowActivationPolicy();
@@ -3266,6 +3278,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             form.ShowInTaskbar = false;
             form.StartPosition = FormStartPosition.Manual;
             form.Location = new Point(-51200, -51200);
+            MoveSelfTestWindowOffscreen(form);
             form.Show();
             Application.DoEvents();
             form.VerifySelfTest();

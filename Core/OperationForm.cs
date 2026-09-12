@@ -2387,9 +2387,10 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.Size,
             workArea,
             BurnInProtection.OperationPanelSalt);
-        left = shiftedLocation.X;
-        top = shiftedLocation.Y;
-        this.Location = new Point(left, top);
+        Point placement = ApplySelfTestOffscreenOffset(shiftedLocation);
+        left = placement.X;
+        top = placement.Y;
+        this.Location = placement;
 
         NativeMethods.SetWindowPos(
             this.Handle,

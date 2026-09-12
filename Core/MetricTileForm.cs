@@ -656,7 +656,8 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             InvalidateLayeredRenderBuffer();
         }
 
-        this.Location = ResolveRuntimeTileLocation(this.CurrentSettings, this.tileIndex, workArea, bounds);
+        this.Location = ApplySelfTestOffscreenOffset(
+            ResolveRuntimeTileLocation(this.CurrentSettings, this.tileIndex, workArea, bounds));
     }
 
     internal static Point ResolveRuntimeTileLocation(

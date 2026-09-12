@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.46
+适用版本：2.0.0.80
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -318,3 +318,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 ```
 
 人工核对重点：右侧恰好 11 个独立 tile、左侧恰好 7 个 tab/board、Operation 正常、Settings 可从任务栏/Alt+Tab 返回、全局编辑恰好 19 项、Network 只有 Dock 展示，以及三个隐藏对象从未出现在桌面、任务栏、布局编辑器或渲染样张中。
+
+## 9. 自检期的离屏呈现与启动期不露面
+
+自检要验证的正是真实的显示/隐藏策略，断言直接读 `Visible`（例如「侧表面隐藏后十一个磁贴都不可见、Operation 仍可见」），
+所以那些窗口不能改成隐藏创建。但它们是回归测试而不是给用户看的界面：`--test` 系列一跑，桌面上就会依次闪过右侧磁贴列、
+巨大的展开面板、左侧操作面板和左缘停靠标签，再加上 `--test-settings-bindings` 在屏幕左上角闪几下设置窗口，
+看起来就像程序启动时的一串丑陋加载。
+
+现行边界：
+
+- `LayeredWidgetFormBase.OffscreenPresentationForSelfTest` 由 `Program.Main` 在检测到任意 `--test*` 参数时打开，
+  正常启动永远为 false。
+- 可见层在**最终落笔**处调用 `ApplySelfTestOffscreenOffset`，把坐标整体平移出屏幕：
+  `MetricTileForm`、`MetricTileExpandForm.ShowForTile`、`OperationForm.PositionOperationWindow`、`EdgeDockTabForm`。
+  `Visible` 仍为 true，断言不受影响。
+- **几何计算必须保持纯净**：`ResolveRuntimeTileLocation`、`PinToLeftEdge`、`BurnInProtection.ApplyRuntimeOffset`
+  与 `MetricTileExpandForm.ShowForTileGeometryForTest` 一律不带偏移，否则会把断言坐标的自检改坏。
+  这是这套机制的关键约束——偏移只加在 `this.Location` 赋值那一步。
+- `Win11SettingsForm` 的绑定覆盖率自检必须真的 `Show()` 才能枚举到已实例化的控件行，
+  因此改为先 `MoveSelfTestWindowOffscreen` 再显示。
+- 启动期不再「先显示再隐藏」：`EnsureMetricTileWindows` 以前对十一个磁贴和展开面板做 `Show(this)` + `HideTile()/HidePanel()`，
+  而那一刻窗口还没定位（构造里只设了 `Size`、没设 `Location`）、图层内容也没渲染过。现在改为 `PrepareHiddenChildWindow`：
+  只设属主并触发 `Form.Handle` 建句柄，`Visible` 保持 false。真正的显示路径一律遵循
+  **先定位、再 `Show`、再 `SetWindowPos`**。
+
+验证方式是枚举进程的可见顶层窗口并读取坐标：修复前 `--test` 期间有 20 个窗口落在屏幕内（右侧 120×120 磁贴列、
+左缘 10×60 停靠标签），修复后只剩 2 个——1 个 2×2 的隐藏宿主点和 1 个存在约 19ms 的几何自检窗口。

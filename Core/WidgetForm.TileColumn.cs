@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Windows.Forms;
 
 // Host side of the only retained metric presentation. WidgetForm stays hidden as the lifecycle and
 // sampler owner; the same per-tick snapshot is pushed into all eleven tiles and the active expand panel.
@@ -33,8 +34,7 @@ internal sealed partial class WidgetForm
             {
                 MetricTileForm tile = new MetricTileForm(this.CurrentSettings, i);
                 tile.TileHoverChanged += OnMetricTileHoverChanged;
-                tile.Show(this);
-                tile.HideTile();
+                PrepareHiddenChildWindow(tile);
                 this.metricTileForms.Add(tile);
             }
         }
@@ -44,8 +44,28 @@ internal sealed partial class WidgetForm
             // The PWR panel is a read-out only; pausing the 80% ceiling is the GUARD board's
             // control, so this host no longer routes a battery-care request from the expand panel.
             this.metricTileExpandForm = new MetricTileExpandForm(this.CurrentSettings);
-            this.metricTileExpandForm.Show(this);
-            this.metricTileExpandForm.HidePanel();
+            PrepareHiddenChildWindow(this.metricTileExpandForm);
+        }
+    }
+
+    // 启动期这些窗口只需要 HWND 和属主关系，不需要露面。以前是 Show(this) 之后立刻
+    // HideTile()/HidePanel()，而那一刻窗口还没定位（构造里只设了 Size、没设 Location），
+    // 图层内容也还没渲染过。真正的显示路径 ShowTile()/ShowForTile() 一律遵循
+    // 「先定位、再 Show、再 SetWindowPos」，所以这里不该让窗口进入可见状态。
+    private void PrepareHiddenChildWindow(Form child)
+    {
+        child.Owner = this;
+        if (child.IsHandleCreated)
+        {
+            return;
+        }
+
+        // Form.Handle 的 getter 会创建 HWND；此时 Visible 仍为 false，
+        // CreateParams 不带 WS_VISIBLE，窗口建出来就是隐藏的。
+        IntPtr handle = child.Handle;
+        if (handle == IntPtr.Zero)
+        {
+            Program.LogInfo("Child window handle creation returned zero. Name=" + child.Text);
         }
     }
 
