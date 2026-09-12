@@ -18,6 +18,8 @@ internal sealed partial class CaptionOverlayForm
     private const float OriginalFontScale = 0.58f;
     private const int MaxTranslationLines = 3;
     private const int ShadowOffsetLogical = 2;
+    // Long enough for at least one sentence to finish while the current-state renderer is watching.
+    private const int WatchSeconds = 20;
 
     private int ResolveRenderWidth()
     {
@@ -367,14 +369,28 @@ internal sealed partial class CaptionOverlayForm
     internal static void RenderCurrent(string outputDir)
     {
         Directory.CreateDirectory(outputDir);
+        // Watches for a stretch rather than taking one sample: the settled line is latched when the
+        // reader sees one sentence give way to the next, so a single read would always report it
+        // empty and prove nothing.
         TranslatorCaptionReader reader = new TranslatorCaptionReader();
-        reader.RefreshIfDue();
-        System.Threading.Thread.Sleep(TranslatorCaptionReader.RefreshIntervalMs + 120);
-        reader.RefreshIfDue();
-        TranslatorCaptionSnapshot live = reader.GetSnapshot();
+        TranslatorCaptionSnapshot live = TranslatorCaptionSnapshot.CreateEmpty();
+        string lastPrinted = string.Empty;
+        DateTime deadline = DateTime.UtcNow.AddSeconds(WatchSeconds);
+        while (DateTime.UtcNow < deadline)
+        {
+            reader.RefreshIfDue();
+            live = reader.GetSnapshot();
+            string line = "settled=[" + live.PreviousTranslation + "]  live=[" + live.TranslatedCaption + "]";
+            if (!string.Equals(line, lastPrinted, StringComparison.Ordinal))
+            {
+                lastPrinted = line;
+                Console.WriteLine(DateTime.Now.ToString("HH:mm:ss") + "  " + line);
+            }
+
+            System.Threading.Thread.Sleep(TranslatorCaptionReader.RefreshIntervalMs);
+        }
+
         Console.WriteLine("translator running = " + live.TranslatorRunning.ToString());
-        Console.WriteLine("settled            = [" + live.PreviousTranslation + "]");
-        Console.WriteLine("in progress        = [" + live.TranslatedCaption + "]");
         Console.WriteLine("original           = [" + live.OriginalCaption + "]");
 
         WidgetSettings settings = WidgetSettings.Load();

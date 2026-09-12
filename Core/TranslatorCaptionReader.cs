@@ -29,19 +29,6 @@ internal sealed class TranslatorCaptionReader
     // Re-resolving the automation elements is the expensive part (a descendant search). Once the
     // window is gone this backs off so a closed translator does not cost a tree walk every tick.
     private const int ResolveRetryIntervalMs = 2000;
-    // The settled sentence comes from the translator's history database, the only place it exists
-    // once the overlay window is closed.
-    //
-    // Note what the main window actually shows: DisplayTranslatedCaption is set when a translation
-    // *completes*, so the live line is the newest finished sentence -- and therefore also the
-    // newest database row. Verified 2026-09-12 against the running stack: live line and row 10442
-    // were the same text, and the sentence a reader wants as context was row 10440. So the lookup
-    // walks back from the newest row and takes the first one that is not the line already on
-    // screen; taking the newest row and de-duplicating it left nothing to show at all.
-    private const int HistoryRefreshIntervalMs = 1500;
-    private const int HistoryLookbackRows = 4;
-    private const string HistoryDatabaseFileName = "translation_history.db";
-    private const string HistoryTableName = "TranslationHistory";
 
     private readonly object stateLock = new object();
 
@@ -52,11 +39,12 @@ internal sealed class TranslatorCaptionReader
     private DateTime lastResolveAttemptUtc = DateTime.MinValue;
     private TranslatorCaptionSnapshot snapshot = TranslatorCaptionSnapshot.CreateEmpty();
     private int refreshing;
-    private DateTime lastHistoryReadUtc = DateTime.MinValue;
-    // Rows, not a resolved string: the live line changes several times a second while this list is
-    // refreshed once a second and a half, so the "which of these is not on screen" decision has to
-    // be made per read, against the current line.
-    private string[] recentTranslations = new string[0];
+    private string lastLiveOriginal = string.Empty;
+    private string lastLiveTranslation = string.Empty;
+    private string settledTranslation = string.Empty;
+    // One level further back, used only for the beat after a transition when the latched sentence is
+    // still the sentence on screen. Blanking the line there instead would resize the whole strip.
+    private string priorSettledTranslation = string.Empty;
 
     // Latest published state. Cache-only: never touches UIA, so the UI thread may call it.
     internal TranslatorCaptionSnapshot GetSnapshot()
@@ -111,8 +99,13 @@ internal sealed class TranslatorCaptionReader
         if (!next.TranslatorRunning)
         {
             // Drop the cached elements: a relaunched translator gets new ones, and a stale element
-            // would keep answering with the text the old process last showed.
+            // would keep answering with the text the old process last showed. The latched sentences
+            // go with them -- a new session must not open with the last words of the old one.
             ReleaseElements();
+            this.lastLiveOriginal = string.Empty;
+            this.lastLiveTranslation = string.Empty;
+            this.settledTranslation = string.Empty;
+            this.priorSettledTranslation = string.Empty;
             Publish(next);
             return;
         }
@@ -137,7 +130,7 @@ internal sealed class TranslatorCaptionReader
         next.CaptionElementsResolved = true;
         next.OriginalCaption = original;
         next.TranslatedCaption = translated;
-        next.PreviousTranslation = ResolveConfirmedTranslation(nowUtc, translated);
+        next.PreviousTranslation = ResolveConfirmedTranslation(original, translated);
         Publish(next);
     }
 
@@ -145,29 +138,110 @@ internal sealed class TranslatorCaptionReader
     // sentence finishes, so for a moment the newest row IS the sentence the main window is still
     // showing; returning it then would print the same words twice, once as settled and once as
     // in-progress.
-    private string ResolveConfirmedTranslation(DateTime nowUtc, string currentTranslation)
+    // The settled line is latched from what this reader itself watched happen, not reconstructed
+    // from the history table.
+    //
+    // Reconstructing it from the table does not work, and the live stack shows why: the translator
+    // rewrites rather than appends while a sentence is still growing (Translator.IsOverwrite ->
+    // DeleteLastTranslation + LogTranslation), it re-translates a lengthening sentence from scratch
+    // so even the opening words of the translation change, and the row for a finished sentence
+    // lands slightly before the live line catches up. Rows therefore mutate, reorder relative to
+    // the live line, and cannot be matched by their translated text.
+    //
+    // What is stable is the original sentence: while one sentence is being refined the recogniser
+    // keeps extending the same text, and a genuinely new sentence starts different text. So this
+    // watches the original line, and the moment it becomes a different sentence the translation
+    // that was live until then becomes the settled one. Nothing else can move it.
+    private string ResolveConfirmedTranslation(string liveOriginal, string liveTranslation)
     {
-        if (this.lastHistoryReadUtc == DateTime.MinValue ||
-            (nowUtc - this.lastHistoryReadUtc).TotalMilliseconds >= HistoryRefreshIntervalMs)
+        string original = (liveOriginal ?? string.Empty).Trim();
+        string translation = (liveTranslation ?? string.Empty).Trim();
+
+        if (original.Length == 0)
         {
-            this.lastHistoryReadUtc = nowUtc;
-            this.recentTranslations = ReadRecentTranslations();
+            return this.settledTranslation;
         }
 
-        string live = (currentTranslation ?? string.Empty).Trim();
-        string[] rows = this.recentTranslations;
-        for (int i = 0; i < rows.Length; i++)
+        if (this.lastLiveOriginal.Length == 0)
         {
-            string candidate = rows[i];
-            if (candidate.Length == 0 || IsSameSentence(candidate, live))
+            this.lastLiveOriginal = original;
+            this.lastLiveTranslation = translation;
+            return this.settledTranslation;
+        }
+
+        if (!IsSameSpokenSentence(this.lastLiveOriginal, original))
+        {
+            // A new sentence started, so whatever was live a moment ago is now final. Status strings
+            // are the only thing not worth keeping as context.
+            //
+            // Nothing else may gate this. An earlier version also required the latched text to differ
+            // from the current translation, and that stopped the latch from ever firing: the original
+            // line moves to the next sentence a beat before the translation does, so at the instant of
+            // the transition the translation on screen still IS the sentence being latched.
+            if (this.lastLiveTranslation.Length > 0 && !IsStatusText(this.lastLiveTranslation))
             {
-                continue;
+                this.priorSettledTranslation = this.settledTranslation;
+                this.settledTranslation = this.lastLiveTranslation;
+            }
+        }
+
+        this.lastLiveOriginal = original;
+        if (translation.Length > 0)
+        {
+            this.lastLiveTranslation = translation;
+        }
+
+        // Only an exact duplicate is hidden, and only for the beat it lasts: right after a transition
+        // the translation on screen is still the sentence that was just latched, and printing it
+        // twice would read as a rendering fault. A *similar* line is left alone -- an earlier version
+        // hid those too and made the settled line blink out at every transition, because a new
+        // sentence often opens like the one it replaced.
+        if (this.settledTranslation.Length > 0 &&
+            string.Equals(this.settledTranslation, translation, StringComparison.Ordinal))
+        {
+            return this.priorSettledTranslation;
+        }
+
+        return this.settledTranslation;
+    }
+
+    // Two readings of the original caption are the same sentence while one is still growing out of
+    // the other. Compared on the common length, which is how upstream decides the same thing
+    // (Translator.IsOverwrite truncates both to the shorter length before scoring similarity).
+    private static bool IsSameSpokenSentence(string previous, string current)
+    {
+        int common = Math.Min(previous.Length, current.Length);
+        if (common == 0)
+        {
+            return false;
+        }
+
+        // Short openings are ambiguous ("So", "And then"), so a new sentence is only declared once
+        // there is enough text to tell them apart.
+        if (common < 10)
+        {
+            return true;
+        }
+
+        int matched = 0;
+        for (int i = 0; i < common; i++)
+        {
+            if (previous[i] != current[i])
+            {
+                break;
             }
 
-            return candidate;
+            matched++;
         }
 
-        return string.Empty;
+        // Two thirds of the shared span is enough tolerance for the recogniser correcting a word it
+        // had wrong, without treating the next sentence as a continuation of this one.
+        return matched * 3 >= common * 2;
+    }
+
+    private static bool IsStatusText(string text)
+    {
+        return text.StartsWith("[", StringComparison.Ordinal);
     }
 
     // The live line can be a shortened form of the logged sentence (the translator runs long
@@ -191,50 +265,6 @@ internal sealed class TranslatorCaptionReader
         return shorter >= 8 &&
             (candidate.IndexOf(live, StringComparison.Ordinal) >= 0 ||
              live.IndexOf(candidate, StringComparison.Ordinal) >= 0);
-    }
-
-    private static string[] ReadRecentTranslations()
-    {
-        try
-        {
-            string path = System.IO.Path.Combine(TranslatorControlReader.TranslatorDirectory, HistoryDatabaseFileName);
-            if (!System.IO.File.Exists(path))
-            {
-                return new string[0];
-            }
-
-            System.Collections.Generic.List<MinimalSqliteReader.Row> rows =
-                MinimalSqliteReader.ReadLastRowsByRowIdDescending(path, HistoryTableName, HistoryLookbackRows);
-            System.Collections.Generic.List<string> translations =
-                new System.Collections.Generic.List<string>(rows.Count);
-            for (int i = 0; i < rows.Count; i++)
-            {
-                if (rows[i].Values == null || rows[i].Values.Length < 4)
-                {
-                    continue;
-                }
-
-                // Column order matches TranslatorControlReader.ReadHistory: [3] = TranslatedText.
-                string translated = (rows[i].Values[3] ?? string.Empty).Trim();
-                // Errors and warnings are shown by the live line already; repeating a failed
-                // sentence as settled context would be worse than showing nothing.
-                if (translated.Length == 0 ||
-                    translated.StartsWith("[ERROR]", StringComparison.Ordinal) ||
-                    translated.StartsWith("[WARNING]", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                translations.Add(translated);
-            }
-
-            return translations.ToArray();
-        }
-        catch (Exception ex)
-        {
-            Program.LogException(ex);
-            return new string[0];
-        }
     }
 
     private void Publish(TranslatorCaptionSnapshot next)
