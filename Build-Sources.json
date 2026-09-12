@@ -16,8 +16,6 @@
     "Core/CodexIqBoardForm.Layout.cs",
     "Core/CodexIqBoardForm.RenderSample.cs",
     "Core/CodexIqBoardSnapshot.cs",
-    "Core/CodexAccountIdentity.cs",
-    "Core/CodexAccountStore.cs",
     "Core/CodexQuotaGoalPlanner.cs",
     "Core/CodexQuotaHistoryStore.cs",
     "Core/CodexRadarForm.ClaudeUsage.cs",
