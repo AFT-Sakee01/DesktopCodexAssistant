@@ -143,10 +143,24 @@ internal sealed partial class WidgetForm
                 throw new InvalidOperationException("Metric tile expand panel did not open for burn-in transition self-test.");
             }
 
+            form.SetBurnInVisualLevel(BurnInVisualLevel.LevelOne, "runtime self-test");
+            if (form.operationForm.Visible)
+            {
+                throw new InvalidOperationException(
+                    "Burn-in level one must physically hide Operation so it cannot draw or intercept the mouse.");
+            }
+
             form.UpdateMetricTileBurnInPresentation(BurnInVisualLevel.LevelOne);
             if (!originalExpand.Visible)
             {
                 throw new InvalidOperationException("Burn-in level one must not force-close the metric tile expand panel.");
+            }
+
+            form.SetBurnInVisualLevel(BurnInVisualLevel.LevelTwo, "runtime self-test");
+            if (form.operationForm.Visible)
+            {
+                throw new InvalidOperationException(
+                    "Burn-in level two must keep Operation physically hidden.");
             }
 
             form.UpdateMetricTileBurnInPresentation(BurnInVisualLevel.LevelTwo);
@@ -154,6 +168,21 @@ internal sealed partial class WidgetForm
             {
                 throw new InvalidOperationException(
                     "Entering burn-in level two must force-close the metric tile expand panel and clear its owner.");
+            }
+
+            form.operationForm.SetHiddenForFullscreen(true);
+            form.SetBurnInVisualLevel(BurnInVisualLevel.Normal, "runtime self-test reset");
+            if (form.operationForm.Visible)
+            {
+                throw new InvalidOperationException(
+                    "Returning burn-in state to Normal must not override another Operation visibility source.");
+            }
+
+            form.operationForm.SetHiddenForFullscreen(false);
+            if (!form.operationForm.Visible)
+            {
+                throw new InvalidOperationException(
+                    "Clearing the final Operation visibility source must restore the window after burn-in ends.");
             }
 
             form.Close();

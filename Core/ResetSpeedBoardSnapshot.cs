@@ -39,8 +39,18 @@ internal sealed class ResetSpeedBoardSnapshot
     public string HardResetStatus { get; set; }
     public string HardResetDescription { get; set; }
 
+    // Codex account context. Every number above belongs to ActiveAccountKey; the roster exists so
+    // the board can offer a switch and say which account the seven-day curve is actually about.
+    public bool ActiveAccountKnown { get; set; }
+    public string ActiveAccountKey { get; set; }
+    public string ActiveAccountLabel { get; set; }
+    public string ActiveAccountLetter { get; set; }
+    public string ActiveAccountPlan { get; set; }
+    public string AccountNotice { get; set; }
+
     public List<ResetSpeedQuotaPoint> QuotaHistory { get; private set; }
     public List<ResetSpeedResetEvent> ResetEvents { get; private set; }
+    public List<ResetSpeedAccountEntry> Accounts { get; private set; }
 
     public static ResetSpeedBoardSnapshot CreateEmpty()
     {
@@ -52,8 +62,14 @@ internal sealed class ResetSpeedBoardSnapshot
             ResetCardDescription = string.Empty,
             HardResetStatus = string.Empty,
             HardResetDescription = string.Empty,
+            ActiveAccountKey = string.Empty,
+            ActiveAccountLabel = string.Empty,
+            ActiveAccountLetter = string.Empty,
+            ActiveAccountPlan = string.Empty,
+            AccountNotice = string.Empty,
             QuotaHistory = new List<ResetSpeedQuotaPoint>(),
-            ResetEvents = new List<ResetSpeedResetEvent>()
+            ResetEvents = new List<ResetSpeedResetEvent>(),
+            Accounts = new List<ResetSpeedAccountEntry>()
         };
     }
 
@@ -90,6 +106,16 @@ internal sealed class ResetSpeedBoardSnapshot
         clone.ResetCardDescription = this.ResetCardDescription;
         clone.HardResetStatus = this.HardResetStatus;
         clone.HardResetDescription = this.HardResetDescription;
+        clone.ActiveAccountKnown = this.ActiveAccountKnown;
+        clone.ActiveAccountKey = this.ActiveAccountKey;
+        clone.ActiveAccountLabel = this.ActiveAccountLabel;
+        clone.ActiveAccountLetter = this.ActiveAccountLetter;
+        clone.ActiveAccountPlan = this.ActiveAccountPlan;
+        clone.AccountNotice = this.AccountNotice;
+        for (int i = 0; i < this.Accounts.Count; i++)
+        {
+            if (this.Accounts[i] != null) clone.Accounts.Add(this.Accounts[i].Clone());
+        }
         for (int i = 0; i < this.QuotaHistory.Count; i++)
         {
             if (this.QuotaHistory[i] != null) clone.QuotaHistory.Add(this.QuotaHistory[i].Clone());
@@ -99,6 +125,28 @@ internal sealed class ResetSpeedBoardSnapshot
             if (this.ResetEvents[i] != null) clone.ResetEvents.Add(this.ResetEvents[i].Clone());
         }
         return clone;
+    }
+}
+
+// One switchable Codex account as shown on the board. Carries no credential: the DPAPI blob stays
+// in CodexAccountStore and is only touched by an explicit switch.
+internal sealed class ResetSpeedAccountEntry
+{
+    public string AccountKey { get; set; }
+    // Stable A/B/C/D badge, used as the whole name when no address could be read.
+    public string Letter { get; set; }
+    public string Label { get; set; }
+    public string PlanType { get; set; }
+    public bool IsActive { get; set; }
+    // False when this machine has no usable credential snapshot, so the row renders un-clickable
+    // instead of failing at click time.
+    public bool CanSwitch { get; set; }
+    public bool LastSeenKnown { get; set; }
+    public DateTime LastSeenLocal { get; set; }
+
+    public ResetSpeedAccountEntry Clone()
+    {
+        return (ResetSpeedAccountEntry)this.MemberwiseClone();
     }
 }
 
@@ -130,5 +178,23 @@ internal sealed class ResetSpeedResetEvent
     public ResetSpeedResetEvent Clone()
     {
         return (ResetSpeedResetEvent)this.MemberwiseClone();
+    }
+}
+
+// Outcome of a board-initiated Codex account switch. Carries only a human message; the board never
+// sees a credential and never learns why a switch was refused beyond this text.
+internal sealed class CodexAccountSwitchResult
+{
+    public bool Success { get; set; }
+    public string Message { get; set; }
+
+    public static CodexAccountSwitchResult CreateSuccess(string message)
+    {
+        return new CodexAccountSwitchResult { Success = true, Message = message ?? string.Empty };
+    }
+
+    public static CodexAccountSwitchResult CreateFailure(string message)
+    {
+        return new CodexAccountSwitchResult { Success = false, Message = message ?? string.Empty };
     }
 }

@@ -71,6 +71,14 @@ internal static class NativeMethods
     public static readonly Guid GUID_POWERSCHEME_PERSONALITY = new Guid("245d8541-3943-4422-b025-13a784f679b7");
     public static readonly Guid GUID_POWER_SAVING_STATUS = new Guid("e00958c0-c213-4ace-ac77-fecced2eeea5");
 
+    // Windows 10 1709+ three-position power-mode slider overlay scheme GUIDs. Undocumented by
+    // Microsoft but stable across Windows versions; PowerThermalForm's read-side normalizer
+    // already matches these same three values out of the registry/WMI/powercfg fallback chain,
+    // which is the corroboration used before promoting them to named constants here.
+    public static readonly Guid PowerOverlaySchemeSaver = new Guid("961cc777-2547-4f9d-8174-7d86181b8a7a");
+    public static readonly Guid PowerOverlaySchemeBalanced = Guid.Empty;
+    public static readonly Guid PowerOverlaySchemePerformance = new Guid("ded574b5-45a0-4f42-8737-46345c09c238");
+
     private const uint WM_SPAWN_WORKER = 0x052C;
     private const uint SMTO_NORMAL = 0x0000;
     private const byte AC_SRC_OVER = 0x00;
@@ -331,6 +339,36 @@ internal static class NativeMethods
 
     [DllImport("powrprof.dll", SetLastError = true)]
     private static extern uint PowerUnregisterFromEffectivePowerModeNotifications(IntPtr registrationHandle);
+
+    // Overlay-scheme get/set is the write counterpart of the registry read PowerThermalForm
+    // already uses for display; PowerGetEffectiveOverlayScheme (not *Actual*) is used for reads so
+    // GUARD reports the mode Windows is really applying, not merely the one last requested.
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerSetActiveOverlayScheme(ref Guid overlaySchemeGuid);
+
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerGetEffectiveOverlayScheme(out Guid effectiveOverlayGuid);
+
+    // The counterpart read: the overlay the user actually selected, ignoring whatever override
+    // Windows is applying on top of it right now. Needed for capture/restore -- see
+    // TryGetActualPowerOverlayScheme.
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerGetActualOverlayScheme(out Guid actualOverlayGuid);
+
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerGetActiveScheme(IntPtr userRootPowerKey, out IntPtr activePolicyGuidPtr);
+
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerSetActiveScheme(IntPtr userRootPowerKey, ref Guid schemeGuid);
+
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerWriteDCValueIndex(IntPtr rootPowerKey, ref Guid schemeGuid, ref Guid subGroupGuid, ref Guid settingGuid, uint dcValueIndex);
+
+    [DllImport("powrprof.dll")]
+    private static extern uint PowerReadDCValueIndex(IntPtr rootPowerKey, ref Guid schemeGuid, ref Guid subGroupGuid, ref Guid settingGuid, out uint dcValueIndex);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr handle);
 
     public static IntPtr RegisterConsoleDisplayStateNotification(IntPtr windowHandle)
     {
@@ -762,6 +800,163 @@ internal static class NativeMethods
         }
         catch
         {
+            return false;
+        }
+    }
+
+    // SUB_ENERGYSAVER \ ESBATTTHRESHOLD (hidden DC-only power setting, Windows 10+; verified
+    // against Microsoft Learn "Energy Saver settings" / "Battery threshold"). Writing 100 forces
+    // Energy Saver on regardless of battery level; this is the same mechanism community
+    // "toggle battery saver" scripts use, since Windows exposes no separate on/off bit. Because
+    // this permanently overwrites the user's own "turn on automatically at X%" preference, the
+    // original value must be read back and restored by the caller on toggle-off.
+    private static readonly Guid PowerSubgroupEnergySaver = new Guid("de830923-a562-41af-a086-e3a2c6bad2da");
+    private static readonly Guid PowerSettingEnergySaverBatteryThreshold = new Guid("e69653ca-cf7f-4f05-aa73-cb833fa90ad4");
+
+    public static bool TrySetActivePowerOverlayScheme(Guid overlaySchemeGuid, out string detail)
+    {
+        detail = string.Empty;
+        try
+        {
+            uint result = PowerSetActiveOverlayScheme(ref overlaySchemeGuid);
+            if (result != 0)
+            {
+                detail = "PowerSetActiveOverlayScheme failed, error=" + result.ToString(CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            detail = ex.GetType().Name + ": " + ex.Message;
+            return false;
+        }
+    }
+
+    public static bool TryGetActivePowerOverlayScheme(out Guid overlaySchemeGuid)
+    {
+        overlaySchemeGuid = Guid.Empty;
+        try
+        {
+            return PowerGetEffectiveOverlayScheme(out overlaySchemeGuid) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // Reads the overlay the user selected rather than the one Windows is currently applying. The two
+    // diverge whenever the OS forces an overlay -- most commonly on battery, where an engaged Energy
+    // Saver pins the EFFECTIVE overlay to saver while the user's own choice is still balanced.
+    // Capture/restore must use this one: writing a captured effective saver back as the ACTIVE
+    // overlay would replace the user's real setting with the override that happened to be in force.
+    public static bool TryGetActualPowerOverlayScheme(out Guid overlaySchemeGuid)
+    {
+        overlaySchemeGuid = Guid.Empty;
+        try
+        {
+            return PowerGetActualOverlayScheme(out overlaySchemeGuid) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryGetActiveSchemeGuid(out Guid schemeGuid)
+    {
+        schemeGuid = Guid.Empty;
+        IntPtr guidPtr = IntPtr.Zero;
+        try
+        {
+            if (PowerGetActiveScheme(IntPtr.Zero, out guidPtr) != 0 || guidPtr == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            schemeGuid = (Guid)Marshal.PtrToStructure(guidPtr, typeof(Guid));
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            if (guidPtr != IntPtr.Zero)
+            {
+                LocalFree(guidPtr);
+            }
+        }
+    }
+
+    public static bool TryReadEnergySaverBatteryThresholdPercent(out int percent)
+    {
+        percent = 0;
+        try
+        {
+            Guid schemeGuid;
+            if (!TryGetActiveSchemeGuid(out schemeGuid))
+            {
+                return false;
+            }
+
+            Guid subGroupGuid = PowerSubgroupEnergySaver;
+            Guid settingGuid = PowerSettingEnergySaverBatteryThreshold;
+            uint value;
+            if (PowerReadDCValueIndex(IntPtr.Zero, ref schemeGuid, ref subGroupGuid, ref settingGuid, out value) != 0)
+            {
+                return false;
+            }
+
+            percent = (int)Math.Max(0, Math.Min(100, value));
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool TryWriteEnergySaverBatteryThresholdPercent(int percent, out string detail)
+    {
+        detail = string.Empty;
+        try
+        {
+            Guid schemeGuid;
+            if (!TryGetActiveSchemeGuid(out schemeGuid))
+            {
+                detail = "无法读取当前电源方案。";
+                return false;
+            }
+
+            Guid subGroupGuid = PowerSubgroupEnergySaver;
+            Guid settingGuid = PowerSettingEnergySaverBatteryThreshold;
+            uint clamped = (uint)Math.Max(0, Math.Min(100, percent));
+            uint writeResult = PowerWriteDCValueIndex(IntPtr.Zero, ref schemeGuid, ref subGroupGuid, ref settingGuid, clamped);
+            if (writeResult != 0)
+            {
+                detail = "PowerWriteDCValueIndex failed, error=" + writeResult.ToString(CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            // Windows caches the active scheme's parameter values; re-activating the same scheme
+            // is the documented way to force a value just written with PowerWriteDCValueIndex to
+            // take effect immediately instead of waiting for the next natural scheme reload.
+            uint reapplyResult = PowerSetActiveScheme(IntPtr.Zero, ref schemeGuid);
+            if (reapplyResult != 0)
+            {
+                detail = "省电模式阈值已写入，但重新应用电源方案失败，错误码 " + reapplyResult.ToString(CultureInfo.InvariantCulture) + "。";
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            detail = ex.GetType().Name + ": " + ex.Message;
             return false;
         }
     }
@@ -2287,6 +2482,20 @@ internal static class NativeMethods
         }
 
         return StartShellProcess("LiveCaptions.exe", null);
+    }
+
+    // Generic launcher for packaged (MSIX/Store) apps addressed by AppUserModelId, e.g.
+    // "OpenAI.Codex_2p2nqsd0c76g0!App". Packaged apps have no stable executable path a caller can
+    // start directly -- the WindowsApps install root carries the version and is ACL'd -- so going
+    // through explorer's AppsFolder namespace is the supported way in.
+    public static bool OpenAppsFolderApplication(string appUserModelId)
+    {
+        if (string.IsNullOrEmpty(appUserModelId))
+        {
+            return false;
+        }
+
+        return StartShellProcess("explorer.exe", @"shell:AppsFolder\" + appUserModelId);
     }
 
     public static bool IsLiveCaptionsAvailable()

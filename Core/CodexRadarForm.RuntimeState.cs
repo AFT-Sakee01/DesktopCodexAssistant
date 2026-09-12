@@ -18,6 +18,7 @@ internal sealed partial class CodexRadarForm
             this.ModelKey = string.Empty;
             this.RadarSnapshot = CodexRadarSnapshot.CreateDefault();
             this.Quota = new QuotaRuntimeState();
+            this.Protection = new QuotaProtectionState();
             this.RadarSiteHealth = ServiceHealthState.Unknown;
             this.LastRadarStatusRefreshUtc = DateTime.MinValue;
             this.NextRadarStatusRefreshUtc = DateTime.MinValue;
@@ -28,6 +29,23 @@ internal sealed partial class CodexRadarForm
         public string ModelKey { get; set; }
         public CodexRadarSnapshot RadarSnapshot { get; set; }
         public QuotaRuntimeState Quota { get; private set; }
+
+        // Reset protection and Radar RSS reset-event de-duplication belong to the family, not to an
+        // account: the public Radar feed is account-independent, and the state restored by
+        // LoadQuotaResetState() must survive every per-account Quota swap. While it lived inside
+        // QuotaRuntimeState a swap silently discarded it, so a months-old RSS event compared against
+        // a blank LastRadarResetEventUtc and re-fired the "extra reset" alert on every start.
+        public QuotaProtectionState Protection { get; private set; }
+
+        // Codex account switches replace the whole quota trend at once. Swapping the state object
+        // keeps each account's measurement intact instead of clearing and re-accumulating.
+        public void SwapQuota(QuotaRuntimeState next)
+        {
+            if (next != null)
+            {
+                this.Quota = next;
+            }
+        }
         public ServiceHealthState RadarSiteHealth { get; set; }
         public bool RadarStatusRequestRunning { get; set; }
         public DateTime LastRadarStatusRefreshUtc { get; set; }
@@ -73,8 +91,12 @@ internal sealed partial class CodexRadarForm
             this.FiveHourBurnTrackedResetLocal = DateTime.MinValue;
             this.WeeklyBurnTrackedResetLocal = DateTime.MinValue;
             this.WeeklyBurnClockUtc = DateTime.MinValue;
-            this.Protection = new QuotaProtectionState();
+            this.AccountKey = CodexAccountIdentity.UnknownAccountKey;
         }
+
+        // The Codex account this whole trend belongs to. Claude has no equivalent switch and simply
+        // stays on the unknown key.
+        public string AccountKey { get; set; }
 
         public CodexQuotaSnapshot Snapshot { get; set; }
         public bool SourceKnown { get; set; }
@@ -107,7 +129,6 @@ internal sealed partial class CodexRadarForm
         public double WeeklyBurnActiveHours { get; set; }
         public DateTime WeeklyBurnClockUtc { get; set; }
         public bool WeeklyBurnClockActive { get; set; }
-        public QuotaProtectionState Protection { get; private set; }
     }
 
     // One accepted quota reading. Active lists use ActiveHours; recent-rhythm lists use Utc.
@@ -167,6 +188,89 @@ internal sealed partial class CodexRadarForm
         return GetRadarFamilyState(family).Quota;
     }
 
+    // Parked Codex quota trends, one per account seen this process lifetime. Switching accounts must
+    // not merge two accounts' remaining-% series into one burn rate, and switching back must not
+    // throw away what the previous account already measured.
+    private readonly Dictionary<string, QuotaRuntimeState> codexAccountQuotaStates =
+        new Dictionary<string, QuotaRuntimeState>(StringComparer.OrdinalIgnoreCase);
+
+    private static string NormalizeAccountStateKey(string accountKey)
+    {
+        return string.IsNullOrWhiteSpace(accountKey)
+            ? CodexAccountIdentity.UnknownAccountKey
+            : accountKey.Trim();
+    }
+
+    // Returns true when the active Codex account actually changed, so the caller can republish.
+    private bool EnsureCodexQuotaStateForAccount(string accountKey)
+    {
+        if (!SwapCodexQuotaStateForAccount(
+                this.codexAccountQuotaStates,
+                GetRadarFamilyState(CodexRadarSoftwareMode.Codex),
+                accountKey))
+        {
+            return false;
+        }
+
+        Program.LogInfo("Codex account switch observed. Account=" +
+            NormalizeAccountStateKey(accountKey) + ", parked=" +
+            this.codexAccountQuotaStates.Count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        return true;
+    }
+
+    private static bool SwapCodexQuotaStateForAccount(
+        Dictionary<string, QuotaRuntimeState> parked,
+        RadarFamilyRuntimeState family,
+        string accountKey)
+    {
+        string key = NormalizeAccountStateKey(accountKey);
+        QuotaRuntimeState current = family.Quota;
+        if (CodexAccountIdentity.KeysEqual(current.AccountKey, key))
+        {
+            return false;
+        }
+
+        parked[NormalizeAccountStateKey(current.AccountKey)] = current;
+
+        QuotaRuntimeState next;
+        if (parked.TryGetValue(key, out next) && next != null)
+        {
+            parked.Remove(key);
+        }
+        else
+        {
+            next = new QuotaRuntimeState();
+        }
+
+        // A resumed trend keeps its own timestamps: the burn clock's gap rule clears the active-time
+        // samples on the next tick, and the wall-clock window prunes whatever aged out meanwhile.
+        next.AccountKey = key;
+        family.SwapQuota(next);
+        family.Touch();
+
+        // Bound the parked set so a long-lived process cannot accumulate states without limit.
+        while (parked.Count > CodexAccountStore.MaxAccounts)
+        {
+            string oldest = null;
+            foreach (KeyValuePair<string, QuotaRuntimeState> pair in parked)
+            {
+                if (oldest == null || pair.Value.WeeklyBurnClockUtc < parked[oldest].WeeklyBurnClockUtc)
+                {
+                    oldest = pair.Key;
+                }
+            }
+
+            if (oldest == null)
+            {
+                break;
+            }
+
+            parked.Remove(oldest);
+        }
+
+        return true;
+    }
+
     private QuotaRuntimeState GetActiveQuotaRuntimeState()
     {
         return GetActiveRadarFamilyState().Quota;
@@ -212,7 +316,7 @@ internal sealed partial class CodexRadarForm
 
     private QuotaProtectionState GetCodexQuotaProtectionState()
     {
-        return this.codexRuntimeState.Quota.Protection;
+        return this.codexRuntimeState.Protection;
     }
 
     private CodexQuotaSnapshot quotaSnapshot

@@ -289,7 +289,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 97;
+    private const int CurrentSettingsVersion = 99;
     private const int RetiredCanonicalSettingsCount = 113;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -471,6 +471,15 @@ internal sealed class WidgetSettings
     public bool CaptionsBoardLeftDockEnabled { get; set; }
     public int CaptionsBoardLeftDockTabCenterY { get; set; }
     public int CaptionsBoardAutoHideSeconds { get; set; }
+    // Program guard for the external translation stack (GenieX NPU server, its sanitize proxy and
+    // LiveCaptionsTranslator). Unlike the captions board's read-only monitoring, this restarts
+    // whichever of the three is missing: system sleep tears all three down, and a half-dead stack
+    // fails every translation because the client survives while the server it talks to is gone.
+    public bool TranslatorKeepAliveEnabled { get; set; }
+    // Same program guard, applied to the two packaged AI desktop apps. Scoped to the apps and not
+    // their CLIs on purpose -- see Core/ProgramKeepAliveGuard.cs.
+    public bool CodexAppKeepAliveEnabled { get; set; }
+    public bool ClaudeAppKeepAliveEnabled { get; set; }
     // Guard state. GuardSleepEnabled and the two deadline ticks are live runtime state rather than
     // preferences: they are persisted so a restart during a long unattended run does not silently
     // drop the protection the board promises. Ticks are UTC; 0 means "not armed".
@@ -927,6 +936,9 @@ internal sealed class WidgetSettings
         this.CaptionsBoardLeftDockEnabled = defaults.CaptionsBoardLeftDockEnabled;
         this.CaptionsBoardLeftDockTabCenterY = defaults.CaptionsBoardLeftDockTabCenterY;
         this.CaptionsBoardAutoHideSeconds = defaults.CaptionsBoardAutoHideSeconds;
+        this.TranslatorKeepAliveEnabled = defaults.TranslatorKeepAliveEnabled;
+        this.CodexAppKeepAliveEnabled = defaults.CodexAppKeepAliveEnabled;
+        this.ClaudeAppKeepAliveEnabled = defaults.ClaudeAppKeepAliveEnabled;
         this.GuardSleepEnabled = defaults.GuardSleepEnabled;
         this.GuardSleepSinceUtcTicks = defaults.GuardSleepSinceUtcTicks;
         this.GuardDisplayMinutes = defaults.GuardDisplayMinutes;
@@ -1143,6 +1155,9 @@ internal sealed class WidgetSettings
         settings.CaptionsBoardLeftDockEnabled = true;
         settings.CaptionsBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CaptionsBoardAutoHideSeconds = DefaultCaptionsBoardAutoHideSeconds;
+        settings.TranslatorKeepAliveEnabled = false;
+        settings.CodexAppKeepAliveEnabled = false;
+        settings.ClaudeAppKeepAliveEnabled = false;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1361,6 +1376,9 @@ internal sealed class WidgetSettings
         settings.CaptionsBoardLeftDockEnabled = true;
         settings.CaptionsBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CaptionsBoardAutoHideSeconds = DefaultCaptionsBoardAutoHideSeconds;
+        settings.TranslatorKeepAliveEnabled = false;
+        settings.CodexAppKeepAliveEnabled = false;
+        settings.ClaudeAppKeepAliveEnabled = false;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1575,6 +1593,9 @@ internal sealed class WidgetSettings
             CaptionsBoardLeftDockEnabled = this.CaptionsBoardLeftDockEnabled,
             CaptionsBoardLeftDockTabCenterY = this.CaptionsBoardLeftDockTabCenterY,
             CaptionsBoardAutoHideSeconds = this.CaptionsBoardAutoHideSeconds,
+            TranslatorKeepAliveEnabled = this.TranslatorKeepAliveEnabled,
+            CodexAppKeepAliveEnabled = this.CodexAppKeepAliveEnabled,
+            ClaudeAppKeepAliveEnabled = this.ClaudeAppKeepAliveEnabled,
             GuardSleepEnabled = this.GuardSleepEnabled,
             GuardSleepSinceUtcTicks = this.GuardSleepSinceUtcTicks,
             GuardDisplayMinutes = this.GuardDisplayMinutes,
@@ -2507,6 +2528,25 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 98)
+        {
+            // Version 98 adds the translation-stack keep-alive program guard. It starts disarmed on
+            // existing installs for the same reason version 79 left the sleep guard and version 96
+            // left the power-mode override disarmed: this guard starts external processes, so
+            // inheriting it silently would launch programs the user never asked for.
+            settings.TranslatorKeepAliveEnabled = false;
+            saveAfterMigration = true;
+        }
+
+        if (sourceFileExists && settingsVersion < 99)
+        {
+            // Version 99 extends the same guard to the two packaged AI desktop apps, disarmed on
+            // upgrade for the same reason.
+            settings.CodexAppKeepAliveEnabled = false;
+            settings.ClaudeAppKeepAliveEnabled = false;
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2736,6 +2776,9 @@ internal sealed class WidgetSettings
             "CaptionsBoardLeftDockEnabled=" + this.CaptionsBoardLeftDockEnabled,
             "CaptionsBoardLeftDockTabCenterY=" + this.CaptionsBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
             "CaptionsBoardAutoHideSeconds=" + this.CaptionsBoardAutoHideSeconds.ToString(CultureInfo.InvariantCulture),
+            "TranslatorKeepAliveEnabled=" + this.TranslatorKeepAliveEnabled,
+            "CodexAppKeepAliveEnabled=" + this.CodexAppKeepAliveEnabled,
+            "ClaudeAppKeepAliveEnabled=" + this.ClaudeAppKeepAliveEnabled,
             "GuardSleepEnabled=" + this.GuardSleepEnabled,
             "GuardSleepSinceUtcTicks=" + this.GuardSleepSinceUtcTicks.ToString(CultureInfo.InvariantCulture),
             "GuardDisplayMinutes=" + this.GuardDisplayMinutes.ToString(CultureInfo.InvariantCulture),
@@ -3369,6 +3412,24 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "CaptionsBoardAutoHideSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
         {
             settings.CaptionsBoardAutoHideSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "TranslatorKeepAliveEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.TranslatorKeepAliveEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CodexAppKeepAliveEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.CodexAppKeepAliveEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "ClaudeAppKeepAliveEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.ClaudeAppKeepAliveEnabled = boolValue;
             return;
         }
 
@@ -6502,6 +6563,63 @@ internal sealed class WidgetSettings
         }
 
         Console.WriteLine("Captions board settings: PASS fixed dock, independent overrides, save/load, migrate(v96->v97)");
+        RunTranslatorKeepAliveSettingsSelfTest();
+    }
+
+    private static void RunTranslatorKeepAliveSettingsSelfTest()
+    {
+        WidgetSettings keepAliveDefaults = CreateDefaults();
+        AssertLayout(
+            !keepAliveDefaults.TranslatorKeepAliveEnabled &&
+            !keepAliveDefaults.CodexAppKeepAliveEnabled &&
+            !keepAliveDefaults.ClaudeAppKeepAliveEnabled,
+            "All three program keep-alive guards should default disarmed.");
+
+        string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-translator-keepalive-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string path = Path.Combine(root, "settings.ini");
+            WidgetSettings armed = CreateDefaults();
+            armed.TranslatorKeepAliveEnabled = true;
+            armed.CodexAppKeepAliveEnabled = true;
+            armed.ClaudeAppKeepAliveEnabled = true;
+            armed.SaveToPath(path, true);
+            WidgetSettings reloaded = LoadFromPath(path, false);
+            AssertLayout(
+                reloaded.TranslatorKeepAliveEnabled &&
+                reloaded.CodexAppKeepAliveEnabled &&
+                reloaded.ClaudeAppKeepAliveEnabled,
+                "Program keep-alive guards should round-trip through settings.ini.");
+            WidgetSettings cloned = armed.Clone();
+            AssertLayout(
+                cloned.TranslatorKeepAliveEnabled &&
+                cloned.CodexAppKeepAliveEnabled &&
+                cloned.ClaudeAppKeepAliveEnabled,
+                "Program keep-alive guards should survive Clone().");
+
+            // An upgraded install must not inherit any of these: they start external processes.
+            File.WriteAllLines(path, new string[] { "Version=97", "TranslatorKeepAliveEnabled=True" }, SharedEncoding.Utf8NoBom);
+            AssertLayout(
+                !LoadFromPath(path, false).TranslatorKeepAliveEnabled,
+                "Translation-stack keep-alive v97 to v98 migration should disarm.");
+
+            File.WriteAllLines(
+                path,
+                new string[] { "Version=98", "CodexAppKeepAliveEnabled=True", "ClaudeAppKeepAliveEnabled=True" },
+                SharedEncoding.Utf8NoBom);
+            WidgetSettings migrated99 = LoadFromPath(path, false);
+            AssertLayout(
+                !migrated99.CodexAppKeepAliveEnabled && !migrated99.ClaudeAppKeepAliveEnabled,
+                "Desktop-app keep-alive v98 to v99 migration should disarm.");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+
+        Console.WriteLine("Program keep-alive settings: PASS three guards default disarmed, save/load, clone, migrate(v97->v98, v98->v99)");
+        ProgramKeepAliveGuard.RunSelfTest();
     }
 
     private static void RunRightTileInteractionSchema93MigrationSelfTest()

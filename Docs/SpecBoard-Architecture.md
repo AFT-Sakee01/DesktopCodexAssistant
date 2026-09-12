@@ -1,6 +1,6 @@
 # Spec Board 架构
 
-适用版本：2.0.0.26
+适用版本：2.0.0.51
 
 本文负责跨项目 spec 账本读取、对账、看板窗口、交互和只读边界。
 
@@ -13,6 +13,8 @@
 `SpecBoardReader` 的输入边界固定为：单个 `PROJECTS.json`/账本不超过 2 MiB、单行不超过 64 KiB、账本最多 5000 行、快照最多 64 个项目、单轮目录对账最多枚举 512 个文件。超限输入只发布界限内的完整数据，将截断计入 `MalformedLines`，并为同一轮读取聚合一条不含正文的诊断日志。`CancellationToken` 贯穿文件读取、项目遍历和目录枚举；紧凑窗口的 3 秒对账超时会取消底层读取并用本轮已完成的基础账本快照回退，迟到结果由 generation 拒绝。
 
 项目注册表不可用时，账本 `project` 仍直接形成项目栏，对账停用并在 footer 显示警告。注册项目的 `root` 不可达时跳过该项目，不把全部 spec 误报为未登记。`GoalSpec` 文件不进入对账结果。
+
+`PROJECTS.json` 的 `projects[].workspace_aliases` 是**可选**字符串数组，由 `SpecBoardReader.ReadWorkspaceAliases` 只读消费，提供该项目额外的工作目录叶名拼写，供 `WorkBoardComposer` 把本地 Codex 会话归属到项目（见 `Core/WorkBoardComposer.cs`）。程序永不写 `PROJECTS.json`：字段缺失按空数组处理；字段存在但不是数组、单条为空白、或超过 `SpecBoardReader.MaxWorkspaceAliases = 16` 条时，只降级并计入 `MalformedLines` 与 `ExcessAliases` 诊断，不得据此判定注册表不可用。同一项目内重复拼写按 `OrdinalIgnoreCase` 去重。
 
 ## 窗口与交互
 

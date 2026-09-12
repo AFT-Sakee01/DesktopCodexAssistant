@@ -2,6 +2,17 @@ using System;
 using System.Globalization;
 using System.Net.NetworkInformation;
 
+// The three-position Windows power-mode slider (registry ActiveOverlay*PowerScheme / powrprof
+// overlay scheme). Unknown covers both "not yet read" and a custom vendor scheme this app does
+// not recognize; GUARD never guesses a tier in that case.
+internal enum GuardPowerModeTier
+{
+    Unknown = 0,
+    Saver = 1,
+    Balanced = 2,
+    Performance = 3
+}
+
 // Power and program guard state machine behind the GUARD board (scheme D).
 //
 // This is a native C# reimplementation of the CodexSleepGuard PowerShell utility
@@ -39,6 +50,17 @@ internal sealed class GuardRuntime
     private int displayGuardMinutes = WidgetSettings.DefaultGuardDisplayMinutes;
     private int offlineThresholdMinutes = WidgetSettings.DefaultGuardOfflineThresholdMinutes;
     private string lastActionDetail = string.Empty;
+    // Scheduled power-mode override: locks whichever tier is active when armed and always reverts
+    // to Balanced at the deadline, so unlike displayGuardUntilUtc there is no separate "restore
+    // tier" field to keep in sync - Balanced is a fixed, well-known, predictable revert target
+    // even if the user manually changed modes again partway through a multi-hour window.
+    private DateTime powerModeOverrideUntilUtc = DateTime.MinValue;
+    private int powerModeOverrideHours = WidgetSettings.DefaultGuardPowerModeOverrideHours;
+    // Energy Saver force is a plain on/off with no deadline (the user asked to switch it, not to
+    // schedule it). RestoreThresholdPercent remembers the ESBATTTHRESHOLD value from just before
+    // forcing it to 100 so toggling off does not overwrite the user's own auto-enable preference.
+    private bool energySaverForcedOn;
+    private int energySaverRestoreThresholdPercent = -1;
 
     // Modern Standby fix: the persistent power request is what actually holds an S0 machine in the
     // active phase. SetThreadExecutionState alone was suspended with other desktop apps when the
@@ -134,6 +156,31 @@ internal sealed class GuardRuntime
     internal string LastActionDetail
     {
         get { return this.lastActionDetail; }
+    }
+
+    internal bool PowerModeOverrideActive
+    {
+        get { return this.powerModeOverrideUntilUtc != DateTime.MinValue; }
+    }
+
+    internal DateTime PowerModeOverrideUntilUtc
+    {
+        get { return this.powerModeOverrideUntilUtc; }
+    }
+
+    internal int PowerModeOverrideHours
+    {
+        get { return this.powerModeOverrideHours; }
+    }
+
+    internal bool EnergySaverForcedOn
+    {
+        get { return this.energySaverForcedOn; }
+    }
+
+    internal TimeSpan GetPowerModeOverrideRemaining(DateTime nowUtc)
+    {
+        return Remaining(this.powerModeOverrideUntilUtc, nowUtc);
     }
 
     // The three Modern Standby power requests actually held right now. The board surfaces these so
@@ -274,6 +321,38 @@ internal sealed class GuardRuntime
             ? NormalizeStartStamp(settings.GuardSleepSinceUtcTicks, nowUtc)
             : DateTime.MinValue;
         ApplyExecutionState();
+
+        this.powerModeOverrideHours = WidgetSettings.NormalizeGuardPowerModeOverrideHours(settings.GuardPowerModeOverrideHours);
+        DateTime overrideDeadline = NormalizeDeadline(settings.GuardPowerModeOverrideUntilUtcTicks, nowUtc);
+        if (overrideDeadline != DateTime.MinValue)
+        {
+            // A future deadline just resumes counting down; Tick will fire the normal revert-to-
+            // balanced expiry path later, exactly as if the app had stayed open the whole time.
+            this.powerModeOverrideUntilUtc = overrideDeadline;
+        }
+        else if (settings.GuardPowerModeOverrideUntilUtcTicks > 0L)
+        {
+            // Unlike a power *request* handle, an overlay-scheme write has no OS-side owner that
+            // quietly lets go when this process exits. A deadline discovered already in the past
+            // means the window elapsed while the app was closed, so the revert-to-balanced action
+            // that Tick would have fired must still run once here, or Windows is left in the
+            // boosted tier indefinitely with no other code path left to notice.
+            string staleRevertDetail;
+            NativeMethods.TrySetActivePowerOverlayScheme(NativeMethods.PowerOverlaySchemeBalanced, out staleRevertDetail);
+            Program.LogInfo("Guard power mode override had expired while closed; reverted to balanced on load.");
+        }
+
+        this.energySaverForcedOn = settings.GuardEnergySaverForcedOn;
+        this.energySaverRestoreThresholdPercent = settings.GuardEnergySaverRestoreThresholdPercent;
+        if (this.energySaverForcedOn)
+        {
+            // Best-effort repair, mirroring RefreshExecutionState's philosophy for the ES/PowerRequest
+            // layer: re-assert in case Windows or another tool reset the threshold while this app was
+            // closed. Never throws; a failure just leaves the board showing it as on so the user can
+            // retry the toggle instead of the state silently drifting out of sync with reality.
+            string forceDetail;
+            NativeMethods.TryWriteEnergySaverBatteryThresholdPercent(100, out forceDetail);
+        }
     }
 
     internal void SaveToSettings(WidgetSettings settings)
@@ -289,6 +368,10 @@ internal sealed class GuardRuntime
         settings.GuardSleepSinceUtcTicks = this.sleepGuardSinceUtc == DateTime.MinValue ? 0L : this.sleepGuardSinceUtc.Ticks;
         settings.GuardDisplayUntilUtcTicks = this.displayGuardUntilUtc == DateTime.MinValue ? 0L : this.displayGuardUntilUtc.Ticks;
         settings.GuardBatteryCarePauseUntilUtcTicks = this.batteryCarePauseUntilUtc == DateTime.MinValue ? 0L : this.batteryCarePauseUntilUtc.Ticks;
+        settings.GuardPowerModeOverrideHours = this.powerModeOverrideHours;
+        settings.GuardPowerModeOverrideUntilUtcTicks = this.powerModeOverrideUntilUtc == DateTime.MinValue ? 0L : this.powerModeOverrideUntilUtc.Ticks;
+        settings.GuardEnergySaverForcedOn = this.energySaverForcedOn;
+        settings.GuardEnergySaverRestoreThresholdPercent = this.energySaverRestoreThresholdPercent;
     }
 
     private static DateTime NormalizeDeadline(long ticks, DateTime nowUtc)
@@ -406,6 +489,245 @@ internal sealed class GuardRuntime
         return true;
     }
 
+    internal static Guid ResolveOverlaySchemeGuid(GuardPowerModeTier tier)
+    {
+        switch (tier)
+        {
+            case GuardPowerModeTier.Saver:
+                return NativeMethods.PowerOverlaySchemeSaver;
+            case GuardPowerModeTier.Performance:
+                return NativeMethods.PowerOverlaySchemePerformance;
+            default:
+                return NativeMethods.PowerOverlaySchemeBalanced;
+        }
+    }
+
+    internal static GuardPowerModeTier ClassifyOverlaySchemeGuid(Guid overlaySchemeGuid)
+    {
+        if (overlaySchemeGuid == NativeMethods.PowerOverlaySchemeSaver)
+        {
+            return GuardPowerModeTier.Saver;
+        }
+
+        if (overlaySchemeGuid == NativeMethods.PowerOverlaySchemePerformance)
+        {
+            return GuardPowerModeTier.Performance;
+        }
+
+        if (overlaySchemeGuid == NativeMethods.PowerOverlaySchemeBalanced)
+        {
+            return GuardPowerModeTier.Balanced;
+        }
+
+        return GuardPowerModeTier.Unknown;
+    }
+
+    internal static string DescribeTier(GuardPowerModeTier tier)
+    {
+        switch (tier)
+        {
+            case GuardPowerModeTier.Saver:
+                return "省电";
+            case GuardPowerModeTier.Balanced:
+                return "平衡";
+            case GuardPowerModeTier.Performance:
+                return "性能";
+            default:
+                return "未知";
+        }
+    }
+
+    // English lowercase wire-format counterpart to DescribeTier, matching the request-side "mode"
+    // token vocabulary in GuardControlProtocol so CLI callers never have to parse Chinese text.
+    internal static string DescribeTierForWire(GuardPowerModeTier tier)
+    {
+        switch (tier)
+        {
+            case GuardPowerModeTier.Saver:
+                return "saver";
+            case GuardPowerModeTier.Balanced:
+                return "balanced";
+            case GuardPowerModeTier.Performance:
+                return "performance";
+            default:
+                return "unknown";
+        }
+    }
+
+    // Reads the live overlay scheme rather than trusting any cached field, since Windows (or the
+    // user, via its own Settings UI) can change this at any time outside GUARD's control.
+    internal static GuardPowerModeTier GetLivePowerModeTier()
+    {
+        Guid overlaySchemeGuid;
+        return NativeMethods.TryGetActivePowerOverlayScheme(out overlaySchemeGuid)
+            ? ClassifyOverlaySchemeGuid(overlaySchemeGuid)
+            : GuardPowerModeTier.Unknown;
+    }
+
+    // Immediate, indefinite switch - the "quick switch" request. A manual switch always overrides
+    // any pending scheduled reversion: leaving the old deadline armed would silently undo the
+    // user's explicit choice a few hours later, which is a worse surprise than losing the timer.
+    internal bool SetPowerMode(GuardPowerModeTier tier)
+    {
+        string detail;
+        bool applied = NativeMethods.TrySetActivePowerOverlayScheme(ResolveOverlaySchemeGuid(tier), out detail);
+        bool cancelledOverride = this.powerModeOverrideUntilUtc != DateTime.MinValue;
+        this.powerModeOverrideUntilUtc = DateTime.MinValue;
+        this.lastActionDetail = applied
+            ? "电源模式已切换为" + DescribeTier(tier) + "。"
+            : "切换电源模式失败：" + detail;
+        Program.LogInfo("Guard power mode set. Tier=" + tier + ", Applied=" + applied.ToString());
+        return applied || cancelledOverride;
+    }
+
+    // Arms the scheduled override: whichever tier is live right now stays in effect, and Tick
+    // reverts to Balanced once the window elapses. Does not itself change the current tier - the
+    // UI/CLI caller applies a tier first via SetPowerMode if a different one should be locked in.
+    internal bool StartPowerModeOverride(int hours, DateTime nowUtc)
+    {
+        int normalized = WidgetSettings.NormalizeGuardPowerModeOverrideHours(hours);
+        this.powerModeOverrideHours = normalized;
+        this.powerModeOverrideUntilUtc = nowUtc.AddHours(normalized);
+        this.lastActionDetail = "已锁定当前电源模式 " + normalized.ToString(CultureInfo.InvariantCulture) + " 小时，到点恢复至平衡。";
+        Program.LogInfo(
+            "Guard power mode override armed. Hours=" +
+            normalized.ToString(CultureInfo.InvariantCulture) +
+            ", UntilUtc=" +
+            this.powerModeOverrideUntilUtc.ToString("o", CultureInfo.InvariantCulture));
+        return true;
+    }
+
+    // Cancels the pending reversion without touching the current tier, mirroring StopDisplayGuard:
+    // "stop babysitting this" is not the same request as "change it back right now".
+    internal bool StopPowerModeOverride()
+    {
+        if (this.powerModeOverrideUntilUtc == DateTime.MinValue)
+        {
+            return false;
+        }
+
+        this.powerModeOverrideUntilUtc = DateTime.MinValue;
+        this.lastActionDetail = "定时电源模式已取消，当前模式不受影响。";
+        Program.LogInfo("Guard power mode override cancelled.");
+        return true;
+    }
+
+    internal bool SetPowerModeOverrideHours(int hours)
+    {
+        int normalized = WidgetSettings.NormalizeGuardPowerModeOverrideHours(hours);
+        if (this.powerModeOverrideHours == normalized)
+        {
+            return false;
+        }
+
+        this.powerModeOverrideHours = normalized;
+        // Re-arming a running countdown against the new duration mirrors SetDisplayGuardMinutes:
+        // leaving the old deadline in place would silently ignore the user's change while it counts.
+        if (this.powerModeOverrideUntilUtc != DateTime.MinValue)
+        {
+            this.powerModeOverrideUntilUtc = DateTime.UtcNow.AddHours(normalized);
+        }
+
+        return true;
+    }
+
+    // Windows exposes no direct "turn Energy Saver on now" bit; ESBATTTHRESHOLD=100 is the same
+    // mechanism community battery-saver toggle scripts use, since 100 is always >= the current
+    // battery percentage. Because this overwrites the user's own auto-enable threshold, the
+    // original value is captured once and restored exactly on toggle-off.
+    internal bool SetEnergySaverForced(bool enabled)
+    {
+        if (this.energySaverForcedOn == enabled)
+        {
+            // One exception to the no-op. Turning the force off while the flag already reads off is
+            // the only path that can repair a threshold stranded at 100 by a run that died between
+            // force-on and restore (an aborted self-test, a crash, or simply a later process whose
+            // in-memory flag never knew about it). That state is not cosmetic: Windows pins the
+            // effective overlay to saver while ESBATTTHRESHOLD is 100, so every overlay write
+            // succeeds and every read still returns saver, and neither a GUARD power-mode switch
+            // nor powercfg /overlaysetactive can undo it. Writing the threshold back is the only
+            // recovery, so the "off" command has to be able to perform it.
+            return !enabled && this.TryRepairStrandedEnergySaverThreshold();
+        }
+
+        string detail;
+        if (enabled)
+        {
+            if (this.energySaverRestoreThresholdPercent < 0)
+            {
+                // Only capture a restore point the first time. Re-reading "100" back after a prior
+                // successful force-on (e.g. a second call after a crash restored the flag but not
+                // this in-memory field) would clobber the real value with our own forced one.
+                int currentThreshold;
+                this.energySaverRestoreThresholdPercent = NativeMethods.TryReadEnergySaverBatteryThresholdPercent(out currentThreshold)
+                    ? currentThreshold
+                    : WidgetSettings.DefaultPowerThermalManualEnergySaverThresholdPercent;
+            }
+
+            if (!NativeMethods.TryWriteEnergySaverBatteryThresholdPercent(100, out detail))
+            {
+                this.lastActionDetail = "开启省电模式失败：" + detail;
+                Program.LogInfo("Guard energy saver force-on failed. Detail=" + detail);
+                return false;
+            }
+
+            this.energySaverForcedOn = true;
+            this.lastActionDetail = "省电模式已开启。";
+        }
+        else
+        {
+            int restoreValue = this.energySaverRestoreThresholdPercent >= 0
+                ? this.energySaverRestoreThresholdPercent
+                : WidgetSettings.DefaultPowerThermalManualEnergySaverThresholdPercent;
+            if (!NativeMethods.TryWriteEnergySaverBatteryThresholdPercent(restoreValue, out detail))
+            {
+                this.lastActionDetail = "关闭省电模式失败：" + detail;
+                Program.LogInfo("Guard energy saver restore failed. Detail=" + detail);
+                return false;
+            }
+
+            this.energySaverForcedOn = false;
+            this.energySaverRestoreThresholdPercent = -1;
+            this.lastActionDetail = "省电模式已关闭，恢复原自动阈值。";
+        }
+
+        Program.LogInfo("Guard energy saver forced state set. Enabled=" + enabled.ToString());
+        return true;
+    }
+
+    // Only a threshold of exactly 100 is treated as stranded. Any other value is a real preference
+    // -- either the user's own auto-enable point or one we already restored -- and must be left
+    // alone, so a healthy machine sees this as a plain no-op. 100 is also what the user's own
+    // "always" choice writes; restoring the default there is still the right answer, because the
+    // caller has explicitly asked for Energy Saver to be off and "always on" cannot honour that.
+    private bool TryRepairStrandedEnergySaverThreshold()
+    {
+        int currentThreshold;
+        if (!NativeMethods.TryReadEnergySaverBatteryThresholdPercent(out currentThreshold) || currentThreshold != 100)
+        {
+            return false;
+        }
+
+        int restoreValue = this.energySaverRestoreThresholdPercent >= 0
+            ? this.energySaverRestoreThresholdPercent
+            : WidgetSettings.DefaultPowerThermalManualEnergySaverThresholdPercent;
+        string detail;
+        if (!NativeMethods.TryWriteEnergySaverBatteryThresholdPercent(restoreValue, out detail))
+        {
+            this.lastActionDetail = "修复省电模式阈值失败：" + detail;
+            Program.LogInfo("Guard energy saver stranded-threshold repair failed. Detail=" + detail);
+            return false;
+        }
+
+        this.energySaverRestoreThresholdPercent = -1;
+        this.lastActionDetail = "省电阈值被留在 100%，已恢复为" +
+            restoreValue.ToString(CultureInfo.InvariantCulture) + "%。";
+        Program.LogInfo(
+            "Guard energy saver stranded threshold repaired. RestoredPercent=" +
+            restoreValue.ToString(CultureInfo.InvariantCulture));
+        return true;
+    }
+
     // Command callers pass the click time only after a successful launch. Observations pass the
     // first crossing time. Neither path claims the vendor process actually applied the command.
     internal void NoteBatteryCarePaused(DateTime nowUtc)
@@ -472,6 +794,18 @@ internal sealed class GuardRuntime
             this.batteryCarePauseUntilUtc = DateTime.MinValue;
             this.lastActionDetail = "电池保护 24 小时暂停已到期。";
             Program.LogInfo("Guard battery care pause window elapsed.");
+            changed = true;
+        }
+
+        if (this.powerModeOverrideUntilUtc != DateTime.MinValue && nowUtc >= this.powerModeOverrideUntilUtc)
+        {
+            this.powerModeOverrideUntilUtc = DateTime.MinValue;
+            string revertDetail;
+            bool reverted = NativeMethods.TrySetActivePowerOverlayScheme(NativeMethods.PowerOverlaySchemeBalanced, out revertDetail);
+            this.lastActionDetail = reverted
+                ? "定时电源模式到点，已恢复至平衡。"
+                : "定时电源模式到点，但恢复平衡失败：" + revertDetail;
+            Program.LogInfo("Guard power mode override expired; reverted to balanced. Reverted=" + reverted.ToString());
             changed = true;
         }
 
@@ -691,6 +1025,14 @@ internal sealed class GuardRuntime
 
     // Releases the flags on shutdown. Without this the process can exit while Windows still holds
     // the requirement against a thread that no longer exists.
+    //
+    // This deliberately does not touch batteryCarePauseUntilUtc, powerModeOverrideUntilUtc or
+    // energySaverForcedOn. Sleep/display protection is released here because it is backed by a
+    // process-scoped Win32 handle that becomes meaningless the moment this process exits; the power
+    // mode, Energy Saver and battery-care states are durable writes to Windows' own settings store
+    // with no such handle, and the entire point of scheduling them is that they survive this app
+    // being closed and reopened. Reverting them on every shutdown would silently undo a boost the
+    // user asked to keep for the next several hours.
     internal void ReleaseAll()
     {
         this.sleepGuardEnabled = false;
@@ -837,6 +1179,102 @@ internal sealed class GuardRuntime
         AssertSelfTest(
             FormatCountdown(new TimeSpan(1, 2, 3, 4)) == "26:03:04",
             "countdown rolls days into hours");
+
+        // Power mode override and energy saver force. These exercise real Windows APIs (the power-
+        // mode overlay scheme and ESBATTTHRESHOLD), so whatever the machine already has is captured
+        // first and restored in a finally block - --test must never leave the developer's machine
+        // in a different power mode or with a different Energy Saver auto-enable threshold.
+        // Captured through the ACTUAL overlay read, never the effective one: on battery with Energy
+        // Saver engaged the effective overlay is saver while the user's own selection is still
+        // balanced, and restoring that captured saver would write the override in as the real
+        // setting -- the restore itself would be the corruption it exists to prevent.
+        Guid originalOverlayGuid;
+        bool hadOriginalOverlay = NativeMethods.TryGetActualPowerOverlayScheme(out originalOverlayGuid);
+        int originalEnergySaverThreshold;
+        bool hadOriginalEnergySaverThreshold = NativeMethods.TryReadEnergySaverBatteryThresholdPercent(out originalEnergySaverThreshold);
+        try
+        {
+            AssertSelfTest(GuardRuntime.ClassifyOverlaySchemeGuid(GuardRuntime.ResolveOverlaySchemeGuid(GuardPowerModeTier.Saver)) == GuardPowerModeTier.Saver, "saver tier GUID round trip");
+            AssertSelfTest(GuardRuntime.ClassifyOverlaySchemeGuid(GuardRuntime.ResolveOverlaySchemeGuid(GuardPowerModeTier.Balanced)) == GuardPowerModeTier.Balanced, "balanced tier GUID round trip");
+            AssertSelfTest(GuardRuntime.ClassifyOverlaySchemeGuid(GuardRuntime.ResolveOverlaySchemeGuid(GuardPowerModeTier.Performance)) == GuardPowerModeTier.Performance, "performance tier GUID round trip");
+            AssertSelfTest(GuardRuntime.ClassifyOverlaySchemeGuid(Guid.NewGuid()) == GuardPowerModeTier.Unknown, "unrecognized overlay GUID classifies as unknown");
+
+            GuardRuntime powerMode = new GuardRuntime(delegate { return true; });
+            AssertSelfTest(!powerMode.PowerModeOverrideActive, "power mode override starts disarmed");
+            AssertSelfTest(powerMode.StartPowerModeOverride(3, now), "starting the override reports a change");
+            AssertSelfTest(powerMode.PowerModeOverrideActive, "override reports armed after starting");
+            AssertSelfTest(powerMode.PowerModeOverrideHours == 3, "override hours dial reflects the requested value");
+
+            powerMode.SetPowerMode(GuardPowerModeTier.Balanced);
+            AssertSelfTest(!powerMode.PowerModeOverrideActive, "manual power mode switch cancels a pending override");
+
+            powerMode.StartPowerModeOverride(2, now);
+            AssertSelfTest(powerMode.Tick(now.AddHours(3)), "power mode override expiry reports a repaint");
+            AssertSelfTest(!powerMode.PowerModeOverrideActive, "power mode override clears itself at the deadline");
+
+            AssertSelfTest(!powerMode.EnergySaverForcedOn, "energy saver force starts off");
+            AssertSelfTest(powerMode.SetEnergySaverForced(true), "forcing energy saver on reports a change");
+            AssertSelfTest(powerMode.EnergySaverForcedOn, "energy saver force reports on");
+            AssertSelfTest(!powerMode.SetEnergySaverForced(true), "re-forcing energy saver on is a no-op");
+            AssertSelfTest(powerMode.SetEnergySaverForced(false), "restoring energy saver reports a change");
+            AssertSelfTest(!powerMode.EnergySaverForcedOn, "energy saver force reports off after restore");
+            powerMode.ReleaseAll();
+
+            WidgetSettings powerModeSettings = WidgetSettings.CreateDefaults();
+            GuardRuntime savedPowerMode = new GuardRuntime(delegate { return true; });
+            savedPowerMode.StartPowerModeOverride(5, DateTime.UtcNow);
+            savedPowerMode.SaveToSettings(powerModeSettings);
+            GuardRuntime loadedPowerMode = new GuardRuntime(delegate { return true; });
+            loadedPowerMode.LoadFromSettings(powerModeSettings, DateTime.UtcNow);
+            AssertSelfTest(loadedPowerMode.PowerModeOverrideActive, "power mode override deadline round trips");
+            AssertSelfTest(loadedPowerMode.PowerModeOverrideHours == 5, "power mode override hours round trip");
+            loadedPowerMode.ReleaseAll();
+            savedPowerMode.ReleaseAll();
+
+            // An override deadline already in the past at load time must fire its revert immediately
+            // rather than only clearing the bookkeeping, since no Tick() will ever see it as "just
+            // expired" once the in-memory field has already been reset to the unarmed sentinel.
+            WidgetSettings stalePowerModeSettings = WidgetSettings.CreateDefaults();
+            stalePowerModeSettings.GuardPowerModeOverrideUntilUtcTicks = DateTime.UtcNow.AddHours(-1).Ticks;
+            GuardRuntime staleOverride = new GuardRuntime(delegate { return true; });
+            staleOverride.LoadFromSettings(stalePowerModeSettings, DateTime.UtcNow);
+            AssertSelfTest(!staleOverride.PowerModeOverrideActive, "expired power mode override is not restored as active");
+            staleOverride.ReleaseAll();
+
+            // The recovery path for a threshold left at 100 by a run that died mid-force. A fresh
+            // runtime's flag already reads off, which used to make the "off" command a no-op and
+            // left the machine pinned to saver with nothing able to release it.
+            GuardRuntime stranded = new GuardRuntime(delegate { return true; });
+            string strandWriteDetail;
+            if (NativeMethods.TryWriteEnergySaverBatteryThresholdPercent(100, out strandWriteDetail))
+            {
+                AssertSelfTest(!stranded.EnergySaverForcedOn, "the repair case starts with the forced flag already off");
+                AssertSelfTest(stranded.SetEnergySaverForced(false), "turning off repairs a threshold stranded at 100");
+                int repairedThreshold;
+                AssertSelfTest(
+                    NativeMethods.TryReadEnergySaverBatteryThresholdPercent(out repairedThreshold) && repairedThreshold != 100,
+                    "the repaired threshold is no longer pinned at 100");
+                AssertSelfTest(
+                    !stranded.SetEnergySaverForced(false),
+                    "turning off again with a healthy threshold stays a no-op");
+            }
+
+            stranded.ReleaseAll();
+        }
+        finally
+        {
+            if (hadOriginalOverlay)
+            {
+                string restoreOverlayDetail;
+                NativeMethods.TrySetActivePowerOverlayScheme(originalOverlayGuid, out restoreOverlayDetail);
+            }
+
+            if (hadOriginalEnergySaverThreshold)
+            {
+                string restoreThresholdDetail;
+                NativeMethods.TryWriteEnergySaverBatteryThresholdPercent(originalEnergySaverThreshold, out restoreThresholdDetail);
+            }
+        }
 
         // Settings round trip.
         WidgetSettings settings = WidgetSettings.CreateDefaults();

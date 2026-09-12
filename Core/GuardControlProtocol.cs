@@ -17,6 +17,8 @@ internal sealed class GuardControlRequest
 {
     public string Action = string.Empty;
     public int Hours;
+    // Only meaningful for power_mode ("saver"|"balanced"|"performance"); empty for every other action.
+    public string Mode = string.Empty;
 }
 
 internal sealed class GuardControlSnapshot
@@ -33,6 +35,15 @@ internal sealed class GuardControlSnapshot
     public bool DisplayPowerRequestActive;
     public bool? OnAcPower;
     public string LastActionDetail = string.Empty;
+    // Live-read at response time, so a caller sees the post-write reality rather than a cached
+    // intent - the same "freshly built after the mutation" rule the other state fields follow.
+    public string PowerModeCurrent = string.Empty;
+    public bool EnergySaverActive;
+    public bool EnergySaverForcedByGuard;
+    public bool PowerScheduleActive;
+    public int PowerScheduleHours;
+    public DateTime PowerScheduleUntilUtc;
+    public int PowerScheduleRemainingSeconds;
 }
 
 internal sealed class GuardControlResponse
@@ -79,6 +90,9 @@ internal static class CommandLineHelp
             "  --guard sleep <on|off>                  开关防睡眠",
             "  --guard display <start [1..24]|stop>    启停亮屏计时",
             "  --guard display hours <1..24>           设置亮屏小时预设",
+            "  --guard power mode <saver|balanced|performance>  快速切换电源模式",
+            "  --guard power saver <on|off>            强制开关省电模式",
+            "  --guard power schedule <start [1..24]|stop>      定时电源模式",
             string.Empty,
             "程序管理",
             "  --install [--no-start]                  安装开机启动",
@@ -101,7 +115,7 @@ internal static class CommandLineHelp
     {
         return string.Join(Environment.NewLine, new[]
         {
-            "GUARD CLI - 睡眠防护与亮屏计时代理控制",
+            "GUARD CLI - 睡眠防护、亮屏计时与电源模式代理控制",
             "用法: DesktopCodexAssistant.exe --guard <命令>",
             string.Empty,
             "命令",
@@ -113,9 +127,21 @@ internal static class CommandLineHelp
             "  --guard display start <1..24>           设置预设并启动亮屏",
             "  --guard display stop                    停止亮屏；不改变防睡眠",
             "  --guard display hours <1..24>           只修改小时预设",
+            "  --guard power mode <saver|balanced|performance>",
+            "                                           立即切换电源模式，不会自动还原",
+            "  --guard power saver on                  强制开启省电模式（改写自动阈值）",
+            "  --guard power saver off                 关闭强制省电模式，恢复原自动阈值",
+            "  --guard power schedule start             按已保存的小时预设锁定当前电源模式",
+            "  --guard power schedule start <1..24>     设置预设并锁定当前电源模式",
+            "  --guard power schedule stop              取消定时，不改变当前电源模式",
             string.Empty,
             "行为",
             "  sleep 与 display 相互独立；display start 不会自动 sleep on。",
+            "  power mode 立即切换且会取消尚未到期的 power schedule，因为手动切换应当覆盖旧定时。",
+            "  power schedule start 不改变当前电源模式，只是把它锁定 N 小时，到点固定恢复至平衡；",
+            "  如需锁定某个具体模式，先执行 power mode 再执行 power schedule start。",
+            "  power saver 强制的是 Windows 省电模式的自动开启阈值（ESBATTTHRESHOLD），只在电池供电",
+            "  时才会实际生效，这是 Windows 省电策略本身的限制，接通电源时开关会成功但不会显示为省电中。",
             "  除 help 外，命令要求同一 Windows 用户的常驻实例正在运行。",
             "  成功结果写 stdout；错误 JSON 写 stderr。所有协议响应为单行 JSON。",
             string.Empty,
@@ -127,6 +153,8 @@ internal static class CommandLineHelp
             "自动化提示",
             "  修改后再次执行 --guard status，并检查 sleep_power_request_ready",
             "  或 display_power_request_ready；不要只把开关值当作 OS 请求已生效。",
+            "  power_mode_current 与 energy_saver_active 均为调用后即时重读的实际状态，",
+            "  而非请求是否被接受的镜像；请以它们判断电源模式或省电模式是否真的生效。",
             string.Empty,
             "完整字段与调用示例: Docs\\Guard-CLI.md"
         });
@@ -148,8 +176,13 @@ internal static class CommandLineHelp
         string guard = BuildGuardHelp();
         if (general.IndexOf("--balances", StringComparison.Ordinal) < 0 ||
             general.IndexOf("--guard help", StringComparison.Ordinal) < 0 ||
+            general.IndexOf("power mode", StringComparison.Ordinal) < 0 ||
             guard.IndexOf("display_power_request_ready", StringComparison.Ordinal) < 0 ||
-            guard.IndexOf("1..24", StringComparison.Ordinal) < 0)
+            guard.IndexOf("1..24", StringComparison.Ordinal) < 0 ||
+            guard.IndexOf("power mode <saver|balanced|performance>", StringComparison.Ordinal) < 0 ||
+            guard.IndexOf("power saver", StringComparison.Ordinal) < 0 ||
+            guard.IndexOf("power schedule start", StringComparison.Ordinal) < 0 ||
+            guard.IndexOf("power_mode_current", StringComparison.Ordinal) < 0)
             throw new InvalidOperationException("CLI help content is incomplete.");
         Console.WriteLine("Command-line help: PASS aliases, routing, documented GUARD readiness");
     }
@@ -181,7 +214,8 @@ internal static class GuardControlProtocol
             string.Equals(value, "--guard", StringComparison.OrdinalIgnoreCase));
         if (index < 0 || index + 1 >= args.Length)
         {
-            error = "Usage: --guard status | sleep <on|off> | display <start [hours]|stop|hours N>";
+            error = "Usage: --guard status | sleep <on|off> | display <start [hours]|stop|hours N> | " +
+                "power <mode <saver|balanced|performance>|saver <on|off>|schedule <start [hours]|stop>>";
             return false;
         }
 
@@ -233,6 +267,51 @@ internal static class GuardControlProtocol
             }
         }
 
+        if (group == "power" && index + 2 < args.Length)
+        {
+            string sub = args[index + 2].Trim().ToLowerInvariant();
+            if (sub == "mode" && index + 4 == args.Length)
+            {
+                string mode = args[index + 3].Trim().ToLowerInvariant();
+                if (mode == "saver" || mode == "balanced" || mode == "performance")
+                {
+                    request = new GuardControlRequest { Action = "power_mode", Mode = mode };
+                    return true;
+                }
+            }
+
+            if (sub == "saver" && index + 4 == args.Length)
+            {
+                string state = args[index + 3].Trim().ToLowerInvariant();
+                if (state == "on" || state == "off")
+                {
+                    request = new GuardControlRequest { Action = "energy_saver_" + state };
+                    return true;
+                }
+            }
+
+            if (sub == "schedule" && index + 3 < args.Length)
+            {
+                string verb = args[index + 3].Trim().ToLowerInvariant();
+                if (verb == "stop" && index + 4 == args.Length)
+                {
+                    request = new GuardControlRequest { Action = "power_schedule_stop" };
+                    return true;
+                }
+
+                if (verb == "start")
+                {
+                    int hours = 0;
+                    if (index + 4 == args.Length ||
+                        (index + 5 == args.Length && TryParseHours(args[index + 4], out hours)))
+                    {
+                        request = new GuardControlRequest { Action = "power_schedule_start", Hours = hours };
+                        return true;
+                    }
+                }
+            }
+        }
+
         error = "Invalid GUARD command. Hours must be an integer from 1 to 24.";
         return false;
     }
@@ -256,6 +335,7 @@ internal static class GuardControlProtocol
         data["schema_version"] = SchemaVersion;
         data["action"] = request == null ? string.Empty : request.Action;
         if (request != null && request.Hours > 0) data["hours"] = request.Hours;
+        if (request != null && !string.IsNullOrEmpty(request.Mode)) data["mode"] = request.Mode;
         return new JavaScriptSerializer().Serialize(data);
     }
 
@@ -268,16 +348,22 @@ internal static class GuardControlProtocol
                 as Dictionary<string, object>;
             if (data == null || ReadInt(data, "schema_version") != SchemaVersion) return false;
             string action = ReadString(data, "action");
+            string mode = ReadString(data, "mode");
             int hours;
             if (!TryReadWholeNumber(data, "hours", out hours)) return false;
             bool allowed = action == "status" || action == "sleep_on" || action == "sleep_off" ||
-                action == "display_stop" || action == "display_start" || action == "display_hours";
+                action == "display_stop" || action == "display_start" || action == "display_hours" ||
+                action == "power_mode" || action == "energy_saver_on" || action == "energy_saver_off" ||
+                action == "power_schedule_start" || action == "power_schedule_stop";
             bool hoursInRange = hours >= MinDisplayHours && hours <= MaxDisplayHours;
             bool hoursValid = action == "display_hours"
                 ? hoursInRange
-                : action == "display_start" ? hours == 0 || hoursInRange : hours == 0;
-            if (!allowed || !hoursValid) return false;
-            request = new GuardControlRequest { Action = action, Hours = hours };
+                : (action == "display_start" || action == "power_schedule_start") ? hours == 0 || hoursInRange : hours == 0;
+            bool modeValid = action == "power_mode"
+                ? (mode == "saver" || mode == "balanced" || mode == "performance")
+                : string.IsNullOrEmpty(mode);
+            if (!allowed || !hoursValid || !modeValid) return false;
+            request = new GuardControlRequest { Action = action, Hours = hours, Mode = mode };
             return true;
         }
         catch { return false; }
@@ -339,7 +425,14 @@ internal static class GuardControlProtocol
             { "execution_power_request_active", state.ExecutionPowerRequestActive },
             { "display_power_request_active", state.DisplayPowerRequestActive },
             { "on_ac_power", state.OnAcPower.HasValue ? (object)state.OnAcPower.Value : null },
-            { "last_action_detail", string.IsNullOrWhiteSpace(state.LastActionDetail) ? null : (object)state.LastActionDetail }
+            { "last_action_detail", string.IsNullOrWhiteSpace(state.LastActionDetail) ? null : (object)state.LastActionDetail },
+            { "power_mode_current", state.PowerModeCurrent },
+            { "energy_saver_active", state.EnergySaverActive },
+            { "energy_saver_forced_by_guard", state.EnergySaverForcedByGuard },
+            { "power_schedule_active", state.PowerScheduleActive },
+            { "power_schedule_hours", state.PowerScheduleHours },
+            { "power_schedule_until_utc", state.PowerScheduleUntilUtc == DateTime.MinValue ? null : (object)FormatUtc(state.PowerScheduleUntilUtc) },
+            { "power_schedule_remaining_seconds", state.PowerScheduleRemainingSeconds }
         };
     }
 
@@ -412,6 +505,25 @@ internal static class GuardControlProtocol
             throw new InvalidOperationException("GUARD CLI request bounds failed.");
         if (TryDeserializeRequest("{\"schema_version\":1,\"action\":\"display_start\",\"hours\":1.5}", out request))
             throw new InvalidOperationException("GUARD CLI request integer validation failed.");
+
+        AssertParsed(new[] { "--guard", "power", "mode", "saver" }, "power_mode", 0);
+        AssertParsed(new[] { "--guard", "power", "mode", "performance" }, "power_mode", 0);
+        if (!TryParseArguments(new[] { "--guard", "power", "mode", "balanced" }, out request, out error) ||
+            request.Mode != "balanced")
+            throw new InvalidOperationException("GUARD CLI power mode parsing failed.");
+        AssertParsed(new[] { "--guard", "power", "saver", "on" }, "energy_saver_on", 0);
+        AssertParsed(new[] { "--guard", "power", "saver", "off" }, "energy_saver_off", 0);
+        AssertParsed(new[] { "--guard", "power", "schedule", "start" }, "power_schedule_start", 0);
+        AssertParsed(new[] { "--guard", "power", "schedule", "start", "3" }, "power_schedule_start", 3);
+        AssertParsed(new[] { "--guard", "power", "schedule", "stop" }, "power_schedule_stop", 0);
+        if (TryParseArguments(new[] { "--guard", "power", "mode", "turbo" }, out request, out error) ||
+            TryParseArguments(new[] { "--guard", "power", "saver", "maybe" }, out request, out error) ||
+            TryParseArguments(new[] { "--guard", "power", "schedule", "start", "25" }, out request, out error))
+            throw new InvalidOperationException("GUARD CLI power command rejection failed.");
+        if (TryDeserializeRequest("{\"schema_version\":1,\"action\":\"power_mode\",\"hours\":0,\"mode\":\"turbo\"}", out request))
+            throw new InvalidOperationException("GUARD CLI power mode value validation failed.");
+        if (TryDeserializeRequest("{\"schema_version\":1,\"action\":\"energy_saver_on\",\"hours\":0,\"mode\":\"saver\"}", out request))
+            throw new InvalidOperationException("GUARD CLI unexpected mode rejection failed.");
 
         string pipe = ProductIdentity.MachineName + ".GuardControl.Test." + Guid.NewGuid().ToString("N");
         using (GuardControlServer server = new GuardControlServer(pipe, delegate(GuardControlRequest input)

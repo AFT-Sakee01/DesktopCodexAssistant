@@ -35,3 +35,6 @@ settings.ini
 .vscode/
 Thumbs.db
 Desktop.ini
+
+# Formal build staging and candidate artifacts (build output, never committed)
+_formal/

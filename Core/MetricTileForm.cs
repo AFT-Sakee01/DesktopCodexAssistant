@@ -1047,6 +1047,26 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
         }
     }
 
+    // The magnitude, not the value, is what a glance at a 60 px tile needs first: 900 K and 900 M
+    // are three orders apart but render almost identically. Colouring the number by unit makes that
+    // jump readable without reading the one-letter suffix. The suffix itself keeps the lane's
+    // down/up colour, so direction stays encoded too.
+    internal static Color ResolveNetworkRateValueColor(string unit)
+    {
+        if (string.Equals(unit, "M", StringComparison.Ordinal))
+        {
+            return DesignTokens.Colors.Warning;
+        }
+
+        if (string.Equals(unit, "G", StringComparison.Ordinal))
+        {
+            return DesignTokens.Colors.AccentAlt;
+        }
+
+        // "K" and the disconnected "--" (empty unit) keep the neutral reading colour.
+        return DesignTokens.Colors.TextStrong;
+    }
+
     private void DrawNetworkRate(Graphics g, RectangleF rateArea, string value, string unit, Color unitColor)
     {
         value = string.IsNullOrEmpty(value) ? "--" : value;
@@ -1064,7 +1084,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             Math.Max(5.5f, S(6.5f)),
             FontStyle.Bold,
             GraphicsUnit.Pixel))
-        using (SolidBrush valueBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
+        using (SolidBrush valueBrush = new SolidBrush(ResolveNetworkRateValueColor(unit)))
         using (SolidBrush unitBrush = new SolidBrush(DesignTokens.WithAlpha(unitColor, 255)))
         using (StringFormat near = new StringFormat(StringFormatFlags.NoWrap))
         {

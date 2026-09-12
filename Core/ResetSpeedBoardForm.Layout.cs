@@ -44,7 +44,11 @@ internal sealed partial class ResetSpeedBoardForm
         int footerHeight = MeasureLineHeight(g, smallFont, S(5));
         Rectangle header = new Rectangle(content.Left, content.Top, content.Width, headerHeight);
         Rectangle footer = new Rectangle(content.Left, content.Bottom - footerHeight, content.Width, footerHeight);
-        Rectangle body = new Rectangle(content.Left, header.Bottom + S(4), content.Width, Math.Max(1, footer.Top - header.Bottom - S(8)));
+        // A full-width account strip sits between the header and the two-column body. Everything
+        // below it belongs to exactly one Codex account, so naming that account has to come first.
+        int accountHeight = S(30);
+        Rectangle accountBar = new Rectangle(content.Left, header.Bottom + S(2), content.Width, accountHeight);
+        Rectangle body = new Rectangle(content.Left, accountBar.Bottom + S(5), content.Width, Math.Max(1, footer.Top - accountBar.Bottom - S(9)));
         int rightWidth = Math.Max(S(180), (int)Math.Round(body.Width * 0.31));
         Rectangle left = new Rectangle(body.Left, body.Top, Math.Max(1, body.Width - rightWidth - S(8)), body.Height);
         Rectangle right = new Rectangle(left.Right + S(8), body.Top, Math.Max(1, body.Right - left.Right - S(8)), body.Height);
@@ -61,6 +65,7 @@ internal sealed partial class ResetSpeedBoardForm
         Rectangle credits = new Rectangle(right.Left, speed.Bottom + S(7), right.Width, Math.Max(1, right.Bottom - speed.Bottom - S(7)));
 
         DrawHeader(g, header, titleFont, bodyFont, monoFont);
+        DrawAccountBar(g, accountBar, bodyFont, smallFont, monoFont);
         DrawTrendPanel(g, trend, sectionFont, bodyFont, smallFont, monoFont);
         DrawRecentResetPanel(g, recent, sectionFont, smallFont, monoFont);
         DrawResetProbabilityPanel(g, probability, sectionFont, smallFont, monoFont);
@@ -95,6 +100,119 @@ internal sealed partial class ResetSpeedBoardForm
             string updated = this.snapshot.UpdatedKnown ? this.snapshot.UpdatedLocal.ToString("HH:mm", CultureInfo.InvariantCulture) : "--:--";
             g.DrawString(updated, monoFont, mutedBrush, new Rectangle(rsRect.Right + S(5), bounds.Top + S(7), S(50), S(18)), far);
         }
+    }
+
+    // Active account on the left, switchable accounts as chips on the right. Chip bounds are the
+    // click targets and are rebuilt here on every paint so they cannot outlive their roster entry.
+    private void DrawAccountBar(Graphics g, Rectangle bounds, Font bodyFont, Font smallFont, Font monoFont)
+    {
+        this.accountHitTargets.Clear();
+        Color accent = EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.ResetSpeed);
+        DrawPanel(g, bounds, accent);
+
+        int inset = S(7);
+        Rectangle inner = new Rectangle(
+            bounds.Left + inset,
+            bounds.Top,
+            Math.Max(1, bounds.Width - inset * 2),
+            bounds.Height);
+
+        string letter = string.IsNullOrEmpty(this.snapshot.ActiveAccountLetter)
+            ? "?"
+            : this.snapshot.ActiveAccountLetter;
+        string label = string.IsNullOrEmpty(this.snapshot.ActiveAccountLabel)
+            ? "未识别账户"
+            : this.snapshot.ActiveAccountLabel;
+        string plan = string.IsNullOrEmpty(this.snapshot.ActiveAccountPlan)
+            ? string.Empty
+            : " · " + this.snapshot.ActiveAccountPlan.ToUpperInvariant();
+
+        using (SolidBrush strongBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
+        using (SolidBrush mutedBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
+        using (StringFormat near = CreateFormat(StringAlignment.Near))
+        {
+            Rectangle badge = new Rectangle(inner.Left, inner.Top + S(6), S(19), S(18));
+            DrawHeaderChip(
+                g,
+                badge,
+                letter,
+                monoFont,
+                this.snapshot.ActiveAccountKnown ? accent : DesignTokens.Colors.GlyphMuted);
+
+            Rectangle labelRect = new Rectangle(
+                badge.Right + S(6),
+                inner.Top + S(7),
+                Math.Max(1, (int)Math.Round(inner.Width * 0.44)),
+                S(16));
+            DrawFittedSingleLine(g, label + plan, bodyFont, strongBrush, labelRect, near);
+
+            // Chips fill from the right so the active-account label keeps a stable left edge, and the
+            // roster is walked backwards so they still read A, B, C from left to right.
+            int chipRight = inner.Right;
+            int chipHeight = S(18);
+            int chipTop = inner.Top + S(6);
+            for (int i = this.snapshot.Accounts.Count - 1; i >= 0; i--)
+            {
+                ResetSpeedAccountEntry entry = this.snapshot.Accounts[i];
+                if (entry == null || entry.IsActive)
+                {
+                    continue;
+                }
+
+                string chipText = string.IsNullOrEmpty(entry.Letter) ? entry.Label : entry.Letter;
+                int chipWidth = Math.Max(S(24), (int)Math.Ceiling(g.MeasureString(chipText, monoFont).Width) + S(12));
+                int chipLeft = chipRight - chipWidth;
+                if (chipLeft <= labelRect.Right + S(6))
+                {
+                    break;
+                }
+
+                Rectangle chip = new Rectangle(chipLeft, chipTop, chipWidth, chipHeight);
+                // A row without a stored credential renders dimmed and registers no hit target, so
+                // an unswitchable account cannot be clicked into a failure message.
+                DrawHeaderChip(
+                    g,
+                    chip,
+                    chipText,
+                    monoFont,
+                    entry.CanSwitch ? DesignTokens.Colors.TextStrong : DesignTokens.Colors.GlyphMuted);
+                if (entry.CanSwitch)
+                {
+                    this.accountHitTargets.Add(new ResetSpeedAccountHitTarget
+                    {
+                        Bounds = chip,
+                        AccountKey = entry.AccountKey
+                    });
+                }
+
+                chipRight = chipLeft - S(5);
+            }
+
+            string notice = ResolveAccountNotice();
+            if (!string.IsNullOrEmpty(notice))
+            {
+                Rectangle noticeRect = new Rectangle(
+                    labelRect.Right + S(8),
+                    inner.Top + S(8),
+                    Math.Max(1, chipRight - labelRect.Right - S(14)),
+                    S(14));
+                if (noticeRect.Width > S(40))
+                {
+                    DrawFittedSingleLine(g, notice, smallFont, mutedBrush, noticeRect, near);
+                }
+            }
+        }
+    }
+
+    // A switch result outranks the standing hint for a few seconds so the user sees what happened.
+    private string ResolveAccountNotice()
+    {
+        if (!string.IsNullOrEmpty(this.accountNoticeOverride) && DateTime.UtcNow < this.accountNoticeUntilUtc)
+        {
+            return this.accountNoticeOverride;
+        }
+
+        return this.snapshot.AccountNotice ?? string.Empty;
     }
 
     private void DrawHeaderChip(Graphics g, Rectangle bounds, string text, Font font, Color accent)
@@ -608,4 +726,11 @@ internal sealed partial class ResetSpeedBoardForm
             g.DrawString(value, fitted, brush, bounds, format);
         }
     }
+}
+
+// One clickable account chip on the Reset / Speed board.
+internal sealed class ResetSpeedAccountHitTarget
+{
+    public Rectangle Bounds;
+    public string AccountKey;
 }

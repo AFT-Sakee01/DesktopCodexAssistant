@@ -18,6 +18,11 @@ internal sealed partial class CaptionsBoardForm
 {
     private const string AttributionText = "GenieX · NPU";
 
+    // The caption transcript is the lowest-value content on this board (the controls above it are
+    // what the user actually comes here for), so it is capped well below what the canvas could fit
+    // and the reclaimed height goes to the service status strip and to overall breathing room.
+    private const int MaxHistoryEntries = 3;
+
     protected override void DrawWindowContent(Graphics g)
     {
         DrawBoard(g, true);
@@ -60,12 +65,19 @@ internal sealed partial class CaptionsBoardForm
 
         int headerHeight = S(22);
         Rectangle header = new Rectangle(content.Left, content.Top, content.Width, headerHeight);
-        int y = header.Bottom + S(6);
+        int y = header.Bottom + S(7);
 
         DrawDivider(g, content.Left, y, content.Width);
-        y += S(9);
+        y += S(10);
 
-        int toolbarHeight = S(24);
+        // Service status strip: the four processes that all have to be up for a translation to
+        // succeed. It sits above the toolbar because it answers "can this work at all right now",
+        // which has to be readable before any of the settings controls below it mean anything.
+        int statusRowHeight = S(24);
+        Rectangle statusRow = new Rectangle(content.Left, y, content.Width, statusRowHeight);
+        y = statusRow.Bottom + S(11);
+
+        int toolbarHeight = S(25);
         Rectangle toolbar = new Rectangle(content.Left, y, content.Width, toolbarHeight);
         y = toolbar.Bottom;
 
@@ -73,22 +85,23 @@ internal sealed partial class CaptionsBoardForm
         Rectangle alert = Rectangle.Empty;
         if (hasFailure)
         {
-            y += S(8);
+            y += S(9);
             alert = new Rectangle(content.Left, y, content.Width, S(24));
             y = alert.Bottom;
         }
 
-        y += S(8);
+        y += S(10);
         DrawDivider(g, content.Left, y, content.Width);
-        y += S(7);
+        y += S(8);
 
         int sectionLabelHeight = S(13);
         Rectangle sectionLabel = new Rectangle(content.Left, y, content.Width, sectionLabelHeight);
-        y = sectionLabel.Bottom + S(4);
+        y = sectionLabel.Bottom + S(5);
 
         Rectangle historyArea = new Rectangle(content.Left, y, content.Width, Math.Max(1, content.Bottom - y));
 
         DrawHeader(g, header, titleFont, bodyFont, monoFont);
+        DrawServiceStatusRow(g, statusRow, labelFont, recordHitTargets);
         DrawToolbar(g, toolbar, labelFont, bodyFont, monoFont, glyphFont, recordHitTargets);
         if (hasFailure)
         {
@@ -133,6 +146,156 @@ internal sealed partial class CaptionsBoardForm
             {
                 g.DrawString(sinceText, monoFont, mutedBrush, bounds, far);
             }
+        }
+    }
+
+    // Four compact service chips left-aligned, plus the caption-source control right-aligned on the
+    // same row. A chip that is UP registers no hit target at all -- clicking a healthy service must
+    // never be able to restart it by accident (GenieX in particular costs ~10s of model reload).
+    private void DrawServiceStatusRow(Graphics g, Rectangle bounds, Font labelFont, bool recordHitTargets)
+    {
+        bool busy = this.operationRunning;
+        int gap = S(6);
+        int x = bounds.Left;
+
+        x = DrawServiceChip(g, x, bounds, "GenieX", this.snapshot.GenieXRunning, CaptionsHitAction.GenieXStart, labelFont, busy, recordHitTargets) + gap;
+        x = DrawServiceChip(g, x, bounds, "代理", this.snapshot.SanitizeProxyRunning, CaptionsHitAction.SanitizeProxyStart, labelFont, busy, recordHitTargets) + gap;
+        x = DrawServiceChip(g, x, bounds, "实时字幕", this.snapshot.LiveCaptionsRunning, CaptionsHitAction.LiveCaptionsStart, labelFont, busy, recordHitTargets) + gap;
+        x = DrawServiceChip(g, x, bounds, "翻译器", this.snapshot.IsRunning, CaptionsHitAction.TranslatorStart, labelFont, busy, recordHitTargets) + gap;
+
+        DrawCaptionSourceChip(g, bounds, labelFont, busy, recordHitTargets, x);
+    }
+
+    private int DrawServiceChip(
+        Graphics g,
+        int left,
+        Rectangle row,
+        string label,
+        bool up,
+        CaptionsHitAction startAction,
+        Font font,
+        bool busy,
+        bool recordHitTargets)
+    {
+        bool pending = busy && this.pendingAction == startAction;
+        int dotSize = S(7);
+        int innerPad = S(8);
+        // Same generous measurement pad the toolbar labels use: GenericTypographic measurement is
+        // tighter than the NoWrap/Ellipsis DrawString below actually needs, and a snug box
+        // ellipsis-trims even short CJK labels.
+        int labelWidth = MeasureTextWidth(g, label, font) + S(8);
+        int width = innerPad + dotSize + S(5) + labelWidth + innerPad;
+        Rectangle bounds = new Rectangle(left, row.Top, width, row.Height);
+
+        // A down chip is the click target that starts its service, so it carries the board's violet
+        // accent border and brighter text to read as actionable; an up chip stays on the neutral
+        // border and reads as a passive indicator.
+        Color accent = EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Captions);
+        Color borderColor = up ? DesignTokens.Colors.Border : accent;
+        int borderAlpha = up ? 110 : (busy ? 90 : 185);
+        Color dotColor = pending
+            ? DesignTokens.Colors.Warning
+            : (up ? DesignTokens.Colors.Success : DesignTokens.Colors.GlyphMuted);
+        Color textColor = up ? DesignTokens.Colors.TextMuted : DesignTokens.Colors.Text;
+        int textAlpha = busy && !pending ? 130 : 255;
+
+        using (GraphicsPath path = RoundedRectangle(new RectangleF(bounds.Left, bounds.Top, bounds.Width, bounds.Height), S(4)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, up ? 170 : 205)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(borderColor, borderAlpha), Math.Max(1.0f, this.LayerScale)))
+        {
+            g.FillPath(fill, path);
+            g.DrawPath(border, path);
+        }
+
+        int dotTop = bounds.Top + (bounds.Height - dotSize) / 2;
+        using (SolidBrush dotBrush = new SolidBrush(DesignTokens.WithAlpha(dotColor, textAlpha)))
+        {
+            g.FillEllipse(dotBrush, bounds.Left + innerPad, dotTop, dotSize, dotSize);
+        }
+
+        using (SolidBrush textBrush = new SolidBrush(DesignTokens.WithAlpha(textColor, textAlpha)))
+        using (StringFormat near = CreateFormat(StringAlignment.Near))
+        {
+            g.DrawString(
+                label,
+                font,
+                textBrush,
+                new Rectangle(bounds.Left + innerPad + dotSize + S(5), bounds.Top, labelWidth, bounds.Height),
+                near);
+        }
+
+        if (recordHitTargets && !up && !busy)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = bounds, Action = startAction });
+        }
+
+        return bounds.Right;
+    }
+
+    // Shows the consequence of the registry value, not the raw code: which text the local model
+    // actually receives. "原文 EN" means Windows hands over untouched English and our model does the
+    // EN->ZH work; "微软已翻 中" means Windows already translated it and the model only ever sees
+    // Chinese. Clicking flips between exactly those two states (including out of 未知).
+    private void DrawCaptionSourceChip(Graphics g, Rectangle row, Font font, bool busy, bool recordHitTargets, int minimumLeft)
+    {
+        bool pending = busy && this.pendingAction == CaptionsHitAction.CaptionLanguageToggle;
+        bool original = this.snapshot.CaptionLanguageKnown && string.Equals(
+            this.snapshot.CaptionLanguage,
+            TranslatorControlReader.CaptionLanguageOriginalEnglish,
+            StringComparison.OrdinalIgnoreCase);
+        bool microsoftTranslated = this.snapshot.CaptionLanguageKnown && string.Equals(
+            this.snapshot.CaptionLanguage,
+            TranslatorControlReader.CaptionLanguageMicrosoftChinese,
+            StringComparison.OrdinalIgnoreCase);
+
+        const string prefix = "字幕源";
+        string value = pending
+            ? "切换中…"
+            : (original ? "原文 EN" : (microsoftTranslated ? "微软已翻 中" : "未知"));
+        Color valueColor = pending
+            ? DesignTokens.Colors.TextMuted
+            : (original
+                ? DesignTokens.Colors.SuccessText
+                : (microsoftTranslated ? DesignTokens.Colors.Warning : DesignTokens.Colors.GlyphMuted));
+
+        int innerPad = S(8);
+        int prefixWidth = MeasureTextWidth(g, prefix, font) + S(8);
+        int valueWidth = MeasureTextWidth(g, value, font) + S(8);
+        int width = innerPad + prefixWidth + S(5) + valueWidth + innerPad;
+        // Never let this chip run back into the service chips: at an unusual LayerScale the measured
+        // label widths could add up past the row, and an overlapping hit target would silently hand
+        // the click to whichever target was registered first.
+        width = Math.Max(S(24), Math.Min(width, Math.Max(S(24), row.Right - minimumLeft)));
+        Rectangle bounds = new Rectangle(row.Right - width, row.Top, width, row.Height);
+
+        Color accent = EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Captions);
+        using (GraphicsPath path = RoundedRectangle(new RectangleF(bounds.Left, bounds.Top, bounds.Width, bounds.Height), S(4)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, 205)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(accent, busy ? 90 : 185), Math.Max(1.0f, this.LayerScale)))
+        {
+            g.FillPath(fill, path);
+            g.DrawPath(border, path);
+        }
+
+        int textAlpha = busy && !pending ? 130 : 255;
+        int availablePrefixWidth = Math.Max(1, Math.Min(prefixWidth, bounds.Width - innerPad * 2));
+        int availableValueWidth = Math.Max(1, bounds.Width - innerPad * 2 - availablePrefixWidth - S(5));
+        using (SolidBrush prefixBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, textAlpha)))
+        using (SolidBrush valueBrush = new SolidBrush(DesignTokens.WithAlpha(valueColor, textAlpha)))
+        using (StringFormat near = CreateFormat(StringAlignment.Near))
+        {
+            g.DrawString(prefix, font, prefixBrush, new Rectangle(bounds.Left + innerPad, bounds.Top, availablePrefixWidth, bounds.Height), near);
+            g.DrawString(
+                value,
+                font,
+                valueBrush,
+                new Rectangle(bounds.Left + innerPad + availablePrefixWidth + S(5), bounds.Top, availableValueWidth, bounds.Height),
+                near);
+        }
+
+        if (recordHitTargets && !busy)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = bounds, Action = CaptionsHitAction.CaptionLanguageToggle });
         }
     }
 
@@ -405,6 +568,7 @@ internal sealed partial class CaptionsBoardForm
 
     private void DrawHistoryList(Graphics g, Rectangle bounds, Font smallFont, Font strongFont, Font monoSmallFont)
     {
+        this.lastDrawnHistoryCount = 0;
         if (this.snapshot.RecentHistory.Count == 0)
         {
             using (SolidBrush mutedBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
@@ -423,14 +587,33 @@ internal sealed partial class CaptionsBoardForm
         int perEntry = firstLineHeight + secondLineHeight + entryGap;
         // Compute how many whole entries actually fit against the measured font metrics at this
         // canvas size, the same way CodexTaskBoard.MaximumVisibleRows() does, rather than assuming a
-        // fixed count -- a different LayerScale/DPI changes the measured line heights.
+        // fixed count -- a different LayerScale/DPI changes the measured line heights. The measured
+        // budget is then capped at MaxHistoryEntries: on this board the controls matter more than
+        // the transcript, so the list deliberately shows less than it could fit.
         int maxEntries = perEntry > 0 ? Math.Max(1, (bounds.Height + entryGap) / perEntry) : 1;
-        int count = Math.Min(maxEntries, this.snapshot.RecentHistory.Count);
+        int count = Math.Min(Math.Min(MaxHistoryEntries, maxEntries), this.snapshot.RecentHistory.Count);
 
-        int y = bounds.Top;
+        // The cap frees far more height than the entries need, so instead of leaving a void under a
+        // list crammed against the top, the area is divided into `count` equal rows that fill it and
+        // each entry's measured two-line block is centred inside its own row. Row height therefore
+        // comes from the area and the entry count, never from a hardcoded pixel rhythm, and the two
+        // text lines inside a row are still positioned purely from their measured heights.
+        int rowHeight = Math.Max(firstLineHeight + secondLineHeight + entryGap, bounds.Height / count);
+        int blockHeight = firstLineHeight + secondLineHeight;
+
+        this.lastDrawnHistoryCount = count;
         for (int i = 0; i < count; i++)
         {
             TranslatorHistoryEntry entry = this.snapshot.RecentHistory[i];
+            int rowTop = bounds.Top + i * rowHeight;
+            if (i > 0)
+            {
+                // Hairline between rows: with rows this tall, a separator is what makes the spacing
+                // read as a deliberate list rather than as three stranded paragraphs.
+                DrawDivider(g, bounds.Left, rowTop, bounds.Width);
+            }
+
+            int y = rowTop + Math.Max(0, (rowHeight - blockHeight) / 2);
             Rectangle firstLine = new Rectangle(bounds.Left, y, bounds.Width, firstLineHeight);
             Rectangle secondLine = new Rectangle(bounds.Left, firstLine.Bottom, bounds.Width, secondLineHeight);
 
@@ -461,8 +644,6 @@ internal sealed partial class CaptionsBoardForm
 
                 g.DrawString(entry.TranslatedText, strongFont, translatedBrush, secondLine, near);
             }
-
-            y = secondLine.Bottom + entryGap;
         }
     }
 
@@ -562,7 +743,9 @@ internal sealed partial class CaptionsBoardForm
     internal static void RunSelfTest()
     {
         VerifyHitTargets(648, 400);
-        Console.WriteLine("Captions board layout: PASS hit targets, no overlap, zero-height alert strip when no failure");
+        VerifyServiceChipHitTargetsFollowServiceState(648, 400);
+        VerifyHistoryEntryCap(648, 400);
+        Console.WriteLine("Captions board layout: PASS hit targets, no overlap, zero-height alert strip when no failure, status-strip targets follow service state, history capped at " + MaxHistoryEntries);
     }
 
     private static void VerifyHitTargets(int logicalWidth, int logicalHeight)
@@ -577,7 +760,10 @@ internal sealed partial class CaptionsBoardForm
         using (Graphics g = Graphics.FromImage(bitmap))
         {
             form.Size = new Size(logicalWidth, logicalHeight);
-            form.snapshot = CreateFixtureSnapshot();
+            // Every service down, so all four status-strip start actions are registered in the same
+            // frame: that is the only state in which the full interactive surface of this board is
+            // drawn at once, and therefore the only state that can prove nothing overlaps.
+            form.snapshot = CreateAllServicesDownFixtureSnapshot();
             form.DrawBoard(g, true);
 
             CaptionsHitAction[] required =
@@ -587,7 +773,12 @@ internal sealed partial class CaptionsBoardForm
                 CaptionsHitAction.NumContextsPlus,
                 CaptionsHitAction.ModelCycle,
                 CaptionsHitAction.ToggleRunning,
-                CaptionsHitAction.Close
+                CaptionsHitAction.Close,
+                CaptionsHitAction.GenieXStart,
+                CaptionsHitAction.SanitizeProxyStart,
+                CaptionsHitAction.LiveCaptionsStart,
+                CaptionsHitAction.TranslatorStart,
+                CaptionsHitAction.CaptionLanguageToggle
             };
 
             for (int i = 0; i < required.Length; i++)
@@ -620,7 +811,7 @@ internal sealed partial class CaptionsBoardForm
             // The failure alert strip must take zero height (not merely be invisible) when there is
             // no recent failure, so the section label/history area below it are not pushed down for
             // nothing.
-            TranslatorControlSnapshot noFailure = CreateFixtureSnapshot();
+            TranslatorControlSnapshot noFailure = CreateAllServicesDownFixtureSnapshot();
             noFailure.RecentHistory[0].IsError = false;
             noFailure.RecentHistory[0].TranslatedText = "ok";
             form.snapshot = noFailure;
@@ -629,6 +820,109 @@ internal sealed partial class CaptionsBoardForm
             if (form.hitTargets.Count != hitTargetCountWithoutAlert)
             {
                 throw new InvalidOperationException("Captions board layout self-test failed: alert strip presence changed toolbar hit target count.");
+            }
+        }
+    }
+
+    // A healthy service must not be clickable: the status chip is an indicator, not a restart
+    // button, and an accidental click on a green GenieX chip would cost ~10s of model reload.
+    // The caption-source chip is the exception -- it is always actionable.
+    private static void VerifyServiceChipHitTargetsFollowServiceState(int logicalWidth, int logicalHeight)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.SpecBoardWidth = logicalWidth;
+        settings.SpecBoardHeight = logicalHeight;
+        settings.Normalize();
+
+        CaptionsHitAction[] startActions =
+        {
+            CaptionsHitAction.GenieXStart,
+            CaptionsHitAction.SanitizeProxyStart,
+            CaptionsHitAction.LiveCaptionsStart,
+            CaptionsHitAction.TranslatorStart
+        };
+
+        using (CaptionsBoardForm form = new CaptionsBoardForm(null, settings, delegate { return null; }))
+        using (Bitmap bitmap = new Bitmap(logicalWidth, logicalHeight, PixelFormat.Format32bppPArgb))
+        using (Graphics g = Graphics.FromImage(bitmap))
+        {
+            form.Size = new Size(logicalWidth, logicalHeight);
+            TranslatorControlSnapshot allUp = CreateFixtureSnapshot();
+            allUp.LiveCaptionsRunning = true;
+            form.snapshot = allUp;
+            form.DrawBoard(g, true);
+
+            for (int i = 0; i < startActions.Length; i++)
+            {
+                if (form.FindHitTarget(startActions[i]) != Rectangle.Empty)
+                {
+                    throw new InvalidOperationException(
+                        "Captions board layout self-test failed: a running service still registered a start target " + startActions[i]);
+                }
+            }
+
+            if (form.FindHitTarget(CaptionsHitAction.CaptionLanguageToggle) == Rectangle.Empty)
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: the caption source chip must stay clickable while every service is up.");
+            }
+
+            // Unknown caption language must still be clickable -- that is the state a user most
+            // needs to be able to correct.
+            TranslatorControlSnapshot unknownLanguage = CreateFixtureSnapshot();
+            unknownLanguage.LiveCaptionsRunning = true;
+            unknownLanguage.CaptionLanguageKnown = false;
+            unknownLanguage.CaptionLanguage = string.Empty;
+            form.snapshot = unknownLanguage;
+            form.DrawBoard(g, true);
+            if (form.FindHitTarget(CaptionsHitAction.CaptionLanguageToggle) == Rectangle.Empty)
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: the caption source chip must stay clickable when the registry value is unknown.");
+            }
+        }
+    }
+
+    private static void VerifyHistoryEntryCap(int logicalWidth, int logicalHeight)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.SpecBoardWidth = logicalWidth;
+        settings.SpecBoardHeight = logicalHeight;
+        settings.Normalize();
+
+        using (CaptionsBoardForm form = new CaptionsBoardForm(null, settings, delegate { return null; }))
+        using (Bitmap bitmap = new Bitmap(logicalWidth, logicalHeight, PixelFormat.Format32bppPArgb))
+        using (Graphics g = Graphics.FromImage(bitmap))
+        {
+            form.Size = new Size(logicalWidth, logicalHeight);
+            TranslatorControlSnapshot crowded = CreateFixtureSnapshot();
+            while (crowded.RecentHistory.Count < 8)
+            {
+                crowded.RecentHistory.Add(crowded.RecentHistory[crowded.RecentHistory.Count - 1].Clone());
+            }
+
+            form.snapshot = crowded;
+            form.DrawBoard(g, true);
+            if (form.lastDrawnHistoryCount != MaxHistoryEntries)
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: history must be capped at " + MaxHistoryEntries +
+                    " entries, drew " + form.lastDrawnHistoryCount);
+            }
+
+            // Fewer available entries than the cap must not be padded out to the cap.
+            TranslatorControlSnapshot sparse = CreateFixtureSnapshot();
+            while (sparse.RecentHistory.Count > 2)
+            {
+                sparse.RecentHistory.RemoveAt(sparse.RecentHistory.Count - 1);
+            }
+
+            form.snapshot = sparse;
+            form.DrawBoard(g, true);
+            if (form.lastDrawnHistoryCount != 2)
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: expected 2 history entries, drew " + form.lastDrawnHistoryCount);
             }
         }
     }

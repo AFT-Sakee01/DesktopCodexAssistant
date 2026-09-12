@@ -48,6 +48,10 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
     private string statusNotice = string.Empty;
     private bool operationRunning;
     private CaptionsHitAction pendingAction = CaptionsHitAction.None;
+    // How many history entries the last DrawHistoryList pass actually painted. Purely observational
+    // (never read by the draw path itself); it exists so the layout self-test can assert the
+    // measured-metrics entry budget against the MaxHistoryEntries cap without re-deriving it.
+    private int lastDrawnHistoryCount;
 
     internal Action CollapseOtherLeftDockOverlays;
 
@@ -517,11 +521,13 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
         builder.Append(this.snapshot.IsRunning ? '1' : '0');
         builder.Append(this.snapshot.GenieXRunning ? '1' : '0');
         builder.Append(this.snapshot.SanitizeProxyRunning ? '1' : '0');
+        builder.Append(this.snapshot.LiveCaptionsRunning ? '1' : '0');
         builder.Append(this.snapshot.RestartInProgress ? '1' : '0');
         builder.Append(this.operationRunning ? '1' : '0');
         builder.Append('|').Append((int)this.pendingAction);
         builder.Append('|').Append(this.snapshot.ContextAwareKnown ? '1' : '0').Append(this.snapshot.ContextAware ? '1' : '0');
         builder.Append('|').Append(this.snapshot.NumContextsKnown ? this.snapshot.NumContexts : -1);
+        builder.Append('|').Append(this.snapshot.CaptionLanguageKnown ? this.snapshot.CaptionLanguage : "?");
         builder.Append('|').Append(this.snapshot.ModelNameKnown ? this.snapshot.ModelName : string.Empty);
         builder.Append('|').Append(this.snapshot.AvailableModels.Count);
         builder.Append('|').Append(this.snapshot.LastSuccessKnown ? (nowUtc - this.snapshot.LastSuccessLocal.ToUniversalTime()).TotalMinutes.ToString("F0", CultureInfo.InvariantCulture) : "?");
@@ -666,6 +672,30 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
                 RequestTranslatorToggle(action, reader, !this.snapshot.IsRunning);
                 break;
 
+            case CaptionsHitAction.TranslatorStart:
+                // The status strip's 翻译器 chip is only clickable while the translator is down, so
+                // this is always a start. It deliberately goes through the same
+                // RequestTranslatorToggle -> TryToggleTranslatorRunning path the toolbar's
+                // start/stop button uses rather than introducing a second launcher.
+                RequestTranslatorToggle(action, reader, true);
+                break;
+
+            case CaptionsHitAction.GenieXStart:
+                RequestServiceStart(action, reader, TranslatorControlReader.MonitoredServiceKind.GenieX);
+                break;
+
+            case CaptionsHitAction.SanitizeProxyStart:
+                RequestServiceStart(action, reader, TranslatorControlReader.MonitoredServiceKind.SanitizeProxy);
+                break;
+
+            case CaptionsHitAction.LiveCaptionsStart:
+                RequestServiceStart(action, reader, TranslatorControlReader.MonitoredServiceKind.LiveCaptions);
+                break;
+
+            case CaptionsHitAction.CaptionLanguageToggle:
+                RequestCaptionLanguageToggle(action, reader);
+                break;
+
             default:
                 break;
         }
@@ -723,6 +753,71 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
             try
             {
                 success = reader.TryApplySettingChange(kind, boolValue, intValue, stringValue, out detail);
+            }
+            catch (Exception ex)
+            {
+                Program.LogException(ex);
+                detail = ex.GetType().Name + ": " + ex.Message;
+            }
+
+            CompleteAsyncOperation(reader, success, detail);
+        });
+    }
+
+    // Starting a down service is the same async shape as a settings write: the click only sets the
+    // pending state and repaints, the blocking Process.Start happens on a background Task, and the
+    // continuation marshals back through CompleteAsyncOperation. The chip does not wait for the
+    // service to finish coming up -- the reader's next 2000ms refresh is what flips the dot green.
+    private void RequestServiceStart(
+        CaptionsHitAction sourceControl,
+        TranslatorControlReader reader,
+        TranslatorControlReader.MonitoredServiceKind kind)
+    {
+        this.operationRunning = true;
+        this.pendingAction = sourceControl;
+        reader.SetRestartInProgress(true);
+        RefreshSnapshot();
+        RenderLayeredWindow();
+
+        Task.Run((Action)delegate
+        {
+            string detail;
+            bool success = false;
+            try
+            {
+                success = TranslatorControlReader.TryStartMonitoredService(kind, out detail);
+            }
+            catch (Exception ex)
+            {
+                Program.LogException(ex);
+                detail = ex.GetType().Name + ": " + ex.Message;
+            }
+
+            CompleteAsyncOperation(reader, success, detail);
+        });
+    }
+
+    // Registry write + Live Captions/translator restart. Same async contract as every other control
+    // on this board; the target value comes from the pure ResolveToggledCaptionLanguage helper so
+    // the board never encodes the two language codes itself.
+    private void RequestCaptionLanguageToggle(CaptionsHitAction sourceControl, TranslatorControlReader reader)
+    {
+        string nextLanguage = TranslatorControlReader.ResolveToggledCaptionLanguage(
+            this.snapshot.CaptionLanguageKnown ? this.snapshot.CaptionLanguage : null);
+
+        this.operationRunning = true;
+        this.pendingAction = sourceControl;
+        reader.SetRestartInProgress(true);
+        RefreshSnapshot();
+        RenderLayeredWindow();
+
+        Task.Run((Action)delegate
+        {
+            string detail;
+            bool success = false;
+            try
+            {
+                success = reader.TryApplyCaptionLanguage(nextLanguage, out detail);
             }
             catch (Exception ex)
             {
@@ -811,7 +906,14 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
         NumContextsPlus,
         ModelCycle,
         ToggleRunning,
-        Close
+        Close,
+        // Status-strip start actions. Each is registered only while its own service is down, so a
+        // chip that already shows green is inert rather than a restart trap.
+        GenieXStart,
+        SanitizeProxyStart,
+        LiveCaptionsStart,
+        TranslatorStart,
+        CaptionLanguageToggle
     }
 
     private struct CaptionsHitTarget

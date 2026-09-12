@@ -29,6 +29,13 @@ internal sealed partial class CaptionsBoardForm
         snapshot.IsRunning = true;
         snapshot.GenieXRunning = true;
         snapshot.SanitizeProxyRunning = true;
+        // Deliberately mixed so one render exercises both status-chip styles at once: three healthy
+        // indicator chips plus one down chip carrying the accent border and its start hit target.
+        snapshot.LiveCaptionsRunning = false;
+        // zh-CN is the state the caption-source control exists to get the machine out of, so the
+        // sample renders its warning styling rather than the already-correct en-US.
+        snapshot.CaptionLanguageKnown = true;
+        snapshot.CaptionLanguage = "zh-CN";
         snapshot.SettingsFileFound = true;
         snapshot.ContextAwareKnown = true;
         snapshot.ContextAware = true;
@@ -80,6 +87,19 @@ internal sealed partial class CaptionsBoardForm
             IsError = false
         });
 
+        return snapshot;
+    }
+
+    // Worst case for the layout self-test: with nothing running, all four status-strip start
+    // targets plus the caption-source chip are registered in the same frame alongside the toolbar's
+    // six, which is the densest the interactive surface ever gets.
+    private static TranslatorControlSnapshot CreateAllServicesDownFixtureSnapshot()
+    {
+        TranslatorControlSnapshot snapshot = CreateFixtureSnapshot();
+        snapshot.IsRunning = false;
+        snapshot.GenieXRunning = false;
+        snapshot.SanitizeProxyRunning = false;
+        snapshot.LiveCaptionsRunning = false;
         return snapshot;
     }
 

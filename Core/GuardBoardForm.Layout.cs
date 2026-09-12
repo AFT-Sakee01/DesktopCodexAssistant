@@ -93,7 +93,10 @@ internal sealed partial class GuardBoardForm
         }
         else
         {
-            int gaugeWidth = Math.Max(S(150), (int)Math.Round(body.Width * 0.40));
+            // The ring column gives up four points of width to the control column: the rows there now
+            // carry a name and its live state on one line, which needs horizontal room, while the ring
+            // only loses a few pixels of diameter.
+            int gaugeWidth = Math.Max(S(150), (int)Math.Round(body.Width * 0.36));
             Rectangle gauge = new Rectangle(body.Left, body.Top, gaugeWidth, body.Height);
             Rectangle controls = new Rectangle(gauge.Right + S(7), body.Top, Math.Max(1, body.Right - gauge.Right - S(7)), body.Height);
             using (Pen divider = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Border, 112), Math.Max(1.0f, this.LayerScale)))
@@ -643,9 +646,18 @@ internal sealed partial class GuardBoardForm
         }
     }
 
-    // Right column: two labelled sections of control cards. Card heights are measured and the
-    // leftover space is split between the sections, so the column fills the board at any scale
-    // instead of leaving a ragged gap under the last card.
+    // Right column: three labelled groups, each a rounded panel of single-line control rows.
+    //
+    // Rows, not cards. Every setting used to get its own boxed card — bold title line, muted subtitle
+    // line, one control floated to the right — so a single switch cost two text lines plus card
+    // padding. The column's fixed height was permanently oversubscribed: each control added had to be
+    // paid for by shrinking its neighbours, and at narrow widths the last card still collided with the
+    // footer. A row carries the same three things (name, live state, control) on one line and costs
+    // one line height, which is where this column's headroom comes from.
+    //
+    // Exactly one variable drives the height budget: rowHeight. Group headers, panel padding and gaps
+    // are fixed and measured, so fitting the column is one clamp instead of a cascade of per-group
+    // shrink rules.
     private void DrawControlColumn(
         Graphics g,
         Rectangle bounds,
@@ -657,150 +669,373 @@ internal sealed partial class GuardBoardForm
         DateTime nowUtc,
         bool recordHitTargets)
     {
-        int sectionRow = MeasureLineHeight(g, smallBold, S(4));
-        int cardTitleHeight = MeasureLineHeight(g, bodyBold, S(1));
-        int cardSubtitleHeight = MeasureLineHeight(g, smallFont, S(1));
-        int cardHeight = cardTitleHeight + cardSubtitleHeight + S(8);
-        int cardGap = S(4);
-        int sectionGap = S(6);
-
-        // Battery care normally lives in the ring column next to its 24h bar. The compact layout has
-        // no ring column, so it moves here as a fourth power card — dropping it would silently make
-        // a feature unreachable at narrow widths instead of merely rearranging it.
+        // Battery care normally lives in the ring column beside its 24h bar. The compact layout has no
+        // ring column, so it moves here as a fourth power row — dropping it would silently make a
+        // feature unreachable at narrow widths instead of merely rearranging it.
         bool includeBattery = this.IsCompactLayout;
-        int cardCount = includeBattery ? 7 : 6;
 
-        int required = sectionRow * 2 + cardHeight * cardCount + cardGap * (cardCount - 2) + sectionGap;
-        int slack = Math.Max(0, bounds.Height - required);
-        // Spread leftover height across the cards rather than inflating one of them.
-        cardHeight += slack / cardCount;
+        int sectionRow = MeasureLineHeight(g, smallBold, S(4));
+        int toggleHeight = S(17);
+        int controlHeight = MeasureLineHeight(g, smallBold, S(5));
+        int naturalRowHeight = Math.Max(
+            Math.Max(MeasureLineHeight(g, bodyBold, S(7)), controlHeight + S(5)),
+            toggleHeight + S(7));
+        // Floor: still taller than the tallest control, so a squeezed row never puts a toggle on top
+        // of a separator. Rows stop shrinking here; the fixed parts give way first (below).
+        int minRowHeight = Math.Max(
+            Math.Max(MeasureLineHeight(g, bodyBold, S(1)), controlHeight + S(2)),
+            toggleHeight + S(3));
+
+        int panelPad = S(4);
+        int headerGap = S(2);
+        int groupGap = S(6);
+
+        int powerRowCount = 3;
+        int modeRowCount = includeBattery ? 4 : 3;
+        int programRowCount = 5;
+        int rowCount = powerRowCount + modeRowCount + programRowCount;
+
+        int fixedHeight = sectionRow * 3 + headerGap * 3 + panelPad * 6 + groupGap * 2;
+        if ((bounds.Height - fixedHeight) / rowCount < minRowHeight)
+        {
+            // Short board: the padding gives way before the rows do. Padding only buys air, while a
+            // row below its floor stops being clickable — so this order is deliberate.
+            panelPad = S(1);
+            headerGap = S(1);
+            groupGap = S(3);
+            fixedHeight = sectionRow * 3 + headerGap * 3 + panelPad * 6 + groupGap * 2;
+        }
+
+        int rowHeight = Math.Max(minRowHeight, Math.Min(naturalRowHeight, (bounds.Height - fixedHeight) / rowCount));
+        // Leftover height goes between groups, not into the rows: a row inflated well past its own
+        // line height reads as a gap with a control floating in it.
+        int slack = Math.Max(0, bounds.Height - (fixedHeight + rowHeight * rowCount));
+        groupGap += Math.Min(S(16), slack / 2);
 
         int y = bounds.Top;
-        y = DrawSectionHeader(g, bounds, y, sectionRow, "电源守护 · CodexSleepGuard", DesignTokens.Colors.Success, smallBold);
 
-        y = DrawControlCard(
+        // --- 电源守护 ---
+        y = DrawSectionHeader(g, bounds, y, sectionRow, "电源守护 · CodexSleepGuard", DesignTokens.Colors.Success, smallBold) + headerGap;
+        Rectangle panel = new Rectangle(bounds.Left, y, bounds.Width, panelPad * 2 + rowHeight * powerRowCount);
+        DrawGroupPanel(g, panel);
+        int rowY = panel.Top + panelPad;
+        int nameColumn = MeasureNameColumn(g, bodyBold, panel.Width, new string[] { "睡眠防护", "亮屏计时", "断网自动睡眠" });
+
+        bool sleepOn = this.runtime.SleepGuardEnabled;
+        rowY = DrawSettingRow(
             g,
-            new Rectangle(bounds.Left, y, bounds.Width, cardHeight),
-            "睡眠防护",
-            this.runtime.SleepGuardEnabled ? "系统不休眠 · 屏幕仍按超时熄灭" : "系统按 Windows 电源设置休眠",
-            GuardCardControl.Toggle,
-            this.runtime.SleepGuardEnabled,
-            string.Empty,
-            GuardHitAction.SleepToggle,
-            GuardHitAction.None,
-            GuardHitAction.None,
+            new Rectangle(panel.Left, rowY, panel.Width, rowHeight),
+            new GuardRowSpec
+            {
+                Name = "睡眠防护",
+                NameColumn = nameColumn,
+                State = sleepOn ? "系统不休眠 · 屏幕仍按超时熄灭" : "系统按 Windows 电源设置休眠",
+                StateColor = sleepOn ? DesignTokens.Colors.Success : DesignTokens.Colors.GlyphMuted,
+                Control = GuardCardControl.Toggle,
+                On = sleepOn,
+                Primary = GuardHitAction.SleepToggle
+            },
             bodyBold,
             smallFont,
             smallBold,
-            recordHitTargets) + cardGap;
+            recordHitTargets);
 
-        y = DrawControlCard(
+        DrawRowSeparator(g, panel, rowY);
+        bool displayOn = this.runtime.DisplayGuardActive;
+        rowY = DrawSettingRow(
             g,
-            new Rectangle(bounds.Left, y, bounds.Width, cardHeight),
-            "亮屏计时",
-            this.runtime.DisplayGuardActive
-                ? "剩余 " + GuardRuntime.FormatCountdown(this.runtime.GetDisplayGuardRemaining(nowUtc)) + " · 到点自动解除"
-                : "按小时保持亮屏 · 不会自动开启防睡眠",
-            GuardCardControl.StepperWithAction,
-            this.runtime.DisplayGuardActive,
-            FormatMinutesLabel(this.runtime.DisplayGuardMinutes),
-            GuardHitAction.DisplayToggle,
-            GuardHitAction.DisplayMinus,
-            GuardHitAction.DisplayPlus,
+            new Rectangle(panel.Left, rowY, panel.Width, rowHeight),
+            new GuardRowSpec
+            {
+                Name = "亮屏计时",
+                NameColumn = nameColumn,
+                State = displayOn
+                    ? "剩余 " + GuardRuntime.FormatCountdown(this.runtime.GetDisplayGuardRemaining(nowUtc)) + " · 到点自动解除"
+                    : "保持亮屏 · 不会自动开启防睡眠",
+                StateColor = displayOn ? DesignTokens.Colors.Warning : DesignTokens.Colors.GlyphMuted,
+                Control = GuardCardControl.StepperWithAction,
+                On = displayOn,
+                Value = FormatMinutesLabel(this.runtime.DisplayGuardMinutes),
+                ActionLabel = displayOn ? "停止" : "开始",
+                ActionAccent = displayOn ? DesignTokens.Colors.Warning : DesignTokens.Colors.Accent,
+                Primary = GuardHitAction.DisplayToggle,
+                Minus = GuardHitAction.DisplayMinus,
+                Plus = GuardHitAction.DisplayPlus
+            },
             bodyBold,
             smallFont,
             smallBold,
-            recordHitTargets) + cardGap;
+            recordHitTargets);
 
-        y = DrawControlCard(
+        DrawRowSeparator(g, panel, rowY);
+        DrawSettingRow(
             g,
-            new Rectangle(bounds.Left, y, bounds.Width, cardHeight),
-            "断网自动睡眠",
-            !this.runtime.SleepGuardEnabled
-                ? "未武装 · 开启睡眠防护后才会触发"
-                : (this.runtime.Online
-                    ? "在线 · 离线满阈值即解除守护并睡眠"
-                    : "离线 " + GuardRuntime.FormatCountdown(this.runtime.GetOfflineElapsed(nowUtc)) + " · 达阈值即请求睡眠"),
-            GuardCardControl.Stepper,
-            false,
-            FormatMinutesLabel(this.runtime.OfflineThresholdMinutes),
-            GuardHitAction.None,
-            GuardHitAction.OfflineMinus,
-            GuardHitAction.OfflinePlus,
+            new Rectangle(panel.Left, rowY, panel.Width, rowHeight),
+            new GuardRowSpec
+            {
+                Name = "断网自动睡眠",
+                NameColumn = nameColumn,
+                State = !sleepOn
+                    ? "未武装 · 开启睡眠防护后才会触发"
+                    : (this.runtime.Online
+                        ? "在线 · 离线满阈值即解除守护并睡眠"
+                        : "离线 " + GuardRuntime.FormatCountdown(this.runtime.GetOfflineElapsed(nowUtc)) + " · 达阈值即请求睡眠"),
+                StateColor = sleepOn && !this.runtime.Online ? DesignTokens.Colors.Warning : DesignTokens.Colors.GlyphMuted,
+                Control = GuardCardControl.Stepper,
+                Value = FormatMinutesLabel(this.runtime.OfflineThresholdMinutes),
+                Minus = GuardHitAction.OfflineMinus,
+                Plus = GuardHitAction.OfflinePlus
+            },
             bodyBold,
             smallFont,
             smallBold,
-            recordHitTargets) + (includeBattery ? cardGap : sectionGap);
+            recordHitTargets);
+        y = panel.Bottom + groupGap;
+
+        // --- 电源模式 ---
+        // The live tier and any pending schedule ride in the section header. The header is a line this
+        // group already pays for, so the quick-switch row below it can be pure control.
+        GuardPowerModeTier liveTier = GuardRuntime.GetLivePowerModeTier();
+        bool scheduleActive = this.runtime.PowerModeOverrideActive;
+        string modeHeader = "电源模式 · 当前" + GuardRuntime.DescribeTier(liveTier) +
+            (scheduleActive ? " · 定时中" : " · 点击即切换，不自动还原");
+        y = DrawSectionHeader(g, bounds, y, sectionRow, modeHeader, DesignTokens.Colors.Accent, smallBold) + headerGap;
+        panel = new Rectangle(bounds.Left, y, bounds.Width, panelPad * 2 + rowHeight * modeRowCount);
+        DrawGroupPanel(g, panel);
+        rowY = panel.Top + panelPad;
+        nameColumn = MeasureNameColumn(g, bodyBold, panel.Width, new string[] { "定时锁定", "省电模式", "电池保护" });
+
+        int segmentInset = S(9);
+        int segmentHeight = Math.Max(controlHeight, rowHeight - S(4));
+        DrawSegmentRow(
+            g,
+            new Rectangle(
+                panel.Left + segmentInset,
+                rowY + Math.Max(0, (rowHeight - segmentHeight) / 2),
+                Math.Max(S(60), panel.Width - segmentInset * 2),
+                segmentHeight),
+            new string[] { "省电", "平衡", "性能" },
+            new bool[]
+            {
+                liveTier == GuardPowerModeTier.Saver,
+                liveTier == GuardPowerModeTier.Balanced,
+                liveTier == GuardPowerModeTier.Performance
+            },
+            DesignTokens.Colors.Accent,
+            new GuardHitAction[]
+            {
+                GuardHitAction.PowerModeSaver,
+                GuardHitAction.PowerModeBalanced,
+                GuardHitAction.PowerModePerformance
+            },
+            smallBold,
+            recordHitTargets);
+        rowY += rowHeight;
+
+        DrawRowSeparator(g, panel, rowY);
+        rowY = DrawSettingRow(
+            g,
+            new Rectangle(panel.Left, rowY, panel.Width, rowHeight),
+            new GuardRowSpec
+            {
+                Name = "定时锁定",
+                NameColumn = nameColumn,
+                State = scheduleActive
+                    ? "剩余 " + GuardRuntime.FormatCountdown(this.runtime.GetPowerModeOverrideRemaining(nowUtc)) + " 后恢复至平衡"
+                    : "到点固定恢复至平衡",
+                StateColor = scheduleActive ? DesignTokens.Colors.Warning : DesignTokens.Colors.GlyphMuted,
+                Control = GuardCardControl.StepperWithAction,
+                On = scheduleActive,
+                Value = FormatHoursLabel(this.runtime.PowerModeOverrideHours),
+                ActionLabel = scheduleActive ? "取消定时" : "定时锁定",
+                ActionAccent = scheduleActive ? DesignTokens.Colors.Warning : DesignTokens.Colors.Accent,
+                Primary = GuardHitAction.PowerScheduleToggle,
+                Minus = GuardHitAction.PowerScheduleHoursMinus,
+                Plus = GuardHitAction.PowerScheduleHoursPlus
+            },
+            bodyBold,
+            smallFont,
+            smallBold,
+            recordHitTargets);
+
+        DrawRowSeparator(g, panel, rowY);
+        // The toggle stays bound to GUARD's own intent — it is the control for that flag, and making
+        // it mirror the live state would snap back the moment the user flips it on AC power. The state
+        // text carries what the system is actually doing, which is the part that answers "did it take".
+        bool energySaverForced = this.runtime.EnergySaverForcedOn;
+        bool energySaverLive;
+        bool energySaverLiveKnown = NativeMethods.TryGetBatterySaverStatus(out energySaverLive);
+        rowY = DrawSettingRow(
+            g,
+            new Rectangle(panel.Left, rowY, panel.Width, rowHeight),
+            new GuardRowSpec
+            {
+                Name = "省电模式",
+                NameColumn = nameColumn,
+                State = DescribeEnergySaverDetail(energySaverLiveKnown, energySaverLive, energySaverForced),
+                StateColor = energySaverLiveKnown && energySaverLive
+                    ? DesignTokens.Colors.Success
+                    : (energySaverForced ? DesignTokens.Colors.Warning : DesignTokens.Colors.GlyphMuted),
+                Control = GuardCardControl.Toggle,
+                On = energySaverForced,
+                Primary = GuardHitAction.EnergySaverToggle
+            },
+            bodyBold,
+            smallFont,
+            smallBold,
+            recordHitTargets);
 
         if (includeBattery)
         {
+            DrawRowSeparator(g, panel, rowY);
             bool paused = this.runtime.BatteryCarePauseActive;
-            y = DrawControlCard(
+            DrawSettingRow(
                 g,
-                new Rectangle(bounds.Left, y, bounds.Width, cardHeight),
-                "电池保护",
-                paused
-                    ? "暂停约 " + GuardRuntime.FormatCountdown(this.runtime.GetBatteryCarePauseRemaining(nowUtc)) + " 后恢复"
-                    : "按 80% 充电上限",
-                GuardCardControl.Button,
-                paused,
-                paused ? "恢复" : "暂停",
-                GuardHitAction.BatteryToggle,
-                GuardHitAction.None,
-                GuardHitAction.None,
+                new Rectangle(panel.Left, rowY, panel.Width, rowHeight),
+                new GuardRowSpec
+                {
+                    Name = "电池保护",
+                    NameColumn = nameColumn,
+                    State = paused
+                        ? "暂停约 " + GuardRuntime.FormatCountdown(this.runtime.GetBatteryCarePauseRemaining(nowUtc)) + " 后恢复"
+                        : "按 80% 充电上限",
+                    StateColor = paused ? DesignTokens.Colors.Warning : DesignTokens.Colors.GlyphMuted,
+                    Control = GuardCardControl.Button,
+                    On = paused,
+                    ActionLabel = paused ? "恢复" : "暂停",
+                    ActionAccent = paused ? DesignTokens.Colors.Warning : DesignTokens.Colors.Accent,
+                    Primary = GuardHitAction.BatteryToggle
+                },
                 bodyBold,
                 smallFont,
                 smallBold,
-                recordHitTargets) + sectionGap;
+                recordHitTargets);
         }
 
-        y = DrawSectionHeader(g, bounds, y, sectionRow, "程序守护 · 特殊设置", DesignTokens.Colors.AccentAlt, smallBold);
+        y = panel.Bottom + groupGap;
 
+        // --- 程序守护 ---
+        y = DrawSectionHeader(g, bounds, y, sectionRow, "程序守护 · 特殊设置", DesignTokens.Colors.AccentAlt, smallBold) + headerGap;
+        panel = new Rectangle(bounds.Left, y, bounds.Width, panelPad * 2 + rowHeight * programRowCount);
+        DrawGroupPanel(g, panel);
+        rowY = panel.Top + panelPad;
+        nameColumn = MeasureNameColumn(g, bodyBold, panel.Width, new string[] { "保活", "链接阻断", "额度计划", "CTF 重启" });
+
+        bool translatorAlive = this.CurrentSettings != null && this.CurrentSettings.TranslatorKeepAliveEnabled;
+        bool codexAlive = this.CurrentSettings != null && this.CurrentSettings.CodexAppKeepAliveEnabled;
+        bool claudeAlive = this.CurrentSettings != null && this.CurrentSettings.ClaudeAppKeepAliveEnabled;
+        int armedCount = (translatorAlive ? 1 : 0) + (codexAlive ? 1 : 0) + (claudeAlive ? 1 : 0);
+        bool allArmed = armedCount == 3;
+        rowY = DrawSettingRow(
+            g,
+            new Rectangle(panel.Left, rowY, panel.Width, rowHeight),
+            new GuardRowSpec
+            {
+                Name = "保活",
+                NameColumn = nameColumn,
+                State = armedCount == 0
+                    ? "未守护任何程序"
+                    : "已守护 " + armedCount.ToString(CultureInfo.InvariantCulture) + "/3 · 掉线每 30 秒补拉",
+                StateColor = armedCount == 0 ? DesignTokens.Colors.GlyphMuted : DesignTokens.Colors.Success,
+                Control = GuardCardControl.Button,
+                On = allArmed,
+                // One control both applies and undoes the default, so the label flips once all three
+                // are armed rather than leaving a button that does nothing.
+                ActionLabel = allArmed ? "全关" : "全开",
+                ActionAccent = allArmed ? DesignTokens.Colors.Warning : DesignTokens.Colors.Accent,
+                Primary = GuardHitAction.KeepAliveDefaults
+            },
+            bodyBold,
+            smallFont,
+            smallBold,
+            recordHitTargets);
+
+        // The three guards are peers of one setting, so they read as one segmented row rather than
+        // three label+toggle pairs strung across a line — with pairs, a toggle sitting midway between
+        // two labels visually attaches to the wrong one.
+        //
+        // Each segment carries its own ●/○ state dot, which is what separates this row from the
+        // power-mode row above it: identical pills without the dots would read as one exclusive
+        // choice, and these three are independent switches.
+        DrawSegmentRow(
+            g,
+            new Rectangle(
+                panel.Left + segmentInset,
+                rowY + Math.Max(0, (rowHeight - segmentHeight) / 2),
+                Math.Max(S(60), panel.Width - segmentInset * 2),
+                segmentHeight),
+            new string[]
+            {
+                (translatorAlive ? "● " : "○ ") + "翻译",
+                (codexAlive ? "● " : "○ ") + "Codex",
+                (claudeAlive ? "● " : "○ ") + "Claude"
+            },
+            new bool[] { translatorAlive, codexAlive, claudeAlive },
+            DesignTokens.Colors.Success,
+            new GuardHitAction[]
+            {
+                GuardHitAction.TranslatorKeepAliveToggle,
+                GuardHitAction.CodexAppKeepAliveToggle,
+                GuardHitAction.ClaudeAppKeepAliveToggle
+            },
+            smallBold,
+            recordHitTargets);
+        rowY += rowHeight;
+
+        DrawRowSeparator(g, panel, rowY);
         bool aiBlocked = this.CurrentSettings != null && this.CurrentSettings.AiRequestProtectionManualBlockEnabled;
-        y = DrawControlCard(
+        rowY = DrawSettingRow(
             g,
-            new Rectangle(bounds.Left, y, bounds.Width, cardHeight),
-            "链接阻断",
-            aiBlocked ? "已阻断本程序的 OpenAI / Claude 请求" : "阻断本程序的 OpenAI / Claude 请求",
-            GuardCardControl.Toggle,
-            aiBlocked,
-            string.Empty,
-            GuardHitAction.AiBlockToggle,
-            GuardHitAction.None,
-            GuardHitAction.None,
+            new Rectangle(panel.Left, rowY, panel.Width, rowHeight),
+            new GuardRowSpec
+            {
+                Name = "链接阻断",
+                NameColumn = nameColumn,
+                State = aiBlocked ? "已阻断本程序的 OpenAI / Claude 请求" : "阻断本程序的 OpenAI / Claude 请求",
+                StateColor = aiBlocked ? DesignTokens.Colors.Warning : DesignTokens.Colors.GlyphMuted,
+                Control = GuardCardControl.Toggle,
+                On = aiBlocked,
+                Primary = GuardHitAction.AiBlockToggle
+            },
             bodyBold,
             smallFont,
             smallBold,
-            recordHitTargets) + cardGap;
+            recordHitTargets);
 
+        DrawRowSeparator(g, panel, rowY);
         bool quotaPlan = this.CurrentSettings != null && this.CurrentSettings.CodexQuotaPlanEnabled;
-        y = DrawControlCard(
+        rowY = DrawSettingRow(
             g,
-            new Rectangle(bounds.Left, y, bounds.Width, cardHeight),
-            "额度计划",
-            "阈值与 goal 列表在普通设置中调整",
-            GuardCardControl.Toggle,
-            quotaPlan,
-            string.Empty,
-            GuardHitAction.QuotaPlanToggle,
-            GuardHitAction.None,
-            GuardHitAction.None,
+            new Rectangle(panel.Left, rowY, panel.Width, rowHeight),
+            new GuardRowSpec
+            {
+                Name = "额度计划",
+                NameColumn = nameColumn,
+                State = quotaPlan ? "已启用 · 阈值与 goal 见普通设置" : "未启用 · 阈值与 goal 见普通设置",
+                StateColor = quotaPlan ? DesignTokens.Colors.Success : DesignTokens.Colors.GlyphMuted,
+                Control = GuardCardControl.Toggle,
+                On = quotaPlan,
+                Primary = GuardHitAction.QuotaPlanToggle
+            },
             bodyBold,
             smallFont,
             smallBold,
-            recordHitTargets) + cardGap;
+            recordHitTargets);
 
-        DrawControlCard(
+        DrawRowSeparator(g, panel, rowY);
+        DrawSettingRow(
             g,
-            new Rectangle(bounds.Left, y, bounds.Width, cardHeight),
-            "CTF 重启",
-            "提权重启当前会话的 ctfmon.exe",
-            GuardCardControl.Button,
-            false,
-            "重启",
-            GuardHitAction.CtfRestart,
-            GuardHitAction.None,
-            GuardHitAction.None,
+            new Rectangle(panel.Left, rowY, panel.Width, rowHeight),
+            new GuardRowSpec
+            {
+                Name = "CTF 重启",
+                NameColumn = nameColumn,
+                State = "提权重启当前会话的 ctfmon.exe",
+                Control = GuardCardControl.Button,
+                ActionLabel = "重启",
+                ActionAccent = DesignTokens.Colors.Accent,
+                Primary = GuardHitAction.CtfRestart
+            },
             bodyBold,
             smallFont,
             smallBold,
@@ -833,99 +1068,236 @@ internal sealed partial class GuardBoardForm
         Button
     }
 
-    private int DrawControlCard(
+    // One row of a group panel. Everything a row needs is named here rather than passed as eleven
+    // positional arguments, because the rows differ in which three or four of these they use.
+    private struct GuardRowSpec
+    {
+        public string Name;
+        public string State;
+        public Color StateColor;
+        // Shared per panel so every state text in a group starts at the same x. Zero means "measure
+        // this row's own name", which leaves the states ragged.
+        public int NameColumn;
+        public GuardCardControl Control;
+        public bool On;
+        public string Value;
+        public string ActionLabel;
+        public Color ActionAccent;
+        public GuardHitAction Primary;
+        public GuardHitAction Minus;
+        public GuardHitAction Plus;
+    }
+
+    // Name, live state, control — on one line. The control is laid out right-to-left from the row's
+    // right edge and the text is measured against whatever remains; doing it in the other order is how
+    // text ends up running underneath a toggle at small widths.
+    private int DrawSettingRow(
         Graphics g,
         Rectangle bounds,
-        string title,
-        string subtitle,
-        GuardCardControl control,
-        bool state,
-        string value,
-        GuardHitAction primary,
-        GuardHitAction minus,
-        GuardHitAction plus,
-        Font titleFont,
+        GuardRowSpec spec,
+        Font nameFont,
         Font smallFont,
         Font smallBold,
         bool recordHitTargets)
     {
-        using (GraphicsPath path = RoundedRectangle(RectangleF.Inflate(bounds, -0.5f, -0.5f), S(5)))
-        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, 220)))
-        {
-            g.FillPath(fill, path);
-        }
-
         int padX = S(9);
         int controlRight = bounds.Right - padX;
-        int controlTop;
 
-        // Controls are laid out right-to-left from the card's right edge, and the text block is
-        // measured against whatever remains. Doing it in the other order is how text ends up
-        // running underneath a toggle at small widths.
-        if (control == GuardCardControl.Toggle)
+        if (spec.Control == GuardCardControl.Toggle)
         {
             int toggleWidth = S(32);
             int toggleHeight = S(17);
-            controlTop = bounds.Top + Math.Max(0, (bounds.Height - toggleHeight) / 2);
-            Rectangle toggle = new Rectangle(controlRight - toggleWidth, controlTop, toggleWidth, toggleHeight);
-            DrawToggle(g, toggle, state);
-            if (recordHitTargets && primary != GuardHitAction.None)
-            {
-                this.hitTargets.Add(new GuardHitTarget { Bounds = toggle, Action = primary });
-            }
-
+            Rectangle toggle = new Rectangle(
+                controlRight - toggleWidth,
+                bounds.Top + Math.Max(0, (bounds.Height - toggleHeight) / 2),
+                toggleWidth,
+                toggleHeight);
+            DrawToggle(g, toggle, spec.On);
+            RecordHitTarget(recordHitTargets, toggle, spec.Primary);
             controlRight = toggle.Left - S(6);
         }
-        else if (control == GuardCardControl.Button)
+        else if (spec.Control == GuardCardControl.Button)
         {
             int buttonHeight = MeasureLineHeight(g, smallBold, S(5));
-            int buttonWidth = Math.Max(S(44), (int)Math.Ceiling(g.MeasureString(value, smallBold).Width) + S(16));
-            controlTop = bounds.Top + Math.Max(0, (bounds.Height - buttonHeight) / 2);
-            Rectangle button = new Rectangle(controlRight - buttonWidth, controlTop, buttonWidth, buttonHeight);
-            DrawActionButton(g, button, value, DesignTokens.Colors.Accent, smallBold);
-            if (recordHitTargets && primary != GuardHitAction.None)
-            {
-                this.hitTargets.Add(new GuardHitTarget { Bounds = button, Action = primary });
-            }
-
+            int buttonWidth = Math.Max(S(44), (int)Math.Ceiling(g.MeasureString(spec.ActionLabel, smallBold).Width) + S(16));
+            Rectangle button = new Rectangle(
+                controlRight - buttonWidth,
+                bounds.Top + Math.Max(0, (bounds.Height - buttonHeight) / 2),
+                buttonWidth,
+                buttonHeight);
+            DrawActionButton(g, button, spec.ActionLabel, spec.ActionAccent, smallBold);
+            RecordHitTarget(recordHitTargets, button, spec.Primary);
             controlRight = button.Left - S(6);
         }
         else
         {
-            int rowHeight = MeasureLineHeight(g, smallBold, S(5));
-            controlTop = bounds.Top + Math.Max(0, (bounds.Height - rowHeight) / 2);
+            int controlHeight = MeasureLineHeight(g, smallBold, S(5));
+            int controlTop = bounds.Top + Math.Max(0, (bounds.Height - controlHeight) / 2);
 
-            if (control == GuardCardControl.StepperWithAction)
+            if (spec.Control == GuardCardControl.StepperWithAction)
             {
-                string actionLabel = state ? "停止" : "开始";
-                int actionWidth = Math.Max(S(40), (int)Math.Ceiling(g.MeasureString(actionLabel, smallBold).Width) + S(14));
-                Rectangle action = new Rectangle(controlRight - actionWidth, controlTop, actionWidth, rowHeight);
-                DrawActionButton(g, action, actionLabel, state ? DesignTokens.Colors.Warning : DesignTokens.Colors.Accent, smallBold);
-                if (recordHitTargets && primary != GuardHitAction.None)
-                {
-                    this.hitTargets.Add(new GuardHitTarget { Bounds = action, Action = primary });
-                }
-
+                int actionWidth = Math.Max(S(40), (int)Math.Ceiling(g.MeasureString(spec.ActionLabel, smallBold).Width) + S(14));
+                Rectangle action = new Rectangle(controlRight - actionWidth, controlTop, actionWidth, controlHeight);
+                DrawActionButton(g, action, spec.ActionLabel, spec.ActionAccent, smallBold);
+                RecordHitTarget(recordHitTargets, action, spec.Primary);
                 controlRight = action.Left - S(5);
             }
 
-            Rectangle stepper = DrawStepper(g, controlRight, controlTop, rowHeight, value, smallBold, smallFont, minus, plus, recordHitTargets);
+            Rectangle stepper = DrawStepper(
+                g,
+                controlRight,
+                controlTop,
+                controlHeight,
+                spec.Value,
+                smallBold,
+                smallFont,
+                spec.Minus,
+                spec.Plus,
+                recordHitTargets);
             controlRight = stepper.Left - S(6);
         }
 
-        int textWidth = Math.Max(S(30), controlRight - (bounds.Left + padX));
-        int titleHeight = MeasureLineHeight(g, titleFont, S(1));
-        int subtitleHeight = MeasureLineHeight(g, smallFont, S(1));
-        int textTop = bounds.Top + Math.Max(0, (bounds.Height - titleHeight - subtitleHeight) / 2);
-        using (SolidBrush titleBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
-        using (SolidBrush subtitleBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
+        int textLeft = bounds.Left + padX;
+        int textWidth = Math.Max(S(24), controlRight - textLeft);
+        using (SolidBrush nameBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
         using (StringFormat near = CreateFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
         {
-            g.DrawString(title, titleFont, titleBrush, new RectangleF(bounds.Left + padX, textTop, textWidth, titleHeight), near);
-            g.DrawString(subtitle, smallFont, subtitleBrush, new RectangleF(bounds.Left + padX, textTop + titleHeight, textWidth, subtitleHeight), near);
+            // Names share one column per panel so the state texts line up; without it every row starts
+            // its state at a different x and the group reads as unrelated lines rather than a table.
+            int nameWidth = spec.NameColumn > 0
+                ? Math.Min(textWidth, spec.NameColumn)
+                : Math.Min(textWidth, (int)Math.Ceiling(g.MeasureString(spec.Name, nameFont).Width) + S(3));
+            g.DrawString(spec.Name, nameFont, nameBrush, new RectangleF(textLeft, bounds.Top, nameWidth, bounds.Height), near);
+
+            int stateLeft = textLeft + nameWidth + S(6);
+            int stateWidth = controlRight - stateLeft;
+            if (!string.IsNullOrEmpty(spec.State) && stateWidth > S(16))
+            {
+                Color stateColor = spec.StateColor.IsEmpty ? DesignTokens.Colors.GlyphMuted : spec.StateColor;
+                using (SolidBrush stateBrush = new SolidBrush(stateColor))
+                {
+                    g.DrawString(spec.State, smallFont, stateBrush, new RectangleF(stateLeft, bounds.Top, stateWidth, bounds.Height), near);
+                }
+            }
         }
 
         return bounds.Bottom;
+    }
+
+    // Widest name in a group, used as that panel's name column. Capped so a long name ellipsizes
+    // instead of pushing every state text in the group up against the controls.
+    private int MeasureNameColumn(Graphics g, Font font, int panelWidth, string[] names)
+    {
+        int widest = 0;
+        for (int i = 0; i < names.Length; i++)
+        {
+            widest = Math.Max(widest, (int)Math.Ceiling(g.MeasureString(names[i], font).Width));
+        }
+
+        return Math.Min(widest + S(3), Math.Max(S(40), (int)Math.Round(panelWidth * 0.38)));
+    }
+
+    private void RecordHitTarget(bool recordHitTargets, Rectangle bounds, GuardHitAction action)
+    {
+        if (recordHitTargets && action != GuardHitAction.None)
+        {
+            this.hitTargets.Add(new GuardHitTarget { Bounds = bounds, Action = action });
+        }
+    }
+
+    // One surface per group instead of one per setting: the boxed-card-per-control look made eight
+    // unrelated slabs compete for attention, and the section headers floating between them carried no
+    // visual grouping of their own.
+    private void DrawGroupPanel(Graphics g, Rectangle bounds)
+    {
+        using (GraphicsPath path = RoundedRectangle(RectangleF.Inflate(bounds, -0.5f, -0.5f), S(6)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, 220)))
+        {
+            g.FillPath(fill, path);
+        }
+    }
+
+    // Hairline between two rows of the same panel, inset so it reads as an internal divider rather
+    // than a second panel edge.
+    private void DrawRowSeparator(Graphics g, Rectangle panel, int y)
+    {
+        int inset = S(9);
+        using (Pen pen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Border, 70), Math.Max(1.0f, this.LayerScale)))
+        {
+            g.DrawLine(pen, panel.Left + inset, y, panel.Right - inset, y);
+        }
+    }
+
+    // Live system state first, GUARD's intent second. Rendered as the 省电模式 row's state text, so
+    // this returns the state alone — the row already carries the name.
+    //
+    // SetEnergySaverForced() does not switch Energy Saver on; it writes the battery threshold to 100%
+    // and lets Windows decide, so on AC power forced-on legitimately means "not in effect". Reporting
+    // the flag as "已强制开启" claimed an effect that had not happened.
+    internal static string DescribeEnergySaverDetail(bool liveKnown, bool liveOn, bool forcedByGuard)
+    {
+        if (!liveKnown)
+        {
+            return forcedByGuard ? "未知（强制）" : "未知";
+        }
+
+        if (liveOn)
+        {
+            return forcedByGuard ? "开启（强制）" : "开启";
+        }
+
+        return forcedByGuard ? "强制未生效" : "关闭";
+    }
+
+    // Segmented row of mutually-visible peers, used by the power-mode tiers (accent) and the three
+    // keep-alive guards (success). Segments are separated by a real gap, so their hit targets cannot
+    // touch — two adjacent targets sharing pixels means the first one registered silently wins.
+    private void DrawSegmentRow(
+        Graphics g,
+        Rectangle bounds,
+        string[] labels,
+        bool[] active,
+        Color accent,
+        GuardHitAction[] actions,
+        Font font,
+        bool recordHitTargets)
+    {
+        int gap = S(4);
+        int count = labels.Length;
+        int segmentWidth = (bounds.Width - gap * (count - 1)) / count;
+        int x = bounds.Left;
+        for (int i = 0; i < count; i++)
+        {
+            // The last segment takes the remainder rather than the computed width, so integer
+            // division never leaves a ragged sliver against the panel's right edge.
+            int width = i == count - 1 ? Math.Max(1, bounds.Right - x) : segmentWidth;
+            DrawSegment(g, new Rectangle(x, bounds.Top, width, bounds.Height), labels[i], active[i], accent, actions[i], font, recordHitTargets);
+            x += width + gap;
+        }
+    }
+
+    private void DrawSegment(Graphics g, Rectangle bounds, string label, bool active, Color accent, GuardHitAction action, Font font, bool recordHitTargets)
+    {
+        Color outline = active ? accent : DesignTokens.Colors.Border;
+        using (GraphicsPath path = RoundedRectangle(new RectangleF(bounds.Left, bounds.Top, bounds.Width, bounds.Height), S(5)))
+        using (SolidBrush fill = new SolidBrush(active
+            ? DesignTokens.WithAlpha(accent, 56)
+            : DesignTokens.WithAlpha(DesignTokens.Colors.AppBackground, 220)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(outline, active ? 205 : 150), Math.Max(1.0f, this.LayerScale)))
+        using (SolidBrush text = new SolidBrush(active ? accent : DesignTokens.Colors.GlyphMuted))
+        using (StringFormat centered = CreateFormat(StringAlignment.Center, StringTrimming.EllipsisCharacter))
+        {
+            g.FillPath(fill, path);
+            g.DrawPath(border, path);
+            g.DrawString(label, font, text, bounds, centered);
+        }
+
+        RecordHitTarget(recordHitTargets, bounds, action);
+    }
+
+    private static string FormatHoursLabel(int hours)
+    {
+        return hours.ToString(CultureInfo.InvariantCulture) + " 小时";
     }
 
     private void DrawToggle(Graphics g, Rectangle bounds, bool on)
@@ -1081,8 +1453,32 @@ internal sealed partial class GuardBoardForm
         VerifyHitTargets(648, 400);
         VerifyHitTargets(320, 400);
         VerifyControlContract();
+        VerifyEnergySaverLabelContract();
 
-        Console.WriteLine("Guard board layout: PASS hit targets, hourly ladder, independent CLI controls");
+        Console.WriteLine("Guard board layout: PASS hit targets, hourly ladder, independent CLI controls, live energy-saver label");
+    }
+
+    // The label must report what the system is doing, not what GUARD asked for. Forcing writes the
+    // battery threshold to 100% and lets Windows decide, so on AC power forced-on legitimately means
+    // "not in effect" - the state the old wording claimed was "已强制开启".
+    private static void VerifyEnergySaverLabelContract()
+    {
+        AssertSelfTest(
+            DescribeEnergySaverDetail(true, false, true) == "强制未生效",
+            "forced but system-off reports that the force has not taken effect");
+        AssertSelfTest(
+            DescribeEnergySaverDetail(true, true, true) == "开启（强制）",
+            "forced and system-on reports both the live state and the force");
+        AssertSelfTest(
+            DescribeEnergySaverDetail(true, true, false) == "开启",
+            "system-on without GUARD forcing still reports on, so an external change is visible");
+        AssertSelfTest(
+            DescribeEnergySaverDetail(true, false, false) == "关闭",
+            "system-off without forcing reports off");
+        AssertSelfTest(
+            DescribeEnergySaverDetail(false, false, false) == "未知" &&
+            DescribeEnergySaverDetail(false, true, true) == "未知（强制）",
+            "an unreadable status reports unknown instead of claiming off");
     }
 
     private static void VerifyControlContract()
@@ -1111,6 +1507,71 @@ internal sealed partial class GuardBoardForm
             response = form.ExecuteGuardControl(new GuardControlRequest { Action = "display_stop" });
             AssertSelfTest(response.Ok && !response.State.DisplayActive && !response.State.SleepEnabled,
                 "CLI stops display protection without changing sleep state");
+
+            // power_mode/energy_saver_* exercise real Windows APIs through the CLI dispatch layer
+            // (distinct code from GuardRuntime's own self-test), so the machine's prior state is
+            // captured and restored the same way — --test-layout must not leave a different power
+            // mode or Energy Saver threshold behind.
+            // The ACTUAL overlay read, never the effective one -- see GuardRuntime.RunSelfTest for
+            // why restoring a captured effective saver would itself corrupt the user's selection.
+            Guid originalOverlayGuid;
+            bool hadOriginalOverlay = NativeMethods.TryGetActualPowerOverlayScheme(out originalOverlayGuid);
+            int originalEnergySaverThreshold;
+            bool hadOriginalEnergySaverThreshold = NativeMethods.TryReadEnergySaverBatteryThresholdPercent(out originalEnergySaverThreshold);
+            try
+            {
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "power_mode", Mode = "balanced" });
+                // PowerSetActiveOverlayScheme is a request, not a guarantee, and PowerModeCurrent is
+                // read back through the EFFECTIVE overlay, which Windows is free to override
+                // (battery policy, a vendor service). Asserting that the write round-trips therefore
+                // tests the environment rather than the code: the same build passed this on AC and
+                // failed it on battery, where an engaged Energy Saver pins the effective overlay to
+                // saver no matter what is written. What the code actually owns is that the call
+                // succeeded, so that is asserted unconditionally; the round-trip is asserted only
+                // while nothing is forcing an overlay.
+                AssertSelfTest(response.Ok, "CLI power mode switch reports success");
+                bool energySaverEngaged;
+                bool energySaverKnown = NativeMethods.TryGetBatterySaverStatus(out energySaverEngaged);
+                AssertSelfTest(
+                    (energySaverKnown && energySaverEngaged) || response.State.PowerModeCurrent == "balanced",
+                    "CLI power mode switch reports the resulting tier when the OS is not forcing an overlay");
+
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "power_schedule_start", Hours = 2 });
+                AssertSelfTest(response.Ok && response.State.PowerScheduleActive && response.State.PowerScheduleHours == 2,
+                    "CLI power schedule start arms the override");
+
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "power_mode", Mode = "saver" });
+                AssertSelfTest(response.Ok && !response.State.PowerScheduleActive,
+                    "CLI power mode switch cancels a pending schedule");
+
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "power_schedule_start" });
+                AssertSelfTest(response.Ok && response.State.PowerScheduleActive,
+                    "CLI power schedule start reuses the saved hour preset when hours is omitted");
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "power_schedule_stop" });
+                AssertSelfTest(response.Ok && !response.State.PowerScheduleActive,
+                    "CLI power schedule stop cancels without an error");
+
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "energy_saver_on" });
+                AssertSelfTest(response.Ok && response.State.EnergySaverForcedByGuard,
+                    "CLI energy saver on reports forced");
+                response = form.ExecuteGuardControl(new GuardControlRequest { Action = "energy_saver_off" });
+                AssertSelfTest(response.Ok && !response.State.EnergySaverForcedByGuard,
+                    "CLI energy saver off clears the forced flag");
+            }
+            finally
+            {
+                if (hadOriginalOverlay)
+                {
+                    string restoreOverlayDetail;
+                    NativeMethods.TrySetActivePowerOverlayScheme(originalOverlayGuid, out restoreOverlayDetail);
+                }
+
+                if (hadOriginalEnergySaverThreshold)
+                {
+                    string restoreThresholdDetail;
+                    NativeMethods.TryWriteEnergySaverBatteryThresholdPercent(originalEnergySaverThreshold, out restoreThresholdDetail);
+                }
+            }
         }
     }
 
@@ -1140,7 +1601,18 @@ internal sealed partial class GuardBoardForm
                 GuardHitAction.QuotaPlanToggle,
                 GuardHitAction.CtfRestart,
                 GuardHitAction.Close,
-                GuardHitAction.Panel
+                GuardHitAction.Panel,
+                GuardHitAction.PowerModeSaver,
+                GuardHitAction.PowerModeBalanced,
+                GuardHitAction.PowerModePerformance,
+                GuardHitAction.PowerScheduleHoursMinus,
+                GuardHitAction.PowerScheduleHoursPlus,
+                GuardHitAction.PowerScheduleToggle,
+                GuardHitAction.EnergySaverToggle,
+                GuardHitAction.TranslatorKeepAliveToggle,
+                GuardHitAction.CodexAppKeepAliveToggle,
+                GuardHitAction.ClaudeAppKeepAliveToggle,
+                GuardHitAction.KeepAliveDefaults
             };
 
             for (int i = 0; i < required.Length; i++)

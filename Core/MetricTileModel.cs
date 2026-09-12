@@ -889,6 +889,32 @@ internal static class MetricTileModel
                 "Network tile must suppress rings and split both compact rates into directional lanes.");
         }
 
+        // The lane number is coloured by magnitude so a three-orders jump is visible without reading
+        // the one-letter suffix. The three colours must stay distinct from each other; collapsing any
+        // two would silently remove the distinction the colouring exists for.
+        Color kiloColor = MetricTileForm.ResolveNetworkRateValueColor("K");
+        Color megaColor = MetricTileForm.ResolveNetworkRateValueColor("M");
+        Color gigaColor = MetricTileForm.ResolveNetworkRateValueColor("G");
+        if (kiloColor != DesignTokens.Colors.TextStrong ||
+            megaColor != DesignTokens.Colors.Warning ||
+            gigaColor != DesignTokens.Colors.AccentAlt ||
+            kiloColor == megaColor ||
+            megaColor == gigaColor ||
+            kiloColor == gigaColor)
+        {
+            throw new InvalidOperationException(
+                "Network rate value colour must map K/M/G to distinct white/yellow/purple tokens.");
+        }
+
+        // A disconnected lane carries no unit and must fall back to the neutral reading colour
+        // rather than inheriting whichever magnitude was shown last.
+        if (MetricTileForm.ResolveNetworkRateValueColor(string.Empty) != DesignTokens.Colors.TextStrong ||
+            MetricTileForm.ResolveNetworkRateValueColor(null) != DesignTokens.Colors.TextStrong)
+        {
+            throw new InvalidOperationException(
+                "Network rate value colour must fall back to the neutral colour when no unit is known.");
+        }
+
         if (network.NetworkDownPulses == null ||
             network.NetworkUpPulses == null ||
             network.NetworkDownPulses.Length != 5 ||

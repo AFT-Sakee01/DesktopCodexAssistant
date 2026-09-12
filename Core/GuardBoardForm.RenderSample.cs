@@ -30,6 +30,11 @@ internal sealed partial class GuardBoardForm
                 form.runtime.BackdateSleepGuardForRenderSample(now.AddHours(-2).AddMinutes(-18));
                 form.runtime.NoteBatteryCarePaused(now.AddHours(-8));
                 form.CurrentSettings.CodexQuotaPlanEnabled = true;
+                // Two of three keep-alive guards armed: the partial state is the one worth sampling,
+                // because it is where the segment row has to show per-guard state rather than a single
+                // on/off look, and where the one-shot button still reads 全开.
+                form.CurrentSettings.TranslatorKeepAliveEnabled = true;
+                form.CurrentSettings.CodexAppKeepAliveEnabled = true;
             });
 
             RenderState(outputDir, "guard-display-only.png", 648, 400, delegate(GuardBoardForm form)
@@ -53,6 +58,10 @@ internal sealed partial class GuardBoardForm
             RenderState(outputDir, "guard-compact.png", 320, 400, delegate(GuardBoardForm form)
             {
                 form.runtime.SetSleepGuard(true);
+                // All three armed here, so the compact sample also covers the button's flipped label.
+                form.CurrentSettings.TranslatorKeepAliveEnabled = true;
+                form.CurrentSettings.CodexAppKeepAliveEnabled = true;
+                form.CurrentSettings.ClaudeAppKeepAliveEnabled = true;
             });
         }
 

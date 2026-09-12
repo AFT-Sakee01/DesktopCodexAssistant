@@ -1741,6 +1741,7 @@ internal static class Program
         try
         {
             OperationForm.RunSelfTest();
+            WorkBoardComposer.RunSelfTest();
             CodexIqBoardForm.RunSelfTest();
             ResetSpeedBoardForm.RunSelfTest();
             SystemDayHistoryStore.RunSelfTest();

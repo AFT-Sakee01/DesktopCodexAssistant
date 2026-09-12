@@ -21,6 +21,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private const int DisplayRecoveryRetryDelayMs = 1500;
     private const int DisplayRecoveryMaxAttempts = 3;
     private const int SampleDiagnosticIntervalMinutes = 15;
+    // 30s is fast enough that a post-sleep outage is repaired before the user finishes opening the
+    // video they want captioned, and slow enough that the WMI query behind the proxy check stays a
+    // rounding error on the tick budget.
+    private const int TranslatorKeepAliveIntervalSeconds = 30;
     private const int SeelenDockPulseFallbackIntervalMs = 30 * 60 * 1000;
     private const int WinDRecoveryDelayMs = 2000;
     private const int PowerResumeRestartGuardSeconds = 30;
@@ -111,6 +115,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool seelenUiWasRunningBeforePowerSuspend;
     private string seelenUiExecutablePathBeforePowerSuspend = string.Empty;
     private DateTime lastPowerResumeRestartUtc;
+    // Translation-stack keep-alive guard. The check itself runs off the UI thread (a WMI query plus
+    // up to three Process.Start calls), so a single-flight flag keeps a slow or hung pass from
+    // stacking further passes behind it while it is still running.
+    private DateTime lastTranslatorKeepAliveUtc;
+    private bool translatorKeepAliveRunning;
     private readonly Dictionary<int, string> registeredGlobalHotkeys = new Dictionary<int, string>();
     private readonly Dictionary<string, string> globalHotkeyRegistrationFailures =
         new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1605,6 +1614,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 this.codexQuotaGoalPlanner.ProcessMaintenanceTick(this.CurrentSettings, quotaNotification);
             }
 
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:program_keep_alive");
+            MaintainProgramKeepAlive();
+
             if (this.hiddenForFullscreen &&
                 WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode) == WidgetPerformanceMode.BatterySaver)
             {
@@ -2108,6 +2120,88 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 : "额度计划不会再自动暂停或恢复 goal。",
             ToolTipIcon.Info);
         return true;
+    }
+
+    // GUARD program guards: restart whatever the user armed once it goes missing -- the translation
+    // stack, the Codex desktop app, the Claude desktop app. Runs on the main tick rather than the
+    // Captions board's timer on purpose: the failure these repair is system sleep tearing processes
+    // down, which is precisely when no board is on screen to drive a visibility-gated refresh.
+    // All three share one pass so an armed set costs one 30s background sweep, not three.
+    private void MaintainProgramKeepAlive()
+    {
+        if (this.CurrentSettings == null || this.translatorKeepAliveRunning)
+        {
+            return;
+        }
+
+        bool translatorArmed = this.CurrentSettings.TranslatorKeepAliveEnabled;
+        bool codexArmed = this.CurrentSettings.CodexAppKeepAliveEnabled;
+        bool claudeArmed = this.CurrentSettings.ClaudeAppKeepAliveEnabled;
+        if (!translatorArmed && !codexArmed && !claudeArmed)
+        {
+            return;
+        }
+
+        DateTime nowUtc = DateTime.UtcNow;
+        if (this.lastTranslatorKeepAliveUtc != DateTime.MinValue &&
+            (nowUtc - this.lastTranslatorKeepAliveUtc).TotalSeconds < TranslatorKeepAliveIntervalSeconds)
+        {
+            return;
+        }
+
+        this.lastTranslatorKeepAliveUtc = nowUtc;
+        this.translatorKeepAliveRunning = true;
+        bool announce = AlertPresentationPolicy.ShouldPresent(this.CurrentSettings, AlertPresentationCategory.ServiceHealth);
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            try
+            {
+                if (translatorArmed)
+                {
+                    string detail;
+                    if (TranslatorControlReader.TryEnsureStackAlive(out detail) && announce)
+                    {
+                        // ShowWindowsNotification marshals itself back to the UI thread.
+                        ShowWindowsNotification("翻译保活", detail, ToolTipIcon.Info);
+                    }
+                }
+
+                if (codexArmed)
+                {
+                    EnsureKeepAliveTarget(ProgramKeepAliveGuard.KeepAliveTarget.CodexApp, announce);
+                }
+
+                if (claudeArmed)
+                {
+                    EnsureKeepAliveTarget(ProgramKeepAliveGuard.KeepAliveTarget.ClaudeApp, announce);
+                }
+            }
+            catch (Exception ex)
+            {
+                Program.LogException(ex);
+            }
+            finally
+            {
+                this.translatorKeepAliveRunning = false;
+            }
+        });
+    }
+
+    private void EnsureKeepAliveTarget(ProgramKeepAliveGuard.KeepAliveTarget target, bool announce)
+    {
+        string detail;
+        string name = ProgramKeepAliveGuard.DescribeTarget(target);
+        if (ProgramKeepAliveGuard.TryEnsureRunning(target, out detail))
+        {
+            if (announce)
+            {
+                ShowWindowsNotification(name + "保活", "已拉起 " + name, ToolTipIcon.Info);
+            }
+        }
+        else if (!string.IsNullOrEmpty(detail) && announce)
+        {
+            ShowWindowsNotification(name + "保活", "拉起失败：" + detail, ToolTipIcon.Warning);
+        }
     }
 
     internal bool SetBooleanSettingFromOperationPanel(string propertyName, bool enabled)

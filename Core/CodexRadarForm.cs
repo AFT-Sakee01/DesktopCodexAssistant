@@ -208,6 +208,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         public string ProviderPlan { get; set; }
         public string ProviderPool { get; set; }
         public string ProviderCorrelationId { get; set; }
+        // Which Codex account this reading belongs to. Codex CLI keeps one account in auth.json, so
+        // a switch replaces every number below at once; without the key two accounts' remaining-%
+        // series merge and the burn forecast reads the switch as a huge consumption event.
+        public string AccountKey { get; set; }
+        public string AccountLabel { get; set; }
 
         public static CodexQuotaSnapshot CreateDefault()
         {
@@ -236,7 +241,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 ProviderResponseBodySha256 = string.Empty,
                 ProviderPlan = "unknown",
                 ProviderPool = "unknown",
-                ProviderCorrelationId = string.Empty
+                ProviderCorrelationId = string.Empty,
+                AccountKey = CodexAccountIdentity.UnknownAccountKey,
+                AccountLabel = string.Empty
             };
         }
 
@@ -267,7 +274,9 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 ProviderResponseBodySha256 = this.ProviderResponseBodySha256,
                 ProviderPlan = this.ProviderPlan,
                 ProviderPool = this.ProviderPool,
-                ProviderCorrelationId = this.ProviderCorrelationId
+                ProviderCorrelationId = this.ProviderCorrelationId,
+                AccountKey = this.AccountKey,
+                AccountLabel = this.AccountLabel
             };
         }
     }
@@ -1782,6 +1791,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             return;
         }
 
+        // Defence in depth behind the state swap: a reading may only extend the trend of the account
+        // it was actually read from. Claude keeps both keys unknown and is unaffected.
+        if (!CodexAccountIdentity.KeysEqual(quotaState.AccountKey, snapshot.AccountKey))
+        {
+            return;
+        }
+
         DateTime normalizedUtc = nowUtc.Kind == DateTimeKind.Utc ? nowUtc : nowUtc.ToUniversalTime();
         quotaState.WeeklyBurnTrackedResetLocal = RecordQuotaBurnWindow(
             quotaState.WeeklyBurnSamples,
@@ -1936,6 +1952,284 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         while (samples.Count > WeeklyBurnSampleLimit)
         {
             samples.RemoveAt(0);
+        }
+    }
+
+    // Codex account separation: the trend must follow the account, not the wall clock.
+    private static void RunCodexAccountSeparationSelfTest()
+    {
+        Dictionary<string, QuotaRuntimeState> parked = new Dictionary<string, QuotaRuntimeState>(
+            StringComparer.OrdinalIgnoreCase);
+        RadarFamilyRuntimeState family = new RadarFamilyRuntimeState(CodexRadarSoftwareMode.Codex);
+        DateTime baseUtc = new DateTime(2026, 9, 11, 3, 0, 0, DateTimeKind.Utc);
+
+        // Account A measures a drop, so its weekly trend holds two accepted samples.
+        if (!SwapCodexQuotaStateForAccount(parked, family, "acct-A"))
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: first account did not take the trend.");
+        }
+
+        QuotaRuntimeState stateA = family.Quota;
+        UpdateQuotaBurnObservationClock(stateA, true, baseUtc);
+        RecordQuotaBurnSamples(stateA, CreateAccountSeparationSnapshot("acct-A", 60, baseUtc), baseUtc);
+        UpdateQuotaBurnObservationClock(stateA, true, baseUtc.AddSeconds(60.0));
+        RecordQuotaBurnSamples(
+            stateA,
+            CreateAccountSeparationSnapshot("acct-A", 55, baseUtc.AddSeconds(60.0)),
+            baseUtc.AddSeconds(60.0));
+        if (stateA.WeeklyBurnSamples.Count != 2)
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: account A did not accumulate its own samples.");
+        }
+
+        // Switching to B must hand over a clean trend, not A's samples.
+        if (!SwapCodexQuotaStateForAccount(parked, family, "acct-B"))
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: switch to a new account was not detected.");
+        }
+
+        QuotaRuntimeState stateB = family.Quota;
+        if (ReferenceEquals(stateA, stateB) ||
+            stateB.WeeklyBurnSamples.Count != 0 ||
+            !string.Equals(stateB.AccountKey, "acct-B", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: account B inherited account A's trend.");
+        }
+
+        // A reading stamped with a foreign account must never extend the active trend.
+        UpdateQuotaBurnObservationClock(stateB, true, baseUtc.AddSeconds(120.0));
+        RecordQuotaBurnSamples(
+            stateB,
+            CreateAccountSeparationSnapshot("acct-A", 10, baseUtc.AddSeconds(120.0)),
+            baseUtc.AddSeconds(120.0));
+        if (stateB.WeeklyBurnSamples.Count != 0 || stateB.WeeklyWallBurnSamples.Count != 0)
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: a foreign reading extended the trend.");
+        }
+
+        // Switching back restores account A's own measurement instead of starting over.
+        if (!SwapCodexQuotaStateForAccount(parked, family, "acct-A") ||
+            !ReferenceEquals(family.Quota, stateA) ||
+            family.Quota.WeeklyBurnSamples.Count != 2)
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: returning to account A lost its trend.");
+        }
+
+        // Re-selecting the account already in place is not a switch.
+        if (SwapCodexQuotaStateForAccount(parked, family, "acct-A"))
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: same-account selection reported a switch.");
+        }
+
+        // Reset protection and the Radar RSS reset-event de-duplication must survive every swap.
+        // They live on the family, not the account: the public Radar feed is account-independent and
+        // LoadQuotaResetState() restores this state once at startup. When it lived inside the
+        // per-account state, the first swap wiped LastRadarResetEventUtc back to MinValue, a
+        // months-old RSS event then compared as "newer", and the "Codex 额外重置" alert fired on
+        // every single restart.
+        DateTime resetEventUtc = new DateTime(2026, 6, 17, 21, 25, 51, DateTimeKind.Utc);
+        family.Protection.LastRadarResetEventId = "codex-speed-window-2026-06-17-codex-close";
+        family.Protection.LastRadarResetEventUtc = resetEventUtc;
+        family.Protection.LastRadarProtectedResetEventId = "codex-speed-window-2026-06-17-codex-close";
+        family.Protection.WeeklyProtectionUtc = resetEventUtc;
+        SwapCodexQuotaStateForAccount(parked, family, "acct-B");
+        SwapCodexQuotaStateForAccount(parked, family, "acct-A");
+        if (!string.Equals(
+                family.Protection.LastRadarProtectedResetEventId,
+                "codex-speed-window-2026-06-17-codex-close",
+                StringComparison.Ordinal) ||
+            family.Protection.LastRadarResetEventUtc != resetEventUtc ||
+            family.Protection.WeeklyProtectionUtc != resetEventUtc)
+        {
+            throw new InvalidOperationException(
+                "Codex account separation self-test failed: an account swap discarded the reset-protection state.");
+        }
+
+        // Cache readings stamped with another account must not be presented as the current balance.
+        CodexQuotaSnapshot foreignCache = CreateAccountSeparationSnapshot("acct-A", 12, baseUtc);
+        if (CodexAccountIdentity.KeysEqual(foreignCache.AccountKey, "acct-B"))
+        {
+            throw new InvalidOperationException("Codex account separation self-test failed: account keys compared equal across accounts.");
+        }
+
+        Console.WriteLine("Codex account separation: PASS per-account trend park/restore, foreign-reading rejection, same-account no-op");
+    }
+
+    // Boundaries of the "Codex 额外重置" alert. Every case below was reachable in production.
+    private static void RunRadarResetEventDetectionSelfTest()
+    {
+        DateTime nowUtc = new DateTime(2026, 9, 12, 3, 0, 0, DateTimeKind.Utc);
+        const string Id = "codex-speed-window-2026-06-17-codex-close";
+        DateTime staleUtc = new DateTime(2026, 6, 17, 21, 25, 51, DateTimeKind.Utc);
+        DateTime freshUtc = nowUtc.AddHours(-2.0);
+
+        // The live failure: restored state says this event already activated protection, so no
+        // restart may raise it again no matter how the timestamps compare.
+        if (IsNewRadarResetEvent(Id, staleUtc, Id, Id, staleUtc, Id, nowUtc))
+        {
+            throw new InvalidOperationException(
+                "Radar reset event self-test failed: an already-protected event fired again.");
+        }
+
+        // Cold start on a months-old feed entry must stay silent; only "newer than MinValue" made it
+        // fire before, and a stale event is not evidence that a reset just happened.
+        if (IsNewRadarResetEvent(Id, staleUtc, Id, string.Empty, DateTime.MinValue, string.Empty, nowUtc))
+        {
+            throw new InvalidOperationException(
+                "Radar reset event self-test failed: a stale event fired on a cold start.");
+        }
+
+        // A genuinely recent event on a cold start is exactly what the alert is for.
+        if (!IsNewRadarResetEvent("evt-fresh", freshUtc, "evt-fresh", string.Empty, DateTime.MinValue, string.Empty, nowUtc))
+        {
+            throw new InvalidOperationException(
+                "Radar reset event self-test failed: a fresh cold-start event was suppressed.");
+        }
+
+        // A newer event after a known one still fires, even when the new one is itself older than
+        // the freshness bound would allow on a cold start.
+        if (!IsNewRadarResetEvent("evt-2", nowUtc.AddHours(-60.0), "evt-2", "evt-1", nowUtc.AddHours(-90.0), "evt-1", nowUtc))
+        {
+            throw new InvalidOperationException(
+                "Radar reset event self-test failed: a newer event after a known one was suppressed.");
+        }
+
+        // Same id, never protected, still fresh: an interrupted activation may retry.
+        if (!IsNewRadarResetEvent("evt-fresh", freshUtc, "evt-fresh", "evt-fresh", freshUtc, string.Empty, nowUtc))
+        {
+            throw new InvalidOperationException(
+                "Radar reset event self-test failed: an unprotected fresh retry was suppressed.");
+        }
+
+        // Same id, never protected, no longer fresh: stop retrying instead of firing forever.
+        if (IsNewRadarResetEvent(Id, staleUtc, Id, Id, staleUtc, string.Empty, nowUtc))
+        {
+            throw new InvalidOperationException(
+                "Radar reset event self-test failed: a stale unprotected retry kept firing.");
+        }
+
+        // An id-only event with no timestamp is still actionable once, then de-duplicated by id.
+        if (!IsNewRadarResetEvent("evt-noTime", DateTime.MinValue, "evt-noTime", "evt-old", DateTime.MinValue, "evt-old", nowUtc) ||
+            IsNewRadarResetEvent("evt-noTime", DateTime.MinValue, "evt-noTime", "evt-noTime", DateTime.MinValue, "evt-noTime", nowUtc))
+        {
+            throw new InvalidOperationException(
+                "Radar reset event self-test failed: id-only event handling is wrong.");
+        }
+
+        // An empty event is never actionable.
+        if (IsNewRadarResetEvent(string.Empty, DateTime.MinValue, string.Empty, string.Empty, DateTime.MinValue, string.Empty, nowUtc))
+        {
+            throw new InvalidOperationException(
+                "Radar reset event self-test failed: an empty event was treated as a reset.");
+        }
+
+        Console.WriteLine("Codex Radar reset event: PASS already-protected suppression, stale cold start, fresh cold start, newer-after-known, fresh retry, stale retry stop, id-only de-duplication");
+    }
+
+    private static CodexQuotaSnapshot CreateAccountSeparationSnapshot(
+        string accountKey,
+        int weeklyPercent,
+        DateTime sourceUtc)
+    {
+        CodexQuotaSnapshot snapshot = CodexQuotaSnapshot.CreateDefault();
+        snapshot.AccountKey = accountKey;
+        snapshot.WeeklyPercent = weeklyPercent;
+        snapshot.WeeklyResetKnown = true;
+        snapshot.WeeklyResetLocal = sourceUtc.ToLocalTime().AddDays(3.0);
+        snapshot.FiveHourLimitAbsent = true;
+        snapshot.SourceUpdatedUtc = sourceUtc;
+        snapshot.SourceUpdatedKnown = true;
+        return snapshot;
+    }
+
+    // Reset protection paints the live snapshot 100 so the ring stays full until the next quota
+    // window materializes. The seven-day board reads the same numbers from CodexQuotaHistoryStore, so
+    // a forced value reaching Record() manufactures a "hard" reset the account never had - and the
+    // forced row also clears weekly_reset_known, so the next real reset loses its natural anchor too.
+    private static void RunQuotaHistoryProtectionSelfTest()
+    {
+        DateTime nowUtc = DateTime.UtcNow;
+        DateTime weeklyResetLocal = nowUtc.ToLocalTime().AddDays(2.0);
+        CodexQuotaSnapshot accepted = CodexQuotaSnapshot.CreateDefault();
+        accepted.AccountKey = "acct-protection";
+        accepted.FiveHourPercent = 44;
+        accepted.WeeklyPercent = 44;
+        accepted.FiveHourResetKnown = true;
+        accepted.FiveHourResetLocal = nowUtc.ToLocalTime().AddHours(3.0);
+        accepted.WeeklyResetKnown = true;
+        accepted.WeeklyResetLocal = weeklyResetLocal;
+        accepted.SourceUpdatedKnown = true;
+        accepted.SourceUpdatedUtc = nowUtc;
+
+        CodexQuotaSnapshot history = CaptureAcceptedQuotaForHistory(accepted);
+        ForceFiveHourQuotaToFull(accepted);
+        ForceWeeklyQuotaToFull(accepted);
+
+        if (accepted.WeeklyPercent != 100 || accepted.WeeklyResetKnown || accepted.FiveHourPercent != 100)
+        {
+            throw new InvalidOperationException(
+                "Quota history protection self-test failed: protection no longer forces the display snapshot to full.");
+        }
+
+        if (history == null ||
+            history.FiveHourPercent != 44 ||
+            history.WeeklyPercent != 44 ||
+            !history.WeeklyResetKnown ||
+            history.WeeklyResetLocal != weeklyResetLocal)
+        {
+            throw new InvalidOperationException(
+                "Quota history protection self-test failed: the accepted source reading did not survive the protection chain.");
+        }
+
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            ProductIdentity.MachineName + "-quota-protection-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            // Same account, same instant, two candidate readings. The forced 100 is the row that used
+            // to reach disk; asserting it still classifies as "hard" keeps this test honest, because a
+            // classifier change that stopped producing the bug would otherwise let the fix pass vacuously.
+            string forcedKind = ClassifyQuotaHistoryReset(Path.Combine(root, "forced.jsonl"), accepted, nowUtc);
+            string acceptedKind = ClassifyQuotaHistoryReset(Path.Combine(root, "accepted.jsonl"), history, nowUtc);
+            if (!string.Equals(forcedKind, "hard", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "Quota history protection self-test failed: a forced 100 no longer reproduces the fabricated reset, so the test cannot prove the fix. reset_kind=" + forcedKind);
+            }
+
+            if (acceptedKind.Length != 0)
+            {
+                throw new InvalidOperationException(
+                    "Quota history protection self-test failed: the accepted reading was classified as reset_kind=" + acceptedKind + ".");
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); }
+            catch { }
+        }
+
+        Console.WriteLine("Quota history protection: PASS forced 100 stays out of the seven-day history, accepted reading records flat");
+    }
+
+    // Seeds one account at 44% an hour back, records the candidate reading, and returns the reset_kind
+    // the store assigned to it.
+    private static string ClassifyQuotaHistoryReset(string path, CodexQuotaSnapshot next, DateTime nowUtc)
+    {
+        using (CodexQuotaHistoryStore store = new CodexQuotaHistoryStore(path))
+        {
+            store.Record("acct-protection", 44, 44, true, nowUtc.ToLocalTime().AddDays(2.0), false, 0, nowUtc.AddHours(-1.0));
+            RecordAcceptedQuotaHistory(store, next, false, 0, nowUtc);
+            CodexQuotaHistorySnapshot snapshot = store.GetSnapshot(nowUtc, "acct-protection");
+            if (snapshot.Entries.Count != 2)
+            {
+                throw new InvalidOperationException(
+                    "Quota history protection self-test failed: expected two rows for one account, found " +
+                    snapshot.Entries.Count.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+
+            return snapshot.Entries[1].ResetKind ?? string.Empty;
         }
     }
 
@@ -2375,6 +2669,28 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         bool logDecision)
     {
         family = NormalizeEffectiveSoftwareMode(family);
+        // Stamp here rather than only in ReadQuotaSnapshot: the provider-usage scheduler applies its
+        // own snapshot directly, so stamping at the read site alone left those readings on the
+        // "unknown" key. Mixed keys then flip the trend state back and forth on every refresh and
+        // split one account's history across two buckets.
+        if (family == CodexRadarSoftwareMode.Codex && nextSnapshot != null)
+        {
+            CodexAccountIdentity applyIdentity = PeekCodexAccountIdentity();
+            if (!applyIdentity.Known)
+            {
+                // The provider scheduler can complete before any read path has resolved an identity.
+                // Resolving here keeps that first reading on its real account instead of stranding it.
+                applyIdentity = RefreshCodexAccountIdentity();
+            }
+
+            StampQuotaAccount(nextSnapshot, applyIdentity);
+
+            // Park/restore before anything reads the trend: an account switch replaces every quota
+            // number at once, and charging the new account's balance against the old account's
+            // samples would be read as one enormous consumption event.
+            EnsureCodexQuotaStateForAccount(nextSnapshot.AccountKey);
+        }
+
         QuotaRuntimeState quotaState = GetQuotaRuntimeState(family);
         MarkQuotaSnapshotSource(nextSnapshot, sourceKind);
         if (family == CodexRadarSoftwareMode.Codex && IsQuotaResetDue(nextSnapshot, nowLocal))
@@ -2383,6 +2699,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         QuotaRingDecisionInfo quotaDecision = UpdateQuotaReadDeltaTrackingWithSettings(quotaState, nextSnapshot, quotaKnown);
+        // Keep the accepted source reading before the protection chain rewrites it. Both branches
+        // below hand back the same instance they were given, and CodexUsage reuses that instance for
+        // the provider cache and the ini fallback, so the protected 100 has to stay in place there.
+        // Only the seven-day history must not see it: Record() reads a forced 44 -> 100 step as a
+        // reset that never happened, and the forced row also clears weekly_reset_known, destroying
+        // the anchor the next real reset needs to classify itself as natural.
+        CodexQuotaSnapshot historySnapshot = CaptureAcceptedQuotaForHistory(nextSnapshot);
         CodexQuotaSnapshot displaySnapshot = family == CodexRadarSoftwareMode.Codex
             ? ApplyQuotaResetProtections(family, nextSnapshot)
             : NormalizeQuotaSnapshot(nextSnapshot);
@@ -2392,17 +2715,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (quotaKnown && displaySnapshot != null)
         {
             RecordQuotaBurnSamples(quotaState, displaySnapshot, detectedUtc);
-            if (family == CodexRadarSoftwareMode.Codex && logDecision)
+            if (family == CodexRadarSoftwareMode.Codex && logDecision && historySnapshot != null)
             {
                 CodexResetCreditsSnapshot credits = GetCodexResetCreditsDisplaySnapshot();
                 int activeCredits = credits != null && credits.Known
                     ? credits.GetActiveCount(detectedUtc.Kind == DateTimeKind.Utc ? detectedUtc : detectedUtc.ToUniversalTime())
                     : 0;
-                this.codexQuotaHistoryStore.Record(
-                    displaySnapshot.FiveHourPercent,
-                    displaySnapshot.WeeklyPercent,
-                    displaySnapshot.WeeklyResetKnown,
-                    displaySnapshot.WeeklyResetLocal,
+                RecordAcceptedQuotaHistory(
+                    this.codexQuotaHistoryStore,
+                    historySnapshot,
                     credits != null && credits.Known,
                     activeCredits,
                     detectedUtc);
@@ -2474,7 +2795,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
     {
         bool codexIdentityHardening = object.ReferenceEquals(quotaState, this.codexRuntimeState.Quota);
         DateTime corroboratingResetEventUtc = codexIdentityHardening
-            ? this.codexRuntimeState.Quota.Protection.LastRadarResetEventUtc
+            ? this.codexRuntimeState.Protection.LastRadarResetEventUtc
             : DateTime.MinValue;
         return UpdateQuotaReadDeltaTracking(
             quotaState,
@@ -8197,33 +8518,23 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         string eventKey = GetRadarResetEventKey(eventId, eventUtc);
         lock (this.quotaResetStateLock)
         {
-            bool sameEventId = eventId.Length > 0 &&
-                string.Equals(eventId, this.lastRadarResetEventId, StringComparison.Ordinal);
-            bool alreadyProtected = eventKey.Length > 0 &&
-                string.Equals(eventKey, this.lastRadarProtectedResetEventId, StringComparison.Ordinal);
-            bool newerEvent = eventUtc != DateTime.MinValue && eventUtc > this.lastRadarResetEventUtc;
-            bool firstRecentEvent = this.lastRadarResetEventUtc == DateTime.MinValue &&
-                eventUtc != DateTime.MinValue &&
-                DateTime.UtcNow - eventUtc <= TimeSpan.FromHours(36.0);
-            bool sameRecentEventNotProtected = sameEventId &&
-                !alreadyProtected &&
-                eventUtc != DateTime.MinValue &&
-                DateTime.UtcNow - eventUtc <= TimeSpan.FromHours(36.0);
-            bool differentIdWithoutTime = eventUtc == DateTime.MinValue &&
-                eventId.Length > 0 &&
-                !sameEventId;
-            if (!alreadyProtected &&
-                (!sameEventId && (newerEvent || firstRecentEvent || differentIdWithoutTime) ||
-                 sameRecentEventNotProtected))
+            isNewReset = IsNewRadarResetEvent(
+                eventId,
+                eventUtc,
+                eventKey,
+                this.lastRadarResetEventId,
+                this.lastRadarResetEventUtc,
+                this.lastRadarProtectedResetEventId,
+                DateTime.UtcNow);
+            if (isNewReset)
             {
                 this.lastRadarResetEventId = eventId;
                 this.lastRadarResetEventUtc = eventUtc;
                 stateChanged = true;
-                isNewReset = true;
             }
             else if (eventUtc == this.lastRadarResetEventUtc &&
                 eventId.Length > 0 &&
-                !sameEventId)
+                !string.Equals(eventId, this.lastRadarResetEventId, StringComparison.Ordinal))
             {
                 this.lastRadarResetEventId = eventId;
                 stateChanged = true;
@@ -8286,6 +8597,64 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         {
             SaveQuotaResetState();
         }
+    }
+
+    // How long after its own timestamp a public Radar reset event may still activate protection.
+    // The feed keeps entries indefinitely, so without an age bound the newest entry in a months-old
+    // feed reads as a reset every time a machine starts with no prior state.
+    private const double RadarResetEventFreshnessHours = 36.0;
+
+    // Pure decision for "is this Radar RSS reset event one we have not acted on yet".
+    //
+    // Extracted so the boundaries are testable: this ran unguarded for months and misfired on both
+    // halves of the same bug - a swapped-away protection state made every restart look like a cold
+    // start, and a cold start accepted an arbitrarily old event because "newer than DateTime.MinValue"
+    // is true for every timestamp.
+    private static bool IsNewRadarResetEvent(
+        string eventId,
+        DateTime eventUtc,
+        string eventKey,
+        string lastEventId,
+        DateTime lastEventUtc,
+        string lastProtectedEventKey,
+        DateTime nowUtc)
+    {
+        eventId = (eventId ?? string.Empty).Trim();
+        eventKey = (eventKey ?? string.Empty).Trim();
+        if (eventId.Length == 0 && eventUtc == DateTime.MinValue)
+        {
+            return false;
+        }
+
+        // The strongest signal: this exact event already activated protection once.
+        if (eventKey.Length > 0 &&
+            string.Equals(eventKey, (lastProtectedEventKey ?? string.Empty).Trim(), StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        bool sameEventId = eventId.Length > 0 &&
+            string.Equals(eventId, (lastEventId ?? string.Empty).Trim(), StringComparison.Ordinal);
+        bool fresh = eventUtc != DateTime.MinValue &&
+            nowUtc - eventUtc <= TimeSpan.FromHours(RadarResetEventFreshnessHours);
+
+        // "Newer" only means something against a previously recorded event. With no prior timestamp
+        // every event is newer than DateTime.MinValue, which is why the cold-start case has to go
+        // through the freshness bound instead.
+        bool newerThanKnownEvent = eventUtc != DateTime.MinValue &&
+            lastEventUtc != DateTime.MinValue &&
+            eventUtc > lastEventUtc;
+        bool firstRecentEvent = lastEventUtc == DateTime.MinValue && fresh;
+        bool differentIdWithoutTime = eventUtc == DateTime.MinValue && eventId.Length > 0 && !sameEventId;
+
+        if (!sameEventId && (newerThanKnownEvent || firstRecentEvent || differentIdWithoutTime))
+        {
+            return true;
+        }
+
+        // Same id seen before but never protected (an interrupted activation): retry only while the
+        // event is still fresh.
+        return sameEventId && fresh;
     }
 
     private static string GetRadarResetEventKey(string eventId, DateTime eventUtc)
@@ -8543,6 +8912,41 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return snapshot.SourceUpdatedKnown &&
             snapshot.SourceUpdatedUtc > protectionUtc &&
             (!resetKnown || resetLocal > DateTime.Now);
+    }
+
+    // The only writer into the seven-day store. It takes the accepted source reading on purpose:
+    // handing it the protected display snapshot is the defect RunQuotaHistoryProtectionSelfTest()
+    // guards, so the parameter is named for what it must receive.
+    private static void RecordAcceptedQuotaHistory(
+        CodexQuotaHistoryStore store,
+        CodexQuotaSnapshot accepted,
+        bool resetCreditsKnown,
+        int activeResetCredits,
+        DateTime detectedUtc)
+    {
+        if (store == null || accepted == null)
+        {
+            return;
+        }
+
+        store.Record(
+            accepted.AccountKey,
+            accepted.FiveHourPercent,
+            accepted.WeeklyPercent,
+            accepted.WeeklyResetKnown,
+            accepted.WeeklyResetLocal,
+            resetCreditsKnown,
+            activeResetCredits,
+            detectedUtc);
+    }
+
+    // The seven-day history charts what the source actually reported. ForceFiveHourQuotaToFull() and
+    // ForceWeeklyQuotaToFull() below rewrite the live snapshot in place, so callers that need the
+    // accepted reading must take their copy before the protection chain runs. Covered by
+    // RunQuotaHistoryProtectionSelfTest().
+    private static CodexQuotaSnapshot CaptureAcceptedQuotaForHistory(CodexQuotaSnapshot accepted)
+    {
+        return accepted == null ? null : accepted.Clone();
     }
 
     private static void ForceFiveHourQuotaToFull(CodexQuotaSnapshot snapshot)
@@ -9512,13 +9916,16 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private CodexQuotaSnapshot ReadQuotaSnapshot(out bool sourceKnown, out string sourceKind)
     {
+        // Resolve the account once per read so all three sources are stamped with the same identity
+        // and the caller can compare it against the account the running trend belongs to.
+        CodexAccountIdentity identity = RefreshCodexAccountIdentity();
         CodexQuotaSnapshot snapshot;
         if (TryGetCodexProviderQuotaSnapshot(out snapshot))
         {
             sourceKnown = true;
             sourceKind = "provider";
             MarkQuotaSnapshotSource(snapshot, sourceKind);
-            return NormalizeQuotaSnapshot(snapshot);
+            return StampQuotaAccount(NormalizeQuotaSnapshot(snapshot), identity);
         }
 
         if (TryReadCodexSessionQuota(out snapshot))
@@ -9526,7 +9933,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             sourceKnown = true;
             sourceKind = "session";
             MarkQuotaSnapshotSource(snapshot, sourceKind);
-            snapshot = NormalizeQuotaSnapshot(snapshot);
+            snapshot = StampQuotaAccount(NormalizeQuotaSnapshot(snapshot), identity);
             TryWriteQuotaIniSnapshot(snapshot);
             return snapshot;
         }
@@ -9536,12 +9943,46 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             sourceKnown = true;
             sourceKind = "cache";
             MarkQuotaSnapshotSource(snapshot, sourceKind);
-            return NormalizeQuotaSnapshot(snapshot);
+            snapshot = NormalizeQuotaSnapshot(snapshot);
+            // The cache is written per account; a cached reading whose stamp disagrees with the live
+            // account belongs to a previous sign-in and must not be shown as the current balance.
+            if (!CodexAccountIdentity.KeysEqual(snapshot.AccountKey, identity.AccountKey))
+            {
+                sourceKnown = false;
+                sourceKind = "default";
+                return StampQuotaAccount(CodexQuotaSnapshot.CreateDefault(), identity);
+            }
+
+            return StampQuotaAccount(snapshot, identity);
         }
 
         sourceKnown = false;
         sourceKind = "default";
-        return CodexQuotaSnapshot.CreateDefault();
+        return StampQuotaAccount(CodexQuotaSnapshot.CreateDefault(), identity);
+    }
+
+    private static CodexQuotaSnapshot StampQuotaAccount(
+        CodexQuotaSnapshot snapshot,
+        CodexAccountIdentity identity)
+    {
+        if (snapshot == null)
+        {
+            return null;
+        }
+
+        CodexAccountIdentity resolved = identity ?? CodexAccountIdentity.CreateUnknown();
+        snapshot.AccountKey = resolved.AccountKey;
+        snapshot.AccountLabel = resolved.ResolveDisplayLabel();
+        if (string.IsNullOrWhiteSpace(snapshot.ProviderPlan) ||
+            string.Equals(snapshot.ProviderPlan, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrEmpty(resolved.PlanType))
+            {
+                snapshot.ProviderPlan = resolved.PlanType;
+            }
+        }
+
+        return snapshot;
     }
 
     private static CodexQuotaSnapshot NormalizeQuotaSnapshot(CodexQuotaSnapshot snapshot)
@@ -9821,6 +10262,39 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return !string.IsNullOrEmpty(newestPath);
     }
 
+    // Two independent rejections for the account-blind rollout source:
+    //   1. the reading predates the moment the active account became active on this machine, and
+    //   2. the reading's plan disagrees with the active account's plan.
+    // Rule 1 only engages once this machine has actually seen more than one account, so a
+    // single-account install keeps its existing fallback behaviour untouched.
+    private bool IsSessionQuotaEventAttributable(CodexQuotaEvent quotaEvent)
+    {
+        if (quotaEvent == null)
+        {
+            return false;
+        }
+
+        CodexAccountIdentity identity = PeekCodexAccountIdentity();
+        DateTime boundaryUtc = CodexAccountStore.ResolveSessionTrustBoundaryUtc(identity.AccountKey);
+        if (boundaryUtc != DateTime.MinValue &&
+            quotaEvent.UpdatedUtc != DateTime.MinValue &&
+            quotaEvent.UpdatedUtc < boundaryUtc)
+        {
+            return false;
+        }
+
+        string eventPlan = quotaEvent.Snapshot == null ? string.Empty : quotaEvent.Snapshot.ProviderPlan;
+        if (!string.IsNullOrWhiteSpace(identity.PlanType) &&
+            !string.IsNullOrWhiteSpace(eventPlan) &&
+            !string.Equals(eventPlan, "unknown", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(eventPlan.Trim(), identity.PlanType.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
     private bool TryReadCodexSessionQuota(out CodexQuotaSnapshot snapshot)
     {
         snapshot = null;
@@ -9911,6 +10385,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         if (latestEvent == null)
+        {
+            return false;
+        }
+
+        // Rollout files are shared across sign-ins: one resumed session file was observed holding
+        // both a "prolite" and a "pro" rate_limits block months apart. Since the block itself has no
+        // account id, refuse any reading that cannot be attributed to the account that is active now.
+        if (!IsSessionQuotaEventAttributable(latestEvent))
         {
             return false;
         }
@@ -10027,13 +10509,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
 
     private void InitializeQuotaSessionWatcher()
     {
-        string profilePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrEmpty(profilePath))
+        // Resolve through the shared Codex home so a CODEX_HOME switch moves the token, the rollout
+        // history and the task index together. Reading one account's token beside another account's
+        // sessions produced snapshots that belonged to neither.
+        this.quotaSessionsPath = CodexHome.ResolveSessionsPath();
+        if (string.IsNullOrEmpty(this.quotaSessionsPath))
         {
             return;
         }
 
-        this.quotaSessionsPath = Path.Combine(Path.Combine(profilePath, ".codex"), "sessions");
         if (!Directory.Exists(this.quotaSessionsPath))
         {
             return;
@@ -10241,6 +10725,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (found)
         {
             ApplyFiveHourLimitAbsence(snapshot);
+            // A rollout rate_limits block carries no account id at all - plan_type is the only
+            // attribution signal it offers, and it is kept so a plainly foreign reading can be
+            // rejected before it reaches the trend.
+            string plan = GetQuotaString(rateLimits, "plan_type");
+            if (!string.IsNullOrWhiteSpace(plan))
+            {
+                snapshot.ProviderPlan = plan.Trim();
+            }
         }
 
         return found;
@@ -10397,7 +10889,14 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
                 string value = line.Substring(split + 1).Trim();
                 int percent;
                 DateTime dateTime;
-                if (string.Equals(key, "FiveHourPercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out percent))
+                if (string.Equals(key, "AccountKey", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Identity alone must not make an otherwise empty cache count as a reading.
+                    snapshot.AccountKey = string.IsNullOrWhiteSpace(value)
+                        ? CodexAccountIdentity.UnknownAccountKey
+                        : value;
+                }
+                else if (string.Equals(key, "FiveHourPercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out percent))
                 {
                     snapshot.FiveHourPercent = ClampPercent(percent);
                     found = true;
@@ -10540,6 +11039,11 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             List<string> lines = new List<string>();
             lines.Add("Version=1");
+            // Stamp the owning account so a cached balance from a previous sign-in is recognised as
+            // foreign on the next start instead of being shown as the current account's balance.
+            lines.Add("AccountKey=" + (string.IsNullOrWhiteSpace(snapshot.AccountKey)
+                ? CodexAccountIdentity.UnknownAccountKey
+                : snapshot.AccountKey.Trim()));
             lines.Add("FiveHourPercent=" + ClampPercent(snapshot.FiveHourPercent).ToString(CultureInfo.InvariantCulture));
             lines.Add("WeeklyPercent=" + ClampPercent(snapshot.WeeklyPercent).ToString(CultureInfo.InvariantCulture));
             if (snapshot.FiveHourLimitAbsent)
@@ -10910,7 +11414,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         RunCodexRadarCatalogCompletenessSelfTest();
         RunCodexResetCreditsSelfTest();
         CodexQuotaHistoryStore.RunSelfTest();
+        RunQuotaHistoryProtectionSelfTest();
         RunCodexAuthJsonSelfTest();
+        CodexHome.RunSelfTest();
+        CodexAccountStore.RunSelfTest();
+        RunCodexAccountSeparationSelfTest();
+        RunRadarResetEventDetectionSelfTest();
         RunWeeklyBurnRateSelfTest();
 
         int baseline = GetNextFiveHourConsumptionRingBaseline(-1, 67, 57);

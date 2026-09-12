@@ -22,6 +22,14 @@ internal sealed class RadarTileSnapshot
     public string FamilyLabel = string.Empty;
     public string ModelName = string.Empty;
 
+    // Codex account this quota belongs to. The tile always follows the account that is active in
+    // auth.json right now; the numbers below are that account's alone, never a merge of two sign-ins.
+    // Claude has no account switch and leaves these empty.
+    public bool AccountKnown;
+    public string AccountKey = string.Empty;
+    public string AccountLabel = string.Empty;
+    public string AccountLetter = string.Empty;
+
     // Quota. Percent values are REMAINING, matching what the Radar rings show.
     public bool QuotaKnown;
     public bool QuotaSourceUpdatedKnown;

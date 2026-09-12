@@ -1,15 +1,15 @@
 # Guard Board 架构
 
-适用版本：2.0.0.39
+适用版本：2.0.0.53
 
-本文负责电源守护状态机（睡眠防护、亮屏计时、断网自动睡眠、电池保护暂停窗口）、GUARD 看板窗口的布局与交互，以及该窗口与「特殊设置」三项程序守护的共用边界。
+本文负责电源守护状态机（睡眠防护、亮屏计时、断网自动睡眠、电池保护暂停窗口、电源模式与省电模式）、GUARD 看板窗口的布局与交互，以及该窗口与「特殊设置」三项程序守护的共用边界。
 
 ## 定位
 
 GUARD 是左缘七角色停靠队列的第四个成员，与 Network、Spec Board、Codex 任务板、Codex IQ、重置与速蹬、系统日记看板并列。它把两处原本分散的功能合并到一个窗口：
 
 - **电源守护**：原独立工具 `CodexSleepGuard`（`E:\Codexproject\desktopdata\CodexSleepGuard` 的 PowerShell 脚本）的三项能力，在本程序内用 C# 重新实现。
-- **程序守护**：`AiQuickMenuForm`（特殊设置窗）的链接阻断、额度计划、CTF 重启三项，此处只是第二个入口，逻辑仍归特殊设置窗所属的 owner 路径。
+- **程序守护**：`AiQuickMenuForm`（特殊设置窗）的链接阻断、额度计划、CTF 重启三项，此处只是第二个入口，逻辑仍归特殊设置窗所属的 owner 路径；另加本看板自有的**保活**（字幕翻译链路 / Codex 桌面应用 / Claude 桌面应用三个独立开关加一键全开）。
 - **电池保护**：原先只在扇形速控盘「辅助」分支下作为两个一次性按钮存在（`common_battery_care_pause` / `common_battery_limit_restore`），此处补上 24 小时暂停窗口的倒计时。
 
 `AiQuickMenuForm` 与扇形速控盘的电池按钮保持存在，不因本窗口新增而移除；两处读写同一批设置键。
@@ -45,7 +45,15 @@ GUARD 是左缘七角色停靠队列的第四个成员，与 Network、Spec Boar
 
 MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePauseHours = 24`），之后自行恢复 80% 上限。**本程序无法回读 MyASUS 的真实剩余时间**，`GuardBatteryCarePauseUntilUtcTicks` 是本地记账。GUARD、操作盘和 PWR 共用 `OperationForm.RequestBatteryCareFromGuardBoard`：以点击时刻加 24 小时作为截止时间，只在成功启动厂商进程后经 `GuardBoardForm.RecordBatteryCareCommand` 保存；失败保持原记录，成功发送恢复指令清除记录。启动成功不等同于厂商已应用设置。
 
-`GuardRuntime.ObserveBatteryPercent` 在有效读数从不高于 80% 跳到高于 80% 时、且没有有效暂停记录时，以首次观察时刻补记 24 小时。连续高电量、有效窗口内再次跨越均不续期；未知读数中断基线。首次启动已高于 80% 不凭空推定起点；重启读取原截止时间而非重置 24 小时。到期只清本地记录，不自动发送额外厂商指令；挂起期间未观察到的精确跨越时刻不可回溯。PWR 和 GUARD 均以“约”标明本地推算，默认按设备 80% 上限显示，不宣称读到了 MyASUS 状态。调度归属见 `Docs/Component-Refresh-Rules.md`。
+`GuardRuntime.ObserveBatteryPercent` 在有效读数从不高于 80% 跳到高于 80% 时、且没有有效暂停记录时，以首次观察时刻补记 24 小时。连续高电量、有效窗口内再次跨越均不续期；未知读数中断基线。首次启动已高于 80% 不凭空推定起点；重启读取原截止时间而非重置 24 小时。到期只清本地记录，不自动发送额外厂商指令；挂起期间未观察到的精确跨越时刻不可回溯。PWR 和 GUARD 均以”约”标明本地推算，默认按设备 80% 上限显示，不宣称读到了 MyASUS 状态。调度归属见 `Docs/Component-Refresh-Rules.md`。
+
+### 电源模式与省电模式
+
+三档电源模式（省电/平衡/性能）复用 `PowerThermalForm` 展示侧已经依赖的同一批 Windows 10 1709+ 电源模式滑块 overlay scheme GUID（`00000000-...`=平衡、`961cc777-...`=省电、`ded574b5-...`=性能），但 GUARD 是这些 GUID 第一次被用于**写入**而非只读：`NativeMethods.TrySetActivePowerOverlayScheme`/`TryGetActivePowerOverlayScheme` 包装 `powrprof.dll` 的 `PowerSetActiveOverlayScheme`/`PowerGetEffectiveOverlayScheme`。切换是即时且无限期的——不做任何记账，Windows 自己持有当前档位，GUARD 每次绘制都用 `GuardRuntime.GetLivePowerModeTier()` 现读现显示。手动切换会顺带取消尚未到期的定时电源模式，因为静默保留旧定时会在数小时后无声地推翻用户刚做的手动选择。
+
+定时电源模式（”未来几小时锁定当前模式”）是唯一带截止时间的电源模式功能：`GuardRuntime.StartPowerModeOverride` 只记录 `powerModeOverrideUntilUtc`（终点型，语义与 `GuardDisplayUntilUtcTicks` 相同）与用户拨定的 `powerModeOverrideHours`（1–24 整点阶梯，复用 `WidgetSettings.GuardPowerModeOverrideHourSteps`），**不**记录”恢复到哪个档位”——到期固定恢复至平衡，而不是动态记住”武装前是什么档位”。这是刻意简化：跨越数小时的窗口内用户很可能已经手动改过模式，恢复到一个不确定的历史值不如恢复到确定的推荐档位可预测，也省掉了一个额外的 restore-tier 设置键。`Tick` 到点即调用 `NativeMethods.TrySetActivePowerOverlayScheme(PowerOverlaySchemeBalanced)`；由于 overlay scheme 是持久 Windows 设置而非进程持有的电源请求句柄，应用关闭期间到期不会有任何代码路径自动处理，`LoadFromSettings` 必须在加载时发现”已过期”的截止时间后立即补执行一次恢复动作，而不能只清空内存里的计时字段——这与 `GuardRuntime.ReleaseAll` 刻意不清除电源模式/省电模式状态是同一组不变量的两面：两者都是持久 Windows 设置而非进程句柄，进程退出不应该、也无法让 Windows 自动放手。
+
+省电模式强制开关没有独立的”现在打开/关闭”公开 API，`NativeMethods.TryWriteEnergySaverBatteryThresholdPercent` 复用社区常见的 `SUB_ENERGYSAVER \ ESBATTTHRESHOLD` 隐藏电源设置技巧：写入 100 等价于”电量始终低于阈值”从而强制开启，写回原值即关闭。因为这会覆盖用户自己的”电量低于 X% 自动开启”偏好，`GuardRuntime.SetEnergySaverForced(true)` 必须先用 `TryReadEnergySaverBatteryThresholdPercent` 读出原值存进 `energySaverRestoreThresholdPercent`（仅在尚未记录时捕获一次，避免崩溃重启后把”100”误当作原值），写完新值后调用 `PowerSetActiveScheme` 重新激活当前方案——这是 Windows 让 `PowerWriteDCValueIndex` 写入的新值立即生效的文档化方式。该设置只在电池供电时才有实际效果，这是 Windows 省电策略本身的边界，插着电源时开关会返回成功但系统不会显示为省电中。正因为”写入成功”不等于”已生效”，省电模式行显示的是 `NativeMethods.TryGetBatterySaverStatus()` 读到的**系统真实状态**，GUARD 自己的强制标志只作为括注：`DescribeEnergySaverDetail(liveKnown, liveOn, forcedByGuard)` 给出开启/开启（强制）/强制未生效/关闭/未知（含强制变体）几种状态文字（行名”省电模式”由行本身承担），其中”强制未生效”正是接电时的正常结果。开关本身仍绑定 GUARD 的强制意图而非实时状态——让它镜像实时状态会导致用户在接电时刚点开就被弹回，看起来像坏了。读不到状态时显示”未知”，不假装关闭。`VerifyEnergySaverLabelContract()`（`--test`）守这五种映射。
 
 ## 持久化
 
@@ -64,6 +72,10 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 | `GuardDisplayUntilUtcTicks` | 亮屏计时截止时刻（**终点**，只在未来有效） |
 | `GuardOfflineThresholdMinutes` | 断网自动睡眠阈值，取值必须落在 `GuardOfflineThresholdMinuteSteps` |
 | `GuardBatteryCarePauseUntilUtcTicks` | 电池保护暂停窗口终点 |
+| `GuardPowerModeOverrideHours` | 定时电源模式拨定的小时数，取值必须落在 `GuardPowerModeOverrideHourSteps`（1–24 整点） |
+| `GuardPowerModeOverrideUntilUtcTicks` | 定时电源模式截止时刻（**终点**，只在未来有效；到期固定恢复至平衡，不记忆武装前的档位） |
+| `GuardEnergySaverForcedOn` | 省电模式是否被本程序强制开启 |
+| `GuardEnergySaverRestoreThresholdPercent` | 强制开启前的 ESBATTTHRESHOLD 原值，`-1` 表示未记录；关闭时写回该值 |
 
 两个档位是**阶梯**而非任意区间：亮屏阶梯覆盖 1–24 小时的每一个整点（`60, 120, ... 1440` 分），断网阶梯仍为 `GuardOfflineThresholdMinuteSteps = {1, 5, 10, 30}` 分。`NormalizeGuardDisplayMinutes` / `NormalizeGuardOfflineThresholdMinutes` 对旧值或越界值取最近档位，旧版 30 分自动归一为 1 小时；UI 的 `+/-` 每次只移动一小时。
 
@@ -84,11 +96,21 @@ MyASUS 的电池保养暂停固定持续 24 小时（`GuardRuntime.BatteryCarePa
 
 电池保护轨下方是**电源请求状态块**（`DrawPowerRequestInfo`）：`电源请求` 标签后跟系统 / 执行 / 显示三枚 `DrawStateChip` 状态芯片，按 `*PowerRequestActive` 着绿（持有）或灰（未持有），把「机器现在究竟靠什么不睡」这条最关键的信息显式画出，而非让修复隐形。副行经 `NativeMethods.TryGetOnAcPower` 给出 AC 提示：未守护时「未持有电源请求」；已守护且接通电源时绿字「S0 待机感知 · 守护持续有效」；电池供电时黄字警告「待机超时后系统可能中断守护」（`ACLineStatus == 255` 未知时不猜，走中性提示）。该块无命中区，故计时环预算按 `infoHeight + infoGap` 扣除其高度、由环让位而非挤压轨道；块与电池轨间距（`infoGap`）比环与轨间距（`trackGap`）更紧，将两条电源相关行视觉归组。`SpecBoardWidth < CompactRingMinimumLogicalWidth` 的紧凑单列模式撤除整个左栏，因此不绘制该块——防睡眠两层修复仍然生效，只是不显示芯片。
 
-### 右栏：控制卡片
+### 右栏：三组控制行
 
-两个分段（电源守护 / 程序守护）各三张卡片。卡片控件自右向左布局，文本块按剩余宽度测量——反过来做就是窄宽度下文字压到开关底下的成因。
+右栏是三组（电源守护 / 电源模式 / 程序守护）**行**，不是一堆卡片。每组一个圆角面板（`DrawGroupPanel`），面板内每行一个设置，行间画内缩发丝线（`DrawRowSeparator`）；组标题在面板之上，由 `DrawSectionHeader` 画圆点加文字。
 
-`SpecBoardWidth < GuardBoardForm.CompactRingMinimumLogicalWidth = 460` 时进入**紧凑单列模式**：左栏整体撤除，电池保护降级为电源守护分段下的第四张卡片。功能在窄宽度下只允许重排，不允许消失。
+一行由 `DrawSettingRow` 画三件东西：**名称**（`bodyBold`）、**实时状态**（`smallFont`，按语义着色：已守护绿、进行中/告警黄、其余中性）、**控件**（开关 / 步进器 / 按钮 / 步进器+按钮，由 `GuardRowSpec.Control` 选择）。控件自右向左布局，文本按剩余宽度测量——反过来做就是窄宽度下文字压到开关底下的成因。同组各行的名称共用一个列宽（`MeasureNameColumn`，取组内最宽名称，上限为面板宽的 38%），因此状态文字在组内左对齐成一列；超出列宽的名称按省略号截断，而不是把状态挤到控件上。
+
+高度预算只有一个变量：`rowHeight`。组标题、面板内边距与组间距都是按字体度量的固定量，行高在 `minRowHeight`（比最高控件再高一点，保证开关不压到分隔线）与 `naturalRowHeight` 之间取值；板高不够时先收紧内边距，再让行高向下取到下限，多余的高度则加到组间距而不是撑高行——行高远超行内文字时读起来是"一个控件浮在空白里"。这套预算取代了早期"每个设置一张带标题+副标题的卡片"的形状：那种形状让一个开关要占两行文字加卡片内边距，右栏的固定高度长期超订，每加一个控件都要靠压缩邻居来买单，紧凑布局下最后一张卡片仍会与页脚相撞。
+
+`SpecBoardWidth < GuardBoardForm.CompactRingMinimumLogicalWidth = 460` 时进入**紧凑单列模式**：左栏整体撤除，电池保护降级为电源模式组的第四行。功能在窄宽度下只允许重排，不允许消失。
+
+两处**分段行**（`DrawSegmentRow`）不带名称，整行铺满面板内宽：电源模式的省电/平衡/性能是互斥选择（accent 色），保活的翻译/Codex/Claude 是三个独立开关（success 色），后者每段自带 `●`/`○` 状态点——没有状态点时两行外形完全相同，独立开关会被读成又一组互斥选项。分段之间留真实间隙，命中区因此不会相邻贴合（两个命中区共用像素时，先登记者静默获胜）。
+
+电源模式的实时档位与待恢复定时写在组标题里（"电源模式 · 当前性能 · 点击即切换，不自动还原"），组标题是这一组本来就要付的一行，因此快速切换行可以是纯控件。快速切换点击立即调用 `GuardRuntime.SetPowerMode` 并取消任何挂起的定时；"定时锁定"行读的是拨定的小时数与当前已生效的档位，不弹出额外的目标档位选择器。省电模式行的状态文字由 `DescribeEnergySaverDetail` 给出（开启 / 开启（强制）/ 强制未生效 / 关闭 / 未知 / 未知（强制）），行名由行本身承担。该组的档位高亮与省电模式状态都不读缓存，刷新语义见 `Docs/Component-Refresh-Rules.md` 8.3。
+
+程序守护组的**保活**占两行：第一行是名称、"已守护 n/3 · 掉线每 30 秒补拉"与一键按钮（三项全开时按钮翻面为"全关"，一个控件既下发默认也撤销默认），第二行是三段独立开关。看板只写设置键，真正的补齐动作在 `WidgetForm.MaintainProgramKeepAlive`，见 `Docs/Component-Refresh-Rules.md` 8.4。
 
 ### 交互
 

@@ -8,13 +8,23 @@ using System.Collections.Generic;
 internal sealed class TranslatorControlSnapshot
 {
     // Process/service state. IsRunning tracks LiveCaptionsTranslator.exe only -- that is what the
-    // header dot/label and the start/stop toolbar button both represent. GenieX and the sanitize
-    // proxy are monitored for completeness (and possible future surfacing) but are never
-    // started/stopped by this board: GenieX reload is ~10s and must not be triggered casually.
+    // header dot/label and the start/stop toolbar button both represent. The other three members of
+    // the stack (GenieX on 127.0.0.1:18181, the sanitize proxy on 127.0.0.1:18182, and Windows'
+    // own LiveCaptions.exe) all have to be up for a translation to succeed, so the board's service
+    // status strip surfaces each of them and offers a start action for whichever one is down.
     public bool IsRunning { get; set; }
     public bool GenieXRunning { get; set; }
     public bool SanitizeProxyRunning { get; set; }
+    public bool LiveCaptionsRunning { get; set; }
     public bool RestartInProgress { get; set; }
+
+    // HKCU\Software\Microsoft\LiveCaptions\UI\CaptionLanguage: "en-US" means Windows hands us the
+    // original English captions (so the local NPU model does the real EN->ZH translation), "zh-CN"
+    // means Windows translates to Chinese first and the model only ever sees already-translated
+    // text. A missing key/value is "unknown" -- never assume a default, because assuming the wrong
+    // one would render a control that lies about which state the machine is actually in.
+    public bool CaptionLanguageKnown { get; set; }
+    public string CaptionLanguage { get; set; }
 
     public bool SettingsFileFound { get; set; }
     public bool ContextAwareKnown { get; set; }
@@ -42,6 +52,7 @@ internal sealed class TranslatorControlSnapshot
         {
             ModelName = string.Empty,
             ApiUrl = string.Empty,
+            CaptionLanguage = string.Empty,
             AvailableModels = new List<string>(),
             RecentHistory = new List<TranslatorHistoryEntry>()
         };
@@ -53,7 +64,10 @@ internal sealed class TranslatorControlSnapshot
         clone.IsRunning = this.IsRunning;
         clone.GenieXRunning = this.GenieXRunning;
         clone.SanitizeProxyRunning = this.SanitizeProxyRunning;
+        clone.LiveCaptionsRunning = this.LiveCaptionsRunning;
         clone.RestartInProgress = this.RestartInProgress;
+        clone.CaptionLanguageKnown = this.CaptionLanguageKnown;
+        clone.CaptionLanguage = this.CaptionLanguage;
         clone.SettingsFileFound = this.SettingsFileFound;
         clone.ContextAwareKnown = this.ContextAwareKnown;
         clone.ContextAware = this.ContextAware;

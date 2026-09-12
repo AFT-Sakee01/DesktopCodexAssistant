@@ -51,6 +51,13 @@ internal sealed class SpecBoardProject
     public string Root;
     public string SpecGlob;
     public bool Reachable = true;
+
+    // Optional PROJECTS.json field, consumed read-only. A Codex session is attributed to a project by
+    // its cwd leaf name; when that leaf differs from both the project name and the root's own leaf
+    // (BunkyoUNV's root leaf is a Chinese folder name), the registry can list extra leaf spellings
+    // here. The program never writes PROJECTS.json, so a missing or malformed field simply yields an
+    // empty list rather than a reader failure.
+    public readonly List<string> WorkspaceAliases = new List<string>();
 }
 
 internal sealed class SpecBoardSnapshot
@@ -81,6 +88,7 @@ internal static class SpecBoardReader
     internal const int MaxLedgerLines = 5000;
     internal const int MaxProjects = 64;
     internal const int MaxScannedFiles = 512;
+    internal const int MaxWorkspaceAliases = 16;
 
     public static SpecBoardSnapshot Read(string ledgerPath, bool reconcile)
     {
@@ -174,6 +182,7 @@ internal static class SpecBoardReader
                     Root = NormalizeRoot(rootPath),
                     SpecGlob = specGlob.Trim().Replace('\\', '/')
                 };
+                ReadWorkspaceAliases(value, project, snapshot, diagnostics);
                 if (!result.ContainsKey(project.Name))
                 {
                     result.Add(project.Name, project);
@@ -457,6 +466,131 @@ internal static class SpecBoardReader
         }
     }
 
+    // workspace_aliases is optional: the field is absent from every PROJECTS.json written before it
+    // existed, so "absent", "wrong type" and "over the cap" must all degrade to a usable registry
+    // rather than to ProjectRegistryAvailable=false.
+    private static void RunWorkspaceAliasSelfTest(string tempRoot, string ledger)
+    {
+        string projects = Path.Combine(tempRoot, "PROJECTS.json");
+        string root = new JavaScriptSerializer().Serialize(Path.Combine(tempRoot, "project"));
+
+        // Absent field: the common legacy case.
+        SpecBoardSnapshot absent = Read(ledger, false);
+        SpecBoardProject absentProject = absent.Projects.FirstOrDefault();
+        if (absentProject == null || absentProject.WorkspaceAliases.Count != 0 || !absent.ProjectRegistryAvailable)
+        {
+            throw new InvalidOperationException("Spec Board absent workspace_aliases policy failed.");
+        }
+
+        // Present with blanks, duplicates and a non-string entry mixed in.
+        File.WriteAllText(
+            projects,
+            "{\"schema_version\":1,\"projects\":[{\"name\":\"Test\",\"display\":\"Test Project\",\"root\":" + root +
+            ",\"spec_glob\":\"Docs/Technical/*-SPEC-*.md\",\"workspace_aliases\":[\"Alpha\",\"  \",\"alpha\",\"Beta\",null,7]}]}",
+            SharedEncoding.Utf8NoBom);
+        SpecBoardSnapshot mixed = Read(ledger, false);
+        SpecBoardProject mixedProject = mixed.Projects.FirstOrDefault();
+        if (mixedProject == null || !mixed.ProjectRegistryAvailable ||
+            mixedProject.WorkspaceAliases.Count != 3 ||
+            !mixedProject.WorkspaceAliases.Contains("Alpha", StringComparer.OrdinalIgnoreCase) ||
+            !mixedProject.WorkspaceAliases.Contains("Beta", StringComparer.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Spec Board workspace_aliases sanitisation failed.");
+        }
+
+        // Wrong type for the field itself: counted as malformed, registry still usable.
+        File.WriteAllText(
+            projects,
+            "{\"schema_version\":1,\"projects\":[{\"name\":\"Test\",\"display\":\"Test Project\",\"root\":" + root +
+            ",\"spec_glob\":\"Docs/Technical/*-SPEC-*.md\",\"workspace_aliases\":\"Alpha\"}]}",
+            SharedEncoding.Utf8NoBom);
+        SpecBoardSnapshot wrongType = Read(ledger, false);
+        SpecBoardProject wrongTypeProject = wrongType.Projects.FirstOrDefault();
+        if (wrongTypeProject == null || !wrongType.ProjectRegistryAvailable ||
+            wrongTypeProject.WorkspaceAliases.Count != 0)
+        {
+            throw new InvalidOperationException("Spec Board workspace_aliases wrong-type policy failed.");
+        }
+
+        // Over the cap: bounded, with the overflow reported as malformed input.
+        System.Text.StringBuilder builder = new System.Text.StringBuilder();
+        for (int i = 0; i < MaxWorkspaceAliases + 5; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append(',');
+            }
+
+            builder.Append("\"alias" + i.ToString(CultureInfo.InvariantCulture) + "\"");
+        }
+
+        File.WriteAllText(
+            projects,
+            "{\"schema_version\":1,\"projects\":[{\"name\":\"Test\",\"display\":\"Test Project\",\"root\":" + root +
+            ",\"spec_glob\":\"Docs/Technical/*-SPEC-*.md\",\"workspace_aliases\":[" + builder + "]}]}",
+            SharedEncoding.Utf8NoBom);
+        SpecBoardSnapshot capped = Read(ledger, false);
+        SpecBoardProject cappedProject = capped.Projects.FirstOrDefault();
+        if (cappedProject == null || cappedProject.WorkspaceAliases.Count != MaxWorkspaceAliases ||
+            capped.MalformedLines < 5)
+        {
+            throw new InvalidOperationException("Spec Board workspace_aliases bound policy failed.");
+        }
+    }
+
+    // workspace_aliases is optional and user-authored. Anything that is not a usable string is
+    // skipped rather than failing the project: a typo in one entry must not cost the whole registry.
+    // Overflow past MaxWorkspaceAliases is counted as malformed input so the bounded-read diagnostic
+    // still reports that the file was larger than what the snapshot carries.
+    private static void ReadWorkspaceAliases(
+        Dictionary<string, object> value,
+        SpecBoardProject project,
+        SpecBoardSnapshot snapshot,
+        ReadDiagnostics diagnostics)
+    {
+        object raw;
+        if (value == null || !value.TryGetValue("workspace_aliases", out raw))
+        {
+            return;
+        }
+
+        object[] entries = raw as object[];
+        if (entries == null)
+        {
+            // Present but not an array: treat as absent, and count it so the input is not silently
+            // different from what the user wrote.
+            snapshot.MalformedLines++;
+            return;
+        }
+
+        for (int i = 0; i < entries.Length; i++)
+        {
+            if (project.WorkspaceAliases.Count >= MaxWorkspaceAliases)
+            {
+                int omitted = entries.Length - i;
+                snapshot.MalformedLines += omitted;
+                diagnostics.ExcessAliases += omitted;
+                diagnostics.Sources.Add("workspace-aliases");
+                return;
+            }
+
+            string alias = entries[i] == null
+                ? string.Empty
+                : Convert.ToString(entries[i], CultureInfo.InvariantCulture);
+            if (string.IsNullOrWhiteSpace(alias))
+            {
+                snapshot.MalformedLines++;
+                continue;
+            }
+
+            alias = alias.Trim();
+            if (!project.WorkspaceAliases.Contains(alias, StringComparer.OrdinalIgnoreCase))
+            {
+                project.WorkspaceAliases.Add(alias);
+            }
+        }
+    }
+
     private static string ReadString(Dictionary<string, object> value, string key)
     {
         object raw;
@@ -660,11 +794,12 @@ internal static class SpecBoardReader
         public int ExcessLineSets;
         public int ExcessProjects;
         public int ExcessScannedFiles;
+        public int ExcessAliases;
 
         public void LogSummary()
         {
             if (this.OversizedFiles == 0 && this.OversizedLines == 0 && this.ExcessLineSets == 0 &&
-                this.ExcessProjects == 0 && this.ExcessScannedFiles == 0)
+                this.ExcessProjects == 0 && this.ExcessScannedFiles == 0 && this.ExcessAliases == 0)
             {
                 return;
             }
@@ -675,7 +810,8 @@ internal static class SpecBoardReader
                 ", OversizedLines=" + this.OversizedLines.ToString(CultureInfo.InvariantCulture) +
                 ", ExcessLineSets=" + this.ExcessLineSets.ToString(CultureInfo.InvariantCulture) +
                 ", ExcessProjects=" + this.ExcessProjects.ToString(CultureInfo.InvariantCulture) +
-                ", ExcessScannedFiles=" + this.ExcessScannedFiles.ToString(CultureInfo.InvariantCulture));
+                ", ExcessScannedFiles=" + this.ExcessScannedFiles.ToString(CultureInfo.InvariantCulture) +
+                ", ExcessAliases=" + this.ExcessAliases.ToString(CultureInfo.InvariantCulture));
         }
     }
 
@@ -726,6 +862,8 @@ internal static class SpecBoardReader
             {
                 throw new InvalidOperationException("Spec Board missing-ledger policy failed.");
             }
+
+            RunWorkspaceAliasSelfTest(tempRoot, ledger);
         }
         finally
         {

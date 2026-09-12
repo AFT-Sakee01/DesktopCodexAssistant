@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.48
+适用版本：2.0.0.53
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -147,6 +147,7 @@ DNS 检测：
 - `BuildStripSnapshot()` 只读缓存，不触发 WMI、注册表或 `powercfg`。
 - `WidgetForm.BuildMetricTilePowerProjection()` 不建立 timer；只在组装 `MetricTileFeed` 时按 `MetricTilePowerProjectionRefreshIntervalMs = 5000` 最多每 5 秒 clone 一次 System Day 的 `Last24Hours` owner-memory 投影，供 PWR 展开详情绘制趋势与 ETA。
 - `WidgetForm.RecordSystemDaySample()` 在既有主采样 tick 中、推送 tile feed 之前，将缓存电量交给 GUARD 检测向上跨越 80%；只在形成新暂停记录时保存设置，不改变历史样本节奏，不新增 timer。PWR 倒计时随既有 feed 刷新，以绝对 UTC 截止时间计算；GUARD 的既有维护 tick 清理到期记录。手动暂停/恢复成功后立即刷新 PWR；与新目标不符的旧历史 ETA 暂不使用。隐藏 tile 不停止检测；休眠期间不采样，恢复后只能用首次可见读数检测跨越，不能重建睡眠期间的精确起点。
+- `WidgetForm.MaintainProgramKeepAlive()` 不建立 timer；只在既有主控制 tick 中按 `TranslatorKeepAliveIntervalSeconds = 30` 自门控，且仅在三个保活开关（`TranslatorKeepAliveEnabled` / `CodexAppKeepAliveEnabled` / `ClaudeAppKeepAliveEnabled`）至少有一个打开时执行。命中后用 `ThreadPool.QueueUserWorkItem` 在后台线程依次处理已武装的项：字幕翻译链路走 `TranslatorControlReader.TryEnsureStackAlive()`（内含 WMI 查询与最多四次 `Process.Start`），两个打包桌面应用走 `ProgramKeepAliveGuard.TryEnsureRunning()`（进程/WMI 探测 + `shell:AppsFolder` 拉起）。`translatorKeepAliveRunning` 单飞标志覆盖整轮，保证上一轮未结束时不叠加下一轮。该守护**不受任何看板可见性门控**——它要修复的正是系统睡眠把这些进程带走、此时没有任何看板在场的情况，因此不能复用 `TranslatorControlReader.RefreshIfDue` 那条 2000 ms、看板可见才驱动的路径。桌面应用的存在性判定一律 fail-safe：查询失败按"在运行"处理，宁可守护静默失效，也不能因误判每 30 秒反复拉起一个本来活着的应用。
 - 全屏标志不停止采样；显示器关闭、会话锁定或系统挂起停止，恢复后清空时间戳并立即采样。
 - `PowerThermalManualEnergySaverThresholdPercent` 只根据最近电池快照影响 `EnergySaverActive`，不新增轮询。
 - `PowerThermalIntegratedEnabled` 只兼容读取且 UI 隐藏，不控制 owner、采样或可见性。
@@ -228,6 +229,7 @@ DNS 检测：
 
 - `GuardBoardForm` 固定 500 ms 状态 tick，从隐藏构造起运行；board 收起不停止状态机。
 - 可见时更新秒级倒计时，隐藏时只维护状态与 tab 颜色。
+- 电源模式档位与省电模式是系统状态，别的程序、Windows 自身和用户都能改，因此**不缓存**：可见时每个 500 ms tick 用 `GuardRuntime.GetLivePowerModeTier()` 与 `NativeMethods.TryGetBatterySaverStatus()` 现读，两者都进重绘签名，外部变更 0.5 s 内跟随重绘；`ShowBoard()` 打开瞬间也重读一次并记录该签名，避免开板后第一次 tick 重复合成同一帧。
 - 睡眠防护或亮屏计时活动时，每 30 秒幂等重申 Win32 电源请求与线程 ES 标志；失败项在后续周期重试，不增加请求引用计数。
 - 网络未知按在线处理；只有明确离线且睡眠防护已武装时才累计到睡眠。
 - 系统恢复清除旧离线起点并释放、重建电源请求句柄；离线必须重新累计完整阈值。
@@ -259,9 +261,12 @@ DNS 检测：
 
 - `TranslatorControlReader`（`Core/TranslatorControlReader.cs`）是 `WidgetForm` 直接构造并调用 `StartHeadlessDataOwner()`/`StopHeadlessDataOwner()` 的第三个 headless data owner，与 §4/§5 的 Codex/Power owner 同一套生命周期契约；但它不是 `Form`，没有 HWND，不接收 Windows 消息，因此不做 `InvokeRequired`/`Invoke` 编排——所有调用固定发生在 UI 线程。
 - 轮询固定 `RefreshIntervalMs = 2000`（不随 `PerformanceMode` 变化），由 `CaptionsBoardForm` 自己的 500 ms maintenance tick 在每次 tick 调用 `RefreshIfDue(now, force:false)` 驱动；`RefreshIfDue` 内部按 `nextRefreshUtc` 自门控，实际每 2000 ms 才真正做一次 I/O，与 `RefreshSeelenUiStatus`（§7，`SeelenStatusRefreshIntervalMs = 2000`）同一节流写法。board 隐藏时其 maintenance tick 停止，`RefreshIfDue` 因此完全不被调用——不常驻轮询外部文件或进程。
-- 每次到期刷新读取三项：`setting.json`（`ContextAware`/`NumContexts`/`Configs.OpenAI[ConfigIndices.OpenAI].ModelName`/`ApiUrl`）、`translation_history.db` 最近 8 行（经 `Core/MinimalSqliteReader.cs`）、以及三个外部进程的存在性（`LiveCaptionsTranslator.exe`、`geniex.exe` 按进程名；sanitize-proxy 的 `node.exe` 按 `Win32_Process.CommandLine` 含 `sanitize-proxy.js` 过滤）。`GetSnapshot()` 只读缓存 clone，board 绘制路径不做任何 I/O。
-- 三个交互控件（上下文感知开关、轮数步进、模型切换）与启动/停止按钮全部走同一条异步链路：点击先同步置位 `operationRunning`/`pendingAction` 并立即重绘一次显示"…"过渡态，再用 `Task.Run` 在后台线程调用 `TranslatorControlReader` 的写入方法，完成后通过 `BeginInvoke` 编组回 UI 线程清状态、刷新缓存快照并重绘；写入期间新点击一律忽略，不排队第二个写入。
-- 设置写入（`TryApplySettingChange`）只改写目标字段，其余字段（`ApiKey`、`Temperature`、`Prompt` 等）原样回写；写入成功后若 `LiveCaptionsTranslator.exe` 正在运行则 kill + 以其自身目录为 WorkingDirectory 重新启动（该外部应用只在启动时读一次配置）；未运行则只保存，不主动拉起。GenieX 与 sanitize-proxy 只监控、不由本 board 启动/停止。
+- 每次到期刷新读取四项：`setting.json`（`ContextAware`/`NumContexts`/`Configs.OpenAI[ConfigIndices.OpenAI].ModelName`/`ApiUrl`）、`translation_history.db` 最近 8 行（经 `Core/MinimalSqliteReader.cs`）、四个外部进程的存在性（`LiveCaptionsTranslator.exe`、`geniex.exe`、Windows 自带 `LiveCaptions.exe` 按进程名；sanitize-proxy 的 `node.exe` 按 `Win32_Process.CommandLine` 含 `sanitize-proxy.js` 过滤），以及注册表值 `HKCU\Software\Microsoft\LiveCaptions\UI\CaptionLanguage`（`TranslatorControlReader.ReadCaptionLanguage`，键或值缺失时快照保持 `CaptionLanguageKnown = false`，不假定默认值）。`GetSnapshot()` 只读缓存 clone，board 绘制路径不做任何 I/O。
+- 服务状态条的四个芯片（GenieX / 代理 / 实时字幕 / 翻译器）只反映上一轮快照，本身不做探测；只有处于停止态的芯片才注册点击目标，运行中的芯片完全不可点（GenieX 重载模型约 10 秒，误点代价过高）。点击启动走 `TranslatorControlReader.TryStartMonitoredService`（GenieX = `%LOCALAPPDATA%\GenieX CLI\geniex.exe serve`；代理 = `node "<translator root>\sanitize-proxy.js"`，两者均隐藏窗口并经 `cmd.exe /s /c` 把 stdout/stderr 重定向到 `<translator root>\logs\*.out.log`/`*.err.log`；实时字幕 = `%SystemRoot%\System32\LiveCaptions.exe` 无参数），翻译器芯片复用既有的 `TryToggleTranslatorRunning(start: true)`，不新增第二条启动路径。启动返回值只代表"已发起"，服务是否真的起来由下一轮 2000 ms 刷新判定。
+- 全部交互控件（上下文感知开关、轮数步进、模型切换、启动/停止按钮、四个服务芯片、字幕源芯片）走同一条异步链路：点击先同步置位 `operationRunning`/`pendingAction` 并立即重绘一次显示"…"过渡态，再用 `Task.Run` 在后台线程调用 `TranslatorControlReader` 的写入/启动方法，完成后通过 `BeginInvoke` 编组回 UI 线程清状态、刷新缓存快照并重绘；写入期间新点击一律忽略，不排队第二个写入。
+- 设置写入（`TryApplySettingChange`）只改写目标字段，其余字段（`ApiKey`、`Temperature`、`Prompt` 等）原样回写；写入成功后若 `LiveCaptionsTranslator.exe` 正在运行则 kill + 以其自身目录为 WorkingDirectory 重新启动（该外部应用只在启动时读一次配置）；未运行则只保存，不主动拉起。
+- 字幕源写入（`TryApplyCaptionLanguage`）是本 board 唯一的 HKCU 写入，只在用户点击字幕源芯片时发生，绝不由刷新触发。目标值由纯函数 `ResolveToggledCaptionLanguage` 决定：`en-US` ↔ `zh-CN`，未知/异常值一律解析为 `en-US`（原文英文才能让本地模型真正做 EN→ZH 翻译）。执行顺序固定为：先按点击瞬间采样的"翻译器是否在运行"决定路径 → 写注册表 → 若翻译器当时未运行则到此为止（不拉起任何进程）→ 否则 kill `LiveCaptions.exe`、kill `LiveCaptionsTranslator.exe`、等待 `ProcessRestartGraceMs` 后以其自身目录为 WorkingDirectory 重启翻译器（翻译器启动时会自行重新拉起 Live Captions）。
+- 最近字幕列表上限 `MaxHistoryEntries = 3`：可见条数仍先按实测字体行高计算可容纳量，再取该上限的较小值；剩余高度按 `count` 等分成整行、每条的两行文本在自己的行内垂直居中并以细分隔线分隔，不出现硬编码像素行距。
 - 最近一次翻译失败的 toast 通知复用 `Core/ServiceAlertDebouncer.cs` 的 10 s 稳定窗口（`checking` 立即、新错误 10 s 稳定后触发、恢复立即清除），只在稳定态从"无失败"翻转为"有失败"的上升沿调用一次 `WidgetForm.ShowWindowsNotification`；看板内的失败提示条本身不防抖，直接反映 `translation_history.db` 最新一行是否以 `[ERROR]` 开头。
 - board 隐藏、全屏或显示挂起时停止展示刷新；`TranslatorControlReader` 自身在 `WidgetForm` 退出前才 `StopHeadlessDataOwner()` + `Dispose()`。
 

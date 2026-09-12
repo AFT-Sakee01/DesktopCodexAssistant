@@ -310,6 +310,10 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
             this.Height,
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_NOOWNERZORDER | NativeMethods.SWP_FRAMECHANGED | NativeMethods.SWP_SHOWWINDOW);
         ResetAutoHideClock();
+        // RenderLayeredWindow below draws the current state, including a fresh read of the live
+        // power mode and Energy Saver. Recording that signature keeps the first maintenance tick
+        // after opening from re-compositing the identical frame.
+        this.lastVisibleStateSignature = BuildVisibleStateSignature(DateTime.UtcNow);
         RenderLayeredWindow();
     }
 
@@ -622,6 +626,9 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         {
             builder.Append(this.CurrentSettings.AiRequestProtectionManualBlockEnabled ? '1' : '0');
             builder.Append(this.CurrentSettings.CodexQuotaPlanEnabled ? '1' : '0');
+            builder.Append(this.CurrentSettings.TranslatorKeepAliveEnabled ? '1' : '0');
+            builder.Append(this.CurrentSettings.CodexAppKeepAliveEnabled ? '1' : '0');
+            builder.Append(this.CurrentSettings.ClaudeAppKeepAliveEnabled ? '1' : '0');
         }
 
         // The power-request info block renders these. The three flags derive from the armed guards
@@ -631,6 +638,21 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         builder.Append(this.runtime.ExecutionPowerRequestActive ? '1' : '0');
         builder.Append(this.runtime.DisplayPowerRequestActive ? '1' : '0');
         builder.Append('|').Append(((int)ResolveAcState()).ToString(CultureInfo.InvariantCulture));
+
+        // Power mode and Energy Saver are live OS state that Windows (or the user, via its own
+        // Settings UI, or any other program) can change at any time outside GUARD's control, so both
+        // are re-read every tick rather than cached. Without the live Energy Saver bit here the row
+        // only repainted when GUARD's own flag moved, so a change made anywhere else - including
+        // Windows switching it on by itself at low battery - stayed invisible until something else
+        // forced a repaint.
+        builder.Append('|').Append((int)GuardRuntime.GetLivePowerModeTier());
+        bool signatureEnergySaverLive;
+        bool signatureEnergySaverKnown = NativeMethods.TryGetBatterySaverStatus(out signatureEnergySaverLive);
+        builder.Append(signatureEnergySaverKnown ? (signatureEnergySaverLive ? '1' : '0') : '?');
+        builder.Append(this.runtime.EnergySaverForcedOn ? '1' : '0');
+        builder.Append(this.runtime.PowerModeOverrideActive ? '1' : '0');
+        builder.Append('|').Append(this.runtime.PowerModeOverrideHours.ToString(CultureInfo.InvariantCulture));
+        AppendSeconds(builder, this.runtime.GetPowerModeOverrideRemaining(nowUtc));
 
         return builder.ToString();
     }
@@ -757,9 +779,70 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
                 persist = false;
                 break;
 
+            case GuardHitAction.TranslatorKeepAliveToggle:
+                ToggleTranslatorKeepAlive();
+                persist = false;
+                break;
+
+            case GuardHitAction.CodexAppKeepAliveToggle:
+                ToggleKeepAliveSetting("CodexAppKeepAliveEnabled", "Codex 保活");
+                persist = false;
+                break;
+
+            case GuardHitAction.ClaudeAppKeepAliveToggle:
+                ToggleKeepAliveSetting("ClaudeAppKeepAliveEnabled", "Claude 保活");
+                persist = false;
+                break;
+
+            case GuardHitAction.KeepAliveDefaults:
+                ApplyKeepAliveDefaults();
+                persist = false;
+                break;
+
             case GuardHitAction.CtfRestart:
                 RequestCtfRestart();
                 persist = false;
+                break;
+
+            case GuardHitAction.PowerModeSaver:
+                this.runtime.SetPowerMode(GuardPowerModeTier.Saver);
+                this.statusNotice = this.runtime.LastActionDetail;
+                break;
+
+            case GuardHitAction.PowerModeBalanced:
+                this.runtime.SetPowerMode(GuardPowerModeTier.Balanced);
+                this.statusNotice = this.runtime.LastActionDetail;
+                break;
+
+            case GuardHitAction.PowerModePerformance:
+                this.runtime.SetPowerMode(GuardPowerModeTier.Performance);
+                this.statusNotice = this.runtime.LastActionDetail;
+                break;
+
+            case GuardHitAction.PowerScheduleHoursMinus:
+                this.runtime.SetPowerModeOverrideHours(StepValue(WidgetSettings.GuardPowerModeOverrideHourSteps, this.runtime.PowerModeOverrideHours, -1));
+                break;
+
+            case GuardHitAction.PowerScheduleHoursPlus:
+                this.runtime.SetPowerModeOverrideHours(StepValue(WidgetSettings.GuardPowerModeOverrideHourSteps, this.runtime.PowerModeOverrideHours, 1));
+                break;
+
+            case GuardHitAction.PowerScheduleToggle:
+                if (this.runtime.PowerModeOverrideActive)
+                {
+                    this.runtime.StopPowerModeOverride();
+                }
+                else
+                {
+                    this.runtime.StartPowerModeOverride(this.runtime.PowerModeOverrideHours, now);
+                }
+
+                this.statusNotice = this.runtime.LastActionDetail;
+                break;
+
+            case GuardHitAction.EnergySaverToggle:
+                this.runtime.SetEnergySaverForced(!this.runtime.EnergySaverForcedOn);
+                this.statusNotice = this.runtime.LastActionDetail;
                 break;
 
             case GuardHitAction.Close:
@@ -807,6 +890,16 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
                 if (request.Hours > 0) changed |= this.runtime.SetDisplayGuardMinutes(request.Hours * 60);
                 changed |= this.runtime.StartDisplayGuard(now);
                 break;
+            case "power_mode":
+                changed = this.runtime.SetPowerMode(ParseTierToken(request.Mode));
+                break;
+            case "energy_saver_on": changed = this.runtime.SetEnergySaverForced(true); break;
+            case "energy_saver_off": changed = this.runtime.SetEnergySaverForced(false); break;
+            case "power_schedule_start":
+                if (request.Hours > 0) changed |= this.runtime.SetPowerModeOverrideHours(request.Hours);
+                changed |= this.runtime.StartPowerModeOverride(this.runtime.PowerModeOverrideHours, now);
+                break;
+            case "power_schedule_stop": changed = this.runtime.StopPowerModeOverride(); break;
             default: return GuardControlProtocol.Error("INVALID_ACTION", "Unsupported GUARD action.");
         }
 
@@ -819,6 +912,9 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         bool onAc;
         bool acKnown = NativeMethods.TryGetOnAcPower(out onAc);
         TimeSpan remaining = this.runtime.GetDisplayGuardRemaining(now);
+        TimeSpan scheduleRemaining = this.runtime.GetPowerModeOverrideRemaining(now);
+        bool energySaverActive;
+        NativeMethods.TryGetBatterySaverStatus(out energySaverActive);
         return new GuardControlResponse
         {
             Ok = true,
@@ -837,9 +933,31 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
                 ExecutionPowerRequestActive = this.runtime.ExecutionPowerRequestActive,
                 DisplayPowerRequestActive = this.runtime.DisplayPowerRequestActive,
                 OnAcPower = acKnown ? (bool?)onAc : null,
-                LastActionDetail = this.runtime.LastActionDetail
+                LastActionDetail = this.runtime.LastActionDetail,
+                PowerModeCurrent = GuardRuntime.DescribeTierForWire(GuardRuntime.GetLivePowerModeTier()),
+                EnergySaverActive = energySaverActive,
+                EnergySaverForcedByGuard = this.runtime.EnergySaverForcedOn,
+                PowerScheduleActive = this.runtime.PowerModeOverrideActive,
+                PowerScheduleHours = this.runtime.PowerModeOverrideHours,
+                PowerScheduleUntilUtc = this.runtime.PowerModeOverrideUntilUtc,
+                PowerScheduleRemainingSeconds = Math.Max(0, (int)Math.Ceiling(scheduleRemaining.TotalSeconds))
             }
         };
+    }
+
+    private static GuardPowerModeTier ParseTierToken(string mode)
+    {
+        if (string.Equals(mode, "saver", StringComparison.OrdinalIgnoreCase))
+        {
+            return GuardPowerModeTier.Saver;
+        }
+
+        if (string.Equals(mode, "performance", StringComparison.OrdinalIgnoreCase))
+        {
+            return GuardPowerModeTier.Performance;
+        }
+
+        return GuardPowerModeTier.Balanced;
     }
 
     // Steps along the hourly ladder and stops at the ends rather than wrapping: wrapping from 24
@@ -963,6 +1081,107 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         RenderLayeredWindow();
     }
 
+    private void ToggleTranslatorKeepAlive()
+    {
+        ToggleKeepAliveSetting("TranslatorKeepAliveEnabled", "翻译保活");
+    }
+
+    // Arming never starts anything from here: the guard's own 30s maintenance pass owns that, so the
+    // board's UI thread is never blocked on process starts or a WMI query.
+    private void ToggleKeepAliveSetting(string propertyName, string displayName)
+    {
+        if (this.owner == null)
+        {
+            return;
+        }
+
+        bool next = !ReadKeepAliveSetting(propertyName);
+        if (this.owner.SetBooleanSettingFromGuardBoard(propertyName, next))
+        {
+            WriteKeepAliveSetting(propertyName, next);
+            this.statusNotice = displayName + (next ? "已开启。" : "已关闭。");
+        }
+        else
+        {
+            this.statusNotice = displayName + "切换失败，详见日志。";
+        }
+
+        RenderLayeredWindow();
+    }
+
+    private void ApplyKeepAliveDefaults()
+    {
+        if (this.owner == null)
+        {
+            return;
+        }
+
+        // The button mirrors what the card shows: all three on unless they already all are.
+        bool next = !(this.CurrentSettings.TranslatorKeepAliveEnabled &&
+            this.CurrentSettings.CodexAppKeepAliveEnabled &&
+            this.CurrentSettings.ClaudeAppKeepAliveEnabled);
+
+        int applied = 0;
+        string[] properties = new string[] { "TranslatorKeepAliveEnabled", "CodexAppKeepAliveEnabled", "ClaudeAppKeepAliveEnabled" };
+        for (int i = 0; i < properties.Length; i++)
+        {
+            if (ReadKeepAliveSetting(properties[i]) == next)
+            {
+                applied++;
+                continue;
+            }
+
+            if (this.owner.SetBooleanSettingFromGuardBoard(properties[i], next))
+            {
+                WriteKeepAliveSetting(properties[i], next);
+                applied++;
+            }
+        }
+
+        if (applied == properties.Length)
+        {
+            this.statusNotice = next ? "三项保活已全部开启。" : "三项保活已全部关闭。";
+        }
+        else
+        {
+            this.statusNotice = "部分保活切换失败，详见日志。";
+        }
+
+        RenderLayeredWindow();
+    }
+
+    private bool ReadKeepAliveSetting(string propertyName)
+    {
+        if (string.Equals(propertyName, "CodexAppKeepAliveEnabled", StringComparison.Ordinal))
+        {
+            return this.CurrentSettings.CodexAppKeepAliveEnabled;
+        }
+
+        if (string.Equals(propertyName, "ClaudeAppKeepAliveEnabled", StringComparison.Ordinal))
+        {
+            return this.CurrentSettings.ClaudeAppKeepAliveEnabled;
+        }
+
+        return this.CurrentSettings.TranslatorKeepAliveEnabled;
+    }
+
+    private void WriteKeepAliveSetting(string propertyName, bool value)
+    {
+        if (string.Equals(propertyName, "CodexAppKeepAliveEnabled", StringComparison.Ordinal))
+        {
+            this.CurrentSettings.CodexAppKeepAliveEnabled = value;
+            return;
+        }
+
+        if (string.Equals(propertyName, "ClaudeAppKeepAliveEnabled", StringComparison.Ordinal))
+        {
+            this.CurrentSettings.ClaudeAppKeepAliveEnabled = value;
+            return;
+        }
+
+        this.CurrentSettings.TranslatorKeepAliveEnabled = value;
+    }
+
     private void RequestCtfRestart()
     {
         if (this.owner == null)
@@ -1013,9 +1232,20 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         BatteryToggle,
         AiBlockToggle,
         QuotaPlanToggle,
+        TranslatorKeepAliveToggle,
+        CodexAppKeepAliveToggle,
+        ClaudeAppKeepAliveToggle,
+        KeepAliveDefaults,
         CtfRestart,
         Close,
-        Panel
+        Panel,
+        PowerModeSaver,
+        PowerModeBalanced,
+        PowerModePerformance,
+        PowerScheduleHoursMinus,
+        PowerScheduleHoursPlus,
+        PowerScheduleToggle,
+        EnergySaverToggle
     }
 
     private struct GuardHitTarget

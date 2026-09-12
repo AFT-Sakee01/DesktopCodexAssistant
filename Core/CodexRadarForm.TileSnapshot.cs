@@ -61,6 +61,19 @@ internal sealed partial class CodexRadarForm
                 tile.WeeklyResetLocal = quota.WeeklyResetLocal;
             }
 
+            // The Codex tile always names whichever account auth.json holds right now; the balances
+            // and the forecast above belong to that account alone. Claude has no account switch.
+            if (state.Family == CodexRadarSoftwareMode.Codex)
+            {
+                CodexAccountIdentity identity = PeekCodexAccountIdentity();
+                tile.AccountKnown = identity.Known;
+                tile.AccountKey = quota != null && !string.IsNullOrWhiteSpace(quota.AccountKey)
+                    ? quota.AccountKey
+                    : identity.AccountKey;
+                tile.AccountLabel = identity.Known ? identity.ResolveDisplayLabel() : string.Empty;
+                tile.AccountLetter = ResolveCachedAccountLetter(tile.AccountKey);
+            }
+
             FillBurnDown(tile, state);
 
             // Claude's retained CLD surface is quota-only. Even if a stale community Radar snapshot
@@ -247,7 +260,12 @@ internal sealed partial class CodexRadarForm
                 }
             }
 
-            CodexQuotaHistorySnapshot history = this.codexQuotaHistoryStore.GetSnapshot(nowUtc);
+            // Account context first: the seven-day rows below must be scoped to the same account the
+            // balances above came from, not to whatever is merely newest in the shared history file.
+            FillResetSpeedAccounts(board, quota);
+            CodexQuotaHistorySnapshot history = this.codexQuotaHistoryStore.GetSnapshot(
+                nowUtc,
+                board.ActiveAccountKey);
             DateTime firstDate = nowLocal.Date.AddDays(-6.0);
             for (int dayOffset = 0; dayOffset < 7; dayOffset++)
             {
@@ -1008,6 +1026,78 @@ internal sealed partial class CodexRadarForm
             form.StopHeadlessDataOwner();
         }
         try { File.Delete(historyPath); } catch { }
+    }
+
+    // Owner-memory lookup only; the roster is refreshed on the quota path, never from a paint or a
+    // snapshot build.
+    private string ResolveCachedAccountLetter(string accountKey)
+    {
+        List<CodexAccountRecord> roster = PeekCodexAccountRoster();
+        for (int i = 0; i < roster.Count; i++)
+        {
+            if (CodexAccountIdentity.KeysEqual(roster[i].AccountKey, accountKey))
+            {
+                return roster[i].Letter ?? string.Empty;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    // Cache-only account context for the board. Reads the owner-memory roster refreshed on the quota
+    // path; never touches the account store, auth.json or the network from here.
+    private void FillResetSpeedAccounts(ResetSpeedBoardSnapshot board, CodexQuotaSnapshot quota)
+    {
+        CodexAccountIdentity identity = PeekCodexAccountIdentity();
+        string activeKey = quota != null && !string.IsNullOrWhiteSpace(quota.AccountKey)
+            ? quota.AccountKey
+            : identity.AccountKey;
+        board.ActiveAccountKey = CodexQuotaHistoryStore.NormalizeAccountKey(activeKey);
+        board.ActiveAccountKnown = identity.Known;
+        board.ActiveAccountLabel = identity.Known
+            ? identity.ResolveDisplayLabel()
+            : "未识别账户";
+        board.ActiveAccountPlan = identity.PlanType ?? string.Empty;
+
+        List<CodexAccountRecord> roster = PeekCodexAccountRoster();
+        for (int i = 0; i < roster.Count; i++)
+        {
+            CodexAccountRecord record = roster[i];
+            bool isActive = CodexAccountIdentity.KeysEqual(record.AccountKey, board.ActiveAccountKey);
+            if (isActive)
+            {
+                board.ActiveAccountLetter = record.Letter ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(board.ActiveAccountPlan))
+                {
+                    board.ActiveAccountPlan = record.PlanType ?? string.Empty;
+                }
+            }
+
+            board.Accounts.Add(new ResetSpeedAccountEntry
+            {
+                AccountKey = record.AccountKey,
+                Letter = record.Letter ?? string.Empty,
+                Label = record.ResolveDisplayLabel(),
+                PlanType = record.PlanType ?? string.Empty,
+                IsActive = isActive,
+                // The active account is never a switch target, and a row without a stored credential
+                // cannot become one.
+                CanSwitch = !isActive && record.CredentialStored,
+                LastSeenKnown = record.LastSeenAtUtc != DateTime.MinValue,
+                LastSeenLocal = record.LastSeenAtUtc == DateTime.MinValue
+                    ? DateTime.MinValue
+                    : record.LastSeenAtUtc.ToLocalTime()
+            });
+        }
+
+        if (!identity.Known)
+        {
+            board.AccountNotice = "读不到 auth.json 账户信息，额度按“未识别”单独统计。";
+        }
+        else if (board.Accounts.Count <= 1)
+        {
+            board.AccountNotice = "登录其他账户后会自动加入名单。";
+        }
     }
 
     // The burn-down series and forecasts come from the same per-family accepted histories. Active

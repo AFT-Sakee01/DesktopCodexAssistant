@@ -8,6 +8,10 @@ internal sealed partial class OperationForm
 
     internal Func<ResetSpeedBoardSnapshot> ResetSpeedSnapshotProvider;
 
+    // Codex account switch requested from the board. Routed through the same hidden-host ownership
+    // as the snapshot provider so the board never reaches into CodexRadarForm or auth.json itself.
+    internal Func<string, CodexAccountSwitchResult> CodexAccountSwitchHandler;
+
     internal ResetSpeedBoardForm EnsureResetSpeedBoardForm()
     {
         if (this.resetSpeedBoardForm == null || this.resetSpeedBoardForm.IsDisposed)
@@ -15,7 +19,8 @@ internal sealed partial class OperationForm
             this.resetSpeedBoardForm = new ResetSpeedBoardForm(
                 this,
                 this.CurrentSettings,
-                delegate { return ResolveResetSpeedSnapshot(); });
+                delegate { return ResolveResetSpeedSnapshot(); },
+                delegate(string accountKey) { return RequestCodexAccountSwitch(accountKey); });
             this.resetSpeedBoardForm.CollapseOtherLeftDockOverlays = delegate
             {
                 HideNetworkDockedPanelIfVisible();
@@ -35,6 +40,25 @@ internal sealed partial class OperationForm
         {
             Program.LogException(ex);
             return ResetSpeedBoardSnapshot.CreateEmpty();
+        }
+    }
+
+    internal CodexAccountSwitchResult RequestCodexAccountSwitch(string accountKey)
+    {
+        Func<string, CodexAccountSwitchResult> handler = this.CodexAccountSwitchHandler;
+        if (handler == null)
+        {
+            return CodexAccountSwitchResult.CreateFailure("账户切换不可用。");
+        }
+
+        try
+        {
+            return handler(accountKey) ?? CodexAccountSwitchResult.CreateFailure("账户切换没有返回结果。");
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return CodexAccountSwitchResult.CreateFailure("账户切换失败：" + ex.GetType().Name);
         }
     }
 

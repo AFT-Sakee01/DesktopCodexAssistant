@@ -160,7 +160,8 @@ internal sealed partial class OperationForm
     }
 
     // The board mutates guard state on its own clone. WidgetForm owns the committed settings
-    // snapshot, so only it may merge these six runtime fields and persist them.
+    // snapshot, so only it may merge these runtime fields and persist them. This list must stay in
+    // sync with WidgetForm.MergeGuardRuntimeFields and GuardRuntime.LoadFromSettings/SaveToSettings.
     internal void PersistGuardStateFromBoard(WidgetSettings boardSettings)
     {
         if (boardSettings == null || this.CurrentSettings == null)
@@ -174,6 +175,10 @@ internal sealed partial class OperationForm
         this.CurrentSettings.GuardOfflineThresholdMinutes = boardSettings.GuardOfflineThresholdMinutes;
         this.CurrentSettings.GuardDisplayUntilUtcTicks = boardSettings.GuardDisplayUntilUtcTicks;
         this.CurrentSettings.GuardBatteryCarePauseUntilUtcTicks = boardSettings.GuardBatteryCarePauseUntilUtcTicks;
+        this.CurrentSettings.GuardPowerModeOverrideHours = boardSettings.GuardPowerModeOverrideHours;
+        this.CurrentSettings.GuardPowerModeOverrideUntilUtcTicks = boardSettings.GuardPowerModeOverrideUntilUtcTicks;
+        this.CurrentSettings.GuardEnergySaverForcedOn = boardSettings.GuardEnergySaverForcedOn;
+        this.CurrentSettings.GuardEnergySaverRestoreThresholdPercent = boardSettings.GuardEnergySaverRestoreThresholdPercent;
 
         Action<WidgetSettings> persist = this.persistGuardStateAction;
         if (persist == null)
@@ -236,6 +241,29 @@ internal sealed partial class OperationForm
         try
         {
             return this.setQuotaPlanAction(enabled);
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return false;
+        }
+    }
+
+    // Generic boolean-setting toggle for guard-board cards that need no side effects beyond the
+    // persisted flag itself. The two older cards keep their dedicated paths because flipping them
+    // also drives request blocking and the quota planner; a plain flag like the translation
+    // keep-alive needs no such wiring, so it reuses the reflection-based setter instead of adding
+    // another single-purpose delegate through the whole WidgetForm -> OperationForm chain.
+    internal bool SetBooleanSettingFromGuardBoard(string propertyName, bool enabled)
+    {
+        if (this.setBooleanSettingAction == null || string.IsNullOrEmpty(propertyName))
+        {
+            return false;
+        }
+
+        try
+        {
+            return this.setBooleanSettingAction(propertyName, enabled);
         }
         catch (Exception ex)
         {
