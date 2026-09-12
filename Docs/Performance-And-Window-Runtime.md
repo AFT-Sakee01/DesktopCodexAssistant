@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.85
+适用版本：2.0.0.86
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -164,7 +164,7 @@ Network 是 Dock-only；其采样、PathPing、固定 Ping、Clean IP 和 board 
 
 RadialDial 核心圆圈和经典 Start 按钮的双击统一进入 `WidgetForm.ToggleSideSurfacesFromOperationPanel()`：第一次真实隐藏七个左侧 tab/board、十一项右侧 tile 与 hover expand，第二次恢复；`OperationForm` 自身保留为恢复入口。RadialDial 圆心在隐藏态降低表面亮度作为状态反馈，但该状态不参与菜单布局、命中或点击路由，隐藏后单击圆心仍可弹出全部扩展按钮。隐藏通过各窗体的可见性 API 完成，因此隐藏表面不再参与命中、悬停展开或鼠标遮挡。右侧 tile 的可见性转换是对称的：进入隐藏态调用 `MetricTileForm.HideTile()`，退出隐藏态由 `MetricTileForm.SetHiddenForFullscreen(false)` 调用 `ShowTile()`，同步恢复 WinForms 可见性、hover timer、定位和 layered render。旧 `OperationLauncherTrioForm` 及其双击分支已移除。
 
-`Win11SettingsForm` 按需创建，`ShowInTaskbar=true`。设置预览经 75 ms debounce 应用；保存写 `settings.ini`，取消或异常关闭恢复打开时 baseline。设置窗口不是 layered edge surface，不参加 burn-in，也不进入 19 项全局布局清单。布局与位置页的“两侧边缘平衡”分组是常驻的统一间距模式（`UnifiedColumnSpacingEnabled` / `UnifiedColumnSpacingPercent`，默认关闭，取代了原来一次性的“侦测并对齐”按钮）。开启后两列先同取统一百分比，占用高度较小的一列把自己的百分比单向抬高，直到整列高度最接近较大的一列；随后两列共用同一条中线。间距只能取整数百分比，一档在常见工作区上就是七到十像素，剩下的高度余量没有任何偏移能消掉，共用中线是把它平摊到上下两端、让最大边缘误差减半的做法。该模式下 `LeftDockButtonGapPixels` / `RightTileButtonGapPixels` / `LeftDockGroupOffsetY` / `RightTileGroupOffsetY` 变成派生值并被写回 settings.ini，设置界面里这四个编辑器置灰，统一间距滑块反过来只在模式开启时可用；开启模式会一并打开左右自动排列。解算入口是 `SideColumnBalance.ApplyUnifiedColumnSpacing()`，调用点是 `WidgetSettings.LoadFromPath`、`WidgetForm.ApplyRuntimeSettings`、`WidgetForm.SaveSettings` 和 `Win11SettingsForm.ReadSettings`——即「一份设置开始生效」的每一处。**不要把它挪进 `Normalize()`**：`CreateDefaults()` 和各处纯钳位场景也走 `Normalize()`，在那里改写会让「默认值」不再是默认值，也会让 schema 90 以来「迁移必须保留既有间距」的约定失效。两列中任一侧处于手动摆位时该模式整体跳过，不会推翻用户存下来的逐项坐标。
+`Win11SettingsForm` 按需创建，`ShowInTaskbar=true`。设置预览经 75 ms debounce 应用；保存写 `settings.ini`，取消或异常关闭恢复打开时 baseline。设置窗口不是 layered edge surface，不参加 burn-in，也不进入 19 项全局布局清单。布局与位置页的“两侧边缘平衡”分组是常驻的统一间距模式（`UnifiedColumnSpacingEnabled` / `UnifiedColumnSpacingPercent`，**默认开启**，取代了原来一次性的“侦测并对齐”按钮）。开启后两列先同取统一百分比，占用高度较小的一列把自己的百分比单向抬高，直到整列高度最接近较大的一列；随后两列共用同一条中线。间距只能取整数百分比，一档在常见工作区上就是七到十像素，剩下的高度余量没有任何偏移能消掉，共用中线是把它平摊到上下两端、让最大边缘误差减半的做法。该模式下 `LeftDockButtonGapPixels` / `RightTileButtonGapPixels` / `LeftDockGroupOffsetY` / `RightTileGroupOffsetY` 变成派生值并被写回 settings.ini，设置界面里这四个编辑器置灰，统一间距滑块反过来只在模式开启时可用；开启模式会一并打开左右自动排列。解算入口是 `SideColumnBalance.ApplyUnifiedColumnSpacing()`，调用点是 `WidgetSettings.LoadFromPath`、`WidgetForm.ApplyRuntimeSettings`、`WidgetForm.SaveSettings` 和 `Win11SettingsForm.ReadSettings`——即「一份设置开始生效」的每一处。**不要把它挪进 `Normalize()`**：`CreateDefaults()` 和各处纯钳位场景也走 `Normalize()`，在那里改写会让「默认值」不再是默认值，也会让 schema 90 以来「迁移必须保留既有间距」的约定失效。两列中任一侧处于手动摆位时该模式整体跳过，不会推翻用户存下来的逐项坐标。
 
 ## 8. 性能模式
 

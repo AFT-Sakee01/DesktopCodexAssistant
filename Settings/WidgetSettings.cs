@@ -1224,7 +1224,7 @@ internal sealed class WidgetSettings
         settings.LeftDockButtonOrder = CloneLeftDockButtonOrder(DefaultLeftDockButtonOrder);
         settings.LeftDockButtonGapPixels = DefaultLeftDockButtonGapPixels;
         settings.LeftDockGroupOffsetY = DefaultColumnGroupOffsetY;
-        settings.UnifiedColumnSpacingEnabled = false;
+        settings.UnifiedColumnSpacingEnabled = true;
         settings.UnifiedColumnSpacingPercent = DefaultUnifiedColumnSpacingPercent;
         settings.SpecBoardLeftDockEnabled = true;
         settings.SpecBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
@@ -1463,7 +1463,7 @@ internal sealed class WidgetSettings
         settings.LeftDockButtonOrder = CloneLeftDockButtonOrder(DefaultLeftDockButtonOrder);
         settings.LeftDockButtonGapPixels = DefaultLeftDockButtonGapPixels;
         settings.LeftDockGroupOffsetY = DefaultColumnGroupOffsetY;
-        settings.UnifiedColumnSpacingEnabled = false;
+        settings.UnifiedColumnSpacingEnabled = true;
         settings.UnifiedColumnSpacingPercent = DefaultUnifiedColumnSpacingPercent;
         settings.SpecBoardLeftDockEnabled = true;
         settings.SpecBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
@@ -2805,9 +2805,10 @@ internal sealed class WidgetSettings
 
         if (sourceFileExists && settingsVersion < 107)
         {
-            // Version 107 引入统一间距模式，默认关闭：这个模式会把两侧间距与整列偏移改写成
-            // 解算出来的派生值，自动打开就等于替用户丢掉他自己调过的间距——和 schema 90 当初
-            // 坚持保留既有间距是同一条理由。这里只负责把新键落盘，免得下次读取又走一遍迁移分支。
+            // Version 107 引入统一间距模式，按用户要求默认开启：老档案没有这两个键，读取时
+            // 就会拿到默认值，两侧间距与整列偏移随即变成解算出来的派生值——也就是说升级本身
+            // 会覆盖掉此前手调的左右间距。这是明确要的行为（左右两列从此自动保持上下一致），
+            // 不想要的话在设置里关掉即可。这里负责把新键落盘，免得下次读取又走一遍迁移分支。
             saveAfterMigration = true;
         }
 
@@ -6516,6 +6517,9 @@ internal sealed class WidgetSettings
                 new string[]
                 {
                     "Version=89",
+                    // 这段测的是 schema 90 的 0..100 区间契约，所以显式关掉统一间距模式：
+                    // 模式开着时这两个键是派生值，迁移当然会改写它们，那是另一条路径的行为。
+                    "UnifiedColumnSpacingEnabled=False",
                     "LeftDockButtonGapPixels=0",
                     "RightTileButtonGapPixels=80",
                     "ApplicationTransparencyPercent=43"
@@ -6537,6 +6541,7 @@ internal sealed class WidgetSettings
                 new string[]
                 {
                     "Version=90",
+                    "UnifiedColumnSpacingEnabled=False",
                     "LeftDockButtonGapPixels=100",
                     "RightTileButtonGapPixels=100"
                 },
@@ -6546,6 +6551,30 @@ internal sealed class WidgetSettings
                 fullDistribution.LeftDockButtonGapPixels == MaxColumnButtonGapPixels &&
                 fullDistribution.RightTileButtonGapPixels == MaxColumnButtonGapPixels,
                 "schema 90 should accept 100 as the full-edge distribution value");
+
+            // 反过来的一条：老档案没写 UnifiedColumnSpacingEnabled 就会拿到默认值（开启），
+            // 于是升级本身就把手调的间距换成解算结果。这是 2.0.0.86 明确要的行为，
+            // 不是 bug，所以在这里钉住，免得以后有人当成回归又改回去。
+            string legacyPath = Path.Combine(root, "settings-legacy-no-key.ini");
+            File.WriteAllLines(
+                legacyPath,
+                new string[]
+                {
+                    "Version=90",
+                    "LeftDockAutoArrangeEnabled=True",
+                    "RightTileAutoArrangeEnabled=True",
+                    "LeftDockButtonGapPixels=3",
+                    "RightTileButtonGapPixels=97"
+                },
+                SharedEncoding.Utf8NoBom);
+            WidgetSettings legacy = LoadFromPathForSelfTest(legacyPath);
+            AssertLayout(
+                legacy.UnifiedColumnSpacingEnabled &&
+                legacy.UnifiedColumnSpacingPercent == DefaultUnifiedColumnSpacingPercent,
+                "a settings file without the unified spacing keys must adopt the enabled-by-default mode");
+            AssertLayout(
+                !(legacy.LeftDockButtonGapPixels == 3 && legacy.RightTileButtonGapPixels == 97),
+                "the enabled-by-default unified mode must derive both columns over the stored spacing");
         }
         finally
         {
