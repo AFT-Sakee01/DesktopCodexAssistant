@@ -330,6 +330,65 @@ internal sealed class TranslatorControlReader : IDisposable
         }
     }
 
+    // The caption-source options the board offers. Tag is exactly what Windows stores in
+    // HKCU\Software\Microsoft\LiveCaptions\UI\CaptionLanguage; Label is kept to two Latin
+    // characters so the whole set fits one row at any LayerScale.
+    //
+    // zh-CN is in the list because it is a real setting, not because it is a good one: it makes
+    // Live Captions translate, so everything downstream -- including the local model -- only ever
+    // sees Microsoft's Chinese. IsOriginalCaptionLanguage() is what the UI uses to mark it apart.
+    //
+    // The eight non-English source languages were chosen by measuring the deployed NPU model on one
+    // sentence each (2026-09-12: 0.65-1.9 s, all correct), so every entry here is one the local
+    // translator is known to handle. Adding another language is a row in this table plus a speech
+    // pack in Windows -- nothing else in the chain is language-specific.
+    internal struct CaptionLanguageOption
+    {
+        public string Tag;
+        public string Label;
+    }
+
+    internal static readonly CaptionLanguageOption[] CaptionLanguageOptions = new CaptionLanguageOption[]
+    {
+        new CaptionLanguageOption { Tag = CaptionLanguageOriginalEnglish, Label = "EN" },
+        new CaptionLanguageOption { Tag = CaptionLanguageMicrosoftChinese, Label = "ZH" },
+        new CaptionLanguageOption { Tag = "es-ES", Label = "ES" },
+        new CaptionLanguageOption { Tag = "ja-JP", Label = "JA" },
+        new CaptionLanguageOption { Tag = "de-DE", Label = "DE" },
+        new CaptionLanguageOption { Tag = "fr-FR", Label = "FR" },
+        new CaptionLanguageOption { Tag = "ru-RU", Label = "RU" },
+        new CaptionLanguageOption { Tag = "ko-KR", Label = "KO" },
+        new CaptionLanguageOption { Tag = "ar-SA", Label = "AR" },
+        new CaptionLanguageOption { Tag = "pt-BR", Label = "PT" },
+    };
+
+    // "Original" means Windows hands the recognised speech over untranslated, whichever language it
+    // is in, and the local model does the translating. Only zh-CN takes that job away from it.
+    internal static bool IsOriginalCaptionLanguage(string language)
+    {
+        return !string.Equals(language, CaptionLanguageMicrosoftChinese, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Label for a tag that is in the table; falls back to the tag itself so a language set outside
+    // this board (or a future Windows value) is still shown honestly rather than as "unknown".
+    internal static string DescribeCaptionLanguage(string language)
+    {
+        if (string.IsNullOrEmpty(language))
+        {
+            return string.Empty;
+        }
+
+        for (int i = 0; i < CaptionLanguageOptions.Length; i++)
+        {
+            if (string.Equals(CaptionLanguageOptions[i].Tag, language, StringComparison.OrdinalIgnoreCase))
+            {
+                return CaptionLanguageOptions[i].Label;
+            }
+        }
+
+        return language;
+    }
+
     // Pure toggle logic (no I/O) so the self-test can cover it: "zh-CN" and every unreadable or
     // unexpected value resolve to "en-US", because original-English captions are the state that
     // lets the local model do the translation -- an unknown value must not be nudged toward the

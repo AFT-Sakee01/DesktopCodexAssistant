@@ -86,6 +86,36 @@ internal sealed partial class CaptionsBoardForm
             TargetLanguage = "zh-CN",
             IsError = false
         });
+        // Enough rows to overflow the visible area: the list now fills what it measures instead of
+        // spreading a fixed three across it, so a fixture that stops short of the budget would show
+        // the old sparse picture and hide the very thing this sample is meant to verify.
+        snapshot.RecentHistory.Add(new TranslatorHistoryEntry
+        {
+            TimestampKnown = true,
+            TimestampLocal = now.AddMinutes(-12.0),
+            SourceText = "The frame rate drops as soon as ray tracing is switched on.",
+            TranslatedText = "一打开光线追踪，帧率就掉下来了。",
+            TargetLanguage = "zh-CN",
+            IsError = false
+        });
+        snapshot.RecentHistory.Add(new TranslatorHistoryEntry
+        {
+            TimestampKnown = true,
+            TimestampLocal = now.AddMinutes(-15.0),
+            SourceText = "Battery life improved noticeably after the update.",
+            TranslatedText = "更新之后续航明显变长了。",
+            TargetLanguage = "zh-CN",
+            IsError = false
+        });
+        snapshot.RecentHistory.Add(new TranslatorHistoryEntry
+        {
+            TimestampKnown = true,
+            TimestampLocal = now.AddMinutes(-18.0),
+            SourceText = "We will look at how attention scales with sequence length.",
+            TranslatedText = "我们来看注意力如何随序列长度变化。",
+            TargetLanguage = "zh-CN",
+            IsError = false
+        });
 
         return snapshot;
     }

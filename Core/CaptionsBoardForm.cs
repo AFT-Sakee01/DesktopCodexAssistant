@@ -593,13 +593,13 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
             CaptionsHitTarget target = this.hitTargets[i];
             if (target.Bounds.Contains(e.Location))
             {
-                ExecuteAction(target.Action);
+                ExecuteAction(target.Action, target.Payload);
                 return;
             }
         }
     }
 
-    private void ExecuteAction(CaptionsHitAction action)
+    private void ExecuteAction(CaptionsHitAction action, string payload)
     {
         if (action == CaptionsHitAction.Close)
         {
@@ -692,8 +692,14 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
                 RequestServiceStart(action, reader, TranslatorControlReader.MonitoredServiceKind.LiveCaptions);
                 break;
 
-            case CaptionsHitAction.CaptionLanguageToggle:
-                RequestCaptionLanguageToggle(action, reader);
+            case CaptionsHitAction.CaptionLanguageSet:
+                // The row registers no target for the language already in effect, so reaching here
+                // always means a real change.
+                if (!string.IsNullOrEmpty(payload))
+                {
+                    RequestCaptionLanguageApply(action, reader, payload);
+                }
+
                 break;
 
             default:
@@ -798,13 +804,10 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
     }
 
     // Registry write + Live Captions/translator restart. Same async contract as every other control
-    // on this board; the target value comes from the pure ResolveToggledCaptionLanguage helper so
-    // the board never encodes the two language codes itself.
-    private void RequestCaptionLanguageToggle(CaptionsHitAction sourceControl, TranslatorControlReader reader)
+    // on this board; the language tag comes from TranslatorControlReader.CaptionLanguageOptions so
+    // the board never encodes language codes itself.
+    private void RequestCaptionLanguageApply(CaptionsHitAction sourceControl, TranslatorControlReader reader, string nextLanguage)
     {
-        string nextLanguage = TranslatorControlReader.ResolveToggledCaptionLanguage(
-            this.snapshot.CaptionLanguageKnown ? this.snapshot.CaptionLanguage : null);
-
         this.operationRunning = true;
         this.pendingAction = sourceControl;
         reader.SetRestartInProgress(true);
@@ -913,12 +916,16 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
         SanitizeProxyStart,
         LiveCaptionsStart,
         TranslatorStart,
-        CaptionLanguageToggle
+        CaptionLanguageSet
     }
 
     private struct CaptionsHitTarget
     {
         public Rectangle Bounds;
         public CaptionsHitAction Action;
+        // Only CaptionLanguageSet uses this: the caption-source row registers one target per
+        // language, and the tag has to survive the hit test. Widening the action enum into ten
+        // near-identical members instead would push the same string into the type system.
+        public string Payload;
     }
 }
