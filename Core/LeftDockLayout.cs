@@ -227,7 +227,9 @@ internal static class LeftDockLayout
                 groupBounds.Location,
                 groupBounds.Size,
                 workArea,
-                BurnInProtection.LeftDockButtonColumnSalt);
+                BurnInProtection.ResolveEdgeColumnSalt(
+                    settings.UnifiedColumnSpacingEnabled,
+                    BurnInProtection.LeftDockButtonColumnSalt));
             return ApplySharedColumnVerticalOffset(bounds[i].Location, groupBounds, runtimeGroupLocation, workArea.Left);
         }
 

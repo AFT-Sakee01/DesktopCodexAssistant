@@ -39,6 +39,8 @@ internal static class BurnInProtection
     public const int SystemDayBoardDockTabSalt = 103;
     public const int CaptionsBoardSalt = 107;
     public const int CaptionsBoardDockTabSalt = 109;
+    // 统一间距模式专用：两条边缘列共用这一个盐。
+    public const int UnifiedEdgeColumnSalt = 113;
 
     private const int ShiftIntervalMinutes = 7;
     private static int currentVisualLevel;
@@ -150,6 +152,28 @@ internal static class BurnInProtection
         }
 
         return level;
+    }
+
+    // 每条表面各有各的盐，好让它们的防烧屏位移互不相关——这对独立窗口是对的，但对「左右两列
+    // 上下必须一致」是致命的：两列各自在 -3..+3 之间取值，相对高度差最大 6 像素，还每 7 分钟换一次，
+    // 再精确的间距解算都会被它抵消。统一间距模式下两列改用同一个盐，于是它们一起漂、相对关系不变；
+    // 防烧屏要的是「像素别长时间静止」，共用盐并不削弱这一点。
+    public static int ResolveEdgeColumnSalt(bool unifiedColumnSpacing, int ownSalt)
+    {
+        return unifiedColumnSpacing ? UnifiedEdgeColumnSalt : ownSalt;
+    }
+
+    // 自检用：直接暴露某个盐在当前时隙下的位移，便于断言两列一致。
+    internal static Point ResolveRuntimeOffsetForSelfTest(int salt)
+    {
+        long slot = GetCurrentSlot();
+        int index = (int)((slot + salt) % RuntimeOffsets.Length);
+        if (index < 0)
+        {
+            index += RuntimeOffsets.Length;
+        }
+
+        return RuntimeOffsets[index];
     }
 
     public static Point ApplyRuntimeOffset(Point baseLocation, Size windowSize, Rectangle workArea, int salt)

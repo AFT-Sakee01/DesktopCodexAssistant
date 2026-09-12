@@ -709,7 +709,9 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             groupBounds.Location,
             groupBounds.Size,
             workArea,
-            BurnInProtection.MetricTileColumnSalt);
+            BurnInProtection.ResolveEdgeColumnSalt(
+                settings != null && settings.UnifiedColumnSpacingEnabled,
+                BurnInProtection.MetricTileColumnSalt));
         Rectangle[] runtimeBounds = new Rectangle[baseBounds.Length];
         for (int i = 0; i < baseBounds.Length; i++)
         {

@@ -1,8 +1,8 @@
-﻿# Desktop Codex Assistant Project Rules
+# Desktop Codex Assistant Project Rules
 
 The global `C:\Users\GengH\.codex\AGENTS.md` rules apply. This file only records project-specific constraints and overrides; do not duplicate global rules or maintenance history here.
 
-Current version: `2.0.0.88`
+Current version: `2.0.0.89`
 
 ## Project AI
 
@@ -43,7 +43,7 @@ Current version: `2.0.0.88`
 - GFW probing and cloud endpoint probing remain independently scheduled; a GFW result must not suppress or recolor cloud probe results.
 - New settings must cover defaults, clone, load, save, normalization, settings UI, migration version, and `--test-settings-bindings`.
 - Persistent runtime data belongs under `%LOCALAPPDATA%\DesktopCodexAssistant`, not beside the executable.
-- Caption text is memory-only. `CaptionTranscript` (the captions board article) must never be persisted, cached, or logged automatically; the board's export button is the single path that writes it to disk, and only when pressed. The translator's own `translation_history.db` is out of scope for this rule and stays read-only to this app.
+- Caption text is memory-only. `CaptionTranscript` (the captions board article) must never be persisted, cached, or logged automatically; the board's export button is the single path that writes it to disk, and only when pressed. DCA-Livetranslator owns capture, translation, settings and its own display; DCA consumes a local named-pipe snapshot and does not read translator files.
 - Power and thermal behavior is device-family-specific. Generic fallbacks must not silently replace UX3407N / UX3607O calibrated behavior.
 - Never hand-guess fixed pixel Y offsets/heights for WinForms `Label`/text-adjacent controls (dialogs, custom rows, etc.) — actual rendered font metrics on the user's machine are routinely taller than assumed and rows silently overlap. Compute each control's height from its actual font via `Win11SettingsForm.GetSingleLineHeight`/`GetWrappedTextHeight` (or `TextRenderer.MeasureText`) and accumulate the next control's Y from the previous control's measured height, the same way `OpenClaudeSetupTokenDialog` and `SettingRow` do it. This applies to any manually laid-out `Form`/`Panel`, not just Settings.
 

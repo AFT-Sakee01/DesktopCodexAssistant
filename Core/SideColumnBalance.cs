@@ -423,6 +423,40 @@ internal static class SideColumnBalance
         }
 
         RunLoadPathSelfTest();
+        RunSharedBurnInSaltSelfTest();
+    }
+
+    // 解算把两列拉到同一条中线上之后，防烧屏还会各自把它们上下挪一次。两条列的盐不同，位移表
+    // 取值在 -3..+3，于是相对高度差最多 6 像素、每 7 分钟变一次——用户看到的「左边还是高一点」
+    // 正是这一步造成的。统一模式下两列必须共用同一个盐。
+    private static void RunSharedBurnInSaltSelfTest()
+    {
+        int left = BurnInProtection.ResolveEdgeColumnSalt(true, BurnInProtection.LeftDockButtonColumnSalt);
+        int right = BurnInProtection.ResolveEdgeColumnSalt(true, BurnInProtection.MetricTileColumnSalt);
+        if (left != right || left != BurnInProtection.UnifiedEdgeColumnSalt)
+        {
+            throw new InvalidOperationException(
+                "Unified spacing must give both edge columns one burn-in salt, got " + left + "/" + right);
+        }
+
+        if (BurnInProtection.ResolveRuntimeOffsetForSelfTest(left).Y !=
+            BurnInProtection.ResolveRuntimeOffsetForSelfTest(right).Y)
+        {
+            throw new InvalidOperationException("One salt must produce one vertical burn-in offset.");
+        }
+
+        // 模式关闭时必须保持原样：两列各用各的盐，各自独立漂移。
+        if (BurnInProtection.ResolveEdgeColumnSalt(false, BurnInProtection.LeftDockButtonColumnSalt) !=
+                BurnInProtection.LeftDockButtonColumnSalt ||
+            BurnInProtection.ResolveEdgeColumnSalt(false, BurnInProtection.MetricTileColumnSalt) !=
+                BurnInProtection.MetricTileColumnSalt)
+        {
+            throw new InvalidOperationException("Without the unified mode each column must keep its own burn-in salt.");
+        }
+
+        Console.WriteLine("Side column unified spacing: PASS shared burn-in salt " + left +
+            " (per-column salts " + BurnInProtection.LeftDockButtonColumnSalt + "/" +
+            BurnInProtection.MetricTileColumnSalt + " retained when the mode is off)");
     }
 
     // 端到端覆盖「一份设置开始生效」的那条路：模式写在 settings.ini 里，加载出来的两侧间距和
