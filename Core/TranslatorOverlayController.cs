@@ -31,6 +31,85 @@ internal static class TranslatorOverlayController
     // thread, but a stuck provider must not pin it forever.
     private const int AutomationTimeoutMs = 4000;
 
+    private static IntPtr lastClosedOverlayWindow = IntPtr.Zero;
+
+    // Presses the same button the other way. Used when this app renders the captions itself: two
+    // strips saying the same sentence is worse than either alone, and the translator has no way to
+    // be told to start without its overlay.
+    //
+    // Once per overlay window instance, tracked by handle: if the user deliberately reopens it
+    // while our strip is on, that is their call and it stays open.
+    internal static bool TryEnsureOverlayClosed(out string detail)
+    {
+        detail = string.Empty;
+        try
+        {
+            IntPtr handle = FindOverlayWindow();
+            if (handle == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            if (handle == lastClosedOverlayWindow)
+            {
+                return false;
+            }
+
+            AutomationElement button = FindOverlayButton();
+            if (button == null)
+            {
+                detail = "未找到覆盖字幕按钮(" + OverlayButtonAutomationId + ")";
+                return false;
+            }
+
+            object pattern;
+            if (!button.TryGetCurrentPattern(InvokePattern.Pattern, out pattern) || pattern == null)
+            {
+                detail = "覆盖字幕按钮不支持 Invoke";
+                return false;
+            }
+
+            lastClosedOverlayWindow = handle;
+            ((InvokePattern)pattern).Invoke();
+            detail = "已关闭翻译器自带覆盖字幕";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            detail = ex.GetType().Name + ": " + ex.Message;
+            return false;
+        }
+    }
+
+    private static IntPtr FindOverlayWindow()
+    {
+        int[] processIds = GetTranslatorProcessIds();
+        for (int i = 0; i < processIds.Length; i++)
+        {
+            IntPtr handle;
+            if (NativeMethods.TryFindProcessWindowByTitle(processIds[i], OverlayWindowTitle, out handle))
+            {
+                return handle;
+            }
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private static AutomationElement FindOverlayButton()
+    {
+        AutomationElement mainWindow = WaitForTranslatorMainWindow();
+        if (mainWindow == null)
+        {
+            return null;
+        }
+
+        return mainWindow.FindFirst(
+            TreeScope.Descendants,
+            new PropertyCondition(AutomationElement.AutomationIdProperty, OverlayButtonAutomationId));
+    }
+
     internal static bool IsOverlayOpen()
     {
         int[] processIds = GetTranslatorProcessIds();

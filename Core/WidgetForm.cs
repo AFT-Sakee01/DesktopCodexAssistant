@@ -2330,6 +2330,14 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 {
                     Program.LogInfo("Translator window: " + detail);
                 }
+
+                // And close the overlay the translator may already have open -- two strips saying
+                // the same sentence is worse than either on its own.
+                if (captionOverlayOwnsDisplay &&
+                    TranslatorOverlayController.TryEnsureOverlayClosed(out detail))
+                {
+                    Program.LogInfo("Translator overlay: " + detail);
+                }
             }
             catch (Exception ex)
             {
