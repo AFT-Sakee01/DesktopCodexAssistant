@@ -703,43 +703,98 @@ internal sealed partial class CaptionsBoardForm
         }
     }
 
-    // One row, eight controls: paging, the page indicator, overlay edit/reset, export/clear, and the
-    // strip's history-line stepper. Everything the caption strip needs is here because the strip is
-    // click-through and cannot carry a button of its own.
+    // One row, two groups, split by what they act on. Left of the separator everything acts on the
+    // article; right of it everything acts on the caption strip, under a 字幕条 label that says so.
+    //
+    // The split exists because the first version did not have it: 编辑 and 重置 sat among 导出 and 清除
+    // with nothing to say they were about the strip, and they read as "edit the text" and "reset the
+    // text" -- the two most alarming things a button next to a transcript could mean. Renamed to
+    // 调整/复位 for the same reason: 编辑 and 重置 are what you call operations on content.
     private void DrawArticleToolbar(Graphics g, Rectangle bounds, Font labelFont, Font bodyFont, Font monoFont, Font glyphFont, bool recordHitTargets)
     {
         int gap = S(4);
         int groupGap = S(9);
 
-        // Right-aligned first so the left-to-right run below knows where it has to stop.
+        // The strip group is measured and right-aligned first, so the article group on the left knows
+        // where it has to stop.
+        bool editing = IsCaptionOverlayEditing;
+        string editLabel = editing ? "完成" : "调整";
+        string stripLabel = "字幕条";
         string linesLabel = "句数";
-        int linesLabelWidth = MeasureTextWidth(g, linesLabel, labelFont) + S(8);
         int settledLines = this.CurrentSettings == null
             ? WidgetSettings.DefaultCaptionOverlaySettledLines
             : this.CurrentSettings.CaptionOverlaySettledLines;
-        int stepperWidth = MeasureStepperWidth(g, settledLines.ToString(CultureInfo.InvariantCulture), monoFont, bounds.Height);
-        int stepperLeft = bounds.Right - stepperWidth;
-        int linesLabelLeft = stepperLeft - gap - linesLabelWidth;
+        string settledText = settledLines.ToString(CultureInfo.InvariantCulture);
+
+        int stripLabelWidth = MeasureTextWidth(g, stripLabel, labelFont) + S(8);
+        int editWidth = MeasureTextWidth(g, editLabel, bodyFont) + S(14);
+        int resetWidth = MeasureTextWidth(g, "复位", bodyFont) + S(14);
+        int linesLabelWidth = MeasureTextWidth(g, linesLabel, labelFont) + S(8);
+        int stepperWidth = MeasureStepperWidth(g, settledText, monoFont, bounds.Height);
+        int stripGroupWidth = stripLabelWidth + gap + editWidth + gap + resetWidth + groupGap +
+            linesLabelWidth + gap + stepperWidth;
+        int stripLeft = bounds.Right - stripGroupWidth;
 
         using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
         using (StringFormat near = CreateFormat(StringAlignment.Near))
         {
             g.DrawString("文 章", labelFont, labelBrush, new Rectangle(bounds.Left, bounds.Top, S(40), bounds.Height), near);
-            g.DrawString(linesLabel, labelFont, labelBrush, new Rectangle(linesLabelLeft, bounds.Top, linesLabelWidth, bounds.Height), near);
+            g.DrawString(stripLabel, labelFont, labelBrush, new Rectangle(stripLeft, bounds.Top, stripLabelWidth, bounds.Height), near);
+        }
+
+        int sx = stripLeft + stripLabelWidth + gap;
+        // Editing is a mode, so the button says what pressing it will do: 调整 to enter, 完成 to leave
+        // and save. Green while editing, because that press is the one that commits the new rectangle.
+        Rectangle editBounds = new Rectangle(sx, bounds.Top, editWidth, bounds.Height);
+        DrawToolbarButton(
+            g,
+            editBounds,
+            editLabel,
+            editing ? DesignTokens.Colors.Success : EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Captions),
+            bodyFont,
+            false);
+        if (recordHitTargets)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = editBounds, Action = CaptionsHitAction.OverlayEditToggle });
+        }
+
+        sx = editBounds.Right + gap;
+        Rectangle resetBounds = new Rectangle(sx, bounds.Top, resetWidth, bounds.Height);
+        DrawToolbarButton(g, resetBounds, "复位", DesignTokens.Colors.Border, bodyFont, false);
+        if (recordHitTargets)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = resetBounds, Action = CaptionsHitAction.OverlayReset });
+        }
+
+        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
+        using (StringFormat near = CreateFormat(StringAlignment.Near))
+        {
+            g.DrawString(
+                linesLabel,
+                labelFont,
+                labelBrush,
+                new Rectangle(resetBounds.Right + groupGap, bounds.Top, linesLabelWidth, bounds.Height),
+                near);
         }
 
         DrawStepper(
             g,
-            stepperLeft,
+            bounds.Right - stepperWidth,
             bounds.Top,
             bounds.Height,
-            settledLines.ToString(CultureInfo.InvariantCulture),
+            settledText,
             monoFont,
             glyphFont,
             false,
             recordHitTargets,
             CaptionsHitAction.SettledLinesMinus,
             CaptionsHitAction.SettledLinesPlus);
+
+        using (Pen separatorPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Border, 140), Math.Max(1.0f, this.LayerScale)))
+        {
+            int separatorX = stripLeft - groupGap / 2;
+            g.DrawLine(separatorPen, separatorX, bounds.Top + S(2), separatorX, bounds.Bottom - S(2));
+        }
 
         int x = bounds.Left + S(40) + gap;
         int pageWidth = S(PageButtonLogicalWidth);
@@ -774,28 +829,6 @@ internal sealed partial class CaptionsBoardForm
         }
 
         x += pageTextWidth + groupGap;
-
-        bool editing = IsCaptionOverlayEditing;
-        string editLabel = editing ? "完成" : "编辑";
-        Color editColor = editing
-            ? DesignTokens.Colors.Success
-            : EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Captions);
-        Rectangle editBounds = new Rectangle(x, bounds.Top, MeasureTextWidth(g, editLabel, bodyFont) + S(14), bounds.Height);
-        DrawToolbarButton(g, editBounds, editLabel, editColor, bodyFont, false);
-        if (recordHitTargets)
-        {
-            this.hitTargets.Add(new CaptionsHitTarget { Bounds = editBounds, Action = CaptionsHitAction.OverlayEditToggle });
-        }
-
-        x = editBounds.Right + gap;
-        Rectangle resetBounds = new Rectangle(x, bounds.Top, MeasureTextWidth(g, "重置", bodyFont) + S(14), bounds.Height);
-        DrawToolbarButton(g, resetBounds, "重置", DesignTokens.Colors.Border, bodyFont, false);
-        if (recordHitTargets)
-        {
-            this.hitTargets.Add(new CaptionsHitTarget { Bounds = resetBounds, Action = CaptionsHitAction.OverlayReset });
-        }
-
-        x = resetBounds.Right + groupGap;
         Rectangle exportBounds = new Rectangle(x, bounds.Top, MeasureTextWidth(g, "导出", bodyFont) + S(14), bounds.Height);
         DrawToolbarButton(g, exportBounds, "导出", DesignTokens.Colors.Border, bodyFont, false);
         if (recordHitTargets)
