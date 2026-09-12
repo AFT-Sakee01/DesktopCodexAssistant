@@ -326,13 +326,6 @@ internal sealed partial class OperationForm
             this.DrawTogglesGlyph,
             () => ExecuteButton(WindowsQuickSettingsButtonIndex, MouseButtons.Left),
             () => "打开快速设置\r\n使用快捷键 Win+A"));
-        system.Children.Add(NewSettingToggle(
-            "SpecBoardAutoPopupEnabled",
-            "spec_board_auto_popup",
-            "自动 Spec 面板",
-            RadialSystemColor,
-            this.DrawAppWindowGlyph,
-            s => s.SpecBoardAutoPopupEnabled));
         system.Children.Add(NewLeaf(
             "refresh",
             "刷新",
@@ -2263,7 +2256,6 @@ internal sealed partial class OperationForm
             "FallbackDisconnectedDisplaysEnabled",
             "OperationRadialKeepOpenAfterLeafClickEnabled",
             "OperationSettingsLogicExtensionEnabled",
-            "SpecBoardAutoPopupEnabled",
             "RadarClockAutoSwitchModelEnabled",
             "CodexRadarPublicJsonEnabled",
             "CodexRadarHtmlFallbackEnabled",

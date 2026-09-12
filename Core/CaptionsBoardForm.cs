@@ -23,6 +23,9 @@ using System.Windows.Forms;
 // (cache-only) provider.
 internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
 {
+    // 与其余看板的标题保持一致：WORKBENCH、SYSTEM DAY 都是大写英文。
+    private const string BoardTitle = "CAPTIONS";
+
     private const int MaintenanceIntervalMs = 500;
     private const int MinNumContexts = 0;
     private const int MaxNumContexts = 128;
@@ -69,7 +72,7 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
         InitializeLayerScaleFromCurrentDpi();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
         this.FormBorderStyle = FormBorderStyle.None;
-        this.Text = "字幕";
+        this.Text = BoardTitle;
         this.AccessibleName = "字幕看板";
         this.ShowInTaskbar = false;
         this.TopMost = false;

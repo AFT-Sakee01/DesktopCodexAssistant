@@ -230,9 +230,6 @@ internal sealed class WidgetSettings
     public const int MinWorkBoardTimelineMinutes = MinCodexTaskBoardTimelineMinutes;
     public const int MaxWorkBoardTimelineMinutes = MaxCodexTaskBoardTimelineMinutes;
     public const int DefaultWorkBoardTimelineMinutes = DefaultCodexTaskBoardTimelineMinutes;
-    public const int MinSpecBoardAutoPopupSeconds = 1;
-    public const int MaxSpecBoardAutoPopupSeconds = 120;
-    public const int DefaultSpecBoardAutoPopupSeconds = 5;
     public const string DefaultSpecBoardLedgerPath = @"D:\E_Drive_Files\Codexproject\_spec_board\SPEC_BOARD.jsonl";
     public const int MinSpecBoardManagerWidth = 560;
     public const int MaxSpecBoardManagerWidth = 1000;
@@ -295,7 +292,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 105;
+    private const int CurrentSettingsVersion = 106;
     internal const int MinCaptionOverlayFontSize = 12;
     internal const int MaxCaptionOverlayFontSize = 48;
     internal const int DefaultCaptionOverlayFontSize = 22;
@@ -465,8 +462,6 @@ internal sealed class WidgetSettings
     public int SpecBoardLeftX { get; set; }
     public int SpecBoardBottomY { get; set; }
     public int SpecBoardAutoHideSeconds { get; set; }
-    public bool SpecBoardAutoPopupEnabled { get; set; }
-    public int SpecBoardAutoPopupSeconds { get; set; }
     public string SpecBoardLedgerPath { get; set; }
     public int SpecBoardManagerWidth { get; set; }
     public int SpecBoardManagerHeight { get; set; }
@@ -979,8 +974,6 @@ internal sealed class WidgetSettings
         this.SpecBoardLeftX = defaults.SpecBoardLeftX;
         this.SpecBoardBottomY = defaults.SpecBoardBottomY;
         this.SpecBoardAutoHideSeconds = defaults.SpecBoardAutoHideSeconds;
-        this.SpecBoardAutoPopupEnabled = defaults.SpecBoardAutoPopupEnabled;
-        this.SpecBoardAutoPopupSeconds = defaults.SpecBoardAutoPopupSeconds;
         this.SpecBoardLedgerPath = defaults.SpecBoardLedgerPath;
         this.SpecBoardManagerWidth = defaults.SpecBoardManagerWidth;
         this.SpecBoardManagerHeight = defaults.SpecBoardManagerHeight;
@@ -1216,8 +1209,6 @@ internal sealed class WidgetSettings
         settings.SpecBoardLeftX = -1;
         settings.SpecBoardBottomY = -1;
         settings.SpecBoardAutoHideSeconds = DefaultSpecBoardAutoHideSeconds;
-        settings.SpecBoardAutoPopupEnabled = true;
-        settings.SpecBoardAutoPopupSeconds = DefaultSpecBoardAutoPopupSeconds;
         settings.SpecBoardLedgerPath = DefaultSpecBoardLedgerPath;
         settings.SpecBoardManagerWidth = 720;
         settings.SpecBoardManagerHeight = 520;
@@ -1455,8 +1446,6 @@ internal sealed class WidgetSettings
         settings.SpecBoardLeftX = -1;
         settings.SpecBoardBottomY = -1;
         settings.SpecBoardAutoHideSeconds = DefaultSpecBoardAutoHideSeconds;
-        settings.SpecBoardAutoPopupEnabled = true;
-        settings.SpecBoardAutoPopupSeconds = DefaultSpecBoardAutoPopupSeconds;
         settings.SpecBoardLedgerPath = DefaultSpecBoardLedgerPath;
         settings.SpecBoardManagerWidth = 720;
         settings.SpecBoardManagerHeight = 520;
@@ -1690,8 +1679,6 @@ internal sealed class WidgetSettings
             SpecBoardLeftX = this.SpecBoardLeftX,
             SpecBoardBottomY = this.SpecBoardBottomY,
             SpecBoardAutoHideSeconds = this.SpecBoardAutoHideSeconds,
-            SpecBoardAutoPopupEnabled = this.SpecBoardAutoPopupEnabled,
-            SpecBoardAutoPopupSeconds = this.SpecBoardAutoPopupSeconds,
             SpecBoardLedgerPath = this.SpecBoardLedgerPath,
             SpecBoardManagerWidth = this.SpecBoardManagerWidth,
             SpecBoardManagerHeight = this.SpecBoardManagerHeight,
@@ -1950,7 +1937,6 @@ internal sealed class WidgetSettings
         this.SpecBoardLeftX = NormalizeSpecBoardAnchor(this.SpecBoardLeftX);
         this.SpecBoardBottomY = NormalizeSpecBoardAnchor(this.SpecBoardBottomY);
         this.SpecBoardAutoHideSeconds = Clamp(this.SpecBoardAutoHideSeconds, MinSpecBoardAutoHideSeconds, MaxSpecBoardAutoHideSeconds);
-        this.SpecBoardAutoPopupSeconds = Clamp(this.SpecBoardAutoPopupSeconds, MinSpecBoardAutoPopupSeconds, MaxSpecBoardAutoPopupSeconds);
         this.SpecBoardLedgerPath = NormalizeSpecBoardLedgerPath(this.SpecBoardLedgerPath);
         this.SpecBoardManagerWidth = Clamp(this.SpecBoardManagerWidth, MinSpecBoardManagerWidth, MaxSpecBoardManagerWidth);
         this.SpecBoardManagerHeight = Clamp(this.SpecBoardManagerHeight, MinSpecBoardManagerHeight, MaxSpecBoardManagerHeight);
@@ -2410,8 +2396,6 @@ internal sealed class WidgetSettings
         {
             // Auto-popup of the Spec board on newly registered specs defaults on for existing
             // installs; the 5-second dwell is retained by the Version 69 persisted keys.
-            settings.SpecBoardAutoPopupEnabled = true;
-            settings.SpecBoardAutoPopupSeconds = DefaultSpecBoardAutoPopupSeconds;
             saveAfterMigration = true;
         }
 
@@ -2796,6 +2780,14 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 106)
+        {
+            // Version 106 retires SpecBoardAutoPopupEnabled / SpecBoardAutoPopupSeconds. The Work Board
+            // no longer shows itself when a new spec appears, so both keys have no consumer left;
+            // the rewrite below drops them from settings.ini the same way earlier retirements did.
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2995,8 +2987,6 @@ internal sealed class WidgetSettings
             "SpecBoardLeftX=" + this.SpecBoardLeftX,
             "SpecBoardBottomY=" + this.SpecBoardBottomY,
             "SpecBoardAutoHideSeconds=" + this.SpecBoardAutoHideSeconds,
-            "SpecBoardAutoPopupEnabled=" + this.SpecBoardAutoPopupEnabled,
-            "SpecBoardAutoPopupSeconds=" + this.SpecBoardAutoPopupSeconds,
             "SpecBoardLedgerPath=" + this.SpecBoardLedgerPath,
             "SpecBoardManagerWidth=" + this.SpecBoardManagerWidth,
             "SpecBoardManagerHeight=" + this.SpecBoardManagerHeight,
@@ -3505,17 +3495,7 @@ internal sealed class WidgetSettings
             return;
         }
 
-        if (string.Equals(key, "SpecBoardAutoPopupEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
-        {
-            settings.SpecBoardAutoPopupEnabled = boolValue;
-            return;
-        }
 
-        if (string.Equals(key, "SpecBoardAutoPopupSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
-        {
-            settings.SpecBoardAutoPopupSeconds = intValue;
-            return;
-        }
 
         if (string.Equals(key, "SpecBoardLedgerPath", StringComparison.OrdinalIgnoreCase))
         {
@@ -7093,7 +7073,6 @@ internal sealed class WidgetSettings
             defaults.SpecBoardLeftX == -1 && defaults.SpecBoardBottomY == -1 &&
             defaults.SpecBoardAutoHideSeconds == 20 &&
             defaults.LeftDockOutsideClickCollapseEnabled &&
-            defaults.SpecBoardAutoPopupEnabled && defaults.SpecBoardAutoPopupSeconds == 5 &&
             string.Equals(defaults.SpecBoardLedgerPath, DefaultSpecBoardLedgerPath, StringComparison.Ordinal) &&
             defaults.SpecBoardManagerWidth == 720 && defaults.SpecBoardManagerHeight == 520 &&
             defaults.SpecBoardManagerDangerZoneRequiresTypedConfirm,
@@ -7107,8 +7086,6 @@ internal sealed class WidgetSettings
             clone.SpecBoardBottomY == defaults.SpecBoardBottomY &&
             clone.SpecBoardAutoHideSeconds == defaults.SpecBoardAutoHideSeconds &&
             clone.LeftDockOutsideClickCollapseEnabled == defaults.LeftDockOutsideClickCollapseEnabled &&
-            clone.SpecBoardAutoPopupEnabled == defaults.SpecBoardAutoPopupEnabled &&
-            clone.SpecBoardAutoPopupSeconds == defaults.SpecBoardAutoPopupSeconds &&
             string.Equals(clone.SpecBoardLedgerPath, defaults.SpecBoardLedgerPath, StringComparison.Ordinal) &&
             clone.SpecBoardManagerWidth == defaults.SpecBoardManagerWidth &&
             clone.SpecBoardManagerHeight == defaults.SpecBoardManagerHeight &&
@@ -7117,13 +7094,12 @@ internal sealed class WidgetSettings
 
         WidgetSettings low = defaults.Clone();
         low.SpecBoardAutoHideSeconds = -5;
-        low.SpecBoardAutoPopupSeconds = -5;
         low.SpecBoardLeftX = -2;
         low.SpecBoardLedgerPath = "  \"\"  ";
         low.SpecBoardManagerWidth = -1;
         low.SpecBoardManagerHeight = -1;
         low.Normalize();
-        AssertLayout(low.SpecBoardAutoHideSeconds == 0 && low.SpecBoardAutoPopupSeconds == 1 && low.SpecBoardLeftX == -1 &&
+        AssertLayout(low.SpecBoardAutoHideSeconds == 0 && low.SpecBoardLeftX == -1 &&
             low.SpecBoardManagerWidth == 560 && low.SpecBoardManagerHeight == 400 &&
             string.Equals(low.SpecBoardLedgerPath, DefaultSpecBoardLedgerPath, StringComparison.Ordinal), "Spec Board low normalization");
 
@@ -7131,12 +7107,11 @@ internal sealed class WidgetSettings
         high.SpecBoardWidth = 9999;
         high.SpecBoardHeight = 9999;
         high.SpecBoardAutoHideSeconds = 9999;
-        high.SpecBoardAutoPopupSeconds = 9999;
         high.SpecBoardBottomY = int.MaxValue;
         high.SpecBoardManagerWidth = 9999;
         high.SpecBoardManagerHeight = 9999;
         high.Normalize();
-        AssertLayout(high.SpecBoardWidth == 700 && high.SpecBoardHeight == 800 && high.SpecBoardAutoHideSeconds == 600 && high.SpecBoardAutoPopupSeconds == 120 && high.SpecBoardBottomY == -1 &&
+        AssertLayout(high.SpecBoardWidth == 700 && high.SpecBoardHeight == 800 && high.SpecBoardAutoHideSeconds == 600 && high.SpecBoardBottomY == -1 &&
             high.SpecBoardManagerWidth == 1000 && high.SpecBoardManagerHeight == 900, "Spec Board high normalization");
 
         string tempRoot = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-specboard-settings-" + Guid.NewGuid().ToString("N"));
@@ -7150,8 +7125,6 @@ internal sealed class WidgetSettings
             defaults.SpecBoardBottomY = 777;
             defaults.SpecBoardAutoHideSeconds = 45;
             defaults.LeftDockOutsideClickCollapseEnabled = false;
-            defaults.SpecBoardAutoPopupEnabled = false;
-            defaults.SpecBoardAutoPopupSeconds = 17;
             defaults.SpecBoardLedgerPath = Path.Combine(tempRoot, "ledger.jsonl");
             defaults.SpecBoardManagerWidth = 811;
             defaults.SpecBoardManagerHeight = 633;
@@ -7163,8 +7136,6 @@ internal sealed class WidgetSettings
                 loaded.SpecBoardLeftX == defaults.SpecBoardLeftX && loaded.SpecBoardBottomY == defaults.SpecBoardBottomY &&
                 loaded.SpecBoardAutoHideSeconds == defaults.SpecBoardAutoHideSeconds &&
                 loaded.LeftDockOutsideClickCollapseEnabled == defaults.LeftDockOutsideClickCollapseEnabled &&
-                loaded.SpecBoardAutoPopupEnabled == defaults.SpecBoardAutoPopupEnabled &&
-                loaded.SpecBoardAutoPopupSeconds == defaults.SpecBoardAutoPopupSeconds &&
                 string.Equals(loaded.SpecBoardLedgerPath, defaults.SpecBoardLedgerPath, StringComparison.Ordinal) &&
                 loaded.SpecBoardManagerWidth == defaults.SpecBoardManagerWidth &&
                 loaded.SpecBoardManagerHeight == defaults.SpecBoardManagerHeight &&

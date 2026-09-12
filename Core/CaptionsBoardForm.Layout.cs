@@ -134,13 +134,18 @@ internal sealed partial class CaptionsBoardForm
 
     private void DrawHeader(Graphics g, Rectangle bounds, Font titleFont, Font bodyFont, Font monoFont)
     {
+        // 与本文件里芯片标签同一套理由：GenericTypographic 的量宽比 NoWrap/Ellipsis 的
+        // DrawString 实际所需更紧，标题字号又大，差值随字号放大——留窄了会被截成 CAPTIO…。
+        int titleWidth = MeasureTextWidth(g, BoardTitle, titleFont) + S(14);
         using (SolidBrush titleBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
         using (StringFormat near = CreateFormat(StringAlignment.Near))
         {
-            g.DrawString("字幕", titleFont, titleBrush, new Rectangle(bounds.Left, bounds.Top, S(50), bounds.Height), near);
+            g.DrawString(BoardTitle, titleFont, titleBrush, new Rectangle(bounds.Left, bounds.Top, titleWidth, bounds.Height), near);
         }
 
-        int statusLeft = bounds.Left + S(46);
+        // 状态点跟着标题的实测宽度走：原来是写死的 S(46)，只对两个汉字的「字幕」成立，
+        // 换成英文标题后必然叠压。
+        int statusLeft = bounds.Left + titleWidth + S(6);
         Color statusColor = this.snapshot.IsRunning ? DesignTokens.Colors.Success : DesignTokens.Colors.GlyphMuted;
         string statusText = this.snapshot.IsRunning ? "运行中" : "已停止";
         int dotSize = S(7);

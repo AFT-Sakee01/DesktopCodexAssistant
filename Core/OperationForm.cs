@@ -296,12 +296,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         RefreshMemoryPieSnapshot(DateTime.UtcNow, true);
         // A left-docked board must exist from startup even while collapsed: its dock tab is the only
         // always-visible surface, so the (hidden) board has to be constructed to own it.
-        SpecBoardForm autoPopupForm = EnsureSpecBoardForm();
-        if (this.CurrentSettings.SpecBoardAutoPopupEnabled)
-        {
-            autoPopupForm.StartAutoPopupMonitoring();
-        }
-
+        EnsureSpecBoardForm().EnsureBoardRuntime();
 
         // The guard board is always built at startup: its hidden runtime owns sleep/display
         // requirements and deadline maintenance while its canonical tab remains collapsed.

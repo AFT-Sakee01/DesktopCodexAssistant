@@ -35,8 +35,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private readonly List<ProjectHitTarget> projectHitTargets = new List<ProjectHitTarget>();
     private readonly List<CardHitTarget> cardHitTargets = new List<CardHitTarget>();
     private readonly List<FileSystemWatcher> projectWatchers = new List<FileSystemWatcher>();
-    private readonly HashSet<string> autoPopupKnownRows = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> autoPopupHighlightedRows = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     private readonly SpecBoardSeenStateStore seenStateStore;
     private readonly object refreshCancellationSync = new object();
     private Func<Point> cursorPositionProvider;
@@ -60,7 +58,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private bool displaySuspended;
     private bool hiddenForFullscreen;
     private bool restoreAfterFullscreen;
-    private bool restoreAutoPopupAfterFullscreen;
     private int refreshRunning;
     private int refreshQueued;
     private long refreshGeneration;
@@ -71,10 +68,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private string copySuccessNotice = string.Empty;
     private DateTime copySuccessNoticeUntilUtc = DateTime.MinValue;
     private bool seenStateInitialized;
-    private bool autoPopupBaselineInitialized;
-    private bool autoPopupActive;
-    private DateTime autoPopupHideUtc = DateTime.MinValue;
-    private DateTime autoPopupHighlightUntilUtc = DateTime.MinValue;
     private string projectWatcherSignature = string.Empty;
     private Rectangle managerButtonBounds = Rectangle.Empty;
     private Rectangle closeButtonBounds = Rectangle.Empty;
@@ -141,7 +134,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     public void ApplyRuntimeSettings(WidgetSettings settings)
     {
         string oldLedgerPath = this.CurrentSettings == null ? string.Empty : this.CurrentSettings.SpecBoardLedgerPath;
-        bool oldAutoPopupEnabled = this.CurrentSettings != null && this.CurrentSettings.SpecBoardAutoPopupEnabled;
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
@@ -157,10 +149,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             CancelRefresh();
             DisposeWatcher();
             DisposeProjectWatchers();
-            this.autoPopupKnownRows.Clear();
-            this.autoPopupHighlightedRows.Clear();
-            this.autoPopupBaselineInitialized = false;
-            this.autoPopupActive = false;
         }
 
         if (this.Visible)
@@ -177,7 +165,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         SyncLeftDockTab();
 
         UpdateMonitoringState();
-        if (ShouldMonitorWork() && (ledgerPathChanged || !oldAutoPopupEnabled && this.CurrentSettings.SpecBoardAutoPopupEnabled))
+        if (ShouldMonitorWork() && ledgerPathChanged)
         {
             RequestRefresh(true);
         }
@@ -256,7 +244,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         bool enabled = this.Visible &&
             this.CurrentSettings != null &&
             this.CurrentSettings.LeftDockOutsideClickCollapseEnabled &&
-            (this.IsLeftDocked || this.autoPopupActive);
+            this.IsLeftDocked;
         if (!enabled)
         {
             return false;
@@ -296,7 +284,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     // the manually opened board keeps its much longer idle timeout.
     private bool UpdateDockCollapse(DateTime nowUtc)
     {
-        if (!this.IsLeftDocked || !this.Visible || this.autoPopupActive)
+        if (!this.IsLeftDocked || !this.Visible)
         {
             this.dockPointerLeftUtc = DateTime.MinValue;
             return false;
@@ -351,29 +339,25 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         }
     }
 
-    public void StartAutoPopupMonitoring()
+    // 看板不再自己弹出：以前它会在发现新 spec 时自动现身，现在只由 Dock 标签和显式调用打开。
+    // 仍然需要在启动时建好 HWND —— 异步刷新要靠它把结果 marshal 回 UI 线程。
+    public void EnsureBoardRuntime()
     {
         if (this.IsDisposed)
         {
             return;
         }
 
-        // A hidden WinForms window needs a handle before an async refresh can marshal its result
-        // back to the UI thread. Creating the handle does not show the board.
         IntPtr unused = this.Handle;
         UpdateMonitoringState();
-        if (!this.autoPopupBaselineInitialized)
-        {
-            RequestRefresh(true);
-        }
     }
 
     public void ShowBoard()
     {
-        ShowBoardCore(false);
+        ShowBoardCore();
     }
 
-    private void ShowBoardCore(bool automaticPopup)
+    private void ShowBoardCore()
     {
         if (LeftDockLayout.IsPresentationBlocked(this.displaySuspended, this.hiddenForFullscreen))
         {
@@ -389,17 +373,8 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         // captured, so force one resample before the first paint.
         RefreshTaskSampleIfDue(DateTime.UtcNow, true);
 
-        this.autoPopupActive = automaticPopup;
         this.outsideClickCollapseUtc = DateTime.MinValue;
         this.outsideClickSequence = OutsideClickDismissalMonitor.ArmConsumer();
-        if (automaticPopup)
-        {
-            this.autoPopupHideUtc = DateTime.UtcNow.AddSeconds(this.CurrentSettings.SpecBoardAutoPopupSeconds);
-        }
-        else
-        {
-            this.autoPopupHideUtc = DateTime.MinValue;
-        }
 
         this.selectedProject = string.Empty;
         ApplyRuntimeSettings(this.CurrentSettings);
@@ -431,10 +406,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
     public void HideBoard()
     {
-        this.autoPopupActive = false;
-        this.autoPopupHideUtc = DateTime.MinValue;
-        this.autoPopupHighlightedRows.Clear();
-        this.autoPopupHighlightUntilUtc = DateTime.MinValue;
         if (this.Visible)
         {
             Hide();
@@ -461,15 +432,12 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         if (hidden)
         {
             this.restoreAfterFullscreen = this.Visible;
-            this.restoreAutoPopupAfterFullscreen = this.autoPopupActive;
             HideBoard();
         }
         else if (this.restoreAfterFullscreen && !this.displaySuspended)
         {
             this.restoreAfterFullscreen = false;
-            bool automaticPopup = this.restoreAutoPopupAfterFullscreen;
-            this.restoreAutoPopupAfterFullscreen = false;
-            ShowBoardCore(automaticPopup);
+            ShowBoardCore();
         }
         else
         {
@@ -501,9 +469,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         if (!this.hiddenForFullscreen && this.restoreAfterFullscreen)
         {
             this.restoreAfterFullscreen = false;
-            bool automaticPopup = this.restoreAutoPopupAfterFullscreen;
-            this.restoreAutoPopupAfterFullscreen = false;
-            ShowBoardCore(automaticPopup);
+            ShowBoardCore();
         }
 
         if (ShouldMonitorWork())
@@ -1498,20 +1464,10 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private void DrawCard(Graphics g, Rectangle bounds, SpecBoardRow row, Color statusColor, Font titleFont, Font smallFont, SpecBoardPalette palette)
     {
         Color cardText = row.FileMissing ? palette.Muted : palette.Text;
-        bool highlighted = IsAutoPopupHighlighted(row, DateTime.UtcNow);
         using (GraphicsPath path = RoundedRectangle(RectangleF.Inflate(bounds, -0.5f, -0.5f), S(5)))
-        using (SolidBrush fill = new SolidBrush(highlighted
-            ? DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 82)
-            : DesignTokens.WithAlpha(DesignTokens.Colors.Surface, row.FileMissing ? 120 : 220)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, row.FileMissing ? 120 : 220)))
         {
             g.FillPath(fill, path);
-            if (highlighted)
-            {
-                using (Pen highlightBorder = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Accent, 238), Math.Max(1.0f, this.LayerScale * 1.5f)))
-                {
-                    g.DrawPath(highlightBorder, path);
-                }
-            }
         }
 
         using (SolidBrush stripe = new SolidBrush(row.FileMissing ? palette.Muted : statusColor))
@@ -1542,12 +1498,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             g.DrawString(age, smallFont, mutedBrush, ageRect, right);
             g.DrawString(projectLabel + " · " + eventLabel, smallFont, mutedBrush, subtitleRect, left);
         }
-    }
-
-    private bool IsAutoPopupHighlighted(SpecBoardRow row, DateTime nowUtc)
-    {
-        return nowUtc < this.autoPopupHighlightUntilUtc &&
-            this.autoPopupHighlightedRows.Contains(GetAutoPopupRowKey(row));
     }
 
     private static void DrawCenteredEmptyState(Graphics g, Rectangle bounds, string title, string subtitle, Color titleColor, Color subtitleColor, Font titleFont, Font smallFont)
@@ -1585,13 +1535,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         {
             renderNeeded = true;
         }
-        if (this.autoPopupHighlightUntilUtc != DateTime.MinValue && now >= this.autoPopupHighlightUntilUtc)
-        {
-            this.autoPopupHighlightUntilUtc = DateTime.MinValue;
-            this.autoPopupHighlightedRows.Clear();
-            renderNeeded = true;
-        }
-
         if (this.dockTab != null && !this.dockTab.IsDisposed && this.dockTab.Visible)
         {
             this.dockTab.RefreshBurnInPosition();
@@ -1613,12 +1556,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             if (inside)
             {
                 this.mouseWasInside = true;
-                if (this.autoPopupActive)
-                {
-                    // Hovering pauses auto-close and restarts the full dwell on every tick, so the
-                    // countdown begins only after the pointer actually leaves the window.
-                    this.autoPopupHideUtc = now.AddSeconds(this.CurrentSettings.SpecBoardAutoPopupSeconds);
-                }
             }
             else if (this.mouseWasInside)
             {
@@ -1626,22 +1563,11 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                 ResetAutoHideClock();
             }
 
-            if (this.autoPopupActive)
+            int autoHideSeconds = this.CurrentSettings.SpecBoardAutoHideSeconds;
+            if (autoHideSeconds > 0 && !inside && now >= this.lastInteractionUtc.AddSeconds(autoHideSeconds))
             {
-                if (!inside && this.autoPopupHideUtc != DateTime.MinValue && now >= this.autoPopupHideUtc)
-                {
-                    HideBoard();
-                    return;
-                }
-            }
-            else
-            {
-                int autoHideSeconds = this.CurrentSettings.SpecBoardAutoHideSeconds;
-                if (autoHideSeconds > 0 && !inside && now >= this.lastInteractionUtc.AddSeconds(autoHideSeconds))
-                {
-                    HideBoard();
-                    return;
-                }
+                HideBoard();
+                return;
             }
         }
 
@@ -1832,91 +1758,13 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         EnsureSeenStateInitialized(this.snapshot);
         RefreshProjectWatchers(this.snapshot);
 
-        List<string> newRows = UpdateAutoPopupBaseline(this.snapshot);
-        if (newRows.Count > 0 && this.CurrentSettings.SpecBoardAutoPopupEnabled &&
-            !this.displaySuspended && !this.hiddenForFullscreen)
-        {
-            this.autoPopupHighlightedRows.Clear();
-            for (int i = 0; i < newRows.Count; i++)
-            {
-                this.autoPopupHighlightedRows.Add(newRows[i]);
-            }
-
-            this.autoPopupHighlightUntilUtc = DateTime.UtcNow.AddSeconds(this.CurrentSettings.SpecBoardAutoPopupSeconds);
-            if (this.Visible)
-            {
-                ResetAutoHideClock();
-                RenderLayeredWindow();
-            }
-            else
-            {
-                ShowBoardCore(true);
-            }
-        }
-        else if (this.Visible)
+        // 看板不再因为发现新 spec 就自己弹出：刷新只更新已显示的内容。
+        if (this.Visible)
         {
             RenderLayeredWindow();
         }
     }
 
-    private List<string> UpdateAutoPopupBaseline(SpecBoardSnapshot currentSnapshot)
-    {
-        List<string> discovered = new List<string>();
-        if (currentSnapshot == null)
-        {
-            return discovered;
-        }
-
-        List<SpecBoardRow> rows = currentSnapshot.Rows ?? new List<SpecBoardRow>();
-        if (!this.autoPopupBaselineInitialized)
-        {
-            for (int i = 0; i < rows.Count; i++)
-            {
-                this.autoPopupKnownRows.Add(GetAutoPopupRowKey(rows[i]));
-            }
-
-            this.autoPopupBaselineInitialized = true;
-            return discovered;
-        }
-
-        for (int i = 0; i < rows.Count; i++)
-        {
-            SpecBoardRow row = rows[i];
-            string key = GetAutoPopupRowKey(row);
-            bool firstSeen = this.autoPopupKnownRows.Add(key);
-            if (firstSeen && IsAutoPopupActionable(row))
-            {
-                discovered.Add(key);
-            }
-        }
-
-        return discovered;
-    }
-
-    private static bool IsAutoPopupActionable(SpecBoardRow row)
-    {
-        return row != null && !row.FileMissing &&
-            (row.Status == SpecBoardStatus.Unregistered ||
-             row.Status == SpecBoardStatus.Pending ||
-             row.Status == SpecBoardStatus.NeedsRevision ||
-             row.Status == SpecBoardStatus.AwaitingVerify);
-    }
-
-    private static string GetAutoPopupRowKey(SpecBoardRow row)
-    {
-        if (row == null)
-        {
-            return string.Empty;
-        }
-
-        string path = string.IsNullOrWhiteSpace(row.SpecPath) ? row.AbsolutePath : row.SpecPath;
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            path = row.Id;
-        }
-
-        return ((row.Project ?? string.Empty).Trim() + "|" + (path ?? string.Empty).Trim().Replace('\\', '/')).ToLowerInvariant();
-    }
 
     private void EnsureSeenStateInitialized(SpecBoardSnapshot currentSnapshot)
     {
@@ -1976,8 +1824,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         // A left-docked board must keep its maintenance tick even while collapsed: the tick is what
         // drives the tab's burn-in drift and the collapse countdown after a hover expand.
         return !this.displaySuspended && !this.hiddenForFullscreen &&
-            (this.Visible || this.IsLeftDocked ||
-                this.CurrentSettings != null && this.CurrentSettings.SpecBoardAutoPopupEnabled);
+            (this.Visible || this.IsLeftDocked);
     }
 
     private void SuspendVisibleWork()
@@ -2416,10 +2263,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private void ResetAutoHideClock()
     {
         this.lastInteractionUtc = DateTime.UtcNow;
-        if (this.autoPopupActive && this.CurrentSettings != null)
-        {
-            this.autoPopupHideUtc = this.lastInteractionUtc.AddSeconds(this.CurrentSettings.SpecBoardAutoPopupSeconds);
-        }
     }
 
     protected override void Dispose(bool disposing)
@@ -2535,12 +2378,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             using (SpecBoardForm form = new SpecBoardForm(null, settings))
             {
                 form.snapshot = CreateSampleSnapshot();
-                SpecBoardRow highlightedSample = form.snapshot.Rows.FirstOrDefault(row => row.Id == "u1");
-                if (highlightedSample != null)
-                {
-                    form.autoPopupHighlightedRows.Add(GetAutoPopupRowKey(highlightedSample));
-                    form.autoPopupHighlightUntilUtc = DateTime.UtcNow.AddMinutes(1);
-                }
                 form.SetLayerScale(2.0f);
                 // Keep the stable baseline filename even though the board no longer has variants.
                 form.Size = new Size(settings.SpecBoardWidth * 2, settings.SpecBoardHeight * 2);
@@ -2728,7 +2565,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         RunSectionLadderSelfTest();
         RunCompactLayoutSelfTest();
         RunAutoHideSelfTest();
-        RunAutoPopupSelfTest();
+        RunProjectWatcherSelfTest();
         RunManagerLifecycleSelfTest();
         RunManagerWatcherWriteSelfTest();
     }
@@ -3133,7 +2970,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.SpecBoardLedgerPath = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-specboard-missing-" + Guid.NewGuid().ToString("N") + ".jsonl");
         settings.SpecBoardAutoHideSeconds = 5;
-        settings.SpecBoardAutoPopupEnabled = false;
         using (SpecBoardForm form = new SpecBoardForm(null, settings))
         {
             DateTime noticeNow = DateTime.UtcNow;
@@ -3202,7 +3038,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         }
     }
 
-    private static void RunAutoPopupSelfTest()
+    private static void RunProjectWatcherSelfTest()
     {
         string watcherRoot = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-specboard-auto-watch-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Path.Combine(watcherRoot, "Docs", "Technical"));
@@ -3211,7 +3047,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             WidgetSettings settings = WidgetSettings.CreateDefaults();
             settings.SpecBoardLedgerPath = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-specboard-auto-popup-" + Guid.NewGuid().ToString("N") + ".jsonl");
             settings.SpecBoardAutoHideSeconds = 0;
-            settings.SpecBoardAutoPopupSeconds = 5;
             using (SpecBoardForm form = new SpecBoardForm(null, settings))
             {
                 SpecBoardSnapshot watcherSnapshot = new SpecBoardSnapshot();
@@ -3229,28 +3064,6 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                 throw new InvalidOperationException("Spec Board did not derive the project Spec-directory watcher from PROJECTS.json metadata.");
             }
 
-            SpecBoardSnapshot baseline = CreateSampleSnapshot();
-            if (form.UpdateAutoPopupBaseline(baseline).Count != 0)
-            {
-                throw new InvalidOperationException("Spec Board initial auto-popup scan treated existing specs as new.");
-            }
-
-            SpecBoardSnapshot changed = CreateSampleSnapshot();
-            SpecBoardRow newRow = CreateSampleRow("new-popup", "DesktopCodexAssistant", "新建 Spec 自动弹窗", SpecBoardStatus.Pending, DateTime.UtcNow, false);
-            changed.Rows.Add(newRow);
-            List<string> discovered = form.UpdateAutoPopupBaseline(changed);
-            if (discovered.Count != 1 || form.UpdateAutoPopupBaseline(changed).Count != 0)
-            {
-                throw new InvalidOperationException("Spec Board auto-popup baseline missed or repeated a new spec.");
-            }
-
-            form.autoPopupHighlightedRows.Add(discovered[0]);
-            form.autoPopupHighlightUntilUtc = DateTime.UtcNow.AddSeconds(5);
-            if (!form.IsAutoPopupHighlighted(newRow, DateTime.UtcNow))
-            {
-                throw new InvalidOperationException("Spec Board new-spec highlight state failed.");
-            }
-
             Rectangle workArea = Screen.PrimaryScreen.WorkingArea;
             Point cursor = Cursor.Position;
             int awayX = cursor.X < workArea.Left + workArea.Width / 2 ? Math.Max(workArea.Left, workArea.Right - form.Width) : workArea.Left;
@@ -3258,26 +3071,8 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             form.Location = new Point(awayX, awayY);
             form.ShowBoard();
             Application.DoEvents();
-            form.cursorPositionProvider = delegate { return new Point(form.Right + 10, form.Bottom + 10); };
-            form.autoPopupActive = true;
-            form.autoPopupHideUtc = DateTime.UtcNow.AddSeconds(-1);
-            form.OnMaintenanceTick(null, EventArgs.Empty);
-            if (form.Visible)
-            {
-                throw new InvalidOperationException("Spec Board automatic popup did not close at its configured deadline.");
-            }
 
-            form.ShowBoard();
-            Application.DoEvents();
-            form.Location = GetWindowLocationContainingPoint(form.Size, cursor);
-            form.cursorPositionProvider = delegate { return new Point(form.Left + 5, form.Top + 5); };
-            form.autoPopupActive = true;
-            form.autoPopupHideUtc = DateTime.UtcNow.AddSeconds(-1);
-            form.OnMaintenanceTick(null, EventArgs.Empty);
-            if (!form.Visible || form.autoPopupHideUtc <= DateTime.UtcNow)
-            {
-                throw new InvalidOperationException("Spec Board automatic popup did not pause and reset while hovered.");
-            }
+            // 自动弹出已移除；闲置收起由 RunAutoHideSelfTest 覆盖，这里只验证监视器布线。
 
                 form.HideBoard();
             }
