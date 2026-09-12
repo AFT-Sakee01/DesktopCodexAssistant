@@ -309,11 +309,11 @@ internal sealed partial class NetworkMonitorForm
             EdgeDockTabRole.Network,
             this.LayerScale,
             this.Size);
-        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
+        this.Location = ApplySelfTestOffscreenOffset(BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
             baseLocation,
             this.Size,
             workArea,
-            BurnInProtection.NetworkMonitorSalt);
+            BurnInProtection.NetworkMonitorSalt));
     }
 
     private void SetDockTabHiddenForFullscreen(bool hidden)

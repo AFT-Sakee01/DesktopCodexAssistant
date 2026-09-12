@@ -2387,16 +2387,13 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.Size,
             workArea,
             BurnInProtection.OperationPanelSalt);
-        Point placement = ApplySelfTestOffscreenOffset(shiftedLocation);
-        left = placement.X;
-        top = placement.Y;
-        this.Location = placement;
+        this.Location = ApplySelfTestOffscreenOffset(shiftedLocation);
 
         NativeMethods.SetWindowPos(
             this.Handle,
             GetLayeredWidgetInsertAfter(this.CurrentSettings.VisibilityMode, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
-            left,
-            top,
+            this.Left,
+            this.Top,
             this.Width,
             this.Height,
             NativeMethods.SWP_NOACTIVATE |

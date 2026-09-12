@@ -378,18 +378,21 @@ internal sealed partial class CaptionOverlayForm
         hover.Normalize();
         using (CaptionOverlayForm form = new CaptionOverlayForm(hover))
         {
-            form.Bounds = new Rectangle(100, 200, 800, 120);
+            Point probeOrigin = ApplySelfTestOffscreenOffset(new Point(100, 200));
+            form.Bounds = new Rectangle(probeOrigin.X, probeOrigin.Y, 800, 120);
             form.snapshot = CreateFixtureSnapshot("Speaking.", "正在说。", new string[0]);
             // A window that is not on screen has no hover, so the test needs a shown one.
+            // 光标点一律相对窗口的实际落点取，不写死屏幕坐标：自检期间可见层会被整体
+            // 移出屏幕，写死的 (500,260) 会落在窗口之外，测出来的就不是悬停行为了。
             form.Show();
-            form.CursorPositionProvider = delegate { return new Point(4000, 4000); };
+            form.CursorPositionProvider = delegate { return new Point(form.Left + 4000, form.Top + 4000); };
             form.PollHoverForSelfTest();
             AssertSelfTest(
                 form.WindowTransparencyOverridePercent == -1,
                 "a pointer away from the strip must leave the window alpha alone");
 
             // HoverEnterTicks = 1: the fade reacts on the first poll inside.
-            form.CursorPositionProvider = delegate { return new Point(500, 260); };
+            form.CursorPositionProvider = delegate { return new Point(form.Left + 400, form.Top + 60); };
             form.PollHoverForSelfTest();
             AssertSelfTest(
                 form.WindowTransparencyOverridePercent == WidgetSettings.CaptionOverlayHoverTransparencyPercent,
@@ -397,7 +400,7 @@ internal sealed partial class CaptionOverlayForm
 
             // HoverExitTicks = 3: a single poll outside must not restore it, or a pointer grazing
             // the edge would make the strip flicker.
-            form.CursorPositionProvider = delegate { return new Point(4000, 4000); };
+            form.CursorPositionProvider = delegate { return new Point(form.Left + 4000, form.Top + 4000); };
             form.PollHoverForSelfTest();
             AssertSelfTest(
                 form.WindowTransparencyOverridePercent == WidgetSettings.CaptionOverlayHoverTransparencyPercent,
@@ -409,7 +412,7 @@ internal sealed partial class CaptionOverlayForm
                 "three polls outside must restore the strip");
 
             // Nothing to place if it fades out from under the pointer that is dragging it.
-            form.CursorPositionProvider = delegate { return new Point(500, 260); };
+            form.CursorPositionProvider = delegate { return new Point(form.Left + 400, form.Top + 60); };
             form.PollHoverForSelfTest();
             form.SetEditMode(true);
             AssertSelfTest(

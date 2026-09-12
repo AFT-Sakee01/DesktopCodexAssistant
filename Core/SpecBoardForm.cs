@@ -2263,11 +2263,11 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             EdgeDockTabRole.SpecBoard,
             this.LayerScale,
             this.Size);
-        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
+        this.Location = ApplySelfTestOffscreenOffset(BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
             baseLocation,
             this.Size,
             workArea,
-            BurnInProtection.SpecBoardSalt);
+            BurnInProtection.SpecBoardSalt));
     }
 
     private void PositionNearOperationPanel()
@@ -2284,7 +2284,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
         top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
         Point baseLocation = new Point(left, top);
-        this.Location = BurnInProtection.ApplyRuntimeOffset(baseLocation, this.Size, workArea, BurnInProtection.SpecBoardSalt);
+        this.Location = ApplySelfTestOffscreenOffset(BurnInProtection.ApplyRuntimeOffset(baseLocation, this.Size, workArea, BurnInProtection.SpecBoardSalt));
     }
 
     private void OpenRow(SpecBoardRow row)

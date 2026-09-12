@@ -410,7 +410,7 @@ internal abstract class LayeredWidgetFormBase : Form
 
     internal static bool OffscreenPresentationForSelfTest { get; set; }
 
-    protected static Point ApplySelfTestOffscreenOffset(Point location)
+    internal static Point ApplySelfTestOffscreenOffset(Point location)
     {
         if (!OffscreenPresentationForSelfTest)
         {
@@ -419,6 +419,7 @@ internal abstract class LayeredWidgetFormBase : Form
 
         return new Point(location.X - OffscreenSelfTestShift, location.Y - OffscreenSelfTestShift);
     }
+
 
     protected int S(int value)
     {

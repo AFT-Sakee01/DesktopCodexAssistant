@@ -380,11 +380,11 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
             EdgeDockTabRole.Captions,
             this.LayerScale,
             this.Size);
-        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
+        this.Location = ApplySelfTestOffscreenOffset(BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
             baseLocation,
             this.Size,
             workArea,
-            BurnInProtection.CaptionsBoardSalt);
+            BurnInProtection.CaptionsBoardSalt));
     }
 
     private TranslatorControlReader ResolveReader()

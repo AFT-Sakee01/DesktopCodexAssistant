@@ -436,11 +436,11 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
             EdgeDockTabRole.Guard,
             this.LayerScale,
             this.Size);
-        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
+        this.Location = ApplySelfTestOffscreenOffset(BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
             baseLocation,
             this.Size,
             workArea,
-            BurnInProtection.GuardBoardSalt);
+            BurnInProtection.GuardBoardSalt));
     }
 
     private void PositionNearOperationPanel()
@@ -455,7 +455,7 @@ internal sealed partial class GuardBoardForm : LayeredWidgetFormBase
         int top = this.owner.Top - S(10) - this.Height;
         left = Math.Max(workArea.Left, Math.Min(left, Math.Max(workArea.Left, workArea.Right - this.Width)));
         top = Math.Max(workArea.Top, Math.Min(top, Math.Max(workArea.Top, workArea.Bottom - this.Height)));
-        this.Location = BurnInProtection.ApplyRuntimeOffset(new Point(left, top), this.Size, workArea, BurnInProtection.GuardBoardSalt);
+        this.Location = ApplySelfTestOffscreenOffset(BurnInProtection.ApplyRuntimeOffset(new Point(left, top), this.Size, workArea, BurnInProtection.GuardBoardSalt));
     }
 
     private bool UpdateOutsideClickDismissal(DateTime nowUtc)

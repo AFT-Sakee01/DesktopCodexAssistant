@@ -297,11 +297,11 @@ internal sealed partial class ResetSpeedBoardForm : LayeredWidgetFormBase
             EdgeDockTabRole.ResetSpeed,
             this.LayerScale,
             this.Size);
-        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
+        this.Location = ApplySelfTestOffscreenOffset(BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
             baseLocation,
             this.Size,
             workArea,
-            BurnInProtection.ResetSpeedBoardSalt);
+            BurnInProtection.ResetSpeedBoardSalt));
     }
 
     private bool RefreshSnapshot(bool force)

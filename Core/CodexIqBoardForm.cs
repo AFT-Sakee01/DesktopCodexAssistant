@@ -352,11 +352,11 @@ internal sealed partial class CodexIqBoardForm : LayeredWidgetFormBase
             EdgeDockTabRole.CodexIq,
             this.LayerScale,
             this.Size);
-        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
+        this.Location = ApplySelfTestOffscreenOffset(BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
             baseLocation,
             this.Size,
             workArea,
-            BurnInProtection.CodexIqBoardSalt);
+            BurnInProtection.CodexIqBoardSalt));
     }
 
     private bool RefreshSnapshot(bool force)

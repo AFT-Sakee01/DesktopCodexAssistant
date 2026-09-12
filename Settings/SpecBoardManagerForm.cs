@@ -1770,9 +1770,11 @@ internal sealed class SpecBoardManagerForm : Form
         // Center of the work area: the user's layered widgets hug the screen edges and are
         // also topmost, so an edge-positioned capture would photograph them over the form.
         Rectangle captureArea = Screen.PrimaryScreen.WorkingArea;
-        form.Location = new Point(
+        // 渲染命令要的就是居中拍照，保持原样；自检则把它移出屏幕——
+        // ApplySelfTestOffscreenOffset 只在 --test* 下生效，--render-* 不受影响。
+        form.Location = LayeredWidgetFormBase.ApplySelfTestOffscreenOffset(new Point(
             captureArea.Left + Math.Max(0, (captureArea.Width - form.Width) / 2),
-            captureArea.Top + Math.Max(0, (captureArea.Height - form.Height) / 2));
+            captureArea.Top + Math.Max(0, (captureArea.Height - form.Height) / 2)));
         form.TopMost = true;
     }
 
@@ -1885,7 +1887,14 @@ internal sealed class SpecBoardManagerForm : Form
                     throw new InvalidOperationException("Spec Board manager fixture selection failed.");
                 }
 
-                form.Refresh();
+                // 命中目标是在绘制时填充的，而移出屏幕的窗口不会收到真正的重绘，
+                // Refresh() 于是变成空操作。DrawToBitmap 会同步走一遍绘制路径，
+                // 无论窗口在不在可见桌面上都能把命中目标算出来。
+                using (Bitmap probe = new Bitmap(Math.Max(1, form.Width), Math.Max(1, form.Height)))
+                {
+                    form.DrawToBitmap(probe, new Rectangle(0, 0, probe.Width, probe.Height));
+                }
+
                 int capsuleCount = form.hitTargets.Count(target => target.Kind == Hit.Capsule);
                 if (capsuleCount != SpecBoardStatus.LedgerValues.Length)
                 {

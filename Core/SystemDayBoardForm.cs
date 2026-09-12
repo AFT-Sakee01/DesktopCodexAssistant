@@ -286,11 +286,11 @@ internal sealed partial class SystemDayBoardForm : LayeredWidgetFormBase
             EdgeDockTabRole.SystemDay,
             this.LayerScale,
             this.Size);
-        this.Location = BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
+        this.Location = ApplySelfTestOffscreenOffset(BurnInProtection.ApplyRuntimeOffsetWithPinnedX(
             baseLocation,
             this.Size,
             workArea,
-            BurnInProtection.SystemDayBoardSalt);
+            BurnInProtection.SystemDayBoardSalt));
     }
 
     private bool RefreshSnapshot(bool force)

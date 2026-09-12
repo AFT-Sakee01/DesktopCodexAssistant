@@ -302,7 +302,7 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             this.burnInSalt);
         // Horizontal drift is always discarded: a positive runtime offset would move the 5px target
         // away from the physical edge, making a cursor at the leftmost pixel miss the dock tabs.
-        // PinToLeftEdge 本身保持纯几何，自检的钉边断言照常成立；离屏偏移只加在落笔的这一步。
+        // PinToLeftEdge 保持纯几何，钉边断言照常成立；偏移只加在落笔这一步。
         this.Location = ApplySelfTestOffscreenOffset(PinToLeftEdge(runtimeLocation, workArea));
     }
 

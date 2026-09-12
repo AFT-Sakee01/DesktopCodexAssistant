@@ -3051,7 +3051,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         int top = Clamp(this.Top, workArea.Top, Math.Max(workArea.Top, workArea.Bottom - this.Height));
         if (left != this.Left || top != this.Top)
         {
-            this.Location = new Point(left, top);
+            // 这一步会在构造与分辨率变化时把窗口重新居中，把自检设好的离屏坐标覆写掉，
+            // 所以偏移必须加在这里，而不是只在 Show 之前设一次 Location。
+            this.Location = LayeredWidgetFormBase.ApplySelfTestOffscreenOffset(new Point(left, top));
         }
     }
 
