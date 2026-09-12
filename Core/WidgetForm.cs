@@ -1893,6 +1893,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     {
         WidgetSettings nextSettings = settings.Clone();
         nextSettings.Normalize();
+        SideColumnBalance.ApplyUnifiedColumnSpacing(nextSettings);
         nextSettings.Save();
         Program.SetStartupEnabled(nextSettings.StartupEnabled, false);
         this.savedSettings = nextSettings.Clone();
@@ -2795,6 +2796,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.CurrentSettings.BurnInProtectionEnabled;
         WidgetSettings nextSettings = settings.Clone();
         nextSettings.Normalize();
+        SideColumnBalance.ApplyUnifiedColumnSpacing(nextSettings);
         this.CurrentSettings = nextSettings;
         if (!this.CurrentSettings.BurnInProtectionEnabled || !burnInWasEnabled)
         {

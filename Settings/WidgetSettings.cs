@@ -176,6 +176,9 @@ internal sealed class WidgetSettings
     public const int MaxColumnGroupOffsetY = 1000;
     public const int DefaultLeftDockButtonGapPixels = 10;
     public const int DefaultRightTileButtonGapPixels = 8;
+    // 统一间距模式：两侧同取这个百分比，占用高度小的那一侧再单向抬高去够大的那一侧。
+    // 复用上面的 0-100 区间，这样三个滑块在界面上是同一把尺子。
+    public const int DefaultUnifiedColumnSpacingPercent = 10;
     public const int DefaultColumnGroupOffsetY = 0;
     public static readonly string[] DefaultLeftDockButtonOrder = new string[]
     {
@@ -292,7 +295,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 106;
+    private const int CurrentSettingsVersion = 107;
     internal const int MinCaptionOverlayFontSize = 12;
     internal const int MaxCaptionOverlayFontSize = 48;
     internal const int DefaultCaptionOverlayFontSize = 22;
@@ -470,6 +473,8 @@ internal sealed class WidgetSettings
     public string[] LeftDockButtonOrder { get; set; }
     public int LeftDockButtonGapPixels { get; set; }
     public int LeftDockGroupOffsetY { get; set; }
+    public bool UnifiedColumnSpacingEnabled { get; set; }
+    public int UnifiedColumnSpacingPercent { get; set; }
     public bool SpecBoardLeftDockEnabled { get; set; }
     public int SpecBoardLeftDockTabCenterY { get; set; }
     public bool CodexTaskBoardLeftDockEnabled { get; set; }
@@ -982,6 +987,8 @@ internal sealed class WidgetSettings
         this.LeftDockButtonOrder = CloneLeftDockButtonOrder(defaults.LeftDockButtonOrder);
         this.LeftDockButtonGapPixels = defaults.LeftDockButtonGapPixels;
         this.LeftDockGroupOffsetY = defaults.LeftDockGroupOffsetY;
+        this.UnifiedColumnSpacingEnabled = defaults.UnifiedColumnSpacingEnabled;
+        this.UnifiedColumnSpacingPercent = defaults.UnifiedColumnSpacingPercent;
         this.SpecBoardLeftDockEnabled = defaults.SpecBoardLeftDockEnabled;
         this.SpecBoardLeftDockTabCenterY = defaults.SpecBoardLeftDockTabCenterY;
         this.CodexTaskBoardLeftDockEnabled = defaults.CodexTaskBoardLeftDockEnabled;
@@ -1217,6 +1224,8 @@ internal sealed class WidgetSettings
         settings.LeftDockButtonOrder = CloneLeftDockButtonOrder(DefaultLeftDockButtonOrder);
         settings.LeftDockButtonGapPixels = DefaultLeftDockButtonGapPixels;
         settings.LeftDockGroupOffsetY = DefaultColumnGroupOffsetY;
+        settings.UnifiedColumnSpacingEnabled = false;
+        settings.UnifiedColumnSpacingPercent = DefaultUnifiedColumnSpacingPercent;
         settings.SpecBoardLeftDockEnabled = true;
         settings.SpecBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CodexTaskBoardLeftDockEnabled = true;
@@ -1454,6 +1463,8 @@ internal sealed class WidgetSettings
         settings.LeftDockButtonOrder = CloneLeftDockButtonOrder(DefaultLeftDockButtonOrder);
         settings.LeftDockButtonGapPixels = DefaultLeftDockButtonGapPixels;
         settings.LeftDockGroupOffsetY = DefaultColumnGroupOffsetY;
+        settings.UnifiedColumnSpacingEnabled = false;
+        settings.UnifiedColumnSpacingPercent = DefaultUnifiedColumnSpacingPercent;
         settings.SpecBoardLeftDockEnabled = true;
         settings.SpecBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CodexTaskBoardLeftDockEnabled = true;
@@ -1687,6 +1698,8 @@ internal sealed class WidgetSettings
             LeftDockButtonOrder = CloneLeftDockButtonOrder(this.LeftDockButtonOrder),
             LeftDockButtonGapPixels = this.LeftDockButtonGapPixels,
             LeftDockGroupOffsetY = this.LeftDockGroupOffsetY,
+            UnifiedColumnSpacingEnabled = this.UnifiedColumnSpacingEnabled,
+            UnifiedColumnSpacingPercent = this.UnifiedColumnSpacingPercent,
             SpecBoardLeftDockEnabled = this.SpecBoardLeftDockEnabled,
             SpecBoardLeftDockTabCenterY = this.SpecBoardLeftDockTabCenterY,
             CodexTaskBoardLeftDockEnabled = this.CodexTaskBoardLeftDockEnabled,
@@ -1943,6 +1956,8 @@ internal sealed class WidgetSettings
         this.LeftDockButtonOrder = NormalizeLeftDockButtonOrder(this.LeftDockButtonOrder);
         this.LeftDockButtonGapPixels = Clamp(this.LeftDockButtonGapPixels, MinColumnButtonGapPixels, MaxColumnButtonGapPixels);
         this.LeftDockGroupOffsetY = Clamp(this.LeftDockGroupOffsetY, MinColumnGroupOffsetY, MaxColumnGroupOffsetY);
+        this.UnifiedColumnSpacingPercent = Clamp(
+            this.UnifiedColumnSpacingPercent, MinColumnButtonGapPixels, MaxColumnButtonGapPixels);
         // The visible topology is fixed at six left-edge tabs. These persisted flags remain only
         // so older settings files round-trip safely; false values must never resurrect undocked
         // board windows or make the layout editor disagree with the runtime surface set.
@@ -2788,7 +2803,18 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 107)
+        {
+            // Version 107 引入统一间距模式，默认关闭：这个模式会把两侧间距与整列偏移改写成
+            // 解算出来的派生值，自动打开就等于替用户丢掉他自己调过的间距——和 schema 90 当初
+            // 坚持保留既有间距是同一条理由。这里只负责把新键落盘，免得下次读取又走一遍迁移分支。
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
+        // 统一间距模式下两侧间距与整列偏移是派生值。放在这里而不是 Normalize()，是因为
+        // Normalize() 还被 CreateDefaults 和各处纯钳位场景调用，那些地方不应该被解算结果改写。
+        SideColumnBalance.ApplyUnifiedColumnSpacing(settings);
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
         if (settingsVersion > 0 && settingsVersion < 62)
@@ -2995,6 +3021,8 @@ internal sealed class WidgetSettings
             "LeftDockButtonOrder=" + string.Join(",", NormalizeLeftDockButtonOrder(this.LeftDockButtonOrder)),
             "LeftDockButtonGapPixels=" + this.LeftDockButtonGapPixels.ToString(CultureInfo.InvariantCulture),
             "LeftDockGroupOffsetY=" + this.LeftDockGroupOffsetY.ToString(CultureInfo.InvariantCulture),
+            "UnifiedColumnSpacingEnabled=" + this.UnifiedColumnSpacingEnabled,
+            "UnifiedColumnSpacingPercent=" + this.UnifiedColumnSpacingPercent.ToString(CultureInfo.InvariantCulture),
             "SpecBoardLeftDockEnabled=" + this.SpecBoardLeftDockEnabled,
             "SpecBoardLeftDockTabCenterY=" + this.SpecBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
             "CodexTaskBoardLeftDockEnabled=" + this.CodexTaskBoardLeftDockEnabled,
@@ -3538,6 +3566,20 @@ internal sealed class WidgetSettings
             int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
         {
             settings.LeftDockButtonGapPixels = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "UnifiedColumnSpacingEnabled", StringComparison.OrdinalIgnoreCase) &&
+            bool.TryParse(value, out boolValue))
+        {
+            settings.UnifiedColumnSpacingEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "UnifiedColumnSpacingPercent", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.UnifiedColumnSpacingPercent = intValue;
             return;
         }
 
@@ -5727,6 +5769,9 @@ internal sealed class WidgetSettings
 
     private static void ApplyFullRoundTripCoherentSentinels(WidgetSettings settings)
     {
+        // 统一间距模式打开时，两侧间距与整列偏移由 Normalize 改写成派生值，通用哨兵会在加载后
+        // 对不上。模式本身的行为由 SideColumnBalance 的专项自检覆盖，这里只保证持久化往返可比。
+        settings.UnifiedColumnSpacingEnabled = false;
         settings.CodexRadarModelVersion = CodexRadarModelVersion.Gpt55Medium;
         settings.CodexRadarModelKey = CodexRadarModelCatalog.LegacyKeyFromVersion(settings.CodexRadarModelVersion);
         settings.DisplayTimeZoneMode = DisplayTimeZoneMode.Manual;

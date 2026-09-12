@@ -29,7 +29,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private const int CompactNavWidth = 220;
     private const int NavItemHeight = 60;
     private const string GlobalLayoutEditCommandName = "GlobalLayoutEditCommand";
-    private const string SideColumnBalanceCommandName = "SideColumnBalanceCommand";
     private const string ClaudeSetupTokenCommandName = "ClaudeSetupTokenCommand";
     private const string DeepSeekApiKeyCommandName = "DeepSeekApiKeyCommand";
 
@@ -472,7 +471,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "可视化编辑", GlobalLayoutEditCommandName },
             new string[] { "左侧面板列", "LeftDockAutoArrangeEnabled", "LeftDockButtonOrder", "LeftDockButtonGapPixels", "LeftDockGroupOffsetY" },
             new string[] { "右侧窗口列", "RightTileAutoArrangeEnabled", "RightTileButtonOrder", "RightTileButtonGapPixels", "RightTileGroupOffsetY" },
-            new string[] { "两侧边缘平衡", SideColumnBalanceCommandName },
+            new string[] { "两侧边缘平衡", "UnifiedColumnSpacingEnabled", "UnifiedColumnSpacingPercent" },
             new string[] { "分辨率兼容", "ResolutionCompatibilityModeEnabled", "ResolutionCompatibilityScalePercent" },
             new string[] { "可见面缩放", "NetworkMonitorScaleOverridePercent", "OperationScaleOverridePercent", "SpecBoardScaleOverridePercent" },
             new string[] { "显示器分配", "FallbackDisconnectedDisplaysEnabled", "MainDisplayDeviceName", "OperationDisplayDeviceName" },
@@ -767,11 +766,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             return BuildGlobalLayoutEditEditor();
         }
 
-        if (string.Equals(propertyName, SideColumnBalanceCommandName, StringComparison.Ordinal))
-        {
-            return BuildSideColumnBalanceEditor();
-        }
-
         if (string.Equals(propertyName, ClaudeSetupTokenCommandName, StringComparison.Ordinal))
         {
             return BuildClaudeSetupTokenEditor();
@@ -821,22 +815,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         card.HintLabel.Text = GetSettingHint(GlobalLayoutEditCommandName);
         card.BackColor = Color.Transparent;
         return new SettingEditor(GlobalLayoutEditCommandName, card, button);
-    }
-
-    private SettingEditor BuildSideColumnBalanceEditor()
-    {
-        Button button = BuildCommandButton("侦测并对齐", false, AccentClr);
-        button.Width = 227;
-        button.Height = 54;
-        button.Click += delegate { DetectAndApplySideColumnBalance(); };
-
-        SettingRow card = new SettingRow(button, GetUiFont(10.0f), GetUiFont(8.5f));
-        card.Width = 1152;
-        card.Margin = new Padding(0);
-        card.TitleLabel.Text = GetSettingTitle(SideColumnBalanceCommandName);
-        card.HintLabel.Text = GetSettingHint(SideColumnBalanceCommandName);
-        card.BackColor = Color.Transparent;
-        return new SettingEditor(SideColumnBalanceCommandName, card, button);
     }
 
     private SettingEditor BuildClaudeSetupTokenEditor()
@@ -1438,6 +1416,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             {
                 if (IsColumnAutoArrangeSetting(property.Name))
                 {
+                    EnsureAutoArrangeForUnifiedColumnSpacing();
                     RefreshColumnArrangementEditorEnabledStates();
                 }
 
@@ -1612,13 +1591,15 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private static bool IsColumnAutoArrangeSetting(string propertyName)
     {
         return string.Equals(propertyName, "LeftDockAutoArrangeEnabled", StringComparison.Ordinal) ||
-            string.Equals(propertyName, "RightTileAutoArrangeEnabled", StringComparison.Ordinal);
+            string.Equals(propertyName, "RightTileAutoArrangeEnabled", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "UnifiedColumnSpacingEnabled", StringComparison.Ordinal);
     }
 
     private static bool IsColumnButtonGapSetting(string propertyName)
     {
         return string.Equals(propertyName, "LeftDockButtonGapPixels", StringComparison.Ordinal) ||
-            string.Equals(propertyName, "RightTileButtonGapPixels", StringComparison.Ordinal);
+            string.Equals(propertyName, "RightTileButtonGapPixels", StringComparison.Ordinal) ||
+            string.Equals(propertyName, "UnifiedColumnSpacingPercent", StringComparison.Ordinal);
     }
 
     private static bool IsColumnGroupOffsetSetting(string propertyName)
@@ -1986,6 +1967,77 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         RefreshColumnArrangementEditorEnabledState(
             "RightTileAutoArrangeEnabled",
             new string[] { "RightTileButtonOrder", "RightTileButtonGapPixels", "RightTileGroupOffsetY" });
+        RefreshUnifiedColumnSpacingEditorEnabledStates();
+    }
+
+    // 统一间距模式下，两侧的间距与整列偏移都是解算出来的派生值，留着可编辑只会让用户改了没反应。
+    // 统一百分比反过来只有在模式开启时才有意义，所以两组的可用状态正好相反。
+    private void RefreshUnifiedColumnSpacingEditorEnabledStates()
+    {
+        SettingEditor modeEditor;
+        if (!this.editors.TryGetValue("UnifiedColumnSpacingEnabled", out modeEditor))
+        {
+            return;
+        }
+
+        ToggleSwitch toggle = modeEditor.Control as ToggleSwitch;
+        bool unified = toggle != null && toggle.Checked;
+        SettingEditor percentEditor;
+        if (this.editors.TryGetValue("UnifiedColumnSpacingPercent", out percentEditor))
+        {
+            percentEditor.Control.Enabled = unified;
+        }
+
+        if (!unified)
+        {
+            return;
+        }
+
+        string[] derived =
+        {
+            "LeftDockButtonGapPixels", "LeftDockGroupOffsetY",
+            "RightTileButtonGapPixels", "RightTileGroupOffsetY"
+        };
+        for (int i = 0; i < derived.Length; i++)
+        {
+            SettingEditor dependent;
+            if (this.editors.TryGetValue(derived[i], out dependent))
+            {
+                dependent.Control.Enabled = false;
+            }
+        }
+    }
+
+    // 模式要成立，两列都必须处在自动排列下——手动摆位的列没有可解算的整列包络。
+    private void EnsureAutoArrangeForUnifiedColumnSpacing()
+    {
+        SettingEditor modeEditor;
+        if (!this.editors.TryGetValue("UnifiedColumnSpacingEnabled", out modeEditor))
+        {
+            return;
+        }
+
+        ToggleSwitch toggle = modeEditor.Control as ToggleSwitch;
+        if (toggle == null || !toggle.Checked)
+        {
+            return;
+        }
+
+        string[] autoArrange = { "LeftDockAutoArrangeEnabled", "RightTileAutoArrangeEnabled" };
+        for (int i = 0; i < autoArrange.Length; i++)
+        {
+            SettingEditor editor;
+            if (!this.editors.TryGetValue(autoArrange[i], out editor))
+            {
+                continue;
+            }
+
+            ToggleSwitch dependent = editor.Control as ToggleSwitch;
+            if (dependent != null && !dependent.Checked)
+            {
+                dependent.SetCheckedSilent(true);
+            }
+        }
     }
 
     private void RefreshColumnArrangementEditorEnabledState(string toggleName, string[] dependentNames)
@@ -2028,6 +2080,9 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         }
 
         settings.Normalize();
+        // 统一模式下的两侧间距与整列偏移是派生值：在这里解算，预览、保存和界面回填拿到的
+        // 就是同一份结果，滑块显示的数字也和实际布局一致。
+        SideColumnBalance.ApplyUnifiedColumnSpacing(settings);
         return settings;
     }
 
@@ -2442,250 +2497,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
 
         this.owner.PreviewSettings(ReadSettings());
         ShowStatus("全局编辑已取消", SettingsStatusSeverity.Warning);
-    }
-
-    private void DetectAndApplySideColumnBalance()
-    {
-        WidgetSettings settings = ReadSettings();
-        Rectangle leftWorkArea = LeftDockLayout.ResolveWorkArea(settings);
-        Rectangle rightWorkArea = settings.GetWorkAreaForModule(WidgetSettings.ModuleMain);
-        SideColumnBalanceResult result;
-        if (!TryResolveSideColumnBalance(
-            settings,
-            leftWorkArea,
-            rightWorkArea,
-            GetCurrentSystemDpiScale(),
-            out result))
-        {
-            ShowStatus("无法对齐：左右目标显示器没有足够的共同垂直区域。", SettingsStatusSeverity.Error);
-            return;
-        }
-
-        this.initializing = true;
-        try
-        {
-            SetEditorValue(this.editors["LeftDockAutoArrangeEnabled"], true);
-            SetEditorValue(this.editors["RightTileAutoArrangeEnabled"], true);
-            SetEditorValue(this.editors["LeftDockButtonGapPixels"], result.LeftSpacingPercent);
-            SetEditorValue(this.editors["RightTileButtonGapPixels"], result.RightSpacingPercent);
-            SetEditorValue(this.editors["LeftDockGroupOffsetY"], result.LeftOffsetY);
-            SetEditorValue(this.editors["RightTileGroupOffsetY"], result.RightOffsetY);
-        }
-        finally
-        {
-            this.initializing = false;
-        }
-
-        RefreshColumnArrangementEditorEnabledStates();
-        OnSettingChanged();
-        int edgeError = Math.Max(result.TopEdgeErrorPixels, result.BottomEdgeErrorPixels);
-        ShowStatus(
-            string.Format(
-                CultureInfo.CurrentCulture,
-                "已找到平衡点：左 {0}% / 右 {1}%，边缘误差 {2} px。",
-                result.LeftSpacingPercent,
-                result.RightSpacingPercent,
-                edgeError),
-            SettingsStatusSeverity.Success);
-    }
-
-    private static bool TryResolveSideColumnBalance(
-        WidgetSettings settings,
-        Rectangle leftWorkArea,
-        Rectangle rightWorkArea,
-        float leftDpiScale,
-        out SideColumnBalanceResult result)
-    {
-        result = new SideColumnBalanceResult();
-        if (settings == null ||
-            leftWorkArea.Height <= 0 ||
-            rightWorkArea.Height <= 0 ||
-            Math.Min(leftWorkArea.Bottom, rightWorkArea.Bottom) <= Math.Max(leftWorkArea.Top, rightWorkArea.Top))
-        {
-            return false;
-        }
-
-        WidgetSettings working = settings.Clone();
-        working.LeftDockAutoArrangeEnabled = true;
-        working.RightTileAutoArrangeEnabled = true;
-        int currentLeftSpacing = Math.Max(
-            WidgetSettings.MinColumnButtonGapPixels,
-            Math.Min(WidgetSettings.MaxColumnButtonGapPixels, working.LeftDockButtonGapPixels));
-        int currentRightSpacing = Math.Max(
-            WidgetSettings.MinColumnButtonGapPixels,
-            Math.Min(WidgetSettings.MaxColumnButtonGapPixels, working.RightTileButtonGapPixels));
-
-        Rectangle currentLeftGroup = LeftDockLayout.ResolveAutoTabGroupBounds(
-            working,
-            leftWorkArea,
-            Math.Max(0.25f, leftDpiScale));
-        Rectangle currentRightGroup = MetricTileForm.ResolveAutoTileGroupBounds(working, rightWorkArea);
-        if (currentLeftGroup.IsEmpty || currentRightGroup.IsEmpty)
-        {
-            return false;
-        }
-
-        working.LeftDockGroupOffsetY = 0;
-        working.RightTileGroupOffsetY = 0;
-        int valueCount = WidgetSettings.MaxColumnButtonGapPixels - WidgetSettings.MinColumnButtonGapPixels + 1;
-        int[] leftHeights = new int[valueCount];
-        int[] rightHeights = new int[valueCount];
-        for (int value = WidgetSettings.MinColumnButtonGapPixels;
-             value <= WidgetSettings.MaxColumnButtonGapPixels;
-             value++)
-        {
-            int index = value - WidgetSettings.MinColumnButtonGapPixels;
-            working.LeftDockButtonGapPixels = value;
-            leftHeights[index] = LeftDockLayout.ResolveAutoTabGroupBounds(
-                working,
-                leftWorkArea,
-                Math.Max(0.25f, leftDpiScale)).Height;
-            working.RightTileButtonGapPixels = value;
-            rightHeights[index] = MetricTileForm.ResolveAutoTileGroupBounds(working, rightWorkArea).Height;
-        }
-
-        int leftSpacing;
-        int rightSpacing;
-        FindClosestSideColumnSpacingPair(
-            leftHeights,
-            rightHeights,
-            currentLeftSpacing,
-            currentRightSpacing,
-            out leftSpacing,
-            out rightSpacing);
-
-        working.LeftDockButtonGapPixels = leftSpacing;
-        working.RightTileButtonGapPixels = rightSpacing;
-        Rectangle leftBaseline = LeftDockLayout.ResolveAutoTabGroupBounds(
-            working,
-            leftWorkArea,
-            Math.Max(0.25f, leftDpiScale));
-        Rectangle rightBaseline = MetricTileForm.ResolveAutoTileGroupBounds(working, rightWorkArea);
-
-        int minimumTop = Math.Max(leftWorkArea.Top, rightWorkArea.Top);
-        int maximumTop = Math.Min(
-            leftWorkArea.Bottom - leftBaseline.Height,
-            rightWorkArea.Bottom - rightBaseline.Height);
-        if (maximumTop < minimumTop)
-        {
-            return false;
-        }
-
-        double preferredCenter =
-            (currentLeftGroup.Top + currentLeftGroup.Height / 2.0 +
-             currentRightGroup.Top + currentRightGroup.Height / 2.0) / 2.0;
-        double balancedHeight = (leftBaseline.Height + rightBaseline.Height) / 2.0;
-        int targetTop = (int)Math.Round(preferredCenter - balancedHeight / 2.0);
-        targetTop = Math.Max(minimumTop, Math.Min(maximumTop, targetTop));
-
-        working.LeftDockGroupOffsetY = Math.Max(
-            WidgetSettings.MinColumnGroupOffsetY,
-            Math.Min(WidgetSettings.MaxColumnGroupOffsetY, targetTop - leftBaseline.Top));
-        working.RightTileGroupOffsetY = Math.Max(
-            WidgetSettings.MinColumnGroupOffsetY,
-            Math.Min(WidgetSettings.MaxColumnGroupOffsetY, targetTop - rightBaseline.Top));
-
-        Rectangle finalLeft = LeftDockLayout.ResolveAutoTabGroupBounds(
-            working,
-            leftWorkArea,
-            Math.Max(0.25f, leftDpiScale));
-        Rectangle finalRight = MetricTileForm.ResolveAutoTileGroupBounds(working, rightWorkArea);
-        result.LeftSpacingPercent = leftSpacing;
-        result.RightSpacingPercent = rightSpacing;
-        result.LeftOffsetY = working.LeftDockGroupOffsetY;
-        result.RightOffsetY = working.RightTileGroupOffsetY;
-        result.TopEdgeErrorPixels = Math.Abs(finalLeft.Top - finalRight.Top);
-        result.BottomEdgeErrorPixels = Math.Abs(finalLeft.Bottom - finalRight.Bottom);
-        return true;
-    }
-
-    private static void FindClosestSideColumnSpacingPair(
-        int[] leftHeights,
-        int[] rightHeights,
-        int currentLeftSpacing,
-        int currentRightSpacing,
-        out int leftSpacing,
-        out int rightSpacing)
-    {
-        const int VisualAlignmentTolerancePixels = 1;
-        leftSpacing = WidgetSettings.MinColumnButtonGapPixels;
-        rightSpacing = WidgetSettings.MinColumnButtonGapPixels;
-        bool foundVisualMatch = false;
-        int bestHeightError = int.MaxValue;
-        int bestChange = int.MaxValue;
-        int bestSpread = int.MaxValue;
-
-        for (int leftIndex = 0; leftIndex < leftHeights.Length; leftIndex++)
-        {
-            for (int rightIndex = 0; rightIndex < rightHeights.Length; rightIndex++)
-            {
-                int candidateLeft = leftIndex + WidgetSettings.MinColumnButtonGapPixels;
-                int candidateRight = rightIndex + WidgetSettings.MinColumnButtonGapPixels;
-                int heightError = Math.Abs(leftHeights[leftIndex] - rightHeights[rightIndex]);
-                bool visualMatch = heightError <= VisualAlignmentTolerancePixels;
-                int change =
-                    Math.Abs(candidateLeft - currentLeftSpacing) +
-                    Math.Abs(candidateRight - currentRightSpacing);
-                int spread = Math.Max(candidateLeft, candidateRight);
-
-                bool better;
-                if (visualMatch != foundVisualMatch)
-                {
-                    better = visualMatch;
-                }
-                else if (visualMatch)
-                {
-                    better =
-                        change < bestChange ||
-                        change == bestChange && heightError < bestHeightError ||
-                        change == bestChange && heightError == bestHeightError && spread < bestSpread;
-                }
-                else
-                {
-                    better =
-                        heightError < bestHeightError ||
-                        heightError == bestHeightError && change < bestChange ||
-                        heightError == bestHeightError && change == bestChange && spread < bestSpread;
-                }
-
-                if (!better)
-                {
-                    continue;
-                }
-
-                foundVisualMatch = visualMatch;
-                bestHeightError = heightError;
-                bestChange = change;
-                bestSpread = spread;
-                leftSpacing = candidateLeft;
-                rightSpacing = candidateRight;
-            }
-        }
-    }
-
-    private static float GetCurrentSystemDpiScale()
-    {
-        try
-        {
-            using (Graphics graphics = Graphics.FromHwnd(IntPtr.Zero))
-            {
-                return Math.Max(0.25f, graphics.DpiY / 96.0f);
-            }
-        }
-        catch
-        {
-            return 1.0f;
-        }
-    }
-
-    private struct SideColumnBalanceResult
-    {
-        public int LeftSpacingPercent;
-        public int RightSpacingPercent;
-        public int LeftOffsetY;
-        public int RightOffsetY;
-        public int TopEdgeErrorPixels;
-        public int BottomEdgeErrorPixels;
     }
 
     // ── Status Toast ─────────────────────────────────────────────────────
@@ -3410,6 +3221,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "LeftDockButtonOrder",
             "LeftDockButtonGapPixels",
             "LeftDockGroupOffsetY",
+            "UnifiedColumnSpacingEnabled",
+            "UnifiedColumnSpacingPercent",
             "NetworkMonitorLeftDockTabCenterY",
             "GuardBoardLeftDockTabCenterY",
             "GuardBoardAutoHideSeconds",
@@ -3442,7 +3255,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "ResolutionCompatibilityScalePercent",
             "MainDisplayDeviceName",
             GlobalLayoutEditCommandName,
-            SideColumnBalanceCommandName,
             "MainWidgetTileLargeModeEnabled",
             "MetricTileExpandWidth",
             "MetricTileExpandHeight",
@@ -3681,67 +3493,84 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             SetEditorValue(editor, original);
         }
 
-        SettingEditor balanceEditor = this.editors[SideColumnBalanceCommandName];
-        Button balanceButton = balanceEditor.Control as Button;
-        if (balanceButton == null ||
-            !string.Equals(balanceButton.Text, "侦测并对齐", StringComparison.Ordinal) ||
-            string.IsNullOrEmpty(balanceEditor.Card.HintLabel.Text))
-        {
-            throw new InvalidOperationException("WinUI side-column balance command binding failed.");
-        }
-
-        WidgetSettings balanceSettings = WidgetSettings.CreateDefaults();
-        Rectangle balanceWorkArea = new Rectangle(0, 40, 1440, 1740);
-        SideColumnBalanceResult balanceResult;
-        if (!TryResolveSideColumnBalance(
-                balanceSettings,
-                balanceWorkArea,
-                balanceWorkArea,
-                1.0f,
-                out balanceResult) ||
-            Math.Max(balanceResult.TopEdgeErrorPixels, balanceResult.BottomEdgeErrorPixels) > 1)
-        {
-            throw new InvalidOperationException("Side-column automatic balance geometry failed.");
-        }
-
-        // Exercise the spacing-pair solver with different hypothetical member counts. The command
-        // must continue deriving its answer from each column's measured envelope if panes are added.
-        int spacingValueCount =
-            WidgetSettings.MaxColumnButtonGapPixels - WidgetSettings.MinColumnButtonGapPixels + 1;
-        int[] futureLeftHeights = new int[spacingValueCount];
-        int[] futureRightHeights = new int[spacingValueCount];
-        for (int value = WidgetSettings.MinColumnButtonGapPixels;
-             value <= WidgetSettings.MaxColumnButtonGapPixels;
-             value++)
-        {
-            int index = value - WidgetSettings.MinColumnButtonGapPixels;
-            futureLeftHeights[index] =
-                9 * EdgeDockTabForm.LogicalHeight +
-                EdgeColumnSpacing.ResolveDistributedWhitespacePixels(value, 1740 - 9 * EdgeDockTabForm.LogicalHeight);
-            futureRightHeights[index] =
-                14 * MetricTileForm.TileCompactPixels +
-                EdgeColumnSpacing.ResolveDistributedWhitespacePixels(value, 1740 - 14 * MetricTileForm.TileCompactPixels);
-        }
-
-        int futureLeftSpacing;
-        int futureRightSpacing;
-        FindClosestSideColumnSpacingPair(
-            futureLeftHeights,
-            futureRightHeights,
-            WidgetSettings.DefaultLeftDockButtonGapPixels,
-            WidgetSettings.DefaultRightTileButtonGapPixels,
-            out futureLeftSpacing,
-            out futureRightSpacing);
-        int futureHeightError = Math.Abs(
-            futureLeftHeights[futureLeftSpacing - WidgetSettings.MinColumnButtonGapPixels] -
-            futureRightHeights[futureRightSpacing - WidgetSettings.MinColumnButtonGapPixels]);
-        if (futureHeightError > 1)
-        {
-            throw new InvalidOperationException("Side-column balance solver did not adapt to changed pane counts.");
-        }
-
         VerifyColumnArrangementDependentEnabledState("LeftDockAutoArrangeEnabled", "LeftDockButtonOrder");
         VerifyColumnArrangementDependentEnabledState("RightTileAutoArrangeEnabled", "RightTileButtonOrder");
+        VerifyUnifiedColumnSpacingEditorPolicy();
+    }
+
+    private void VerifyUnifiedColumnSpacingEditorPolicy()
+    {
+        SettingEditor modeEditor = this.editors["UnifiedColumnSpacingEnabled"];
+        SettingEditor percentEditor = this.editors["UnifiedColumnSpacingPercent"];
+        ToggleSwitch mode = modeEditor.Control as ToggleSwitch;
+        PercentSliderControl percent = percentEditor.Control as PercentSliderControl;
+        if (mode == null || percent == null ||
+            percent.Minimum != WidgetSettings.MinColumnButtonGapPixels ||
+            percent.Maximum != WidgetSettings.MaxColumnButtonGapPixels ||
+            percent.Suffix != "%" ||
+            string.IsNullOrEmpty(modeEditor.Card.HintLabel.Text))
+        {
+            throw new InvalidOperationException("WinUI unified column spacing binding failed.");
+        }
+
+        string[] derived =
+        {
+            "LeftDockButtonGapPixels", "LeftDockGroupOffsetY",
+            "RightTileButtonGapPixels", "RightTileGroupOffsetY"
+        };
+        bool originalMode = mode.Checked;
+        SettingEditor leftAuto = this.editors["LeftDockAutoArrangeEnabled"];
+        SettingEditor rightAuto = this.editors["RightTileAutoArrangeEnabled"];
+        ToggleSwitch leftToggle = leftAuto.Control as ToggleSwitch;
+        ToggleSwitch rightToggle = rightAuto.Control as ToggleSwitch;
+        bool originalLeftAuto = leftToggle.Checked;
+        bool originalRightAuto = rightToggle.Checked;
+
+        mode.SetCheckedSilent(false);
+        leftToggle.SetCheckedSilent(true);
+        rightToggle.SetCheckedSilent(true);
+        RefreshColumnArrangementEditorEnabledStates();
+        if (percentEditor.Control.Enabled)
+        {
+            throw new InvalidOperationException("Unified spacing percent must stay disabled while the mode is off.");
+        }
+
+        for (int i = 0; i < derived.Length; i++)
+        {
+            if (!this.editors[derived[i]].Control.Enabled)
+            {
+                throw new InvalidOperationException("Per-side spacing must stay editable while the mode is off: " + derived[i]);
+            }
+        }
+
+        mode.SetCheckedSilent(true);
+        // 模式开启时手动关掉自动排列也必须被拉回来，否则解算没有整列包络可用。
+        leftToggle.SetCheckedSilent(false);
+        rightToggle.SetCheckedSilent(false);
+        EnsureAutoArrangeForUnifiedColumnSpacing();
+        RefreshColumnArrangementEditorEnabledStates();
+        if (!leftToggle.Checked || !rightToggle.Checked)
+        {
+            throw new InvalidOperationException("Unified spacing mode must force both columns into automatic arrangement.");
+        }
+
+        if (!percentEditor.Control.Enabled)
+        {
+            throw new InvalidOperationException("Unified spacing percent must become editable with the mode.");
+        }
+
+        for (int i = 0; i < derived.Length; i++)
+        {
+            if (this.editors[derived[i]].Control.Enabled)
+            {
+                throw new InvalidOperationException("Unified spacing mode must disable the derived per-side editor: " + derived[i]);
+            }
+        }
+
+        mode.SetCheckedSilent(originalMode);
+        leftToggle.SetCheckedSilent(originalLeftAuto);
+        rightToggle.SetCheckedSilent(originalRightAuto);
+        RefreshColumnArrangementEditorEnabledStates();
     }
 
     private void VerifyColumnArrangementDependentEnabledState(string toggleName, string dependentName)
@@ -4362,7 +4191,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ResolutionCompatibilityModeEnabled", "分辨率兼容模式" },
         { "ResolutionCompatibilityScalePercent", "兼容缩放比例" },
         { GlobalLayoutEditCommandName, "全局编辑" },
-        { SideColumnBalanceCommandName, "自动侦测两侧平衡点" },
+        { "UnifiedColumnSpacingEnabled", "统一间距模式" },
+        { "UnifiedColumnSpacingPercent", "统一间距" },
         { "LeftDockAutoArrangeEnabled", "自动排列左侧面板列" },
         { "LeftDockButtonOrder", "左侧按钮顺序" },
         { "LeftDockButtonGapPixels", "左侧按钮分布间距（0–100）" },
@@ -4563,7 +4393,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ResolutionCompatibilityModeEnabled", "默认关闭。开启后按 2880x1800 参考布局投影 Operation、七个 Dock 与十一枚磁贴/展开面板。" },
         { "ResolutionCompatibilityScalePercent", "运行时输出比例，低于 100% 压缩，高于 100% 放大；不会改写保存的真实布局坐标。" },
         { GlobalLayoutEditCommandName, "打开全屏布局编辑遮罩，显示 Operation、固定七个左侧停靠按钮与固定十一枚右侧磁贴；Enter 保存，Esc 放弃。自动排列开启时拖动列成员会整体上下移动。" },
-        { SideColumnBalanceCommandName, "根据当前窗格数量、尺寸、间距、整列偏移与目标工作区寻找改动最小的平衡点，使左右两列最上端和最下端在允许 1 像素舍入误差内水平对齐；执行时会开启两侧自动排列。" },
+        { "UnifiedColumnSpacingEnabled", "开启后左右两列共用下面这一个间距：占用高度较小的一侧自动加大自己的间距向较大的一侧看齐，两列的最上端与最下端在 1 像素舍入误差内对齐。这个模式下左右各自的间距与整列偏移由程序解算，设置项随之置灰；开启时会自动打开两侧自动排列。" },
+        { "UnifiedColumnSpacingPercent", "两列共同使用的间距百分比：0 表示窗格互相贴紧，100 表示把该列可用的纵向空白全部摊开。较高的一列按这个值排布，较矮的一列在此基础上只增不减地补足高度差。" },
         { "LeftDockAutoArrangeEnabled", "开启后按下方顺序和分布间距自动排列固定七个左侧梯形按钮；关闭后保留全局编辑器写入的单项位置。" },
         { "LeftDockButtonOrder", "用上下箭头调整 Network、Spec、Codex Task、GUARD、Codex IQ、重置/速蹬与系统日记七个固定按钮的排列顺序。" },
         { "LeftDockButtonGapPixels", "可拖动滑块或直接输入 0–100；0 让按钮紧挨，100 让整列从工作区顶部到底部均匀分布，中间值按比例展开。" },

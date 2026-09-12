@@ -60,6 +60,7 @@
     "Core/LiveCaptionsWindowTidy.cs",
     "Core/LayeredWidgetFormBase.cs",
     "Core/LeftDockLayout.cs",
+    "Core/SideColumnBalance.cs",
     "Core/Logger.cs",
     "Core/MinimalSqliteReader.cs",
     "Core/MetricTileExpandForm.cs",
