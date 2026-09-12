@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
@@ -7,7 +7,6 @@ internal enum EdgeDockTabRole
 {
     Network,
     SpecBoard,
-    CodexTask,
     Guard,
     CodexIq,
     ResetSpeed,
@@ -140,8 +139,6 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
                 return DesignTokens.Colors.AccentAction;
             case EdgeDockTabRole.SpecBoard:
                 return DesignTokens.Colors.WarningDeep;
-            case EdgeDockTabRole.CodexTask:
-                return DesignTokens.Colors.Success;
             case EdgeDockTabRole.Guard:
                 return DesignTokens.Colors.AccentAlt;
             case EdgeDockTabRole.CodexIq:
@@ -499,7 +496,6 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         roleSettings.CaptionsBoardScaleOverridePercent = 98;
         if (ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.Network) != 11 ||
             ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.SpecBoard) != 22 ||
-            ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.CodexTask) != 33 ||
             ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.Guard) != 44 ||
             ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.CodexIq) != 55 ||
             ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.ResetSpeed) != 56 ||
@@ -507,7 +503,6 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
             ResolveTransparencyOverride(roleSettings, EdgeDockTabRole.Captions) != 58 ||
             ResolveScaleOverride(roleSettings, EdgeDockTabRole.Network) != 51 ||
             ResolveScaleOverride(roleSettings, EdgeDockTabRole.SpecBoard) != 62 ||
-            ResolveScaleOverride(roleSettings, EdgeDockTabRole.CodexTask) != 73 ||
             ResolveScaleOverride(roleSettings, EdgeDockTabRole.Guard) != 84 ||
             ResolveScaleOverride(roleSettings, EdgeDockTabRole.CodexIq) != 95 ||
             ResolveScaleOverride(roleSettings, EdgeDockTabRole.ResetSpeed) != 96 ||
@@ -654,7 +649,6 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         {
             ResolveQueueAccent(EdgeDockTabRole.Network),
             ResolveQueueAccent(EdgeDockTabRole.SpecBoard),
-            ResolveQueueAccent(EdgeDockTabRole.CodexTask),
             ResolveQueueAccent(EdgeDockTabRole.Guard),
             ResolveQueueAccent(EdgeDockTabRole.CodexIq),
             ResolveQueueAccent(EdgeDockTabRole.ResetSpeed),
@@ -665,7 +659,6 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         {
             DesignTokens.Colors.AccentAction,
             DesignTokens.Colors.WarningDeep,
-            DesignTokens.Colors.Success,
             DesignTokens.Colors.AccentAlt,
             DesignTokens.Colors.Accent,
             DesignTokens.Colors.Warning,
@@ -703,7 +696,6 @@ internal sealed class EdgeDockTabForm : LayeredWidgetFormBase
         {
             EdgeDockTabRole.Network,
             EdgeDockTabRole.SpecBoard,
-            EdgeDockTabRole.CodexTask,
             EdgeDockTabRole.Guard,
             EdgeDockTabRole.CodexIq,
             EdgeDockTabRole.ResetSpeed,

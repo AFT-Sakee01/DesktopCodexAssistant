@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -474,7 +474,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "右侧窗口列", "RightTileAutoArrangeEnabled", "RightTileButtonOrder", "RightTileButtonGapPixels", "RightTileGroupOffsetY" },
             new string[] { "两侧边缘平衡", SideColumnBalanceCommandName },
             new string[] { "分辨率兼容", "ResolutionCompatibilityModeEnabled", "ResolutionCompatibilityScalePercent" },
-            new string[] { "可见面缩放", "NetworkMonitorScaleOverridePercent", "OperationScaleOverridePercent", "SpecBoardScaleOverridePercent", "CodexTaskBoardScaleOverridePercent" },
+            new string[] { "可见面缩放", "NetworkMonitorScaleOverridePercent", "OperationScaleOverridePercent", "SpecBoardScaleOverridePercent" },
             new string[] { "显示器分配", "FallbackDisconnectedDisplaysEnabled", "MainDisplayDeviceName", "OperationDisplayDeviceName" },
             new string[] { "!Spec Board 尺寸", "SpecBoardWidth", "SpecBoardHeight" },
             new string[] { "!操作面板位置", "OperationLeftOffset", "OperationBottomOffset" }
@@ -538,7 +538,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         {
             new string[] { "按钮与面板", "OperationButtonSize", "OperationPrimaryPanelMode", "OperationSettingsLogicExtensionEnabled", "OperationBackgroundTransparencyPercent", "OperationTransparencyOverridePercent" },
             new string[] { "Spec Board", "SpecBoardTransparencyOverridePercent", "SpecBoardLeftDockTabCenterY", "LeftDockOutsideClickCollapseEnabled", "SpecBoardAutoPopupEnabled", "SpecBoardAutoPopupSeconds", "SpecBoardAutoHideSeconds", "SpecBoardLedgerPath", "SpecBoardManagerWidth", "SpecBoardManagerHeight", "SpecBoardManagerDangerZoneRequiresTypedConfirm" },
-            new string[] { "Codex 任务看板", "CodexTaskBoardTransparencyOverridePercent", "CodexTaskBoardLeftDockTabCenterY" },
             new string[] { "GUARD 看板", "GuardBoardTransparencyOverridePercent", "GuardBoardScaleOverridePercent", "GuardBoardLeftDockTabCenterY", "GuardBoardAutoHideSeconds" },
             new string[] { "Codex IQ 看板", "CodexIqBoardTransparencyOverridePercent", "CodexIqBoardScaleOverridePercent", "CodexIqBoardLeftDockTabCenterY", "CodexIqBoardAutoHideSeconds" },
             new string[] { "重置与速蹬看板", "ResetSpeedBoardTransparencyOverridePercent", "ResetSpeedBoardScaleOverridePercent", "ResetSpeedBoardLeftDockTabCenterY", "ResetSpeedBoardAutoHideSeconds" },
@@ -3398,7 +3397,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "LeftDockButtonOrder",
             "LeftDockButtonGapPixels",
             "LeftDockGroupOffsetY",
-            "CodexTaskBoardLeftDockTabCenterY",
             "NetworkMonitorLeftDockTabCenterY",
             "GuardBoardLeftDockTabCenterY",
             "GuardBoardAutoHideSeconds",
@@ -3515,7 +3513,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         string[] names = new string[]
         {
             "SpecBoardLeftDockTabCenterY",
-            "CodexTaskBoardLeftDockTabCenterY",
             "NetworkMonitorLeftDockTabCenterY",
             "GuardBoardLeftDockTabCenterY",
             "CodexIqBoardLeftDockTabCenterY",
@@ -3573,7 +3570,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             SettingEditor editor = this.editors[orderNames[i]];
             string[] original = (string[])editor.Property.GetValue(this.baseline, null);
             string[] reversed = i == 0
-                ? new string[] { "SystemDay", "ResetSpeed", "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network", "Captions" }
+                ? new string[] { "SystemDay", "ResetSpeed", "CodexIq", "Guard", "SpecBoard", "Network", "Captions" }
                 : new string[] { "DeepSeekQuota", "ClaudeQuota", "CodexQuota", "Guard", "Power", "Npu", "Gpu", "Network", "Disk", "Memory", "Cpu" };
             SetEditorValue(editor, reversed);
             string[] actual = GetEditorValue(editor) as string[];
@@ -4070,9 +4067,12 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             "GuardBoardLeftDockEnabled", "CodexIqBoardLeftDockEnabled", "ResetSpeedBoardLeftDockEnabled",
             "SystemDayBoardLeftDockEnabled", "CaptionsBoardLeftDockEnabled"
         });
-        AddSettingsUiBindingExemptions(exemptions, "Codex task-board geometry/view is owned by the board surface; monitor thresholds are internal tuning", new string[]
+        AddSettingsUiBindingExemptions(exemptions, "retired Codex task-board keys kept only for rollback after the Work Board merge, plus internal monitor tuning", new string[]
         {
             "CodexTaskBoardWidth", "CodexTaskBoardHeight", "CodexTaskBoardView", "CodexTaskBoardTimelineMinutes",
+            "CodexTaskBoardLeftDockTabCenterY", "CodexTaskBoardScaleOverridePercent",
+            "CodexTaskBoardTransparencyOverridePercent",
+            "WorkBoardView", "WorkBoardTimelineMinutes", "WorkBoardSpecSessionHintEnabled",
             "CodexTaskMonitorEnabled", "CodexTaskMonitorActiveWindowMinutes", "CodexTaskMonitorActiveSeconds",
             "CodexTaskMonitorIdleSeconds", "CodexTaskMonitorTerminalHoldSeconds", "CodexTaskMonitorErrorHoldSeconds",
             "CodexTaskMonitorNumberCooldownSeconds"
@@ -4628,7 +4628,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             this.leftColumn = leftColumn;
             this.rowFont = rowFont;
             this.allowedIds = leftColumn
-                ? new string[] { "Network", "SpecBoard", "CodexTask", "Guard", "CodexIq", "ResetSpeed", "SystemDay", "Captions" }
+                ? new string[] { "Network", "SpecBoard", "Guard", "CodexIq", "ResetSpeed", "SystemDay", "Captions" }
                 : (string[])WidgetSettings.MetricTileIds.Clone();
             this.rowStates = new Dictionary<string, ColumnOrderRowState>(StringComparer.OrdinalIgnoreCase);
             this.order = (string[])this.allowedIds.Clone();
@@ -4888,9 +4888,8 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             if (this.leftColumn)
             {
                 if (string.Equals(id, "Network", StringComparison.Ordinal)) return "Network 网络面板";
-                if (string.Equals(id, "SpecBoard", StringComparison.Ordinal)) return "Spec Board";
-                if (string.Equals(id, "CodexTask", StringComparison.Ordinal)) return "Codex Task";
-                if (string.Equals(id, "Guard", StringComparison.Ordinal)) return "GUARD";
+                if (string.Equals(id, "SpecBoard", StringComparison.Ordinal)) return "Workbench";
+                                if (string.Equals(id, "Guard", StringComparison.Ordinal)) return "GUARD";
                 if (string.Equals(id, "CodexIq", StringComparison.Ordinal)) return "Codex IQ";
                 if (string.Equals(id, "ResetSpeed", StringComparison.Ordinal)) return "重置与速蹬";
                 return "系统日记";
@@ -4908,7 +4907,6 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             {
                 if (string.Equals(id, "Network", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Network);
                 if (string.Equals(id, "SpecBoard", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.SpecBoard);
-                if (string.Equals(id, "CodexTask", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexTask);
                 if (string.Equals(id, "Guard", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Guard);
                 if (string.Equals(id, "CodexIq", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.CodexIq);
                 if (string.Equals(id, "ResetSpeed", StringComparison.Ordinal)) return EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.ResetSpeed);

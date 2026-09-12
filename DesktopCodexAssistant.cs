@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -1599,7 +1599,6 @@ internal static class Program
                 {
                     EdgeDockTabRole.Network,
                     EdgeDockTabRole.SpecBoard,
-                    EdgeDockTabRole.CodexTask,
                     EdgeDockTabRole.Guard,
                     EdgeDockTabRole.CodexIq,
                     EdgeDockTabRole.ResetSpeed,

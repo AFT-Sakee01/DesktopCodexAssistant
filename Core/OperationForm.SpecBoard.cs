@@ -154,7 +154,6 @@ internal sealed partial class OperationForm
     {
         None,
         Spec,
-        CodexTask,
         Network,
         Guard,
         CodexIq,
@@ -164,15 +163,14 @@ internal sealed partial class OperationForm
     }
 
     // Single place that knows the full membership of the queue. Every expand path routes through
-    // here instead of listing its peers by hand: the guard board once stayed open underneath the
-    // Codex task board for exactly one reason — PrepareForCodexTaskOverlayShow was the one call
-    // site of four that had not been updated when the fourth board was added.
+    // here instead of listing its peers by hand: a board once stayed open underneath another for
+    // exactly one reason — one of the overlay-show call sites had not been updated when a new board
+    // was added.
     private static LeftDockBoardKind[] GetLeftDockBoardMembership()
     {
         return new LeftDockBoardKind[]
         {
             LeftDockBoardKind.Spec,
-            LeftDockBoardKind.CodexTask,
             LeftDockBoardKind.Network,
             LeftDockBoardKind.Guard,
             LeftDockBoardKind.CodexIq,
@@ -204,10 +202,6 @@ internal sealed partial class OperationForm
                     this.specBoardForm.HideBoard();
                 }
 
-                break;
-
-            case LeftDockBoardKind.CodexTask:
-                HideCodexTaskBoardIfVisible();
                 break;
 
             case LeftDockBoardKind.Network:

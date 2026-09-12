@@ -179,7 +179,7 @@ internal sealed class WidgetSettings
     public const int DefaultColumnGroupOffsetY = 0;
     public static readonly string[] DefaultLeftDockButtonOrder = new string[]
     {
-        "Network", "SpecBoard", "CodexTask", "Guard", "CodexIq", "ResetSpeed", "SystemDay", "Captions"
+        "Network", "SpecBoard", "Guard", "CodexIq", "ResetSpeed", "SystemDay", "Captions"
     };
     // Guard board: the fourth dock member. It borrows the Spec board's footprint the same way the
     // docked network panel does, so it has no width/height settings of its own.
@@ -224,6 +224,12 @@ internal sealed class WidgetSettings
     public const int MinCodexTaskBoardTimelineMinutes = 15;
     public const int MaxCodexTaskBoardTimelineMinutes = 180;
     public const int DefaultCodexTaskBoardTimelineMinutes = 45;
+    // Work Board (the merged Spec + Codex Task surface) owns the timeline window and view after the
+    // CodexTask dock role was retired. Bounds intentionally mirror the retired keys so a migrated
+    // value is always already in range.
+    public const int MinWorkBoardTimelineMinutes = MinCodexTaskBoardTimelineMinutes;
+    public const int MaxWorkBoardTimelineMinutes = MaxCodexTaskBoardTimelineMinutes;
+    public const int DefaultWorkBoardTimelineMinutes = DefaultCodexTaskBoardTimelineMinutes;
     public const int MinSpecBoardAutoPopupSeconds = 1;
     public const int MaxSpecBoardAutoPopupSeconds = 120;
     public const int DefaultSpecBoardAutoPopupSeconds = 5;
@@ -289,7 +295,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 99;
+    private const int CurrentSettingsVersion = 100;
     private const int RetiredCanonicalSettingsCount = 113;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -504,6 +510,9 @@ internal sealed class WidgetSettings
     public int CodexTaskBoardHeight { get; set; }
     public CodexTaskBoardView CodexTaskBoardView { get; set; }
     public int CodexTaskBoardTimelineMinutes { get; set; }
+    public CodexTaskBoardView WorkBoardView { get; set; }
+    public int WorkBoardTimelineMinutes { get; set; }
+    public bool WorkBoardSpecSessionHintEnabled { get; set; }
     public bool CodexTaskMonitorEnabled { get; set; }
     public int CodexTaskMonitorActiveWindowMinutes { get; set; }
     public int CodexTaskMonitorActiveSeconds { get; set; }
@@ -955,6 +964,9 @@ internal sealed class WidgetSettings
         this.CodexTaskBoardHeight = defaults.CodexTaskBoardHeight;
         this.CodexTaskBoardView = defaults.CodexTaskBoardView;
         this.CodexTaskBoardTimelineMinutes = defaults.CodexTaskBoardTimelineMinutes;
+        this.WorkBoardView = defaults.WorkBoardView;
+        this.WorkBoardTimelineMinutes = defaults.WorkBoardTimelineMinutes;
+        this.WorkBoardSpecSessionHintEnabled = defaults.WorkBoardSpecSessionHintEnabled;
         this.CodexTaskMonitorEnabled = defaults.CodexTaskMonitorEnabled;
         this.CodexTaskMonitorActiveWindowMinutes = defaults.CodexTaskMonitorActiveWindowMinutes;
         this.CodexTaskMonitorActiveSeconds = defaults.CodexTaskMonitorActiveSeconds;
@@ -1174,6 +1186,9 @@ internal sealed class WidgetSettings
         settings.CodexTaskBoardHeight = DefaultCodexTaskBoardHeight;
         settings.CodexTaskBoardView = CodexTaskBoardView.Table;
         settings.CodexTaskBoardTimelineMinutes = DefaultCodexTaskBoardTimelineMinutes;
+        settings.WorkBoardView = CodexTaskBoardView.Table;
+        settings.WorkBoardTimelineMinutes = DefaultWorkBoardTimelineMinutes;
+        settings.WorkBoardSpecSessionHintEnabled = true;
         settings.CodexTaskMonitorEnabled = true;
         settings.CodexTaskMonitorActiveWindowMinutes = 30;
         settings.CodexTaskMonitorActiveSeconds = 12;
@@ -1395,6 +1410,9 @@ internal sealed class WidgetSettings
         settings.CodexTaskBoardHeight = DefaultCodexTaskBoardHeight;
         settings.CodexTaskBoardView = CodexTaskBoardView.Table;
         settings.CodexTaskBoardTimelineMinutes = DefaultCodexTaskBoardTimelineMinutes;
+        settings.WorkBoardView = CodexTaskBoardView.Table;
+        settings.WorkBoardTimelineMinutes = DefaultWorkBoardTimelineMinutes;
+        settings.WorkBoardSpecSessionHintEnabled = true;
         settings.CodexTaskMonitorEnabled = true;
         settings.CodexTaskMonitorActiveWindowMinutes = 30;
         settings.CodexTaskMonitorActiveSeconds = 12;
@@ -1612,6 +1630,9 @@ internal sealed class WidgetSettings
             CodexTaskBoardHeight = this.CodexTaskBoardHeight,
             CodexTaskBoardView = this.CodexTaskBoardView,
             CodexTaskBoardTimelineMinutes = this.CodexTaskBoardTimelineMinutes,
+            WorkBoardView = this.WorkBoardView,
+            WorkBoardTimelineMinutes = this.WorkBoardTimelineMinutes,
+            WorkBoardSpecSessionHintEnabled = this.WorkBoardSpecSessionHintEnabled,
             CodexTaskMonitorEnabled = this.CodexTaskMonitorEnabled,
             CodexTaskMonitorActiveWindowMinutes = this.CodexTaskMonitorActiveWindowMinutes,
             CodexTaskMonitorActiveSeconds = this.CodexTaskMonitorActiveSeconds,
@@ -1826,6 +1847,12 @@ internal sealed class WidgetSettings
         this.CodexTaskBoardWidth = Clamp(this.CodexTaskBoardWidth, MinCodexTaskBoardWidth, MaxCodexTaskBoardWidth);
         this.CodexTaskBoardHeight = Clamp(this.CodexTaskBoardHeight, MinCodexTaskBoardHeight, MaxCodexTaskBoardHeight);
         this.CodexTaskBoardTimelineMinutes = Clamp(this.CodexTaskBoardTimelineMinutes, MinCodexTaskBoardTimelineMinutes, MaxCodexTaskBoardTimelineMinutes);
+        this.WorkBoardTimelineMinutes = Clamp(this.WorkBoardTimelineMinutes, MinWorkBoardTimelineMinutes, MaxWorkBoardTimelineMinutes);
+        if (!Enum.IsDefined(typeof(CodexTaskBoardView), this.WorkBoardView))
+        {
+            this.WorkBoardView = CodexTaskBoardView.Table;
+        }
+
         if (!Enum.IsDefined(typeof(CodexTaskBoardView), this.CodexTaskBoardView))
         {
             this.CodexTaskBoardView = CodexTaskBoardView.Table;
@@ -2547,6 +2574,20 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 100)
+        {
+            // Version 100 merges the Codex Task dock role into the Spec Board surface (Work Board,
+            // displayed as WORKBENCH). The retired board's view and timeline window carry over so a
+            // user who had chosen the timeline view keeps it; the geometry/scale/transparency keys
+            // stay readable for rollback but no longer have a consumer.
+            settings.WorkBoardView = settings.CodexTaskBoardView;
+            settings.WorkBoardTimelineMinutes = settings.CodexTaskBoardTimelineMinutes;
+            // LeftDockButtonOrder scrubs itself: NormalizeColumnButtonOrder drops ids that are
+            // no longer in DefaultLeftDockButtonOrder while keeping the relative order of the
+            // rest, so the migration only has to force the cleaned list back to disk.
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2795,6 +2836,9 @@ internal sealed class WidgetSettings
             "CodexTaskBoardHeight=" + this.CodexTaskBoardHeight.ToString(CultureInfo.InvariantCulture),
             "CodexTaskBoardView=" + this.CodexTaskBoardView,
             "CodexTaskBoardTimelineMinutes=" + this.CodexTaskBoardTimelineMinutes.ToString(CultureInfo.InvariantCulture),
+            "WorkBoardView=" + this.WorkBoardView,
+            "WorkBoardTimelineMinutes=" + this.WorkBoardTimelineMinutes.ToString(CultureInfo.InvariantCulture),
+            "WorkBoardSpecSessionHintEnabled=" + this.WorkBoardSpecSessionHintEnabled,
             "CodexTaskMonitorEnabled=" + this.CodexTaskMonitorEnabled,
             "CodexTaskMonitorActiveWindowMinutes=" + this.CodexTaskMonitorActiveWindowMinutes,
             "CodexTaskMonitorActiveSeconds=" + this.CodexTaskMonitorActiveSeconds,
@@ -3522,6 +3566,32 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "CodexTaskBoardHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
         {
             settings.CodexTaskBoardHeight = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "WorkBoardTimelineMinutes", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.WorkBoardTimelineMinutes = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "WorkBoardSpecSessionHintEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.WorkBoardSpecSessionHintEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "WorkBoardView", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                settings.WorkBoardView = (CodexTaskBoardView)Enum.Parse(typeof(CodexTaskBoardView), value, true);
+            }
+            catch
+            {
+                settings.WorkBoardView = CodexTaskBoardView.Table;
+            }
+
             return;
         }
 
@@ -5378,7 +5448,7 @@ internal sealed class WidgetSettings
         // Generic string-array sentinels are metric IDs and are invalid for the left dock (and
         // incomplete for the eleven-tile column). Full legal permutations keep Clone/Save/Load testing
         // focused on persistence instead of intentionally triggering order repair.
-        settings.LeftDockButtonOrder = new string[] { "SystemDay", "ResetSpeed", "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network", "Captions" };
+        settings.LeftDockButtonOrder = new string[] { "SystemDay", "ResetSpeed", "CodexIq", "Guard", "SpecBoard", "Network", "Captions" };
         settings.RightTileButtonOrder = new string[]
         {
             "DeepSeekQuota", "ClaudeQuota", "CodexQuota", "Guard", "Power", "Npu",
@@ -5438,7 +5508,7 @@ internal sealed class WidgetSettings
         AssertLayout(
             ColumnButtonOrdersEqual(
                 repaired.LeftDockButtonOrder,
-                new string[] { "Guard", "Network", "SpecBoard", "CodexTask", "CodexIq", "ResetSpeed", "SystemDay", "Captions" }) &&
+                new string[] { "Guard", "Network", "SpecBoard", "CodexIq", "ResetSpeed", "SystemDay", "Captions" }) &&
             ColumnButtonOrdersEqual(
                 repaired.RightTileButtonOrder,
                 new string[]
@@ -5460,7 +5530,7 @@ internal sealed class WidgetSettings
             WidgetSettings custom = defaults.Clone();
             custom.LeftDockAutoArrangeEnabled = false;
             custom.RightTileAutoArrangeEnabled = false;
-            custom.LeftDockButtonOrder = new string[] { "SystemDay", "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network", "ResetSpeed" };
+            custom.LeftDockButtonOrder = new string[] { "SystemDay", "CodexIq", "Guard", "SpecBoard", "Network", "ResetSpeed" };
             custom.RightTileButtonOrder = new string[]
             {
                 "DeepSeekQuota", "ClaudeQuota", "CodexQuota", "Guard", "Power", "Npu",

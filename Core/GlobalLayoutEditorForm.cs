@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -308,12 +308,6 @@ internal sealed class GlobalLayoutEditorForm : Form
             return true;
         }
 
-        if (string.Equals(id, "CodexTask", StringComparison.OrdinalIgnoreCase))
-        {
-            role = EdgeDockTabRole.CodexTask;
-            return true;
-        }
-
         if (string.Equals(id, "Guard", StringComparison.OrdinalIgnoreCase))
         {
             role = EdgeDockTabRole.Guard;
@@ -354,9 +348,7 @@ internal sealed class GlobalLayoutEditorForm : Form
             case EdgeDockTabRole.Network:
                 return "左侧 网络";
             case EdgeDockTabRole.SpecBoard:
-                return "左侧 Spec";
-            case EdgeDockTabRole.CodexTask:
-                return "左侧 Task";
+                return "左侧 Workbench";
             case EdgeDockTabRole.Guard:
                 return "左侧 Guard";
             case EdgeDockTabRole.CodexIq:
@@ -541,9 +533,6 @@ internal sealed class GlobalLayoutEditorForm : Form
                 break;
             case EdgeDockTabRole.SpecBoard:
                 settings.SpecBoardLeftDockTabCenterY = centerY;
-                break;
-            case EdgeDockTabRole.CodexTask:
-                settings.CodexTaskBoardLeftDockTabCenterY = centerY;
                 break;
             case EdgeDockTabRole.Guard:
                 settings.GuardBoardLeftDockTabCenterY = centerY;
@@ -842,7 +831,6 @@ internal sealed class GlobalLayoutEditorForm : Form
             WidgetSettings.ModuleOperation,
             "LeftDockTab.Network",
             "LeftDockTab.SpecBoard",
-            "LeftDockTab.CodexTask",
             "LeftDockTab.Guard",
             "LeftDockTab.CodexIq",
             "LeftDockTab.ResetSpeed",
@@ -863,7 +851,7 @@ internal sealed class GlobalLayoutEditorForm : Form
         if (!HaveSameSurfaceIds(edgeIds, expectedIds))
         {
             throw new InvalidOperationException(
-                "Global layout editor must expose the exact canonical 20-surface plan: Operation, eight dock tabs, and eleven tiles.");
+                "Global layout editor must expose the exact canonical 19-surface plan: Operation, seven dock tabs, and eleven tiles.");
         }
 
         edge.VisibilityMode = WidgetVisibilityMode.HideWhenOverlapped;

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -25,7 +25,6 @@ internal static class BurnInProtection
     public const int SpecBoardSalt = 73;
     public const int SpecBoardDockTabSalt = 37;
     public const int CodexTaskBoardSalt = 41;
-    public const int CodexTaskBoardDockTabSalt = 43;
     public const int NetworkMonitorDockTabSalt = 47;
     public const int GuardBoardSalt = 53;
     public const int GuardBoardDockTabSalt = 59;

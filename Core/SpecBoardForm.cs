@@ -22,6 +22,12 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     // full-width action column (compact mode). 360 keeps the wide layout's cards no narrower than
     // the compact layout would be.
     internal const int CompactRailMinimumLogicalWidth = 360;
+    // Live sessions are cheap to fetch (an in-memory clone) but re-rendering on every 500 ms
+    // maintenance tick would be wasteful, so the band is resampled on this throttle instead.
+    private const int TaskSampleIntervalMs = 2000;
+    // In-memory only rail selection key for the synthetic "unattributed" row. It is never persisted
+    // and the leading control character cannot collide with a project name from PROJECTS.json.
+    private const string UnattributedProjectKey = "unattributed";
     private readonly OperationForm owner;
     private readonly UiFontCache fontCache = new UiFontCache();
     private readonly System.Windows.Forms.Timer maintenanceTimer;
@@ -36,6 +42,15 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     private Func<Point> cursorPositionProvider;
     private FileSystemWatcher watcher;
     private SpecBoardSnapshot snapshot = new SpecBoardSnapshot();
+    // Live Codex sessions for the merged Work Board band. Resampled on a throttle from the shared
+    // in-memory presentation snapshot (no IO), never sampled from inside a paint pass.
+    private CodexTaskMonitorSnapshot taskSnapshot = CodexTaskMonitorSnapshot.Empty;
+    private DateTime nextTaskSampleUtc = DateTime.MinValue;
+    // Runtime view toggle. WorkBoardView keeps deciding the startup default; clicking the footer
+    // only overrides it for this session, matching how the retired task board behaved.
+    private bool timelineView;
+    private bool timelineViewUserChosen;
+    private Rectangle timelineButtonBounds = Rectangle.Empty;
     private string selectedProject = string.Empty;
     private DateTime lastInteractionUtc = DateTime.UtcNow;
     private DateTime nextPollUtc = DateTime.MinValue;
@@ -81,7 +96,8 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         InitializeLayerScaleFromCurrentDpi();
         ApplyLayerScaleFromSettings(this.CurrentSettings);
         this.FormBorderStyle = FormBorderStyle.None;
-        this.Text = "Spec Board";
+        this.Text = "Workbench";
+        this.AccessibleName = "Workbench";
         this.ShowInTaskbar = false;
         this.TopMost = false;
         this.StartPosition = FormStartPosition.Manual;
@@ -369,6 +385,10 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             this.owner.PrepareForSpecBoardOverlayShow();
         }
 
+        // Expanding must show current sessions immediately rather than whatever the throttle last
+        // captured, so force one resample before the first paint.
+        RefreshTaskSampleIfDue(DateTime.UtcNow, true);
+
         this.autoPopupActive = automaticPopup;
         this.outsideClickCollapseUtc = DateTime.MinValue;
         this.outsideClickSequence = OutsideClickDismissalMonitor.ArmConsumer();
@@ -574,6 +594,16 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             return;
         }
 
+        if (!this.timelineButtonBounds.IsEmpty && this.timelineButtonBounds.Contains(e.Location))
+        {
+            // Runtime-only override; WorkBoardView still decides the next startup.
+            this.timelineView = !IsTimelineView;
+            this.timelineViewUserChosen = true;
+            ResetAutoHideClock();
+            RenderLayeredWindow();
+            return;
+        }
+
         for (int i = 0; i < this.projectHitTargets.Count; i++)
         {
             ProjectHitTarget target = this.projectHitTargets[i];
@@ -613,6 +643,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     internal bool ShouldDismissForBlankClick(Point location)
     {
         if ((!this.closeButtonBounds.IsEmpty && this.closeButtonBounds.Contains(location)) ||
+            (!this.timelineButtonBounds.IsEmpty && this.timelineButtonBounds.Contains(location)) ||
             (!this.managerButtonBounds.IsEmpty && this.managerButtonBounds.Contains(location)))
         {
             return false;
@@ -729,7 +760,8 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         int columnsTop = header.Bottom + S(5);
         int columnsHeight = Math.Max(1, content.Bottom - columnsTop);
 
-        DrawHeader(g, header, headerFont, countFont, palette);
+        WorkBoardModel model = BuildWorkBoardModel();
+        DrawHeader(g, header, headerFont, countFont, palette, model);
 
         // Compact single-column mode: below this logical width the 37% project rail would leave the
         // cards narrower than a readable title, so the rail is dropped and the action flow takes the
@@ -738,10 +770,11 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         if (this.CurrentSettings != null && this.CurrentSettings.SpecBoardWidth < CompactRailMinimumLogicalWidth)
         {
             this.selectedProject = string.Empty;
+            model = BuildWorkBoardModel();
             Rectangle full = new Rectangle(content.Left, columnsTop, content.Width, columnsHeight);
             Rectangle compactFooter = new Rectangle(full.Left, Math.Max(full.Top, full.Bottom - footerHeight), full.Width, footerHeight);
             Rectangle flow = new Rectangle(full.Left, full.Top, full.Width, Math.Max(1, compactFooter.Top - S(3) - full.Top));
-            DrawActionFlow(g, flow, segmentHeight, cardHeight, cardGap, bodyBold, smallFont, smallBold, palette, recordHitTargets);
+            DrawWorkFlow(g, flow, model, true, segmentHeight, cardHeight, cardGap, bodyBold, smallFont, smallBold, palette, recordHitTargets);
             DrawBoardFooter(g, compactFooter, smallFont, palette, recordHitTargets);
             return;
         }
@@ -755,11 +788,61 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             g.DrawLine(divider, left.Right + S(3), left.Top, left.Right + S(3), left.Bottom);
         }
 
-        DrawProjectRail(g, left, footerHeight, projectRowHeight, bodyFont, smallFont, palette, recordHitTargets);
-        DrawActionFlow(g, right, segmentHeight, cardHeight, cardGap, bodyBold, smallFont, smallBold, palette, recordHitTargets);
+        DrawProjectRail(g, left, footerHeight, projectRowHeight, bodyFont, smallFont, palette, recordHitTargets, model);
+        DrawWorkFlow(g, right, model, false, segmentHeight, cardHeight, cardGap, bodyBold, smallFont, smallBold, palette, recordHitTargets);
     }
 
-    private void DrawHeader(Graphics g, Rectangle bounds, Font headerFont, Font countFont, SpecBoardPalette palette)
+    // The merged board reads both halves through one pure composer, so the rail filter applies to
+    // live sessions and ledger rows at the same time. Compose does no IO and never mutates the
+    // snapshots, which is what makes it safe to call from the paint path.
+    private WorkBoardModel BuildWorkBoardModel()
+    {
+        WorkBoardFilter filter;
+        if (string.Equals(this.selectedProject, UnattributedProjectKey, StringComparison.Ordinal))
+        {
+            filter = WorkBoardFilter.Unattributed;
+        }
+        else if (string.IsNullOrEmpty(this.selectedProject))
+        {
+            filter = WorkBoardFilter.All;
+        }
+        else
+        {
+            filter = WorkBoardFilter.ForProject(this.selectedProject);
+        }
+
+        WorkBoardLimits limits = WorkBoardLimits.Default;
+        limits.SpecSessionHintEnabled = this.CurrentSettings == null || this.CurrentSettings.WorkBoardSpecSessionHintEnabled;
+        return WorkBoardComposer.Compose(this.snapshot, this.taskSnapshot, filter, DateTime.Now, limits);
+    }
+
+    private bool IsTimelineView
+    {
+        get
+        {
+            return this.timelineViewUserChosen
+                ? this.timelineView
+                : (this.CurrentSettings != null && this.CurrentSettings.WorkBoardView == CodexTaskBoardView.Timeline);
+        }
+    }
+
+    // Resampled off the existing maintenance tick, never from a paint pass. Returns true when the
+    // visible content could have changed.
+    private bool RefreshTaskSampleIfDue(DateTime nowUtc, bool force)
+    {
+        if (!force && nowUtc < this.nextTaskSampleUtc)
+        {
+            return false;
+        }
+
+        this.nextTaskSampleUtc = nowUtc.AddMilliseconds(TaskSampleIntervalMs);
+        CodexTaskMonitorSnapshot next = CodexTaskPresentation.GetSnapshot();
+        CodexTaskMonitorSnapshot previous = this.taskSnapshot;
+        this.taskSnapshot = next ?? CodexTaskMonitorSnapshot.Empty;
+        return !ReferenceEquals(previous, this.taskSnapshot);
+    }
+
+    private void DrawHeader(Graphics g, Rectangle bounds, Font headerFont, Font countFont, SpecBoardPalette palette, WorkBoardModel model)
     {
         int unregistered = this.snapshot.Count(string.Empty, SpecBoardStatus.Unregistered);
         int pending = this.snapshot.Count(string.Empty, SpecBoardStatus.Pending);
@@ -774,12 +857,18 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         using (StringFormat left = CreateStringFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
         using (StringFormat right = CreateStringFormat(StringAlignment.Far, StringTrimming.None))
         {
-            g.DrawString("SPEC BOARD", headerFont, text, bounds, left);
+            g.DrawString("WORKBENCH", headerFont, text, bounds, left);
             string time = this.snapshot.LedgerLastWriteLocal.HasValue ? this.snapshot.LedgerLastWriteLocal.Value.ToString("HH:mm", CultureInfo.InvariantCulture) : "--:--";
             float timeWidth = g.MeasureString(time, countFont).Width;
             RectangleF timeRect = new RectangleF(bounds.Right - timeWidth, bounds.Top, timeWidth, bounds.Height);
             g.DrawString(time, countFont, text, timeRect, right);
             float x = timeRect.Left - S(8);
+            // Live session count leads the ledger dots: it is the most volatile number on the board.
+            if (model != null && model.LiveCount > 0)
+            {
+                x = DrawHeaderCount(g, x, bounds.Top, bounds.Height, "▶" + model.LiveCount.ToString(CultureInfo.InvariantCulture), countFont, green);
+            }
+
             x = DrawHeaderCount(g, x, bounds.Top, bounds.Height, "●" + done.ToString(CultureInfo.InvariantCulture), countFont, green);
             x = DrawHeaderCount(g, x, bounds.Top, bounds.Height, "●" + awaiting.ToString(CultureInfo.InvariantCulture), countFont, yellow);
             x = DrawHeaderCount(g, x, bounds.Top, bounds.Height, "●" + revision.ToString(CultureInfo.InvariantCulture), countFont, purple);
@@ -799,20 +888,36 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         return rect.Left - 4;
     }
 
-    private void DrawProjectRail(Graphics g, Rectangle bounds, int footerHeight, int rowHeight, Font bodyFont, Font smallFont, SpecBoardPalette palette, bool recordHitTargets)
+    private void DrawProjectRail(Graphics g, Rectangle bounds, int footerHeight, int rowHeight, Font bodyFont, Font smallFont, SpecBoardPalette palette, bool recordHitTargets, WorkBoardModel model)
     {
         Rectangle footer = new Rectangle(bounds.Left, Math.Max(bounds.Top, bounds.Bottom - footerHeight), bounds.Width, footerHeight);
         int availableRowsHeight = Math.Max(0, footer.Top - bounds.Top - S(3));
         List<SpecBoardProject> projects = this.snapshot.Projects;
-        int totalRows = projects.Count + 1;
+        // The synthetic "unattributed" row exists only while a session's cwd leaf matched no
+        // registered project. It carries no ledger counts and never participates in freshness.
+        WorkBoardProjectRow unattributed = null;
+        if (model != null)
+        {
+            for (int i = 0; i < model.ProjectRows.Count; i++)
+            {
+                if (model.ProjectRows[i].IsUnattributed)
+                {
+                    unattributed = model.ProjectRows[i];
+                    break;
+                }
+            }
+        }
+
+        int totalRows = projects.Count + 1 + (unattributed != null ? 1 : 0);
         int maxRows = rowHeight <= 0 ? 0 : availableRowsHeight / rowHeight;
         bool needsMore = totalRows > maxRows;
         int rowsToDraw = Math.Min(totalRows, needsMore ? Math.Max(0, maxRows - 1) : maxRows);
         int y = bounds.Top;
         for (int i = 0; i < rowsToDraw; i++)
         {
-            string project = i == 0 ? string.Empty : projects[i - 1].Name;
-            string display = i == 0 ? "全部" : projects[i - 1].Display;
+            bool isUnattributedRow = unattributed != null && i == projects.Count + 1;
+            string project = i == 0 ? string.Empty : (isUnattributedRow ? UnattributedProjectKey : projects[i - 1].Name);
+            string display = i == 0 ? "全部" : (isUnattributedRow ? unattributed.Display : projects[i - 1].Display);
             Rectangle row = new Rectangle(bounds.Left, y, bounds.Width, rowHeight);
             bool selected = string.Equals(this.selectedProject, project, StringComparison.OrdinalIgnoreCase);
             if (selected)
@@ -824,19 +929,24 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                 }
             }
 
-            int redCount = this.snapshot.Count(project, SpecBoardStatus.Pending) + this.snapshot.Count(project, SpecBoardStatus.Unregistered);
-            int revisionCount = this.snapshot.Count(project, SpecBoardStatus.NeedsRevision);
-            int yellowCount = this.snapshot.Count(project, SpecBoardStatus.AwaitingVerify);
+            int redCount = isUnattributedRow ? 0 : this.snapshot.Count(project, SpecBoardStatus.Pending) + this.snapshot.Count(project, SpecBoardStatus.Unregistered);
+            int revisionCount = isUnattributedRow ? 0 : this.snapshot.Count(project, SpecBoardStatus.NeedsRevision);
+            int yellowCount = isUnattributedRow ? 0 : this.snapshot.Count(project, SpecBoardStatus.AwaitingVerify);
+            int liveCount = ResolveRailLiveCount(model, i == 0, isUnattributedRow, project);
             string countText = redCount == 0 && revisionCount == 0 && yellowCount == 0
                 ? "✓"
                 : redCount.ToString(CultureInfo.InvariantCulture) + "/" + revisionCount.ToString(CultureInfo.InvariantCulture) + "/" + yellowCount.ToString(CultureInfo.InvariantCulture);
-            bool fresh = !string.IsNullOrEmpty(project) && this.seenStateStore != null && this.seenStateStore.IsFresh(project, this.snapshot);
+            string liveText = liveCount > 0 ? "▶" + liveCount.ToString(CultureInfo.InvariantCulture) : string.Empty;
+            bool fresh = !isUnattributedRow && !string.IsNullOrEmpty(project) && this.seenStateStore != null && this.seenStateStore.IsFresh(project, this.snapshot);
             using (SolidBrush labelBrush = new SolidBrush(selected ? palette.Text : palette.Muted))
             using (StringFormat labelFormat = CreateStringFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
             {
-                float countWidth = g.MeasureString(countText, bodyFont).Width + S(6);
+                float liveWidth = liveText.Length == 0 ? 0 : g.MeasureString(liveText, smallFont).Width + S(4);
+                // The unattributed row has no ledger counts at all, so its "✓" would read as "this
+                // project is clear" -- it must not be drawn.
+                float countWidth = isUnattributedRow ? 0 : g.MeasureString(countText, bodyFont).Width + S(6);
                 int freshWidth = fresh ? S(10) : 0;
-                RectangleF labelRect = new RectangleF(row.Left + S(4) + freshWidth, row.Top, Math.Max(1, row.Width - countWidth - S(8) - freshWidth), row.Height);
+                RectangleF labelRect = new RectangleF(row.Left + S(4) + freshWidth, row.Top, Math.Max(1, row.Width - countWidth - liveWidth - S(8) - freshWidth), row.Height);
                 g.DrawString(display, bodyFont, labelBrush, labelRect, labelFormat);
                 if (fresh)
                 {
@@ -847,7 +957,19 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                     }
                 }
 
-                DrawProjectCounts(g, row, bodyFont, redCount, revisionCount, yellowCount, palette);
+                if (!isUnattributedRow)
+                {
+                    DrawProjectCounts(g, new Rectangle(row.Left, row.Top, Math.Max(1, row.Width - (int)Math.Ceiling(liveWidth)), row.Height), bodyFont, redCount, revisionCount, yellowCount, palette);
+                }
+
+                if (liveText.Length > 0)
+                {
+                    using (SolidBrush liveBrush = new SolidBrush(palette.Success))
+                    using (StringFormat far = CreateStringFormat(StringAlignment.Far, StringTrimming.None))
+                    {
+                        g.DrawString(liveText, smallFont, liveBrush, new RectangleF(row.Left, row.Top, row.Width - 2, row.Height), far);
+                    }
+                }
             }
 
             if (recordHitTargets)
@@ -871,6 +993,40 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         DrawBoardFooter(g, footer, smallFont, palette, recordHitTargets);
     }
 
+    // Rail live counts come from the composer's unfiltered project rows so the pills keep showing
+    // every project's session count while one project is selected.
+    private static int ResolveRailLiveCount(WorkBoardModel model, bool isAllRow, bool isUnattributedRow, string project)
+    {
+        if (model == null)
+        {
+            return 0;
+        }
+
+        int total = 0;
+        for (int i = 0; i < model.ProjectRows.Count; i++)
+        {
+            WorkBoardProjectRow row = model.ProjectRows[i];
+            if (isAllRow)
+            {
+                total += row.LiveCount;
+                continue;
+            }
+
+            if (isUnattributedRow && row.IsUnattributed)
+            {
+                return row.LiveCount;
+            }
+
+            if (!isUnattributedRow && !row.IsUnattributed &&
+                string.Equals(row.Name, project, StringComparison.OrdinalIgnoreCase))
+            {
+                return row.LiveCount;
+            }
+        }
+
+        return isAllRow ? total : 0;
+    }
+
     // Footer (管理/关闭 pills and the done/abandoned/warning stats) is shared by both layouts: the
     // wide board hosts it at the bottom of the project rail, the compact single-column board at the
     // bottom of the full-width action flow. It must stay reachable in every mode.
@@ -882,10 +1038,13 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         {
             footerText += "  ⚠" + warnings.ToString(CultureInfo.InvariantCulture);
         }
+        string viewLabel = IsTimelineView ? "卡片" : "时间线";
         int managerWidth = Math.Min(footer.Width, Math.Max(S(42), (int)Math.Ceiling(g.MeasureString("管理", smallFont).Width) + S(14)));
+        int viewWidth = Math.Min(footer.Width, Math.Max(S(46), (int)Math.Ceiling(g.MeasureString(viewLabel, smallFont).Width) + S(14)));
         int closeWidth = Math.Min(footer.Width, Math.Max(S(42), (int)Math.Ceiling(g.MeasureString("关闭", smallFont).Width) + S(14)));
         Rectangle managerBounds = new Rectangle(footer.Left, footer.Top, managerWidth, footer.Height);
-        Rectangle closeBounds = new Rectangle(managerBounds.Right + S(4), footer.Top, closeWidth, footer.Height);
+        Rectangle viewBounds = new Rectangle(managerBounds.Right + S(4), footer.Top, viewWidth, footer.Height);
+        Rectangle closeBounds = new Rectangle(viewBounds.Right + S(4), footer.Top, closeWidth, footer.Height);
         Rectangle footerStats = new Rectangle(closeBounds.Right + S(5), footer.Top, Math.Max(1, footer.Right - closeBounds.Right - S(5)), footer.Height);
         using (GraphicsPath managerPath = RoundedRectangle(RectangleF.Inflate(managerBounds, -1, -1), S(4)))
         using (SolidBrush managerFill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Control, 220)))
@@ -901,6 +1060,23 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         if (recordHitTargets)
         {
             this.managerButtonBounds = managerBounds;
+        }
+
+        using (GraphicsPath viewPath = RoundedRectangle(RectangleF.Inflate(viewBounds, -1, -1), S(4)))
+        using (SolidBrush viewFill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Control, 220)))
+        using (Pen viewBorder = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.WarningDeep, 170), Math.Max(1.0f, this.LayerScale)))
+        using (SolidBrush viewText = new SolidBrush(palette.Text))
+        using (StringFormat centered = CreateStringFormat(StringAlignment.Center, StringTrimming.None))
+        {
+            centered.LineAlignment = StringAlignment.Center;
+            g.FillPath(viewFill, viewPath);
+            g.DrawPath(viewBorder, viewPath);
+            g.DrawString(viewLabel, smallFont, viewText, viewBounds, centered);
+        }
+
+        if (recordHitTargets)
+        {
+            this.timelineButtonBounds = viewBounds;
         }
 
         using (GraphicsPath closePath = RoundedRectangle(RectangleF.Inflate(closeBounds, -1, -1), S(4)))
@@ -973,106 +1149,348 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
         }
     }
 
-    private void DrawActionFlow(Graphics g, Rectangle bounds, int segmentHeight, int cardHeight, int cardGap, Font titleFont, Font smallFont, Font segmentFont, SpecBoardPalette palette, bool recordHitTargets)
+    // Merged five-section flow: the live Codex band sits on top of the four ledger sections.
+    //
+    // The default board is 648x400 logical. Title bar and footer take ~66, leaving ~334 for this
+    // area, while five sections at "header + one full card" need ~340 -- so the pre-merge contract
+    // "every section keeps one complete card" cannot hold universally any more. It is replaced by
+    // the ladder in ComputeSectionPlan: empty sections collapse to a bare header, the remaining
+    // budget is handed out in priority order, and sections that miss out degrade to a counted header
+    // line. Section headers are never dropped, so the board's five-stage shape and every count stay
+    // visible at any height.
+    private void DrawWorkFlow(Graphics g, Rectangle bounds, WorkBoardModel model, bool compact, int segmentHeight, int cardHeight, int cardGap, Font titleFont, Font smallFont, Font segmentFont, SpecBoardPalette palette, bool recordHitTargets)
     {
-        if (this.snapshot.LedgerMissing)
+        if (this.snapshot.LedgerMissing && model.LiveCount == 0)
         {
             DrawCenteredEmptyState(g, bounds, "账本未找到", this.snapshot.LedgerPath, palette.Danger, palette.Muted, titleFont, smallFont);
             return;
         }
 
-        List<SpecBoardRow> actionable = this.snapshot.Rows
-            .Where(row => (string.IsNullOrEmpty(this.selectedProject) || string.Equals(row.Project, this.selectedProject, StringComparison.OrdinalIgnoreCase)) &&
-                (row.Status == SpecBoardStatus.Unregistered || row.Status == SpecBoardStatus.Pending ||
-                 row.Status == SpecBoardStatus.NeedsRevision || row.Status == SpecBoardStatus.AwaitingVerify))
-            .ToList();
-        if (actionable.Count == 0)
+        if (IsTimelineView)
+        {
+            // Timeline swaps only the flow column; the project rail keeps filtering both halves.
+            DrawTimeline(g, bounds, model, titleFont, smallFont, segmentFont, palette);
+            return;
+        }
+
+        int actionable = model.LiveCount;
+        for (int i = 0; i < model.SpecSections.Count; i++)
+        {
+            actionable += model.SpecSections[i].Count;
+        }
+
+        if (actionable == 0)
         {
             DrawCenteredEmptyState(g, bounds, "没有待办 spec ✓", string.Empty, palette.Success, palette.Muted, titleFont, smallFont);
             return;
         }
 
-        int nonEmptySections = new[] { SpecBoardStatus.Unregistered, SpecBoardStatus.Pending, SpecBoardStatus.NeedsRevision, SpecBoardStatus.AwaitingVerify }
-            .Count(status => actionable.Any(row => string.Equals(row.Status, status, StringComparison.OrdinalIgnoreCase)));
-        if (nonEmptySections >= 4)
-        {
-            // Four actionable states must each retain one complete card in the fixed-height board.
-            // Derive compact dimensions from the measured right-column height instead of dropping
-            // an earlier section or relying on guessed absolute Y coordinates.
-            int slotHeight = Math.Max(1, bounds.Height / nonEmptySections);
-            cardGap = Math.Min(cardGap, Math.Max(1, S(2)));
-            segmentHeight = Math.Min(segmentHeight, Math.Max(S(9), slotHeight / 3));
-            cardHeight = Math.Min(cardHeight, Math.Max(S(20), slotHeight - segmentHeight - cardGap));
-        }
+        int liveCardHeight = cardHeight + MeasureLineHeight(g, smallFont, S(1));
+        SectionPlan[] plan = ComputeSectionPlan(
+            model, bounds.Height, segmentHeight, cardHeight, liveCardHeight, cardGap, compact);
 
         int y = bounds.Top;
-        int sectionMinimum = segmentHeight + cardHeight + cardGap;
-        int pendingReserve = actionable.Any(row => row.Status == SpecBoardStatus.Pending) ? sectionMinimum : 0;
-        int revisionReserve = actionable.Any(row => row.Status == SpecBoardStatus.NeedsRevision) ? sectionMinimum : 0;
-        int awaitingReserve = actionable.Any(row => row.Status == SpecBoardStatus.AwaitingVerify) ? sectionMinimum : 0;
-        DrawSection(g, bounds, ref y, actionable, SpecBoardStatus.Unregistered, "◆ 未登记", palette.Unregistered, segmentHeight, cardHeight, cardGap, pendingReserve + revisionReserve + awaitingReserve, titleFont, smallFont, segmentFont, palette, recordHitTargets);
-        DrawSection(g, bounds, ref y, actionable, SpecBoardStatus.Pending, "◆ 需要执行", palette.Danger, segmentHeight, cardHeight, cardGap, revisionReserve + awaitingReserve, titleFont, smallFont, segmentFont, palette, recordHitTargets);
-        DrawSection(g, bounds, ref y, actionable, SpecBoardStatus.NeedsRevision, "◆ 需要修改", palette.Revision, segmentHeight, cardHeight, cardGap, awaitingReserve, titleFont, smallFont, segmentFont, palette, recordHitTargets);
-        DrawSection(g, bounds, ref y, actionable, SpecBoardStatus.AwaitingVerify, "◆ 等待验证", palette.Warning, segmentHeight, cardHeight, cardGap, 0, titleFont, smallFont, segmentFont, palette, recordHitTargets);
+        for (int i = 0; i < plan.Length; i++)
+        {
+            SectionPlan entry = plan[i];
+            if (y + segmentHeight > bounds.Bottom)
+            {
+                break;
+            }
+
+            int hidden = entry.TotalCount - entry.CardCount;
+            DrawSectionHeader(g, bounds, y, segmentHeight, entry.Label, entry.TotalCount, hidden, entry.Color, segmentFont, smallFont, palette);
+            y += segmentHeight;
+
+            for (int c = 0; c < entry.CardCount; c++)
+            {
+                int height = entry.IsLive ? liveCardHeight : cardHeight;
+                if (y + height > bounds.Bottom)
+                {
+                    break;
+                }
+
+                Rectangle card = new Rectangle(bounds.Left, y, bounds.Width, height);
+                if (entry.IsLive)
+                {
+                    DrawLiveCard(g, card, model.LiveRows[c], titleFont, smallFont, palette);
+                }
+                else
+                {
+                    DrawCard(g, card, entry.Section.Rows[c], entry.Color, titleFont, smallFont, palette);
+                    if (recordHitTargets)
+                    {
+                        this.cardHitTargets.Add(new CardHitTarget { Bounds = card, Row = entry.Section.Rows[c] });
+                    }
+                }
+
+                y += height + cardGap;
+            }
+        }
     }
 
-    private void DrawSection(Graphics g, Rectangle bounds, ref int y, List<SpecBoardRow> allRows, string status, string label, Color statusColor, int segmentHeight, int cardHeight, int cardGap, int reservedBottomHeight, Font titleFont, Font smallFont, Font segmentFont, SpecBoardPalette palette, bool recordHitTargets)
+    // Session activity lanes, carried over from the retired Codex task board. History itself is
+    // accumulated by CodexRadarForm, so the lanes are populated even if this board was collapsed the
+    // whole time.
+    private void DrawTimeline(Graphics g, Rectangle bounds, WorkBoardModel model, Font titleFont, Font smallFont, Font segmentFont, SpecBoardPalette palette)
     {
-        List<SpecBoardRow> rows = allRows.Where(row => string.Equals(row.Status, status, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(row => row.EventTimeUtc ?? DateTime.MaxValue)
-            .ToList();
-        int localBottom = Math.Max(y, bounds.Bottom - Math.Max(0, reservedBottomHeight));
-        if (rows.Count == 0 || y + segmentHeight > localBottom)
+        int windowMinutes = this.CurrentSettings == null
+            ? WidgetSettings.DefaultWorkBoardTimelineMinutes
+            : this.CurrentSettings.WorkBoardTimelineMinutes;
+        CodexTaskTimelineModel timeline = CodexTaskPresentation.BuildTimeline(this.taskSnapshot, DateTime.Now, windowMinutes, WorkBoardLimits.Default.MaxLiveRows);
+        int segmentHeight = MeasureLineHeight(g, segmentFont, S(6));
+        int y = bounds.Top;
+        using (SolidBrush header = new SolidBrush(palette.Success))
+        using (StringFormat near = CreateStringFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
         {
+            g.DrawString(
+                "▶ 时间线 · " + windowMinutes.ToString(CultureInfo.InvariantCulture) + " 分",
+                segmentFont, header, new Rectangle(bounds.Left, y, bounds.Width, segmentHeight), near);
+        }
+
+        y += segmentHeight + S(4);
+        if (timeline == null || !timeline.HasLanes)
+        {
+            DrawCenteredEmptyState(g, new Rectangle(bounds.Left, y, bounds.Width, Math.Max(1, bounds.Bottom - y)),
+                "正在积累活动历史…", string.Empty, palette.Muted, palette.Muted, titleFont, smallFont);
             return;
         }
 
-        int headerTop = y;
-        using (SolidBrush brush = new SolidBrush(statusColor))
+        int nameWidth = Math.Max(S(70), (int)Math.Round(bounds.Width * 0.26));
+        int statusWidth = Math.Max(S(42), (int)Math.Round(bounds.Width * 0.16));
+        int laneHeight = MeasureLineHeight(g, smallFont, S(7));
+        int barHeight = Math.Max(2, laneHeight - S(5));
+        double totalTicks = Math.Max(1.0, (timeline.EndLocal - timeline.StartLocal).TotalMilliseconds);
+        using (SolidBrush nameBrush = new SolidBrush(palette.Text))
+        using (SolidBrush track = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Border, 150)))
+        using (StringFormat far = CreateStringFormat(StringAlignment.Far, StringTrimming.EllipsisCharacter))
+        using (StringFormat near = CreateStringFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
+        {
+            for (int i = 0; i < timeline.Lanes.Count; i++)
+            {
+                if (y + laneHeight > bounds.Bottom)
+                {
+                    break;
+                }
+
+                CodexTaskTimelineLane lane = timeline.Lanes[i];
+                g.DrawString(
+                    "#" + lane.TaskNumber.ToString(CultureInfo.InvariantCulture) + " " + lane.WorkspaceLeaf,
+                    smallFont, nameBrush, new RectangleF(bounds.Left, y, nameWidth, laneHeight), far);
+
+                int barLeft = bounds.Left + nameWidth + S(6);
+                int barRight = bounds.Right - statusWidth - S(6);
+                Rectangle bar = new Rectangle(barLeft, y + (laneHeight - barHeight) / 2, Math.Max(1, barRight - barLeft), barHeight);
+                g.FillRectangle(track, bar);
+                for (int sIndex = 0; sIndex < lane.Segments.Count; sIndex++)
+                {
+                    CodexTaskTimelineSegment segment = lane.Segments[sIndex];
+                    double from = (segment.StartLocal - timeline.StartLocal).TotalMilliseconds / totalTicks;
+                    double to = (segment.EndLocal - timeline.StartLocal).TotalMilliseconds / totalTicks;
+                    int left = bar.Left + (int)Math.Round(Math.Max(0.0, Math.Min(1.0, from)) * bar.Width);
+                    int right = bar.Left + (int)Math.Round(Math.Max(0.0, Math.Min(1.0, to)) * bar.Width);
+                    if (right <= left)
+                    {
+                        continue;
+                    }
+
+                    using (SolidBrush fill = new SolidBrush(CodexTaskPresentation.GetStatusColor(segment.Status)))
+                    {
+                        g.FillRectangle(fill, new Rectangle(left, bar.Top, right - left, bar.Height));
+                    }
+                }
+
+                using (SolidBrush statusBrush = new SolidBrush(lane.StatusColor))
+                {
+                    g.DrawString(lane.StatusText, smallFont, statusBrush,
+                        new RectangleF(bounds.Right - statusWidth, y, statusWidth, laneHeight), near);
+                }
+
+                y += laneHeight;
+            }
+        }
+    }
+
+    internal struct SectionPlan
+    {
+        public string Label;
+        public Color Color;
+        public bool IsLive;
+        public WorkBoardSection Section;
+        public int TotalCount;
+        public int CardCount;
+    }
+
+    // Pure height arithmetic so the ladder can be self-tested without a device context.
+    internal static SectionPlan[] ComputeSectionPlan(
+        WorkBoardModel model,
+        int availableHeight,
+        int segmentHeight,
+        int cardHeight,
+        int liveCardHeight,
+        int cardGap,
+        bool compact)
+    {
+        List<SectionPlan> plan = new List<SectionPlan>();
+        plan.Add(new SectionPlan
+        {
+            Label = "▶ 进行中",
+            Color = DesignTokens.Colors.Success,
+            IsLive = true,
+            Section = null,
+            TotalCount = model.LiveCount,
+            CardCount = 0
+        });
+        for (int i = 0; i < model.SpecSections.Count; i++)
+        {
+            WorkBoardSection section = model.SpecSections[i];
+            plan.Add(new SectionPlan
+            {
+                Label = "◆ " + section.Label,
+                Color = section.Color,
+                IsLive = false,
+                Section = section,
+                TotalCount = section.Count,
+                CardCount = 0
+            });
+        }
+
+        // Step 1: every section always costs one header line; empty ones cost nothing more.
+        int budget = availableHeight - plan.Count * segmentHeight;
+
+        // Steps 2-3: hand out complete cards in fixed priority order (live band first), one per
+        // section per pass, so no single busy section starves the ones below it.
+        int perSectionCap = compact ? 1 : 3;
+        bool progressed = true;
+        while (budget > 0 && progressed)
+        {
+            progressed = false;
+            for (int i = 0; i < plan.Count; i++)
+            {
+                SectionPlan entry = plan[i];
+                if (entry.CardCount >= entry.TotalCount || entry.CardCount >= perSectionCap)
+                {
+                    continue;
+                }
+
+                int cost = (entry.IsLive ? liveCardHeight : cardHeight) + cardGap;
+                if (cost > budget)
+                {
+                    continue;
+                }
+
+                budget -= cost;
+                entry.CardCount++;
+                plan[i] = entry;
+                progressed = true;
+            }
+        }
+
+        return plan.ToArray();
+    }
+
+    private void DrawSectionHeader(Graphics g, Rectangle bounds, int y, int segmentHeight, string label, int total, int hidden, Color statusColor, Font segmentFont, Font smallFont, SpecBoardPalette palette)
+    {
+        using (SolidBrush brush = new SolidBrush(total == 0 ? palette.Muted : statusColor))
         using (StringFormat format = CreateStringFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
         {
-            g.DrawString(label + " · " + rows.Count.ToString(CultureInfo.InvariantCulture), segmentFont, brush, new Rectangle(bounds.Left, y, bounds.Width, segmentHeight), format);
+            g.DrawString(label + " · " + total.ToString(CultureInfo.InvariantCulture), segmentFont, brush, new Rectangle(bounds.Left, y, bounds.Width, segmentHeight), format);
         }
 
-        y += segmentHeight;
-        int remainingHeight = localBottom - y;
-        int capacity = Math.Max(0, (remainingHeight + cardGap) / (cardHeight + cardGap));
-        int drawCount = Math.Min(rows.Count, capacity);
-        bool hasMore = drawCount < rows.Count;
-        int moreHeight = MeasureLineHeight(g, smallFont, S(2));
-        if (hasMore && drawCount > 1 && y + drawCount * (cardHeight + cardGap) + moreHeight > localBottom)
-        {
-            drawCount--;
-        }
-
-        for (int i = 0; i < drawCount; i++)
-        {
-            Rectangle card = new Rectangle(bounds.Left, y, bounds.Width, cardHeight);
-            DrawCard(g, card, rows[i], statusColor, titleFont, smallFont, palette);
-            if (recordHitTargets)
-            {
-                this.cardHitTargets.Add(new CardHitTarget { Bounds = card, Row = rows[i] });
-            }
-
-            y += cardHeight + cardGap;
-        }
-
-        if (drawCount < rows.Count && y + moreHeight <= localBottom)
-        {
-            using (SolidBrush muted = new SolidBrush(palette.Muted))
-            using (StringFormat format = CreateStringFormat(StringAlignment.Near, StringTrimming.None))
-            {
-                g.DrawString("+" + (rows.Count - drawCount).ToString(CultureInfo.InvariantCulture) + " 更多", smallFont, muted, new Rectangle(bounds.Left + S(5), y, bounds.Width - S(5), moreHeight), format);
-            }
-
-            y += moreHeight + cardGap;
-        }
-        else if (drawCount < rows.Count)
+        if (hidden > 0)
         {
             using (SolidBrush muted = new SolidBrush(palette.Muted))
             using (StringFormat right = CreateStringFormat(StringAlignment.Far, StringTrimming.None))
             {
-                g.DrawString("+" + (rows.Count - drawCount).ToString(CultureInfo.InvariantCulture), smallFont, muted, new Rectangle(bounds.Left, headerTop, bounds.Width, segmentHeight), right);
+                g.DrawString("+" + hidden.ToString(CultureInfo.InvariantCulture), smallFont, muted, new Rectangle(bounds.Left, y, bounds.Width, segmentHeight), right);
+            }
+        }
+    }
+
+    // Slimmed live session card. The water ring and the four-part token line stay in the Codex tile
+    // expand panel; here the context level is a thin bar so the card fits the shared shell.
+    private void DrawLiveCard(Graphics g, Rectangle bounds, WorkBoardLiveRow live, Font titleFont, Font smallFont, SpecBoardPalette palette)
+    {
+        CodexTaskRowModel task = live.Task;
+        using (GraphicsPath path = RoundedRectangle(RectangleF.Inflate(bounds, -0.5f, -0.5f), S(5)))
+        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, 235)))
+        {
+            g.FillPath(fill, path);
+        }
+
+        using (SolidBrush stripe = new SolidBrush(task.StatusColor))
+        {
+            g.FillRectangle(stripe, bounds.Left, bounds.Top + S(2), Math.Max(1, S(2)), Math.Max(1, bounds.Height - S(4)));
+        }
+
+        int inset = S(7);
+        int titleHeight = MeasureLineHeight(g, titleFont, S(1));
+        int lineHeight = MeasureLineHeight(g, smallFont, S(1));
+        string head = "#" + task.TaskNumber.ToString(CultureInfo.InvariantCulture) + " " + task.WorkspaceLeaf;
+        string percent = Math.Round(task.ContextPercent).ToString("0", CultureInfo.InvariantCulture) + "%";
+        float percentWidth = g.MeasureString(percent, smallFont).Width + S(4);
+        string orphan = live.IsUnattributed ? "未归属" : string.Empty;
+        float orphanWidth = orphan.Length == 0 ? 0 : g.MeasureString(orphan, smallFont).Width + S(6);
+
+        using (SolidBrush textBrush = new SolidBrush(palette.Text))
+        using (SolidBrush mutedBrush = new SolidBrush(palette.Muted))
+        using (SolidBrush statusBrush = new SolidBrush(task.StatusColor))
+        using (StringFormat left = CreateStringFormat(StringAlignment.Near, StringTrimming.EllipsisCharacter))
+        using (StringFormat right = CreateStringFormat(StringAlignment.Far, StringTrimming.None))
+        {
+            RectangleF headRect = new RectangleF(bounds.Left + inset, bounds.Top + S(3), Math.Max(1, bounds.Width - inset * 2 - percentWidth - orphanWidth), titleHeight);
+            g.DrawString(head, titleFont, textBrush, headRect, left);
+            if (orphan.Length > 0)
+            {
+                g.DrawString(orphan, smallFont, mutedBrush, new RectangleF(bounds.Right - inset - percentWidth - orphanWidth, headRect.Top, orphanWidth, titleHeight), right);
+            }
+
+            using (SolidBrush percentBrush = new SolidBrush(task.ContextBarColor))
+            {
+                g.DrawString(percent, smallFont, percentBrush, new RectangleF(bounds.Right - inset - percentWidth, headRect.Top, percentWidth, titleHeight), right);
+            }
+
+            // The "≈" prefix is mandatory: the hint is a textual guess, never an assertion that this
+            // session is executing that spec.
+            string hint = live.HasSpecHint
+                ? "≈ " + live.SpecHintTitle + (live.SpecHintOverflow > 0 ? " +" + live.SpecHintOverflow.ToString(CultureInfo.InvariantCulture) : string.Empty)
+                : string.Empty;
+            float hintWidth = hint.Length == 0 ? 0 : Math.Min(bounds.Width * 0.42f, g.MeasureString(hint, smallFont).Width + S(6));
+            RectangleF titleRect = new RectangleF(bounds.Left + inset, headRect.Bottom, Math.Max(1, bounds.Width - inset * 2 - hintWidth), lineHeight);
+            g.DrawString(task.Title, smallFont, mutedBrush, titleRect, left);
+            if (hint.Length > 0)
+            {
+                using (SolidBrush hintBrush = new SolidBrush(DesignTokens.WithAlpha(palette.Success, 190)))
+                {
+                    g.DrawString(hint, smallFont, hintBrush, new RectangleF(bounds.Right - inset - hintWidth, titleRect.Top, hintWidth, lineHeight), right);
+                }
+            }
+
+            // Status / age / model on the left, context bar pinned right.
+            float barWidth = Math.Min(S(60), Math.Max(S(24), bounds.Width * 0.24f));
+            RectangleF metaRect = new RectangleF(bounds.Left + inset, titleRect.Bottom, Math.Max(1, bounds.Width - inset * 2 - barWidth - S(6)), lineHeight);
+            g.DrawString(task.StatusText, smallFont, statusBrush, metaRect, left);
+            float statusWidth = g.MeasureString(task.StatusText, smallFont).Width + S(4);
+            string tail = task.DetailText;
+            if (!string.IsNullOrEmpty(task.Model))
+            {
+                tail += " · " + task.Model;
+            }
+
+            g.DrawString(tail, smallFont, mutedBrush, new RectangleF(metaRect.Left + statusWidth, metaRect.Top, Math.Max(1, metaRect.Width - statusWidth), lineHeight), left);
+
+            float barHeight = Math.Max(1, S(4));
+            float barTop = metaRect.Top + (lineHeight - barHeight) / 2.0f;
+            RectangleF barRect = new RectangleF(bounds.Right - inset - barWidth, barTop, barWidth, barHeight);
+            using (SolidBrush track = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Border, 150)))
+            using (SolidBrush level = new SolidBrush(task.ContextBarColor))
+            {
+                g.FillRectangle(track, barRect);
+                float filled = (float)(Math.Max(0.0, Math.Min(100.0, task.ContextPercent)) / 100.0) * barRect.Width;
+                if (filled > 0)
+                {
+                    g.FillRectangle(level, new RectangleF(barRect.Left, barRect.Top, filled, barRect.Height));
+                }
             }
         }
     }
@@ -1161,6 +1579,12 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
 
         DateTime now = DateTime.UtcNow;
         bool renderNeeded = ExpireCopySuccessNotice(now);
+        // The live band folds the retired task board's 2 s cadence into this existing tick rather
+        // than adding a second timer.
+        if (this.Visible && RefreshTaskSampleIfDue(now, false))
+        {
+            renderNeeded = true;
+        }
         if (this.autoPopupHighlightUntilUtc != DateTime.MinValue && now >= this.autoPopupHighlightUntilUtc)
         {
             this.autoPopupHighlightUntilUtc = DateTime.MinValue;
@@ -2151,6 +2575,12 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
                     Console.WriteLine("Compact -> " + path + " (" + form.Width + "x" + form.Height + ")");
                 }
             }
+
+            // Five-section proof shots. The merged board can no longer promise "one complete card per
+            // section" at the default 400 logical height, so both the default and a roomier height
+            // are rendered with a live band present, for the P1 acceptance eyeball.
+            RenderFiveSectionSample(outputDir, 400, "specboard-fivesection-400.png");
+            RenderFiveSectionSample(outputDir, 620, "specboard-fivesection-620.png");
         }
 
         if (current)
@@ -2295,6 +2725,7 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
             throw new InvalidOperationException("Spec Board relative age boundaries failed.");
         }
 
+        RunSectionLadderSelfTest();
         RunCompactLayoutSelfTest();
         RunAutoHideSelfTest();
         RunAutoPopupSelfTest();
@@ -2305,6 +2736,197 @@ internal sealed class SpecBoardForm : LayeredWidgetFormBase
     // Compact single-column mode: below CompactRailMinimumLogicalWidth the project rail must
     // disappear, the cards must take (nearly) the full width, the shared footer must survive with
     // both pills reachable, and any sticky project filter must reset so no rows silently vanish.
+    private static void RenderFiveSectionSample(string outputDir, int logicalHeight, string fileName)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.SpecBoardHeight = logicalHeight;
+        settings.Normalize();
+        using (SpecBoardForm form = new SpecBoardForm(null, settings))
+        {
+            form.snapshot = CreateSampleSnapshot();
+            form.taskSnapshot = CreateSampleTaskSnapshot();
+            form.SetLayerScale(2.0f);
+            form.Size = new Size(settings.SpecBoardWidth * 2, settings.SpecBoardHeight * 2);
+            using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
+            using (Graphics g = Graphics.FromImage(bitmap))
+            {
+                g.Clear(DesignTokens.Colors.AppBackground);
+                form.DrawWindowContent(g);
+                string path = Path.Combine(outputDir, fileName);
+                bitmap.Save(path, ImageFormat.Png);
+                Console.WriteLine("Five-section -> " + path + " (" + form.Width + "x" + form.Height + ")");
+            }
+        }
+    }
+
+    // Fixture sessions for the render harness, where no reader is attached. Leaf names deliberately
+    // mix a registered project with an unregistered one so the "未归属" rail row appears.
+    private static CodexTaskMonitorSnapshot CreateSampleTaskSnapshot()
+    {
+        DateTime now = DateTime.Now;
+        List<CodexTaskSnapshot> tasks = new List<CodexTaskSnapshot>
+        {
+            new CodexTaskSnapshot("rollout:a", 1, "DesktopCodexAssistant", "gpt-6-astra",
+                CodexTaskStatus.Active, now.AddMinutes(-42), now.AddSeconds(-5), null, null, false,
+                CodexTaskTokenUsage.Empty, CodexTaskTokenUsage.Empty, 36.0, "左侧七停靠板 macOS 移植 B 批"),
+            new CodexTaskSnapshot("rollout:b", 2, "WSLmanager", "gpt-6-astra",
+                CodexTaskStatus.Listening, now.AddMinutes(-18), now.AddMinutes(-9), null, null, false,
+                CodexTaskTokenUsage.Empty, CodexTaskTokenUsage.Empty, 53.0, "GUI 三发行版 L1-L5 真实矩阵"),
+            new CodexTaskSnapshot("rollout:c", 3, "qiyangtracker-x64", "gpt-6-astra",
+                CodexTaskStatus.Idle, now.AddHours(-3), now.AddHours(-2), CodexTaskStatus.Completed,
+                now.AddHours(-2), false, CodexTaskTokenUsage.Empty, CodexTaskTokenUsage.Empty, 22.7,
+                "迁移 WinUI 3 并修复 x64 构建")
+        };
+        return new CodexTaskMonitorSnapshot(tasks, 2, now);
+    }
+
+    // The ladder is what replaces the pre-merge "every section keeps one complete card" contract, so
+    // it is asserted on the real default geometry rather than on a convenient fixture size.
+    private static void RunSectionLadderSelfTest()
+    {
+        int segment = 22;
+        int card = 46;
+        int liveCard = 58;
+        int gap = 4;
+        int defaultFlowHeight = 334;
+
+        WorkBoardModel busy = BuildLadderFixture(3, 20, 4, 0, 10);
+        SectionPlan[] plan = ComputeSectionPlan(busy, defaultFlowHeight, segment, card, liveCard, gap, false);
+        if (plan.Length != 5)
+        {
+            throw new InvalidOperationException("Work Board ladder must always plan five sections.");
+        }
+
+        int used = plan.Length * segment;
+        for (int i = 0; i < plan.Length; i++)
+        {
+            used += plan[i].CardCount * ((plan[i].IsLive ? liveCard : card) + gap);
+            if (plan[i].CardCount > plan[i].TotalCount)
+            {
+                throw new InvalidOperationException("Work Board ladder planned more cards than rows exist.");
+            }
+        }
+
+        if (used > defaultFlowHeight)
+        {
+            throw new InvalidOperationException("Work Board ladder overflowed the available flow height.");
+        }
+
+        if (plan[0].CardCount < 1)
+        {
+            throw new InvalidOperationException("Work Board ladder must serve the live band first.");
+        }
+
+        // 需要修改 is empty in the real ledger; an empty section costs a header and nothing else.
+        if (plan[3].TotalCount != 0 || plan[3].CardCount != 0)
+        {
+            throw new InvalidOperationException("Work Board ladder must collapse empty sections to a bare header.");
+        }
+
+        // Only live sessions: every other section is a bare header, and the band must not take more
+        // than its per-section cap even with the whole budget free.
+        WorkBoardModel liveOnly = BuildLadderFixture(6, 0, 0, 0, 0);
+        SectionPlan[] livePlan = ComputeSectionPlan(liveOnly, defaultFlowHeight, segment, card, liveCard, gap, false);
+        if (livePlan[0].CardCount != 3)
+        {
+            throw new InvalidOperationException("Work Board live band must honour the wide-layout cap of three.");
+        }
+
+        for (int i = 1; i < livePlan.Length; i++)
+        {
+            if (livePlan[i].CardCount != 0)
+            {
+                throw new InvalidOperationException("Work Board ladder drew cards for an empty ledger section.");
+            }
+        }
+
+        // Compact mode caps every section at one card.
+        SectionPlan[] compactPlan = ComputeSectionPlan(busy, defaultFlowHeight, segment, card, liveCard, gap, true);
+        for (int i = 0; i < compactPlan.Length; i++)
+        {
+            if (compactPlan[i].CardCount > 1)
+            {
+                throw new InvalidOperationException("Work Board compact ladder must cap each section at one card.");
+            }
+        }
+
+        // Fully empty input still plans five headers and no cards.
+        WorkBoardModel empty = BuildLadderFixture(0, 0, 0, 0, 0);
+        SectionPlan[] emptyPlan = ComputeSectionPlan(empty, defaultFlowHeight, segment, card, liveCard, gap, false);
+        for (int i = 0; i < emptyPlan.Length; i++)
+        {
+            if (emptyPlan[i].CardCount != 0 || emptyPlan[i].TotalCount != 0)
+            {
+                throw new InvalidOperationException("Work Board ladder must stay empty for empty input.");
+            }
+        }
+
+        // A height that cannot even hold five headers must not produce negative or phantom cards.
+        SectionPlan[] starved = ComputeSectionPlan(busy, segment * 2, segment, card, liveCard, gap, false);
+        for (int i = 0; i < starved.Length; i++)
+        {
+            if (starved[i].CardCount != 0)
+            {
+                throw new InvalidOperationException("Work Board ladder must degrade to headers when starved.");
+            }
+        }
+
+        // Raising the height restores a complete card for every non-empty section.
+        SectionPlan[] roomy = ComputeSectionPlan(busy, 560, segment, card, liveCard, gap, false);
+        for (int i = 0; i < roomy.Length; i++)
+        {
+            if (roomy[i].TotalCount > 0 && roomy[i].CardCount < 1)
+            {
+                throw new InvalidOperationException("Work Board ladder must serve every non-empty section at 560.");
+            }
+        }
+    }
+
+    private static WorkBoardModel BuildLadderFixture(int live, int unregistered, int pending, int revision, int awaiting)
+    {
+        SpecBoardSnapshot spec = new SpecBoardSnapshot();
+        spec.ProjectRegistryAvailable = true;
+        spec.Projects.Add(new SpecBoardProject { Name = "Demo", Display = "Demo", Root = @"D:\Demo", SpecGlob = "Docs/Technical/*-SPEC-*.md" });
+        AppendLadderRows(spec, SpecBoardStatus.Unregistered, unregistered);
+        AppendLadderRows(spec, SpecBoardStatus.Pending, pending);
+        AppendLadderRows(spec, SpecBoardStatus.NeedsRevision, revision);
+        AppendLadderRows(spec, SpecBoardStatus.AwaitingVerify, awaiting);
+
+        List<CodexTaskSnapshot> tasks = new List<CodexTaskSnapshot>();
+        for (int i = 0; i < live; i++)
+        {
+            tasks.Add(new CodexTaskSnapshot(
+                "rollout:" + i.ToString(CultureInfo.InvariantCulture), i + 1, "Demo", "gpt-6-astra",
+                CodexTaskStatus.Active, DateTime.Now.AddMinutes(-20), DateTime.Now.AddMinutes(-1),
+                null, null, false, CodexTaskTokenUsage.Empty, CodexTaskTokenUsage.Empty, 30.0, "fixture"));
+        }
+
+        return WorkBoardComposer.Compose(
+            spec,
+            new CodexTaskMonitorSnapshot(tasks, tasks.Count, DateTime.Now),
+            WorkBoardFilter.All,
+            DateTime.Now,
+            WorkBoardLimits.Default);
+    }
+
+    private static void AppendLadderRows(SpecBoardSnapshot spec, string status, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            spec.Rows.Add(new SpecBoardRow
+            {
+                Id = status + "." + i.ToString(CultureInfo.InvariantCulture),
+                Project = "Demo",
+                ProjectRoot = @"D:\Demo",
+                SpecPath = "Docs/Technical/Demo-SPEC-v1.md",
+                Title = status + " " + i.ToString(CultureInfo.InvariantCulture),
+                Status = status,
+                EventTimeUtc = DateTime.UtcNow.AddDays(-i - 1),
+                IsUnregistered = string.Equals(status, SpecBoardStatus.Unregistered, StringComparison.OrdinalIgnoreCase)
+            });
+        }
+    }
+
     private static void RunCompactLayoutSelfTest()
     {
         WidgetSettings settings = WidgetSettings.CreateDefaults();

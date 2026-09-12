@@ -1,6 +1,6 @@
 # Codex / Claude Radar 数据所有者架构
 
-适用版本：2.0.0.47
+适用版本：2.0.0.54
 
 本文说明 `CodexRadarForm` 作为永久 headless owner 时的 Codex 公共 Radar、Codex/Claude 官方额度、服务健康、任务状态和只读投影。
 
@@ -37,7 +37,7 @@
 | 右侧 CLD tile / expand | `BuildRadarTileSnapshot(Claude)` | 固定 Claude/CLD 标签、官方额度、重置与同构趋势预测 |
 | 左侧 Codex IQ board | `BuildCodexIqBoardSnapshot()` / `BuildServiceHealth()` | Codex 全模型 IQ、成本、耗时、token、额度趋势、名册与四项服务健康 |
 | 左侧重置与速蹬 board | `BuildResetSpeedBoardSnapshot()` | 7 天周额度余量、重置事件、速蹬窗口、重置卡余量、最近到期，以及 Radar 的发重置卡/硬重置判断 |
-| Codex Task board / Operation | `CodexTaskPresentation.SnapshotProvider` | 本地 Codex 会话任务状态 |
+| Work Board（WORKBENCH） | `CodexTaskPresentation.SnapshotProvider` | 本地 Codex 会话任务状态 |
 | 本机 `--balances` CLI | `WidgetForm.BuildAiBalanceShareSnapshot()` | 同一运行实例内的 Codex/Claude 额度与 DeepSeek 余额，只读 JSON |
 
 Claude tile 不生成模型 IQ 或效率；其 `IqKnown`、`EfficiencyKnown` 恒为 `false`，且没有社区评分字段。
@@ -71,7 +71,7 @@ flowchart LR
     N --> P["right tiles / Codex IQ / Reset-Speed boards"]
     N --> T["current-user balance pipe"]
     T --> U["--balances JSON"]
-    O --> Q["Codex Task board / Operation"]
+    O --> Q["Work Board（WORKBENCH）"]
 ```
 
 网络、磁盘和 provider 工作只在 owner 的既有调度链执行。绘制表面只读取投影，不建立 reader、timer、watcher 或请求。
@@ -212,6 +212,7 @@ owner 注册 `CodexTaskPresentation.SnapshotProvider`，并在既有 scheduler �
 - `%USERPROFILE%\.codex\sessions` 只维护一套递归 watcher。
 - watcher 事件用于逐文件增量尾读，低频完整对账兜底漏报。
 - reader 不创建独立 timer；presentation 层把缓存映射为颜色、环、徽标和行模型。
+- 会话活动时间线由 owner 的 `SampleCodexTaskTimeline` 在同一刷新批次中累积，**不依赖任何看板存活或展开**——累积是数据行为；`CodexTaskPresentation.SampleTimeline` 只保存状态转换，不保存原始采样。
 - 展示不输出提示词、回复或完整会话路径。
 
 owner 停止时清除 provider，避免消费者调用已销毁实例。

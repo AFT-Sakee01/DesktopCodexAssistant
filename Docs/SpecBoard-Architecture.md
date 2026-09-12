@@ -1,8 +1,8 @@
-# Spec Board 架构
+# Work Board（WORKBENCH）架构
 
-适用版本：2.0.0.51
+适用版本：2.0.0.54
 
-本文负责跨项目 spec 账本读取、对账、看板窗口、交互和只读边界。
+本文负责跨项目 spec 账本读取、对账、合并后的 Work Board 看板窗口、交互和只读边界。`2.0.0.54` 起 Spec Board 与 Codex Task 两个停靠角色合并为单一 Work Board（绘制标题 `WORKBENCH`），左缘 Dock 由八角色收敛为七角色。
 
 ## 数据流
 
@@ -20,9 +20,9 @@
 
 `SpecBoardForm` 继承 `LayeredWidgetFormBase`，复用 `NativeMethods.LayeredBitmapSurface`、`UiFontCache`、`DesignTokens` 和 `BurnInProtection`。窗口无任务栏按钮、无激活显示。`SpecBoardWidth/Height`（默认 648×400）是 96-DPI 逻辑尺寸：`GetDesiredSize` 按 `LayerScale`（DPI × 生效窗口缩放）放大成物理窗口尺寸；`SpecBoardScaleOverridePercent=-1` 时生效值来自全局分辨率兼容缩放，显式 `40..200` 时覆盖全局并由左缘 tab 共同跟随。内容和画布必须走同一缩放系数，否则高 DPI/独立缩放下内容会拥挤或裁切。标题 `S(13)`、计数与正文 `S(9.5)`、强调正文 `S(10)`、辅助文字 `S(8.4)`；标题、项目行、段头、卡片和 footer 高度均来自当前字体实测。卡片副行的项目名按实测可用宽度显示全名，放不下才从尾部截断（保住右侧事件时间，`FitProjectLabel`）。
 
-`SpecBoardWidth` 允许 240–700：逻辑宽小于 `SpecBoardForm.CompactRailMinimumLogicalWidth = 360` 时进入**紧凑单列模式**——项目栏、项目过滤与新鲜度点隐藏（卡片副行本就带项目名，信息不丢；粘滞的项目过滤自动复位为"全部"），行动流占满全宽，footer（管理/关闭/统计）由两种布局共享的 `DrawBoardFooter` 绘制、始终保留。紧凑模式有独立自测（`RunCompactLayoutSelfTest`：栏隐藏、过滤复位、卡片近全宽不越界不压 footer），`--render-specboard sample` 额外产出 `specboard-compact.png`。
+`SpecBoardWidth` 允许 240–700：逻辑宽小于 `SpecBoardForm.CompactRailMinimumLogicalWidth = 360` 时进入**紧凑单列模式**——项目栏、项目过滤与新鲜度点隐藏（卡片副行本就带项目名，信息不丢；粘滞的项目过滤自动复位为"全部"），行动流占满全宽，footer（管理/时间线/关闭/统计）由两种布局共享的 `DrawBoardFooter` 绘制、始终保留。紧凑模式有独立自测（`RunCompactLayoutSelfTest`：栏隐藏、过滤复位、卡片近全宽不越界不压 footer），`--render-specboard sample` 额外产出 `specboard-compact.png`。
 
-宽布局下左栏按项目过滤，右栏依次显示未登记、需要执行、需要修改、等待验证。四段同时非空时按右栏实测高度压缩段头、卡片和间距，每段仍至少保留一张完整卡片；不足处在段头或段尾显示 `+N`。卡片单击等待 `SystemInformation.DoubleClickTime` 后把 spec 绝对路径写入系统剪贴板；复制成功后，窗口右下角显示约 2 秒的绿色“已复制 Spec 绝对路径”提示，并复用维护 tick 清除。双击取消待复制动作并通过系统默认程序打开 spec，丢失或异常路径回退到项目目录。双击后的第二次 MouseUp 会被吞掉，保证不会在打开文件后再次覆盖剪贴板。项目行、卡片和 footer 的管理/关闭命中区保留原动作；左键点击其余非控件/空白区域直接收起小看板。主看板本身不提供状态写入控件。
+宽布局下左栏按项目过滤，右栏为五段行动流（段序与高度分配见「合并后的看板结构」）。卡片单击等待 `SystemInformation.DoubleClickTime` 后把 spec 绝对路径写入系统剪贴板；复制成功后，窗口右下角显示约 2 秒的绿色“已复制 Spec 绝对路径”提示，并复用维护 tick 清除。双击取消待复制动作并通过系统默认程序打开 spec，丢失或异常路径回退到项目目录。双击后的第二次 MouseUp 会被吞掉，保证不会在打开文件后再次覆盖剪贴板。项目行、卡片和 footer 的管理/时间线/关闭命中区保留原动作；左键点击其余非控件/空白区域直接收起小看板。主看板本身不提供状态写入控件。
 
 ## 新鲜度
 
@@ -50,19 +50,33 @@
 
 RadialDial 核心圆圈或 Start 按钮的单击动作等待 `SystemInformation.DoubleClickTime` 后才提交；双击到达会取消待执行单击并吞掉第二次 MouseUp，避免一次双击同时开关 Radial 菜单或 Windows 开始菜单。双击现在由窗口运行时统一负责隐藏或恢复两侧表面，不再提供 Spec 管理入口。生产路径中的 Spec 小看板始终有 `OperationForm` owner，并由固定左 Dock 的 `LeftDockLayout` 定位；`SpecBoardLeftX`、`SpecBoardBottomY` 仅保留为旧版 owner-null/未停靠回退坐标，当前设置 UI、全局布局编辑器和正常运行路径都不提供入口。
 
+## 合并后的看板结构
+
+`SpecBoardForm` 是合并面的唯一窗体。绘制前调用纯函数 `WorkBoardComposer.Compose` 把 `SpecBoardSnapshot` 与 `CodexTaskMonitorSnapshot` 合成 `WorkBoardModel`；合成层零 IO、零计时器、不修改入参，归属只做到项目级（`WorkspaceLeaf` → `root` 叶名 → `project.name` → `workspace_aliases` → 未归属）。会话行一律经 `CodexTaskPresentation.BuildRows` 产生，状态文案、状态色、上下文色与提醒语义在进程内只有一份实现。
+
+行动流固定五段：`▶ 进行中`（`Success`）、`◆ 未登记`（`WarningDeep`）、`◆ 需要执行`（`Danger`）、`◆ 需要修改`（`AccentAlt`）、`◆ 等待验证`（`Warning`）。段名由 `WorkBoardComposer.GetSectionLabel` 提供，与管理窗使用的 `SpecBoardStatus.DisplayName` 分离：看板写「需要执行」这一动作，管理窗写「未执行」这一状态。
+
+默认 `648×400` 下五段无法各留一张完整卡片（标题栏与 footer 约占 66 逻辑像素，可用约 334，而五段「段头 + 卡片」需要约 340），因此 `SpecBoardForm.ComputeSectionPlan` 用降级阶梯替代旧的「每段至少一张完整卡片」契约：空段只画段头；剩余预算按 `进行中` 优先的顺序逐段轮发完整卡片（宽布局每段上限 3，紧凑模式 1）；预算耗尽的非空段退化为「段头 + 计数 + `+N`」；**段头永不省略**，footer 高度固定不可侵占。约 470 逻辑高可容纳五段各一卡。该阶梯是纯高度算术，有独立自测 `RunSectionLadderSelfTest`，并由 `--render-specboard sample` 产出 `specboard-fivesection-400.png` 与 `specboard-fivesection-620.png` 供目测。
+
+项目栏在既有「新鲜度点 / 项目名 / 红-紫-黄计数」之后追加绿色 `▶N` 活跃会话胶囊；存在无归属会话时栏底追加「未归属」伪行，该行不带账本计数、不参与新鲜度、不写 `SpecBoardSeenState.json`，选中它时行动流五段全空。项目过滤同时作用于会话与 spec 两半。
+
+会话卡为瘦身版：状态点 · `#N` · `WorkspaceLeaf` ·（未归属标记）· 上下文百分比 / 官方标题 / 状态 · 时长 · 模型 · 细上下文条。圆环与四段 token 明细不进合并板，仍由右侧 Codex tile 的展开面板承载。`WorkBoardSpecSessionHintEnabled`（默认开启）时，会话标题文本命中同项目 spec 会在标题行右侧显示 `≈ <spec 短标题>`（多条命中追加 `+N`）；该提示是纯文本启发式，只做提示，不参与分组、不影响计数、不写账本，未归属会话永不获得提示。
+
+footer 为 `管理` / `时间线`↔`卡片` / `关闭` + 统计。时间线视图只替换右栏为会话泳道图，项目栏保留并继续过滤；`WorkBoardView` 决定启动默认，footer 点击只在本次会话内覆盖。时间线历史由 `CodexRadarForm.SampleCodexTaskTimeline` 在既有任务刷新批次中累积——累积是数据行为，不依赖任何看板存活或展开。
+
 ## 左缘停靠（EdgeDockTab）
 
-Network、Spec、Codex Task、GUARD、Codex IQ、ResetSpeed 与 SystemDay 七个固定停靠角色共用 `EdgeDockTabForm`（`Core/EdgeDockTabForm.cs`）——`5×30` 逻辑尺寸、左边全高向右收窄的梯形，中央有同角色色、较低不透明度的向右三角箭头，整体贴在工作区左缘。默认队列从上到下为 Network 蓝、Spec 橙、Codex Task 绿、GUARD 紫、Codex IQ 青、ResetSpeed 黄、SystemDay 橙红；用户可调整七角色顺序，但不可禁用或删除角色。展开看板也继承对应角色色的共享圆角内描边，精确线宽与绘制契约见 `Docs/Performance-And-Window-Runtime.md` §6。鼠标移上 tab 即展开对应看板；指针离开看板与 tab 后按各 board 的自动收回设置处理。**一个角色一枚 tab**，互不影响。
+Network、Workbench、GUARD、Codex IQ、ResetSpeed、SystemDay 与 Captions 七个固定停靠角色共用 `EdgeDockTabForm`（`Core/EdgeDockTabForm.cs`）——`5×30` 逻辑尺寸、左边全高向右收窄的梯形，中央有同角色色、较低不透明度的向右三角箭头，整体贴在工作区左缘。默认队列从上到下为 Network 蓝、Workbench 橙、GUARD 紫、Codex IQ 青、ResetSpeed 黄、SystemDay 橙红、Captions 紫罗兰；用户可调整七角色顺序，但不可禁用或删除角色。合并面沿用原 Spec 角色的枚举标识 `EdgeDockTabRole.SpecBoard` 与全部 `SpecBoard*` 设置键——`LeftDockButtonOrder` 以角色 token 持久化，改名会让既有设置失效；`Text` / `AccessibleName` 为 `Workbench` / `WorkbenchDockTab`。退役的 `CodexTask` token 由 `NormalizeColumnButtonOrder` 自动从旧的自定义顺序中剔除，其余相对顺序保留。
 
-tab 自身用 120 ms 计时器轮询 `Cursor.Position` 判定 hover（不依赖分层窗 alpha 命中测试，整个 `5×30` 矩形都是可命中区）。边框和任务栏仍隐藏，`Text`/`AccessibleName` 使用各自稳定名称，让辅助功能和 UI 验收工具能区分五枚微型窗口。展开时看板左缘落在 `工作区左缘 + tab 宽`，tab 保持可见，指针可以从 tab 连续滑入看板而不触发收起倒计时。tab 是**永久可见**元素，因此五枚都使用独立防烧屏 salt；梯形与箭头绘制在同一分层位图内，`EdgeDockTabForm.PositionAtLeftEdge` 先取得 `ApplyRuntimeOffset`，再由 `PinToLeftEdge` 丢弃水平分量并固定到 `workArea.Left`，所以两者共同承受 Y 轴微位移，鼠标贴住主屏或负坐标副屏的绝对最左像素时仍能命中。五个角色的展开面板同样固定水平锚点：各自 `PositionAtLeftDock` 调用 `ApplyRuntimeOffsetWithPinnedX`，统一停在 `工作区左缘 + tab 宽度`，仅保留独立 salt 的 Y 轴微位移。隐藏透明度与像素微迁移的共享视觉契约以 `Docs/Performance-And-Window-Runtime.md` §6.1 为单一事实源。
+鼠标移上 tab 即展开对应看板；指针离开看板与 tab 后按各 board 的自动收回设置处理。**一个角色一枚 tab**，互不影响。tab 自身用 120 ms 计时器轮询 `Cursor.Position` 判定 hover（不依赖分层窗 alpha 命中测试，整个 `5×30` 矩形都是可命中区）。展开时看板左缘落在 `工作区左缘 + tab 宽`，tab 保持可见。tab 是**永久可见**元素，七枚各用独立防烧屏 salt；梯形与箭头绘制在同一分层位图内，`PositionAtLeftEdge` 先取 `ApplyRuntimeOffset`，再由 `PinToLeftEdge` 丢弃水平分量并固定到 `workArea.Left`。七个角色的展开面板同样固定水平锚点，仅保留独立 salt 的 Y 轴微位移。隐藏透明度与像素微迁移的共享视觉契约以 `Docs/Performance-And-Window-Runtime.md` §6.1 为单一事实源。
 
-`LeftDockOutsideClickCollapseEnabled` 默认开启。停靠展开的 Spec、Codex Task、GUARD、Codex IQ 看板，以及 Spec 的自动弹窗态，在用户点击看板外部（桌面、其他窗口或另一块看板）时收回；自身窗口、自己的 tab 与 Spec 管理窗属于排除区。生产路径不存在手动打开且未停靠的常驻 Spec 看板。板内空白区域原有的 `HideBoard()` 语义继续保留，两条关闭路径互补。
+`LeftDockOutsideClickCollapseEnabled` 默认开启。停靠展开的各看板，以及 Work Board 的自动弹窗态，在用户点击看板外部时收回；自身窗口、自己的 tab 与 Spec 管理窗属于排除区。外部点击由共享 `OutsideClickDismissalMonitor` 处理，不使用失焦事件、长期鼠标捕获或全局鼠标钩子，也不新增计时器。外部点击收回后，tab 在 800 ms 内且光标尚未离开 tab 区时禁止重新展开。
 
-外部点击由共享 `OutsideClickDismissalMonitor` 处理，不使用失焦事件、长期鼠标捕获或全局鼠标钩子，也不新增计时器。`EdgeDockTabForm` 的既有 120 ms hover tick 读取 `GetAsyncKeyState(VK_LBUTTON)` 的当前按下位与“上次查询后按过”位，并把单调递增的点击序号交给四个 owned board 消费；Spec 的 500 ms 维护 tick 为自动弹窗补兜底。进程内所有左键异步状态读取必须经该监测器，避免某个调用方提前消耗低位。外部点击收回后，tab 在 800 ms 内且光标尚未离开 tab 区时禁止重新展开，避免左缘点击造成“收回后秒开”；一旦离开 tab 即解除抑制。
+tab 中心 Y 由各自 `*LeftDockTabCenterY` 指定，`-1`（`AutoLeftDockTabCenterY`）表示交给 `LeftDockLayout`：按 `LeftDockButtonOrder` 对七个角色的实际缩放后高度累计排队，并按 0–100 分布值安排可用空白。七个角色始终在启动时构造（即使收起）；历史 `*LeftDockEnabled` 键只作兼容持久化，`Normalize` 强制为 `true`，设置 UI 不显示。挂起或全屏隐藏时 `ShowTab`/`ShowBoard` 不得重现窗口，恢复必须由 owner 显式重新显示。
 
-tab 中心 Y 由各自 `*LeftDockTabCenterY` 指定，`-1`（`AutoLeftDockTabCenterY`）表示交给 `LeftDockLayout`：按 `LeftDockButtonOrder` 对 Network、Spec、Codex Task、GUARD、Codex IQ、ResetSpeed、SystemDay 七个角色的实际缩放后高度累计排队，并按 0–100 分布值安排可用空白。七枚 tab 与对应看板统一使用 `ModuleOperation` 工作区和所属角色的透明度/缩放槽位。七个角色始终在启动时构造（即使收起）——tab 是其唯一常驻表面，由所属宿主的运行时设置链路负责建立；历史 `*LeftDockEnabled` 键只作兼容持久化，`Normalize` 强制为 `true`，设置 UI 不显示。挂起或全屏隐藏时 `ShowTab`/`ShowBoard` 不得重现窗口，恢复必须由 owner 显式重新显示。
+几何、自动槽位、边缘命中和视觉层级有独立自测（`EdgeDockTabForm.RunSelfTest`、`LeftDockLayout.RunSelfTest`：`5×30` 梯形方向、中央右箭头、七角色映射、七枚自动 tab 不重叠）；显示生命周期自测逐一覆盖七角色。两者都随 `--test-operation-panel` 与 `--test-layout` 运行。
 
-几何、自动槽位、边缘命中和普通/隐藏视觉层级有独立自测（`EdgeDockTabForm.RunSelfTest`：`5×30` 梯形方向、中央右箭头、七角色映射、七枚自动 tab 不重叠、主屏与负坐标副屏左缘可命中）；显示生命周期自测也逐一覆盖七角色。外部点击的边沿、多消费者、命中排除与回弹抑制由 `OutsideClickDismissalMonitor.RunSelfTest` 覆盖。两者都随 `--test-operation-panel` 运行；`--render-operation` 输出七角色 tab 状态条和 board 样张，`--render-resetspeedboard` / `--render-systemdayboard` 可单独输出第六、七看板。
+`CodexTaskBoard*` 的宽高、视图、缩放、透明度与 tab 中心 Y 设置键降为兼容持久化，保留以便回滚，但已无消费者，设置 UI 与全局布局编辑器不再显示。`WorkBoardView`、`WorkBoardTimelineMinutes` 与 `WorkBoardSpecSessionHintEnabled` 取而代之，迁移在设置版本 `100` 完成。
 
 OLED Typographic、AmberHud、WarmCard、Phosphor 变体复用现有语义色，且使用灰度文字抗锯齿，避免 ClearType 在分层位图中生成蓝色子像素。
 

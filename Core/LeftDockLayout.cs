@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 
@@ -65,7 +65,6 @@ internal static class LeftDockLayout
     {
         EdgeDockTabRole.Network,
         EdgeDockTabRole.SpecBoard,
-        EdgeDockTabRole.CodexTask,
         EdgeDockTabRole.Guard,
         EdgeDockTabRole.CodexIq,
         EdgeDockTabRole.ResetSpeed,
@@ -84,8 +83,6 @@ internal static class LeftDockLayout
         {
             case EdgeDockTabRole.Network:
                 return settings.NetworkMonitorTransparencyOverridePercent;
-            case EdgeDockTabRole.CodexTask:
-                return settings.CodexTaskBoardTransparencyOverridePercent;
             case EdgeDockTabRole.Guard:
                 return settings.GuardBoardTransparencyOverridePercent;
             case EdgeDockTabRole.CodexIq:
@@ -107,8 +104,6 @@ internal static class LeftDockLayout
         {
             case EdgeDockTabRole.Network:
                 return settings.NetworkMonitorScaleOverridePercent;
-            case EdgeDockTabRole.CodexTask:
-                return settings.CodexTaskBoardScaleOverridePercent;
             case EdgeDockTabRole.Guard:
                 return settings.GuardBoardScaleOverridePercent;
             case EdgeDockTabRole.CodexIq:
@@ -297,18 +292,16 @@ internal static class LeftDockLayout
         constrained.LeftDockButtonGapPixels = WidgetSettings.MaxColumnButtonGapPixels;
         constrained.NetworkMonitorScaleOverridePercent = 200;
         constrained.SpecBoardScaleOverridePercent = 200;
-        constrained.CodexTaskBoardScaleOverridePercent = 200;
         constrained.GuardBoardScaleOverridePercent = 200;
         constrained.CodexIqBoardScaleOverridePercent = 200;
         constrained.ResetSpeedBoardScaleOverridePercent = 200;
         constrained.SystemDayBoardScaleOverridePercent = 200;
         constrained.CaptionsBoardScaleOverridePercent = 200;
-        // Height chosen so the eight 200%-scaled 30-logical-tall tabs (60px each = 480px body) leave
-        // exactly 70px of whitespace across the seven gaps between them (10px/gap at 100% spacing) --
-        // the same per-gap arithmetic the original seven-board height (480) produced with six gaps.
-        Rectangle gapLimitedWorkArea = new Rectangle(0, 0, 800, 550);
+        // Height chosen so the seven 200%-scaled 30-logical-tall tabs (60px each = 420px body) leave
+        // exactly 60px of whitespace across the six gaps between them (10px/gap at 100% spacing).
+        Rectangle gapLimitedWorkArea = new Rectangle(0, 0, 800, 480);
         Rectangle[] gapLimited = ResolveAutoTabBounds(constrained, gapLimitedWorkArea, 1.0f);
-        if (gapLimited.Length != 8 || gapLimited[0].Top != gapLimitedWorkArea.Top ||
+        if (gapLimited.Length != 7 || gapLimited[0].Top != gapLimitedWorkArea.Top ||
             gapLimited[gapLimited.Length - 1].Bottom != gapLimitedWorkArea.Bottom ||
             gapLimited[1].Top - gapLimited[0].Bottom != 10)
         {
@@ -334,7 +327,7 @@ internal static class LeftDockLayout
         arranged.LeftDockAutoArrangeEnabled = true;
         arranged.LeftDockButtonGapPixels = 27;
         arranged.LeftDockGroupOffsetY = 0;
-        arranged.LeftDockButtonOrder = new string[] { "SystemDay", "ResetSpeed", "CodexIq", "Network", "Guard", "SpecBoard", "CodexTask" };
+        arranged.LeftDockButtonOrder = new string[] { "SystemDay", "ResetSpeed", "CodexIq", "Network", "Guard", "SpecBoard" };
         arranged.SpecBoardLeftDockEnabled = false;
         arranged.GuardBoardLeftDockEnabled = false;
         Rectangle[] compact = ResolveAutoTabBounds(arranged, workArea, 1.0f);
@@ -344,27 +337,25 @@ internal static class LeftDockLayout
         int compactWhitespace = EdgeColumnSpacing.ResolveDistributedWhitespacePixels(
             arranged.LeftDockButtonGapPixels,
             workArea.Height - compactBodyHeight);
-        // arranged.LeftDockButtonOrder only lists the original seven roles; Captions is not in that
-        // explicit order but remains enabled, so ResolveEnabledQueue appends it after them (the same
-        // fallback that lets a brand-new role show up in an old, unedited custom order).
-        if (compact.Length != 8 || compactRoles.Length != 8 ||
+        // arranged.LeftDockButtonOrder only lists six roles; Captions is not in that explicit
+        // order but remains enabled, so ResolveEnabledQueue appends it after them -- the same
+        // fallback that silently drops the retired CodexTask id from a pre-merge saved order.
+        if (compact.Length != 7 || compactRoles.Length != 7 ||
             compactRoles[0] != EdgeDockTabRole.SystemDay ||
             compactRoles[1] != EdgeDockTabRole.ResetSpeed ||
             compactRoles[2] != EdgeDockTabRole.CodexIq ||
             compactRoles[3] != EdgeDockTabRole.Network ||
             compactRoles[4] != EdgeDockTabRole.Guard ||
             compactRoles[5] != EdgeDockTabRole.SpecBoard ||
-            compactRoles[6] != EdgeDockTabRole.CodexTask ||
-            compactRoles[7] != EdgeDockTabRole.Captions ||
-            compact[1].Top - compact[0].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 0, 7) ||
-            compact[2].Top - compact[1].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 1, 7) ||
-            compact[3].Top - compact[2].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 2, 7) ||
-            compact[4].Top - compact[3].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 3, 7) ||
-            compact[5].Top - compact[4].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 4, 7) ||
-            compact[6].Top - compact[5].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 5, 7) ||
-            compact[7].Top - compact[6].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 6, 7))
+            compactRoles[6] != EdgeDockTabRole.Captions ||
+            compact[1].Top - compact[0].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 0, 6) ||
+            compact[2].Top - compact[1].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 1, 6) ||
+            compact[3].Top - compact[2].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 2, 6) ||
+            compact[4].Top - compact[3].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 3, 6) ||
+            compact[5].Top - compact[4].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 4, 6) ||
+            compact[6].Top - compact[5].Bottom != EdgeColumnSpacing.ResolveGapAfterIndex(compactWhitespace, 5, 6))
         {
-            throw new InvalidOperationException("Left dock fixed-eight custom order or percentage spacing self-test failed.");
+            throw new InvalidOperationException("Left dock fixed-seven custom order or percentage spacing self-test failed.");
         }
 
         arranged.LeftDockButtonGapPixels = 0;
@@ -456,7 +447,6 @@ internal static class LeftDockLayout
         settings.CaptionsBoardScaleOverridePercent = 198;
         if (ResolveTransparencyOverride(settings, EdgeDockTabRole.Network) != 41 ||
             ResolveTransparencyOverride(settings, EdgeDockTabRole.SpecBoard) != 52 ||
-            ResolveTransparencyOverride(settings, EdgeDockTabRole.CodexTask) != 63 ||
             ResolveTransparencyOverride(settings, EdgeDockTabRole.Guard) != 74 ||
             ResolveTransparencyOverride(settings, EdgeDockTabRole.CodexIq) != 85 ||
             ResolveTransparencyOverride(settings, EdgeDockTabRole.ResetSpeed) != 86 ||
@@ -464,7 +454,6 @@ internal static class LeftDockLayout
             ResolveTransparencyOverride(settings, EdgeDockTabRole.Captions) != 88 ||
             ResolveScaleOverride(settings, EdgeDockTabRole.Network) != 45 ||
             ResolveScaleOverride(settings, EdgeDockTabRole.SpecBoard) != 85 ||
-            ResolveScaleOverride(settings, EdgeDockTabRole.CodexTask) != 125 ||
             ResolveScaleOverride(settings, EdgeDockTabRole.Guard) != 175 ||
             ResolveScaleOverride(settings, EdgeDockTabRole.CodexIq) != 195 ||
             ResolveScaleOverride(settings, EdgeDockTabRole.ResetSpeed) != 196 ||
@@ -565,7 +554,6 @@ internal static class LeftDockLayout
 
         return role == EdgeDockTabRole.Network ||
             role == EdgeDockTabRole.SpecBoard ||
-            role == EdgeDockTabRole.CodexTask ||
             role == EdgeDockTabRole.Guard ||
             role == EdgeDockTabRole.CodexIq ||
             role == EdgeDockTabRole.ResetSpeed ||
@@ -715,8 +703,6 @@ internal static class LeftDockLayout
         {
             case EdgeDockTabRole.Network:
                 return settings.NetworkMonitorLeftDockTabCenterY;
-            case EdgeDockTabRole.CodexTask:
-                return settings.CodexTaskBoardLeftDockTabCenterY;
             case EdgeDockTabRole.Guard:
                 return settings.GuardBoardLeftDockTabCenterY;
             case EdgeDockTabRole.CodexIq:

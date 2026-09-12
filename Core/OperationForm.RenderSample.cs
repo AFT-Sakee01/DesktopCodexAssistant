@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -60,7 +60,6 @@ internal sealed partial class OperationForm
             {
                 return CodexTaskPresentation.CreateFixtureSnapshot(sampleNow);
             };
-            RenderCodexTaskBoardSample(outputDir);
             RenderEdgeDockTabSample(outputDir);
             CodexIqBoardForm.RenderSample(outputDir);
             ResetSpeedBoardForm.RenderSample(outputDir);

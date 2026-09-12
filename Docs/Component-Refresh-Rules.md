@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.53
+适用版本：2.0.0.54
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -213,19 +213,18 @@ DNS 检测：
 
 ## 8. 左侧 boards
 
-### 8.1 Spec Board
+### 8.1 Work Board（WORKBENCH，合并 Spec + Codex 会话）
 
-- 可见/自动监测使用既有 500 ms maintenance tick；文件变化 500 ms 防抖。
+- 可见/自动监测使用既有 500 ms maintenance tick；文件变化 500 ms 防抖。**不存在第二个计时器**：退役的 Codex Task board 的 2 s 刷新折进这个 tick，以 `TaskSampleIntervalMs = 2000` 节流重采会话快照，仅在快照引用变化时重绘。
+- 会话快照取自 `CodexTaskPresentation.GetSnapshot()`（内存克隆，零 IO）；展开时 `ShowBoardCore` 强制重采一次，避免首帧显示节流窗口内的旧数据。
 - 自动监测时 watcher 覆盖账本与注册项目 spec 目录；60 s 轮询和 5 min 完整对账兜底。
 - 读取单飞，运行中触发合并；隐藏、挂起、关闭或超时取消，迟到 generation 不提交。
-- 自动弹窗基线只在首次完整快照播种；新 pending/needs_revision/awaiting_verify 项才弹出。
+- 自动弹窗基线只在首次完整快照播种；新 pending/needs_revision/awaiting_verify 项才弹出。**会话状态变化永不触发自动弹窗**——会话提醒走 `AlertCodexTaskEnabled` 与右侧 Codex tile。
+- 会话时间线历史由 `CodexRadarForm.SampleCodexTaskTimeline` 在 owner 既有任务刷新批次中累积，**不依赖本看板存活或展开**；`WorkBoardTimelineMinutes` 决定窗口长度。
 - 自动收回与外部点击复用既有 tick，不建立 mouse hook。
+- 绘制路径调用纯函数 `WorkBoardComposer.Compose`：零 IO、零计时器、不修改入参，因此不引入任何调度语义。
 
-### 8.2 Codex Task board
-
-任务数据由 Radar owner 的共享 task provider 更新；board 只做展示、tab、收起和绘制节流，不建立第二个 session watcher 或递归 reader。
-
-### 8.3 GUARD
+### 8.2 GUARD
 
 - `GuardBoardForm` 固定 500 ms 状态 tick，从隐藏构造起运行；board 收起不停止状态机。
 - 可见时更新秒级倒计时，隐藏时只维护状态与 tab 颜色。
@@ -236,11 +235,11 @@ DNS 检测：
 - 显示挂起只释放 board layered resources，不停止状态机；显示恢复释放旧句柄并立即重建当前电源请求。
 - GUARD CLI 管道使用单一阻塞 worker 等待连接，不设轮询 timer；有效命令有界等待 UI 线程执行，复用相同状态和持久化路径。
 
-### 8.4 Codex IQ
+### 8.3 Codex IQ
 
 可见时每 5 s clone Radar owner 快照；隐藏、全屏或显示挂起时停止展示轮询。tab/收起/定位使用既有 500 ms maintenance tick，不发网络请求。
 
-### 8.5 重置与速蹬
+### 8.4 重置与速蹬
 
 - `ResetSpeedBoardForm` 可见时每 5 s clone `BuildResetSpeedBoardSnapshot()`；500 ms maintenance tick 只负责 tab、外部点击、自动收回、定位与必要重绘。
 - `CodexQuotaHistoryStore.Record()` 只经 `CodexRadarForm.RecordAcceptedQuotaHistory()` 写入，收到的是 `CaptureAcceptedQuotaForHistory()` 在 `ApplyQuotaResetProtections()` 之前留下的已接受读数；重置保护强制的 100 只作用于展示与缓存，不是一次新的额度采样，不进入历史。15 分钟内且变化小于 3% 的普通样本合并，周余量回升至少 5% 才登记重置事件。合并与重置分类都只与**同一 `account_key`** 的上一条比较。
@@ -249,7 +248,7 @@ DNS 检测：
 - JSONL 后台批量写入 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-quota-seven-day-history.jsonl`；board 的 5 秒投影只 clone 已加载内存，不同步读文件。
 - board 隐藏、全屏或显示挂起时停止展示轮询；历史记录继续服从 Radar owner 的额度调度，不建立 provider、reader 或网络请求。
 
-### 8.6 系统日记
+### 8.5 系统日记
 
 - hidden `WidgetForm` 在现有性能 feed 完成后调用 `SystemDayHistoryStore.RecordSample()`；`MinimumSampleSeconds = 55` 保证最多约每分钟一条，不新增硬件 timer 或 sampler。
 - 连续 5 分钟无键鼠输入后记为 `Idle`，否则记为 `Active`；`PBT_APMSUSPEND` / `PBT_APMRESUME*` 另记睡眠边界事件。
@@ -257,7 +256,7 @@ DNS 检测：
 - `SystemDayBoardForm` 可见时每 5 s clone 范围快照；500 ms maintenance tick 只处理 tab、外部点击、自动收回、范围点击、定位和必要重绘。
 - board 隐藏、全屏或显示挂起时停止展示刷新；历史记录仍随 hidden host 的有效性能采样运行。绘制路径不读 JSONL，也不调用 Power/Thermal sampler。
 
-### 8.7 字幕
+### 8.6 字幕
 
 - `TranslatorControlReader`（`Core/TranslatorControlReader.cs`）是 `WidgetForm` 直接构造并调用 `StartHeadlessDataOwner()`/`StopHeadlessDataOwner()` 的第三个 headless data owner，与 §4/§5 的 Codex/Power owner 同一套生命周期契约；但它不是 `Form`，没有 HWND，不接收 Windows 消息，因此不做 `InvokeRequired`/`Invoke` 编排——所有调用固定发生在 UI 线程。
 - 轮询固定 `RefreshIntervalMs = 2000`（不随 `PerformanceMode` 变化），由 `CaptionsBoardForm` 自己的 500 ms maintenance tick 在每次 tick 调用 `RefreshIfDue(now, force:false)` 驱动；`RefreshIfDue` 内部按 `nextRefreshUtc` 自门控，实际每 2000 ms 才真正做一次 I/O，与 `RefreshSeelenUiStatus`（§7，`SeelenStatusRefreshIntervalMs = 2000`）同一节流写法。board 隐藏时其 maintenance tick 停止，`RefreshIfDue` 因此完全不被调用——不常驻轮询外部文件或进程。

@@ -10455,6 +10455,24 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         this.nextCodexTaskMonitorReconcileUtc = DateTime.MinValue;
     }
 
+    private void SampleCodexTaskTimeline()
+    {
+        try
+        {
+            CodexTaskPresentation.SampleTimeline(
+                CodexTaskPresentation.GetSnapshot(),
+                DateTime.Now,
+                this.CurrentSettings == null
+                    ? WidgetSettings.DefaultWorkBoardTimelineMinutes
+                    : this.CurrentSettings.WorkBoardTimelineMinutes);
+        }
+        catch (Exception ex)
+        {
+            // History accrual must never take down the owner's refresh batch.
+            Logger.Error(ex);
+        }
+    }
+
     private void RefreshCodexTaskMonitorIfNeeded()
     {
         CodexTaskMonitorReader reader = this.codexTaskMonitorReader;
@@ -10469,6 +10487,12 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             this.nextCodexTaskMonitorStatusRefreshUtc = nowUtc.AddSeconds(1.0);
             reader.RequestStatusRefresh();
         }
+
+        // Timeline history accrues here, in the permanent headless owner, rather than in a board's
+        // paint timer. Accumulation is a data behaviour: it must not depend on whether any surface
+        // is alive, docked-collapsed or expanded.
+        SampleCodexTaskTimeline();
+
         if (!this.CurrentSettings.CodexTaskMonitorEnabled)
         {
             return;

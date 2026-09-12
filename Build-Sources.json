@@ -1,4 +1,4 @@
-{
+﻿{
   "schema_version": 1,
   "sources": [
     "DesktopCodexAssistant.cs",
@@ -67,7 +67,7 @@
     "Core/NightScheduleController.cs",
     "Core/OperationForm.CaptionsBoard.cs",
     "Core/OperationForm.CodexIqBoard.cs",
-    "Core/OperationForm.CodexTasks.cs",
+    "Core/OperationForm.EdgeDockSample.cs",
     "Core/OperationForm.cs",
     "Core/OperationForm.GuardBoard.cs",
     "Core/OperationForm.RadialDial.cs",

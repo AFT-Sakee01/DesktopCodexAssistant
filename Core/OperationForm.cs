@@ -189,7 +189,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         this.appSettingsSingleClickTimer.Tick -= OnAppSettingsSingleClickTimerTick;
         this.appSettingsSingleClickTimer.Dispose();
         DisposeSpecBoardForm();
-        DisposeCodexTaskBoardForm();
         DisposeGuardBoardForm();
         DisposeCodexIqBoardForm();
         DisposeResetSpeedBoardForm();
@@ -303,7 +302,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             autoPopupForm.StartAutoPopupMonitoring();
         }
 
-        EnsureCodexTaskBoardForm();
 
         // The guard board is always built at startup: its hidden runtime owns sleep/display
         // requirements and deadline maintenance while its canonical tab remains collapsed.
@@ -420,11 +418,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
             this.specBoardForm.SetHiddenForFullscreen(hidden);
         }
 
-        if (this.codexTaskBoardForm != null && !this.codexTaskBoardForm.IsDisposed)
-        {
-            this.codexTaskBoardForm.SetDockTabHiddenForFullscreen(hidden);
-        }
-
         SetGuardBoardHiddenForFullscreen(hidden);
         SetCodexIqBoardHiddenForFullscreen(hidden);
         SetResetSpeedBoardHiddenForFullscreen(hidden);
@@ -439,12 +432,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         if (this.specBoardForm != null && !this.specBoardForm.IsDisposed)
         {
             this.specBoardForm.RecoverAfterDisplayResume();
-        }
-
-        if (this.codexTaskBoardForm != null && !this.codexTaskBoardForm.IsDisposed)
-        {
-            this.codexTaskBoardForm.SetDockTabDisplaySuspended(false);
-            this.codexTaskBoardForm.SyncLeftDockTab();
         }
 
         RecoverGuardBoardAfterDisplayResume();
@@ -466,11 +453,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         if (this.specBoardForm != null && !this.specBoardForm.IsDisposed)
         {
             this.specBoardForm.PrepareForDisplaySuspend();
-        }
-
-        if (this.codexTaskBoardForm != null && !this.codexTaskBoardForm.IsDisposed)
-        {
-            this.codexTaskBoardForm.SetDockTabDisplaySuspended(true);
         }
 
         PrepareGuardBoardForDisplaySuspend();
@@ -3186,7 +3168,6 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
         RunOperationDoubleClickRoutingSelfTest();
         RunRadialDialSelfTest();
         AiQuickMenuForm.RunSelfTest();
-        RunCodexTaskBoardPlacementSelfTest();
         EdgeDockTabForm.RunSelfTest();
         OutsideClickDismissalMonitor.RunSelfTest();
         PathPingProbeReader.RunSelfTest();

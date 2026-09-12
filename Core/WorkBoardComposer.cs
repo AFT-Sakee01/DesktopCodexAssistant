@@ -43,10 +43,19 @@ internal sealed class WorkBoardLiveRow
     // colour and attention semantics have exactly one implementation in the process.
     public CodexTaskRowModel Task;
     public string ProjectName;
+    // Opportunistic, explicitly-marked guess only: the session title textually matched a spec in the
+    // same project. Never authoritative, never written to the ledger, never used for grouping.
+    public string SpecHintTitle;
+    public int SpecHintOverflow;
 
     public bool IsUnattributed
     {
         get { return string.IsNullOrEmpty(this.ProjectName); }
+    }
+
+    public bool HasSpecHint
+    {
+        get { return !string.IsNullOrEmpty(this.SpecHintTitle); }
     }
 }
 
@@ -148,6 +157,9 @@ internal sealed class WorkBoardLimits
 {
     public int MaxLiveRows = 10;
     public int MaxAmbiguousLeavesLogged = 8;
+    // P3 hint. Off means the composer does no title matching at all, not merely that the hint is
+    // hidden, so the gate genuinely removes the behaviour.
+    public bool SpecSessionHintEnabled = true;
 
     public static WorkBoardLimits Default
     {
@@ -204,6 +216,10 @@ internal static class WorkBoardComposer
 
         AttributionLookup lookup = AttributionLookup.Build(projects, limits, model.Diagnostics);
         List<WorkBoardLiveRow> allLive = BuildLiveRows(tasks, lookup, nowLocal, limits, model.Diagnostics);
+        if (limits.SpecSessionHintEnabled)
+        {
+            ApplySpecHints(allLive, rows);
+        }
 
         BuildProjectRows(model, projects, rows, allLive);
         BuildLiveSection(model, allLive, filter);
@@ -388,6 +404,95 @@ internal static class WorkBoardComposer
         return live;
     }
 
+    // P3: purely textual, same-project-only guess at which spec a session might be working on.
+    //
+    // The backend cannot tell us this -- it never parses session content -- so the match is made on
+    // the official session title alone, and the caller must render it behind an explicit "≈" marker.
+    // Cross-project matching is deliberately impossible: a session with no attribution gets no hint,
+    // which keeps the honest "we only know project granularity" boundary intact.
+    internal static void ApplySpecHints(List<WorkBoardLiveRow> live, List<SpecBoardRow> rows)
+    {
+        for (int i = 0; i < live.Count; i++)
+        {
+            WorkBoardLiveRow row = live[i];
+            if (row.IsUnattributed || row.Task == null || string.IsNullOrEmpty(row.Task.Title))
+            {
+                continue;
+            }
+
+            string title = row.Task.Title;
+            SpecBoardRow best = null;
+            int matches = 0;
+            for (int r = 0; r < rows.Count; r++)
+            {
+                SpecBoardRow spec = rows[r];
+                if (spec == null ||
+                    !string.Equals(spec.Project, row.ProjectName, StringComparison.OrdinalIgnoreCase) ||
+                    !IsHintMatch(title, spec))
+                {
+                    continue;
+                }
+
+                matches++;
+                if (best == null || Later(spec) > Later(best))
+                {
+                    best = spec;
+                }
+            }
+
+            if (best != null)
+            {
+                row.SpecHintTitle = string.IsNullOrEmpty(best.Title) ? best.SpecPath : best.Title;
+                row.SpecHintOverflow = matches - 1;
+            }
+        }
+    }
+
+    private static DateTime Later(SpecBoardRow row)
+    {
+        return row.UpdatedUtc ?? row.EventTimeUtc ?? DateTime.MinValue;
+    }
+
+    private static bool IsHintMatch(string sessionTitle, SpecBoardRow spec)
+    {
+        if (!string.IsNullOrEmpty(spec.Title) && spec.Title.Length >= 4 &&
+            sessionTitle.IndexOf(spec.Title, StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return true;
+        }
+
+        string stem = ExtractSpecStem(spec.SpecPath);
+        return stem.Length >= 4 && sessionTitle.IndexOf(stem, StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    // "Docs/Technical/Opus5-WorkBoardMerge-SPEC-v2.0.0.51-20260912-133632.md" -> "WorkBoardMerge".
+    // The version and timestamp are never typed into a session title, and the model prefix is noise,
+    // so only the subject segment is a usable needle.
+    internal static string ExtractSpecStem(string specPath)
+    {
+        if (string.IsNullOrEmpty(specPath))
+        {
+            return string.Empty;
+        }
+
+        string name = specPath.Replace('\\', '/');
+        int slash = name.LastIndexOf('/');
+        if (slash >= 0)
+        {
+            name = name.Substring(slash + 1);
+        }
+
+        int marker = name.IndexOf("-SPEC-", StringComparison.OrdinalIgnoreCase);
+        if (marker <= 0)
+        {
+            return string.Empty;
+        }
+
+        name = name.Substring(0, marker);
+        int dash = name.IndexOf('-');
+        return dash >= 0 && dash + 1 < name.Length ? name.Substring(dash + 1) : name;
+    }
+
     private static void BuildLiveSection(WorkBoardModel model, List<WorkBoardLiveRow> allLive, WorkBoardFilter filter)
     {
         for (int i = 0; i < allLive.Count; i++)
@@ -461,7 +566,7 @@ internal static class WorkBoardComposer
             WorkBoardSection section = new WorkBoardSection
             {
                 Status = status,
-                Label = SpecBoardStatus.DisplayName(status),
+                Label = GetSectionLabel(status),
                 Color = GetSectionColor(status)
             };
 
@@ -481,6 +586,35 @@ internal static class WorkBoardComposer
 
             model.SpecSections.Add(section);
         }
+    }
+
+    // Board section headings, deliberately separate from SpecBoardStatus.DisplayName: the manager
+    // window labels a row's state ("未执行"), the board labels the action the section asks for
+    // ("需要执行"). These are the wordings the pre-merge board used, kept so the merge does not
+    // silently rename the sections users already read.
+    internal static string GetSectionLabel(string status)
+    {
+        if (string.Equals(status, SpecBoardStatus.Unregistered, StringComparison.OrdinalIgnoreCase))
+        {
+            return "未登记";
+        }
+
+        if (string.Equals(status, SpecBoardStatus.Pending, StringComparison.OrdinalIgnoreCase))
+        {
+            return "需要执行";
+        }
+
+        if (string.Equals(status, SpecBoardStatus.NeedsRevision, StringComparison.OrdinalIgnoreCase))
+        {
+            return "需要修改";
+        }
+
+        if (string.Equals(status, SpecBoardStatus.AwaitingVerify, StringComparison.OrdinalIgnoreCase))
+        {
+            return "等待验证";
+        }
+
+        return SpecBoardStatus.DisplayName(status);
     }
 
     internal static Color GetSectionColor(string status)
@@ -550,6 +684,7 @@ internal static class WorkBoardComposer
         RunSectionSelfTest();
         RunDegenerateInputSelfTest();
         RunInputImmutabilitySelfTest();
+        RunSpecHintSelfTest();
         Console.WriteLine("Work Board composition policy: PASS");
     }
 
@@ -803,6 +938,12 @@ internal static class WorkBoardComposer
         List<SpecBoardRow> ordered = withUndated.SpecSections[0].Rows;
         Assert(ordered[ordered.Count - 1].EventTimeUtc == null, "undated rows sort last");
 
+        Assert(GetSectionLabel(SpecBoardStatus.Unregistered) == "未登记" &&
+            GetSectionLabel(SpecBoardStatus.Pending) == "需要执行" &&
+            GetSectionLabel(SpecBoardStatus.NeedsRevision) == "需要修改" &&
+            GetSectionLabel(SpecBoardStatus.AwaitingVerify) == "等待验证",
+            "board section labels keep the pre-merge wording");
+
         Assert(GetSectionColor(SpecBoardStatus.Unregistered).ToArgb() == DesignTokens.Colors.WarningDeep.ToArgb() &&
             GetSectionColor(SpecBoardStatus.Pending).ToArgb() == DesignTokens.Colors.Danger.ToArgb() &&
             GetSectionColor(SpecBoardStatus.NeedsRevision).ToArgb() == DesignTokens.Colors.AccentAlt.ToArgb() &&
@@ -853,6 +994,77 @@ internal static class WorkBoardComposer
             Snapshot(projects, null), Tasks(many), WorkBoardFilter.All, now,
             new WorkBoardLimits { MaxLiveRows = 6 });
         Assert(bounded.LiveRows.Count == 6, "live rows honour the configured bound");
+    }
+
+    private static void RunSpecHintSelfTest()
+    {
+        Assert(ExtractSpecStem("Docs/Technical/Opus5-WorkBoardMerge-SPEC-v2.0.0.51-20260912-133632.md") == "WorkBoardMerge",
+            "spec stem drops the model prefix, version and timestamp");
+        Assert(ExtractSpecStem("Docs/Technical/NotASpec.md") == string.Empty, "non-spec file names yield no needle");
+        Assert(ExtractSpecStem(null) == string.Empty, "null spec path yields no needle");
+
+        List<SpecBoardProject> projects = new List<SpecBoardProject>
+        {
+            Project("Alpha", @"D:\x\Alpha"),
+            Project("Beta", @"D:\x\Beta")
+        };
+        SpecBoardRow alphaSpec = Row("Alpha", SpecBoardStatus.Pending, 3);
+        alphaSpec.Title = "左侧七停靠板 macOS 移植";
+        alphaSpec.SpecPath = "Docs/Technical/Opus5-MacLeftBoardPort-SPEC-v1.md";
+        SpecBoardRow betaSpec = Row("Beta", SpecBoardStatus.Pending, 4);
+        betaSpec.Title = "GUI 三发行版矩阵";
+        betaSpec.SpecPath = "Docs/Technical/Codex-WslGuiMatrix-SPEC-v1.md";
+        List<SpecBoardRow> rows = new List<SpecBoardRow> { alphaSpec, betaSpec };
+        SpecBoardSnapshot spec = Snapshot(projects, rows);
+        DateTime now = DateTime.Now;
+
+        // Exact title hit, inside the same project.
+        CodexTaskSnapshot hit = Task(1, "Alpha", CodexTaskStatus.Active);
+        WorkBoardModel model = Compose(spec, Tasks(WithTitle(hit, "继续 左侧七停靠板 macOS 移植 的 B 批")),
+            WorkBoardFilter.All, now, WorkBoardLimits.Default);
+        Assert(model.LiveRows[0].HasSpecHint && model.LiveRows[0].SpecHintTitle == "左侧七停靠板 macOS 移植",
+            "session title containing a same-project spec title produces a hint");
+
+        // File-stem hit with different casing.
+        WorkBoardModel stemModel = Compose(spec, Tasks(WithTitle(hit, "run macleftboardport now")),
+            WorkBoardFilter.All, now, WorkBoardLimits.Default);
+        Assert(stemModel.LiveRows[0].HasSpecHint, "spec file stem matches case-insensitively");
+
+        // Cross-project text must never match: the Beta spec title in an Alpha session.
+        WorkBoardModel cross = Compose(spec, Tasks(WithTitle(hit, "GUI 三发行版矩阵")),
+            WorkBoardFilter.All, now, WorkBoardLimits.Default);
+        Assert(!cross.LiveRows[0].HasSpecHint, "a spec from another project must never be hinted");
+
+        // Multiple hits in one project: newest wins and the rest are counted.
+        SpecBoardRow second = Row("Alpha", SpecBoardStatus.AwaitingVerify, 1);
+        second.Title = "左侧七停靠板 macOS 移植";
+        second.SpecPath = "Docs/Technical/Opus5-MacLeftBoardPort2-SPEC-v1.md";
+        second.UpdatedUtc = DateTime.UtcNow;
+        alphaSpec.UpdatedUtc = DateTime.UtcNow.AddDays(-9);
+        SpecBoardSnapshot twoSpec = Snapshot(projects, new List<SpecBoardRow> { alphaSpec, second });
+        WorkBoardModel many = Compose(twoSpec, Tasks(WithTitle(hit, "左侧七停靠板 macOS 移植")),
+            WorkBoardFilter.All, now, WorkBoardLimits.Default);
+        Assert(many.LiveRows[0].SpecHintOverflow == 1, "extra same-project matches are counted, not listed");
+
+        // Gate off means no matching happens at all.
+        WorkBoardLimits off = WorkBoardLimits.Default;
+        off.SpecSessionHintEnabled = false;
+        WorkBoardModel gated = Compose(spec, Tasks(WithTitle(hit, "继续 左侧七停靠板 macOS 移植 的 B 批")),
+            WorkBoardFilter.All, now, off);
+        Assert(!gated.LiveRows[0].HasSpecHint, "disabling the gate removes the hint entirely");
+
+        // An unattributed session has no project, so it can never be hinted.
+        WorkBoardModel orphan = Compose(spec, Tasks(WithTitle(Task(2, "qiyangtracker-x64", CodexTaskStatus.Active), "左侧七停靠板 macOS 移植")),
+            WorkBoardFilter.All, now, WorkBoardLimits.Default);
+        Assert(!orphan.LiveRows[0].HasSpecHint, "an unattributed session never receives a spec hint");
+    }
+
+    private static CodexTaskSnapshot WithTitle(CodexTaskSnapshot task, string title)
+    {
+        return new CodexTaskSnapshot(
+            task.FileKey, task.TaskNumber, task.WorkspaceLeaf, task.Model, task.Status,
+            task.StartedAtLocal, task.LastEventLocal, task.TerminalStatus, task.TerminalAtLocal,
+            task.TerminalSilent, task.LastTokenUsage, task.TotalTokenUsage, task.ContextPercent, title);
     }
 
     private static void RunInputImmutabilitySelfTest()
