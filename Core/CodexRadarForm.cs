@@ -2047,6 +2047,97 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         return snapshot;
     }
 
+    // Reset protection paints the live snapshot 100 so the ring stays full until the next quota
+    // window materializes. The seven-day board reads the same numbers from CodexQuotaHistoryStore, so
+    // a forced value reaching Record() manufactures a "hard" reset the account never had - and the
+    // forced row also clears weekly_reset_known, so the next real reset loses its natural anchor too.
+    private static void RunQuotaHistoryProtectionSelfTest()
+    {
+        DateTime nowUtc = DateTime.UtcNow;
+        DateTime weeklyResetLocal = nowUtc.ToLocalTime().AddDays(2.0);
+        CodexQuotaSnapshot accepted = CodexQuotaSnapshot.CreateDefault();
+        accepted.AccountKey = "acct-protection";
+        accepted.FiveHourPercent = 44;
+        accepted.WeeklyPercent = 44;
+        accepted.FiveHourResetKnown = true;
+        accepted.FiveHourResetLocal = nowUtc.ToLocalTime().AddHours(3.0);
+        accepted.WeeklyResetKnown = true;
+        accepted.WeeklyResetLocal = weeklyResetLocal;
+        accepted.SourceUpdatedKnown = true;
+        accepted.SourceUpdatedUtc = nowUtc;
+
+        CodexQuotaSnapshot history = CaptureAcceptedQuotaForHistory(accepted);
+        ForceFiveHourQuotaToFull(accepted);
+        ForceWeeklyQuotaToFull(accepted);
+
+        if (accepted.WeeklyPercent != 100 || accepted.WeeklyResetKnown || accepted.FiveHourPercent != 100)
+        {
+            throw new InvalidOperationException(
+                "Quota history protection self-test failed: protection no longer forces the display snapshot to full.");
+        }
+
+        if (history == null ||
+            history.FiveHourPercent != 44 ||
+            history.WeeklyPercent != 44 ||
+            !history.WeeklyResetKnown ||
+            history.WeeklyResetLocal != weeklyResetLocal)
+        {
+            throw new InvalidOperationException(
+                "Quota history protection self-test failed: the accepted source reading did not survive the protection chain.");
+        }
+
+        string root = Path.Combine(
+            Path.GetTempPath(),
+            ProductIdentity.MachineName + "-quota-protection-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            // Same account, same instant, two candidate readings. The forced 100 is the row that used
+            // to reach disk; asserting it still classifies as "hard" keeps this test honest, because a
+            // classifier change that stopped producing the bug would otherwise let the fix pass vacuously.
+            string forcedKind = ClassifyQuotaHistoryReset(Path.Combine(root, "forced.jsonl"), accepted, nowUtc);
+            string acceptedKind = ClassifyQuotaHistoryReset(Path.Combine(root, "accepted.jsonl"), history, nowUtc);
+            if (!string.Equals(forcedKind, "hard", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "Quota history protection self-test failed: a forced 100 no longer reproduces the fabricated reset, so the test cannot prove the fix. reset_kind=" + forcedKind);
+            }
+
+            if (acceptedKind.Length != 0)
+            {
+                throw new InvalidOperationException(
+                    "Quota history protection self-test failed: the accepted reading was classified as reset_kind=" + acceptedKind + ".");
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); }
+            catch { }
+        }
+
+        Console.WriteLine("Quota history protection: PASS forced 100 stays out of the seven-day history, accepted reading records flat");
+    }
+
+    // Seeds one account at 44% an hour back, records the candidate reading, and returns the reset_kind
+    // the store assigned to it.
+    private static string ClassifyQuotaHistoryReset(string path, CodexQuotaSnapshot next, DateTime nowUtc)
+    {
+        using (CodexQuotaHistoryStore store = new CodexQuotaHistoryStore(path))
+        {
+            store.Record("acct-protection", 44, 44, true, nowUtc.ToLocalTime().AddDays(2.0), false, 0, nowUtc.AddHours(-1.0));
+            RecordAcceptedQuotaHistory(store, next, false, 0, nowUtc);
+            CodexQuotaHistorySnapshot snapshot = store.GetSnapshot(nowUtc, "acct-protection");
+            if (snapshot.Entries.Count != 2)
+            {
+                throw new InvalidOperationException(
+                    "Quota history protection self-test failed: expected two rows for one account, found " +
+                    snapshot.Entries.Count.ToString(CultureInfo.InvariantCulture) + ".");
+            }
+
+            return snapshot.Entries[1].ResetKind ?? string.Empty;
+        }
+    }
+
     private static void RunWeeklyBurnRateSelfTest()
     {
         DateTime nowLocal = new DateTime(2026, 7, 16, 12, 0, 0, DateTimeKind.Local);
@@ -2499,6 +2590,13 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         }
 
         QuotaRingDecisionInfo quotaDecision = UpdateQuotaReadDeltaTrackingWithSettings(quotaState, nextSnapshot, quotaKnown);
+        // Keep the accepted source reading before the protection chain rewrites it. Both branches
+        // below hand back the same instance they were given, and CodexUsage reuses that instance for
+        // the provider cache and the ini fallback, so the protected 100 has to stay in place there.
+        // Only the seven-day history must not see it: Record() reads a forced 44 -> 100 step as a
+        // reset that never happened, and the forced row also clears weekly_reset_known, destroying
+        // the anchor the next real reset needs to classify itself as natural.
+        CodexQuotaSnapshot historySnapshot = CaptureAcceptedQuotaForHistory(nextSnapshot);
         CodexQuotaSnapshot displaySnapshot = family == CodexRadarSoftwareMode.Codex
             ? ApplyQuotaResetProtections(family, nextSnapshot)
             : NormalizeQuotaSnapshot(nextSnapshot);
@@ -2508,18 +2606,15 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         if (quotaKnown && displaySnapshot != null)
         {
             RecordQuotaBurnSamples(quotaState, displaySnapshot, detectedUtc);
-            if (family == CodexRadarSoftwareMode.Codex && logDecision)
+            if (family == CodexRadarSoftwareMode.Codex && logDecision && historySnapshot != null)
             {
                 CodexResetCreditsSnapshot credits = GetCodexResetCreditsDisplaySnapshot();
                 int activeCredits = credits != null && credits.Known
                     ? credits.GetActiveCount(detectedUtc.Kind == DateTimeKind.Utc ? detectedUtc : detectedUtc.ToUniversalTime())
                     : 0;
-                this.codexQuotaHistoryStore.Record(
-                    displaySnapshot.AccountKey,
-                    displaySnapshot.FiveHourPercent,
-                    displaySnapshot.WeeklyPercent,
-                    displaySnapshot.WeeklyResetKnown,
-                    displaySnapshot.WeeklyResetLocal,
+                RecordAcceptedQuotaHistory(
+                    this.codexQuotaHistoryStore,
+                    historySnapshot,
                     credits != null && credits.Known,
                     activeCredits,
                     detectedUtc);
@@ -8662,6 +8757,41 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
             (!resetKnown || resetLocal > DateTime.Now);
     }
 
+    // The only writer into the seven-day store. It takes the accepted source reading on purpose:
+    // handing it the protected display snapshot is the defect RunQuotaHistoryProtectionSelfTest()
+    // guards, so the parameter is named for what it must receive.
+    private static void RecordAcceptedQuotaHistory(
+        CodexQuotaHistoryStore store,
+        CodexQuotaSnapshot accepted,
+        bool resetCreditsKnown,
+        int activeResetCredits,
+        DateTime detectedUtc)
+    {
+        if (store == null || accepted == null)
+        {
+            return;
+        }
+
+        store.Record(
+            accepted.AccountKey,
+            accepted.FiveHourPercent,
+            accepted.WeeklyPercent,
+            accepted.WeeklyResetKnown,
+            accepted.WeeklyResetLocal,
+            resetCreditsKnown,
+            activeResetCredits,
+            detectedUtc);
+    }
+
+    // The seven-day history charts what the source actually reported. ForceFiveHourQuotaToFull() and
+    // ForceWeeklyQuotaToFull() below rewrite the live snapshot in place, so callers that need the
+    // accepted reading must take their copy before the protection chain runs. Covered by
+    // RunQuotaHistoryProtectionSelfTest().
+    private static CodexQuotaSnapshot CaptureAcceptedQuotaForHistory(CodexQuotaSnapshot accepted)
+    {
+        return accepted == null ? null : accepted.Clone();
+    }
+
     private static void ForceFiveHourQuotaToFull(CodexQuotaSnapshot snapshot)
     {
         snapshot.FiveHourPercent = 100;
@@ -11127,6 +11257,7 @@ internal sealed partial class CodexRadarForm : LayeredWidgetFormBase
         RunCodexRadarCatalogCompletenessSelfTest();
         RunCodexResetCreditsSelfTest();
         CodexQuotaHistoryStore.RunSelfTest();
+        RunQuotaHistoryProtectionSelfTest();
         RunCodexAuthJsonSelfTest();
         CodexHome.RunSelfTest();
         CodexAccountStore.RunSelfTest();

@@ -1,6 +1,6 @@
 # Codex / Claude Radar 数据所有者架构
 
-适用版本：2.0.0.41
+适用版本：2.0.0.43
 
 本文说明 `CodexRadarForm` 作为永久 headless owner 时的 Codex 公共 Radar、Codex/Claude 官方额度、服务健康、任务状态和只读投影。
 
@@ -162,7 +162,7 @@ CLD tile 的固定模型标签为 `Claude`，紧凑标题为 `CLD`；额度与�
 
 ### 7.6 Codex 7 天重置与速蹬历史
 
-`CodexQuotaHistoryStore` 仅接收 `ApplyQuotaSnapshot()` 已接受且允许记录 decision 的 Codex family 快照。每行带 `account_key`，`Record()` 的重置分类与采样间隔过滤只与**同账户**的上一条比较，`GetSnapshot(nowUtc, accountKey)` 只投影该账户的行；没有 `account_key` 的历史行留在 `unknown` 桶里，不并入任何账户。内存立即更新，磁盘由 15 秒 ThreadPool timer 批量写入；普通样本至少间隔 15 分钟，或周余量变化达到 3%，周余量回升达到 5% 时立即登记。旧 reset anchor 前 15 分钟至后 6 小时内的回升标记为自然重置；重置卡计数同时减少时标记为重置卡；其余标记为硬重置。每 6 小时和 owner 退出时原子裁剪到最近 7 天、最多 2048 行。
+`CodexQuotaHistoryStore` 仅接收 `ApplyQuotaSnapshot()` 已接受且允许记录 decision 的 Codex family 快照，并且只接收**重置保护改写之前**的那份读数：`ApplyQuotaSnapshot()` 先用 `CaptureAcceptedQuotaForHistory()` 克隆已接受快照，再让 `ApplyQuotaResetProtections()` 原地把展示快照改写成 100；`RecordAcceptedQuotaHistory()` 是写入本存储的唯一入口，只接受这份已接受读数。保护值继续供右侧 tile、provider 缓存与 `codex-quota.ini` 回退使用，但不得进入历史——`Record()` 会把强制的 44 → 100 读成一次重置事件，而 `ForceWeeklyQuotaToFull()` 同时清掉的 `weekly_reset_known` 还会让下一次真实重置失去判定自然重置所需的 anchor。`RunQuotaHistoryProtectionSelfTest()`（`--test-layout`）守这条不变量。每行带 `account_key`，`Record()` 的重置分类与采样间隔过滤只与**同账户**的上一条比较，`GetSnapshot(nowUtc, accountKey)` 只投影该账户的行；没有 `account_key` 的历史行留在 `unknown` 桶里，不并入任何账户。内存立即更新，磁盘由 15 秒 ThreadPool timer 批量写入；普通样本至少间隔 15 分钟，或周余量变化达到 3%，周余量回升达到 5% 时立即登记。旧 reset anchor 前 15 分钟至后 6 小时内的回升标记为自然重置；重置卡计数同时减少时标记为重置卡；其余标记为硬重置。每 6 小时和 owner 退出时原子裁剪到最近 7 天、最多 2048 行。
 
 ### 7.7 账户名单与切换
 
