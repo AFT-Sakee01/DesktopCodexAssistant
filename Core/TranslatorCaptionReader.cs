@@ -181,11 +181,7 @@ internal sealed class TranslatorCaptionReader
             // the transition the translation on screen still IS the sentence being latched.
             if (this.lastLiveTranslation.Length > 0 && !IsStatusText(this.lastLiveTranslation))
             {
-                this.settledTranslations.Add(this.lastLiveTranslation);
-                while (this.settledTranslations.Count > SettledHistoryLimit)
-                {
-                    this.settledTranslations.RemoveAt(0);
-                }
+                AppendSettled(this.lastLiveTranslation);
             }
         }
 
@@ -202,6 +198,71 @@ internal sealed class TranslatorCaptionReader
     // the original moving on and the translation catching up, the two would be the same words twice.
     // Only an exact match is dropped: a *similar* line is a different sentence that happens to open
     // the same way, and hiding those made the block flicker at every transition.
+    // Replaces the last entry instead of adding a new one when the two are the same sentence said
+    // twice.
+    //
+    // The boundary test upstream gives us is not exact: the recogniser revises a sentence it has
+    // already emitted (rewording its opening, adding a clause), the translator re-translates the
+    // whole thing, and that can look like a new sentence starting. Upstream hits the same problem
+    // and solves it the same way -- IsOverwrite deletes the last logged row and writes the new one.
+    // Without this the history block shows the same thought twice in slightly different words.
+    private void AppendSettled(string sentence)
+    {
+        int count = this.settledTranslations.Count;
+        if (count > 0 && IsSameTranslation(this.settledTranslations[count - 1], sentence))
+        {
+            // Keep the newer text: it is the more complete translation of the same sentence.
+            this.settledTranslations[count - 1] = sentence;
+            return;
+        }
+
+        this.settledTranslations.Add(sentence);
+        while (this.settledTranslations.Count > SettledHistoryLimit)
+        {
+            this.settledTranslations.RemoveAt(0);
+        }
+    }
+
+    // Two translations are the same sentence when one contains the other (a sentence that grew a
+    // clause) or when they agree over most of their shared opening (a sentence whose wording was
+    // revised). Both shapes were observed live on 2026-09-12, e.g. "而对于下一个请求，如果你需要。"
+    // followed by "并且对于下一个请求，如果你需要的话。".
+    private static bool IsSameTranslation(string first, string second)
+    {
+        if (first.Length == 0 || second.Length == 0)
+        {
+            return false;
+        }
+
+        if (string.Equals(first, second, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        int shorter = Math.Min(first.Length, second.Length);
+        if (shorter < 6)
+        {
+            // Too short to tell "same sentence, reworded" from "two short sentences".
+            return false;
+        }
+
+        if (first.IndexOf(second, StringComparison.Ordinal) >= 0 ||
+            second.IndexOf(first, StringComparison.Ordinal) >= 0)
+        {
+            return true;
+        }
+
+        int matched = 0;
+        for (int i = 0; i < shorter && first[i] == second[i]; i++)
+        {
+            matched++;
+        }
+
+        // Three fifths of the shorter sentence agreeing from the start is a rewording; less than
+        // that is a different sentence that happens to open the same way ("所以…", "这个…").
+        return matched * 5 >= shorter * 3;
+    }
+
     private string[] BuildSettledArray(string liveTranslation)
     {
         int count = this.settledTranslations.Count;
