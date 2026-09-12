@@ -735,6 +735,7 @@ internal sealed partial class CaptionsBoardForm
         int hoverWidth = MeasureTextWidth(g, "避让", bodyFont) + S(14);
         int editWidth = MeasureTextWidth(g, editLabel, bodyFont) + S(14);
         int resetWidth = MeasureTextWidth(g, "复位", bodyFont) + S(14);
+        int collapseWidth = MeasureTextWidth(g, "收起", bodyFont) + S(14);
         int linesLabelWidth = MeasureTextWidth(g, linesLabel, labelFont) + S(8);
         int stepperWidth = MeasureStepperWidth(g, settledText, monoFont, bounds.Height);
 
@@ -758,13 +759,17 @@ internal sealed partial class CaptionsBoardForm
         bool showArticleLabel = true;
         bool showStripLabel = true;
         bool showLinesLabel = true;
-        for (int attempt = 0; attempt < 3; attempt++)
+        // 「收起」是这一行里唯一有替代路径的控件——收不到时用户仍可直接最小化那扇窗——
+        // 所以它是标签全部让完之后第一个被放弃的按钮。其余按钮一个都不能丢：
+        // 够不着的控件比没有标签的分组更糟。
+        bool showCollapse = true;
+        for (int attempt = 0; attempt < 4; attempt++)
         {
             int articleGroup = (showArticleLabel ? articleLabelWidth : 0) + pageWidth + gap + pageWidth + gap +
                 pageTextWidth + groupGap + exportWidth + gap + clearWidth;
             int stripGroup = (showStripLabel ? stripLabelWidth + gap : 0) + displayWidth + gap + hoverWidth +
-                gap + editWidth + gap + resetWidth + groupGap + (showLinesLabel ? linesLabelWidth + gap : 0) +
-                stepperWidth;
+                gap + editWidth + gap + resetWidth + (showCollapse ? gap + collapseWidth : 0) + groupGap +
+                (showLinesLabel ? linesLabelWidth + gap : 0) + stepperWidth;
             if (articleGroup + groupGap + stripGroup <= bounds.Width)
             {
                 break;
@@ -778,15 +783,19 @@ internal sealed partial class CaptionsBoardForm
             {
                 showLinesLabel = false;
             }
-            else
+            else if (showStripLabel)
             {
                 showStripLabel = false;
+            }
+            else
+            {
+                showCollapse = false;
             }
         }
 
         int stripGroupWidth = (showStripLabel ? stripLabelWidth + gap : 0) + displayWidth + gap + hoverWidth +
-            gap + editWidth + gap + resetWidth + groupGap + (showLinesLabel ? linesLabelWidth + gap : 0) +
-            stepperWidth;
+            gap + editWidth + gap + resetWidth + (showCollapse ? gap + collapseWidth : 0) + groupGap +
+            (showLinesLabel ? linesLabelWidth + gap : 0) + stepperWidth;
         int stripLeft = bounds.Right - stripGroupWidth;
 
         using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
@@ -856,6 +865,25 @@ internal sealed partial class CaptionsBoardForm
         if (recordHitTargets && shown)
         {
             this.hitTargets.Add(new CaptionsHitTarget { Bounds = resetBounds, Action = CaptionsHitAction.OverlayReset });
+        }
+
+        // 收起 Windows 自己那扇实时辅助字幕窗。它不是覆盖条的控件，所以不随 shown 变灰：
+        // 横幅藏起来的时候那扇窗一样碍事，甚至更需要收。
+        if (showCollapse)
+        {
+            sx = resetBounds.Right + gap;
+            Rectangle collapseBounds = new Rectangle(sx, bounds.Top, collapseWidth, bounds.Height);
+            DrawToolbarButton(
+                g,
+                collapseBounds,
+                "收起",
+                EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Captions),
+                bodyFont,
+                false);
+            if (recordHitTargets)
+            {
+                this.hitTargets.Add(new CaptionsHitTarget { Bounds = collapseBounds, Action = CaptionsHitAction.LiveCaptionsCollapse });
+            }
         }
 
         if (showLinesLabel)
@@ -1212,7 +1240,8 @@ internal sealed partial class CaptionsBoardForm
                 CaptionsHitAction.OverlayDisplayToggle,
                 CaptionsHitAction.OverlayHoverAutoHideToggle,
                 CaptionsHitAction.ArticlePageUp,
-                CaptionsHitAction.ArticlePageDown
+                CaptionsHitAction.ArticlePageDown,
+                CaptionsHitAction.LiveCaptionsCollapse
             };
 
             for (int i = 0; i < required.Length; i++)

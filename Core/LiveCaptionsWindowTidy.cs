@@ -119,6 +119,45 @@ internal static class LiveCaptionsWindowTidy
     }
 
     // Returns true only when this call actually minimised a window, so callers can log a real action.
+    // 手动收起：忽略「每个窗口只处理一次」的记账。自动收起刻意只收一次，好让用户
+    // 自己还原之后不再被抢；但用户亲手点的按钮必须每次都生效，否则按钮就是个哑巴。
+    internal static bool TryCollapseNow(out string detail)
+    {
+        detail = string.Empty;
+        try
+        {
+            IntPtr handle;
+            if (!NativeMethods.TryFindWindowByClassName(LiveCaptionsWindowClassName, out handle))
+            {
+                detail = "没有找到实时辅助字幕窗口";
+                return false;
+            }
+
+            if (NativeMethods.IsWindowMinimized(handle))
+            {
+                lastHandledWindow = handle;
+                detail = "实时辅助字幕窗口已经是收起状态";
+                return false;
+            }
+
+            if (!NativeMethods.TryMinimizeWindowAsToolWindow(handle))
+            {
+                detail = "最小化实时辅助字幕窗口失败";
+                return false;
+            }
+
+            lastHandledWindow = handle;
+            detail = "已收起实时辅助字幕窗口";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            detail = ex.GetType().Name + ": " + ex.Message;
+            return false;
+        }
+    }
+
     internal static bool TryHideNewCaptionWindow(out string detail)
     {
         detail = string.Empty;

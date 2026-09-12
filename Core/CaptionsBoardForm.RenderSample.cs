@@ -143,8 +143,10 @@ internal sealed partial class CaptionsBoardForm
     {
         TranslatorControlSnapshot fixture = CreateFixtureSnapshot();
         TranslatorControlSnapshot clone = fixture.Clone();
-        if (clone.RecentHistory.Count != 4 ||
-            clone.AvailableModels.Count != 3 ||
+        // 断言跟 fixture 自身比，而不是写死条数：这条自检本来要验证的是「克隆是否完整」，
+        // 写死 4 之后 fixture 为了验证更密的历史布局加到 7 条，测试就一直红着却与克隆无关。
+        if (clone.RecentHistory.Count != fixture.RecentHistory.Count ||
+            clone.AvailableModels.Count != fixture.AvailableModels.Count ||
             !clone.ContextAware ||
             clone.NumContexts != 64 ||
             !string.Equals(clone.ModelName, "qualcomm/Qwen3-4B-Instruct-2507:W4A16", StringComparison.Ordinal) ||

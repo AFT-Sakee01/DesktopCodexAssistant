@@ -48,6 +48,8 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
     private string statusNotice = string.Empty;
     private bool operationRunning;
     private CaptionsHitAction pendingAction = CaptionsHitAction.None;
+    private string liveCaptionsCollapseNotice = string.Empty;
+    private DateTime liveCaptionsCollapseNoticeUtc = DateTime.MinValue;
     // How many article lines the last DrawArticle pass actually painted in the translated half.
     // Purely observational (never read by the draw path itself); it exists so the layout self-test
     // can assert the measured-metrics line budget and the paging maths without re-deriving them.
@@ -609,6 +611,22 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
         }
     }
 
+    // 走 TryCollapseNow 而不是自动收起那条路径：自动收起刻意对每个窗口只处理一次，
+    // 手动点击必须每次都生效，否则按钮在「已经自动收过一次、用户又还原了」之后就成了哑巴。
+    private void CollapseLiveCaptionsWindow()
+    {
+        string detail;
+        bool collapsed = LiveCaptionsWindowTidy.TryCollapseNow(out detail);
+        if (!string.IsNullOrEmpty(detail))
+        {
+            Program.LogInfo("Live captions window (manual): " + detail);
+        }
+
+        this.liveCaptionsCollapseNotice = collapsed ? "已收起字幕窗" : (string.IsNullOrEmpty(detail) ? "没有可收起的字幕窗" : detail);
+        this.liveCaptionsCollapseNoticeUtc = DateTime.UtcNow;
+        RenderLayeredWindow();
+    }
+
     private void ExecuteAction(CaptionsHitAction action, string payload)
     {
         if (action == CaptionsHitAction.Close)
@@ -710,6 +728,10 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
 
             case CaptionsHitAction.LiveCaptionsStart:
                 RequestServiceStart(action, reader, TranslatorControlReader.MonitoredServiceKind.LiveCaptions);
+                break;
+
+            case CaptionsHitAction.LiveCaptionsCollapse:
+                CollapseLiveCaptionsWindow();
                 break;
 
             case CaptionsHitAction.CaptionLanguageSet:
@@ -933,7 +955,11 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
         OverlayEditToggle,
         OverlayReset,
         OverlayDisplayToggle,
-        OverlayHoverAutoHideToggle
+        OverlayHoverAutoHideToggle,
+        // 手动收起 Windows 自己那扇实时辅助字幕窗。自动收起对每个窗口实例只做一次，
+        // 用户还原之后就不再管，于是那扇黑色小窗会一直赖在屏幕左上角；这颗按钮是那之后
+        // 唯一不用去翻窗口本身的出路。
+        LiveCaptionsCollapse
     }
 
     private struct CaptionsHitTarget
