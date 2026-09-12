@@ -1158,6 +1158,146 @@ internal sealed class TranslatorControlReader : IDisposable
 
     // ── Model discovery ─────────────────────────────────────────────────────────────────────────
     //
+    // Display name for a GenieX model id: drop the org prefix and the quantisation variant, both of
+    // which are the same for every model this machine has installed and so carry no information
+    // when the point is telling them apart.
+    internal static string FormatModelDisplayName(string fullModelName)
+    {
+        if (string.IsNullOrEmpty(fullModelName))
+        {
+            return "--";
+        }
+
+        string display = fullModelName;
+        int slashIndex = display.LastIndexOf('/');
+        if (slashIndex >= 0 && slashIndex < display.Length - 1)
+        {
+            display = display.Substring(slashIndex + 1);
+        }
+
+        int colonIndex = display.IndexOf(':');
+        if (colonIndex >= 0)
+        {
+            display = display.Substring(0, colonIndex);
+        }
+
+        return display;
+    }
+
+    // Short labels for a row of side-by-side model buttons: the shortest leading run of "-"-separated
+    // tokens that is still unique across the installed set. On this machine that turns
+    // Qwen3-4B-Instruct-2507 / Qwen3-8B / Qwen3-VL-8B-Instruct into 4B / 8B / VL -- three buttons have
+    // to fit where one chip used to, and everything they share ("Qwen3-", the quantisation variant)
+    // tells the user nothing about which one to press.
+    //
+    // Uniqueness is the stopping rule rather than a length budget, so a machine with two models whose
+    // names diverge late gets longer labels instead of two identical buttons. If even the full names
+    // collide, they are returned as-is: a duplicate label is honest about a duplicate entry.
+    internal static string[] BuildModelSegmentLabels(IList<string> models)
+    {
+        if (models == null || models.Count == 0)
+        {
+            return new string[0];
+        }
+
+        string[] display = new string[models.Count];
+        for (int i = 0; i < models.Count; i++)
+        {
+            display[i] = FormatModelDisplayName(models[i]);
+        }
+
+        string[] stripped = new string[display.Length];
+        int sharedHead = MeasureSharedTokenHead(display);
+        string[] labels = new string[display.Length];
+        for (int i = 0; i < display.Length; i++)
+        {
+            string[] tokens = display[i].Split('-');
+            stripped[i] = sharedHead < tokens.Length
+                ? string.Join("-", tokens, sharedHead, tokens.Length - sharedHead)
+                : display[i];
+            if (stripped[i].Length == 0)
+            {
+                stripped[i] = display[i];
+            }
+        }
+
+        for (int i = 0; i < stripped.Length; i++)
+        {
+            labels[i] = ResolveShortestUniqueLabel(stripped, i);
+        }
+
+        return labels;
+    }
+
+    // How many leading "-" tokens every name shares. Cut on token boundaries, never mid-token: a
+    // label that begins in the middle of a word reads as a typo.
+    private static int MeasureSharedTokenHead(string[] display)
+    {
+        if (display.Length < 2)
+        {
+            return 0;
+        }
+
+        string[] first = display[0].Split('-');
+        int shared = 0;
+        while (shared < first.Length - 1)
+        {
+            string token = first[shared];
+            bool common = true;
+            for (int i = 1; i < display.Length && common; i++)
+            {
+                string[] tokens = display[i].Split('-');
+                // Never consume a name entirely: the last token is what is left to identify it by.
+                common = shared < tokens.Length - 1 &&
+                    string.Equals(tokens[shared], token, StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (!common)
+            {
+                break;
+            }
+
+            shared++;
+        }
+
+        return shared;
+    }
+
+    private static string ResolveShortestUniqueLabel(string[] stripped, int index)
+    {
+        if (stripped.Length < 2)
+        {
+            // Nothing to tell it apart from, so nothing to shorten against: any prefix would be
+            // trivially "unique" and the loop below would cut the name down to its first token.
+            return stripped[index];
+        }
+
+        string[] tokens = stripped[index].Split('-');
+        for (int take = 1; take <= tokens.Length; take++)
+        {
+            string candidate = string.Join("-", tokens, 0, take);
+            bool unique = true;
+            for (int other = 0; other < stripped.Length && unique; other++)
+            {
+                if (other == index)
+                {
+                    continue;
+                }
+
+                string[] otherTokens = stripped[other].Split('-');
+                string otherCandidate = string.Join("-", otherTokens, 0, Math.Min(take, otherTokens.Length));
+                unique = !string.Equals(candidate, otherCandidate, StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (unique)
+            {
+                return candidate;
+            }
+        }
+
+        return stripped[index];
+    }
+
     // Enumerates %USERPROFILE%\.cache\geniex\models\<org>\<model>\geniex.json (verified against the
     // real cache layout on this machine while building this reader: two levels deep, one geniex.json
     // manifest per model with a top-level "Name" = "<org>/<model>" and a "ModelFile" map keyed by
@@ -1390,9 +1530,10 @@ internal sealed class TranslatorControlReader : IDisposable
     {
         RunSettingsJsonMutationSelfTest();
         RunModelManifestSelfTest();
+        RunModelSegmentLabelSelfTest();
         RunFailureReasonSelfTest();
         RunCaptionLanguageSelfTest();
-        Console.WriteLine("TranslatorControlReader: PASS settings JSON targeted mutation, model manifest parsing, failure reason extraction, caption language toggle");
+        Console.WriteLine("TranslatorControlReader: PASS settings JSON targeted mutation, model manifest parsing, model segment labels, failure reason extraction, caption language toggle");
     }
 
     // Pure logic only: this must never touch HKCU or start a process. The registry write itself and
@@ -1528,6 +1669,48 @@ internal sealed class TranslatorControlReader : IDisposable
         finally
         {
             try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    private static void RunModelSegmentLabelSelfTest()
+    {
+        string[] labels = BuildModelSegmentLabels(new string[]
+        {
+            "qualcomm/Qwen3-4B-Instruct-2507:W4A16",
+            "qualcomm/Qwen3-8B:W4A16",
+            "qualcomm/Qwen3-VL-8B-Instruct:W4A16",
+        });
+        if (labels.Length != 3 || labels[0] != "4B" || labels[1] != "8B" || labels[2] != "VL")
+        {
+            throw new InvalidOperationException(
+                "Model segment label self-test failed: expected 4B/8B/VL, got " + string.Join("/", labels));
+        }
+
+        // Names that diverge late must grow their labels rather than collide.
+        string[] late = BuildModelSegmentLabels(new string[]
+        {
+            "qualcomm/Qwen3-8B-Instruct:W4A16",
+            "qualcomm/Qwen3-8B-Thinking:W4A16",
+        });
+        if (late.Length != 2 || late[0] == late[1] || late[0] != "Instruct" || late[1] != "Thinking")
+        {
+            throw new InvalidOperationException(
+                "Model segment label self-test failed: late-diverging names must stay distinct, got " +
+                string.Join("/", late));
+        }
+
+        // A single model keeps its own name: there is nothing to tell it apart from.
+        string[] single = BuildModelSegmentLabels(new string[] { "qualcomm/Qwen3-8B:W4A16" });
+        if (single.Length != 1 || single[0] != "Qwen3-8B")
+        {
+            throw new InvalidOperationException(
+                "Model segment label self-test failed: a lone model keeps its full display name, got " +
+                string.Join("/", single));
+        }
+
+        if (BuildModelSegmentLabels(null).Length != 0 || BuildModelSegmentLabels(new string[0]).Length != 0)
+        {
+            throw new InvalidOperationException("Model segment label self-test failed: an empty set must stay empty.");
         }
     }
 

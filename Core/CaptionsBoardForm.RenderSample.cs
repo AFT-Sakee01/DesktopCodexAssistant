@@ -47,8 +47,11 @@ internal sealed partial class CaptionsBoardForm
         snapshot.ModelNameKnown = true;
         snapshot.ModelName = "qualcomm/Qwen3-4B-Instruct-2507:W4A16";
         snapshot.ApiUrl = "http://127.0.0.1:18182/v1/chat/completions";
+        // The three models actually installed on this machine, so the sample and the self-tests
+        // exercise the model row at the width it really has to survive.
         snapshot.AvailableModels.Add("qualcomm/Qwen3-4B-Instruct-2507:W4A16");
         snapshot.AvailableModels.Add("qualcomm/Qwen3-8B:W4A16");
+        snapshot.AvailableModels.Add("qualcomm/Qwen3-VL-8B-Instruct:W4A16");
         snapshot.LastSuccessKnown = true;
         snapshot.LastSuccessLocal = now.AddMinutes(-3.0);
         snapshot.HistoryDatabaseFound = true;
@@ -141,7 +144,7 @@ internal sealed partial class CaptionsBoardForm
         TranslatorControlSnapshot fixture = CreateFixtureSnapshot();
         TranslatorControlSnapshot clone = fixture.Clone();
         if (clone.RecentHistory.Count != 4 ||
-            clone.AvailableModels.Count != 2 ||
+            clone.AvailableModels.Count != 3 ||
             !clone.ContextAware ||
             clone.NumContexts != 64 ||
             !string.Equals(clone.ModelName, "qualcomm/Qwen3-4B-Instruct-2507:W4A16", StringComparison.Ordinal) ||

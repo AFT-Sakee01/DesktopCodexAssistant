@@ -671,9 +671,11 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
                     null);
                 break;
 
-            case CaptionsHitAction.ModelCycle:
-                string nextModel = ResolveNextModel();
-                if (!string.IsNullOrEmpty(nextModel))
+            case CaptionsHitAction.ModelSet:
+                // The row registers no target for the model already in effect, so reaching here is
+                // always a real change -- re-applying the current one would restart the translator
+                // and reload the model for nothing.
+                if (!string.IsNullOrEmpty(payload))
                 {
                     RequestSettingChange(
                         action,
@@ -681,7 +683,7 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
                         TranslatorControlReader.SettingChangeKind.ModelName,
                         false,
                         0,
-                        nextModel);
+                        payload);
                 }
 
                 break;
@@ -728,28 +730,6 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
     private static int ClampNumContexts(int value)
     {
         return Math.Max(MinNumContexts, Math.Min(MaxNumContexts, value));
-    }
-
-    private string ResolveNextModel()
-    {
-        IList<string> models = this.snapshot.AvailableModels;
-        if (models == null || models.Count == 0)
-        {
-            return null;
-        }
-
-        int currentIndex = -1;
-        for (int i = 0; i < models.Count; i++)
-        {
-            if (string.Equals(models[i], this.snapshot.ModelName, StringComparison.Ordinal))
-            {
-                currentIndex = i;
-                break;
-            }
-        }
-
-        int nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % models.Count;
-        return models[nextIndex];
     }
 
     // Async apply, mirroring OperationForm.RequestBatteryCareFromGuardBoard's shape: the actual
@@ -932,7 +912,7 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
         ContextAwareToggle,
         NumContextsMinus,
         NumContextsPlus,
-        ModelCycle,
+        ModelSet,
         ToggleRunning,
         Close,
         // Status-strip start actions. Each is registered only while its own service is down, so a
@@ -958,9 +938,10 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
     {
         public Rectangle Bounds;
         public CaptionsHitAction Action;
-        // Only CaptionLanguageSet uses this: the caption-source row registers one target per
-        // language, and the tag has to survive the hit test. Widening the action enum into ten
-        // near-identical members instead would push the same string into the type system.
+        // The two "pick one of N" rows use this: the caption-source row carries a language tag and
+        // the model row a full model id, and the value has to survive the hit test. Widening the
+        // action enum into one member per option instead would push the same string into the type
+        // system.
         public string Payload;
     }
 }

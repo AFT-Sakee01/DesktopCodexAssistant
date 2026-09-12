@@ -427,21 +427,13 @@ internal sealed partial class CaptionsBoardForm
                 CaptionsHitAction.NumContextsPlus);
             x = stepperBounds.Right + groupGap;
 
-            string modelLabel = "模型";
+            bool modelPending = busy && this.pendingAction == CaptionsHitAction.ModelSet;
+            string modelLabel = modelPending ? "切换中…" : "模型";
             int modelLabelWidth = MeasureTextWidth(g, modelLabel, labelFont) + S(8);
             g.DrawString(modelLabel, labelFont, labelBrush, new Rectangle(x, bounds.Top, modelLabelWidth, bounds.Height), near);
             x += modelLabelWidth + gap;
 
-            bool modelPending = busy && this.pendingAction == CaptionsHitAction.ModelCycle;
-            bool modelCyclable = this.snapshot.AvailableModels.Count > 1;
-            string chipText = modelPending ? "切换中…" : FormatModelDisplayName(this.snapshot.ModelName);
-            Rectangle chipBounds = DrawModelChip(g, x, bounds.Top, bounds.Height, chipText, bodyFont, glyphFont, busy || !modelCyclable);
-            if (recordHitTargets && !busy && modelCyclable)
-            {
-                this.hitTargets.Add(new CaptionsHitTarget { Bounds = chipBounds, Action = CaptionsHitAction.ModelCycle });
-            }
-
-            x = chipBounds.Right + groupGap;
+            x = DrawModelSegments(g, x, bounds, bodyFont, busy, recordHitTargets) + groupGap;
         }
 
         using (Pen separatorPen = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.Border, 140), Math.Max(1.0f, this.LayerScale)))
@@ -565,32 +557,90 @@ internal sealed partial class CaptionsBoardForm
         return bounds;
     }
 
-    private Rectangle DrawModelChip(Graphics g, int left, int top, int height, string text, Font font, Font chevronFont, bool disabled)
+    // One button per installed model, side by side, each applying its own model directly. It used to
+    // be a single chip that cycled: with three models installed, reaching the one you wanted took up
+    // to two clicks, and every click that was not the last one restarted the translator and reloaded
+    // a model you did not want (~10s each). Returns the right edge of the group.
+    //
+    // Labels come from TranslatorControlReader.BuildModelSegmentLabels (4B / 8B / VL here) because
+    // three buttons have to fit where the chip was; the value written to setting.json is always the
+    // full model id carried in the hit target payload.
+    private int DrawModelSegments(Graphics g, int left, Rectangle row, Font font, bool busy, bool recordHitTargets)
     {
-        int chevronWidth = S(12);
-        int textWidth = Math.Min(S(150), MeasureTextWidth(g, text, font) + S(8));
-        Rectangle bounds = new Rectangle(left, top, textWidth + chevronWidth + S(6), height);
+        IList<string> models = this.snapshot.AvailableModels;
+        if (models == null || models.Count == 0)
+        {
+            using (SolidBrush mutedBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
+            using (StringFormat near = CreateFormat(StringAlignment.Near))
+            {
+                int width = MeasureTextWidth(g, "无可用模型", font) + S(6);
+                g.DrawString("无可用模型", font, mutedBrush, new Rectangle(left, row.Top, width, row.Height), near);
+                return left + width;
+            }
+        }
+
+        string[] labels = TranslatorControlReader.BuildModelSegmentLabels(models);
+        int gap = S(3);
+        int x = left;
+        for (int i = 0; i < models.Count; i++)
+        {
+            string label = i < labels.Length ? labels[i] : FormatModelDisplayName(models[i]);
+            // Measured per label, not an equal share of the row: these labels differ in length by a
+            // factor of three ("8B" against "4B-Instruct-2507" on a machine whose names diverge
+            // late), and equal shares would either clip the long one or pad the short one.
+            int width = MeasureTextWidth(g, label, font) + S(14);
+            Rectangle bounds = new Rectangle(x, row.Top, width, row.Height);
+            bool active = string.Equals(models[i], this.snapshot.ModelName, StringComparison.Ordinal);
+            DrawModelSegment(g, bounds, label, active, font, busy, recordHitTargets, models[i]);
+            x = bounds.Right + gap;
+        }
+
+        return x - gap;
+    }
+
+    private void DrawModelSegment(
+        Graphics g,
+        Rectangle bounds,
+        string label,
+        bool active,
+        Font font,
+        bool busy,
+        bool recordHitTargets,
+        string modelName)
+    {
         Color accent = EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Captions);
-        int alpha = disabled ? 110 : 255;
+        Color borderColor = active ? accent : DesignTokens.Colors.Border;
+        int borderAlpha = active ? 205 : (busy ? 70 : 130);
+        Color textColor = active ? accent : DesignTokens.Colors.TextMuted;
+        int textAlpha = busy ? 130 : 255;
 
         using (GraphicsPath path = RoundedRectangle(new RectangleF(bounds.Left, bounds.Top, bounds.Width, bounds.Height), S(4)))
-        using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Surface, ScaleAlpha(212, alpha))))
-        using (Pen border = new Pen(DesignTokens.WithAlpha(accent, ScaleAlpha(90, alpha)), Math.Max(1.0f, this.LayerScale)))
+        using (SolidBrush fill = new SolidBrush(active
+            ? DesignTokens.WithAlpha(accent, 46)
+            : DesignTokens.WithAlpha(DesignTokens.Colors.Surface, 170)))
+        using (Pen border = new Pen(DesignTokens.WithAlpha(borderColor, borderAlpha), Math.Max(1.0f, this.LayerScale)))
         {
             g.FillPath(fill, path);
             g.DrawPath(border, path);
         }
 
-        using (SolidBrush textBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.Text, alpha)))
-        using (SolidBrush chevronBrush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.GlyphMuted, alpha)))
-        using (StringFormat near = CreateFormat(StringAlignment.Near))
-        using (StringFormat centered = CreateFormat(StringAlignment.Center, StringTrimming.None))
+        using (SolidBrush textBrush = new SolidBrush(DesignTokens.WithAlpha(textColor, textAlpha)))
+        using (StringFormat center = CreateFormat(StringAlignment.Center))
         {
-            g.DrawString(text, font, textBrush, new Rectangle(bounds.Left + S(6), bounds.Top, textWidth, bounds.Height), near);
-            g.DrawString("⌄", chevronFont, chevronBrush, new Rectangle(bounds.Right - chevronWidth - S(2), bounds.Top, chevronWidth, bounds.Height), centered);
+            g.DrawString(label, font, textBrush, bounds, center);
         }
 
-        return bounds;
+        // The model already in effect is inert, exactly like the active caption-source segment:
+        // re-applying it costs a translator restart plus a model reload and changes nothing.
+        if (recordHitTargets && !busy && !active)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget
+            {
+                Bounds = bounds,
+                Action = CaptionsHitAction.ModelSet,
+                Payload = modelName,
+            });
+        }
     }
 
     private void DrawToolbarButton(Graphics g, Rectangle bounds, string text, Color semanticColor, Font font, bool disabled)
@@ -889,27 +939,11 @@ internal sealed partial class CaptionsBoardForm
         return DesignTokens.ClampByte(baseAlpha * scale / 255);
     }
 
+    // Delegates to the reader, which owns model-name semantics the same way it owns the caption
+    // language table: what an org prefix or a quantisation suffix means is not a drawing concern.
     private static string FormatModelDisplayName(string fullModelName)
     {
-        if (string.IsNullOrEmpty(fullModelName))
-        {
-            return "--";
-        }
-
-        string display = fullModelName;
-        const string qualcommPrefix = "qualcomm/";
-        if (display.StartsWith(qualcommPrefix, StringComparison.OrdinalIgnoreCase))
-        {
-            display = display.Substring(qualcommPrefix.Length);
-        }
-
-        int colonIndex = display.IndexOf(':');
-        if (colonIndex >= 0)
-        {
-            display = display.Substring(0, colonIndex);
-        }
-
-        return display;
+        return TranslatorControlReader.FormatModelDisplayName(fullModelName);
     }
 
     private static string FormatElapsed(TimeSpan elapsed)
@@ -1016,7 +1050,7 @@ internal sealed partial class CaptionsBoardForm
                 CaptionsHitAction.ContextAwareToggle,
                 CaptionsHitAction.NumContextsMinus,
                 CaptionsHitAction.NumContextsPlus,
-                CaptionsHitAction.ModelCycle,
+                CaptionsHitAction.ModelSet,
                 CaptionsHitAction.ToggleRunning,
                 CaptionsHitAction.Close,
                 CaptionsHitAction.GenieXStart,
@@ -1117,6 +1151,9 @@ internal sealed partial class CaptionsBoardForm
             // Every language except the one already in effect must be reachable, and the active one
             // must not be: re-applying it restarts Live Captions and the translator for no change.
             VerifyCaptionLanguageTargets(form, allUp.CaptionLanguage);
+            // Same rule for the model row, where the cost of a needless re-apply is higher still
+            // (a translator restart plus a ~10s model reload).
+            VerifyModelTargets(form, allUp.AvailableModels, allUp.ModelName);
 
             // An unknown registry value must leave every option clickable -- that is the state a
             // user most needs to be able to correct.
@@ -1152,12 +1189,39 @@ internal sealed partial class CaptionsBoardForm
         }
     }
 
+    private static void VerifyModelTargets(CaptionsBoardForm form, IList<string> models, string activeModel)
+    {
+        for (int i = 0; i < models.Count; i++)
+        {
+            bool active = string.Equals(models[i], activeModel, StringComparison.Ordinal);
+            Rectangle bounds = form.FindPayloadTarget(CaptionsHitAction.ModelSet, models[i]);
+            if (active && bounds != Rectangle.Empty)
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: the active model must not be clickable: " + models[i]);
+            }
+
+            if (!active && bounds == Rectangle.Empty)
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: model option is not clickable: " + models[i]);
+            }
+        }
+    }
+
     private Rectangle FindCaptionLanguageTarget(string tag)
+    {
+        return FindPayloadTarget(CaptionsHitAction.CaptionLanguageSet, tag);
+    }
+
+    // Both "pick one of N" rows register one target per option and tell them apart by payload, so
+    // finding one means matching the pair.
+    private Rectangle FindPayloadTarget(CaptionsHitAction action, string payload)
     {
         for (int i = 0; i < this.hitTargets.Count; i++)
         {
-            if (this.hitTargets[i].Action == CaptionsHitAction.CaptionLanguageSet &&
-                string.Equals(this.hitTargets[i].Payload, tag, StringComparison.OrdinalIgnoreCase))
+            if (this.hitTargets[i].Action == action &&
+                string.Equals(this.hitTargets[i].Payload, payload, StringComparison.OrdinalIgnoreCase))
             {
                 return this.hitTargets[i].Bounds;
             }
