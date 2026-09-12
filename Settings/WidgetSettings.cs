@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -295,7 +295,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 107;
+    private const int CurrentSettingsVersion = 108;
     internal const int MinCaptionOverlayFontSize = 12;
     internal const int MaxCaptionOverlayFontSize = 48;
     internal const int DefaultCaptionOverlayFontSize = 22;
@@ -513,12 +513,14 @@ internal sealed class WidgetSettings
     // Defaults on, unlike the keep-alive guards, because it starts nothing: it only reproduces one
     // click inside a translator this app itself just launched, and it never re-opens an overlay the
     // user closed on their own.
+    // Compatibility-only: retained INI value; independent translator now owns this behavior.
     public bool TranslatorOverlayAutoOpenEnabled { get; set; }
     // Minimises Windows' own Live Captions host once per instance while the translator is
     // running. The translator hides it at its own startup but not when it relaunches the caption
     // host mid-session, which is exactly when a topmost caption bar lands across whatever the
     // user is watching. Never re-applied to a window the user restored -- see
     // Core/LiveCaptionsWindowTidy.cs.
+    // Compatibility-only: retained INI value; independent translator now owns this behavior.
     public bool LiveCaptionsAutoHideEnabled { get; set; }
     // This app's own caption strip, fed from the translator's live text (Core/CaptionOverlayForm.cs).
     // With it on, the translator needs no visible window at all.
@@ -2809,6 +2811,17 @@ internal sealed class WidgetSettings
             // 就会拿到默认值，两侧间距与整列偏移随即变成解算出来的派生值——也就是说升级本身
             // 会覆盖掉此前手调的左右间距。这是明确要的行为（左右两列从此自动保持上下一致），
             // 不想要的话在设置里关掉即可。这里负责把新键落盘，免得下次读取又走一遍迁移分支。
+            saveAfterMigration = true;
+        }
+
+        if (sourceFileExists && settingsVersion >= 107 && settingsVersion < 108)
+        {
+            // 2.0.0.85 以 schema 107 把统一间距模式按当时的「默认关闭」显式写进了 settings.ini，
+            // 2.0.0.86 改成默认开启时，那行落盘的 False 会盖过新默认值——升级等于什么都没发生。
+            // schema 108 一次性把它翻开。条件卡在 >= 107 是刻意的：更老的档案根本没有这个键，
+            // 读取时自然就拿到新默认值；只有 107 这一代带着「旧默认值的残影」需要纠正，
+            // 也因此不会去动用户在更老档案里手写的 False。
+            settings.UnifiedColumnSpacingEnabled = true;
             saveAfterMigration = true;
         }
 
@@ -6575,6 +6588,27 @@ internal sealed class WidgetSettings
             AssertLayout(
                 !(legacy.LeftDockButtonGapPixels == 3 && legacy.RightTileButtonGapPixels == 97),
                 "the enabled-by-default unified mode must derive both columns over the stored spacing");
+
+            // schema 107 那一代把模式按旧的「默认关闭」显式写成了 False；schema 108 必须把它翻开，
+            // 否则 2.0.0.86 改默认值对已经升级过的档案完全无效——这正是当初漏掉的一步。
+            string schema107Path = Path.Combine(root, "settings-v107-off.ini");
+            File.WriteAllLines(
+                schema107Path,
+                new string[]
+                {
+                    "Version=107",
+                    "LeftDockAutoArrangeEnabled=True",
+                    "RightTileAutoArrangeEnabled=True",
+                    "UnifiedColumnSpacingEnabled=False",
+                    "UnifiedColumnSpacingPercent=10",
+                    "LeftDockButtonGapPixels=10",
+                    "RightTileButtonGapPixels=8"
+                },
+                SharedEncoding.Utf8NoBom);
+            WidgetSettings schema107 = LoadFromPathForSelfTest(schema107Path);
+            AssertLayout(
+                schema107.UnifiedColumnSpacingEnabled,
+                "schema 108 must turn the unified spacing mode on for the schema 107 files that recorded the old default");
         }
         finally
         {
