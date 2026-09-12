@@ -9,6 +9,11 @@ using System;
 // LiveCaptions.exe on its own. Either way the user ends up with a topmost caption bar across the
 // video they are watching, showing the untranslated text they already decided not to read.
 //
+// Hiding it takes two steps, not one: minimising a window that has no taskbar button (which is what
+// WS_EX_TOOLWINDOW makes it) leaves the classic minimised placeholder — a title-bar-sized box parked
+// in a screen corner — so the window also has to be parked off-screen. IsIconic goes true after the
+// first step and says nothing about whether that box is still in the user's face.
+//
 // The window is hidden once per instance, never on a schedule. If the user restores it deliberately
 // -- to read the original captions, say -- it stays restored: re-minimising it every few seconds
 // would be a program arguing with its owner.
@@ -133,20 +138,40 @@ internal static class LiveCaptionsWindowTidy
                 return false;
             }
 
-            if (NativeMethods.IsWindowMinimized(handle))
+            bool acted = false;
+            if (!NativeMethods.IsWindowMinimized(handle))
             {
-                lastHandledWindow = handle;
+                if (!NativeMethods.TryMinimizeWindowAsToolWindow(handle))
+                {
+                    detail = "最小化实时辅助字幕窗口失败";
+                    return false;
+                }
+
+                acted = true;
+            }
+
+            // 最小化之后还得把它挪走，否则按钮看上去就是坏的。WS_EX_TOOLWINDOW 让这个窗口没有
+            // 任务栏按钮，于是 Windows 保留了经典的「最小化占位框」——一个标题栏高的深色方块停在
+            // 屏幕角落，在这台机器上正是左上角那个 314x50 的黑框。IsIconic 这时早就返回 true，
+            // 旧代码据此直接判定「已经是收起状态」掉头就走：标志位说的和用户看见的根本不是一回事。
+            if (NativeMethods.IsWindowRectangleOnScreen(handle))
+            {
+                if (!NativeMethods.TryParkWindowOffScreen(handle))
+                {
+                    detail = "移开实时辅助字幕窗口失败";
+                    return false;
+                }
+
+                acted = true;
+            }
+
+            lastHandledWindow = handle;
+            if (!acted)
+            {
                 detail = "实时辅助字幕窗口已经是收起状态";
                 return false;
             }
 
-            if (!NativeMethods.TryMinimizeWindowAsToolWindow(handle))
-            {
-                detail = "最小化实时辅助字幕窗口失败";
-                return false;
-            }
-
-            lastHandledWindow = handle;
             detail = "已收起实时辅助字幕窗口";
             return true;
         }
@@ -182,21 +207,36 @@ internal static class LiveCaptionsWindowTidy
                 return false;
             }
 
-            if (NativeMethods.IsWindowMinimized(handle))
+            bool acted = false;
+            if (!NativeMethods.IsWindowMinimized(handle))
             {
-                // The translator hid it at its own startup; nothing to do beyond remembering that
-                // this instance needs no further attention.
-                lastHandledWindow = handle;
-                return false;
+                if (!NativeMethods.TryMinimizeWindowAsToolWindow(handle))
+                {
+                    detail = "最小化实时辅助字幕窗口失败";
+                    return false;
+                }
+
+                acted = true;
             }
 
-            if (!NativeMethods.TryMinimizeWindowAsToolWindow(handle))
+            // 和手动路径同一条理由：最小化只是把窗口变成角落里的占位框，那个框还在屏幕上。
+            // 翻译器在自己启动时最小化过一次的实例也会留下这个框，所以这里不能因为
+            // IsIconic 为真就当作已经处理完。
+            if (NativeMethods.IsWindowRectangleOnScreen(handle))
             {
-                detail = "最小化实时辅助字幕窗口失败";
-                return false;
+                if (NativeMethods.TryParkWindowOffScreen(handle))
+                {
+                    acted = true;
+                }
             }
 
             lastHandledWindow = handle;
+            if (!acted)
+            {
+                // 已经收起且不在屏幕上；记下这个实例，之后它是什么状态都是用户自己的事。
+                return false;
+            }
+
             detail = "已收起实时辅助字幕窗口";
             return true;
         }

@@ -34,6 +34,10 @@ internal static class NativeMethods
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOSIZE = 0x0001;
+    // The coordinates Windows parks minimised windows at; LiveCaptionsTranslator's own minimised
+    // main window sits exactly here, so this is the native convention rather than a magic number.
+    private const int MinimizedWindowParkX = -32000;
+    private const int MinimizedWindowParkY = -32000;
     public const uint SWP_NOOWNERZORDER = 0x0200;
     public const uint SWP_SHOWWINDOW = 0x0040;
     public const uint SWP_FRAMECHANGED = 0x0020;
@@ -4545,6 +4549,62 @@ internal static class NativeMethods
     internal static bool IsWindowMinimized(IntPtr handle)
     {
         return handle != IntPtr.Zero && IsIconic(handle);
+    }
+
+    // IsIconic is not the same question as "is it off the user's screen". A minimised window that has
+    // no taskbar button — which is exactly what WS_EX_TOOLWINDOW produces — keeps the classic
+    // minimised placeholder: a title-bar-sized box parked in a screen corner. Windows Live Captions
+    // draws a 314x50 dark box there, and on this machine it landed in the top-left corner.
+    // So the real test for "still in the way" is whether the window rectangle touches a screen.
+    internal static bool IsWindowRectangleOnScreen(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        RECT rect;
+        if (!GetWindowRect(handle, out rect))
+        {
+            return false;
+        }
+
+        Rectangle bounds = Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            return false;
+        }
+
+        return SystemInformation.VirtualScreen.IntersectsWith(bounds);
+    }
+
+    // Parks a window at the coordinates Windows itself uses for minimised windows. Position only:
+    // the window stays visible and minimised, so whatever reads its UI Automation tree — the
+    // translator reads Live Captions that way — keeps working, and the owner's own restore path
+    // still brings it back with a real rectangle.
+    internal static bool TryParkWindowOffScreen(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            return SetWindowPos(
+                handle,
+                IntPtr.Zero,
+                MinimizedWindowParkX,
+                MinimizedWindowParkY,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return false;
+        }
     }
 
     // Minimise a window of another process and take it out of the taskbar/alt-tab. This is exactly
