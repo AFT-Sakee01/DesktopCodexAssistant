@@ -127,6 +127,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool translatorKeepAliveRunning;
     private DateTime lastLiveCaptionsTidyUtc;
     private bool liveCaptionsTidyRunning;
+    private readonly TranslatorCaptionReader captionReader = new TranslatorCaptionReader();
+    private CaptionOverlayForm captionOverlay;
+    private bool captionPollRunning;
     private readonly Dictionary<int, string> registeredGlobalHotkeys = new Dictionary<int, string>();
     private readonly Dictionary<string, string> globalHotkeyRegistrationFailures =
         new Dictionary<string, string>(StringComparer.Ordinal);
@@ -268,7 +271,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             delegate { return PromptToggleAiRequestBlockingFromOperationPanel(); },
             delegate(bool enabled) { return SetAiRequestBlockingFromOperationPanel(enabled); },
             delegate(bool enabled) { return SetCodexQuotaPlanFromOperationPanel(enabled); },
-            delegate(string propertyName, bool enabled) { return SetBooleanSettingFromOperationPanel(propertyName, enabled); },
+            delegate(string propertyName, bool enabled, bool notify) { return SetBooleanSettingFromOperationPanel(propertyName, enabled, notify); },
             PersistGuardStateFromOperationPanel);
         this.operationForm.Show(this);
         // Left-dock mutual exclusion: the network panel and the two operation-owned boards live in
@@ -1249,6 +1252,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         SetMetricTileDisplaySuspended(true);
+        if (this.captionOverlay != null && !this.captionOverlay.IsDisposed)
+        {
+            this.captionOverlay.SetDisplaySuspended(true);
+        }
+
 
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
@@ -1625,6 +1633,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             MaintainProgramKeepAlive();
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:live_captions_tidy");
             MaintainLiveCaptionsWindow();
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:caption_overlay");
+            MaintainCaptionOverlay();
 
             if (this.hiddenForFullscreen &&
                 WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode) == WidgetPerformanceMode.BatterySaver)
@@ -2170,7 +2180,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                     string detail;
                     bool translatorStarted;
                     bool started = TranslatorControlReader.TryEnsureStackAlive(out detail, out translatorStarted);
-                    if (translatorStarted && this.CurrentSettings.TranslatorOverlayAutoOpenEnabled)
+                    // Our own strip supersedes the translator's overlay: opening theirs too would
+                    // stack two caption windows saying the same thing.
+                    if (translatorStarted &&
+                        this.CurrentSettings.TranslatorOverlayAutoOpenEnabled &&
+                        !this.CurrentSettings.CaptionOverlayEnabled)
                     {
                         // The guard just put the translator back; without this the transparent caption
                         // window -- the part the user actually watches -- is the one piece of the chain
@@ -2218,6 +2232,64 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         });
     }
 
+    // Drives this app's own caption strip. The UIA read happens on a background thread (it crosses
+    // a process boundary); the surface itself is created, fed and hidden on the UI thread, which is
+    // where every other visible surface in this app lives.
+    //
+    // No timer of its own either: the reader self-gates at TranslatorCaptionReader
+    // .RefreshIntervalMs and the main control tick is what asks it.
+    private void MaintainCaptionOverlay()
+    {
+        if (this.CurrentSettings == null)
+        {
+            return;
+        }
+
+        if (!this.CurrentSettings.CaptionOverlayEnabled)
+        {
+            if (this.captionOverlay != null && !this.captionOverlay.IsDisposed)
+            {
+                this.captionOverlay.UpdateSnapshot(TranslatorCaptionSnapshot.CreateEmpty());
+            }
+
+            return;
+        }
+
+        if (!this.captionPollRunning)
+        {
+            this.captionPollRunning = true;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    this.captionReader.RefreshIfDue();
+                }
+                catch (Exception ex)
+                {
+                    Program.LogException(ex);
+                }
+                finally
+                {
+                    this.captionPollRunning = false;
+                }
+            });
+        }
+
+        TranslatorCaptionSnapshot snapshot = this.captionReader.GetSnapshot();
+        if (this.captionOverlay == null || this.captionOverlay.IsDisposed)
+        {
+            // Created lazily: a user who never runs the translator never pays for the surface.
+            if (!snapshot.TranslatorRunning)
+            {
+                return;
+            }
+
+            this.captionOverlay = new CaptionOverlayForm(this.CurrentSettings);
+        }
+
+        this.captionOverlay.UpdateSnapshot(snapshot);
+    }
+
     // Keeps the Live Captions host minimised while the translator drives it. No timer of its own:
     // it self-gates on the existing main control tick, the same way MaintainProgramKeepAlive does,
     // and hands the actual window work to a background thread because it enumerates processes.
@@ -2239,6 +2311,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         this.lastLiveCaptionsTidyUtc = nowUtc;
         this.liveCaptionsTidyRunning = true;
+        bool captionOverlayOwnsDisplay = this.CurrentSettings.CaptionOverlayEnabled;
         ThreadPool.QueueUserWorkItem(delegate
         {
             try
@@ -2247,6 +2320,15 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 if (LiveCaptionsWindowTidy.TryHideNewCaptionWindow(out detail))
                 {
                     Program.LogInfo("Live captions window: " + detail);
+                }
+
+                // Only when this app is drawing the captions itself. Without our own strip the
+                // translator's window is the only place the captions exist, and minimising it
+                // would hide the very thing the user is watching.
+                if (captionOverlayOwnsDisplay &&
+                    LiveCaptionsWindowTidy.TryHideTranslatorMainWindow(out detail))
+                {
+                    Program.LogInfo("Translator window: " + detail);
                 }
             }
             catch (Exception ex)
@@ -2284,7 +2366,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
     }
 
-    internal bool SetBooleanSettingFromOperationPanel(string propertyName, bool enabled)
+    // notify=false 给的是看板上的视图开关：那类开关切换频繁，每次弹一条带英文属性名的
+    // 通知只会变成噪声；保护类与启动外部程序的开关仍然保持默认的有声反馈。
+    internal bool SetBooleanSettingFromOperationPanel(string propertyName, bool enabled, bool notify = true)
     {
         if (string.Equals(propertyName, "AiRequestProtectionManualBlockEnabled", StringComparison.Ordinal))
         {
@@ -2321,10 +2405,14 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
             property.SetValue(nextSettings, enabled, null);
             SaveSettings(nextSettings);
-            ShowWindowsNotification(
-                enabled ? "设置已开启" : "设置已关闭",
-                propertyName,
-                ToolTipIcon.Info);
+            if (notify)
+            {
+                ShowWindowsNotification(
+                    enabled ? "设置已开启" : "设置已关闭",
+                    propertyName,
+                    ToolTipIcon.Info);
+            }
+
             return true;
         }
         catch (Exception ex)
@@ -2533,6 +2621,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             ResetBurnInProtectionActivity(DateTime.UtcNow);
         }
         UpdateApplicationWindowEventTrackingPolicy();
+        if (this.captionOverlay != null && !this.captionOverlay.IsDisposed)
+        {
+            this.captionOverlay.ApplySettings(this.CurrentSettings);
+        }
+
         if (chinaGuardWasEnabled && !this.CurrentSettings.AiChinaEgressGuardEnabled)
         {
             this.chinaEgressOutsideConfirmed = false;

@@ -295,7 +295,14 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 102;
+    private const int CurrentSettingsVersion = 104;
+    internal const int MinCaptionOverlayFontSize = 12;
+    internal const int MaxCaptionOverlayFontSize = 48;
+    internal const int DefaultCaptionOverlayFontSize = 22;
+    internal const int MinCaptionOverlayTopPercent = 0;
+    internal const int MaxCaptionOverlayTopPercent = 80;
+    // 12% of the work area: the band the user had already dragged the translator overlay to.
+    internal const int DefaultCaptionOverlayTopPercent = 12;
     private const int RetiredCanonicalSettingsCount = 113;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -474,6 +481,7 @@ internal sealed class WidgetSettings
     public bool SystemDayBoardLeftDockEnabled { get; set; }
     public int SystemDayBoardLeftDockTabCenterY { get; set; }
     public int SystemDayBoardAutoHideSeconds { get; set; }
+    public bool SystemDayBoardSmoothingEnabled { get; set; }
     public bool CaptionsBoardLeftDockEnabled { get; set; }
     public int CaptionsBoardLeftDockTabCenterY { get; set; }
     public int CaptionsBoardAutoHideSeconds { get; set; }
@@ -500,6 +508,15 @@ internal sealed class WidgetSettings
     // user is watching. Never re-applied to a window the user restored -- see
     // Core/LiveCaptionsWindowTidy.cs.
     public bool LiveCaptionsAutoHideEnabled { get; set; }
+    // This app's own caption strip, fed from the translator's live text (Core/CaptionOverlayForm.cs).
+    // With it on, the translator needs no visible window at all.
+    public bool CaptionOverlayEnabled { get; set; }
+    // Logical point size of the translated line; the original line is a fixed fraction of it.
+    public int CaptionOverlayFontSize { get; set; }
+    public bool CaptionOverlayShowOriginal { get; set; }
+    // Top edge as a percentage of the work area height, so the strip keeps its place across
+    // resolution changes and external displays instead of storing a pixel row.
+    public int CaptionOverlayTopPercent { get; set; }
     public bool ClaudeAppKeepAliveEnabled { get; set; }
     // Guard state. GuardSleepEnabled and the two deadline ticks are live runtime state rather than
     // preferences: they are persisted so a restart during a long unattended run does not silently
@@ -957,6 +974,7 @@ internal sealed class WidgetSettings
         this.SystemDayBoardLeftDockEnabled = defaults.SystemDayBoardLeftDockEnabled;
         this.SystemDayBoardLeftDockTabCenterY = defaults.SystemDayBoardLeftDockTabCenterY;
         this.SystemDayBoardAutoHideSeconds = defaults.SystemDayBoardAutoHideSeconds;
+        this.SystemDayBoardSmoothingEnabled = defaults.SystemDayBoardSmoothingEnabled;
         this.CaptionsBoardLeftDockEnabled = defaults.CaptionsBoardLeftDockEnabled;
         this.CaptionsBoardLeftDockTabCenterY = defaults.CaptionsBoardLeftDockTabCenterY;
         this.CaptionsBoardAutoHideSeconds = defaults.CaptionsBoardAutoHideSeconds;
@@ -965,6 +983,10 @@ internal sealed class WidgetSettings
         this.ClaudeAppKeepAliveEnabled = defaults.ClaudeAppKeepAliveEnabled;
         this.TranslatorOverlayAutoOpenEnabled = defaults.TranslatorOverlayAutoOpenEnabled;
         this.LiveCaptionsAutoHideEnabled = defaults.LiveCaptionsAutoHideEnabled;
+        this.CaptionOverlayEnabled = defaults.CaptionOverlayEnabled;
+        this.CaptionOverlayFontSize = defaults.CaptionOverlayFontSize;
+        this.CaptionOverlayShowOriginal = defaults.CaptionOverlayShowOriginal;
+        this.CaptionOverlayTopPercent = defaults.CaptionOverlayTopPercent;
         this.GuardSleepEnabled = defaults.GuardSleepEnabled;
         this.GuardSleepSinceUtcTicks = defaults.GuardSleepSinceUtcTicks;
         this.GuardDisplayMinutes = defaults.GuardDisplayMinutes;
@@ -1181,6 +1203,7 @@ internal sealed class WidgetSettings
         settings.SystemDayBoardLeftDockEnabled = true;
         settings.SystemDayBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.SystemDayBoardAutoHideSeconds = DefaultSystemDayBoardAutoHideSeconds;
+        settings.SystemDayBoardSmoothingEnabled = false;
         settings.CaptionsBoardLeftDockEnabled = true;
         settings.CaptionsBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CaptionsBoardAutoHideSeconds = DefaultCaptionsBoardAutoHideSeconds;
@@ -1189,6 +1212,10 @@ internal sealed class WidgetSettings
         settings.ClaudeAppKeepAliveEnabled = false;
         settings.TranslatorOverlayAutoOpenEnabled = true;
         settings.LiveCaptionsAutoHideEnabled = true;
+        settings.CaptionOverlayEnabled = true;
+        settings.CaptionOverlayFontSize = DefaultCaptionOverlayFontSize;
+        settings.CaptionOverlayShowOriginal = true;
+        settings.CaptionOverlayTopPercent = DefaultCaptionOverlayTopPercent;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1407,6 +1434,7 @@ internal sealed class WidgetSettings
         settings.SystemDayBoardLeftDockEnabled = true;
         settings.SystemDayBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.SystemDayBoardAutoHideSeconds = DefaultSystemDayBoardAutoHideSeconds;
+        settings.SystemDayBoardSmoothingEnabled = false;
         settings.CaptionsBoardLeftDockEnabled = true;
         settings.CaptionsBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CaptionsBoardAutoHideSeconds = DefaultCaptionsBoardAutoHideSeconds;
@@ -1415,6 +1443,10 @@ internal sealed class WidgetSettings
         settings.ClaudeAppKeepAliveEnabled = false;
         settings.TranslatorOverlayAutoOpenEnabled = true;
         settings.LiveCaptionsAutoHideEnabled = true;
+        settings.CaptionOverlayEnabled = true;
+        settings.CaptionOverlayFontSize = DefaultCaptionOverlayFontSize;
+        settings.CaptionOverlayShowOriginal = true;
+        settings.CaptionOverlayTopPercent = DefaultCaptionOverlayTopPercent;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1629,6 +1661,7 @@ internal sealed class WidgetSettings
             SystemDayBoardLeftDockEnabled = this.SystemDayBoardLeftDockEnabled,
             SystemDayBoardLeftDockTabCenterY = this.SystemDayBoardLeftDockTabCenterY,
             SystemDayBoardAutoHideSeconds = this.SystemDayBoardAutoHideSeconds,
+            SystemDayBoardSmoothingEnabled = this.SystemDayBoardSmoothingEnabled,
             CaptionsBoardLeftDockEnabled = this.CaptionsBoardLeftDockEnabled,
             CaptionsBoardLeftDockTabCenterY = this.CaptionsBoardLeftDockTabCenterY,
             CaptionsBoardAutoHideSeconds = this.CaptionsBoardAutoHideSeconds,
@@ -1637,6 +1670,10 @@ internal sealed class WidgetSettings
             ClaudeAppKeepAliveEnabled = this.ClaudeAppKeepAliveEnabled,
             TranslatorOverlayAutoOpenEnabled = this.TranslatorOverlayAutoOpenEnabled,
             LiveCaptionsAutoHideEnabled = this.LiveCaptionsAutoHideEnabled,
+            CaptionOverlayEnabled = this.CaptionOverlayEnabled,
+            CaptionOverlayFontSize = this.CaptionOverlayFontSize,
+            CaptionOverlayShowOriginal = this.CaptionOverlayShowOriginal,
+            CaptionOverlayTopPercent = this.CaptionOverlayTopPercent,
             GuardSleepEnabled = this.GuardSleepEnabled,
             GuardSleepSinceUtcTicks = this.GuardSleepSinceUtcTicks,
             GuardDisplayMinutes = this.GuardDisplayMinutes,
@@ -1775,6 +1812,8 @@ internal sealed class WidgetSettings
 
     public void Normalize()
     {
+        this.CaptionOverlayFontSize = Clamp(this.CaptionOverlayFontSize, MinCaptionOverlayFontSize, MaxCaptionOverlayFontSize);
+        this.CaptionOverlayTopPercent = Clamp(this.CaptionOverlayTopPercent, MinCaptionOverlayTopPercent, MaxCaptionOverlayTopPercent);
         this.ApplicationTransparencyPercent = Clamp(this.ApplicationTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
         this.MainWidgetTransparencyOverridePercent = Clamp(this.MainWidgetTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
         this.NetworkMonitorTransparencyOverridePercent = Clamp(this.NetworkMonitorTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
@@ -2630,6 +2669,28 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 104)
+        {
+            // Version 104 adds this app's own caption strip. On by default and armed on upgrade:
+            // it is the point of the feature, it draws nothing until the translator actually
+            // produces a caption, and it never takes a click.
+            settings.CaptionOverlayEnabled = true;
+            settings.CaptionOverlayFontSize = DefaultCaptionOverlayFontSize;
+            settings.CaptionOverlayShowOriginal = true;
+            settings.CaptionOverlayTopPercent = DefaultCaptionOverlayTopPercent;
+            saveAfterMigration = true;
+        }
+
+        if (sourceFileExists && settingsVersion < 103)
+        {
+            // Version 103 adds the System Day curve-smoothing toggle. It arrives OFF on existing
+            // installs because the board's default view must stay the raw 1-minute samples:
+            // smoothing is a reading aid that flattens real spikes, so it has to be something the
+            // user turned on deliberately rather than something an upgrade switched on for them.
+            settings.SystemDayBoardSmoothingEnabled = false;
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2856,6 +2917,7 @@ internal sealed class WidgetSettings
             "SystemDayBoardLeftDockEnabled=" + this.SystemDayBoardLeftDockEnabled,
             "SystemDayBoardLeftDockTabCenterY=" + this.SystemDayBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
             "SystemDayBoardAutoHideSeconds=" + this.SystemDayBoardAutoHideSeconds.ToString(CultureInfo.InvariantCulture),
+            "SystemDayBoardSmoothingEnabled=" + this.SystemDayBoardSmoothingEnabled,
             "CaptionsBoardLeftDockEnabled=" + this.CaptionsBoardLeftDockEnabled,
             "CaptionsBoardLeftDockTabCenterY=" + this.CaptionsBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
             "CaptionsBoardAutoHideSeconds=" + this.CaptionsBoardAutoHideSeconds.ToString(CultureInfo.InvariantCulture),
@@ -2864,6 +2926,10 @@ internal sealed class WidgetSettings
             "ClaudeAppKeepAliveEnabled=" + this.ClaudeAppKeepAliveEnabled,
             "TranslatorOverlayAutoOpenEnabled=" + this.TranslatorOverlayAutoOpenEnabled,
             "LiveCaptionsAutoHideEnabled=" + this.LiveCaptionsAutoHideEnabled,
+            "CaptionOverlayEnabled=" + this.CaptionOverlayEnabled,
+            "CaptionOverlayFontSize=" + this.CaptionOverlayFontSize.ToString(CultureInfo.InvariantCulture),
+            "CaptionOverlayShowOriginal=" + this.CaptionOverlayShowOriginal,
+            "CaptionOverlayTopPercent=" + this.CaptionOverlayTopPercent.ToString(CultureInfo.InvariantCulture),
             "GuardSleepEnabled=" + this.GuardSleepEnabled,
             "GuardSleepSinceUtcTicks=" + this.GuardSleepSinceUtcTicks.ToString(CultureInfo.InvariantCulture),
             "GuardDisplayMinutes=" + this.GuardDisplayMinutes.ToString(CultureInfo.InvariantCulture),
@@ -3467,6 +3533,12 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "SystemDayBoardSmoothingEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.SystemDayBoardSmoothingEnabled = boolValue;
+            return;
+        }
+
         if (string.Equals(key, "SystemDayBoardLeftDockEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.SystemDayBoardLeftDockEnabled = boolValue;
@@ -3512,6 +3584,30 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "LiveCaptionsAutoHideEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.LiveCaptionsAutoHideEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionOverlayEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.CaptionOverlayEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionOverlayShowOriginal", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.CaptionOverlayShowOriginal = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionOverlayFontSize", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CaptionOverlayFontSize = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionOverlayTopPercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CaptionOverlayTopPercent = intValue;
             return;
         }
 
@@ -6600,8 +6696,9 @@ internal sealed class WidgetSettings
             defaults.SystemDayBoardAutoHideSeconds == DefaultSystemDayBoardAutoHideSeconds &&
             defaults.SystemDayBoardTransparencyOverridePercent == MinWindowTransparencyOverridePercent &&
             defaults.SystemDayBoardScaleOverridePercent == MinWindowScaleOverridePercent &&
+            !defaults.SystemDayBoardSmoothingEnabled &&
             Array.IndexOf(defaults.LeftDockButtonOrder, "SystemDay") == defaults.LeftDockButtonOrder.Length - 2,
-            "System Day board defaults should enable an independent seventh dock slot.");
+            "System Day board defaults should enable an independent seventh dock slot with raw (unsmoothed) curves.");
 
         string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-system-day-board-settings-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -6613,6 +6710,7 @@ internal sealed class WidgetSettings
             defaults.SystemDayBoardAutoHideSeconds = 52;
             defaults.SystemDayBoardTransparencyOverridePercent = 42;
             defaults.SystemDayBoardScaleOverridePercent = 135;
+            defaults.SystemDayBoardSmoothingEnabled = true;
             defaults.SaveToPath(path, true);
             WidgetSettings loaded = LoadFromPath(path, false);
             AssertLayout(
@@ -6620,8 +6718,10 @@ internal sealed class WidgetSettings
                 loaded.SystemDayBoardLeftDockTabCenterY == 999 &&
                 loaded.SystemDayBoardAutoHideSeconds == 52 &&
                 loaded.SystemDayBoardTransparencyOverridePercent == 42 &&
-                loaded.SystemDayBoardScaleOverridePercent == 135,
-                "System Day board settings should preserve visual slots while forcing the seventh dock on.");
+                loaded.SystemDayBoardScaleOverridePercent == 135 &&
+                loaded.SystemDayBoardSmoothingEnabled &&
+                defaults.Clone().SystemDayBoardSmoothingEnabled,
+                "System Day board settings should preserve visual slots and the smoothing toggle while forcing the seventh dock on.");
 
             File.WriteAllLines(path, new string[] { "Version=91" }, SharedEncoding.Utf8NoBom);
             WidgetSettings migrated = LoadFromPath(path, false);
@@ -6630,15 +6730,23 @@ internal sealed class WidgetSettings
                 migrated.SystemDayBoardLeftDockTabCenterY == AutoLeftDockTabCenterY &&
                 migrated.SystemDayBoardAutoHideSeconds == DefaultSystemDayBoardAutoHideSeconds &&
                 migrated.SystemDayBoardTransparencyOverridePercent == MinWindowTransparencyOverridePercent &&
-                migrated.SystemDayBoardScaleOverridePercent == MinWindowScaleOverridePercent,
+                migrated.SystemDayBoardScaleOverridePercent == MinWindowScaleOverridePercent &&
+                !migrated.SystemDayBoardSmoothingEnabled,
                 "System Day board v91 to v92 migration failed.");
+
+            // 平滑开关是阅读辅助，会抹平真实尖峰，升级不能替用户打开。
+            File.WriteAllLines(path, new string[] { "Version=102", "SystemDayBoardSmoothingEnabled=True" }, SharedEncoding.Utf8NoBom);
+            WidgetSettings migrated103 = LoadFromPath(path, false);
+            AssertLayout(
+                !migrated103.SystemDayBoardSmoothingEnabled,
+                "System Day v102 to v103 migration must leave curve smoothing off on upgrade.");
         }
         finally
         {
             try { Directory.Delete(root, true); } catch { }
         }
 
-        Console.WriteLine("System Day board settings: PASS fixed dock, independent overrides, save/load, migrate(v91->v92)");
+        Console.WriteLine("System Day board settings: PASS fixed dock, independent overrides, smoothing toggle, save/load, migrate(v91->v92, v102->v103)");
     }
 
     private static void RunCaptionsBoardSettingsSelfTest()

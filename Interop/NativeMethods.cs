@@ -4553,6 +4553,25 @@ internal static class NativeMethods
     // the case upstream misses -- the caption host it relaunches mid-session is left in front.
     // Matching its exact pair of calls keeps the window in a state the translator already expects,
     // including its own RestoreLiveCaptions path on shutdown.
+    internal static bool TryMinimizeWindow(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            ShowWindow(handle, SW_MINIMIZE);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return false;
+        }
+    }
+
     internal static bool TryMinimizeWindowAsToolWindow(IntPtr handle)
     {
         if (handle == IntPtr.Zero)

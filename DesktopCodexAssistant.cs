@@ -184,6 +184,11 @@ internal static class Program
             return RenderResetSpeedBoardSample(args);
         }
 
+        if (HasArg(args, "--render-captionoverlay"))
+        {
+            return RunCaptionOverlayRenderCommand(args);
+        }
+
         if (HasArg(args, "--render-captionsboard"))
         {
             return RenderCaptionsBoardSample(args);
@@ -886,6 +891,7 @@ internal static class Program
             RunNamedSelfTest("MinimalSqliteReader", MinimalSqliteReader.RunSelfTest);
             RunNamedSelfTest("TranslatorControlReader", TranslatorControlReader.RunSelfTest);
             RunNamedSelfTest("CaptionsBoardForm", CaptionsBoardForm.RunSelfTest);
+            RunNamedSelfTest("CaptionOverlayForm", CaptionOverlayForm.RunSelfTest);
             RunNamedSelfTest("OperationForm.LeftDockMutualExclusion", OperationForm.RunLeftDockMutualExclusionSelfTest);
             RunNamedSelfTest("BurnInProtection", BurnInProtection.RunSelfTest);
             RunNamedSelfTest("MemoryPressureTracker", MemoryPressureTracker.RunSelfTest);
@@ -1518,6 +1524,29 @@ internal static class Program
                 ReportTranslatorStackLine("overlay ensure        = " + overlayOpened.ToString() + " detail=[" + overlayDetail + "]");
             }
 
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RunCaptionOverlayRenderCommand(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrWhiteSpace(outputDir))
+            {
+                outputDir = Path.Combine(Environment.CurrentDirectory, "_render-captionoverlay");
+            }
+
+            CaptionOverlayForm.RenderSamples(outputDir);
+            Console.WriteLine("Rendered caption overlay samples to " + Path.GetFullPath(outputDir));
             return 0;
         }
         catch (Exception ex)

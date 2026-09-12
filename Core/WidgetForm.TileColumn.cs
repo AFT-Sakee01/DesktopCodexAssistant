@@ -41,20 +41,9 @@ internal sealed partial class WidgetForm
 
         if (this.metricTileExpandForm == null || this.metricTileExpandForm.IsDisposed)
         {
+            // The PWR panel is a read-out only; pausing the 80% ceiling is the GUARD board's
+            // control, so this host no longer routes a battery-care request from the expand panel.
             this.metricTileExpandForm = new MetricTileExpandForm(this.CurrentSettings);
-            this.metricTileExpandForm.BatteryCareRequest = delegate(bool pause, Action<bool, string> completion)
-            {
-                if (this.operationForm == null || this.operationForm.IsDisposed)
-                {
-                    completion(false, "操作模块尚未就绪");
-                    return;
-                }
-                this.operationForm.RequestBatteryCareFromGuardBoard(pause, delegate(bool success, string detail)
-                {
-                    PushMetricTileFeed();
-                    completion(success, detail);
-                });
-            };
             this.metricTileExpandForm.Show(this);
             this.metricTileExpandForm.HidePanel();
         }
@@ -406,6 +395,11 @@ internal sealed partial class WidgetForm
         // Clearing the suspend flag first is what re-arms CanRenderLayeredWindow; without it the
         // recovery pass below would rebuild the surfaces and then refuse to draw into them.
         SetMetricTileDisplaySuspended(false);
+        if (this.captionOverlay != null && !this.captionOverlay.IsDisposed)
+        {
+            this.captionOverlay.SetDisplaySuspended(false);
+        }
+
 
         if (this.metricTileExpandForm != null && !this.metricTileExpandForm.IsDisposed)
         {

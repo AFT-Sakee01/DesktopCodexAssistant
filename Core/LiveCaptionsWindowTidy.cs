@@ -18,11 +18,104 @@ internal static class LiveCaptionsWindowTidy
     // class is what LiveCaptionsTranslator itself matches on.
     private const string LiveCaptionsWindowClassName = "LiveCaptionsDesktopWindow";
 
+    // The translator's own main window: same class of problem, same once-per-instance rule, so it
+    // lives here rather than in a second helper. With this app drawing the captions that window has
+    // nothing left to show, and it is topmost by default.
+    private const string TranslatorMainWindowTitle = "LiveCaptions Translator";
+    private const string TranslatorProcessName = "LiveCaptionsTranslator";
+
     private static IntPtr lastHandledWindow = IntPtr.Zero;
+    private static IntPtr lastHandledTranslatorWindow = IntPtr.Zero;
 
     internal static void ResetForTests()
     {
         lastHandledWindow = IntPtr.Zero;
+        lastHandledTranslatorWindow = IntPtr.Zero;
+    }
+
+    // Minimises the translator's main window once per instance, with the same restraint as the
+    // caption host above: only while this app renders the captions itself, and never a second time
+    // for a window the user brought back.
+    internal static bool TryHideTranslatorMainWindow(out string detail)
+    {
+        detail = string.Empty;
+        try
+        {
+            if (!TranslatorControlReader.IsLiveCaptionsTranslatorRunning())
+            {
+                return false;
+            }
+
+            IntPtr handle;
+            if (!TryFindTranslatorMainWindow(out handle))
+            {
+                return false;
+            }
+
+            if (handle == lastHandledTranslatorWindow)
+            {
+                return false;
+            }
+
+            if (NativeMethods.IsWindowMinimized(handle))
+            {
+                lastHandledTranslatorWindow = handle;
+                return false;
+            }
+
+            // Plain minimise, no WS_EX_TOOLWINDOW: unlike the caption host, this is a window the
+            // user may well want back from the taskbar to read its log or change a setting.
+            if (!NativeMethods.TryMinimizeWindow(handle))
+            {
+                detail = "最小化翻译器主窗口失败";
+                return false;
+            }
+
+            lastHandledTranslatorWindow = handle;
+            detail = "已收起翻译器主窗口";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            detail = ex.GetType().Name + ": " + ex.Message;
+            return false;
+        }
+    }
+
+    private static bool TryFindTranslatorMainWindow(out IntPtr handle)
+    {
+        handle = IntPtr.Zero;
+        System.Diagnostics.Process[] processes = null;
+        try
+        {
+            processes = System.Diagnostics.Process.GetProcessesByName(TranslatorProcessName);
+            for (int i = 0; i < processes.Length; i++)
+            {
+                if (NativeMethods.TryFindProcessWindowByTitle(processes[i].Id, TranslatorMainWindowTitle, out handle))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        finally
+        {
+            if (processes != null)
+            {
+                for (int i = 0; i < processes.Length; i++)
+                {
+                    try
+                    {
+                        processes[i].Dispose();
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
     }
 
     // Returns true only when this call actually minimised a window, so callers can log a real action.
