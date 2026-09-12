@@ -463,7 +463,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "!Codex 额度计划", "CodexQuotaPlanEnabled", "CodexQuotaPlanWeeklyComparison", "CodexQuotaPlanWeeklyThresholdPercent",
                            "CodexQuotaPlanFiveHourComparison", "CodexQuotaPlanFiveHourThresholdPercent", "CodexQuotaPlanResumeConditionMode",
                            "CodexQuotaPlanAutoResumePausedGoals", "CodexQuotaPlanPauseGoalIds", "CodexQuotaPlanResumeGoalIds" },
-            new string[] { "!恢复与保护", "SeelenDockForegroundPulseEnabled", "WinDRecoveryPulseEnabled", "PowerResumeRestartEnabled", "TranslatorKeepAliveEnabled", "CodexAppKeepAliveEnabled", "ClaudeAppKeepAliveEnabled", "TranslatorOverlayAutoOpenEnabled", "LiveCaptionsAutoHideEnabled", "CaptionOverlayEnabled", "CaptionOverlayShowOriginal", "CaptionOverlayFontSize", "CaptionOverlayTopPercent", "CaptionOverlaySettledLines" },
+            new string[] { "!恢复与保护", "SeelenDockForegroundPulseEnabled", "WinDRecoveryPulseEnabled", "PowerResumeRestartEnabled", "TranslatorKeepAliveEnabled", "CodexAppKeepAliveEnabled", "ClaudeAppKeepAliveEnabled", "TranslatorOverlayAutoOpenEnabled", "LiveCaptionsAutoHideEnabled", "CaptionOverlayEnabled", "CaptionOverlayShowOriginal", "CaptionOverlayFontSize", "CaptionOverlayTopPercent", "CaptionOverlaySettledLines", "CaptionOverlayDisplayEnabled" },
             new string[] { "!调试", "ForceShowForegroundFpsEnabled" }
         });
 
@@ -4328,6 +4328,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CaptionOverlayFontSize", "字幕面板译文字号" },
         { "CaptionOverlayTopPercent", "字幕面板距顶百分比" },
         { "CaptionOverlaySettledLines", "字幕面板历史句数" },
+        { "CaptionOverlayDisplayEnabled", "显示字幕横条" },
         { "CodexAppKeepAliveEnabled", "Codex 应用保活" },
         { "ClaudeAppKeepAliveEnabled", "Claude 应用保活" },
         { "AiRequestProtectionAutoEnabled", "AI 自动阻断" },
@@ -4481,6 +4482,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CaptionOverlayFontSize", "译文行的字号（逻辑磅值，范围 12-48）。原文行按固定比例跟随，不单独设置——两个尺寸各自可调最容易调出原文压过译文的组合。" },
         { "CaptionOverlayTopPercent", "面板顶边位于工作区高度的百分之几（0-80）。存百分比而不是像素行，换分辨率或外接屏时位置不会跑掉。" },
         { "CaptionOverlaySettledLines", "正在说的那句上方保留几句已定稿的白字（0-5，默认 1）。留 0 只剩当前句。字幕看板里的「句数」按钮改的就是这一项，两处等价。行位是固定预留的，所以句数变化只改面板高度，不会让字在播放中途上下跳。" },
+        { "CaptionOverlayDisplayEnabled", "关掉只是不画那条横幅，背后的链路照常运行——字幕照样被读取、定稿句照样累积进字幕看板的文章。想彻底停掉读取请关「自绘字幕面板」。用来在不想被字幕挡着画面、但又要留一份可回看的文稿时切换；字幕看板里的「隐藏 / 显示」按钮改的就是这一项，两处等价。" },
         { "CodexAppKeepAliveEnabled", "每 30 秒检查 ChatGPT 桌面应用（OpenAI.Codex 包），不在运行就拉起。只守护桌面应用，不碰 codex CLI——重开一个 CLI 只会得到空会话。" },
         { "ClaudeAppKeepAliveEnabled", "每 30 秒检查 Claude 桌面应用（Claude 包），不在运行就拉起。按可执行文件路径区分，Claude Code CLI 在跑不会被误判成应用还活着；同样不碰 CLI。" },
         { "AiRequestProtectionAutoEnabled", "网络监控判定为 GFW 明确阻断时，阻断本程序发往 OpenAI、ChatGPT、Claude 和 Anthropic 的请求。" },

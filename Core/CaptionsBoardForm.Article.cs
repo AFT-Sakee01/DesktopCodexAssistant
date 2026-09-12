@@ -155,6 +155,11 @@ internal sealed partial class CaptionsBoardForm
                 ResetCaptionOverlayGeometry();
                 return true;
 
+            case CaptionsHitAction.OverlayDisplayToggle:
+                DisarmClear();
+                ToggleCaptionOverlayDisplay();
+                return true;
+
             default:
                 return false;
         }
@@ -252,8 +257,49 @@ internal sealed partial class CaptionsBoardForm
         });
     }
 
+    private bool IsCaptionOverlayDisplayEnabled
+    {
+        get
+        {
+            return this.CurrentSettings == null || this.CurrentSettings.CaptionOverlayDisplayEnabled;
+        }
+    }
+
+    // Hides the banner without touching the chain behind it. Deliberately not the same thing as
+    // the CaptionOverlayEnabled master switch in the settings window: the reader keeps polling and
+    // the article keeps recording, so the screen can be clear while the session is still being
+    // written down. Leaving edit mode first, because there is nothing to drag once it is hidden.
+    private void ToggleCaptionOverlayDisplay()
+    {
+        bool next = !IsCaptionOverlayDisplayEnabled;
+        if (!next)
+        {
+            CaptionOverlayForm editing = ResolveCaptionOverlay();
+            if (editing != null && editing.IsEditing)
+            {
+                editing.SetEditMode(false);
+            }
+        }
+
+        PersistSettings(delegate(WidgetSettings settings)
+        {
+            settings.CaptionOverlayDisplayEnabled = next;
+        });
+        this.statusNotice = next ? string.Empty : "字幕条已隐藏，字幕仍在记录进文章";
+        RenderLayeredWindow();
+    }
+
     private void ToggleCaptionOverlayEditMode()
     {
+        if (!IsCaptionOverlayDisplayEnabled)
+        {
+            // Placing something invisible is not a thing. Say so rather than silently turning the
+            // strip back on: the user just chose to hide it.
+            this.statusNotice = "字幕条已隐藏，先按「显示」再调整";
+            RenderLayeredWindow();
+            return;
+        }
+
         CaptionOverlayForm overlay = ResolveCaptionOverlay();
         if (overlay == null)
         {

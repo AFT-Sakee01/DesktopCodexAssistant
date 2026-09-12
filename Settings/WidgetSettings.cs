@@ -521,6 +521,10 @@ internal sealed class WidgetSettings
     // Logical point size of the translated line; the original line is a fixed fraction of it.
     public int CaptionOverlayFontSize { get; set; }
     public bool CaptionOverlayShowOriginal { get; set; }
+    // Whether the strip is drawn. Separate from CaptionOverlayEnabled on purpose: this one hides
+    // the banner without stopping the chain behind it, so the article keeps recording while the
+    // screen stays clear. CaptionOverlayEnabled is the master switch that stops the reading too.
+    public bool CaptionOverlayDisplayEnabled { get; set; }
     // Top edge as a percentage of the work area height, so the strip keeps its place across
     // resolution changes and external displays instead of storing a pixel row.
     public int CaptionOverlayTopPercent { get; set; }
@@ -1005,6 +1009,7 @@ internal sealed class WidgetSettings
         this.CaptionOverlayEnabled = defaults.CaptionOverlayEnabled;
         this.CaptionOverlayFontSize = defaults.CaptionOverlayFontSize;
         this.CaptionOverlayShowOriginal = defaults.CaptionOverlayShowOriginal;
+        this.CaptionOverlayDisplayEnabled = defaults.CaptionOverlayDisplayEnabled;
         this.CaptionOverlayTopPercent = defaults.CaptionOverlayTopPercent;
         this.CaptionOverlaySettledLines = defaults.CaptionOverlaySettledLines;
         this.CaptionOverlayLeft = defaults.CaptionOverlayLeft;
@@ -1239,6 +1244,7 @@ internal sealed class WidgetSettings
         settings.CaptionOverlayEnabled = true;
         settings.CaptionOverlayFontSize = DefaultCaptionOverlayFontSize;
         settings.CaptionOverlayShowOriginal = true;
+        settings.CaptionOverlayDisplayEnabled = true;
         settings.CaptionOverlayTopPercent = DefaultCaptionOverlayTopPercent;
         settings.CaptionOverlaySettledLines = DefaultCaptionOverlaySettledLines;
         settings.CaptionOverlayLeft = AutoCaptionOverlayBounds;
@@ -1475,6 +1481,7 @@ internal sealed class WidgetSettings
         settings.CaptionOverlayEnabled = true;
         settings.CaptionOverlayFontSize = DefaultCaptionOverlayFontSize;
         settings.CaptionOverlayShowOriginal = true;
+        settings.CaptionOverlayDisplayEnabled = true;
         settings.CaptionOverlayTopPercent = DefaultCaptionOverlayTopPercent;
         settings.CaptionOverlaySettledLines = DefaultCaptionOverlaySettledLines;
         settings.CaptionOverlayLeft = AutoCaptionOverlayBounds;
@@ -1707,6 +1714,7 @@ internal sealed class WidgetSettings
             CaptionOverlayEnabled = this.CaptionOverlayEnabled,
             CaptionOverlayFontSize = this.CaptionOverlayFontSize,
             CaptionOverlayShowOriginal = this.CaptionOverlayShowOriginal,
+            CaptionOverlayDisplayEnabled = this.CaptionOverlayDisplayEnabled,
             CaptionOverlayTopPercent = this.CaptionOverlayTopPercent,
             CaptionOverlaySettledLines = this.CaptionOverlaySettledLines,
             CaptionOverlayLeft = this.CaptionOverlayLeft,
@@ -2739,6 +2747,7 @@ internal sealed class WidgetSettings
             settings.CaptionOverlayEnabled = true;
             settings.CaptionOverlayFontSize = DefaultCaptionOverlayFontSize;
             settings.CaptionOverlayShowOriginal = true;
+        settings.CaptionOverlayDisplayEnabled = true;
             settings.CaptionOverlayTopPercent = DefaultCaptionOverlayTopPercent;
             settings.CaptionOverlaySettledLines = DefaultCaptionOverlaySettledLines;
             // The strip starts at its automatic full-width band; a saved rectangle only ever comes
@@ -2998,6 +3007,7 @@ internal sealed class WidgetSettings
             "CaptionOverlayEnabled=" + this.CaptionOverlayEnabled,
             "CaptionOverlayFontSize=" + this.CaptionOverlayFontSize.ToString(CultureInfo.InvariantCulture),
             "CaptionOverlayShowOriginal=" + this.CaptionOverlayShowOriginal,
+            "CaptionOverlayDisplayEnabled=" + this.CaptionOverlayDisplayEnabled,
             "CaptionOverlayTopPercent=" + this.CaptionOverlayTopPercent.ToString(CultureInfo.InvariantCulture),
             "CaptionOverlaySettledLines=" + this.CaptionOverlaySettledLines.ToString(CultureInfo.InvariantCulture),
             "CaptionOverlayLeft=" + this.CaptionOverlayLeft.ToString(CultureInfo.InvariantCulture),
@@ -3670,6 +3680,12 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "CaptionOverlayShowOriginal", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.CaptionOverlayShowOriginal = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionOverlayDisplayEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.CaptionOverlayDisplayEnabled = boolValue;
             return;
         }
 

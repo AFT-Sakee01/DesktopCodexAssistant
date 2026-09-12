@@ -205,6 +205,15 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
             return false;
         }
 
+        // Hidden by the board's 隐藏 button: the banner goes away, the chain behind it does not.
+        // The reader keeps polling and the article keeps recording -- this flag reaches no further
+        // than whether anything is painted. Edit mode is checked after it on purpose: there is
+        // nothing to place while the strip is hidden, and the board refuses to enter edit mode then.
+        if (!this.CurrentSettings.CaptionOverlayDisplayEnabled)
+        {
+            return false;
+        }
+
         if (this.editMode)
         {
             // Placing the strip is impossible if it vanishes whenever the speaker pauses.

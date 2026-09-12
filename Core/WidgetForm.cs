@@ -2400,8 +2400,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         if (this.captionOverlay == null || this.captionOverlay.IsDisposed)
         {
-            // Created lazily: a user who never runs the translator never pays for the surface.
-            if (!snapshot.TranslatorRunning)
+            // Created lazily: a user who never runs the translator, or who has hidden the strip,
+            // never pays for the surface. Note what is NOT skipped here -- the poll above still ran
+            // and the reader still records, which is the whole point of hiding rather than disabling.
+            if (!snapshot.TranslatorRunning || !this.CurrentSettings.CaptionOverlayDisplayEnabled)
             {
                 return;
             }

@@ -344,9 +344,24 @@ internal sealed partial class CaptionOverlayForm
             stopped.TranslatorRunning = false;
             form.snapshot = stopped;
             AssertSelfTest(!form.ShouldBeVisible(), "no translator means no strip");
+
+            // Hidden from the board: a running translator with text on screen must still paint
+            // nothing. What this cannot assert from here is the other half of the contract -- that
+            // the article keeps recording -- and that holds structurally: TranslatorCaptionReader,
+            // which owns the transcript, never reads this setting, and WidgetForm keeps polling it
+            // on the same clock either way.
+            WidgetSettings hidden = WidgetSettings.CreateDefaults();
+            hidden.CaptionOverlayDisplayEnabled = false;
+            hidden.Normalize();
+            form.ApplySettings(hidden);
+            form.snapshot = CreateFixtureSnapshot("Speaking right now.", "正在说话。", new string[] { "上一句。" });
+            AssertSelfTest(!form.ShouldBeVisible(), "a hidden strip must not paint even with live captions");
+
+            form.ApplySettings(settings);
+            AssertSelfTest(form.ShouldBeVisible(), "showing it again must bring the strip back");
         }
 
-        Console.WriteLine("Caption overlay layout: PASS fixed-height slots, settled-line count, optional original line, hidden when silent");
+        Console.WriteLine("Caption overlay layout: PASS fixed-height slots, settled-line count, optional original line, hidden when silent, hidden on request");
     }
 
     private static TranslatorCaptionSnapshot CreateFixtureSnapshot(string original, string translated, string[] settled)

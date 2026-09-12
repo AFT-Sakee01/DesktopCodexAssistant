@@ -718,6 +718,9 @@ internal sealed partial class CaptionsBoardForm
         // The strip group is measured and right-aligned first, so the article group on the left knows
         // where it has to stop.
         bool editing = IsCaptionOverlayEditing;
+        bool shown = IsCaptionOverlayDisplayEnabled;
+        // The button says what pressing it does, not what the current state is.
+        string displayLabel = shown ? "隐藏" : "显示";
         string editLabel = editing ? "完成" : "调整";
         string stripLabel = "字幕条";
         string linesLabel = "句数";
@@ -727,12 +730,13 @@ internal sealed partial class CaptionsBoardForm
         string settledText = settledLines.ToString(CultureInfo.InvariantCulture);
 
         int stripLabelWidth = MeasureTextWidth(g, stripLabel, labelFont) + S(8);
+        int displayWidth = MeasureTextWidth(g, displayLabel, bodyFont) + S(14);
         int editWidth = MeasureTextWidth(g, editLabel, bodyFont) + S(14);
         int resetWidth = MeasureTextWidth(g, "复位", bodyFont) + S(14);
         int linesLabelWidth = MeasureTextWidth(g, linesLabel, labelFont) + S(8);
         int stepperWidth = MeasureStepperWidth(g, settledText, monoFont, bounds.Height);
-        int stripGroupWidth = stripLabelWidth + gap + editWidth + gap + resetWidth + groupGap +
-            linesLabelWidth + gap + stepperWidth;
+        int stripGroupWidth = stripLabelWidth + gap + displayWidth + gap + editWidth + gap + resetWidth +
+            groupGap + linesLabelWidth + gap + stepperWidth;
         int stripLeft = bounds.Right - stripGroupWidth;
 
         using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
@@ -743,8 +747,27 @@ internal sealed partial class CaptionsBoardForm
         }
 
         int sx = stripLeft + stripLabelWidth + gap;
+        // Hiding only stops the drawing: the reader keeps polling and the article keeps recording,
+        // which is why this is a button here and not the master switch in the settings window. Muted
+        // while hidden, so a glance at the row says which state the strip is in.
+        Rectangle displayBounds = new Rectangle(sx, bounds.Top, displayWidth, bounds.Height);
+        DrawToolbarButton(
+            g,
+            displayBounds,
+            displayLabel,
+            shown ? DesignTokens.Colors.Border : EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Captions),
+            bodyFont,
+            false);
+        if (recordHitTargets)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = displayBounds, Action = CaptionsHitAction.OverlayDisplayToggle });
+        }
+
+        sx = displayBounds.Right + gap;
         // Editing is a mode, so the button says what pressing it will do: 调整 to enter, 完成 to leave
         // and save. Green while editing, because that press is the one that commits the new rectangle.
+        // Both placement buttons go dead while the strip is hidden -- there is nothing on screen to
+        // place, and a live button that silently does nothing is worse than one that looks disabled.
         Rectangle editBounds = new Rectangle(sx, bounds.Top, editWidth, bounds.Height);
         DrawToolbarButton(
             g,
@@ -752,16 +775,16 @@ internal sealed partial class CaptionsBoardForm
             editLabel,
             editing ? DesignTokens.Colors.Success : EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Captions),
             bodyFont,
-            false);
-        if (recordHitTargets)
+            !shown);
+        if (recordHitTargets && shown)
         {
             this.hitTargets.Add(new CaptionsHitTarget { Bounds = editBounds, Action = CaptionsHitAction.OverlayEditToggle });
         }
 
         sx = editBounds.Right + gap;
         Rectangle resetBounds = new Rectangle(sx, bounds.Top, resetWidth, bounds.Height);
-        DrawToolbarButton(g, resetBounds, "复位", DesignTokens.Colors.Border, bodyFont, false);
-        if (recordHitTargets)
+        DrawToolbarButton(g, resetBounds, "复位", DesignTokens.Colors.Border, bodyFont, !shown);
+        if (recordHitTargets && shown)
         {
             this.hitTargets.Add(new CaptionsHitTarget { Bounds = resetBounds, Action = CaptionsHitAction.OverlayReset });
         }
@@ -1051,8 +1074,9 @@ internal sealed partial class CaptionsBoardForm
         // overlap would appear first.
         VerifyHitTargets(460, 400);
         VerifyServiceChipHitTargetsFollowServiceState(648, 400);
+        VerifyHiddenStripDisablesPlacement(648, 400);
         VerifyArticlePaging(648, 400);
-        Console.WriteLine("Captions board layout: PASS hit targets, no overlap, zero-height alert strip when no failure, status-strip targets follow service state, article paging and empty state");
+        Console.WriteLine("Captions board layout: PASS hit targets, no overlap, zero-height alert strip when no failure, status-strip targets follow service state, hidden strip disables placement, article paging and empty state");
     }
 
     private static void VerifyHitTargets(int logicalWidth, int logicalHeight)
@@ -1097,6 +1121,7 @@ internal sealed partial class CaptionsBoardForm
                 CaptionsHitAction.SettledLinesPlus,
                 CaptionsHitAction.OverlayEditToggle,
                 CaptionsHitAction.OverlayReset,
+                CaptionsHitAction.OverlayDisplayToggle,
                 CaptionsHitAction.ArticlePageUp,
                 CaptionsHitAction.ArticlePageDown
             };
@@ -1261,6 +1286,48 @@ internal sealed partial class CaptionsBoardForm
         }
 
         return Rectangle.Empty;
+    }
+
+    // Hiding the strip must leave the two placement buttons inert: there is nothing on screen to move
+    // or restore, and a live button that silently does nothing is worse than one that looks disabled.
+    // The 隐藏/显示 button itself stays live, or the state would be a trap with no way out.
+    private static void VerifyHiddenStripDisablesPlacement(int logicalWidth, int logicalHeight)
+    {
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.SpecBoardWidth = logicalWidth;
+        settings.SpecBoardHeight = logicalHeight;
+        settings.CaptionOverlayDisplayEnabled = false;
+        settings.Normalize();
+
+        using (CaptionsBoardForm form = new CaptionsBoardForm(null, settings, delegate { return null; }))
+        using (Bitmap bitmap = new Bitmap(logicalWidth, logicalHeight, PixelFormat.Format32bppPArgb))
+        using (Graphics g = Graphics.FromImage(bitmap))
+        {
+            form.Size = new Size(logicalWidth, logicalHeight);
+            form.snapshot = CreateFixtureSnapshot();
+            form.DrawBoard(g, true);
+
+            if (form.FindHitTarget(CaptionsHitAction.OverlayEditToggle) != Rectangle.Empty ||
+                form.FindHitTarget(CaptionsHitAction.OverlayReset) != Rectangle.Empty)
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: a hidden strip must not offer 调整/复位.");
+            }
+
+            if (form.FindHitTarget(CaptionsHitAction.OverlayDisplayToggle) == Rectangle.Empty)
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: the 显示 button must stay clickable while hidden.");
+            }
+
+            // The stepper is about what the strip keeps, not about placing it, and the article keeps
+            // recording either way -- so it stays live.
+            if (form.FindHitTarget(CaptionsHitAction.SettledLinesPlus) == Rectangle.Empty)
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: the 句数 stepper must stay clickable while hidden.");
+            }
+        }
     }
 
     // The article is the only scrollable surface in this app, so its paging maths has no precedent to
