@@ -1,0 +1,120 @@
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+
+internal sealed partial class CaptionsBoardForm
+{
+    internal static void RenderSample(string outputDir)
+    {
+        Directory.CreateDirectory(outputDir);
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        settings.SpecBoardWidth = 648;
+        settings.SpecBoardHeight = 400;
+        TranslatorControlSnapshot fixture = CreateFixtureSnapshot();
+        using (CaptionsBoardForm form = new CaptionsBoardForm(null, settings, delegate { return null; }))
+        {
+            form.Size = form.GetDesiredSize();
+            form.snapshot = fixture;
+            string path = Path.Combine(outputDir, "captions-board.png");
+            RenderSampleSupport.SaveComposited(outputDir, Path.GetFileName(path), form.Width, form.Height, 255, form.DrawWindowContent);
+            Console.WriteLine("Captions board -> " + path + " (" + form.Width + "x" + form.Height + ")");
+        }
+    }
+
+    private static TranslatorControlSnapshot CreateFixtureSnapshot()
+    {
+        DateTime now = new DateTime(2026, 9, 11, 21, 40, 0, DateTimeKind.Local);
+        TranslatorControlSnapshot snapshot = TranslatorControlSnapshot.CreateEmpty();
+        snapshot.IsRunning = true;
+        snapshot.GenieXRunning = true;
+        snapshot.SanitizeProxyRunning = true;
+        snapshot.SettingsFileFound = true;
+        snapshot.ContextAwareKnown = true;
+        snapshot.ContextAware = true;
+        snapshot.NumContextsKnown = true;
+        snapshot.NumContexts = 64;
+        snapshot.ModelNameKnown = true;
+        snapshot.ModelName = "qualcomm/Qwen3-4B-Instruct-2507:W4A16";
+        snapshot.ApiUrl = "http://127.0.0.1:18182/v1/chat/completions";
+        snapshot.AvailableModels.Add("qualcomm/Qwen3-4B-Instruct-2507:W4A16");
+        snapshot.AvailableModels.Add("qualcomm/Qwen3-8B:W4A16");
+        snapshot.LastSuccessKnown = true;
+        snapshot.LastSuccessLocal = now.AddMinutes(-3.0);
+        snapshot.HistoryDatabaseFound = true;
+
+        snapshot.RecentHistory.Add(new TranslatorHistoryEntry
+        {
+            TimestampKnown = true,
+            TimestampLocal = now,
+            SourceText = "Something went wrong connecting to the model.",
+            TranslatedText = "[ERROR] Translation Failed: connection refused",
+            TargetLanguage = "zh-CN",
+            IsError = true
+        });
+        snapshot.RecentHistory.Add(new TranslatorHistoryEntry
+        {
+            TimestampKnown = true,
+            TimestampLocal = now.AddMinutes(-3.0),
+            SourceText = "This is a test of the live caption system running on device.",
+            TranslatedText = "这是设备端实时字幕系统的测试。",
+            TargetLanguage = "zh-CN",
+            IsError = false
+        });
+        snapshot.RecentHistory.Add(new TranslatorHistoryEntry
+        {
+            TimestampKnown = true,
+            TimestampLocal = now.AddMinutes(-6.0),
+            SourceText = "Hello there, how are you today?",
+            TranslatedText = "你好，你今天怎么样？",
+            TargetLanguage = "zh-CN",
+            IsError = false
+        });
+        snapshot.RecentHistory.Add(new TranslatorHistoryEntry
+        {
+            TimestampKnown = true,
+            TimestampLocal = now.AddMinutes(-9.0),
+            SourceText = "Let's talk about the quarterly roadmap for a moment.",
+            TranslatedText = "我们花点时间聊聊这个季度的路线图。",
+            TargetLanguage = "zh-CN",
+            IsError = false
+        });
+
+        return snapshot;
+    }
+
+    internal static void RunRenderSelfTest()
+    {
+        TranslatorControlSnapshot fixture = CreateFixtureSnapshot();
+        TranslatorControlSnapshot clone = fixture.Clone();
+        if (clone.RecentHistory.Count != 4 ||
+            clone.AvailableModels.Count != 2 ||
+            !clone.ContextAware ||
+            clone.NumContexts != 64 ||
+            !string.Equals(clone.ModelName, "qualcomm/Qwen3-4B-Instruct-2507:W4A16", StringComparison.Ordinal) ||
+            !clone.RecentHistory[0].IsError)
+        {
+            throw new InvalidOperationException("Captions board snapshot clone self-test failed.");
+        }
+
+        WidgetSettings settings = WidgetSettings.CreateDefaults();
+        using (CaptionsBoardForm form = new CaptionsBoardForm(null, settings, delegate { return null; }))
+        {
+            form.Size = form.GetDesiredSize();
+            form.snapshot = fixture;
+            using (Bitmap bitmap = new Bitmap(form.Width, form.Height, PixelFormat.Format32bppPArgb))
+            using (Graphics g = Graphics.FromImage(bitmap))
+            {
+                form.DrawWindowContent(g);
+                Color corner = bitmap.GetPixel(Math.Min(bitmap.Width - 1, form.S(3)), Math.Min(bitmap.Height - 1, form.S(3)));
+                Color center = bitmap.GetPixel(bitmap.Width / 2, bitmap.Height / 2);
+                if (corner.A == 0 || center.A == 0)
+                {
+                    throw new InvalidOperationException("Captions board renderer produced transparent output.");
+                }
+            }
+        }
+
+        Console.WriteLine("Captions board render: PASS snapshot clone, non-transparent composite");
+    }
+}

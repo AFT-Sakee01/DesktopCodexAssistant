@@ -184,6 +184,11 @@ internal static class Program
             return RenderResetSpeedBoardSample(args);
         }
 
+        if (HasArg(args, "--render-captionsboard"))
+        {
+            return RenderCaptionsBoardSample(args);
+        }
+
         if (HasArg(args, "--render-systemdayboard"))
         {
             return RenderSystemDayBoardSample(args);
@@ -233,6 +238,11 @@ internal static class Program
             stopEvent = new EventWaitHandle(false, EventResetMode.AutoReset, StopEventName);
             NativeMethods.TrySetDpiAware();
             RegisterGlobalExceptionHandlers(useDesktopParent);
+            // Flush lifecycle evidence before starting owners: a host/job termination cannot
+            // run ProcessExit or the managed fatal-exception recovery handler.
+            LogInfo("Runtime starting. Pid=" + Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture) +
+                ", Version=" + ProductIdentity.Version);
+            Logger.Flush();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
@@ -868,6 +878,9 @@ internal static class Program
             RunNamedSelfTest("CodexTaskPresentation", CodexTaskPresentation.RunSelfTest);
             RunNamedSelfTest("GuardRuntime", GuardRuntime.RunSelfTest);
             RunNamedSelfTest("GuardBoardForm", GuardBoardForm.RunSelfTest);
+            RunNamedSelfTest("MinimalSqliteReader", MinimalSqliteReader.RunSelfTest);
+            RunNamedSelfTest("TranslatorControlReader", TranslatorControlReader.RunSelfTest);
+            RunNamedSelfTest("CaptionsBoardForm", CaptionsBoardForm.RunSelfTest);
             RunNamedSelfTest("OperationForm.LeftDockMutualExclusion", OperationForm.RunLeftDockMutualExclusionSelfTest);
             RunNamedSelfTest("BurnInProtection", BurnInProtection.RunSelfTest);
             RunNamedSelfTest("MemoryPressureTracker", MemoryPressureTracker.RunSelfTest);
@@ -1237,6 +1250,28 @@ internal static class Program
             if (string.IsNullOrEmpty(outputDir)) outputDir = ".";
             ResetSpeedBoardForm.RenderSample(outputDir);
             Console.WriteLine("Rendered Reset / Speed board sample to " + Path.GetFullPath(outputDir));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static int RenderCaptionsBoardSample(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            NativeMethods.TrySetDpiAware();
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            string outputDir = GetStringArg(args, "--out");
+            if (string.IsNullOrEmpty(outputDir)) outputDir = ".";
+            CaptionsBoardForm.RenderSample(outputDir);
+            Console.WriteLine("Rendered Captions board sample to " + Path.GetFullPath(outputDir));
             return 0;
         }
         catch (Exception ex)
@@ -1710,6 +1745,7 @@ internal static class Program
             ResetSpeedBoardForm.RunSelfTest();
             SystemDayHistoryStore.RunSelfTest();
             SystemDayBoardForm.RunSelfTest();
+            CaptionsBoardForm.RunRenderSelfTest();
             RunCtfmonRestartHelperArgumentSelfTest();
             RunCommandLineArgumentParserSelfTest();
             Console.WriteLine("Operation panel interaction and performance policy: PASS");

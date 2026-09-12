@@ -41,6 +41,10 @@ internal static class DesignTokens
         public static readonly Color AccentGradientStart = Color.FromArgb(32, 189, 255);
         public static readonly Color AccentGradientEnd = Color.FromArgb(68, 126, 255);
         public static readonly Color AccentAlt = Color.FromArgb(226, 126, 255);
+        // Eighth left-dock board role accent (Captions/字幕). Chosen violet because it is not used
+        // by any of the other seven dock role accents (Network blue, SpecBoard/SystemDay orange,
+        // CodexTask green, Guard magenta, CodexIq cyan, ResetSpeed yellow).
+        public static readonly Color CaptionsAccent = Color.FromArgb(140, 122, 255);
         public static readonly Color NetworkDown = Color.FromArgb(73, 184, 255);
         public static readonly Color NetworkUp = Color.FromArgb(255, 100, 115);
         public static readonly Color SpeedWindowCountdown = Color.FromArgb(56, 189, 248);

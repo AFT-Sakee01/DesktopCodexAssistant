@@ -338,6 +338,12 @@ internal sealed class GlobalLayoutEditorForm : Form
             return true;
         }
 
+        if (string.Equals(id, "Captions", StringComparison.OrdinalIgnoreCase))
+        {
+            role = EdgeDockTabRole.Captions;
+            return true;
+        }
+
         return false;
     }
 
@@ -359,6 +365,8 @@ internal sealed class GlobalLayoutEditorForm : Form
                 return "左侧 重置/速蹬";
             case EdgeDockTabRole.SystemDay:
                 return "左侧 系统日记";
+            case EdgeDockTabRole.Captions:
+                return "左侧 字幕";
             default:
                 return "左侧按钮";
         }
@@ -548,6 +556,9 @@ internal sealed class GlobalLayoutEditorForm : Form
                 break;
             case EdgeDockTabRole.SystemDay:
                 settings.SystemDayBoardLeftDockTabCenterY = centerY;
+                break;
+            case EdgeDockTabRole.Captions:
+                settings.CaptionsBoardLeftDockTabCenterY = centerY;
                 break;
         }
     }
@@ -820,6 +831,7 @@ internal sealed class GlobalLayoutEditorForm : Form
         edge.CodexIqBoardLeftDockEnabled = true;
         edge.ResetSpeedBoardLeftDockEnabled = true;
         edge.SystemDayBoardLeftDockEnabled = true;
+        edge.CaptionsBoardLeftDockEnabled = true;
         edge.LeftDockAutoArrangeEnabled = true;
         edge.RightTileAutoArrangeEnabled = true;
         edge.Normalize();
@@ -835,6 +847,7 @@ internal sealed class GlobalLayoutEditorForm : Form
             "LeftDockTab.CodexIq",
             "LeftDockTab.ResetSpeed",
             "LeftDockTab.SystemDay",
+            "LeftDockTab.Captions",
             "MetricTile.Cpu",
             "MetricTile.Memory",
             "MetricTile.Disk",
@@ -850,7 +863,7 @@ internal sealed class GlobalLayoutEditorForm : Form
         if (!HaveSameSurfaceIds(edgeIds, expectedIds))
         {
             throw new InvalidOperationException(
-                "Global layout editor must expose the exact canonical 19-surface plan: Operation, seven dock tabs, and eleven tiles.");
+                "Global layout editor must expose the exact canonical 20-surface plan: Operation, eight dock tabs, and eleven tiles.");
         }
 
         edge.VisibilityMode = WidgetVisibilityMode.HideWhenOverlapped;
@@ -876,7 +889,7 @@ internal sealed class GlobalLayoutEditorForm : Form
             throw new InvalidOperationException("Global layout editor manual left-tab coordinate self-test failed.");
         }
 
-        Console.WriteLine("Global layout editor surface policy: PASS structural filtering, 11 tiles, seven tabs, and group drag");
+        Console.WriteLine("Global layout editor surface policy: PASS structural filtering, 11 tiles, eight tabs, and group drag");
     }
 
     private static bool HaveSameSurfaceIds(List<string> a, List<string> b)

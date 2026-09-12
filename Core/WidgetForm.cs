@@ -78,6 +78,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool childWindowLifecycleStarted;
     private CodexRadarForm codexRadarForm;
     private PowerThermalForm powerThermalForm;
+    private TranslatorControlReader translatorControlReader;
     private NetworkMonitorForm networkMonitorForm;
     private OperationForm operationForm;
     private ApplicationWindowStateTracker applicationWindowStateTracker;
@@ -232,6 +233,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         StartAiBalanceShareServer();
         this.powerThermalForm = new PowerThermalForm(this.CurrentSettings);
         this.powerThermalForm.StartHeadlessDataOwner();
+        // Eighth left-dock board's headless data owner: monitors the external LiveCaptions-Translator
+        // app's setting.json/translation_history.db and the three processes involved (never allocates
+        // a presentation buffer or shows a window -- see TranslatorControlReader.cs).
+        this.translatorControlReader = new TranslatorControlReader(ShowWindowsNotification);
+        this.translatorControlReader.StartHeadlessDataOwner();
         InitializeSystemDayHistory();
         this.networkMonitorForm = new NetworkMonitorForm(this.CurrentSettings);
         this.networkMonitorForm.StartDockedOwner(this);
@@ -299,11 +305,34 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
             return this.codexRadarForm.BuildResetSpeedBoardSnapshot();
         };
+        // Account switching rewrites the Codex CLI's auth.json, so it stays with the headless data
+        // owner: the board only forwards the user's explicit click and renders the returned message.
+        this.operationForm.CodexAccountSwitchHandler = delegate(string accountKey)
+        {
+            if (this.codexRadarForm == null || this.codexRadarForm.IsDisposed)
+            {
+                return CodexAccountSwitchResult.CreateFailure("Codex 数据源未运行。");
+            }
+
+            string message;
+            bool switched = this.codexRadarForm.TrySwitchCodexAccount(accountKey, out message);
+            return switched
+                ? CodexAccountSwitchResult.CreateSuccess(message)
+                : CodexAccountSwitchResult.CreateFailure(message);
+        };
         // The seventh board reads only the in-memory projection. Minute samples and suspend/resume
         // markers are owned by this hidden host and persisted independently of board visibility.
         this.operationForm.SystemDaySnapshotProvider = delegate(SystemDayRange range)
         {
             return BuildSystemDayBoardSnapshot(range);
+        };
+        // The eighth board's own headless owner (constructed above, alongside PowerThermalForm).
+        // Unlike the snapshot providers above this hands over the reader itself, not a projection:
+        // CaptionsBoardForm needs both read (GetSnapshot) and write (TryApplySettingChange /
+        // TryToggleTranslatorRunning) access through the same instance.
+        this.operationForm.TranslatorControlReaderProvider = delegate
+        {
+            return this.translatorControlReader;
         };
         // ApplyRuntimeSettings runs before childWindowLifecycleStarted so the hidden host can
         // establish its own HWND safely. Build the canonical tile set only after every data owner
@@ -370,6 +399,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     {
         if (!timedOut && this.stopEventTargetHandle != IntPtr.Zero)
         {
+            Program.LogInfo("Runtime stop event received.");
+            Logger.Flush();
             NativeMethods.RequestCloseWindow(this.stopEventTargetHandle);
         }
     }
@@ -804,6 +835,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        // Record before disposing readers: cleanup failure must not erase the close reason.
+        Program.LogInfo("Runtime host closing. Reason=" + e.CloseReason.ToString());
+        Logger.Flush();
         this.formClosing = true;
         StopGuardControlServer();
         StopAiBalanceShareServer();
@@ -865,6 +899,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             this.powerThermalForm.StopHeadlessDataOwner();
             this.powerThermalForm.Dispose();
             this.powerThermalForm = null;
+        }
+
+        if (this.translatorControlReader != null)
+        {
+            this.translatorControlReader.StopHeadlessDataOwner();
+            this.translatorControlReader.Dispose();
+            this.translatorControlReader = null;
         }
 
         DisposeSystemDayHistory();
@@ -1782,6 +1823,10 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         merged.GuardOfflineThresholdMinutes = guardState.GuardOfflineThresholdMinutes;
         merged.GuardDisplayUntilUtcTicks = guardState.GuardDisplayUntilUtcTicks;
         merged.GuardBatteryCarePauseUntilUtcTicks = guardState.GuardBatteryCarePauseUntilUtcTicks;
+        merged.GuardPowerModeOverrideHours = guardState.GuardPowerModeOverrideHours;
+        merged.GuardPowerModeOverrideUntilUtcTicks = guardState.GuardPowerModeOverrideUntilUtcTicks;
+        merged.GuardEnergySaverForcedOn = guardState.GuardEnergySaverForcedOn;
+        merged.GuardEnergySaverRestoreThresholdPercent = guardState.GuardEnergySaverRestoreThresholdPercent;
         merged.Normalize();
         return merged;
     }
@@ -2790,7 +2835,17 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         BurnInVisualLevel normalized = BurnInProtection.NormalizeVisualLevel(level);
         bool localChanged = this.burnInVisualLevel != normalized;
         bool publishedChanged = BurnInProtection.SetCurrentVisualLevel(normalized);
-        if (!localChanged && !publishedChanged)
+        bool operationVisibilityChanged = false;
+        if (this.operationForm != null && !this.operationForm.IsDisposed)
+        {
+            // Operation is the brightest persistent surface. Both protection levels physically hide
+            // it; the independent flag prevents a fullscreen/manual-visibility update from reviving
+            // it until the shared burn-in state returns to Normal.
+            operationVisibilityChanged = this.operationForm.SetHiddenForBurnIn(
+                normalized != BurnInVisualLevel.Normal);
+        }
+
+        if (!localChanged && !publishedChanged && !operationVisibilityChanged)
         {
             return false;
         }
@@ -3059,6 +3114,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         if (this.operationForm != null && !this.operationForm.IsDisposed)
         {
+            this.operationForm.SetHiddenForBurnIn(
+                this.burnInVisualLevel != BurnInVisualLevel.Normal);
             this.operationForm.SetHiddenForFullscreen(ShouldHideFormForVisibilityMode(this.operationForm));
             this.operationForm.SetLeftDockSurfacesHidden(
                 this.operationSideSurfacesHidden && !this.globalLayoutEditActive);

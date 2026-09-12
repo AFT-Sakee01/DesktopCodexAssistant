@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.38
+适用版本：2.0.0.48
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -241,7 +241,8 @@ DNS 检测：
 ### 8.5 重置与速蹬
 
 - `ResetSpeedBoardForm` 可见时每 5 s clone `BuildResetSpeedBoardSnapshot()`；500 ms maintenance tick 只负责 tab、外部点击、自动收回、定位与必要重绘。
-- `CodexQuotaHistoryStore.Record()` 只接收已通过额度保护链的 Codex 快照；15 分钟内且变化小于 3% 的普通样本合并，周余量回升至少 5% 才登记重置事件。
+- `CodexQuotaHistoryStore.Record()` 只经 `CodexRadarForm.RecordAcceptedQuotaHistory()` 写入，收到的是 `CaptureAcceptedQuotaForHistory()` 在 `ApplyQuotaResetProtections()` 之前留下的已接受读数；重置保护强制的 100 只作用于展示与缓存，不是一次新的额度采样，不进入历史。15 分钟内且变化小于 3% 的普通样本合并，周余量回升至少 5% 才登记重置事件。合并与重置分类都只与**同一 `account_key`** 的上一条比较。
+- 账户切换（board 上点击账户 chip）不是一个刷新周期：`TrySwitchCodexAccount()` 重写 auth.json 后立即换出/换入该账户的 `QuotaRuntimeState`，并把 Codex 额度、provider usage 与 reset-credit 的下次到期时间一起清零，使下一个 owner tick 立刻为新账户取数；reset-credit 快照同时被丢弃，不跨账户沿用。切换本身不绕过任何单飞或冷却。
 - 重置分类只使用无凭据摘要：旧 reset anchor 前 15 分钟到后 6 小时为自然重置；重置卡数同时下降为重置卡；其它确认回升为硬重置。
 - JSONL 后台批量写入 `%LOCALAPPDATA%\DesktopCodexAssistant\codex-quota-seven-day-history.jsonl`；board 的 5 秒投影只 clone 已加载内存，不同步读文件。
 - board 隐藏、全屏或显示挂起时停止展示轮询；历史记录继续服从 Radar owner 的额度调度，不建立 provider、reader 或网络请求。
@@ -253,6 +254,16 @@ DNS 检测：
 - JSONL 由后台 `FlushIntervalMs = 15000` 批量落盘；挂起前同步刷出待写行，恢复后重新进入批量模式。保留 8 天、最多 13000 条。
 - `SystemDayBoardForm` 可见时每 5 s clone 范围快照；500 ms maintenance tick 只处理 tab、外部点击、自动收回、范围点击、定位和必要重绘。
 - board 隐藏、全屏或显示挂起时停止展示刷新；历史记录仍随 hidden host 的有效性能采样运行。绘制路径不读 JSONL，也不调用 Power/Thermal sampler。
+
+### 8.7 字幕
+
+- `TranslatorControlReader`（`Core/TranslatorControlReader.cs`）是 `WidgetForm` 直接构造并调用 `StartHeadlessDataOwner()`/`StopHeadlessDataOwner()` 的第三个 headless data owner，与 §4/§5 的 Codex/Power owner 同一套生命周期契约；但它不是 `Form`，没有 HWND，不接收 Windows 消息，因此不做 `InvokeRequired`/`Invoke` 编排——所有调用固定发生在 UI 线程。
+- 轮询固定 `RefreshIntervalMs = 2000`（不随 `PerformanceMode` 变化），由 `CaptionsBoardForm` 自己的 500 ms maintenance tick 在每次 tick 调用 `RefreshIfDue(now, force:false)` 驱动；`RefreshIfDue` 内部按 `nextRefreshUtc` 自门控，实际每 2000 ms 才真正做一次 I/O，与 `RefreshSeelenUiStatus`（§7，`SeelenStatusRefreshIntervalMs = 2000`）同一节流写法。board 隐藏时其 maintenance tick 停止，`RefreshIfDue` 因此完全不被调用——不常驻轮询外部文件或进程。
+- 每次到期刷新读取三项：`setting.json`（`ContextAware`/`NumContexts`/`Configs.OpenAI[ConfigIndices.OpenAI].ModelName`/`ApiUrl`）、`translation_history.db` 最近 8 行（经 `Core/MinimalSqliteReader.cs`）、以及三个外部进程的存在性（`LiveCaptionsTranslator.exe`、`geniex.exe` 按进程名；sanitize-proxy 的 `node.exe` 按 `Win32_Process.CommandLine` 含 `sanitize-proxy.js` 过滤）。`GetSnapshot()` 只读缓存 clone，board 绘制路径不做任何 I/O。
+- 三个交互控件（上下文感知开关、轮数步进、模型切换）与启动/停止按钮全部走同一条异步链路：点击先同步置位 `operationRunning`/`pendingAction` 并立即重绘一次显示"…"过渡态，再用 `Task.Run` 在后台线程调用 `TranslatorControlReader` 的写入方法，完成后通过 `BeginInvoke` 编组回 UI 线程清状态、刷新缓存快照并重绘；写入期间新点击一律忽略，不排队第二个写入。
+- 设置写入（`TryApplySettingChange`）只改写目标字段，其余字段（`ApiKey`、`Temperature`、`Prompt` 等）原样回写；写入成功后若 `LiveCaptionsTranslator.exe` 正在运行则 kill + 以其自身目录为 WorkingDirectory 重新启动（该外部应用只在启动时读一次配置）；未运行则只保存，不主动拉起。GenieX 与 sanitize-proxy 只监控、不由本 board 启动/停止。
+- 最近一次翻译失败的 toast 通知复用 `Core/ServiceAlertDebouncer.cs` 的 10 s 稳定窗口（`checking` 立即、新错误 10 s 稳定后触发、恢复立即清除），只在稳定态从"无失败"翻转为"有失败"的上升沿调用一次 `WidgetForm.ShowWindowsNotification`；看板内的失败提示条本身不防抖，直接反映 `translation_history.db` 最新一行是否以 `[ERROR]` 开头。
+- board 隐藏、全屏或显示挂起时停止展示刷新；`TranslatorControlReader` 自身在 `WidgetForm` 退出前才 `StopHeadlessDataOwner()` + `Dispose()`。
 
 ## 9. Settings 与布局编辑
 

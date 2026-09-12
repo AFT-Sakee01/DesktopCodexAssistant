@@ -145,7 +145,7 @@ internal sealed partial class OperationForm
         }
     }
 
-    // The seven left-dock boards. Expanded, they overlap heavily — their tabs are close together
+    // The eight left-dock boards. Expanded, they overlap heavily — their tabs are close together
     // pixels apart while the boards themselves are 400 tall — so two of them visible at once is not
     // a cosmetic glitch: the top one covers the other, and the covered board's own collapse timer
     // then reads the cursor as still inside its bounds and never fires. Mutual exclusion at show
@@ -159,7 +159,8 @@ internal sealed partial class OperationForm
         Guard,
         CodexIq,
         ResetSpeed,
-        SystemDay
+        SystemDay,
+        Captions
     }
 
     // Single place that knows the full membership of the queue. Every expand path routes through
@@ -176,7 +177,8 @@ internal sealed partial class OperationForm
             LeftDockBoardKind.Guard,
             LeftDockBoardKind.CodexIq,
             LeftDockBoardKind.ResetSpeed,
-            LeftDockBoardKind.SystemDay
+            LeftDockBoardKind.SystemDay,
+            LeftDockBoardKind.Captions
         };
     }
 
@@ -226,6 +228,10 @@ internal sealed partial class OperationForm
 
             case LeftDockBoardKind.SystemDay:
                 HideSystemDayBoardIfVisible();
+                break;
+
+            case LeftDockBoardKind.Captions:
+                HideCaptionsBoardIfVisible();
                 break;
         }
     }

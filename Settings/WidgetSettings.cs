@@ -179,7 +179,7 @@ internal sealed class WidgetSettings
     public const int DefaultColumnGroupOffsetY = 0;
     public static readonly string[] DefaultLeftDockButtonOrder = new string[]
     {
-        "Network", "SpecBoard", "CodexTask", "Guard", "CodexIq", "ResetSpeed", "SystemDay"
+        "Network", "SpecBoard", "CodexTask", "Guard", "CodexIq", "ResetSpeed", "SystemDay", "Captions"
     };
     // Guard board: the fourth dock member. It borrows the Spec board's footprint the same way the
     // docked network panel does, so it has no width/height settings of its own.
@@ -195,12 +195,21 @@ internal sealed class WidgetSettings
     public const int MinSystemDayBoardAutoHideSeconds = 0;
     public const int MaxSystemDayBoardAutoHideSeconds = 600;
     public const int DefaultSystemDayBoardAutoHideSeconds = 30;
+    public const int MinCaptionsBoardAutoHideSeconds = 0;
+    public const int MaxCaptionsBoardAutoHideSeconds = 600;
+    public const int DefaultCaptionsBoardAutoHideSeconds = 30;
     // Display guard is deliberately an hourly dial. The 1..24 hour bound gives agents and the UI
     // the same predictable contract; legacy half-hour values normalize to one hour.
     public static readonly int[] GuardDisplayMinuteSteps = BuildHourlyMinuteSteps(1, 24);
     public static readonly int[] GuardOfflineThresholdMinuteSteps = { 1, 5, 10, 30 };
     public const int DefaultGuardDisplayMinutes = 300;
     public const int DefaultGuardOfflineThresholdMinutes = 10;
+    // Scheduled power-mode override dial. Stored as whole hours (not minutes, unlike the display
+    // guard) since the revert action only ever fires on an hourly cadence; 1..24 mirrors the
+    // display guard's range so the two "lock this for N hours" dials in GUARD feel consistent.
+    public static readonly int[] GuardPowerModeOverrideHourSteps = BuildHourSteps(1, 24);
+    public const int DefaultGuardPowerModeOverrideHours = 2;
+    public const int DefaultGuardEnergySaverRestoreThresholdPercent = -1;
     public const int MinLeftDockCollapseSeconds = 0;
     public const int MaxLeftDockCollapseSeconds = 30;
     public const int DefaultLeftDockCollapseSeconds = 1;
@@ -280,7 +289,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 95;
+    private const int CurrentSettingsVersion = 97;
     private const int RetiredCanonicalSettingsCount = 113;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -390,6 +399,7 @@ internal sealed class WidgetSettings
     public int CodexIqBoardTransparencyOverridePercent { get; set; }
     public int ResetSpeedBoardTransparencyOverridePercent { get; set; }
     public int SystemDayBoardTransparencyOverridePercent { get; set; }
+    public int CaptionsBoardTransparencyOverridePercent { get; set; }
     public bool NightScheduleEnabled { get; set; }
     public int NightScheduleStartMinutes { get; set; }
     public int NightScheduleEndMinutes { get; set; }
@@ -410,6 +420,7 @@ internal sealed class WidgetSettings
     public int CodexIqBoardScaleOverridePercent { get; set; }
     public int ResetSpeedBoardScaleOverridePercent { get; set; }
     public int SystemDayBoardScaleOverridePercent { get; set; }
+    public int CaptionsBoardScaleOverridePercent { get; set; }
     public int PowerThermalManualEnergySaverThresholdPercent { get; set; }
     // true: the power module is drawn as a strip at the bottom of the main widget and the
     // standalone window stays hidden. false: the standalone window is shown as before.
@@ -457,6 +468,9 @@ internal sealed class WidgetSettings
     public bool SystemDayBoardLeftDockEnabled { get; set; }
     public int SystemDayBoardLeftDockTabCenterY { get; set; }
     public int SystemDayBoardAutoHideSeconds { get; set; }
+    public bool CaptionsBoardLeftDockEnabled { get; set; }
+    public int CaptionsBoardLeftDockTabCenterY { get; set; }
+    public int CaptionsBoardAutoHideSeconds { get; set; }
     // Guard state. GuardSleepEnabled and the two deadline ticks are live runtime state rather than
     // preferences: they are persisted so a restart during a long unattended run does not silently
     // drop the protection the board promises. Ticks are UTC; 0 means "not armed".
@@ -466,6 +480,15 @@ internal sealed class WidgetSettings
     public int GuardOfflineThresholdMinutes { get; set; }
     public long GuardDisplayUntilUtcTicks { get; set; }
     public long GuardBatteryCarePauseUntilUtcTicks { get; set; }
+    // Scheduled power-mode override: locks whichever tier is active when armed and always
+    // reverts to the Balanced overlay scheme when GuardPowerModeOverrideUntilUtcTicks elapses, so
+    // no separate "restore tier" needs to be remembered here. GuardEnergySaverForcedOn/
+    // RestoreThresholdPercent are independent of the schedule; the restore percent is only ever
+    // meaningful while Forced is true and holds the ESBATTTHRESHOLD value to put back on toggle-off.
+    public int GuardPowerModeOverrideHours { get; set; }
+    public long GuardPowerModeOverrideUntilUtcTicks { get; set; }
+    public bool GuardEnergySaverForcedOn { get; set; }
+    public int GuardEnergySaverRestoreThresholdPercent { get; set; }
     public int LeftDockCollapseSeconds { get; set; }
     public bool LeftDockOutsideClickCollapseEnabled { get; set; }
     public int CodexTaskBoardWidth { get; set; }
@@ -834,6 +857,7 @@ internal sealed class WidgetSettings
         this.CodexIqBoardTransparencyOverridePercent = defaults.CodexIqBoardTransparencyOverridePercent;
         this.ResetSpeedBoardTransparencyOverridePercent = defaults.ResetSpeedBoardTransparencyOverridePercent;
         this.SystemDayBoardTransparencyOverridePercent = defaults.SystemDayBoardTransparencyOverridePercent;
+        this.CaptionsBoardTransparencyOverridePercent = defaults.CaptionsBoardTransparencyOverridePercent;
         this.NightScheduleEnabled = defaults.NightScheduleEnabled;
         this.NightScheduleStartMinutes = defaults.NightScheduleStartMinutes;
         this.NightScheduleEndMinutes = defaults.NightScheduleEndMinutes;
@@ -854,6 +878,7 @@ internal sealed class WidgetSettings
         this.CodexIqBoardScaleOverridePercent = defaults.CodexIqBoardScaleOverridePercent;
         this.ResetSpeedBoardScaleOverridePercent = defaults.ResetSpeedBoardScaleOverridePercent;
         this.SystemDayBoardScaleOverridePercent = defaults.SystemDayBoardScaleOverridePercent;
+        this.CaptionsBoardScaleOverridePercent = defaults.CaptionsBoardScaleOverridePercent;
         this.PowerThermalIntegratedEnabled = defaults.PowerThermalIntegratedEnabled;
         this.PowerThermalManualEnergySaverThresholdPercent = defaults.PowerThermalManualEnergySaverThresholdPercent;
         this.NetworkMonitorAdapterId = defaults.NetworkMonitorAdapterId;
@@ -899,12 +924,19 @@ internal sealed class WidgetSettings
         this.SystemDayBoardLeftDockEnabled = defaults.SystemDayBoardLeftDockEnabled;
         this.SystemDayBoardLeftDockTabCenterY = defaults.SystemDayBoardLeftDockTabCenterY;
         this.SystemDayBoardAutoHideSeconds = defaults.SystemDayBoardAutoHideSeconds;
+        this.CaptionsBoardLeftDockEnabled = defaults.CaptionsBoardLeftDockEnabled;
+        this.CaptionsBoardLeftDockTabCenterY = defaults.CaptionsBoardLeftDockTabCenterY;
+        this.CaptionsBoardAutoHideSeconds = defaults.CaptionsBoardAutoHideSeconds;
         this.GuardSleepEnabled = defaults.GuardSleepEnabled;
         this.GuardSleepSinceUtcTicks = defaults.GuardSleepSinceUtcTicks;
         this.GuardDisplayMinutes = defaults.GuardDisplayMinutes;
         this.GuardOfflineThresholdMinutes = defaults.GuardOfflineThresholdMinutes;
         this.GuardDisplayUntilUtcTicks = defaults.GuardDisplayUntilUtcTicks;
         this.GuardBatteryCarePauseUntilUtcTicks = defaults.GuardBatteryCarePauseUntilUtcTicks;
+        this.GuardPowerModeOverrideHours = defaults.GuardPowerModeOverrideHours;
+        this.GuardPowerModeOverrideUntilUtcTicks = defaults.GuardPowerModeOverrideUntilUtcTicks;
+        this.GuardEnergySaverForcedOn = defaults.GuardEnergySaverForcedOn;
+        this.GuardEnergySaverRestoreThresholdPercent = defaults.GuardEnergySaverRestoreThresholdPercent;
         this.LeftDockCollapseSeconds = defaults.LeftDockCollapseSeconds;
         this.LeftDockOutsideClickCollapseEnabled = defaults.LeftDockOutsideClickCollapseEnabled;
         this.CodexTaskBoardWidth = defaults.CodexTaskBoardWidth;
@@ -1041,6 +1073,7 @@ internal sealed class WidgetSettings
         settings.CodexIqBoardTransparencyOverridePercent = -1;
         settings.ResetSpeedBoardTransparencyOverridePercent = -1;
         settings.SystemDayBoardTransparencyOverridePercent = -1;
+        settings.CaptionsBoardTransparencyOverridePercent = -1;
         settings.NightScheduleEnabled = false;
         settings.NightScheduleStartMinutes = DefaultNightScheduleStartMinutes;
         settings.NightScheduleEndMinutes = DefaultNightScheduleEndMinutes;
@@ -1061,6 +1094,7 @@ internal sealed class WidgetSettings
         settings.CodexIqBoardScaleOverridePercent = -1;
         settings.ResetSpeedBoardScaleOverridePercent = -1;
         settings.SystemDayBoardScaleOverridePercent = -1;
+        settings.CaptionsBoardScaleOverridePercent = -1;
         settings.PowerThermalIntegratedEnabled = true;
         settings.PowerThermalManualEnergySaverThresholdPercent = DefaultPowerThermalManualEnergySaverThresholdPercent;
         settings.NetworkMonitorAdapterId = string.Empty;
@@ -1106,12 +1140,19 @@ internal sealed class WidgetSettings
         settings.SystemDayBoardLeftDockEnabled = true;
         settings.SystemDayBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.SystemDayBoardAutoHideSeconds = DefaultSystemDayBoardAutoHideSeconds;
+        settings.CaptionsBoardLeftDockEnabled = true;
+        settings.CaptionsBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.CaptionsBoardAutoHideSeconds = DefaultCaptionsBoardAutoHideSeconds;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
         settings.GuardOfflineThresholdMinutes = DefaultGuardOfflineThresholdMinutes;
         settings.GuardDisplayUntilUtcTicks = 0L;
         settings.GuardBatteryCarePauseUntilUtcTicks = 0L;
+        settings.GuardPowerModeOverrideHours = DefaultGuardPowerModeOverrideHours;
+        settings.GuardPowerModeOverrideUntilUtcTicks = 0L;
+        settings.GuardEnergySaverForcedOn = false;
+        settings.GuardEnergySaverRestoreThresholdPercent = DefaultGuardEnergySaverRestoreThresholdPercent;
         settings.LeftDockCollapseSeconds = DefaultLeftDockCollapseSeconds;
         settings.LeftDockOutsideClickCollapseEnabled = true;
         settings.CodexTaskBoardWidth = DefaultCodexTaskBoardWidth;
@@ -1252,6 +1293,7 @@ internal sealed class WidgetSettings
         settings.CodexIqBoardTransparencyOverridePercent = -1;
         settings.ResetSpeedBoardTransparencyOverridePercent = -1;
         settings.SystemDayBoardTransparencyOverridePercent = -1;
+        settings.CaptionsBoardTransparencyOverridePercent = -1;
         settings.NightScheduleEnabled = false;
         settings.NightScheduleStartMinutes = DefaultNightScheduleStartMinutes;
         settings.NightScheduleEndMinutes = DefaultNightScheduleEndMinutes;
@@ -1272,6 +1314,7 @@ internal sealed class WidgetSettings
         settings.CodexIqBoardScaleOverridePercent = -1;
         settings.ResetSpeedBoardScaleOverridePercent = -1;
         settings.SystemDayBoardScaleOverridePercent = -1;
+        settings.CaptionsBoardScaleOverridePercent = -1;
         settings.PowerThermalIntegratedEnabled = true;
         settings.PowerThermalManualEnergySaverThresholdPercent = DefaultPowerThermalManualEnergySaverThresholdPercent;
         settings.NetworkMonitorAdapterId = "";
@@ -1315,12 +1358,19 @@ internal sealed class WidgetSettings
         settings.SystemDayBoardLeftDockEnabled = true;
         settings.SystemDayBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.SystemDayBoardAutoHideSeconds = DefaultSystemDayBoardAutoHideSeconds;
+        settings.CaptionsBoardLeftDockEnabled = true;
+        settings.CaptionsBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
+        settings.CaptionsBoardAutoHideSeconds = DefaultCaptionsBoardAutoHideSeconds;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
         settings.GuardOfflineThresholdMinutes = DefaultGuardOfflineThresholdMinutes;
         settings.GuardDisplayUntilUtcTicks = 0L;
         settings.GuardBatteryCarePauseUntilUtcTicks = 0L;
+        settings.GuardPowerModeOverrideHours = DefaultGuardPowerModeOverrideHours;
+        settings.GuardPowerModeOverrideUntilUtcTicks = 0L;
+        settings.GuardEnergySaverForcedOn = false;
+        settings.GuardEnergySaverRestoreThresholdPercent = DefaultGuardEnergySaverRestoreThresholdPercent;
         settings.LeftDockCollapseSeconds = DefaultLeftDockCollapseSeconds;
         settings.LeftDockOutsideClickCollapseEnabled = true;
         settings.CodexTaskBoardWidth = DefaultCodexTaskBoardWidth;
@@ -1455,6 +1505,7 @@ internal sealed class WidgetSettings
             CodexIqBoardTransparencyOverridePercent = this.CodexIqBoardTransparencyOverridePercent,
             ResetSpeedBoardTransparencyOverridePercent = this.ResetSpeedBoardTransparencyOverridePercent,
             SystemDayBoardTransparencyOverridePercent = this.SystemDayBoardTransparencyOverridePercent,
+            CaptionsBoardTransparencyOverridePercent = this.CaptionsBoardTransparencyOverridePercent,
             NightScheduleEnabled = this.NightScheduleEnabled,
             NightScheduleStartMinutes = this.NightScheduleStartMinutes,
             NightScheduleEndMinutes = this.NightScheduleEndMinutes,
@@ -1475,6 +1526,7 @@ internal sealed class WidgetSettings
             CodexIqBoardScaleOverridePercent = this.CodexIqBoardScaleOverridePercent,
             ResetSpeedBoardScaleOverridePercent = this.ResetSpeedBoardScaleOverridePercent,
             SystemDayBoardScaleOverridePercent = this.SystemDayBoardScaleOverridePercent,
+            CaptionsBoardScaleOverridePercent = this.CaptionsBoardScaleOverridePercent,
             PowerThermalIntegratedEnabled = this.PowerThermalIntegratedEnabled,
             PowerThermalManualEnergySaverThresholdPercent = this.PowerThermalManualEnergySaverThresholdPercent,
             NetworkMonitorAdapterId = this.NetworkMonitorAdapterId,
@@ -1520,12 +1572,19 @@ internal sealed class WidgetSettings
             SystemDayBoardLeftDockEnabled = this.SystemDayBoardLeftDockEnabled,
             SystemDayBoardLeftDockTabCenterY = this.SystemDayBoardLeftDockTabCenterY,
             SystemDayBoardAutoHideSeconds = this.SystemDayBoardAutoHideSeconds,
+            CaptionsBoardLeftDockEnabled = this.CaptionsBoardLeftDockEnabled,
+            CaptionsBoardLeftDockTabCenterY = this.CaptionsBoardLeftDockTabCenterY,
+            CaptionsBoardAutoHideSeconds = this.CaptionsBoardAutoHideSeconds,
             GuardSleepEnabled = this.GuardSleepEnabled,
             GuardSleepSinceUtcTicks = this.GuardSleepSinceUtcTicks,
             GuardDisplayMinutes = this.GuardDisplayMinutes,
             GuardOfflineThresholdMinutes = this.GuardOfflineThresholdMinutes,
             GuardDisplayUntilUtcTicks = this.GuardDisplayUntilUtcTicks,
             GuardBatteryCarePauseUntilUtcTicks = this.GuardBatteryCarePauseUntilUtcTicks,
+            GuardPowerModeOverrideHours = this.GuardPowerModeOverrideHours,
+            GuardPowerModeOverrideUntilUtcTicks = this.GuardPowerModeOverrideUntilUtcTicks,
+            GuardEnergySaverForcedOn = this.GuardEnergySaverForcedOn,
+            GuardEnergySaverRestoreThresholdPercent = this.GuardEnergySaverRestoreThresholdPercent,
             LeftDockCollapseSeconds = this.LeftDockCollapseSeconds,
             LeftDockOutsideClickCollapseEnabled = this.LeftDockOutsideClickCollapseEnabled,
             CodexTaskBoardWidth = this.CodexTaskBoardWidth,
@@ -1661,6 +1720,7 @@ internal sealed class WidgetSettings
         this.CodexIqBoardTransparencyOverridePercent = Clamp(this.CodexIqBoardTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
         this.ResetSpeedBoardTransparencyOverridePercent = Clamp(this.ResetSpeedBoardTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
         this.SystemDayBoardTransparencyOverridePercent = Clamp(this.SystemDayBoardTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
+        this.CaptionsBoardTransparencyOverridePercent = Clamp(this.CaptionsBoardTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
         this.NightScheduleStartMinutes = Clamp(this.NightScheduleStartMinutes, MinNightScheduleMinutes, MaxNightScheduleMinutes);
         this.NightScheduleEndMinutes = Clamp(this.NightScheduleEndMinutes, MinNightScheduleMinutes, MaxNightScheduleMinutes);
         this.NightDimLuminancePercent = Clamp(this.NightDimLuminancePercent, MinNightDimLuminancePercent, MaxNightDimLuminancePercent);
@@ -1675,6 +1735,7 @@ internal sealed class WidgetSettings
         this.CodexIqBoardScaleOverridePercent = NormalizeWindowScaleOverride(this.CodexIqBoardScaleOverridePercent);
         this.ResetSpeedBoardScaleOverridePercent = NormalizeWindowScaleOverride(this.ResetSpeedBoardScaleOverridePercent);
         this.SystemDayBoardScaleOverridePercent = NormalizeWindowScaleOverride(this.SystemDayBoardScaleOverridePercent);
+        this.CaptionsBoardScaleOverridePercent = NormalizeWindowScaleOverride(this.CaptionsBoardScaleOverridePercent);
         this.MetricTileExpandWidth = Clamp(this.MetricTileExpandWidth, MinMetricTileExpandWidth, MaxMetricTileExpandWidth);
         this.MetricTileExpandHeight = Clamp(this.MetricTileExpandHeight, MinMetricTileExpandHeight, MaxMetricTileExpandHeight);
         this.PowerThermalManualEnergySaverThresholdPercent = Clamp(
@@ -1714,6 +1775,7 @@ internal sealed class WidgetSettings
         this.CodexIqBoardLeftDockEnabled = true;
         this.ResetSpeedBoardLeftDockEnabled = true;
         this.SystemDayBoardLeftDockEnabled = true;
+        this.CaptionsBoardLeftDockEnabled = true;
         // Dock tab centers are screen coordinates; anything below zero other than the auto sentinel
         // is meaningless, and the windows clamp the resolved value into the work area anyway.
         this.SpecBoardLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.SpecBoardLeftDockTabCenterY);
@@ -1727,11 +1789,18 @@ internal sealed class WidgetSettings
         this.ResetSpeedBoardAutoHideSeconds = Clamp(this.ResetSpeedBoardAutoHideSeconds, MinResetSpeedBoardAutoHideSeconds, MaxResetSpeedBoardAutoHideSeconds);
         this.SystemDayBoardLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.SystemDayBoardLeftDockTabCenterY);
         this.SystemDayBoardAutoHideSeconds = Clamp(this.SystemDayBoardAutoHideSeconds, MinSystemDayBoardAutoHideSeconds, MaxSystemDayBoardAutoHideSeconds);
+        this.CaptionsBoardLeftDockTabCenterY = NormalizeLeftDockTabCenterY(this.CaptionsBoardLeftDockTabCenterY);
+        this.CaptionsBoardAutoHideSeconds = Clamp(this.CaptionsBoardAutoHideSeconds, MinCaptionsBoardAutoHideSeconds, MaxCaptionsBoardAutoHideSeconds);
         this.GuardDisplayMinutes = NormalizeGuardDisplayMinutes(this.GuardDisplayMinutes);
         this.GuardOfflineThresholdMinutes = NormalizeGuardOfflineThresholdMinutes(this.GuardOfflineThresholdMinutes);
         this.GuardSleepSinceUtcTicks = NormalizeUtcTicks(this.GuardSleepSinceUtcTicks);
         this.GuardDisplayUntilUtcTicks = NormalizeUtcTicks(this.GuardDisplayUntilUtcTicks);
         this.GuardBatteryCarePauseUntilUtcTicks = NormalizeUtcTicks(this.GuardBatteryCarePauseUntilUtcTicks);
+        this.GuardPowerModeOverrideHours = NormalizeGuardPowerModeOverrideHours(this.GuardPowerModeOverrideHours);
+        this.GuardPowerModeOverrideUntilUtcTicks = NormalizeUtcTicks(this.GuardPowerModeOverrideUntilUtcTicks);
+        this.GuardEnergySaverRestoreThresholdPercent = this.GuardEnergySaverRestoreThresholdPercent < 0
+            ? -1
+            : Clamp(this.GuardEnergySaverRestoreThresholdPercent, MinPowerThermalManualEnergySaverThresholdPercent, MaxPowerThermalManualEnergySaverThresholdPercent);
         this.LeftDockCollapseSeconds = Clamp(this.LeftDockCollapseSeconds, MinLeftDockCollapseSeconds, MaxLeftDockCollapseSeconds);
         this.CodexTaskBoardWidth = Clamp(this.CodexTaskBoardWidth, MinCodexTaskBoardWidth, MaxCodexTaskBoardWidth);
         this.CodexTaskBoardHeight = Clamp(this.CodexTaskBoardHeight, MinCodexTaskBoardHeight, MaxCodexTaskBoardHeight);
@@ -2414,6 +2483,30 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 96)
+        {
+            // Version 96 adds GUARD power-mode quick-switch, the Energy Saver force toggle, and the
+            // scheduled "lock current mode for N hours, then revert to balanced" override. All four
+            // start disarmed/off on existing installs for the same reason version 79 left the sleep
+            // guard disarmed: silently inheriting a forced power mode or Energy Saver state the user
+            // never asked for would be a surprising, hard-to-notice change to real Windows settings.
+            settings.GuardPowerModeOverrideHours = DefaultGuardPowerModeOverrideHours;
+            settings.GuardPowerModeOverrideUntilUtcTicks = 0L;
+            settings.GuardEnergySaverForcedOn = false;
+            settings.GuardEnergySaverRestoreThresholdPercent = DefaultGuardEnergySaverRestoreThresholdPercent;
+            saveAfterMigration = true;
+        }
+
+        if (sourceFileExists && settingsVersion < 97)
+        {
+            // Version 97 adds the eighth left-dock board (Captions/字幕). An absent key already
+            // resolves correctly through CreateDefaults()/Normalize() (dock enabled, auto tab
+            // position, default auto-hide, -1 = follow-global overrides); this migration only
+            // forces an immediate rewrite so an upgraded install's settings.ini documents the new
+            // keys explicitly instead of silently relying on in-memory defaults until the next save.
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2449,7 +2542,8 @@ internal sealed class WidgetSettings
             NormalizeLeftDockTabCenterY(settings.GuardBoardLeftDockTabCenterY) == AutoLeftDockTabCenterY &&
             NormalizeLeftDockTabCenterY(settings.CodexIqBoardLeftDockTabCenterY) == AutoLeftDockTabCenterY &&
             NormalizeLeftDockTabCenterY(settings.ResetSpeedBoardLeftDockTabCenterY) == AutoLeftDockTabCenterY &&
-            NormalizeLeftDockTabCenterY(settings.SystemDayBoardLeftDockTabCenterY) == AutoLeftDockTabCenterY;
+            NormalizeLeftDockTabCenterY(settings.SystemDayBoardLeftDockTabCenterY) == AutoLeftDockTabCenterY &&
+            NormalizeLeftDockTabCenterY(settings.CaptionsBoardLeftDockTabCenterY) == AutoLeftDockTabCenterY;
     }
 
     private static bool AreAllMetricTilePositionsAutomatic(WidgetSettings settings)
@@ -2574,6 +2668,7 @@ internal sealed class WidgetSettings
             "CodexIqBoardTransparencyOverridePercent=" + this.CodexIqBoardTransparencyOverridePercent,
             "ResetSpeedBoardTransparencyOverridePercent=" + this.ResetSpeedBoardTransparencyOverridePercent,
             "SystemDayBoardTransparencyOverridePercent=" + this.SystemDayBoardTransparencyOverridePercent,
+            "CaptionsBoardTransparencyOverridePercent=" + this.CaptionsBoardTransparencyOverridePercent,
             "NightScheduleEnabled=" + this.NightScheduleEnabled,
             "NightScheduleStartMinutes=" + this.NightScheduleStartMinutes,
             "NightScheduleEndMinutes=" + this.NightScheduleEndMinutes,
@@ -2594,6 +2689,7 @@ internal sealed class WidgetSettings
             "CodexIqBoardScaleOverridePercent=" + this.CodexIqBoardScaleOverridePercent,
             "ResetSpeedBoardScaleOverridePercent=" + this.ResetSpeedBoardScaleOverridePercent,
             "SystemDayBoardScaleOverridePercent=" + this.SystemDayBoardScaleOverridePercent,
+            "CaptionsBoardScaleOverridePercent=" + this.CaptionsBoardScaleOverridePercent,
             "PowerThermalIntegratedEnabled=" + this.PowerThermalIntegratedEnabled,
             "PowerThermalManualEnergySaverThresholdPercent=" + this.PowerThermalManualEnergySaverThresholdPercent,
             "NetworkMonitorAdapterId=" + this.NetworkMonitorAdapterId,
@@ -2637,12 +2733,19 @@ internal sealed class WidgetSettings
             "SystemDayBoardLeftDockEnabled=" + this.SystemDayBoardLeftDockEnabled,
             "SystemDayBoardLeftDockTabCenterY=" + this.SystemDayBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
             "SystemDayBoardAutoHideSeconds=" + this.SystemDayBoardAutoHideSeconds.ToString(CultureInfo.InvariantCulture),
+            "CaptionsBoardLeftDockEnabled=" + this.CaptionsBoardLeftDockEnabled,
+            "CaptionsBoardLeftDockTabCenterY=" + this.CaptionsBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
+            "CaptionsBoardAutoHideSeconds=" + this.CaptionsBoardAutoHideSeconds.ToString(CultureInfo.InvariantCulture),
             "GuardSleepEnabled=" + this.GuardSleepEnabled,
             "GuardSleepSinceUtcTicks=" + this.GuardSleepSinceUtcTicks.ToString(CultureInfo.InvariantCulture),
             "GuardDisplayMinutes=" + this.GuardDisplayMinutes.ToString(CultureInfo.InvariantCulture),
             "GuardOfflineThresholdMinutes=" + this.GuardOfflineThresholdMinutes.ToString(CultureInfo.InvariantCulture),
             "GuardDisplayUntilUtcTicks=" + this.GuardDisplayUntilUtcTicks.ToString(CultureInfo.InvariantCulture),
             "GuardBatteryCarePauseUntilUtcTicks=" + this.GuardBatteryCarePauseUntilUtcTicks.ToString(CultureInfo.InvariantCulture),
+            "GuardPowerModeOverrideHours=" + this.GuardPowerModeOverrideHours.ToString(CultureInfo.InvariantCulture),
+            "GuardPowerModeOverrideUntilUtcTicks=" + this.GuardPowerModeOverrideUntilUtcTicks.ToString(CultureInfo.InvariantCulture),
+            "GuardEnergySaverForcedOn=" + this.GuardEnergySaverForcedOn,
+            "GuardEnergySaverRestoreThresholdPercent=" + this.GuardEnergySaverRestoreThresholdPercent.ToString(CultureInfo.InvariantCulture),
             "LeftDockCollapseSeconds=" + this.LeftDockCollapseSeconds.ToString(CultureInfo.InvariantCulture),
             "LeftDockOutsideClickCollapseEnabled=" + this.LeftDockOutsideClickCollapseEnabled,
             "CodexTaskBoardWidth=" + this.CodexTaskBoardWidth.ToString(CultureInfo.InvariantCulture),
@@ -2868,6 +2971,12 @@ internal sealed class WidgetSettings
             settings.SystemDayBoardTransparencyOverridePercent = intValue;
             return;
         }
+
+        if (string.Equals(key, "CaptionsBoardTransparencyOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CaptionsBoardTransparencyOverridePercent = intValue;
+            return;
+        }
         if (string.Equals(key, "NightScheduleEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.NightScheduleEnabled = boolValue;
@@ -2966,6 +3075,12 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "SystemDayBoardScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
         {
             settings.SystemDayBoardScaleOverridePercent = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionsBoardScaleOverridePercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, out intValue))
+        {
+            settings.CaptionsBoardScaleOverridePercent = intValue;
             return;
         }
 
@@ -3239,6 +3354,24 @@ internal sealed class WidgetSettings
             return;
         }
 
+        if (string.Equals(key, "CaptionsBoardLeftDockEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.CaptionsBoardLeftDockEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionsBoardLeftDockTabCenterY", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CaptionsBoardLeftDockTabCenterY = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionsBoardAutoHideSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CaptionsBoardAutoHideSeconds = intValue;
+            return;
+        }
+
         if (string.Equals(key, "GuardSleepEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.GuardSleepEnabled = boolValue;
@@ -3274,6 +3407,30 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "GuardBatteryCarePauseUntilUtcTicks", StringComparison.OrdinalIgnoreCase) && long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out guardTicks))
         {
             settings.GuardBatteryCarePauseUntilUtcTicks = guardTicks;
+            return;
+        }
+
+        if (string.Equals(key, "GuardPowerModeOverrideHours", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.GuardPowerModeOverrideHours = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "GuardPowerModeOverrideUntilUtcTicks", StringComparison.OrdinalIgnoreCase) && long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out guardTicks))
+        {
+            settings.GuardPowerModeOverrideUntilUtcTicks = guardTicks;
+            return;
+        }
+
+        if (string.Equals(key, "GuardEnergySaverForcedOn", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.GuardEnergySaverForcedOn = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "GuardEnergySaverRestoreThresholdPercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.GuardEnergySaverRestoreThresholdPercent = intValue;
             return;
         }
 
@@ -4689,11 +4846,13 @@ internal sealed class WidgetSettings
         RunCodexIqBoardSettingsSelfTest();
         RunResetSpeedBoardSettingsSelfTest();
         RunSystemDayBoardSettingsSelfTest();
+        RunCaptionsBoardSettingsSelfTest();
         RunRightTileInteractionSchema93MigrationSelfTest();
         RunRetiredInteractionSettingsSchema95MigrationSelfTest();
         RunWindowTransparencyOverrideSelfTest();
         RunWindowScaleOverrideSelfTest();
         RunGuardBoardOverrideMigrationSelfTest();
+        RunGuardPowerModeSchema96MigrationSelfTest();
         RunNetworkDockOverrideMigrationSelfTest();
         GlobalHotkeyParser.RunSelfTest();
         WidgetSettings legacy = CreateDefaults();
@@ -5154,10 +5313,11 @@ internal sealed class WidgetSettings
         // by Normalize on load and fail the comparison. These pick real off-default ladder steps.
         settings.GuardDisplayMinutes = 120;
         settings.GuardOfflineThresholdMinutes = 5;
+        settings.GuardPowerModeOverrideHours = 7;
         // Generic string-array sentinels are metric IDs and are invalid for the left dock (and
         // incomplete for the eleven-tile column). Full legal permutations keep Clone/Save/Load testing
         // focused on persistence instead of intentionally triggering order repair.
-        settings.LeftDockButtonOrder = new string[] { "SystemDay", "ResetSpeed", "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network" };
+        settings.LeftDockButtonOrder = new string[] { "SystemDay", "ResetSpeed", "CodexIq", "Guard", "CodexTask", "SpecBoard", "Network", "Captions" };
         settings.RightTileButtonOrder = new string[]
         {
             "DeepSeekQuota", "ClaudeQuota", "CodexQuota", "Guard", "Power", "Npu",
@@ -5217,7 +5377,7 @@ internal sealed class WidgetSettings
         AssertLayout(
             ColumnButtonOrdersEqual(
                 repaired.LeftDockButtonOrder,
-                new string[] { "Guard", "Network", "SpecBoard", "CodexTask", "CodexIq", "ResetSpeed", "SystemDay" }) &&
+                new string[] { "Guard", "Network", "SpecBoard", "CodexTask", "CodexIq", "ResetSpeed", "SystemDay", "Captions" }) &&
             ColumnButtonOrdersEqual(
                 repaired.RightTileButtonOrder,
                 new string[]
@@ -5966,6 +6126,42 @@ internal sealed class WidgetSettings
         Console.WriteLine("GUARD override migration: PASS v79 spec=60 and global-follow sentinel");
     }
 
+    private static void RunGuardPowerModeSchema96MigrationSelfTest()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-guard-power-mode-migration-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string legacyPath = Path.Combine(root, "legacy.ini");
+            File.WriteAllLines(legacyPath, new string[] { "Version=95" }, SharedEncoding.Utf8NoBom);
+            WidgetSettings migrated = LoadFromPath(legacyPath, false);
+            AssertLayout(
+                migrated.GuardPowerModeOverrideHours == DefaultGuardPowerModeOverrideHours &&
+                migrated.GuardPowerModeOverrideUntilUtcTicks == 0L &&
+                !migrated.GuardEnergySaverForcedOn &&
+                migrated.GuardEnergySaverRestoreThresholdPercent == DefaultGuardEnergySaverRestoreThresholdPercent,
+                "schema 96 migration should start power-mode override and energy-saver force disarmed");
+
+            string savedPath = Path.Combine(root, "saved.ini");
+            migrated.SaveToPath(savedPath, false);
+            string[] savedLines = File.ReadAllLines(savedPath);
+            AssertLayout(
+                Array.Exists(savedLines, line => string.Equals(line, "GuardEnergySaverForcedOn=False", StringComparison.Ordinal)),
+                "migrated settings should persist the disarmed energy-saver force flag");
+
+            AssertLayout(
+                NormalizeGuardPowerModeOverrideHours(0) == 1 && NormalizeGuardPowerModeOverrideHours(999) == 24,
+                "power-mode override hours should snap into the 1..24 ladder like the display guard");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); }
+            catch { }
+        }
+
+        Console.WriteLine("GUARD power mode schema 96 migration: PASS disarmed defaults and hour ladder");
+    }
+
     private static void RunNetworkDockOverrideMigrationSelfTest()
     {
         string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-network-dock-migration-" + Guid.NewGuid().ToString("N"));
@@ -6167,7 +6363,7 @@ internal sealed class WidgetSettings
             defaults.ResetSpeedBoardAutoHideSeconds == DefaultResetSpeedBoardAutoHideSeconds &&
             defaults.ResetSpeedBoardTransparencyOverridePercent == MinWindowTransparencyOverridePercent &&
             defaults.ResetSpeedBoardScaleOverridePercent == MinWindowScaleOverridePercent &&
-            Array.IndexOf(defaults.LeftDockButtonOrder, "ResetSpeed") == defaults.LeftDockButtonOrder.Length - 2,
+            Array.IndexOf(defaults.LeftDockButtonOrder, "ResetSpeed") == defaults.LeftDockButtonOrder.Length - 3,
             "Reset / Speed board defaults should enable an independent sixth dock slot.");
 
         string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-reset-speed-board-settings-" + Guid.NewGuid().ToString("N"));
@@ -6217,7 +6413,7 @@ internal sealed class WidgetSettings
             defaults.SystemDayBoardAutoHideSeconds == DefaultSystemDayBoardAutoHideSeconds &&
             defaults.SystemDayBoardTransparencyOverridePercent == MinWindowTransparencyOverridePercent &&
             defaults.SystemDayBoardScaleOverridePercent == MinWindowScaleOverridePercent &&
-            Array.IndexOf(defaults.LeftDockButtonOrder, "SystemDay") == defaults.LeftDockButtonOrder.Length - 1,
+            Array.IndexOf(defaults.LeftDockButtonOrder, "SystemDay") == defaults.LeftDockButtonOrder.Length - 2,
             "System Day board defaults should enable an independent seventh dock slot.");
 
         string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-system-day-board-settings-" + Guid.NewGuid().ToString("N"));
@@ -6256,6 +6452,56 @@ internal sealed class WidgetSettings
         }
 
         Console.WriteLine("System Day board settings: PASS fixed dock, independent overrides, save/load, migrate(v91->v92)");
+    }
+
+    private static void RunCaptionsBoardSettingsSelfTest()
+    {
+        WidgetSettings defaults = CreateDefaults();
+        AssertLayout(
+            defaults.CaptionsBoardLeftDockEnabled &&
+            defaults.CaptionsBoardLeftDockTabCenterY == AutoLeftDockTabCenterY &&
+            defaults.CaptionsBoardAutoHideSeconds == DefaultCaptionsBoardAutoHideSeconds &&
+            defaults.CaptionsBoardTransparencyOverridePercent == MinWindowTransparencyOverridePercent &&
+            defaults.CaptionsBoardScaleOverridePercent == MinWindowScaleOverridePercent &&
+            Array.IndexOf(defaults.LeftDockButtonOrder, "Captions") == defaults.LeftDockButtonOrder.Length - 1,
+            "Captions board defaults should enable an independent eighth dock slot.");
+
+        string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-captions-board-settings-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string path = Path.Combine(root, "settings.ini");
+            defaults.CaptionsBoardLeftDockEnabled = false;
+            defaults.CaptionsBoardLeftDockTabCenterY = 444;
+            defaults.CaptionsBoardAutoHideSeconds = 48;
+            defaults.CaptionsBoardTransparencyOverridePercent = 47;
+            defaults.CaptionsBoardScaleOverridePercent = 140;
+            defaults.SaveToPath(path, true);
+            WidgetSettings loaded = LoadFromPath(path, false);
+            AssertLayout(
+                loaded.CaptionsBoardLeftDockEnabled &&
+                loaded.CaptionsBoardLeftDockTabCenterY == 444 &&
+                loaded.CaptionsBoardAutoHideSeconds == 48 &&
+                loaded.CaptionsBoardTransparencyOverridePercent == 47 &&
+                loaded.CaptionsBoardScaleOverridePercent == 140,
+                "Captions board settings should preserve visual slots while forcing the eighth dock on.");
+
+            File.WriteAllLines(path, new string[] { "Version=96" }, SharedEncoding.Utf8NoBom);
+            WidgetSettings migrated = LoadFromPath(path, false);
+            AssertLayout(
+                migrated.CaptionsBoardLeftDockEnabled &&
+                migrated.CaptionsBoardLeftDockTabCenterY == AutoLeftDockTabCenterY &&
+                migrated.CaptionsBoardAutoHideSeconds == DefaultCaptionsBoardAutoHideSeconds &&
+                migrated.CaptionsBoardTransparencyOverridePercent == MinWindowTransparencyOverridePercent &&
+                migrated.CaptionsBoardScaleOverridePercent == MinWindowScaleOverridePercent,
+                "Captions board v96 to v97 migration failed.");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+
+        Console.WriteLine("Captions board settings: PASS fixed dock, independent overrides, save/load, migrate(v96->v97)");
     }
 
     private static void RunRightTileInteractionSchema93MigrationSelfTest()
@@ -6875,9 +7121,22 @@ internal sealed class WidgetSettings
         return values;
     }
 
+    private static int[] BuildHourSteps(int minimumHours, int maximumHours)
+    {
+        int count = Math.Max(1, maximumHours - minimumHours + 1);
+        int[] values = new int[count];
+        for (int i = 0; i < count; i++) values[i] = minimumHours + i;
+        return values;
+    }
+
     public static int NormalizeGuardOfflineThresholdMinutes(int value)
     {
         return SnapToNearestStep(value, GuardOfflineThresholdMinuteSteps, DefaultGuardOfflineThresholdMinutes);
+    }
+
+    public static int NormalizeGuardPowerModeOverrideHours(int value)
+    {
+        return SnapToNearestStep(value, GuardPowerModeOverrideHourSteps, DefaultGuardPowerModeOverrideHours);
     }
 
     private static int SnapToNearestStep(int value, int[] steps, int fallback)
