@@ -1,6 +1,6 @@
 # 性能采样、可见表面与运行时架构
 
-适用版本：2.0.0.80
+适用版本：2.0.0.82
 
 本文说明性能采样、隐藏宿主、headless 数据所有者、左右边缘可见表面、分层渲染、可见性、显示恢复与布局编辑的现行边界。
 
@@ -330,14 +330,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 
 - `LayeredWidgetFormBase.OffscreenPresentationForSelfTest` 由 `Program.Main` 在检测到任意 `--test*` 参数时打开，
   正常启动永远为 false。
-- 可见层在**最终落笔**处调用 `ApplySelfTestOffscreenOffset`，把坐标整体平移出屏幕：
-  `MetricTileForm`、`MetricTileExpandForm.ShowForTile`、`OperationForm.PositionOperationWindow`、`EdgeDockTabForm`。
-  `Visible` 仍为 true，断言不受影响。
+- 可见层在**最终落笔**处调用 `ApplySelfTestOffscreenOffset`：十一个磁贴、展开面板、操作面板、左缘停靠标签，
+  以及七个看板的 `this.Location = BurnInProtection.*` 落点。`Visible` 仍为 true，断言不受影响。
+- 仅靠落点还不够：不少定位分支要求 `owner` 非空（左侧停靠路径尤其如此），自检里 `owner == null` 时
+  `PositionForDisplay()` 会直接早返回、**根本不设 Location**，窗口于是停在默认位置露在桌面上。
+  因此 `LayeredWidgetFormBase.SetVisibleCore` 在窗口真正转为可见的那一刻再强制一次离屏坐标兜底。
+  只在转可见时触发，所以不显示窗口的几何断言完全不受影响。
+- 不要试图改在 `SetBoundsCore` 上一刀切：那样会同时改掉几何自检看到的坐标，实测会打坏
+  展开面板贴边、Dock 钉边、管理窗命中目标与覆盖条悬停淡出四处断言。
 - **几何计算必须保持纯净**：`ResolveRuntimeTileLocation`、`PinToLeftEdge`、`BurnInProtection.ApplyRuntimeOffset`
   与 `MetricTileExpandForm.ShowForTileGeometryForTest` 一律不带偏移，否则会把断言坐标的自检改坏。
   这是这套机制的关键约束——偏移只加在 `this.Location` 赋值那一步。
 - `Win11SettingsForm` 的绑定覆盖率自检必须真的 `Show()` 才能枚举到已实例化的控件行，
-  因此改为先 `MoveSelfTestWindowOffscreen` 再显示。
+  因此改为先 `MoveSelfTestWindowOffscreen` 再显示；它自己的 `ApplyDynamicResolutionSizing` 会在构造与
+  分辨率变化时重新居中，把离屏坐标覆写掉，所以那一步也要带上偏移。`SpecBoardManagerForm.PositionForCapture`
+  同理——但只在 `--test*` 下偏移，`--render-*` 仍要居中拍照。
+- 两处自检因此改成与窗口实际落点无关：覆盖条悬停用例的光标点改为从 `form.Bounds` 推导（原本写死 `(500,260)`），
+  管理窗的命中目标改用 `DrawToBitmap` 取得——命中目标在绘制时填充，而移出屏幕的窗口收不到真正的重绘，
+  `Refresh()` 会静默变成空操作、算出 0 个命中目标。
 - 启动期不再「先显示再隐藏」：`EnsureMetricTileWindows` 以前对十一个磁贴和展开面板做 `Show(this)` + `HideTile()/HidePanel()`，
   而那一刻窗口还没定位（构造里只设了 `Size`、没设 `Location`）、图层内容也没渲染过。现在改为 `PrepareHiddenChildWindow`：
   只设属主并触发 `Form.Handle` 建句柄，`Visible` 保持 false。真正的显示路径一律遵循
@@ -345,3 +355,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-Arm64.ps1 -OutputPat
 
 验证方式是枚举进程的可见顶层窗口并读取坐标：修复前 `--test` 期间有 20 个窗口落在屏幕内（右侧 120×120 磁贴列、
 左缘 10×60 停靠标签），修复后只剩 2 个——1 个 2×2 的隐藏宿主点和 1 个存在约 19ms 的几何自检窗口。
+
+## 10. 启动耗时与 PDH 计数器的后台初始化
+
+窗口出现之前的一切都跑在启动的 UI 线程上，用户看到的就是这段黑屏。为免再靠猜，
+`Program.Main` 与 `WidgetForm` 的子窗口生命周期各记一行分段耗时（`Startup profile` / `Child lifecycle profile`），
+`PdhSampler` 构造内部再记一行 `PDH ctor profile`。
+
+实测（本机 ARM64）：`PdhSampler` 构造占 **2652ms**，而窗口前总耗时才 2778ms——它一个就是 95%。
+构造内部没有单一热点：CPU 的 WMI 查询约 300ms、每核计数器约 440ms、NPU 探测约 520ms，
+其余约 1.1s 散在几十处 `AddFirstAvailable` 的 PDH 枚举里。
+
+因此把整段初始化挪到后台线程：
+
+- 构造函数只启动 `PdhSamplerInit` 线程，立刻返回；原构造体成为 `InitializeCountersCore()`。
+- 所有字段由该线程一次性写入，完成后 `Volatile.Write(ref initialized, 1)`；读取侧先 `Volatile.Read`
+  再访问这些字段，由此获得所需的内存序，不必给每个字段单独加锁。这些字段的 `readonly` 也因此去掉。
+- `Sample()` 在未就绪时返回空 `PerfSnapshot`，`RequestDiskUsageRefresh()` 静默跳过——
+  查询句柄和计数器此时都还不存在，碰它们是未定义行为。UI 先画出来，下一拍就有真实读数。
+- `Dispose()` 先 `Join` 初始化线程（5 秒上限）再关句柄；等待超时则不去动那两个句柄。
+- 需要真实读数的路径用 `WaitUntilReady(timeoutMs)` 等待，磁贴运行时自检就是这么做的，
+  以免把「还没初始化完」误判成「采集不到」。
+
+结果：窗口前耗时 **2778ms → 109ms**，首个可见窗口 **5150ms → 1157ms**。

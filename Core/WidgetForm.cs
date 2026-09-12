@@ -261,18 +261,24 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         Program.LogInfo("Main widget host remains hidden; desktop-parent presentation is retired.");
 
         this.childWindowLifecycleStarted = true;
+        System.Diagnostics.Stopwatch childWatch = System.Diagnostics.Stopwatch.StartNew();
         EnsureRadarChildWindows();
+        long radarMs = childWatch.ElapsedMilliseconds;
         StartAiBalanceShareServer();
         this.powerThermalForm = new PowerThermalForm(this.CurrentSettings);
         this.powerThermalForm.StartHeadlessDataOwner();
+        long powerMs = childWatch.ElapsedMilliseconds;
         // Eighth left-dock board's headless data owner: monitors the external LiveCaptions-Translator
         // app's setting.json/translation_history.db and the three processes involved (never allocates
         // a presentation buffer or shows a window -- see TranslatorControlReader.cs).
         this.translatorControlReader = new TranslatorControlReader(ShowWindowsNotification);
         this.translatorControlReader.StartHeadlessDataOwner();
+        long translatorMs = childWatch.ElapsedMilliseconds;
         InitializeSystemDayHistory();
+        long systemDayMs = childWatch.ElapsedMilliseconds;
         this.networkMonitorForm = new NetworkMonitorForm(this.CurrentSettings);
         this.networkMonitorForm.StartDockedOwner(this);
+        long networkMs = childWatch.ElapsedMilliseconds;
         this.operationForm = new OperationForm(
             this.CurrentSettings,
             delegate { OpenSettings(); },
@@ -287,6 +293,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             delegate(string propertyName, bool enabled, bool notify) { return SetBooleanSettingFromOperationPanel(propertyName, enabled, notify); },
             PersistGuardStateFromOperationPanel);
         this.operationForm.Show(this);
+        Program.LogInfo("Child lifecycle profile. Radar=" + radarMs +
+            "ms, PowerThermal=" + (powerMs - radarMs) +
+            "ms, Translator=" + (translatorMs - powerMs) +
+            "ms, SystemDayHistory=" + (systemDayMs - translatorMs) +
+            "ms, NetworkMonitor=" + (networkMs - systemDayMs) +
+            "ms, OperationPanel=" + (childWatch.ElapsedMilliseconds - networkMs) +
+            "ms, Total=" + childWatch.ElapsedMilliseconds + "ms");
         // Left-dock mutual exclusion: the network panel and the two operation-owned boards live in
         // different forms, so WidgetForm (the coordination owner) ties the two directions together.
         this.operationForm.HideNetworkDockedPanelForOverlay = delegate

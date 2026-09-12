@@ -274,14 +274,31 @@ internal static class Program
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
 
+            // 启动分段计时：从这里到窗口真正出现是一段纯串行的 UI 线程工作，用户看到的
+            // 就是这段时间的黑屏。把各阶段耗时记成一行，免得下次又靠猜。
+            Stopwatch startupWatch = Stopwatch.StartNew();
             WidgetSettings settings = WidgetSettings.Load();
+            long settingsMs = startupWatch.ElapsedMilliseconds;
             ApplyPerformanceMode(settings.PerformanceMode);
             UiHangWatchdog.Start();
+            long prepMs = startupWatch.ElapsedMilliseconds;
             using (PdhSampler sampler = new PdhSampler())
-            using (WidgetForm form = new WidgetForm(sampler, stopEvent, settings, useDesktopParent))
             {
-                form.EnableLocalControlServers();
-                Application.Run(form);
+                long samplerMs = startupWatch.ElapsedMilliseconds;
+                using (WidgetForm form = new WidgetForm(sampler, stopEvent, settings, useDesktopParent))
+                {
+                    long formMs = startupWatch.ElapsedMilliseconds;
+                    form.EnableLocalControlServers();
+                    long serversMs = startupWatch.ElapsedMilliseconds;
+                    LogInfo("Startup profile. SettingsLoad=" + settingsMs +
+                        "ms, PerfMode+Watchdog=" + (prepMs - settingsMs) +
+                        "ms, PdhSampler=" + (samplerMs - prepMs) +
+                        "ms, WidgetForm=" + (formMs - samplerMs) +
+                        "ms, ControlServers=" + (serversMs - formMs) +
+                        "ms, TotalBeforeRun=" + serversMs + "ms");
+                    Logger.Flush();
+                    Application.Run(form);
+                }
             }
 
             LogInfo("Application loop exited.");

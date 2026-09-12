@@ -410,6 +410,20 @@ internal abstract class LayeredWidgetFormBase : Form
 
     internal static bool OffscreenPresentationForSelfTest { get; set; }
 
+    // 兜底：自检里很多定位分支要求 owner 非空（左侧停靠路径尤其如此），owner 为 null 时
+    // PositionForDisplay 会直接早返回、根本不设 Location，窗口于是停在默认位置露在桌面上。
+    // 这里只在窗口真正转为可见的那一刻强制一次离屏坐标——不显示窗口的几何断言完全不受影响，
+    // 各处 SetWindowPos 传的又是 this.Left / this.Top，所以跟着一起离屏。
+    protected override void SetVisibleCore(bool value)
+    {
+        if (value && OffscreenPresentationForSelfTest)
+        {
+            this.Location = ApplySelfTestOffscreenOffset(Point.Empty);
+        }
+
+        base.SetVisibleCore(value);
+    }
+
     internal static Point ApplySelfTestOffscreenOffset(Point location)
     {
         if (!OffscreenPresentationForSelfTest)

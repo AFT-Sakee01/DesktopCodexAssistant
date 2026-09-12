@@ -19,40 +19,40 @@ using Microsoft.Win32;
 
 internal sealed class PdhSampler : IDisposable
 {
-    private readonly IntPtr query;
-    private readonly IntPtr expensiveQuery;
-    private readonly PdhCounter cpuCounter;
-    private readonly PdhCounter cpuFrequencyCounter;
-    private readonly List<PdhCounter> cpuCoreCounters;
-    private readonly PdhCounter memoryCommittedBytesCounter;
-    private readonly PdhCounter memoryCommitLimitCounter;
-    private readonly PdhCounter memoryPagesOutputCounter;
-    private readonly PdhCounter diskCounter;
-    private readonly PdhCounter diskWriteCounter;
-    private readonly PdhCounter diskReadCounter;
-    private readonly PdhCounter diskWritePercentCounter;
-    private readonly PdhCounter diskReadPercentCounter;
-    private readonly PdhCounter pageFileUsageCounter;
-    private readonly List<PdhCounter> networkSentCounters;
-    private readonly List<PdhCounter> networkReceivedCounters;
-    private readonly List<PdhCounter> gpuEngineCounters;
-    private readonly List<PdhCounter> gpuDedicatedMemoryCounters;
-    private readonly List<PdhCounter> gpuSharedMemoryCounters;
-    private readonly List<PdhCounter> npuEngineCounters;
-    private readonly List<PdhCounter> npuDedicatedMemoryCounters;
-    private readonly List<PdhCounter> npuSharedMemoryCounters;
-    private readonly DiskInfo diskInfo;
-    private readonly string cpuName;
-    private readonly int cpuCoreCount;
-    private readonly double cpuBaseFrequencyGhz;
-    private readonly double cpuCurrentFrequencyFallbackGhz;
-    private readonly MemoryInfo memoryInfo;
-    private readonly MemoryPressureTracker memoryPressureTracker;
-    private readonly string gpuName;
-    private readonly double gpuMemoryTotalGb;
-    private readonly string npuName;
-    private readonly double npuMemoryTotalGb;
-    private readonly HashSet<string> npuLuidTokens;
+    private IntPtr query;
+    private IntPtr expensiveQuery;
+    private PdhCounter cpuCounter;
+    private PdhCounter cpuFrequencyCounter;
+    private List<PdhCounter> cpuCoreCounters;
+    private PdhCounter memoryCommittedBytesCounter;
+    private PdhCounter memoryCommitLimitCounter;
+    private PdhCounter memoryPagesOutputCounter;
+    private PdhCounter diskCounter;
+    private PdhCounter diskWriteCounter;
+    private PdhCounter diskReadCounter;
+    private PdhCounter diskWritePercentCounter;
+    private PdhCounter diskReadPercentCounter;
+    private PdhCounter pageFileUsageCounter;
+    private List<PdhCounter> networkSentCounters;
+    private List<PdhCounter> networkReceivedCounters;
+    private List<PdhCounter> gpuEngineCounters;
+    private List<PdhCounter> gpuDedicatedMemoryCounters;
+    private List<PdhCounter> gpuSharedMemoryCounters;
+    private List<PdhCounter> npuEngineCounters;
+    private List<PdhCounter> npuDedicatedMemoryCounters;
+    private List<PdhCounter> npuSharedMemoryCounters;
+    private DiskInfo diskInfo;
+    private string cpuName;
+    private int cpuCoreCount;
+    private double cpuBaseFrequencyGhz;
+    private double cpuCurrentFrequencyFallbackGhz;
+    private MemoryInfo memoryInfo;
+    private MemoryPressureTracker memoryPressureTracker;
+    private string gpuName;
+    private double gpuMemoryTotalGb;
+    private string npuName;
+    private double npuMemoryTotalGb;
+    private HashSet<string> npuLuidTokens;
     private NetworkState cachedNetworkState;
     private int networkStateRefreshRequested;
     private DateTime lastNetworkStateRefreshUtc;
@@ -70,8 +70,59 @@ internal sealed class PdhSampler : IDisposable
     private bool disposed;
     private const int WifiRssiRefreshIntervalMs = 5000;
 
+    // 计数器初始化实测约 2.5 秒（CPU/内存的 WMI 查询、每核计数器、NPU 探测，以及几十处
+    // AddFirstAvailable 的 PDH 枚举），而它整段跑在启动的 UI 线程上——那 2.5 秒就是用户
+    // 看到的黑屏。这里把它整体挪到后台线程：窗口立刻出来，指标就绪后自然填上。
+    // 就绪之前 Sample() 返回空快照，UI 只是显示未知值，不会阻塞。
+    private readonly Thread initializationThread;
+    private int initialized;
+    private volatile bool initializationFailed;
+
     public PdhSampler()
     {
+        this.initializationThread = new Thread(InitializeCounters);
+        this.initializationThread.IsBackground = true;
+        this.initializationThread.Name = "PdhSamplerInit";
+        this.initializationThread.Start();
+    }
+
+    // 自检和任何需要真实读数的路径用这个等待就绪，避免把「还没初始化完」误判成「采集不到」。
+    internal bool WaitUntilReady(int timeoutMs)
+    {
+        Thread thread = this.initializationThread;
+        if (thread != null && thread.IsAlive)
+        {
+            thread.Join(Math.Max(0, timeoutMs));
+        }
+
+        return Volatile.Read(ref this.initialized) != 0;
+    }
+
+    internal bool IsReady
+    {
+        get { return Volatile.Read(ref this.initialized) != 0; }
+    }
+
+    private void InitializeCounters()
+    {
+        try
+        {
+            InitializeCountersCore();
+            // 所有字段写入都排在这个 Volatile.Write 之前，读取侧先读 initialized，
+            // 由此获得所需的内存序，不必给每个字段单独加锁。
+            Volatile.Write(ref this.initialized, 1);
+        }
+        catch (Exception ex)
+        {
+            this.initializationFailed = true;
+            Program.LogException(ex);
+            Program.LogInfo("PDH sampler initialization failed; metrics stay unknown for this run.");
+        }
+    }
+
+    private void InitializeCountersCore()
+    {
+        System.Diagnostics.Stopwatch ctorWatch = System.Diagnostics.Stopwatch.StartNew();
         uint status = PdhNative.PdhOpenQuery(null, IntPtr.Zero, out this.query);
         if (status != PdhNative.ERROR_SUCCESS)
         {
@@ -91,6 +142,7 @@ internal sealed class PdhSampler : IDisposable
             @"\Processor(_Total)\% Processor Time"
         });
         CpuInfo cpuInfo = DetectCpuInfo();
+        long tCpu = ctorWatch.ElapsedMilliseconds;
         this.cpuName = cpuInfo.Name;
         this.cpuCoreCount = cpuInfo.CoreCount;
         this.cpuBaseFrequencyGhz = cpuInfo.BaseFrequencyGhz;
@@ -101,12 +153,14 @@ internal sealed class PdhSampler : IDisposable
             @"\Processor Information(0,_Total)\Actual Frequency"
         });
         this.cpuCoreCounters = AddCpuCoreCounters();
+        long tCores = ctorWatch.ElapsedMilliseconds;
         if (this.cpuCoreCounters.Count > 0)
         {
             this.cpuCoreCount = this.cpuCoreCounters.Count;
         }
 
         this.memoryInfo = DetectMemoryInfo();
+        long tMem = ctorWatch.ElapsedMilliseconds;
         this.memoryPressureTracker = new MemoryPressureTracker();
         this.memoryCommittedBytesCounter = AddFirstAvailable(new string[]
         {
@@ -122,6 +176,7 @@ internal sealed class PdhSampler : IDisposable
         });
 
         this.diskInfo = DetectDiskInfo();
+        long tDisk = ctorWatch.ElapsedMilliseconds;
         this.diskCounter = AddFirstAvailable(new string[]
         {
             this.diskInfo.CounterPath,
@@ -162,7 +217,9 @@ internal sealed class PdhSampler : IDisposable
         string[] gpuEnginePaths = ExpandWildcard(@"\GPU Engine(*)\Utilization Percentage");
         string[] gpuDedicatedMemoryPaths = ExpandWildcard(@"\GPU Adapter Memory(*)\Dedicated Usage");
         string[] gpuSharedMemoryPaths = ExpandWildcard(@"\GPU Adapter Memory(*)\Shared Usage");
+        long tBeforeNpu = ctorWatch.ElapsedMilliseconds;
         GpuInfo npuInfo = DetectNpuInfo();
+        long tNpu = ctorWatch.ElapsedMilliseconds;
         this.npuLuidTokens = DetectNpuLuidTokens(gpuEnginePaths, npuInfo.IsDetected);
         this.gpuEngineCounters = AddCountersFromPaths(this.expensiveQuery, gpuEnginePaths, delegate(string path) { return !IsNpuPath(path, this.npuLuidTokens); });
         this.gpuDedicatedMemoryCounters = AddCountersFromPaths(this.expensiveQuery, gpuDedicatedMemoryPaths, delegate(string path) { return !IsNpuPath(path, this.npuLuidTokens); });
@@ -187,7 +244,9 @@ internal sealed class PdhSampler : IDisposable
 
         this.cachedNetworkState = DetectNetworkState();
         this.lastNetworkStateRefreshUtc = DateTime.UtcNow;
+        long tBeforeGpu = ctorWatch.ElapsedMilliseconds;
         GpuInfo gpuInfo = DetectGpuInfo();
+        long tGpu = ctorWatch.ElapsedMilliseconds;
         this.gpuName = gpuInfo.Name;
         this.gpuMemoryTotalGb = gpuInfo.MemoryTotalGb;
         this.npuName = npuInfo.Name;
@@ -197,6 +256,13 @@ internal sealed class PdhSampler : IDisposable
 
         PdhNative.PdhCollectQueryData(this.query);
         PdhNative.PdhCollectQueryData(this.expensiveQuery);
+        Program.LogInfo("PDH ctor profile. Cpu(WMI)=" + tCpu +
+            "ms, CoreCounters=" + (tCores - tCpu) +
+            "ms, Memory(WMI)=" + (tMem - tCores) +
+            "ms, Disk=" + (tDisk - tMem) +
+            "ms, Npu=" + (tNpu - tBeforeNpu) +
+            "ms, Gpu=" + (tGpu - tBeforeGpu) +
+            "ms, Total=" + ctorWatch.ElapsedMilliseconds + "ms");
         Program.LogInfo(string.Format(
             "PDH counters initialized. CPU={0}, CPUName={1}, CPUCores={2}, CPUFreq={3}, CPUBaseGHz={4:0.00}, Disk={5}, NetSent={6}, NetRecv={7}, GPU={8}, GPUMem={9}/{10}, NPU={11}, NPUMem={12}/{13}, NPULuids={14}",
             this.cpuCounter == null ? "none" : this.cpuCounter.Path,
@@ -232,6 +298,13 @@ internal sealed class PdhSampler : IDisposable
     public PerfSnapshot Sample(int expensiveCounterIntervalMs)
     {
         EnsureNotDisposed();
+        if (Volatile.Read(ref this.initialized) == 0)
+        {
+            // 后台初始化还没完成：查询句柄和计数器都还不存在，碰它们就是未定义行为。
+            // 返回空快照让 UI 先画出来，下一拍自然就有真实读数了。
+            return new PerfSnapshot();
+        }
+
         PdhNative.PdhCollectQueryData(this.query);
         DateTime nowUtc = DateTime.UtcNow;
         if (this.lastExpensiveCounterRefreshUtc == DateTime.MinValue ||
@@ -353,6 +426,11 @@ internal sealed class PdhSampler : IDisposable
 
     public void RequestDiskUsageRefresh()
     {
+        if (Volatile.Read(ref this.initialized) == 0)
+        {
+            return;
+        }
+
         EnsureNotDisposed();
         this.lastDiskUsageRefreshUtc = DateTime.MinValue;
     }
@@ -361,6 +439,20 @@ internal sealed class PdhSampler : IDisposable
     {
         if (!this.disposed)
         {
+            // 初始化在后台线程上开查询、加计数器，半途关闭句柄会踩空，这里先等它收尾。
+            Thread initThread = this.initializationThread;
+            if (initThread != null && initThread.IsAlive)
+            {
+                initThread.Join(5000);
+            }
+
+            if (Volatile.Read(ref this.initialized) == 0 && !this.initializationFailed)
+            {
+                // 初始化没跑完也没报错（等待超时），此时不去动那两个句柄。
+                this.disposed = true;
+                return;
+            }
+
             NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
             NetworkChange.NetworkAvailabilityChanged -= OnNetworkAvailabilityChanged;
             PdhNative.PdhCloseQuery(this.query);

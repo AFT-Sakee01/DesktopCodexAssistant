@@ -13,6 +13,8 @@ internal sealed partial class WidgetForm
         using (PdhSampler sampler = new PdhSampler())
         using (EventWaitHandle stopEvent = new EventWaitHandle(false, EventResetMode.ManualReset))
         {
+            // 计数器初始化现在跑在后台线程上，自检验证的是真实采样，所以先等它就绪。
+            sampler.WaitUntilReady(30000);
             AssertRuntimeAlive(sampler, stopEvent);
         }
 
