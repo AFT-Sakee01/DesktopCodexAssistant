@@ -16,11 +16,11 @@ internal sealed class TranslatorCaptionSnapshot
 
     internal string TranslatedCaption { get; set; }
 
-    // The sentence before the one still being translated. The translator draws exactly this
+    // Sentences that are done, oldest first. The translator draws the same settled/in-progress
     // split in its own overlay (OverlayPreviousTranslation + OverlayCurrentTranslation, the latter
-    // in a shifted colour), and it is what tells the reader which words are settled and which are
-    // still moving.
-    internal string PreviousTranslation { get; set; }
+    // in a shifted colour); this keeps several of them so the last few seconds stay readable after
+    // the speaker has moved on.
+    internal string[] SettledTranslations { get; set; }
 
     internal DateTime UpdatedUtc { get; set; }
 
@@ -28,7 +28,7 @@ internal sealed class TranslatorCaptionSnapshot
     {
         this.OriginalCaption = string.Empty;
         this.TranslatedCaption = string.Empty;
-        this.PreviousTranslation = string.Empty;
+        this.SettledTranslations = new string[0];
         this.UpdatedUtc = DateTime.MinValue;
     }
 
@@ -45,7 +45,7 @@ internal sealed class TranslatorCaptionSnapshot
             CaptionElementsResolved = this.CaptionElementsResolved,
             OriginalCaption = this.OriginalCaption ?? string.Empty,
             TranslatedCaption = this.TranslatedCaption ?? string.Empty,
-            PreviousTranslation = this.PreviousTranslation ?? string.Empty,
+            SettledTranslations = (string[])(this.SettledTranslations ?? new string[0]).Clone(),
             UpdatedUtc = this.UpdatedUtc,
         };
     }
@@ -57,7 +57,7 @@ internal sealed class TranslatorCaptionSnapshot
     {
         return (this.TranslatorRunning ? "1" : "0") +
             (this.CaptionElementsResolved ? "1" : "0") + "|" +
-            (this.PreviousTranslation ?? string.Empty) + "|" +
+            string.Join("\u0001", this.SettledTranslations ?? new string[0]) + "|" +
             (this.TranslatedCaption ?? string.Empty) + "|" +
             (this.OriginalCaption ?? string.Empty);
     }
@@ -65,7 +65,7 @@ internal sealed class TranslatorCaptionSnapshot
     internal bool HasText()
     {
         return !string.IsNullOrWhiteSpace(this.TranslatedCaption) ||
-            !string.IsNullOrWhiteSpace(this.PreviousTranslation) ||
+            (this.SettledTranslations != null && this.SettledTranslations.Length > 0) ||
             !string.IsNullOrWhiteSpace(this.OriginalCaption);
     }
 }

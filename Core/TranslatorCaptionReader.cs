@@ -29,6 +29,9 @@ internal sealed class TranslatorCaptionReader
     // Re-resolving the automation elements is the expensive part (a descendant search). Once the
     // window is gone this backs off so a closed translator does not cost a tree walk every tick.
     private const int ResolveRetryIntervalMs = 2000;
+    // How many finished sentences the strip keeps. More than this and the panel starts covering
+    // the picture it is supposed to sit on top of.
+    internal const int SettledHistoryLimit = 3;
 
     private readonly object stateLock = new object();
 
@@ -41,10 +44,9 @@ internal sealed class TranslatorCaptionReader
     private int refreshing;
     private string lastLiveOriginal = string.Empty;
     private string lastLiveTranslation = string.Empty;
-    private string settledTranslation = string.Empty;
-    // One level further back, used only for the beat after a transition when the latched sentence is
-    // still the sentence on screen. Blanking the line there instead would resize the whole strip.
-    private string priorSettledTranslation = string.Empty;
+    // Settled sentences, oldest first, capped at SettledHistoryLimit.
+    private readonly System.Collections.Generic.List<string> settledTranslations =
+        new System.Collections.Generic.List<string>();
 
     // Latest published state. Cache-only: never touches UIA, so the UI thread may call it.
     internal TranslatorCaptionSnapshot GetSnapshot()
@@ -104,8 +106,7 @@ internal sealed class TranslatorCaptionReader
             ReleaseElements();
             this.lastLiveOriginal = string.Empty;
             this.lastLiveTranslation = string.Empty;
-            this.settledTranslation = string.Empty;
-            this.priorSettledTranslation = string.Empty;
+            this.settledTranslations.Clear();
             Publish(next);
             return;
         }
@@ -130,7 +131,7 @@ internal sealed class TranslatorCaptionReader
         next.CaptionElementsResolved = true;
         next.OriginalCaption = original;
         next.TranslatedCaption = translated;
-        next.PreviousTranslation = ResolveConfirmedTranslation(original, translated);
+        next.SettledTranslations = ResolveSettledTranslations(original, translated);
         Publish(next);
     }
 
@@ -152,21 +153,21 @@ internal sealed class TranslatorCaptionReader
     // keeps extending the same text, and a genuinely new sentence starts different text. So this
     // watches the original line, and the moment it becomes a different sentence the translation
     // that was live until then becomes the settled one. Nothing else can move it.
-    private string ResolveConfirmedTranslation(string liveOriginal, string liveTranslation)
+    private string[] ResolveSettledTranslations(string liveOriginal, string liveTranslation)
     {
         string original = (liveOriginal ?? string.Empty).Trim();
         string translation = (liveTranslation ?? string.Empty).Trim();
 
         if (original.Length == 0)
         {
-            return this.settledTranslation;
+            return BuildSettledArray(translation);
         }
 
         if (this.lastLiveOriginal.Length == 0)
         {
             this.lastLiveOriginal = original;
             this.lastLiveTranslation = translation;
-            return this.settledTranslation;
+            return BuildSettledArray(translation);
         }
 
         if (!IsSameSpokenSentence(this.lastLiveOriginal, original))
@@ -180,8 +181,11 @@ internal sealed class TranslatorCaptionReader
             // the transition the translation on screen still IS the sentence being latched.
             if (this.lastLiveTranslation.Length > 0 && !IsStatusText(this.lastLiveTranslation))
             {
-                this.priorSettledTranslation = this.settledTranslation;
-                this.settledTranslation = this.lastLiveTranslation;
+                this.settledTranslations.Add(this.lastLiveTranslation);
+                while (this.settledTranslations.Count > SettledHistoryLimit)
+                {
+                    this.settledTranslations.RemoveAt(0);
+                }
             }
         }
 
@@ -191,18 +195,30 @@ internal sealed class TranslatorCaptionReader
             this.lastLiveTranslation = translation;
         }
 
-        // Only an exact duplicate is hidden, and only for the beat it lasts: right after a transition
-        // the translation on screen is still the sentence that was just latched, and printing it
-        // twice would read as a rendering fault. A *similar* line is left alone -- an earlier version
-        // hid those too and made the settled line blink out at every transition, because a new
-        // sentence often opens like the one it replaced.
-        if (this.settledTranslation.Length > 0 &&
-            string.Equals(this.settledTranslation, translation, StringComparison.Ordinal))
+        return BuildSettledArray(translation);
+    }
+
+    // Drops the newest settled sentence while it is still the line on screen -- for the beat between
+    // the original moving on and the translation catching up, the two would be the same words twice.
+    // Only an exact match is dropped: a *similar* line is a different sentence that happens to open
+    // the same way, and hiding those made the block flicker at every transition.
+    private string[] BuildSettledArray(string liveTranslation)
+    {
+        int count = this.settledTranslations.Count;
+        if (count > 0 &&
+            liveTranslation.Length > 0 &&
+            string.Equals(this.settledTranslations[count - 1], liveTranslation, StringComparison.Ordinal))
         {
-            return this.priorSettledTranslation;
+            count--;
         }
 
-        return this.settledTranslation;
+        string[] result = new string[count];
+        for (int i = 0; i < count; i++)
+        {
+            result[i] = this.settledTranslations[i];
+        }
+
+        return result;
     }
 
     // Two readings of the original caption are the same sentence while one is still growing out of
