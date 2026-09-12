@@ -1,6 +1,6 @@
 # 网络监控停靠架构
 
-适用版本：2.0.0.26
+适用版本：2.0.0.78
 
 本文说明 Network 左缘停靠 tab/board 的数据读取、状态机、单飞一致性、PathPing、Clean IP 投影和 Dock-only 渲染边界。
 
@@ -70,7 +70,11 @@ flowchart LR
 
 自动选择候选必须 `OperationalStatus.Up`，排除 Loopback/Tunnel，再按默认网关、IPv4、IPv6、接口类型和速率评分。用户指定网卡时优先匹配 `NetworkInterface.Id`，兼容按名称匹配；指定网卡暂时 down 时仍保留身份展示，但连通性进入未连接路径。
 
+本地枚举只有首轮在 owner tick 上同步执行，用于保证 board 首帧不空；之后每轮都由 `NetworkMonitorReader.CompleteLocalRefresh` 在后台单飞执行（`localRefreshRunning`），tick 继续消费上一份已提交快照。`GetAllNetworkInterfaces`、`GetIPProperties` 与 WLAN 查询都是随虚拟网卡数量增长的系统调用，不得回到 UI 线程。
+
 快照保存完整 IPv4/IPv6/DNS 列表，board 可按宽度折叠为首项与 `+n`。公网短显优先使用可公开路由 IPv6，排除 `fc00::/7` ULA；没有时回退已验证的公网 IPv4。
+
+网络身份比较用 `NetworkMonitorSnapshot.AddressIdentity`，由 `NetworkMonitorReader.BuildAddressIdentity` 生成：取全部非 loopback / 非链路本地单播地址排序拼接，并排除 `SuffixOrigin.Random` 的 IPv6 临时地址。展示用的 `IPv4` / `IPv6` 字符串只保留前两项加 `+n`，不得当作身份键——否则第三项之后的地址替换看不见，而 Windows 自行轮换的临时 IPv6 又会被误判成换网并清空全部滚动测量。
 
 DNS 健康由独立后台任务低频检测：
 
@@ -83,13 +87,13 @@ DNS 健康由独立后台任务低频检测：
 
 ## 5. 连通性与滚动 PING
 
-每轮连通性把 ICMP 与 Microsoft NCSI 门户请求并行：HTTP/NCSI 能证明在线时，即使 ICMP 被屏蔽也保持 `Online`。门户正文和 DNS TCP 读写共用有界 deadline，慢速逐字节响应不能无限续命。
+每轮连通性把 ICMP 与 Microsoft NCSI 门户请求并行：HTTP/NCSI 能证明在线时，即使 ICMP 被屏蔽也保持 `Online`。门户正文和 DNS TCP 读写共用有界 deadline，慢速逐字节响应不能无限续命。NCSI 请求必须 `Proxy = null`：它问的是“这条链路是否被强制门户拦截”，走系统代理会去问代理而不是这条链路。连通性的 `PingCount = 4` 包按 `PingSpacingMs = 250` 间隔发送，背靠背突发会被路由器与 anycast 解析器限速，使丢包系统性偏高。连通性的延迟/抖动/丢包只是滚动窗口就绪前的引导值，滚动窗口就绪后由后者覆盖。
 
-端到端滚动 PING 对默认网关和当前活动目标组采样，样本窗口最多 60 个且有时间上限。公网组在多个 anycast IP 间轮转；GFW 已明确异常时，展示目标可切到百度，但显示 profile 绝不能覆盖实际 `ConnectivityTarget`。
+端到端滚动 PING 对默认网关和当前活动目标组采样。公网组在多个 anycast IP 间轮转，**每个具体目标一个独立窗口**（`PingTargetGroup`），每窗口最多 60 个样本且有时间上限；聚合只在读取时发生。达到 `RollingPingSilentTargetMinSamples = 3` 个样本却一次都没成功的目标判为不可达，退出聚合并计入 `SilentTargetCount`，不得按 1/N 丢包摊到整组；全部目标都静默时才回到整组聚合，以便 `IcmpBlocked` 继续成立。GFW 已明确异常时，展示目标可切到百度，但显示 profile 绝不能覆盖实际 `ConnectivityTarget`。
 
-延迟取成功样本平均，抖动取相邻成功样本 RTT 差绝对值平均，丢包取失败数/总数。HTTP 已确认在线、网关可达、但公网目标长期无成功 ICMP 时显示“ICMP 不可用”，不能改成离线。
+延迟取参与聚合目标的成功样本平均；抖动先在**单个目标**内取相邻成功样本 RTT 差绝对值平均，再对各目标求平均，禁止跨轮转目标计算；丢包取参与聚合目标的失败数/总数。HTTP 已确认在线、网关可达、但公网目标长期无成功 ICMP 时显示“ICMP 不可用”，不能改成离线。
 
-本地链路劣化阈值用于降低 DNS/云服务误报，不改变 `AccessState`。GFW 只消费当前活动目标滚动 PING 的确认丢包门控，不直接消费 4 包连通性采样的 25% 离散丢包。
+本地链路劣化（`LocalNetworkDegraded`）由滚动窗口唯一产出，见 `NetworkMonitorReader.TryBuildLocalLinkDegraded`：网关窗口丢包达 `DegradedPacketLossPercent = 15` 直接成立；端到端丢包必须先通过确认滞后（`rollingLossConfirmed`）再比阈值；抖动 `DegradedJitterMs = 250`、延迟 `DegradedLatencyMs = 800` 同样读滚动值；`IcmpBlocked` 或窗口未就绪时一律不劣化。它只降低 DNS/云服务误报，不改变 `AccessState`。GFW 门控消费的仍是当前活动目标滚动 PING 的确认丢包，两者互不替代。
 
 ## 6. Generation 与单飞
 
@@ -108,6 +112,12 @@ reader 监听 `NetworkAddressChanged` 与 `NetworkAvailabilityChanged`。事件�
 
 GFW 只在真实网络 `Online` 且活动目标滚动丢包未触发门控时启动。候选站点必须在同一异常层至少命中两个，才发布明确疑似阻断；单点或分散异常保持不可判定。
 
+GFW 探测测的是**直连链路**，因此它的每一层传输必须一致：TCP 连接与 TLS 握手本来就是裸 socket，DoH 取址（`FetchText`）与 HTTP HEAD（`TryHttpHead`）也必须 `Proxy = null`。一旦让 HTTP 层走系统代理，同一份结论就会横跨两条链路——直连层失败而代理层成功，读数发布为“疑似连接”，进而经 `AiRequestProtection` 阻断 AI 请求并弹出全屏警告。
+
+DNS 层同时判两种情况：系统解析失败而 DoH 可解析，是解析被拦；系统解析成功但与 DoH 结果**完全不相交**时，再分别对两组地址用同一 SNI 做 TLS 握手（`TryTlsProtocolHandshakeAt`），只有 DoH 地址握手成功而系统地址失败才判投毒（`DnsPoisonSuspected`）。仅比对地址集合不构成证据，CDN 本来就会给本地解析器和 Cloudflare DoH 不同地址。投毒命中后结论仍是 `SuspectedDns`，但 `Reason` 写“系统DNS地址不可握手而DoH地址可握手”，不再被下游误记为连接层异常。
+
+系统解析用 `Dns.BeginGetHostAddresses` 加 `DefaultTimeoutMs = 2800` 显式等待，`Dns.GetHostAddresses` 本身没有超时。整轮另有 `ProbeBudgetMs = 60000` 预算，在域名之间检查；预算耗尽直接发布 `Inconclusive` + `探测超时`，残缺候选集永远不得支撑阻断结论。
+
 云服务与 GFW 共享网络身份和手动刷新入口，但请求、结果和着色彼此独立：
 
 - GFW 结论不能抑制云服务请求或强制改变云服务状态。
@@ -124,6 +134,7 @@ GFW 只在真实网络 `Online` 且活动目标滚动丢包未触发门控时启
 Network board 直接消费 `CleanIpConnectionReader.Shared`：
 
 - 进程级共享单例，禁止 new 第二个 reader。
+- 出口类请求（Clean IP 与 `api.ipify.org` 公网 IP）刻意保留默认 `WebRequest` 代理：它们回答“本进程从哪里出去”，而本程序自己的外发请求同样走系统代理，读数必须描述被代理后的路径。链路类探测（NCSI 与 GFW 各层）反之一律 `Proxy = null`。
 - 按自己的间隔、整点计划、错误重试与单飞规则运行。
 - board 收起不释放 reader；网络/操作面板强制刷新经 `NetworkMonitorForm.ForceRefresh()` 调用 `RequestRefresh()`。
 - 测试状态只影响返回的克隆，不污染真实缓存。

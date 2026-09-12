@@ -222,6 +222,9 @@ internal sealed class MetricTileData
     public double InnerPercent = -1.0;
     public string CenterValue = string.Empty;
     public string CenterSuffix = string.Empty;
+    // Overrides the centre reading's colour when set. Color.Empty keeps the neutral TextStrong, and
+    // an alert still wins over both. Only PWR uses it today, to separate charge from discharge.
+    public Color CenterAccent = Color.Empty;
     // Alert drives the tile's own red treatment (outer ring + centre number), replacing the classic
     // panel's red card background — a 60x60 tile has no background area worth tinting.
     public double AlertPercent;
@@ -457,6 +460,10 @@ internal static class MetricTileModel
                     if (p != null && p.Charging)
                     {
                         tile.Accent = DesignTokens.Colors.Success;
+                        // The centre number is a battery-side rate with no sign, so charging and
+                        // discharging render identically. Colour is the only channel left at 60 px:
+                        // yellow while power flows in, neutral white while it flows out.
+                        tile.CenterAccent = DesignTokens.Colors.Warning;
                     }
                     else if (battery >= 0 && battery <= 20)
                     {
@@ -892,6 +899,22 @@ internal static class MetricTileModel
         // The lane number is coloured by magnitude so a three-orders jump is visible without reading
         // the one-letter suffix. The three colours must stay distinct from each other; collapsing any
         // two would silently remove the distinction the colouring exists for.
+        // PWR centre watts: the battery-side rate is unsigned, so charge and discharge print the
+        // same digits. Colour is the only thing separating them on a 60 px tile.
+        MetricTileFeed powerFeed = new MetricTileFeed();
+        powerFeed.Power = new PowerStripSnapshot { WattsKnown = true, Watts = 21.5, BatteryPercentKnown = true, BatteryPercent = 40 };
+        powerFeed.Power.Charging = true;
+        MetricTileData chargingTile = BuildTile(MetricTileId.Power, powerFeed);
+        powerFeed.Power.Charging = false;
+        MetricTileData dischargingTile = BuildTile(MetricTileId.Power, powerFeed);
+        if (chargingTile.CenterAccent != DesignTokens.Colors.Warning ||
+            !dischargingTile.CenterAccent.IsEmpty ||
+            chargingTile.CenterAccent == dischargingTile.CenterAccent)
+        {
+            throw new InvalidOperationException(
+                "PWR centre watts must be yellow while charging and neutral while discharging.");
+        }
+
         Color kiloColor = MetricTileForm.ResolveNetworkRateValueColor("K");
         Color megaColor = MetricTileForm.ResolveNetworkRateValueColor("M");
         Color gigaColor = MetricTileForm.ResolveNetworkRateValueColor("G");

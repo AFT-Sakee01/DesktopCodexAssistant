@@ -254,7 +254,7 @@ internal sealed partial class OperationForm
     // also drives request blocking and the quota planner; a plain flag like the translation
     // keep-alive needs no such wiring, so it reuses the reflection-based setter instead of adding
     // another single-purpose delegate through the whole WidgetForm -> OperationForm chain.
-    internal bool SetBooleanSettingFromGuardBoard(string propertyName, bool enabled)
+    internal bool SetBooleanSettingFromGuardBoard(string propertyName, bool enabled, bool notify = true)
     {
         if (this.setBooleanSettingAction == null || string.IsNullOrEmpty(propertyName))
         {
@@ -263,7 +263,7 @@ internal sealed partial class OperationForm
 
         try
         {
-            return this.setBooleanSettingAction(propertyName, enabled);
+            return this.setBooleanSettingAction(propertyName, enabled, notify);
         }
         catch (Exception ex)
         {

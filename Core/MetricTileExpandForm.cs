@@ -33,14 +33,10 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     // level-two state; white/neutral text therefore remains hidden until burn-in protection exits.
     private bool burnInPresentationRestored;
     private bool quotaRevivalVisible;
-    private RectangleF batteryCareHitBounds;
     // Where the last-24-hour watts peak landed on the curve, so the badge annotates the data point
     // instead of floating at a hard-coded x in the middle of the panel.
     private PointF powerPeakAnchor;
     private bool powerPeakAnchorKnown;
-    private bool batteryCareRequestPending;
-    private string batteryCareNotice = string.Empty;
-    internal Action<bool, Action<bool, string>> BatteryCareRequest;
 
     public MetricTileExpandForm(WidgetSettings settings)
     {
@@ -86,31 +82,6 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     {
         base.OnHandleCreated(e);
         ApplyMouseClickThroughStyle(this.CurrentSettings.RightTileMouseClickThroughEnabled);
-    }
-
-    protected override void OnMouseUp(MouseEventArgs e)
-    {
-        base.OnMouseUp(e);
-        if (e.Button != MouseButtons.Left || this.metricId != MetricTileId.Power ||
-            this.displaySuspended || this.batteryCareRequestPending ||
-            !this.batteryCareHitBounds.Contains(e.Location) || this.BatteryCareRequest == null)
-        {
-            return;
-        }
-
-        bool pause = this.feed.Power == null || !this.feed.Power.BatteryCarePauseActive;
-        this.batteryCareRequestPending = true;
-        this.batteryCareNotice = string.Empty;
-        InvalidateLayeredRenderBuffer();
-        RenderLayeredWindow();
-        this.BatteryCareRequest(pause, delegate(bool success, string detail)
-        {
-            if (this.IsDisposed) return;
-            this.batteryCareRequestPending = false;
-            this.batteryCareNotice = success ? string.Empty : "指令失败 · 请重试";
-            InvalidateLayeredRenderBuffer();
-            if (this.Visible) RenderLayeredWindow();
-        });
     }
 
     protected override int PresentationLuminancePercent
@@ -1406,10 +1377,11 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         DrawPowerIdentity(g, content, accent, p);
         DrawPowerForecast(g, content, accent, p, day);
         DrawPowerPeakBadge(g, content, day);
-        // The care chip owns the right end of the footer band and is the only thing on this panel
-        // that reacts to a click, so the mode and saver indicators next to it are drawn flat.
-        float careLeft = DrawBatteryCareControl(g, content, p);
-        DrawPowerFooter(g, content, p, careLeft);
+        // No control on this panel is clickable any more. The 80% ceiling used to live here as a
+        // pressable chip; pausing protection now belongs solely to the GUARD board, and the ceiling
+        // itself is already stated by the forecast ("到80%" / "已到 80% 上限"), so a second read-only
+        // copy of it in the footer was redundant. The footer therefore owns its full width.
+        DrawPowerFooter(g, content, p, content.Right);
         DrawPowerBatteryStrip(g, content, accent, p, day);
     }
 
@@ -1518,8 +1490,13 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
             this.burnInVisualLevel,
             this.burnInPresentationRestored);
         // The qualifier moves to the caption slot so the conclusion itself stays a single answer.
-        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)),
-            power != null && power.Charging ? "按当前充电功率" : "按近 24h 趋势");
+        //
+        // It draws forecast.Source rather than a charging/discharging two-way string. Every branch of
+        // ResolvePowerForecast already words its own qualifier, and the hard-coded pair could not say
+        // which of the several no-duration states was in force - the "still measuring" case in
+        // particular rendered as a bare "充电 到80%" with a qualifier that claimed an estimate basis
+        // it did not have. Source was being computed and thrown away.
+        DrawCaption(g, new RectangleF(content.X, content.Y, content.Width, S(CaptionSize)), forecast.Source);
         DrawConclusion(g, content, stateColor, forecast.Main, forecast.Status);
     }
 
@@ -1636,68 +1613,6 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
     // The one interactive element on the panel. The whole chip is the hit target — roughly twice the
     // old two-line text block — and it is the only raised shape here, so "this one is pressable"
     // needs no explanation. Returns its left edge so the flat indicators stop before it.
-    private float DrawBatteryCareControl(Graphics g, RectangleF content, PowerStripSnapshot power)
-    {
-        RectangleF band = FooterRect(content, true);
-        bool paused = power != null && power.BatteryCarePauseActive;
-        Color color = MetricTileForm.ResolveBurnInRingColor(
-            paused ? DesignTokens.Colors.Warning : DesignTokens.Colors.Success,
-            this.burnInVisualLevel,
-            this.burnInPresentationRestored);
-        bool drawNeutral = ShouldDrawNeutralText(this.burnInVisualLevel);
-        string title = paused ? "已暂停" : "80%保护";
-        string detail = this.batteryCareRequestPending
-            ? "指令发送中…"
-            : (!string.IsNullOrEmpty(this.batteryCareNotice)
-                ? this.batteryCareNotice
-                : (paused
-                    ? FormatCompactCountdown(power.BatteryCarePauseUntilUtc - DateTime.UtcNow)
-                    : "点击暂停 24h"));
-        float pillWidth = S(26);
-        float pillHeight = S(12);
-        float padding = S(9);
-        float width = padding * 2.0f + pillWidth;
-        using (Font titleFont = new Font("Segoe UI", S(FooterValueSize), FontStyle.Bold, GraphicsUnit.Pixel))
-        using (Font detailFont = new Font("Segoe UI", S(FooterKeySize), FontStyle.Regular, GraphicsUnit.Pixel))
-        {
-            if (drawNeutral)
-            {
-                width += g.MeasureString(title, titleFont).Width + S(7)
-                    + g.MeasureString(detail, detailFont).Width + S(7);
-            }
-
-            RectangleF chip = new RectangleF(band.Right - width, band.Y, width, band.Height);
-            this.batteryCareHitBounds = chip;
-            using (GraphicsPath path = RoundedRectangle(chip, Math.Max(2.0f, S(7))))
-            using (SolidBrush fill = new SolidBrush(DesignTokens.WithAlpha(color, 26)))
-            using (Pen border = new Pen(DesignTokens.WithAlpha(color, 120), Math.Max(1.0f, S(1))))
-            {
-                g.FillPath(fill, path);
-                g.DrawPath(border, path);
-            }
-
-            float x = chip.X + padding;
-            if (drawNeutral)
-            {
-                x = DrawFooterText(g, title, titleFont, DesignTokens.WithAlpha(color, 250), band, x, true, S(7));
-            }
-
-            DrawPowerSaverToggle(g,
-                new RectangleF(x, band.Y + (band.Height - pillHeight) / 2.0f, pillWidth, pillHeight),
-                !paused, color);
-            x += pillWidth + S(7);
-            if (drawNeutral)
-            {
-                DrawFooterText(g, detail, detailFont, DesignTokens.WithAlpha(color, 228), band, x, true, 0.0f);
-            }
-
-            return chip.X;
-        }
-    }
-
-    // Minute resolution: this is a 24-hour window, and a per-second field was both visually noisy
-    // and wide enough to force the old two-line block. GuardRuntime.FormatCountdown stays
-    // second-level for the GUARD board, which is watched while it runs out.
     private static string FormatCompactCountdown(TimeSpan value)
     {
         int minutes = (int)Math.Round(Math.Max(0.0, value.TotalMinutes));
@@ -1971,8 +1886,12 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         int chargeTarget = power != null && power.BatteryCarePauseActive ? 100 : 80;
         if ((charging || pluggedIn) && battery >= chargeTarget)
         {
-            return new PowerForecastPresentation("已到", chargeTarget + "%", "已达到当前充电上限",
-                PowerForecastTone.Accent, true);
+            return new PowerForecastPresentation(
+                "已到",
+                chargeTarget + "%",
+                chargeTarget == 80 ? "80% 电池保护上限" : "电池保护已暂停 · 充至 100%",
+                PowerForecastTone.Accent,
+                true);
         }
         if (charging)
         {
@@ -1990,20 +1909,27 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
                     true);
             }
 
+            // Distinct from the ceiling case above. BuildBatteryEta needs one whole accepted percent
+            // of rise inside the current charging run before it has a slope, so the first minutes
+            // after plugging in legitimately have no estimate. Saying that outright stops it reading
+            // as a broken or missing forecast.
             return new PowerForecastPresentation(
                 "充电",
                 "到" + target.ToString(CultureInfo.InvariantCulture) + "%",
-                "等待充电趋势",
+                "刚开始充电 · 等电量涨 1%",
                 PowerForecastTone.Charge,
                 true);
         }
 
         if (pluggedIn)
         {
+            // Reached only below the ceiling: at or above it the branch above already said "已到".
+            // So this really is "plugged in and the battery is not taking charge", which is worth
+            // stating plainly rather than implying an estimate was deliberately skipped.
             return new PowerForecastPresentation(
-                "AC",
-                "供电",
-                "当前无需续航估算",
+                "外接",
+                "未充电",
+                "接通电源 · 电池未在充电",
                 PowerForecastTone.Accent,
                 true);
         }
@@ -2834,9 +2760,65 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
         chargingDay.BatteryEtaTargetPercent = 0;
         if (ResolvePowerForecast(charging, chargingDay).Main != "充电")
             throw new InvalidOperationException("Charging must never reuse a cached discharge ETA.");
+        // Plugged in, below the ceiling, not taking charge. The headline must state that plainly and
+        // must never be a duration, which would read as a discharge estimate.
         plugged.BatteryPercent = 75;
-        if (ResolvePowerForecast(plugged, null).Main != "AC")
+        PowerForecastPresentation idleAc = ResolvePowerForecast(plugged, null);
+        if (idleAc.Main != "外接" || idleAc.Status != "未充电")
+            throw new InvalidOperationException("Idle AC must be described as plugged-in-not-charging.");
+        if (idleAc.Source.IndexOf("耗尽", StringComparison.Ordinal) >= 0 ||
+            idleAc.Source.IndexOf("续航", StringComparison.Ordinal) >= 0)
             throw new InvalidOperationException("Idle AC must not be described as discharging.");
+
+        // The three no-estimate states must stay distinguishable from each other: at the ceiling,
+        // charging but too early to measure, and plugged in without charging. Two of them reading
+        // the same is the confusion this wording exists to remove.
+        charging.BatteryCarePauseActive = false;
+        chargingDay.BatteryEtaKnown = false;
+        PowerForecastPresentation tooEarly = ResolvePowerForecast(charging, chargingDay);
+        plugged.BatteryPercent = 85;
+        PowerForecastPresentation atCeiling = ResolvePowerForecast(plugged, null);
+        if (tooEarly.Source == atCeiling.Source ||
+            tooEarly.Source == idleAc.Source ||
+            atCeiling.Source == idleAc.Source)
+            throw new InvalidOperationException("The three no-estimate PWR states must read differently.");
+        if (atCeiling.Source.IndexOf("80%", StringComparison.Ordinal) < 0)
+            throw new InvalidOperationException("The ceiling state must name the 80% limit in force.");
+
+        // Source IS the caption that DrawPowerForecast draws. It used to be computed and discarded
+        // while the caption showed a hard-coded charging/discharging pair, so a state could render a
+        // qualifier that contradicted its own conclusion. Every branch must therefore supply one.
+        PowerStripSnapshot unknownBattery = new PowerStripSnapshot();
+        PowerStripSnapshot onBattery = new PowerStripSnapshot
+        {
+            PowerKnown = true,
+            BatteryPercentKnown = true,
+            BatteryPercent = 55,
+            RuntimeSecondsKnown = true,
+            RuntimeSeconds = 90 * 60
+        };
+        PowerStripSnapshot noTrend = new PowerStripSnapshot
+        {
+            PowerKnown = true,
+            BatteryPercentKnown = true,
+            BatteryPercent = 55
+        };
+        PowerForecastPresentation[] everyState = new PowerForecastPresentation[]
+        {
+            ResolvePowerForecast(unknownBattery, null),
+            atCeiling,
+            ResolvePowerForecast(charging, chargingDay),
+            tooEarly,
+            idleAc,
+            ResolvePowerForecast(onBattery, null),
+            ResolvePowerForecast(noTrend, null)
+        };
+        for (int i = 0; i < everyState.Length; i++)
+        {
+            if (string.IsNullOrEmpty(everyState[i].Source))
+                throw new InvalidOperationException(
+                    "Every PWR forecast state must supply the caption text; state " + i + " left it empty.");
+        }
         discharging.BatteryPercent = 85;
         if (ResolvePowerForecast(discharging, null).Status != "耗尽")
             throw new InvalidOperationException("Battery operation above 80% must still predict runtime.");
@@ -2916,40 +2898,21 @@ internal sealed partial class MetricTileExpandForm : LayeredWidgetFormBase
                 throw new InvalidOperationException("Expand panel must open to the left of the hovered tile.");
             }
 
+            // The PWR panel no longer has any clickable control: pausing the 80% ceiling belongs to
+            // the GUARD board alone. Assert that, so a future edit cannot quietly reintroduce a
+            // pressable chip on a panel that is meant to be a pure read-out.
             panel.PrepareForRenderSample(MetricTileId.Power, new MetricTileFeed { Power = charging });
             using (Bitmap bitmap = new Bitmap(panel.Width, panel.Height))
             using (Graphics graphics = Graphics.FromImage(bitmap)) panel.DrawPanel(graphics);
-            RectangleF careBounds = panel.batteryCareHitBounds;
-            if (careBounds.IsEmpty ||
-                !new RectangleF(0, 0, panel.Width, panel.Height).Contains(careBounds))
-                throw new InvalidOperationException("PWR battery protection must have a visible, in-bounds hit target.");
-            int requests = 0;
-            bool requestedPause = true;
-            Action<bool, string> finish = null;
-            panel.BatteryCareRequest = delegate(bool pause, Action<bool, string> done)
+            if (typeof(MetricTileExpandForm).GetMethod(
+                    "OnMouseUp",
+                    System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.DeclaredOnly) != null)
             {
-                requests++;
-                requestedPause = pause;
-                finish = done;
-            };
-            int hitX = (int)careBounds.Left + 2;
-            int hitY = (int)careBounds.Top + 2;
-            MouseEventArgs click = new MouseEventArgs(MouseButtons.Left, 1, hitX, hitY, 0);
-            panel.OnMouseUp(new MouseEventArgs(MouseButtons.Left, 1, 0, 0, 0));
-            panel.OnMouseUp(click);
-            panel.OnMouseUp(click);
-            if (requests != 1 || requestedPause || finish == null)
-                throw new InvalidOperationException("PWR paused protection must request restore once, ignoring outside/pending clicks.");
-            finish(false, "fixture failure");
-            charging.BatteryCarePauseActive = false;
-            panel.OnMouseUp(click);
-            if (requests != 2 || !requestedPause)
-                throw new InvalidOperationException("PWR enabled protection must request pause and allow retry after failure.");
-            finish(true, "fixture only; no hardware command");
-            panel.PrepareForRenderSample(MetricTileId.Cpu, new MetricTileFeed());
-            panel.OnMouseUp(click);
-            if (requests != 2)
-                throw new InvalidOperationException("Battery controls must not respond on another tile.");
+                throw new InvalidOperationException(
+                    "The expand panel must not declare its own OnMouseUp; the PWR care button was removed.");
+            }
         }
 
         WidgetSettings large = WidgetSettings.CreateDefaults();

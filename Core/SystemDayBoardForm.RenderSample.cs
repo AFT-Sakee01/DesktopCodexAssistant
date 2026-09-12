@@ -18,9 +18,16 @@ internal sealed partial class SystemDayBoardForm
         }))
         {
             form.Size = form.GetDesiredSize();
+            form.CurrentSettings.SystemDayBoardSmoothingEnabled = false;
             string path = Path.Combine(outputDir, "system-day-board.png");
             RenderSampleSupport.SaveComposited(outputDir, Path.GetFileName(path), form.Width, form.Height, 255, form.DrawWindowContent);
             Console.WriteLine("System Day board -> " + path + " (" + form.Width + "x" + form.Height + ")");
+
+            form.CurrentSettings.SystemDayBoardSmoothingEnabled = true;
+            string smoothedPath = Path.Combine(outputDir, "system-day-board-smoothed.png");
+            RenderSampleSupport.SaveComposited(outputDir, Path.GetFileName(smoothedPath), form.Width, form.Height, 255, form.DrawWindowContent);
+            Console.WriteLine("System Day board (smoothed) -> " + smoothedPath + " (" + form.Width + "x" + form.Height + ")");
+            form.CurrentSettings.SystemDayBoardSmoothingEnabled = false;
         }
     }
 
@@ -90,14 +97,34 @@ internal sealed partial class SystemDayBoardForm
         snapshot.WorkSegments.Add(new SystemDayWorkSegment { StartLocal = rangeStart.AddMinutes(totalMinutes * 0.36), EndLocal = rangeStart.AddMinutes(totalMinutes * 0.72), State = SystemDayWorkState.Active });
         snapshot.WorkSegments.Add(new SystemDayWorkSegment { StartLocal = rangeStart.AddMinutes(totalMinutes * 0.72), EndLocal = rangeStart.AddMinutes(totalMinutes * 0.79), State = SystemDayWorkState.Idle });
         snapshot.WorkSegments.Add(new SystemDayWorkSegment { StartLocal = rangeStart.AddMinutes(totalMinutes * 0.79), EndLocal = now, State = SystemDayWorkState.Active });
-        AddFixturePeak(snapshot, "cpu", 85, now.AddHours(-2.6), "%", "");
-        AddFixturePeak(snapshot, "gpu", 69, now.AddHours(-4.1), "%", "");
-        AddFixturePeak(snapshot, "npu", 64, now.AddHours(-1.7), "%", "");
-        AddFixturePeak(snapshot, "memory", 71, now.AddHours(-0.8), "%", "");
-        AddFixturePeak(snapshot, "network", 22000000, now.AddHours(-3.2), "B/s", "");
-        AddFixturePeak(snapshot, "power", 38.2, now.AddHours(-1.1), "W", "");
-        AddFixturePeak(snapshot, "temperature", 73.4, now.AddMinutes(-18), "°C", "TZ99");
+        // 峰值直接从生成的点里实算，时间戳必然落在范围内，峰值标记才能真正压在曲线上；
+        // 写死的时刻会落到范围之外，共享坐标系下的标记就永远画不出来。
+        AddComputedPeak(snapshot, "cpu", "%", false, delegate(SystemDayBoardPoint p) { return p.CpuPercent; });
+        AddComputedPeak(snapshot, "gpu", "%", false, delegate(SystemDayBoardPoint p) { return p.GpuPercent; });
+        AddComputedPeak(snapshot, "npu", "%", false, delegate(SystemDayBoardPoint p) { return p.NpuPercent; });
+        AddComputedPeak(snapshot, "memory", "%", false, delegate(SystemDayBoardPoint p) { return p.MemoryPercent; });
+        AddComputedPeak(snapshot, "network", "B/s", false, delegate(SystemDayBoardPoint p) { return p.NetworkBytesPerSecond; });
+        AddComputedPeak(snapshot, "power", "W", false, delegate(SystemDayBoardPoint p) { return p.Watts; });
+        AddComputedPeak(snapshot, "temperature", "°C", true, delegate(SystemDayBoardPoint p) { return p.MaxCelsius; });
         return snapshot;
+    }
+
+    private static void AddComputedPeak(
+        SystemDayBoardSnapshot snapshot,
+        string id,
+        string unit,
+        bool useZone,
+        Func<SystemDayBoardPoint, double> selector)
+    {
+        SystemDayBoardPoint best = null;
+        for (int i = 0; i < snapshot.Points.Count; i++)
+        {
+            SystemDayBoardPoint point = snapshot.Points[i];
+            if (point == null) continue;
+            if (best == null || selector(point) > selector(best)) best = point;
+        }
+        if (best == null) return;
+        AddFixturePeak(snapshot, id, selector(best), best.TimestampLocal, unit, useZone ? best.HotZoneName : "");
     }
 
     private static void AddFixturePeak(
@@ -143,7 +170,66 @@ internal sealed partial class SystemDayBoardForm
             if (form.ResolveTimeX(timeRow, fixture.StartLocal) != timeRow.Left ||
                 form.ResolveTimeX(timeRow, fixture.EndLocal) != timeRow.Right)
                 throw new InvalidOperationException("System Day time-axis ticks must span the full shared chart width.");
+
+            // 统一坐标系的核心不变量：0 贴底、100 贴顶、50 在正中，所有曲线共用这一把尺。
+            Rectangle plot = new Rectangle(form.S(46), form.S(92), form.Width - form.S(46) - form.S(50), form.S(228));
+            if (Math.Abs(ResolvePlotY(plot, 0.0) - plot.Bottom) > 0.01f ||
+                Math.Abs(ResolvePlotY(plot, 100.0) - plot.Top) > 0.01f ||
+                Math.Abs(ResolvePlotY(plot, 50.0) - (plot.Top + plot.Bottom) / 2.0f) > 1.0f)
+                throw new InvalidOperationException("System Day series must share one 0-100% vertical axis without per-row insets.");
+
+            SystemDayBoardPoint probe = new SystemDayBoardPoint { MaxCelsius = 60.0, NetworkBytesPerSecond = 500.0, CpuPercent = 42.0 };
+            if (Math.Abs(ResolveNormalizedValue(probe, 7, 0.0) - 50.0) > 0.001 ||
+                Math.Abs(ResolveNormalizedValue(probe, 5, 1000.0) - 50.0) > 0.001 ||
+                Math.Abs(ResolveNormalizedValue(probe, 1, 0.0) - 42.0) > 0.001)
+                throw new InvalidOperationException("System Day must normalize temperature by 20-100C and network by the range peak.");
+
+            if (GetSeriesColor(1) == GetSeriesColor(2))
+                throw new InvalidOperationException("System Day CPU and GPU must stay visually separable inside the shared plot.");
+
+            SystemDayMetricPeak cpuPeak = fixture.FindPeak("cpu");
+            if (cpuPeak == null || cpuPeak.TimestampLocal < fixture.StartLocal || cpuPeak.TimestampLocal > fixture.EndLocal)
+                throw new InvalidOperationException("System Day fixture peaks must fall inside the rendered range.");
+
+            // 平滑窗口随点数走，点太少时必须退化成不平滑，否则曲线会被抹成直线。
+            if (ResolveSmoothingWindow(8) != 0 ||
+                ResolveSmoothingWindow(120) != 5 ||
+                ResolveSmoothingWindow(4000) != 11 ||
+                ResolveSmoothingWindow(120) % 2 == 0)
+                throw new InvalidOperationException("System Day smoothing window must stay odd, bounded and disabled on short series.");
+
+            int[] segments = form.BuildSegmentIds();
+            double networkScale = form.ResolveNetworkScale();
+            form.CurrentSettings.SystemDayBoardSmoothingEnabled = false;
+            double[] rawNetwork = form.BuildSeriesValues(5, networkScale, segments);
+            string rawCurrentTemperature = form.FormatCurrentValue(7);
+            string rawPeakSuffix = form.FormatPeakSuffix(1);
+            form.CurrentSettings.SystemDayBoardSmoothingEnabled = true;
+            double[] smoothNetwork = form.BuildSeriesValues(5, networkScale, segments);
+
+            int spike = 0;
+            for (int i = 1; i < rawNetwork.Length; i++) if (rawNetwork[i] > rawNetwork[spike]) spike = i;
+            if (!(smoothNetwork[spike] < rawNetwork[spike] - 1.0))
+                throw new InvalidOperationException("System Day smoothing must flatten network spikes instead of redrawing them.");
+            for (int i = 0; i < smoothNetwork.Length; i++)
+                if (double.IsNaN(smoothNetwork[i]) != double.IsNaN(rawNetwork[i]))
+                    throw new InvalidOperationException("System Day smoothing must not invent or drop samples.");
+
+            // 平滑只改画线：摘要与图例读数必须仍然来自原始采样。
+            if (!string.Equals(form.FormatCurrentValue(7), rawCurrentTemperature, StringComparison.Ordinal) ||
+                !string.Equals(form.FormatPeakSuffix(1), rawPeakSuffix, StringComparison.Ordinal))
+                throw new InvalidOperationException("System Day smoothing must not change summary or legend readouts.");
+
+            if (form.GetSmoothingActionBounds().IntersectsWith(form.GetRangeActionBounds()) ||
+                form.GetSmoothingActionBounds().IntersectsWith(form.GetCloseBounds()))
+                throw new InvalidOperationException("System Day footer actions must not overlap.");
+
+            // 弧线连点的张力必须留在温和区间：调高会让方波型数据在台阶处明显过冲，
+            // 调到 0 就退化成折线、平滑态和原始态看不出区别。
+            if (!(SmoothingCurveTension > 0.1f && SmoothingCurveTension <= 0.6f))
+                throw new InvalidOperationException("System Day smoothing curve tension must stay in the gentle range.");
+            form.CurrentSettings.SystemDayBoardSmoothingEnabled = false;
         }
-        Console.WriteLine("System Day board: PASS 648x400, unified ticks, rise=red, fall=cyan, peaks, work/sleep and thermal-zone labels");
+        Console.WriteLine("System Day board: PASS 648x400, shared 0-100% axis, unified ticks, rise=red, fall=cyan, in-range peaks, gap-safe smoothing drawn as tensioned arcs with raw readouts, three non-overlapping footer actions");
     }
 }

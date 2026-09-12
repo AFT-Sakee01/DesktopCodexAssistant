@@ -92,7 +92,12 @@ internal static class NetworkCheckHistoryLogger
                 pendingBytes += SharedEncoding.Utf8NoBom.GetByteCount(line);
                 if (pendingBytes >= MaxBufferedHistoryBytes)
                 {
-                    FlushBufferLocked();
+                    // Hand the write to the existing flush timer instead of doing it inline.
+                    // Some callers are on the WinForms tick (the rolling-ping diagnosis rows),
+                    // and crossing the buffer threshold there used to mean a synchronous
+                    // File.AppendAllText under the lock. The cap stays a soft one: the buffer
+                    // may briefly exceed it until the timer callback runs.
+                    FlushTimer.Change(0, FlushIntervalMs);
                 }
             }
 

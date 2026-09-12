@@ -15,6 +15,10 @@ internal sealed class GfwProbeReader
 {
     private const int DefaultTimeoutMs = 2800;
     private const int MinControlPassCount = 1;
+    // Whole-round budget. Every individual layer is bounded, but five domains times five
+    // layers is not, and the round holds the single-flight slot the entire time. The budget
+    // is checked between domains, so a round can overshoot by at most one domain.
+    private const int ProbeBudgetMs = 60000;
     private static readonly string[] ControlDomains = new string[]
     {
         "www.microsoft.com",
@@ -479,8 +483,64 @@ internal sealed class GfwProbeReader
         }
 
         RunTlsDiagnosticSelfTest();
+        RunDnsPoisonSelfTest();
 
-        Console.WriteLine("GFW reader: PASS single-flight-token trigger-preservation request-identity tls-trust-semantics");
+        Console.WriteLine("GFW reader: PASS single-flight-token trigger-preservation request-identity tls-trust-semantics dns-poison-gate probe-budget");
+    }
+
+    private static void RunDnsPoisonSelfTest()
+    {
+        List<string> local = new List<string> { "142.250.0.1", "142.250.0.2" };
+        List<string> cdnVariance = new List<string> { "142.250.0.2", "142.250.9.9" };
+        List<string> forged = new List<string> { "203.0.113.7" };
+        if (HasDisjointAddresses(local, cdnVariance))
+        {
+            throw new InvalidOperationException("GFW reader self-test: a shared address must not look like a forged answer.");
+        }
+
+        if (!HasDisjointAddresses(local, forged))
+        {
+            throw new InvalidOperationException("GFW reader self-test: fully disjoint answers must reach the reachability comparison.");
+        }
+
+        if (HasDisjointAddresses(local, new List<string>()) ||
+            HasDisjointAddresses(null, forged))
+        {
+            throw new InvalidOperationException("GFW reader self-test: a missing answer set is not evidence of poisoning.");
+        }
+
+        // A forged answer must be published as a DNS verdict, not as the TCP verdict the
+        // downstream layers would otherwise produce.
+        ProbeSummary poisoned = new ProbeSummary
+        {
+            DomainsTested = 3,
+            DnsAnomalies = 2,
+            DnsPoisonAnomalies = 2
+        };
+        GfwProbeSnapshot poisonedSnapshot = BuildSnapshot(poisoned);
+        if (poisonedSnapshot.Status != GfwProbeStatus.SuspectedDns ||
+            poisonedSnapshot.Reason.IndexOf("DoH地址可握手", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("GFW reader self-test: poisoning must publish a DNS verdict with its own reason.");
+        }
+
+        ProbeSummary plainDnsFailure = new ProbeSummary
+        {
+            DomainsTested = 3,
+            DnsAnomalies = 2
+        };
+        if (BuildSnapshot(plainDnsFailure).Reason.IndexOf("系统DNS失败但DoH可解析", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("GFW reader self-test: plain resolver failure must keep its original reason.");
+        }
+
+        // An expired round must never publish a blocking verdict.
+        GfwProbeSnapshot expired = BuildBudgetExpiredSnapshot(1);
+        if (expired.Status != GfwProbeStatus.Inconclusive ||
+            !string.Equals(expired.Reason, "探测超时", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("GFW reader self-test: an expired probe budget must stay inconclusive.");
+        }
     }
 
     private static void RunTlsDiagnosticSelfTest()
@@ -550,11 +610,18 @@ internal sealed class GfwProbeReader
 
     private static GfwProbeSnapshot RunProbe(List<string> logLines)
     {
+        DateTime deadlineUtc = DateTime.UtcNow.AddMilliseconds(ProbeBudgetMs);
         int controlPasses = 0;
         List<DomainProbeResult> controlResults = new List<DomainProbeResult>();
         logLines.Add("控制站点:");
         for (int i = 0; i < ControlDomains.Length; i++)
         {
+            if (DateTime.UtcNow >= deadlineUtc)
+            {
+                logLines.Add("  探测预算耗尽，停止控制站点");
+                return BuildBudgetExpiredSnapshot(i);
+            }
+
             DomainProbeResult control = ProbeDomain(ControlDomains[i], false);
             controlResults.Add(control);
             logLines.Add("  " + FormatProbeResult(control));
@@ -586,12 +653,24 @@ internal sealed class GfwProbeReader
         logLines.Add("候选站点:");
         for (int i = 0; i < CandidateDomains.Length; i++)
         {
+            if (DateTime.UtcNow >= deadlineUtc)
+            {
+                logLines.Add("  探测预算耗尽，停止候选站点");
+                // A partial candidate set cannot support a blocking verdict, and a blocking
+                // verdict is what stops AI requests, so an expired round stays inconclusive.
+                return BuildBudgetExpiredSnapshot(summary.DomainsTested);
+            }
+
             DomainProbeResult result = ProbeDomain(CandidateDomains[i], true);
             logLines.Add("  " + FormatProbeResult(result));
             summary.DomainsTested++;
             if (result.HasDnsAnomaly)
             {
                 summary.DnsAnomalies++;
+                if (result.DnsPoisonSuspected)
+                {
+                    summary.DnsPoisonAnomalies++;
+                }
             }
             else if (result.HasTcpAnomaly)
             {
@@ -608,6 +687,22 @@ internal sealed class GfwProbeReader
         }
 
         return BuildSnapshot(summary);
+    }
+
+    private static GfwProbeSnapshot BuildBudgetExpiredSnapshot(int domainsTested)
+    {
+        return new GfwProbeSnapshot
+        {
+            Enabled = true,
+            Running = false,
+            Status = GfwProbeStatus.Inconclusive,
+            Detail = "不可判定",
+            Reason = "探测超时",
+            CheckedAtLocal = DateTime.Now,
+            CheckedAtKnown = true,
+            DomainsTested = Math.Max(0, domainsTested),
+            AnomalyCount = 0
+        };
     }
 
     private static GfwProbeSnapshot BuildSnapshot(ProbeSummary summary)
@@ -643,7 +738,9 @@ internal sealed class GfwProbeReader
             {
                 status = GfwProbeStatus.SuspectedDns;
                 detail = "疑似DNS";
-                reason = "系统DNS失败但DoH可解析 " + FormatCount(summary.DnsAnomalies, summary.DomainsTested);
+                reason = summary.DnsPoisonAnomalies > 0
+                    ? "系统DNS地址不可握手而DoH地址可握手 " + FormatCount(summary.DnsAnomalies, summary.DomainsTested)
+                    : "系统DNS失败但DoH可解析 " + FormatCount(summary.DnsAnomalies, summary.DomainsTested);
             }
             else if (summary.TlsAnomalies >= summary.TcpAnomalies &&
                      summary.TlsAnomalies >= summary.HttpAnomalies)
@@ -752,7 +849,9 @@ internal sealed class GfwProbeReader
     {
         if (result.HasDnsAnomaly)
         {
-            return "DNS";
+            return result.DnsPoisonSuspected
+                ? "DNS投毒(" + (string.IsNullOrWhiteSpace(result.DnsPoisonError) ? "系统地址不可握手" : result.DnsPoisonError.Trim()) + ")"
+                : "DNS";
         }
 
         if (result.HasTcpAnomaly)
@@ -816,6 +915,35 @@ internal sealed class GfwProbeReader
             return result;
         }
 
+        // DNS poisoning returns an address successfully, so the check above never sees it: the
+        // system resolver "works", and the forged address then fails to connect, which used to
+        // be filed as a TCP or TLS anomaly. Comparing the two answer sets alone is not evidence
+        // either — CDNs legitimately hand a local resolver and Cloudflare's DoH different
+        // addresses. The discriminator is reachability with the same SNI: when the DoH address
+        // completes a TLS handshake for this host and the system address does not, the system
+        // answer is forged rather than merely different.
+        if (candidate &&
+            result.SystemDnsOk &&
+            result.DohOk &&
+            HasDisjointAddresses(result.SystemAddresses, result.DohAddresses))
+        {
+            TlsCertificateTrustObservation dohTrust;
+            TlsCertificateTrustObservation systemTrust;
+            string dohError;
+            string systemError;
+            bool dohReachable = TryTlsProtocolHandshakeAt(
+                result.DohAddresses[0], domain, DefaultTimeoutMs, out dohTrust, out dohError);
+            bool systemReachable = TryTlsProtocolHandshakeAt(
+                result.SystemAddresses[0], domain, DefaultTimeoutMs, out systemTrust, out systemError);
+            if (dohReachable && !systemReachable)
+            {
+                result.HasDnsAnomaly = true;
+                result.DnsPoisonSuspected = true;
+                result.DnsPoisonError = systemError;
+                return result;
+            }
+        }
+
         result.TcpOk = TryTcpConnect(domain, 443, DefaultTimeoutMs, out result.TcpError);
         if (!result.TcpOk)
         {
@@ -857,7 +985,18 @@ internal sealed class GfwProbeReader
         addresses = new List<string>();
         try
         {
-            IPAddress[] resolved = Dns.GetHostAddresses(domain);
+            // Dns.GetHostAddresses takes no timeout. On a blackholed or poisoned resolver it
+            // blocks for the OS resolver's own budget, and five domains in one round can hold
+            // the single-flight slot far longer than every other layer combined. Begin/End
+            // puts an explicit bound on the wait; an abandoned lookup finishes into the
+            // framework's own callback and its result is simply dropped.
+            IAsyncResult pending = Dns.BeginGetHostAddresses(domain, null, null);
+            if (!pending.AsyncWaitHandle.WaitOne(DefaultTimeoutMs))
+            {
+                return false;
+            }
+
+            IPAddress[] resolved = Dns.EndGetHostAddresses(pending);
             for (int i = 0; i < resolved.Length; i++)
             {
                 if (resolved[i] != null && resolved[i].AddressFamily == AddressFamily.InterNetwork)
@@ -908,6 +1047,120 @@ internal sealed class GfwProbeReader
         catch
         {
             return false;
+        }
+    }
+
+    // Two answer sets that share no address at all. A single shared address means both
+    // resolvers agree on at least one endpoint, which rules out a forged answer.
+    internal static bool HasDisjointAddresses(List<string> left, List<string> right)
+    {
+        if (left == null || right == null || left.Count == 0 || right.Count == 0)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < left.Count; i++)
+        {
+            for (int j = 0; j < right.Count; j++)
+            {
+                if (string.Equals(left[i], right[j], StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    // Connects to one concrete address while presenting the real host as SNI, so the two
+    // candidate answers for a domain can be compared on equal terms.
+    private static bool TryTlsProtocolHandshakeAt(
+        string address,
+        string host,
+        int timeoutMs,
+        out TlsCertificateTrustObservation certificateTrust,
+        out string error)
+    {
+        error = string.Empty;
+        TlsCertificateTrustObservation trust = new TlsCertificateTrustObservation();
+        certificateTrust = trust;
+        IPAddress parsed;
+        if (string.IsNullOrWhiteSpace(address) || !IPAddress.TryParse(address.Trim(), out parsed))
+        {
+            error = "BadAddress";
+            return false;
+        }
+
+        TcpClient client = null;
+        SslStream ssl = null;
+        try
+        {
+            client = new TcpClient(parsed.AddressFamily);
+            IAsyncResult connect = client.BeginConnect(parsed, 443, null, null);
+            if (!connect.AsyncWaitHandle.WaitOne(timeoutMs))
+            {
+                error = "TcpTimeout";
+                return false;
+            }
+
+            client.EndConnect(connect);
+            // Same diagnostic policy as TryTlsProtocolHandshake: let the handshake finish so
+            // reachability can be observed, and record certificate trust separately.
+            RemoteCertificateValidationCallback diagnosticCertificateCallback = delegate(
+                object sender,
+                X509Certificate certificate,
+                X509Chain chain,
+                SslPolicyErrors sslPolicyErrors)
+            {
+                RecordCertificateTrust(trust, sslPolicyErrors);
+                return true;
+            };
+            ssl = new SslStream(client.GetStream(), false, diagnosticCertificateCallback);
+            IAsyncResult auth = ssl.BeginAuthenticateAsClient(
+                host,
+                new X509CertificateCollection(),
+                SslProtocols.Tls12,
+                false,
+                null,
+                null);
+            if (!auth.AsyncWaitHandle.WaitOne(timeoutMs))
+            {
+                error = "TlsTimeout";
+                return false;
+            }
+
+            ssl.EndAuthenticateAsClient(auth);
+            return ssl.IsAuthenticated;
+        }
+        catch (Exception ex)
+        {
+            error = FormatException(ex);
+            return false;
+        }
+        finally
+        {
+            if (ssl != null)
+            {
+                try
+                {
+                    ssl.Close();
+                }
+                catch
+                {
+                }
+            }
+
+            if (client != null)
+            {
+                try
+                {
+                    client.Close();
+                }
+                catch
+                {
+                }
+            }
         }
     }
 
@@ -1045,6 +1298,13 @@ internal sealed class GfwProbeReader
             // Do not install a process-wide TLS callback or protocol override here.
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create("https://" + host + "/");
             request.Method = "HEAD";
+            // Every other layer of this probe (TCP connect, TLS handshake) is a raw socket and
+            // therefore proxy-blind. Leaving HTTP on the default WebRequest proxy made a single
+            // verdict straddle two different transports: with a system proxy configured the
+            // direct layers failed while HTTP succeeded through the proxy, and the reader
+            // published "疑似连接" — which blocks AI requests and raises the full-screen China
+            // warning. The probe measures the direct link, so all of its layers must be direct.
+            request.Proxy = null;
             request.Timeout = timeoutMs;
             request.ReadWriteTimeout = timeoutMs;
             request.AllowAutoRedirect = false;
@@ -1081,6 +1341,9 @@ internal sealed class GfwProbeReader
     {
         HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
         request.Method = "GET";
+        // Direct, like every other layer of this probe: a DoH answer fetched through a proxy
+        // describes the proxy's resolver, not this link's.
+        request.Proxy = null;
         request.Timeout = timeoutMs;
         request.ReadWriteTimeout = timeoutMs;
         request.UserAgent = ProductIdentity.UserAgent;
@@ -1202,6 +1465,10 @@ internal sealed class GfwProbeReader
         public bool CertificateTrusted;
         public bool HttpOk;
         public bool HasDnsAnomaly;
+        // Set when the system answer was proven forged rather than merely different from the
+        // DoH answer; it splits "系统DNS失败" from "系统DNS被投毒" in the published reason.
+        public bool DnsPoisonSuspected;
+        public string DnsPoisonError;
         public bool HasTcpAnomaly;
         public bool HasTlsAnomaly;
         public bool HasHttpAnomaly;
@@ -1225,6 +1492,7 @@ internal sealed class GfwProbeReader
     {
         public int DomainsTested;
         public int DnsAnomalies;
+        public int DnsPoisonAnomalies;
         public int TcpAnomalies;
         public int TlsAnomalies;
         public int HttpAnomalies;

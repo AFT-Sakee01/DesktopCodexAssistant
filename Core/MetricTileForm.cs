@@ -480,6 +480,7 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             a.EasterEggSecondLine != b.EasterEggSecondLine ||
             a.AlertIconVisible != b.AlertIconVisible ||
             a.Accent.ToArgb() != b.Accent.ToArgb() ||
+            a.CenterAccent.ToArgb() != b.CenterAccent.ToArgb() ||
             Math.Abs(a.OuterPercent - b.OuterPercent) >= 0.5 ||
             Math.Abs(a.InnerPercent - b.InnerPercent) >= 0.5 ||
             (a.AlertPercent >= 80.0) != (b.AlertPercent >= 80.0))
@@ -1168,7 +1169,9 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
     {
         string text = string.IsNullOrEmpty(data.CenterValue) ? "--" : data.CenterValue;
         string suffix = data.CenterSuffix ?? string.Empty;
-        Color color = alert ? DesignTokens.Colors.DangerText : DesignTokens.Colors.TextStrong;
+        Color color = alert
+            ? DesignTokens.Colors.DangerText
+            : (data.CenterAccent.IsEmpty ? DesignTokens.Colors.TextStrong : data.CenterAccent);
         float basis = ringBox.Height * (suffix.Length > 0
             ? (text.Length >= 3 ? 0.31f : 0.36f)
             : (text.Length >= 3 ? 0.31f : 0.42f));

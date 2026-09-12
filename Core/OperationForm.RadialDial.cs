@@ -607,7 +607,7 @@ internal sealed partial class OperationForm
 
         try
         {
-            if (!this.setBooleanSettingAction(descriptor.PropertyName, next))
+            if (!this.setBooleanSettingAction(descriptor.PropertyName, next, true))
             {
                 ShowOperationNotification("设置切换", descriptor.Label + " 切换失败。", ToolTipIcon.Warning);
             }
@@ -2349,6 +2349,6 @@ internal sealed partial class OperationForm
             delegate { return true; },
             delegate(bool enabled) { return enabled; },
             delegate(bool enabled) { return enabled; },
-            delegate(string propertyName, bool enabled) { return enabled; });
+            delegate(string propertyName, bool enabled, bool notify) { return enabled; });
     }
 }

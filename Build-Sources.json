@@ -66,6 +66,8 @@
     "Core/MetricTileForm.cs",
     "Core/MetricTileForm.RenderSample.cs",
     "Core/MetricTileModel.cs",
+    "Core/NativeCaptionReader.cs",
+    "Core/NativeCaptionSnapshot.cs",
     "Core/NetworkCheckHistoryLogger.cs",
     "Core/NetworkMonitorForm.cs",
     "Core/NetworkMonitorForm.Dock.cs",

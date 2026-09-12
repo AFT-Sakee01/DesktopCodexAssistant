@@ -49,7 +49,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private readonly Func<bool> manualAiBlockAction;
     private readonly Func<bool, bool> setAiBlockAction;
     private readonly Func<bool, bool> setQuotaPlanAction;
-    private readonly Func<string, bool, bool> setBooleanSettingAction;
+    private readonly Func<string, bool, bool, bool> setBooleanSettingAction;
     private readonly Action<WidgetSettings> persistGuardStateAction;
     private readonly System.Windows.Forms.Timer animationTimer;
     private readonly System.Windows.Forms.Timer foregroundFpsTimer;
@@ -86,7 +86,7 @@ internal sealed partial class OperationForm : LayeredWidgetFormBase
     private RectangleF[] buttonRects;
     private bool buttonRectsValid;
 
-    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleSideSurfacesAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction, Func<string, bool, bool> setBooleanSettingAction, Action<WidgetSettings> persistGuardStateAction = null)
+    public OperationForm(WidgetSettings settings, Action openSettingsAction, Action forceRefreshAction, Action restartAction, Action<string, string, ToolTipIcon> notificationAction, Func<bool> toggleSideSurfacesAction, Func<bool> pulseSeelenDockAction, Func<bool> manualAiBlockAction, Func<bool, bool> setAiBlockAction, Func<bool, bool> setQuotaPlanAction, Func<string, bool, bool, bool> setBooleanSettingAction, Action<WidgetSettings> persistGuardStateAction = null)
     {
         this.CurrentSettings = settings.Clone();
         this.CurrentSettings.Normalize();

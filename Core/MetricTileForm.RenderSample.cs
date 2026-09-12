@@ -99,6 +99,21 @@ internal sealed partial class MetricTileForm
         feed.Power.BatteryCarePauseActive = false;
         feed.Power.BatteryCarePauseUntilUtc = DateTime.MinValue;
         RenderExpandedSample(outputDir, settings, feed, MetricTileId.Power, false, "tileexpand-power-ceiling.png");
+
+        // The first minutes after plugging in, before the charging run has produced one whole
+        // accepted percent of rise. This state had no reference image, which is how a caption that
+        // never rendered its own qualifier went unnoticed.
+        feed.Power.BatteryPercent = 27;
+        feed.Power.Charging = true;
+        feed.Power.PluggedIn = true;
+        feed.PowerDay.BatteryEtaKnown = false;
+        feed.PowerDay.BatteryEtaMinutes = 0;
+        feed.PowerDay.BatteryEtaTargetPercent = 0;
+        RenderExpandedSample(outputDir, settings, feed, MetricTileId.Power, false, "tileexpand-power-measuring.png");
+
+        // Plugged in below the ceiling but not taking charge.
+        feed.Power.Charging = false;
+        RenderExpandedSample(outputDir, settings, feed, MetricTileId.Power, false, "tileexpand-power-idle-ac.png");
     }
 
     private static void RenderColumn(

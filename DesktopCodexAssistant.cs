@@ -229,6 +229,11 @@ internal static class Program
             return RunTranslatorStackDiagnosisCommand(args);
         }
 
+        if (HasArg(args, "--diagnose-native-captions"))
+        {
+            return RunNativeCaptionDiagnosisCommand(args);
+        }
+
         // Stop pre-rename processes before acquiring the new product mutex.
         SignalLegacyStops();
 
@@ -1525,6 +1530,81 @@ internal static class Program
                 ReportTranslatorStackLine("overlay ensure        = " + overlayOpened.ToString() + " detail=[" + overlayDetail + "]");
             }
 
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    // Step 1 of replacing LiveCaptionsTranslator: verify NativeCaptionReader's UI Automation capture
+    // and sentence segmentation against real speech, entirely independent of any translation call.
+    // Starts Windows' own LiveCaptions.exe if it is not already running (reusing the same start path
+    // the Captions board's service chip uses), then polls at NativeCaptionReader's own tick rate and
+    // prints every sentence it decides is ready plus a periodic status line, so a person can watch it
+    // segment real, spoken sentences correctly (or not) before anything downstream depends on it.
+    private static int RunNativeCaptionDiagnosisCommand(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            int durationSeconds;
+            if (!TryGetIntArg(args, "--duration", out durationSeconds))
+            {
+                durationSeconds = 20;
+            }
+
+            if (!TranslatorControlReader.IsLiveCaptionsRunning())
+            {
+                string startDetail;
+                bool started = TranslatorControlReader.TryStartMonitoredService(
+                    TranslatorControlReader.MonitoredServiceKind.LiveCaptions, out startDetail);
+                ReportTranslatorStackLine("Live Captions was not running; start attempt = " +
+                    started.ToString() + " detail=[" + startDetail + "]");
+                Thread.Sleep(1500);
+            }
+
+            ReportTranslatorStackLine("Polling NativeCaptionReader for " +
+                durationSeconds.ToString(CultureInfo.InvariantCulture) +
+                "s (Ctrl+C to stop early). Speak into the mic to see sentences segment.");
+
+            NativeCaptionReader reader = new NativeCaptionReader();
+            DateTime deadlineUtc = DateTime.UtcNow.AddSeconds(durationSeconds);
+            DateTime lastStatusUtc = DateTime.MinValue;
+            string lastPending = null;
+
+            while (DateTime.UtcNow < deadlineUtc)
+            {
+                DateTime nowUtc = DateTime.UtcNow;
+                reader.RefreshIfDue(nowUtc, false);
+
+                string readySentence;
+                while (reader.TryDequeueReady(out readySentence))
+                {
+                    ReportTranslatorStackLine("READY  : " + readySentence);
+                }
+
+                NativeCaptionSnapshot snapshot = reader.GetSnapshot();
+                if (!string.Equals(snapshot.PendingSentence, lastPending, StringComparison.Ordinal))
+                {
+                    lastPending = snapshot.PendingSentence;
+                    ReportTranslatorStackLine("pending: " + lastPending);
+                }
+
+                if ((nowUtc - lastStatusUtc).TotalSeconds >= 5)
+                {
+                    lastStatusUtc = nowUtc;
+                    ReportTranslatorStackLine("status : running=" + snapshot.LiveCaptionsRunning.ToString() +
+                        " resolved=" + snapshot.CaptionElementResolved.ToString());
+                }
+
+                Thread.Sleep(15);
+            }
+
+            ReportTranslatorStackLine("Done.");
             return 0;
         }
         catch (Exception ex)

@@ -419,6 +419,20 @@ internal sealed partial class SystemDayBoardForm : LayeredWidgetFormBase
         SelectRange(next);
     }
 
+    private void ToggleSmoothing()
+    {
+        // 平滑是阅读偏好而不是临时视图，所以它落进 WidgetSettings，重启后仍然保持。
+        // 这里先就地翻转并重绘让点击立刻有反馈；落盘走 OperationForm 已有的布尔设置通道，
+        // 保存后 WidgetForm 会把设置推回 ApplyRuntimeSettings，本地这一次只是同一结果的提前量。
+        // notify:false —— 视图开关切换频繁，不该每次都弹一条带英文属性名的系统通知。
+        bool next = !this.SmoothingEnabled;
+        if (this.CurrentSettings != null) this.CurrentSettings.SystemDayBoardSmoothingEnabled = next;
+        ResetAutoHideClock();
+        RenderLayeredWindow();
+        if (this.owner != null)
+            this.owner.SetBooleanSettingFromGuardBoard("SystemDayBoardSmoothingEnabled", next, false);
+    }
+
     private void ResetAutoHideClock()
     {
         this.lastInteractionUtc = DateTime.UtcNow;
@@ -458,6 +472,7 @@ internal sealed partial class SystemDayBoardForm : LayeredWidgetFormBase
         ResetAutoHideClock();
         if (e.Button != MouseButtons.Left) return;
         if (GetCloseBounds().Contains(e.Location)) { HideBoard(); return; }
+        if (GetSmoothingActionBounds().Contains(e.Location)) { ToggleSmoothing(); return; }
         if (GetRangeActionBounds().Contains(e.Location)) SelectNextRange();
     }
 

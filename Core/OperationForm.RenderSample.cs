@@ -30,7 +30,7 @@ internal sealed partial class OperationForm
                 () => true,
                 (enabled) => enabled,
                 (enabled) => enabled,
-                (propertyName, enabled) => enabled))
+                (propertyName, enabled, notify) => enabled))
             {
                 form.SetRadialDialExpandedForSample(true);
 
@@ -87,7 +87,7 @@ internal sealed partial class OperationForm
             () => true,
             (enabled) => enabled,
             (enabled) => enabled,
-            (propertyName, enabled) => enabled))
+            (propertyName, enabled, notify) => enabled))
         {
             form.SetLayerScale(2.0f);
             form.MaximumSize = new Size(4000, 4000);

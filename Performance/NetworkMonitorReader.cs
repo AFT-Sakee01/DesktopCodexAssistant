@@ -20,6 +20,11 @@ internal sealed class NetworkMonitorReader : IDisposable
     private const string PublicIpv4Endpoint = "https://api.ipify.org";
     private const int PingCount = 4;
     private const int PingTimeoutMs = 1000;
+    // Connectivity pings are a reachability proof, not a measurement. Back-to-back ICMP
+    // bursts are exactly what routers and anycast resolvers rate-limit, so the burst is
+    // spaced. Quality numbers come from the rolling window, which has orders of magnitude
+    // more samples; these four packets only bootstrap the display before it is ready.
+    private const int PingSpacingMs = 250;
     private const int HttpTimeoutMs = 4000;
     private const int CaptivePortalBodyLimitBytes = 4096;
     private const int DegradedPacketLossPercent = 15;
@@ -27,6 +32,10 @@ internal sealed class NetworkMonitorReader : IDisposable
     private const double DegradedJitterMs = 250.0;
     private const int RollingPingMinSamples = 10;
     private const int RollingPingMaxSamples = 60;
+    // A target that has answered nothing after this many samples is unreachable on this
+    // network (blocked ICMP, filtered anycast prefix), not a lossy path. It leaves the
+    // group aggregate so one dead rotation target cannot masquerade as 1/N packet loss.
+    private const int RollingPingSilentTargetMinSamples = 3;
     private const int RollingPingPublicTimeoutMs = 1000;
     private const int RollingPingGatewayTimeoutMs = 500;
     private const double RollingPingLossWarningPercent = 2.0;
@@ -68,6 +77,11 @@ internal sealed class NetworkMonitorReader : IDisposable
     private DateTime lastConnectivityRefreshUtc;
     private DateTime lastDnsRefreshUtc;
     private bool localRefreshRequested = true;
+    // Adapter enumeration, GetIPProperties and the WLAN query are syscalls that get slow on
+    // machines with many virtual adapters, so only the very first pass runs inline. Every
+    // later pass is a single-flight background task and the tick keeps serving the last
+    // committed snapshot.
+    private bool localRefreshRunning;
     // Public IP and connectivity requests are single-flight independently.
     private bool publicIpRequestRunning;
     private bool connectivityRequestRunning;
@@ -79,7 +93,9 @@ internal sealed class NetworkMonitorReader : IDisposable
     private string selectedAdapterId = string.Empty;
     private string lastDnsProbeSignature = string.Empty;
     private readonly PingSampleWindow rollingGatewaySamples = new PingSampleWindow();
-    private readonly PingSampleWindow rollingPublicSamples = new PingSampleWindow();
+    // The public profile rotates across several anycast resolvers, so it keeps one window
+    // per target instead of one pooled window. See RollingPingSilentTargetMinSamples.
+    private readonly PingTargetGroup rollingPublicSamples = new PingTargetGroup();
     private readonly PingSampleWindow rollingBaiduSamples = new PingSampleWindow();
     private DateTime lastRollingPingRefreshUtc = DateTime.MinValue;
     private int nextPublicPingTargetIndex;
@@ -151,20 +167,37 @@ internal sealed class NetworkMonitorReader : IDisposable
         WidgetPerformanceMode mode = settings == null ? WidgetPerformanceMode.Balanced : settings.PerformanceMode;
         string requestedAdapterId = settings == null ? string.Empty : NormalizeAdapterId(settings.NetworkMonitorAdapterId);
         bool refreshLocal;
+        bool firstLocalRefresh;
         lock (this.sync)
         {
-            refreshLocal = this.localRefreshRequested ||
-                !string.Equals(requestedAdapterId, this.selectedAdapterId, StringComparison.OrdinalIgnoreCase) ||
-                (now - this.lastLocalRefreshUtc).TotalMilliseconds >= WidgetSettings.GetNetworkLocalRefreshIntervalMs(mode);
+            firstLocalRefresh = this.lastLocalRefreshUtc == DateTime.MinValue;
+            refreshLocal = !this.disposed &&
+                !this.localRefreshRunning &&
+                (this.localRefreshRequested ||
+                 !string.Equals(requestedAdapterId, this.selectedAdapterId, StringComparison.OrdinalIgnoreCase) ||
+                 (now - this.lastLocalRefreshUtc).TotalMilliseconds >= WidgetSettings.GetNetworkLocalRefreshIntervalMs(mode));
+            if (refreshLocal)
+            {
+                this.localRefreshRunning = true;
+            }
         }
 
         if (refreshLocal)
         {
-            bool refreshRemoteProbes = RefreshLocalSnapshot(now, requestedAdapterId);
-            if (refreshRemoteProbes)
+            if (firstLocalRefresh)
             {
-                this.gfwProbeReader.RequestRefresh("网络身份变化");
-                this.cloudEndpointProbeReader.RequestRefresh("云服务网络身份变化");
+                // The first pass stays inline so the board never has to render an empty header.
+                CompleteLocalRefresh(now, requestedAdapterId);
+            }
+            else
+            {
+                // GetAllNetworkInterfaces, GetIPProperties and the WLAN query are syscalls that
+                // grow with the number of virtual adapters (VPN, Hyper-V, WSL). This runs on the
+                // WinForms tick, so every later pass goes to the thread pool and the tick keeps
+                // serving the last committed snapshot. localRefreshRunning is the single-flight.
+                DateTime scheduledAtUtc = now;
+                string scheduledAdapterId = requestedAdapterId;
+                Task.Run(delegate { CompleteLocalRefresh(scheduledAtUtc, scheduledAdapterId); });
             }
         }
 
@@ -363,6 +396,35 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
     }
 
+    // Runs the local pass and releases the single-flight slot, whether it is called inline
+    // (first pass) or from the thread pool (every later pass).
+    private void CompleteLocalRefresh(DateTime now, string requestedAdapterId)
+    {
+        bool refreshRemoteProbes = false;
+        try
+        {
+            refreshRemoteProbes = RefreshLocalSnapshot(now, requestedAdapterId);
+        }
+        catch
+        {
+            // BuildLocalSnapshot already records its own failures; never let a background
+            // enumeration failure tear down the reader or leave the slot occupied.
+        }
+        finally
+        {
+            lock (this.sync)
+            {
+                this.localRefreshRunning = false;
+            }
+        }
+
+        if (refreshRemoteProbes)
+        {
+            this.gfwProbeReader.RequestRefresh("网络身份变化");
+            this.cloudEndpointProbeReader.RequestRefresh("云服务网络身份变化");
+        }
+    }
+
     private bool RefreshLocalSnapshot(DateTime now, string requestedAdapterId)
     {
         long generationAtStart;
@@ -379,6 +441,11 @@ internal sealed class NetworkMonitorReader : IDisposable
 
         lock (this.sync)
         {
+            if (this.disposed)
+            {
+                return false;
+            }
+
             // A network event during enumeration keeps the refresh pending for one more stable pass.
             bool eventDuringRefresh = generationAtStart != this.networkGeneration;
             bool hadLocalSnapshot = this.lastLocalRefreshUtc != DateTime.MinValue;
@@ -489,6 +556,7 @@ internal sealed class NetworkMonitorReader : IDisposable
             IPInterfaceProperties properties = best.GetIPProperties();
             result.IPv4 = JoinUnicastAddresses(properties, AddressFamily.InterNetwork);
             result.IPv6 = JoinUnicastAddresses(properties, AddressFamily.InterNetworkV6);
+            result.AddressIdentity = BuildAddressIdentity(properties);
             result.DefaultGatewayAddress = SelectDefaultGatewayAddress(properties);
             List<string> dnsServers = CollectDnsServers(properties);
             result.DnsServers = dnsServers.Count == 0 ? "--" : JoinLimited(dnsServers, 3);
@@ -595,11 +663,13 @@ internal sealed class NetworkMonitorReader : IDisposable
             return true;
         }
 
+        // Compares AddressIdentity, not the truncated IPv4/IPv6 display strings: this gate
+        // bumps the generation and wipes every rolling measurement, so it must fire on real
+        // address changes and only on those.
         return previous.Connected != current.Connected ||
             previous.InterfaceKnown != current.InterfaceKnown ||
             !string.Equals(previous.InterfaceId, current.InterfaceId, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(previous.IPv4, current.IPv4, StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(previous.IPv6, current.IPv6, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(previous.AddressIdentity, current.AddressIdentity, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(previous.DefaultGatewayAddress, current.DefaultGatewayAddress, StringComparison.OrdinalIgnoreCase) ||
             !HasSameDnsServerAddresses(previous.DnsServerDetails, current.DnsServerDetails);
     }
@@ -619,8 +689,7 @@ internal sealed class NetworkMonitorReader : IDisposable
         return previous.InterfaceKnown != current.InterfaceKnown ||
             !string.Equals(previous.InterfaceId, current.InterfaceId, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(previous.DefaultGatewayAddress, current.DefaultGatewayAddress, StringComparison.OrdinalIgnoreCase) ||
-            !HasSameAddressText(previous.IPv4, current.IPv4) ||
-            !HasSameAddressText(previous.IPv6, current.IPv6);
+            !string.Equals(previous.AddressIdentity, current.AddressIdentity, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool HasSameDnsServerAddresses(DnsServerSnapshot[] left, DnsServerSnapshot[] right)
@@ -668,51 +737,6 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
 
         return values;
-    }
-
-    private static bool HasSameAddressText(string left, string right)
-    {
-        List<string> leftValues = SplitAddressText(left);
-        List<string> rightValues = SplitAddressText(right);
-        if (leftValues.Count != rightValues.Count)
-        {
-            return false;
-        }
-
-        leftValues.Sort(StringComparer.OrdinalIgnoreCase);
-        rightValues.Sort(StringComparer.OrdinalIgnoreCase);
-        for (int i = 0; i < leftValues.Count; i++)
-        {
-            if (!string.Equals(leftValues[i], rightValues[i], StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static List<string> SplitAddressText(string value)
-    {
-        List<string> result = new List<string>();
-        if (string.IsNullOrWhiteSpace(value) || string.Equals(value.Trim(), "--", StringComparison.Ordinal))
-        {
-            return result;
-        }
-
-        string[] parts = value.Split(',');
-        for (int i = 0; i < parts.Length; i++)
-        {
-            string part = parts[i] == null ? string.Empty : parts[i].Trim();
-            if (part.Length == 0 || part[0] == '+')
-            {
-                continue;
-            }
-
-            AddDistinct(result, part);
-        }
-
-        return result;
     }
 
     private static NetworkInterface SelectPrimaryInterface(string requestedAdapterId)
@@ -896,6 +920,60 @@ internal sealed class NetworkMonitorReader : IDisposable
 
         values.Sort(StringComparer.OrdinalIgnoreCase);
         return values.Count == 0 ? "--" : JoinLimited(values, 2);
+    }
+
+    // Identity, not display. The full unicast set participates (JoinUnicastAddresses shows at
+    // most two entries, so an address swap past the second one used to be invisible), and IPv6
+    // temporary/privacy addresses are excluded because Windows rotates them on its own
+    // schedule — treating a rotation as a new network wiped the rolling windows, reset
+    // connectivity to Unknown and re-fired the GFW and cloud probes for no reason.
+    internal static string BuildAddressIdentity(IPInterfaceProperties properties)
+    {
+        if (properties == null || properties.UnicastAddresses == null)
+        {
+            return string.Empty;
+        }
+
+        List<string> values = new List<string>();
+        foreach (UnicastIPAddressInformation address in properties.UnicastAddresses)
+        {
+            if (address == null || address.Address == null || IsIgnorableAddress(address.Address))
+            {
+                continue;
+            }
+
+            if (IsTemporaryIpv6Address(address))
+            {
+                continue;
+            }
+
+            AddDistinct(values, address.Address.ToString());
+        }
+
+        values.Sort(StringComparer.OrdinalIgnoreCase);
+        return string.Join("|", values.ToArray());
+    }
+
+    private static bool IsTemporaryIpv6Address(UnicastIPAddressInformation address)
+    {
+        if (address == null ||
+            address.Address == null ||
+            address.Address.AddressFamily != AddressFamily.InterNetworkV6)
+        {
+            return false;
+        }
+
+        try
+        {
+            // SuffixOrigin.Random is exactly the RFC 4941 temporary address. Some adapters
+            // and virtual drivers do not report origins at all, which throws here; falling
+            // back to "not temporary" keeps the previous, stricter behaviour for them.
+            return address.SuffixOrigin == SuffixOrigin.Random;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static List<string> CollectDnsServers(IPInterfaceProperties properties)
@@ -1191,7 +1269,10 @@ internal sealed class NetworkMonitorReader : IDisposable
                 }
                 else
                 {
-                    this.rollingPublicSamples.Add(activeResult.Success, activeResult.LatencyMs, completedUtc);
+                    // Keyed by the concrete target: the public profile rotates, and pooling
+                    // the rotation into one window turns a single blocked resolver into a
+                    // permanent group-wide loss reading.
+                    this.rollingPublicSamples.Add(request.Target, activeResult.Success, activeResult.LatencyMs, completedUtc);
                 }
 
                 NetworkAccessState currentAccessState = GetActualAccessState(this.snapshot);
@@ -1214,6 +1295,17 @@ internal sealed class NetworkMonitorReader : IDisposable
 
         PingRollingSnapshot rolling = BuildRollingPingSnapshot(accessState, insideWall, gateway, active);
         this.snapshot.PingRolling = rolling;
+        // The local-link verdict follows the rolling window, not the four-packet connectivity
+        // burst. Once the window is ready it is the only writer, so the flag and the packet
+        // loss shown on the PING line can no longer disagree.
+        if (rolling.StatsReady || rolling.IcmpBlocked)
+        {
+            string degradedReason;
+            bool degraded = TryBuildLocalLinkDegraded(rolling, gateway, this.rollingLossConfirmed, out degradedReason);
+            this.snapshot.LocalNetworkDegraded = degraded;
+            this.snapshot.LocalNetworkDegradedReason = degraded ? degradedReason : string.Empty;
+        }
+
         if (rolling.StatsReady && !rolling.IcmpBlocked)
         {
             this.snapshot.LatencyMs = rolling.LatencyMs;
@@ -1315,7 +1407,9 @@ internal sealed class NetworkMonitorReader : IDisposable
             LatencyMs = active.LatencyMs,
             JitterMs = active.JitterMs,
             JitterKnown = active.JitterKnown,
-            StatsReady = active.StatsReady
+            StatsReady = active.StatsReady,
+            TargetCount = active.TargetCount,
+            SilentTargetCount = active.SilentTargetCount
         };
 
         bool gatewayHealthyEnough = gateway.SuccessCount > 0 &&
@@ -1437,7 +1531,10 @@ internal sealed class NetworkMonitorReader : IDisposable
             rolling.Diagnosis.ToString() + "|" +
             rolling.Severity.ToString() + "|" +
             lossBand + "|" +
-            rolling.IcmpBlocked.ToString();
+            rolling.IcmpBlocked.ToString() + "|" +
+            // A rotation target going silent (or coming back) is a state change worth one
+            // history row, not a silent drop from the aggregate.
+            rolling.SilentTargetCount.ToString(CultureInfo.InvariantCulture);
     }
 
     private RollingPingHistoryEntry BuildRollingPingHistoryEntry(string checkName, string trigger, PingRollingSnapshot rolling)
@@ -1464,6 +1561,11 @@ internal sealed class NetworkMonitorReader : IDisposable
                 { "loss_percent", rolling == null ? 0.0 : Math.Round(rolling.LossPercent, 1) },
                 { "latency_ms", rolling == null ? 0.0 : Math.Round(rolling.LatencyMs, 1) },
                 { "jitter_ms", rolling == null ? 0.0 : Math.Round(rolling.JitterMs, 1) },
+                // Makes the rotation aggregation auditable: a non-zero silent_target_count is
+                // why a blocked rotation target no longer shows up as group packet loss.
+                { "target_count", rolling == null ? 0 : rolling.TargetCount },
+                { "silent_target_count", rolling == null ? 0 : rolling.SilentTargetCount },
+                { "local_network_degraded", this.snapshot != null && this.snapshot.LocalNetworkDegraded },
                 { "diagnosis", rolling == null ? string.Empty : rolling.Diagnosis.ToString() }
             }
         };
@@ -1504,6 +1606,10 @@ internal sealed class NetworkMonitorReader : IDisposable
             {
                 DiagnosisText = string.Equals(trigger, "网络身份变化", StringComparison.Ordinal) ? "RESET" : string.Empty
             };
+            // The rolling window owns the local-link verdict, so wiping the window must also
+            // drop the verdict instead of leaving a stale one to gate DNS and cloud results.
+            this.snapshot.LocalNetworkDegraded = false;
+            this.snapshot.LocalNetworkDegradedReason = string.Empty;
         }
     }
 
@@ -1511,7 +1617,7 @@ internal sealed class NetworkMonitorReader : IDisposable
     {
         return this.networkGeneration.ToString(CultureInfo.InvariantCulture) + "|" +
             (this.snapshot == null ? string.Empty : this.snapshot.InterfaceId ?? string.Empty) + "|" +
-            (this.snapshot == null ? string.Empty : this.snapshot.IPv4 ?? string.Empty) + "|" +
+            (this.snapshot == null ? string.Empty : this.snapshot.AddressIdentity ?? string.Empty) + "|" +
             (this.snapshot == null ? string.Empty : this.snapshot.DefaultGatewayAddress ?? string.Empty);
     }
 
@@ -1528,6 +1634,58 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
 
         return 5000;
+    }
+
+    // Local-link degradation. This flag never changes Online/Offline; it tells the DNS and
+    // cloud-endpoint layers that a remote failure may be caused by the local link, which is
+    // why a false positive is expensive: it downgrades a genuine cloud outage to
+    // "本地丢包影响" and a genuine DNS failure to a yellow "待确认".
+    //
+    // It used to be derived from the four ICMP packets of one connectivity round, where the
+    // loss figure can only be 0/25/50/75/100%: a single dropped packet already cleared the
+    // 15% threshold, and a network that filters ICMP to the connectivity target sat at a
+    // permanent 100% while HTTP proved it was online. It now reads the rolling window, which
+    // carries far more samples, knows when ICMP is blocked outright, and only reports
+    // end-to-end loss after the confirmation hysteresis has latched.
+    private static bool TryBuildLocalLinkDegraded(
+        PingRollingSnapshot rolling,
+        PingGroupStats gateway,
+        bool rollingLossConfirmed,
+        out string reason)
+    {
+        reason = string.Empty;
+        if (rolling == null || !rolling.StatsReady || rolling.IcmpBlocked)
+        {
+            return false;
+        }
+
+        // Gateway loss is a single target with its own window, so it needs no cross-target
+        // confirmation before it counts as a local problem.
+        if (gateway.StatsReady && gateway.LossPercent >= DegradedPacketLossPercent)
+        {
+            reason = "本地丢包高 " + FormatLossPercent(gateway.LossPercent);
+            return true;
+        }
+
+        if (rollingLossConfirmed && rolling.LossPercent >= DegradedPacketLossPercent)
+        {
+            reason = "本地丢包高 " + FormatLossPercent(rolling.LossPercent);
+            return true;
+        }
+
+        if (rolling.JitterKnown && rolling.JitterMs >= DegradedJitterMs)
+        {
+            reason = "本地抖动高 " + Math.Round(rolling.JitterMs).ToString(CultureInfo.InvariantCulture) + "ms";
+            return true;
+        }
+
+        if (rolling.LossPercent < 100.0 && rolling.LatencyMs >= DegradedLatencyMs)
+        {
+            reason = "本地延迟高 " + Math.Round(rolling.LatencyMs).ToString(CultureInfo.InvariantCulture) + "ms";
+            return true;
+        }
+
+        return false;
     }
 
     private static bool IsExplicitGfwBlock(GfwProbeSnapshot gfw, NetworkAccessState accessState)
@@ -2503,11 +2661,11 @@ internal sealed class NetworkMonitorReader : IDisposable
                 this.snapshot.AccessState = result.AccessState;
                 this.snapshot.AccessReason = result.AccessReason;
                 this.snapshot.ConnectivityTarget = ConnectivityTarget;
+                // Quality fields are bootstrap values only: the rolling window overwrites them
+                // as soon as it is ready, and it is the sole owner of LocalNetworkDegraded.
                 this.snapshot.LatencyMs = result.LatencyMs;
                 this.snapshot.JitterMs = result.JitterMs;
                 this.snapshot.PacketLossPercent = result.PacketLossPercent;
-                this.snapshot.LocalNetworkDegraded = result.LocalNetworkDegraded;
-                this.snapshot.LocalNetworkDegradedReason = result.LocalNetworkDegradedReason;
                 if (!result.Online)
                 {
                     this.snapshot.LastError = string.IsNullOrEmpty(result.AccessReason) ? "Connectivity failed" : result.AccessReason;
@@ -2533,8 +2691,7 @@ internal sealed class NetworkMonitorReader : IDisposable
                         { "access_state", result.AccessState.ToString() },
                         { "latency_ms", Math.Round(result.LatencyMs, 1) },
                         { "jitter_ms", Math.Round(result.JitterMs, 1) },
-                        { "packet_loss_percent", result.PacketLossPercent },
-                        { "local_network_degraded", result.LocalNetworkDegraded }
+                        { "packet_loss_percent", result.PacketLossPercent }
                     });
             }
         });
@@ -2870,6 +3027,10 @@ internal sealed class NetworkMonitorReader : IDisposable
         request.Timeout = HttpTimeoutMs;
         request.ReadWriteTimeout = HttpTimeoutMs;
         request.UserAgent = ProductIdentity.UserAgent;
+        // Deliberately keeps the default WebRequest proxy. This endpoint answers "where does
+        // this process come out", and the app's own outbound requests take the same proxy, so
+        // the answer must describe the proxied path. Link-shaped probes (NCSI here, and every
+        // GFW layer) set Proxy = null instead, because they measure the link.
         BoundedHttpTextResult response = BoundedHttpTextReader.Execute(
             request,
             BoundedHttpTextReader.TinyProbeMaxBytes,
@@ -2933,7 +3094,6 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
 
         ApplyPingStats(ref result, roundTrips);
-        ApplyLocalNetworkQuality(ref result);
         return result;
     }
 
@@ -2945,6 +3105,13 @@ internal sealed class NetworkMonitorReader : IDisposable
         {
             for (int i = 0; i < PingCount; i++)
             {
+                // Space the burst. Routers and anycast resolvers rate-limit back-to-back ICMP
+                // echo, which used to make this measurement systematically pessimistic.
+                if (i > 0)
+                {
+                    Thread.Sleep(PingSpacingMs);
+                }
+
                 try
                 {
                     PingReply reply = ping.Send(target, PingTimeoutMs);
@@ -2996,38 +3163,6 @@ internal sealed class NetworkMonitorReader : IDisposable
         result.JitterMs = jitterSum / (roundTrips.Count - 1);
     }
 
-    private static void ApplyLocalNetworkQuality(ref ConnectivityResult result)
-    {
-        result.LocalNetworkDegraded = false;
-        result.LocalNetworkDegradedReason = string.Empty;
-        if (result.AccessState != NetworkAccessState.Online)
-        {
-            return;
-        }
-
-        // This flag does not change Online/Offline. It only tells higher level probes
-        // that a remote failure may be caused by local packet loss or extreme latency.
-        if (result.PacketLossPercent >= DegradedPacketLossPercent)
-        {
-            result.LocalNetworkDegraded = true;
-            result.LocalNetworkDegradedReason = "本地丢包高 " + result.PacketLossPercent.ToString(CultureInfo.InvariantCulture) + "%";
-            return;
-        }
-
-        if (result.JitterMs >= DegradedJitterMs)
-        {
-            result.LocalNetworkDegraded = true;
-            result.LocalNetworkDegradedReason = "本地抖动高 " + Math.Round(result.JitterMs).ToString(CultureInfo.InvariantCulture) + "ms";
-            return;
-        }
-
-        if (result.LatencyMs >= DegradedLatencyMs)
-        {
-            result.LocalNetworkDegraded = true;
-            result.LocalNetworkDegradedReason = "本地延迟高 " + Math.Round(result.LatencyMs).ToString(CultureInfo.InvariantCulture) + "ms";
-        }
-    }
-
     private static string FormatLocalNetworkDegradedReason(string reason)
     {
         return string.IsNullOrWhiteSpace(reason) ? "本地网络不稳定" : reason.Trim();
@@ -3061,6 +3196,10 @@ internal sealed class NetworkMonitorReader : IDisposable
         {
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(CaptivePortalTestUrl);
             request.Method = "GET";
+            // NCSI asks whether THIS link is behind a captive portal, so it must ride the
+            // link itself. Left on the default WebRequest proxy it would ask the proxy
+            // instead and report a portal-free network that the adapter cannot actually use.
+            request.Proxy = null;
             int remainingMs = GetRemainingTimeoutMs(deadlineUtc);
             request.Timeout = remainingMs;
             request.ReadWriteTimeout = remainingMs;
@@ -3398,6 +3537,84 @@ internal sealed class NetworkMonitorReader : IDisposable
             throw new InvalidOperationException("Rolling ping self-test: GFW gate local loss failed.");
         }
 
+        // Rotation aggregation: one blocked target must leave the group instead of showing up
+        // as 1/N packet loss for every other target.
+        bool[] fiveGood = new bool[] { true, true, true, true, true };
+        bool[] fiveDead = new bool[] { false, false, false, false, false };
+        int[] fastLatency = new int[] { 10, 11, 10, 11, 10 };
+        int[] slowLatency = new int[] { 200, 201, 200, 201, 200 };
+        int[] deadLatency = new int[] { 0, 0, 0, 0, 0 };
+        PingGroupStats rotationWithDeadTarget = PingTargetGroup.BuildStatsForTest(
+            "public",
+            new bool[][] { fiveGood, fiveGood, fiveGood, fiveGood, fiveGood, fiveDead },
+            new int[][] { fastLatency, fastLatency, fastLatency, fastLatency, fastLatency, deadLatency });
+        if (rotationWithDeadTarget.SilentTargetCount != 1 ||
+            rotationWithDeadTarget.TargetCount != 6 ||
+            rotationWithDeadTarget.TotalCount != 25 ||
+            Math.Abs(rotationWithDeadTarget.LossPercent) > 0.01)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: a silent rotation target must not read as group packet loss.");
+        }
+
+        PingGroupStats rotationAllDead = PingTargetGroup.BuildStatsForTest(
+            "public",
+            new bool[][] { fiveDead, fiveDead },
+            new int[][] { deadLatency, deadLatency });
+        PingRollingSnapshot rotationBlocked = BuildRollingPingSnapshot(NetworkAccessState.Online, false, gateway, rotationAllDead);
+        if (rotationAllDead.SuccessCount != 0 || !rotationBlocked.IcmpBlocked)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: an entirely silent rotation must still report ICMP blocked.");
+        }
+
+        // Jitter must stay inside a target. Pooled across a fast and a slow target this would
+        // be ~190ms; per target it is ~1ms.
+        PingGroupStats mixedLatencyRotation = PingTargetGroup.BuildStatsForTest(
+            "public",
+            new bool[][] { fiveGood, fiveGood },
+            new int[][] { fastLatency, slowLatency });
+        if (!mixedLatencyRotation.JitterKnown || mixedLatencyRotation.JitterMs > 5.0)
+        {
+            throw new InvalidOperationException("Rolling ping self-test: jitter must be computed per target, not across the rotation.");
+        }
+
+        // Local-link degradation now comes from the rolling window and its hysteresis.
+        string degradedReason;
+        if (TryBuildLocalLinkDegraded(cold, gateway, true, out degradedReason))
+        {
+            throw new InvalidOperationException("Local link self-test: warm-up samples must not mark the link degraded.");
+        }
+
+        if (TryBuildLocalLinkDegraded(icmpBlocked, gateway, true, out degradedReason))
+        {
+            throw new InvalidOperationException("Local link self-test: blocked ICMP must not mark the link degraded.");
+        }
+
+        if (TryBuildLocalLinkDegraded(wanLoss, gateway, true, out degradedReason))
+        {
+            throw new InvalidOperationException("Local link self-test: 10% confirmed loss is below the degraded threshold.");
+        }
+
+        PingGroupStats publicHeavyLoss = PingSampleWindow.BuildStatsForTest("public", new bool[] { true, false, true, false, true, true, false, true, true, true }, new int[] { 40, 0, 41, 0, 42, 40, 0, 41, 40, 42 });
+        PingRollingSnapshot heavyLoss = BuildRollingPingSnapshot(NetworkAccessState.Online, false, gateway, publicHeavyLoss);
+        if (TryBuildLocalLinkDegraded(heavyLoss, gateway, false, out degradedReason))
+        {
+            throw new InvalidOperationException("Local link self-test: end-to-end loss must wait for the confirmation hysteresis.");
+        }
+
+        if (!TryBuildLocalLinkDegraded(heavyLoss, gateway, true, out degradedReason) ||
+            degradedReason.IndexOf("本地丢包高", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("Local link self-test: confirmed heavy loss must mark the link degraded.");
+        }
+
+        PingGroupStats lossyGateway = PingSampleWindow.BuildStatsForTest("gateway", new bool[] { true, false, true, true, false, true, true, true, true, true }, new int[] { 2, 0, 2, 3, 0, 2, 2, 3, 2, 2 });
+        PingRollingSnapshot gatewayLossRolling = BuildRollingPingSnapshot(NetworkAccessState.Online, false, lossyGateway, publicClean);
+        if (!TryBuildLocalLinkDegraded(gatewayLossRolling, lossyGateway, false, out degradedReason) ||
+            degradedReason.IndexOf("本地丢包高", StringComparison.Ordinal) < 0)
+        {
+            throw new InvalidOperationException("Local link self-test: gateway loss needs no cross-target confirmation.");
+        }
+
         PingRollingSnapshot baidu = BuildRollingPingSnapshot(NetworkAccessState.Online, true, gateway, warming);
         if (!string.Equals(baidu.ActiveProfile, "BAIDU", StringComparison.Ordinal) ||
             baidu.Diagnosis != PingPathDiagnosis.GlobalBlock)
@@ -3536,6 +3753,133 @@ internal sealed class NetworkMonitorReader : IDisposable
         }
     }
 
+    // One window per concrete target, aggregated only at read time.
+    //
+    // The public profile rotates across six anycast resolvers. Pooling them into a single
+    // window made two different measurements wrong at once: a target that this network
+    // happens to block read as a fixed 1/N packet loss for the whole group (16.7% with six
+    // targets, above the error threshold, which then latched the confirmed-loss gate and
+    // suppressed GFW probing indefinitely), and "jitter" was computed between samples that
+    // belonged to different targets, so it measured the spread between resolvers instead of
+    // the variation of any one path.
+    private sealed class PingTargetGroup
+    {
+        // Insertion order keeps aggregation deterministic across ticks.
+        private readonly List<string> order = new List<string>();
+        private readonly Dictionary<string, PingSampleWindow> windows =
+            new Dictionary<string, PingSampleWindow>(StringComparer.OrdinalIgnoreCase);
+
+        public void Add(string target, bool success, int latencyMs, DateTime timestampUtc)
+        {
+            string key = string.IsNullOrWhiteSpace(target) ? "?" : target.Trim();
+            PingSampleWindow window;
+            if (!this.windows.TryGetValue(key, out window))
+            {
+                window = new PingSampleWindow();
+                this.windows.Add(key, window);
+                this.order.Add(key);
+            }
+
+            window.Add(success, latencyMs, timestampUtc);
+        }
+
+        public void Clear()
+        {
+            this.windows.Clear();
+            this.order.Clear();
+        }
+
+        public PingGroupStats BuildStats(string group, DateTime nowUtc)
+        {
+            List<PingGroupStats> perTarget = new List<PingGroupStats>();
+            for (int i = 0; i < this.order.Count; i++)
+            {
+                PingSampleWindow window = this.windows[this.order[i]];
+                perTarget.Add(window.BuildStats(group, nowUtc));
+            }
+
+            return AggregateTargets(group, perTarget);
+        }
+
+        internal static PingGroupStats AggregateTargets(string group, List<PingGroupStats> perTarget)
+        {
+            PingGroupStats stats = new PingGroupStats();
+            stats.Group = group ?? string.Empty;
+            if (perTarget == null || perTarget.Count == 0)
+            {
+                return stats;
+            }
+
+            List<PingGroupStats> answering = new List<PingGroupStats>();
+            int silent = 0;
+            for (int i = 0; i < perTarget.Count; i++)
+            {
+                PingGroupStats target = perTarget[i];
+                if (target.SuccessCount == 0 && target.TotalCount >= RollingPingSilentTargetMinSamples)
+                {
+                    silent++;
+                    continue;
+                }
+
+                answering.Add(target);
+            }
+
+            // Every target silent means the profile itself is unreachable, which is the
+            // ICMP-blocked verdict. Aggregate everything so SuccessCount stays zero and the
+            // existing IcmpBlocked classification still fires.
+            List<PingGroupStats> population = answering.Count == 0 ? perTarget : answering;
+            double jitterSum = 0.0;
+            int jitterTargets = 0;
+            double latencySum = 0.0;
+            for (int i = 0; i < population.Count; i++)
+            {
+                PingGroupStats target = population[i];
+                stats.TotalCount += target.TotalCount;
+                stats.SuccessCount += target.SuccessCount;
+                latencySum += target.LatencyMs * target.SuccessCount;
+                if (target.JitterKnown)
+                {
+                    jitterSum += target.JitterMs;
+                    jitterTargets++;
+                }
+            }
+
+            stats.LostCount = stats.TotalCount - stats.SuccessCount;
+            stats.StatsReady = stats.TotalCount >= RollingPingMinSamples;
+            stats.LossPercent = stats.TotalCount <= 0 ? 0.0 : stats.LostCount * 100.0 / stats.TotalCount;
+            if (stats.SuccessCount > 0)
+            {
+                stats.LatencyMs = latencySum / stats.SuccessCount;
+            }
+
+            // Jitter is the mean of the per-target jitters, never a figure computed across
+            // the rotation boundary.
+            if (jitterTargets > 0)
+            {
+                stats.JitterMs = jitterSum / jitterTargets;
+                stats.JitterKnown = true;
+            }
+
+            stats.TargetCount = perTarget.Count;
+            stats.SilentTargetCount = silent;
+            return stats;
+        }
+
+        public static PingGroupStats BuildStatsForTest(string group, bool[][] successes, int[][] latencies)
+        {
+            List<PingGroupStats> perTarget = new List<PingGroupStats>();
+            for (int i = 0; successes != null && i < successes.Length; i++)
+            {
+                perTarget.Add(PingSampleWindow.BuildStatsForTest(
+                    group,
+                    successes[i],
+                    latencies != null && i < latencies.Length ? latencies[i] : null));
+            }
+
+            return AggregateTargets(group, perTarget);
+        }
+    }
+
     private sealed class PingSampleWindow
     {
         private readonly List<RollingPingSample> samples = new List<RollingPingSample>();
@@ -3618,6 +3962,7 @@ internal sealed class NetworkMonitorReader : IDisposable
                 return stats;
             }
 
+            stats.TargetCount = 1;
             List<int> successes = new List<int>();
             stats.TotalCount = values.Count;
             for (int i = 0; i < values.Count; i++)
@@ -3679,6 +4024,10 @@ internal sealed class NetworkMonitorReader : IDisposable
         public double JitterMs;
         public bool JitterKnown;
         public bool StatsReady;
+        // Rotation bookkeeping: how many concrete targets fed this group, and how many of
+        // them never answered and were therefore excluded from the aggregate.
+        public int TargetCount;
+        public int SilentTargetCount;
 
         public PingRollingSnapshot ToSnapshot(
             string activeProfile,
@@ -3698,6 +4047,8 @@ internal sealed class NetworkMonitorReader : IDisposable
                 JitterMs = this.JitterMs,
                 JitterKnown = this.JitterKnown,
                 StatsReady = this.StatsReady,
+                TargetCount = this.TargetCount,
+                SilentTargetCount = this.SilentTargetCount,
                 Diagnosis = diagnosis,
                 Severity = severity,
                 DiagnosisText = diagnosisText ?? string.Empty
@@ -3738,8 +4089,6 @@ internal sealed class NetworkMonitorReader : IDisposable
         public double LatencyMs;
         public double JitterMs;
         public int PacketLossPercent;
-        public bool LocalNetworkDegraded;
-        public string LocalNetworkDegradedReason;
     }
 
     private struct CaptivePortalResult

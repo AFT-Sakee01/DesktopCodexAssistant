@@ -349,6 +349,12 @@ internal sealed class PingRollingSnapshot
     public bool JitterKnown { get; set; }
     public bool StatsReady { get; set; }
     public bool IcmpBlocked { get; set; }
+    // Rotation bookkeeping for the public profile: how many concrete targets fed the window
+    // and how many of them never answered and were therefore excluded from the aggregate.
+    // Diagnostic only — the Dock board does not draw these, so they stay out of
+    // HasSameDisplayData and cannot cause repaints.
+    public int TargetCount { get; set; }
+    public int SilentTargetCount { get; set; }
     public string DiagnosisText { get; set; }
     public PingPathDiagnosis Diagnosis { get; set; }
     public PingDiagnosisSeverity Severity { get; set; }
@@ -376,6 +382,8 @@ internal sealed class PingRollingSnapshot
             JitterKnown = this.JitterKnown,
             StatsReady = this.StatsReady,
             IcmpBlocked = this.IcmpBlocked,
+            TargetCount = this.TargetCount,
+            SilentTargetCount = this.SilentTargetCount,
             DiagnosisText = this.DiagnosisText,
             Diagnosis = this.Diagnosis,
             Severity = this.Severity
@@ -611,6 +619,12 @@ internal sealed class NetworkMonitorSnapshot
     public bool IsWifi { get; set; }
     public string IPv4 { get; set; }
     public string IPv6 { get; set; }
+    // Stable key for "is this still the same network", separate from the IPv4/IPv6 display
+    // strings above. Those are truncated for the board and include the IPv6 privacy addresses
+    // Windows rotates on a schedule of its own, so using them as the identity both missed
+    // real address changes past the truncation point and forced a full probe reset every
+    // time a temporary address rotated in. Never drawn.
+    public string AddressIdentity { get; set; }
     public string DefaultGatewayAddress { get; set; }
     public string DnsServers { get; set; }
     public DnsServerSnapshot[] DnsServerDetails { get; set; }
@@ -644,6 +658,7 @@ internal sealed class NetworkMonitorSnapshot
         this.MacAddress = "--";
         this.IPv4 = "--";
         this.IPv6 = "--";
+        this.AddressIdentity = string.Empty;
         this.DefaultGatewayAddress = string.Empty;
         this.DnsServers = "--";
         this.DnsServerDetails = new DnsServerSnapshot[0];
@@ -676,6 +691,7 @@ internal sealed class NetworkMonitorSnapshot
             IsWifi = this.IsWifi,
             IPv4 = this.IPv4,
             IPv6 = this.IPv6,
+            AddressIdentity = this.AddressIdentity,
             DefaultGatewayAddress = this.DefaultGatewayAddress,
             DnsServers = this.DnsServers,
             DnsServerDetails = CloneDnsServerDetails(this.DnsServerDetails),

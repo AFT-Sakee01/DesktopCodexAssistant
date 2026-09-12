@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.63
+适用版本：2.0.0.78
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -168,21 +168,22 @@ DNS 检测：
 | --- | --- |
 | owner tick | 500/1000/3000 ms；只在 board 显示字段、尺寸或必要动画变化时重绘。 |
 | Dock 交互 | tab/展开/外部点击/离开收起只由 `EdgeDockTabForm` 既有 120 ms tick 驱动。 |
-| 本地网卡 | 首次、手动刷新、选择变化、网络事件或 2 s/5 s 到期；省电只事件驱动。 |
-| 连通性 | 使用 §2 状态表；`AdapterMissing` 不周期请求。 |
-| 滚动 PING | 仅 `Online`；性能/均衡/省电 2/5/10 s；网关与活动目标组单飞。 |
+| 本地网卡 | 首次、手动刷新、选择变化、网络事件或 2 s/5 s 到期；省电只事件驱动。首轮在 tick 上同步执行，之后每轮走后台单飞 `localRefreshRunning`，tick 只消费已提交快照。 |
+| 连通性 | 使用 §2 状态表；`AdapterMissing` 不周期请求。4 包 ICMP 按 `PingSpacingMs = 250` 间隔发送；其延迟/抖动/丢包仅作滚动窗口就绪前的引导值。 |
+| 滚动 PING | 仅 `Online`；性能/均衡/省电 2/5/10 s；网关与活动目标组单飞。公网组按具体目标分窗口，样本 TTL 15 min、每窗口上限 60；连续 `RollingPingSilentTargetMinSamples = 3` 个样本全失败的目标退出聚合。 |
 | 公网 IP | 仅 `Online`；5/10/15 min；只接受校验后的 IPv4。 |
 | DNS | 地址签名变化立即测，否则按 §2 自适应表；单轮最多 2 个 DNS 并发。 |
 | PathPing | 仅 board 展开时运行；均衡 3000 ms、省电 10000 ms，性能按有效模式实现取值；收起完全暂停发包。 |
 | 固定 Ping | 复用 PathPing 可见门控与有效模式间隔，不创建 timer；每目标 1000 ms 超时。 |
-| Network history | 内存缓冲，15 s、32 KiB 或进程退出时批量追加；启动修剪，运行中约 6 h 粗粒度修剪。 |
+| Network history | 内存缓冲，15 s 定时、进程退出时批量追加；跨过 32 KiB 软上限只把既有 flush timer 提前到立即触发，不在调用线程同步写盘（部分调用方在 owner tick 上）。启动修剪，运行中约 6 h 粗粒度修剪。 |
 
-网络事件 30 s 防抖，只失效本地、连通性、公网 IP 与 DNS，并推进 generation。接口 ID、主 IP 或网关真正变化后才重置 GFW、云服务、PathPing 与滚动样本。所有后台任务提交前验证 generation、接口和 target/config signature。
+网络事件 30 s 防抖，只失效本地、连通性、公网 IP 与 DNS，并推进 generation。接口 ID、`AddressIdentity`（排除 IPv6 临时地址的完整单播集合）或网关真正变化后才重置 GFW、云服务、PathPing 与滚动样本。所有后台任务提交前验证 generation、接口和 target/config signature。
 
 ### 6.1 GFW 与云服务
 
 - GFW 周期范围 15-240 min，默认 30 min；只在真实 `Online` 且活动目标滚动丢包未达到确认门控时启动。
 - 手动 token 只有成功占用单飞任务后才消费；任务占用时保留到下一轮。
+- 单轮整体预算 `ProbeBudgetMs = 60000`，在域名之间检查；系统 DNS 解析用 `Dns.BeginGetHostAddresses` 加 `DefaultTimeoutMs = 2800` 显式等待。预算耗尽发布 `Inconclusive` + `探测超时`。
 - 云服务复用 GFW 间隔和 token，但与 GFW 结果完全解耦。
 - 云服务手动刷新冷却 45 s；地区或目标列表变化强制相关源到期。
 - 官方 API 正常缓存 30 min；普通 HTTPS 正常 15 min；异常/慢 2 min；无法连接 45 s；unknown 30 s。

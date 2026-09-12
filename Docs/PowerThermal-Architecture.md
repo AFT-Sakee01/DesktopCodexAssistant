@@ -1,6 +1,6 @@
 # 功耗与温度数据所有者架构
 
-适用版本：2.0.0.35
+适用版本：2.0.0.57
 
 本文说明 `PowerThermalForm` 作为永久 headless 数据所有者时的数据来源、采样、通知、缓存和快照边界。
 
@@ -78,9 +78,9 @@ flowchart LR
 
 `PowerThermalManualEnergySaverThresholdPercent` 只根据最近一次电池快照决定 `EnergySaverActive` 的展示兜底，不修改 Windows 电源模式，也不让全局性能档位强制进入省电。
 
-PWR 展开详情与其余方块共用同一套栅格：左上是 `PWR` 标签、电量主数值与实时电池功率副行；右上 `DrawCaption` 只放限定语（充电时“按当前充电功率”，否则“按近 24h 趋势”）；右侧 `DrawConclusion` 只放一个结论，用紧凑时长和目标词显示耗尽、充到 80%/100%、外接供电或估算状态；曲线带占满全宽，近 24 小时峰值由 `DrawPowerPeakBadge` 锚在峰值样本上（`powerPeakAnchor` 与 `DrawSpark` 共用同一投影），并在与限定语或结论槽相撞时自动下移或内收；底部 `DrawFooterBand` 是脚注条，最下是 9 px 电量条带十等分刻度。`DrawPowerModeIndicator` 用叶片、仪表和闪电分别表示省电、平衡与性能档位，选中项着色并加下划线；系统省电模式是脚注条里的独立色块指示段。两者都是扁平只读投影，不画轨道、选中块或胶囊开关——这一带里只有电池保护开关可点，外观差异就是可点与否的唯一线索。若快照只有节能状态而不知道基础电源模式，档位指示器不选择任何档位，不能把节能兜底冒充为已知基础档位。
+PWR 展开详情与其余方块共用同一套栅格：左上是 `PWR` 标签、电量主数值与实时电池功率副行；右上 `DrawCaption` 只放限定语，内容就是 `PowerForecastPresentation.Source`——每个分支自带的那句，不再是充电/放电两选一的写死文案。写死版本说不出当前处在哪一种“无时长”状态，「刚开始充电还测不出斜率」会渲染成一句声称有估算依据的限定语；`Source` 此前被算出来却从未绘制。`MetricTileExpandForm.RunSelfTest` 断言每个分支都提供非空 `Source`，渲染样张另有 tileexpand-power-measuring.png 与 tileexpand-power-idle-ac.png 两张参考图覆盖这两种状态。右侧 `DrawConclusion` 只放一个结论，用紧凑时长和目标词显示耗尽、充到 80%/100%、外接供电或估算状态。三种“给不出时长”的状态必须彼此可分，`ResolvePowerForecast` 因此给出不同文案：已达上限为“已到 / 80% / 80% 电池保护上限”；刚插上电、当前充电区间内电量还没涨满 1%（`BuildBatteryEta` 求斜率的前提）为“充电 / 到80% / 刚开始充电 · 等电量涨 1%”；插电但未在充电为“外接 / 未充电 / 接通电源 · 电池未在充电”。`MetricTileExpandForm.RunSelfTest` 断言三者的说明文字互不相同，且外接态不含“耗尽/续航”字样。小方块中心的瓦数是电池侧速率、不带符号，充放电打印出的数字完全一样，因此改用颜色区分：充电时 `MetricTileData.CenterAccent` 取 `DesignTokens.Colors.Warning`（黄），放电时留空走中性白；alert 仍优先于两者，`HasVisibleChange` 把 `CenterAccent` 计入重绘比较，充放电切换才会立即重画。曲线带占满全宽，近 24 小时峰值由 `DrawPowerPeakBadge` 锚在峰值样本上（`powerPeakAnchor` 与 `DrawSpark` 共用同一投影），并在与限定语或结论槽相撞时自动下移或内收；底部 `DrawFooterBand` 是脚注条，最下是 9 px 电量条带十等分刻度。`DrawPowerModeIndicator` 用叶片、仪表和闪电分别表示省电、平衡与性能档位，选中项着色并加下划线；系统省电模式是脚注条里的独立色块指示段。两者都是扁平只读投影，不画轨道、选中块或胶囊开关。电池保护 chip 移除后这一带里已无任何可点控件，整条脚注都是只读的。若快照只有节能状态而不知道基础电源模式，档位指示器不选择任何档位，不能把节能兜底冒充为已知基础档位。
 
-`MetricTileExpandForm.DrawBatteryCareControl` 在脚注条右端画一枚抬起式 chip：开启时“80%保护”配“点击暂停 24h”，暂停时“已暂停”配 `FormatCompactCountdown` 的分钟级倒计时（`23h41m` / `41m`）；GUARD 看板仍用 `GuardRuntime.FormatCountdown` 的秒级格式，两者互不影响。整枚 chip 就是 `batteryCareHitBounds`，命中区约为旧两行文字块的两倍。它与 GUARD、操作盘共用 `OperationForm.RequestBatteryCareFromGuardBoard`，在指令执行中禁止重复点击，失败可重试；不开额外 ASUS 调用路径。chip 内文字按实际字体度量排布并据此决定 chip 宽度；开关遵守右侧点击穿透设置，开启穿透时需先在设置中关闭穿透才能点击。右侧充电预测用当前记录选择 80%/100% 目标，达到上限显示“已到”；历史 ETA 的目标若与当前目标不一致或是放电 ETA，暂显示“充电”而不复用错误时长。
+PWR 展开面板不含任何可点控件。原先脚注条右端那枚“80%保护 / 点击暂停 24h”可点 chip 已移除：暂停电池保护只保留在 GUARD 看板一处，而当前生效的上限已由右侧结论直接说出（“到80%”/“到100%”/“已到 80%”），脚注里再放一份只读副本属于重复。`WidgetForm.TileColumn` 因此不再向面板注入 `BatteryCareRequest`，面板也不再声明自己的 `OnMouseUp`——`MetricTileExpandForm.RunSelfTest` 用反射断言这一点，防止以后又在这块只读面板上加回可点控件。充电目标仍按 `BatteryCarePauseActive` 选择：默认 80%，仅在记录显示保护已暂停时才用 100%；历史 ETA 的目标若与当前目标不一致或是放电 ETA，暂显示“充电”而不复用错误时长。
 
 ### 3.3 温度
 

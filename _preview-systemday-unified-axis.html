@@ -1,0 +1,943 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System Day · 统一坐标系改版方案（7 案）</title>
+<style>
+:root{
+  color-scheme: dark;
+  --app-bg:#121316; --surface:#1a1f24; --panel:#161a1e; --border:#48484e;
+  --text:#e8ebee; --strong:#ecf0f2; --muted:#cad3da; --glyph:#808790;
+  --accent:#e27531; --cyan:#52d3ff; --green:#86ee64; --yellow:#ffe25c; --magenta:#e27eff; --danger:#ff5c68;
+  --ui:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI",sans-serif;
+  --mono:"Cascadia Mono","Consolas","JetBrains Mono",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:radial-gradient(circle at 50% 0%, rgba(226,117,49,.06), transparent 42%), #090a0c;
+  color:var(--text); font-family:var(--ui); padding:28px 24px 90px;
+}
+.page{max-width:1180px;margin:0 auto}
+h1{font-size:20px;font-weight:600;letter-spacing:.02em;margin:0 0 8px}
+.lede{color:#8b9099;font-size:13px;line-height:1.8;margin:0 0 4px;max-width:900px}
+.lede b{color:var(--muted);font-weight:600}
+.toolbar{position:sticky;top:0;z-index:20;display:flex;gap:7px;align-items:center;flex-wrap:wrap;
+  margin:18px 0 26px;padding:10px 12px;border:1px solid #2a2c31;border-radius:10px;
+  background:rgba(12,13,15,.94);backdrop-filter:blur(8px)}
+.toolbar span{color:#6e747c;font-size:11.5px;margin-right:2px}
+.btn{border:1px solid #33353b;background:#191a1e;color:var(--muted);font:inherit;font-size:12px;
+  padding:5px 11px;border-radius:6px;cursor:pointer}
+.btn:hover{border-color:#4a4d55;color:var(--strong)}
+.btn.on{border-color:var(--accent);color:#ffd7ba;background:rgba(226,117,49,.14)}
+.card{margin:0 0 34px;border:1px solid #232529;border-radius:12px;background:#0e0f12;overflow:hidden;scroll-margin-top:70px}
+.card > header{padding:14px 18px 12px;border-bottom:1px solid #1e2024;display:flex;gap:13px;align-items:baseline;flex-wrap:wrap}
+.tag{font:600 11px/1 var(--mono);color:#0c0d0f;background:var(--accent);padding:4px 7px;border-radius:4px;letter-spacing:.04em}
+.tag.cur{background:#4a4d55;color:#d6dade}
+.card h2{font-size:15px;font-weight:600;margin:0;color:var(--strong)}
+.sub{color:#7d838b;font-size:12.5px}
+.stage{padding:22px 18px;display:flex;justify-content:center;background:linear-gradient(180deg,#0b0c0e,#0e0f12)}
+.board{width:648px;height:400px;transform-origin:top center;transition:transform .15s ease}
+.board img{display:block;width:648px;height:400px}
+body.x15 .board{transform:scale(1.5)}
+body.x15 .stage{padding-bottom:222px}
+.axisnote{font:500 11px/1.7 var(--mono);color:#8a8f97;background:#141518;border:1px solid #24262b;
+  border-radius:6px;padding:8px 11px;margin:0 18px 16px}
+.axisnote em{color:var(--accent);font-style:normal}
+.notes{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid #1e2024}
+.notes > div{padding:13px 18px 15px;font-size:12.5px;line-height:1.85;color:#8b9099}
+.notes > div + div{border-left:1px solid #1e2024}
+.notes h3{margin:0 0 6px;font-size:10.5px;letter-spacing:.1em;color:#636972;font-weight:600}
+.notes b{color:var(--muted);font-weight:600}
+.notes ul{margin:0;padding-left:16px}
+.notes li{margin:0 0 3px}
+.pros li::marker{color:#4d7a4a}
+.cons li::marker{color:#9a6038}
+footer.end{color:#54595f;font-size:12px;text-align:center;padding:14px}
+</style>
+</head>
+<body>
+<div class="page">
+<h1>System Day · 统一坐标系改版方案</h1>
+<p class="lede">现状问题：<b>8 条指标各有各的基线和量程</b>，曲线漂在自己的窄带里读不出绝对值；峰值文字压在曲线上；顶部 6 个摘要卡又把同一批数字重复一遍。<br>
+以下 7 案的共同前提：<b>所有元素进同一套坐标系</b> —— 一条共享时间轴 X、一条共享数值轴 Y（0–100%），温度与网速在同一画框内用副轴换算，工作状态不再单占一行，摘要折进标题带不再另立卡片。全部 <b>648×400</b> 原生 1:1，数据为 RenderSample 的 fixture。</p>
+
+<div class="toolbar">
+  <span>比例</span>
+  <button class="btn on" data-scale="1">1× 原生</button>
+  <button class="btn" data-scale="1.5">1.5×</button>
+  <span style="margin-left:10px">跳转</span>
+  <button class="btn" data-jump="s1">1 统一百分比（已实装）</button>
+  <button class="btn" data-jump="s2">2 堆叠占用</button>
+  <button class="btn" data-jump="s3">3 热力矩阵</button>
+  <button class="btn" data-jump="s4">4 镜像双域</button>
+  <button class="btn" data-jump="s5">5 极坐标日轮</button>
+  <button class="btn" data-jump="s6">6 焦点单轴</button>
+  <button class="btn" data-jump="s7">7 包络双主线</button>
+</div>
+
+
+
+<div id="mounts"></div>
+<footer class="end">648×400 · fixture 取自 SystemDayBoardForm.RenderSample（120 点 / 00:00–00:40）· 峰值按数据实算，标记落点真实</footer>
+</div>
+
+<script>
+/* ===================== 调色板：DesignTokens 实值 ===================== */
+var C = {
+  bg:'#121316', surface:'#1a1f24', panel:'#171b1f', border:'#48484e',
+  text:'#e8ebee', strong:'#ecf0f2', muted:'#cad3da', glyph:'#808790', dim:'#5d636b',
+  accent:'#e27531',
+  cpu:'#52d3ff', gpu:'#447eff', npu:'#9aa4ae', mem:'#e27eff', net:'#86ee64',
+  battDown:'#52d3ff', battUp:'#ff2c3a',
+  temp:'#ffe25c', tempWarm:'#e27531', tempHot:'#ff2c3a',
+  active:'#86ee64', idle:'#ffe25c', sleep:'#e27eff', danger:'#ff5c68'
+};
+var UI = "'Segoe UI Variable Text','Segoe UI','Microsoft YaHei UI',sans-serif";
+var MONO = "'Cascadia Mono','Consolas',monospace";
+
+/* ===================== fixture（与 C# RenderSample 同式） ===================== */
+var SPAN = 40;
+function buildPoints(){
+  var pts = [];
+  for (var i=0;i<120;i++){
+    var ratio = i/119;
+    var wave = (Math.sin(i*0.27)+1)*0.5;
+    var battery = i<45 ? 82-Math.floor(i/4) : (i<75 ? 71+Math.floor((i-45)/3) : 81-Math.floor((i-75)/5));
+    var dir = i===0 ? 'flat' : (i<45 ? 'fall' : (i<75 ? 'rise' : 'fall'));
+    pts.push({
+      i:i, t:SPAN*ratio,
+      state: (i>26&&i<44) ? 'sleep' : ((i%10<7) ? 'active' : 'idle'),
+      cpu: 16+wave*69,
+      gpu: 8+(Math.sin(i*0.19+1.1)+1)*31,
+      npu: (i>80&&i<96) ? 64 : 2+wave*12,
+      mem: 44+ratio*22+wave*5,
+      net: (i%17===0 ? 21 : 1+wave*4)*1e6,
+      batt: Math.max(0,Math.min(100,battery)), dir:dir,
+      watts: dir==='rise' ? 30+wave*8 : 8+wave*9,
+      temp: 37+wave*37
+    });
+  }
+  return pts;
+}
+var P = buildPoints();
+var LAST = P[P.length-1];
+var SEG = [
+  {a:0.00,b:0.22,s:'active'},{a:0.22,b:0.36,s:'sleep'},
+  {a:0.36,b:0.72,s:'active'},{a:0.72,b:0.79,s:'idle'},{a:0.79,b:1.00,s:'active'}
+].map(function(o){ return {a:o.a*SPAN,b:o.b*SPAN,s:o.s}; });
+
+var SUM = {
+  recorded:'15h28', active:'6h48', idle:'1h36', sleep:'7h04',
+  batt:76, charging:true, watts:'31.6', eta:'约 42分 到 80%',
+  zone:'TZ99', temp:'73.4', updated:'07/23 00:40'
+};
+function peakOf(key){
+  var bi=0; for(var i=1;i<P.length;i++) if(P[i][key]>P[bi][key]) bi=i;
+  return {i:bi, t:P[bi].t, v:P[bi][key]};
+}
+var PEAK = {cpu:peakOf('cpu'),gpu:peakOf('gpu'),npu:peakOf('npu'),mem:peakOf('mem'),net:peakOf('net'),temp:peakOf('temp')};
+
+function clock(t){ var m=Math.round(t); return '00:'+(m<10?'0':'')+m; }
+function mb(bps){ return Math.round(bps/125000)+'M'; }
+
+/* ===================== SVG 基元 ===================== */
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+function T(x,y,txt,o){
+  o=o||{};
+  return '<text x="'+x+'" y="'+y+'" fill="'+(o.fill||C.glyph)+'" font-size="'+(o.size||10)+'"'
+    +' font-family="'+(o.mono?MONO:UI)+'" font-weight="'+(o.w||400)+'"'
+    +' text-anchor="'+(o.anchor||'start')+'" dominant-baseline="central"'
+    +(o.ls?' letter-spacing="'+o.ls+'"':'')+(o.op?' opacity="'+o.op+'"':'')+'>'+esc(txt)+'</text>';
+}
+function R(x,y,w,h,o){
+  o=o||{};
+  return '<rect x="'+x+'" y="'+y+'" width="'+Math.max(0,w)+'" height="'+Math.max(0,h)+'"'
+    +(o.rx?' rx="'+o.rx+'"':'')+' fill="'+(o.fill||'none')+'"'
+    +(o.stroke?' stroke="'+o.stroke+'" stroke-width="'+(o.sw||1)+'"':'')
+    +(o.op!==undefined?' opacity="'+o.op+'"':'')+'/>';
+}
+function L(x1,y1,x2,y2,o){
+  o=o||{};
+  return '<line x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'" stroke="'+(o.stroke||'#ffffff')+'"'
+    +' stroke-width="'+(o.sw||1)+'"'+(o.op!==undefined?' opacity="'+o.op+'"':'')
+    +(o.dash?' stroke-dasharray="'+o.dash+'"':'')+' stroke-linecap="round"/>';
+}
+function PATH(d,o){
+  o=o||{};
+  return '<path d="'+d+'" fill="'+(o.fill||'none')+'"'
+    +(o.stroke?' stroke="'+o.stroke+'" stroke-width="'+(o.sw||1.4)+'" stroke-linejoin="round" stroke-linecap="round"':'')
+    +(o.dash?' stroke-dasharray="'+o.dash+'"':'')
+    +(o.op!==undefined?' opacity="'+o.op+'"':'')+'/>';
+}
+function DOT(x,y,r,fill,o){
+  o=o||{};
+  return '<circle cx="'+x+'" cy="'+y+'" r="'+r+'" fill="'+fill+'"'
+    +(o.stroke?' stroke="'+o.stroke+'" stroke-width="'+(o.sw||1)+'"':'')
+    +(o.op!==undefined?' opacity="'+o.op+'"':'')+'/>';
+}
+function gradV(id,y0,y1,stops){
+  var s='';
+  for(var i=0;i<stops.length;i++)
+    s+='<stop offset="'+stops[i][0]+'" stop-color="'+stops[i][1]+'" stop-opacity="'+stops[i][2]+'"/>';
+  return '<linearGradient id="'+id+'" gradientUnits="userSpaceOnUse" x1="0" y1="'+y0+'" x2="0" y2="'+y1+'">'+s+'</linearGradient>';
+}
+function hx(c){ return [parseInt(c.substr(1,2),16),parseInt(c.substr(3,2),16),parseInt(c.substr(5,2),16)]; }
+function mix(a,b,t){
+  var A=hx(a),B=hx(b);
+  return 'rgb('+Math.round(A[0]+(B[0]-A[0])*t)+','+Math.round(A[1]+(B[1]-A[1])*t)+','+Math.round(A[2]+(B[2]-A[2])*t)+')';
+}
+var RAMP = ['#141a1f','#1d3a47','#2a6f6a','#8f9a3c','#dc8c2e','#ff3b48'];
+function ramp(v){
+  v=Math.max(0,Math.min(1,v));
+  var k=v*(RAMP.length-1), i=Math.min(RAMP.length-2,Math.floor(k));
+  return mix(RAMP[i],RAMP[i+1],k-i);
+}
+
+/* box = {x,y,w,h}，value min..max 映射到 底..顶 */
+function px(box,t){ return box.x + (t/SPAN)*box.w; }
+function py(box,v,min,max){
+  var r=(v-min)/(max-min); r=Math.max(0,Math.min(1,r));
+  return box.y + box.h - r*box.h;
+}
+function series(box,key,min,max){
+  var d='', on=false;
+  for (var i=0;i<P.length;i++){
+    d += (on?'L':'M')+px(box,P[i].t).toFixed(1)+' '+py(box,P[i][key],min,max).toFixed(1)+' ';
+    on=true;
+  }
+  return d.trim();
+}
+function areaOf(box,key,min,max){
+  var d=series(box,key,min,max);
+  return d+' L'+px(box,LAST.t).toFixed(1)+' '+(box.y+box.h)+' L'+box.x+' '+(box.y+box.h)+' Z';
+}
+/* 电量按充/放方向分段上色：升=红，降=青（产品既定语义） */
+function battPath(box,min,max,sw){
+  var out='',cur=null,d='';
+  for(var i=0;i<P.length;i++){
+    var dir = P[i].dir==='rise' ? 'rise' : 'fall';
+    var X=px(box,P[i].t).toFixed(1), Y=py(box,P[i].batt,min,max).toFixed(1);
+    if(cur===null){ cur=dir; d='M'+X+' '+Y+' '; }
+    else if(dir!==cur){
+      d+='L'+X+' '+Y;
+      out+=PATH(d.trim(),{stroke:cur==='rise'?C.battUp:C.battDown,sw:sw||1.9});
+      cur=dir; d='M'+X+' '+Y+' ';
+    } else d+='L'+X+' '+Y+' ';
+  }
+  if(d) out+=PATH(d.trim(),{stroke:cur==='rise'?C.battUp:C.battDown,sw:sw||1.9});
+  return out;
+}
+function stateColor(s){ return s==='active'?C.active:(s==='idle'?C.idle:C.sleep); }
+
+/* ===================== 全方案共用外壳 ===================== */
+function shell(inner,defs){
+  return '<svg viewBox="0 0 648 400" width="648" height="400" xmlns="http://www.w3.org/2000/svg">'
+    + (defs?'<defs>'+defs+'</defs>':'')
+    + R(0,0,648,400,{fill:'#121316'})
+    + R(1.5,1.5,645,397,{rx:9,stroke:C.accent,sw:3,fill:'none',op:.95})
+    + inner + '</svg>';
+}
+function headLine(sub){
+  return T(18,24,'SYSTEM DAY',{fill:C.strong,size:15,w:700,ls:'0.04em'})
+    + T(128,25,sub,{fill:C.accent,size:11})
+    + T(630,24,SUM.updated,{fill:C.glyph,size:10,mono:true,anchor:'end'});
+}
+function footBar(y){
+  return R(14,y,74,22,{rx:4,fill:'#2d2d30',op:.86,stroke:'rgba(134,238,100,.6)'})
+    + T(51,y+11,'今天 ›',{fill:C.text,size:11,anchor:'middle'})
+    + R(93,y,42,22,{rx:4,fill:'#2d2d30',op:.86,stroke:'rgba(255,92,104,.6)'})
+    + T(114,y+11,'关闭',{fill:C.text,size:11,anchor:'middle'})
+    + T(630,y+11,'点击切换范围 · 1 分钟采样 · 完整热区 JSONL',{fill:'#6a7079',size:9.5,anchor:'end'});
+}
+/* 摘要折进标题带：不再另立 6 个卡片 */
+function summaryStrip(y){
+  /* 状态色块直接贴在工作/空闲/睡眠的时长上，这一行同时充当状态图例 */
+  var s = T(18,y,'记录',{fill:C.dim,size:9.5}) + T(44,y,SUM.recorded,{fill:C.muted,size:11.5,w:700,mono:true});
+  var st=[['工作',SUM.active,C.active],['空闲',SUM.idle,C.idle],['睡眠',SUM.sleep,C.sleep]], x=96;
+  for(var i=0;i<st.length;i++){
+    s += R(x,y-3.5,7,7,{fill:st[i][2],rx:1.5});
+    s += T(x+11,y,st[i][0],{fill:C.dim,size:9.5});
+    s += T(x+37,y,st[i][1],{fill:st[i][2],size:11.5,w:700,mono:true});
+    x += 88;
+  }
+  s += L(354,y-7,354,y+7,{stroke:'#ffffff',op:.12});
+  s += T(364,y,'电量',{fill:C.dim,size:9.5});
+  s += T(390,y,SUM.batt+'%',{fill:SUM.charging?C.battUp:C.battDown,size:11.5,w:700,mono:true});
+  s += T(424,y,SUM.watts+'W',{fill:C.muted,size:10.5,mono:true});
+  s += T(466,y,SUM.eta,{fill:C.dim,size:9.5});
+  s += L(552,y-7,552,y+7,{stroke:'#ffffff',op:.12});
+  s += T(592,y,SUM.zone,{fill:C.muted,size:10.5,mono:true,anchor:'end'});
+  s += T(630,y,SUM.temp+'°',{fill:C.tempWarm,size:12,w:700,mono:true,anchor:'end'});
+  return s;
+}
+/* 时间刻度：共享 X 轴，7 格 */
+function timeAxis(box,labelY,o){
+  o=o||{};
+  var s='';
+  for(var i=0;i<7;i++){
+    var t=SPAN*i/6, X=px(box,t);
+    s += L(X,box.y,X,box.y+box.h,{stroke:'#ffffff',op:o.gridOp!==undefined?o.gridOp:.075,sw:1});
+    if(labelY!==null) s += T(X,labelY,clock(t),{fill:'#6a7079',size:9,mono:true,anchor:i===0?'start':(i===6?'end':'middle')});
+  }
+  return s;
+}
+/* 状态色带：并入同一画框，不再单占一行 */
+function stateRibbon(box,y,h,o){
+  o=o||{};
+  var s=R(box.x,y,box.w,h,{fill:'#ffffff',op:.04,rx:o.rx||2});
+  for(var i=0;i<SEG.length;i++){
+    var a=px(box,SEG[i].a), b=px(box,SEG[i].b);
+    s += R(a,y,b-a,h,{fill:stateColor(SEG[i].s),op:o.op!==undefined?o.op:.8,rx:o.rx||2});
+  }
+  return s;
+}
+function stateLegend(x,y){
+  var s='', names=[['工作',C.active],['空闲',C.idle],['睡眠',C.sleep]];
+  for(var i=0;i<3;i++){
+    s += R(x,y-3.5,7,7,{fill:names[i][1],rx:1.5});
+    s += T(x+11,y,names[i][0],{fill:'#767c85',size:9.5});
+    x += 46;
+  }
+  return s;
+}
+/* 图例芯片：名称 + 当前值 / 峰值，取代右侧漂浮的峰值文字 */
+function chip(x,y,color,name,val,peak,dash){
+  var s = L(x,y,x+12,y,{stroke:color,sw:dash?2:2.6,dash:dash?'3 2.5':null});
+  s += T(x+17,y,name,{fill:C.muted,size:10});
+  s += T(x+47,y,val,{fill:color,size:11,w:700,mono:true});
+  if(peak) s += T(x+47+(''+val).length*6.4+2,y,'/'+peak,{fill:'#63696f',size:9,mono:true});
+  return s;
+}
+</script>
+<script>
+/* ===================== 通用扩展基元 ===================== */
+function seriesFn(box,fn,min,max){
+  var d='',on=false;
+  for(var i=0;i<P.length;i++){
+    d += (on?'L':'M')+px(box,P[i].t).toFixed(1)+' '+py(box,fn(P[i]),min,max).toFixed(1)+' '; on=true;
+  }
+  return d.trim();
+}
+function areaFn(box,fn,min,max){
+  return seriesFn(box,fn,min,max)+' L'+px(box,LAST.t).toFixed(1)+' '+(box.y+box.h)+' L'+box.x+' '+(box.y+box.h)+' Z';
+}
+function pyD(box,v,min,max){ var r=(v-min)/(max-min); r=Math.max(0,Math.min(1,r)); return box.y + r*box.h; }
+function seriesFnD(box,fn,min,max){
+  var d='',on=false;
+  for(var i=0;i<P.length;i++){
+    d += (on?'L':'M')+px(box,P[i].t).toFixed(1)+' '+pyD(box,fn(P[i]),min,max).toFixed(1)+' '; on=true;
+  }
+  return d.trim();
+}
+function areaFnD(box,fn,min,max){
+  return seriesFnD(box,fn,min,max)+' L'+px(box,LAST.t).toFixed(1)+' '+box.y+' L'+box.x+' '+box.y+' Z';
+}
+var nTemp = function(p){ return (p.temp-20)/0.8; };          /* 20–100°C -> 0–100 */
+var nNet  = function(p){ return p.net/PEAK.net.v*100; };     /* 0–峰值 -> 0–100 */
+function gridY(box,vals,o){
+  o=o||{};
+  var s='';
+  for(var i=0;i<vals.length;i++){
+    var Y=py(box,vals[i],0,100);
+    s += L(box.x,Y,box.x+box.w,Y,{stroke:'#ffffff',op:vals[i]===0?.16:.085,sw:1,dash:vals[i]===0?null:'2 3'});
+    if(o.left!==false) s += T(box.x-7,Y,vals[i]+(o.unit||''),{fill:'#6a7079',size:9,mono:true,anchor:'end'});
+  }
+  return s;
+}
+function rightAxis(box,x,vals,labels,color,title){
+  var s = T(x,box.y-11,title,{fill:color,size:9,anchor:'start',op:.9});
+  for(var i=0;i<vals.length;i++){
+    var Y=py(box,vals[i],0,100);
+    s += L(x-5,Y,x-1,Y,{stroke:color,op:.45,sw:1});
+    s += T(x+1,Y,labels[i],{fill:color,size:9,mono:true,op:.8});
+  }
+  return s;
+}
+function peakMark(box,t,vNorm,color,label,below){
+  var X=px(box,t), Y=py(box,vNorm,0,100);
+  var flip = X > box.x+box.w-70;
+  return DOT(X,Y,2.8,color,{stroke:'#121316',sw:1.6})
+    + T(flip?X-6:X+6, below?Y+10:Y-9, label, {fill:color,size:9,mono:true,anchor:flip?'end':'start'});
+}
+
+/* ================================================================
+   方案 1 · 统一百分比面板
+   一个 0–100% 主轴容纳全部指标；温度走右副轴 °C；NET 按峰值归一
+   ================================================================ */
+function drawS1(){
+  var box = {x:46,y:92,w:552,h:228};
+  var defs = gradV('s1cpu',box.y,box.y+box.h,[[0,C.cpu,.30],[1,C.cpu,0]]);
+  var s = headLine('统一 0–100% 坐标系 · 右副轴 °C');
+  s += summaryStrip(48);
+
+  /* 图例：当前值 / 峰值，取代压在曲线上的漂浮文字 */
+  var cy=70;
+  s += chip(18, cy,C.cpu,'CPU',Math.round(LAST.cpu),Math.round(PEAK.cpu.v));
+  s += chip(94, cy,C.gpu,'GPU',Math.round(LAST.gpu),Math.round(PEAK.gpu.v));
+  s += chip(170,cy,C.npu,'NPU',Math.round(LAST.npu),Math.round(PEAK.npu.v));
+  s += chip(246,cy,C.mem,'MEM',Math.round(LAST.mem),Math.round(PEAK.mem.v));
+  s += chip(330,cy,C.net,'NET',mb(LAST.net),mb(PEAK.net.v));
+  s += chip(444,cy,C.battDown,'电量',SUM.batt,null);
+  s += chip(512,cy,C.temp,'温度',Math.round(LAST.temp),Math.round(PEAK.temp.v));
+
+  s += R(box.x-1,box.y-1,box.w+2,box.h+2,{fill:'#171b1f',op:.55,rx:5,stroke:'rgba(226,117,49,.22)'});
+  s += gridY(box,[0,25,50,75,100],{unit:''});
+  s += T(box.x-7,box.y-11,'%',{fill:'#6a7079',size:9,anchor:'end'});
+  s += timeAxis(box,343);
+
+  s += PATH(areaFn(box,function(p){return p.cpu;},0,100),{fill:'url(#s1cpu)'});
+  s += PATH(seriesFn(box,nNet,0,100),{stroke:C.net,sw:1.0,op:.32});
+  s += PATH(series(box,'npu',0,100),{stroke:C.npu,sw:1.2,op:.8});
+  s += PATH(series(box,'mem',0,100),{stroke:C.mem,sw:1.3,op:.85});
+  s += PATH(series(box,'gpu',0,100),{stroke:C.gpu,sw:1.3,op:.9});
+  s += PATH(series(box,'cpu',0,100),{stroke:C.cpu,sw:1.8});
+  s += battPath(box,0,100,2.0);
+  s += PATH(seriesFn(box,nTemp,0,100),{stroke:C.temp,sw:1.7,op:.95});
+
+  s += rightAxis(box,box.x+box.w+7,[0,25,50,75,100],['20','40','60','80','100'],C.temp,'°C');
+  s += peakMark(box,PEAK.cpu.t,PEAK.cpu.v,C.cpu,'峰 '+Math.round(PEAK.cpu.v)+'% '+clock(PEAK.cpu.t));
+  s += peakMark(box,PEAK.temp.t,nTemp(P[PEAK.temp.i]),C.temp,'峰 '+PEAK.temp.v.toFixed(1)+'° '+SUM.zone,true);
+
+  /* 状态并入同一画框底沿；状态图例已并进标题带的时长色块 */
+  s += stateRibbon(box,324,9,{op:.85});
+  s += footBar(362);
+  return shell(s,defs);
+}
+
+/* ================================================================
+   方案 2 · 状态底色 + 综合占用堆叠
+   状态退成画布底色；CPU/GPU/NPU/MEM 按 1/4 权重堆叠，栈顶即综合负载
+   ================================================================ */
+function drawS2(){
+  var box = {x:46,y:76,w:552,h:236};
+  var keys=['cpu','gpu','npu','mem'], cols=[C.cpu,C.gpu,C.npu,C.mem];
+  function stackPath(idx){
+    var top='',bot=[];
+    for(var i=0;i<P.length;i++){
+      var up=0,lo=0,k;
+      for(k=0;k<=idx;k++) up+=P[i][keys[k]]/4;
+      for(k=0;k<idx;k++) lo+=P[i][keys[k]]/4;
+      var X=px(box,P[i].t).toFixed(1);
+      top += (i?'L':'M')+X+' '+py(box,up,0,100).toFixed(1)+' ';
+      bot.push(X+' '+py(box,lo,0,100).toFixed(1));
+    }
+    var rev='';
+    for(var j=bot.length-1;j>=0;j--) rev+='L'+bot[j]+' ';
+    return top+rev+'Z';
+  }
+  var s = headLine('状态即底色 · 综合负载堆叠');
+  s += summaryStrip(48);
+  s += R(box.x-1,box.y-1,box.w+2,box.h+2,{fill:'#15181c',rx:5,stroke:'rgba(226,117,49,.22)'});
+
+  /* 工作状态直接染在画布上，省掉整整一行 */
+  for(var i=0;i<SEG.length;i++){
+    var a=px(box,SEG[i].a), b=px(box,SEG[i].b);
+    s += R(a,box.y,b-a,box.h,{fill:stateColor(SEG[i].s),op:.075});
+    s += R(a,box.y-7,b-a,3,{fill:stateColor(SEG[i].s),op:.8});   /* 状态脊线放在画框外，不冒充 100% 的数据线 */
+  }
+  s += gridY(box,[0,25,50,75,100],{});
+  s += T(box.x-7,box.y-11,'%',{fill:'#6a7079',size:9,anchor:'end'});
+  s += timeAxis(box,322,{gridOp:.06});
+
+  for(var k=3;k>=0;k--) s += PATH(stackPath(k),{fill:cols[k],op:k===0?.62:.40});
+  s += PATH(seriesFn(box,function(p){return (p.cpu+p.gpu+p.npu+p.mem)/4;},0,100),{stroke:'#ffffff',sw:1.2,op:.55});
+  s += PATH(seriesFn(box,nNet,0,100),{stroke:C.net,sw:1.0,op:.3});
+  s += battPath(box,0,100,2.1);
+  s += PATH(seriesFn(box,nTemp,0,100),{stroke:C.temp,sw:1.8});
+  s += rightAxis(box,box.x+box.w+7,[0,25,50,75,100],['20','40','60','80','100'],C.temp,'°C');
+  s += peakMark(box,PEAK.temp.t,nTemp(P[PEAK.temp.i]),C.temp,PEAK.temp.v.toFixed(1)+'° '+SUM.zone);
+
+  /* 图例即摘要：堆叠份额 + 绝对值 */
+  var ly=342, lx=18;
+  var vals=[['CPU',C.cpu,Math.round(LAST.cpu)],['GPU',C.gpu,Math.round(LAST.gpu)],
+            ['NPU',C.npu,Math.round(LAST.npu)],['MEM',C.mem,Math.round(LAST.mem)]];
+  for(var v=0;v<vals.length;v++){
+    s += R(lx,ly-4.5,9,9,{fill:vals[v][1],rx:2,op:.75});
+    s += T(lx+13,ly,vals[v][0],{fill:C.muted,size:10});
+    s += T(lx+42,ly,vals[v][2]+'%',{fill:vals[v][1],size:10.5,w:700,mono:true});
+    lx += 76;
+  }
+  s += L(lx-14,ly-7,lx-14,ly+7,{stroke:'#ffffff',op:.12});
+  s += L(lx,ly,lx+12,ly,{stroke:'#ffffff',sw:1.2,op:.55});
+  s += T(lx+17,ly,'综合',{fill:C.muted,size:10});
+  s += T(lx+46,ly,Math.round((LAST.cpu+LAST.gpu+LAST.npu+LAST.mem)/4)+'%',{fill:C.strong,size:10.5,w:700,mono:true});
+  s += L(lx+92,ly,lx+104,ly,{stroke:C.net,sw:2,op:.55});
+  s += T(lx+109,ly,'NET',{fill:C.muted,size:10}) + T(lx+138,ly,mb(LAST.net),{fill:C.net,size:10.5,w:700,mono:true});
+  s += T(630,ly,'底色 = 工作状态',{fill:'#5f656d',size:9.5,anchor:'end'});
+  s += footBar(362);
+  return shell(s);
+}
+
+/* ================================================================
+   方案 3 · 时间 × 指标 热力矩阵
+   X 共享时间；所有指标共用同一条 0–100% 色标；数值列独立成列，永不叠压
+   ================================================================ */
+function bins(key,n,min,max,fn){
+  var out=[];
+  for(var b=0;b<n;b++){
+    var t0=SPAN*b/n, t1=SPAN*(b+1)/n, sum=0,c=0;
+    for(var i=0;i<P.length;i++) if(P[i].t>=t0 && (P[i].t<t1 || (b===n-1 && P[i].t<=t1))){
+      sum += fn?fn(P[i]):P[i][key]; c++;
+    }
+    out.push(c ? Math.max(0,Math.min(1,((sum/c)-min)/(max-min))) : null);
+  }
+  return out;
+}
+function stateBins(n){
+  var out=[];
+  for(var b=0;b<n;b++){
+    var t0=SPAN*b/n, t1=SPAN*(b+1)/n, mid=(t0+t1)/2, st='active';
+    for(var i=0;i<SEG.length;i++) if(mid>=SEG[i].a && mid<SEG[i].b) st=SEG[i].s;
+    out.push(st);
+  }
+  return out;
+}
+function drawS3(){
+  var N=58, gx=64, gw=452, cw=gw/N;
+  var s = headLine('时间 × 指标矩阵 · 单一共享色标');
+  s += summaryStrip(46);
+
+  /* 状态行：类别色，与色标分开，用间距隔断 */
+  var sb=stateBins(N), sy=68, sh=15;
+  s += T(gx-8,sy+sh/2,'状态',{fill:C.muted,size:10,w:600,anchor:'end'});
+  for(var i=0;i<N;i++) s += R(gx+i*cw,sy,cw+.4,sh,{fill:stateColor(sb[i]),op:.82});
+
+  var rows=[
+    {n:'CPU', k:'cpu', min:0, max:100, cur:Math.round(LAST.cpu)+'%', pk:Math.round(PEAK.cpu.v)+'% '+clock(PEAK.cpu.t), c:C.cpu},
+    {n:'GPU', k:'gpu', min:0, max:100, cur:Math.round(LAST.gpu)+'%', pk:Math.round(PEAK.gpu.v)+'% '+clock(PEAK.gpu.t), c:C.gpu},
+    {n:'NPU', k:'npu', min:0, max:100, cur:Math.round(LAST.npu)+'%', pk:Math.round(PEAK.npu.v)+'% '+clock(PEAK.npu.t), c:C.npu},
+    {n:'MEM', k:'mem', min:0, max:100, cur:Math.round(LAST.mem)+'%', pk:Math.round(PEAK.mem.v)+'% '+clock(PEAK.mem.t), c:C.mem},
+    {n:'NET', k:'net', min:0, max:PEAK.net.v, cur:mb(LAST.net), pk:mb(PEAK.net.v)+' '+clock(PEAK.net.t), c:C.net},
+    {n:'电量',k:'batt',min:0, max:100, cur:SUM.batt+'%', pk:'充电 '+SUM.watts+'W', c:C.battDown},
+    {n:'温度',k:'temp',min:20,max:100, cur:LAST.temp.toFixed(1)+'°', pk:PEAK.temp.v.toFixed(1)+'° '+SUM.zone, c:C.temp}
+  ];
+  var y0=92, rh=27;
+  s += T(566,84,'当前',{fill:'#5f656d',size:9,anchor:'end'});
+  s += T(636,84,'峰值 / 状态',{fill:'#5f656d',size:9,anchor:'end'});
+  for(var r=0;r<rows.length;r++){
+    var y=y0+r*rh, row=rows[r], bs=bins(row.k,N,row.min,row.max);
+    s += T(gx-8,y+rh/2-1,row.n,{fill:row.c,size:10,w:600,anchor:'end'});
+    for(var b=0;b<N;b++){
+      if(bs[b]===null) continue;
+      s += R(gx+b*cw, y+2, cw+.4, rh-5, {fill:ramp(bs[b])});
+    }
+    s += T(566,y+rh/2-1,row.cur,{fill:row.c,size:11,w:700,mono:true,anchor:'end'});
+    s += T(636,y+rh/2-1,row.pk,{fill:'#79808a',size:9.5,mono:true,anchor:'end'});
+  }
+  /* 共享刻度网格叠在矩阵上 */
+  for(var t=0;t<7;t++){
+    var X=gx+gw*t/6;
+    s += L(X,y0,X,y0+rows.length*rh-3,{stroke:'#ffffff',op:.16,sw:1});
+    s += T(X,y0+rows.length*rh+9,clock(SPAN*t/6),{fill:'#6a7079',size:9,mono:true,anchor:t===0?'start':(t===6?'end':'middle')});
+  }
+  /* 唯一色标：所有行共用 */
+  var cbx=64, cby=308, cbw=180;
+  s += T(cbx,cby+5,'0',{fill:'#6a7079',size:9,mono:true,anchor:'end'});
+  for(var q=0;q<60;q++) s += R(cbx+4+q*(cbw/60), cby, cbw/60+.4, 10, {fill:ramp(q/59)});
+  s += T(cbx+cbw+10,cby+5,'100%',{fill:'#6a7079',size:9,mono:true});
+  s += T(cbx+cbw+52,cby+5,'· 全指标共用此色标（NET 按峰值、温度按 20–100°C 归一）',{fill:'#5a6068',size:9});
+  s += stateLegend(64,336);
+  s += footBar(362);
+  return shell(s);
+}
+
+/* ================================================================
+   方案 4 · 镜像双域轴
+   一条零线居中：向上是负载域，向下是热与电域，零线本身就是状态带
+   ================================================================ */
+function drawS4(){
+  var up   = {x:52,y:64,w:540,h:124};
+  var down = {x:52,y:196,w:540,h:124};
+  var defs = gradV('s4cpu',up.y,up.y+up.h,[[0,C.cpu,.34],[1,C.cpu,0]])
+           + gradV('s4temp',down.y,down.y+down.h,[[0,C.tempWarm,0],[1,C.tempWarm,.34]]);
+  var s = headLine('镜像双域 · 上=负载 ↑ 下=热与电 ↓');
+  s += summaryStrip(46);
+  s += R(up.x-1,up.y-1,up.w+2,258,{fill:'#15181c',op:.5,rx:5,stroke:'rgba(226,117,49,.2)'});
+
+  var i,Y,X;
+  for(i=0;i<3;i++){
+    var v=[25,50,75][i];
+    Y=py(up,v,0,100);
+    s += L(up.x,Y,up.x+up.w,Y,{stroke:'#ffffff',op:.075,dash:'2 3'});
+    s += T(up.x-7,Y,v,{fill:'#6a7079',size:9,mono:true,anchor:'end'});
+    Y=pyD(down,v,0,100);
+    s += L(down.x,Y,down.x+down.w,Y,{stroke:'#ffffff',op:.075,dash:'2 3'});
+    s += T(down.x-7,Y,[40,60,80][i],{fill:'#8a7a52',size:9,mono:true,anchor:'end'});
+    s += T(down.x+down.w+7,Y,[75,50,25][i],{fill:'#4f7a8a',size:9,mono:true,anchor:'start'});
+  }
+  s += T(up.x-7,up.y+4,'100',{fill:'#6a7079',size:9,mono:true,anchor:'end'});
+  s += T(down.x-7,down.y+down.h-4,'100',{fill:'#8a7a52',size:9,mono:true,anchor:'end'});
+  /* 两域的轴名放在各自域的起点，不与时间刻度抢位 */
+  s += T(up.x+8,up.y+11,'负载 % ↑',{fill:C.cpu,size:9,op:.8});
+  s += T(down.x-7,down.y+9,'温度 °C ↓',{fill:C.temp,size:9,anchor:'end',op:.85});
+  s += T(down.x+down.w+7,down.y+9,'电量 % ↓',{fill:C.battDown,size:9,anchor:'start',op:.85});
+
+  for(i=0;i<7;i++){
+    X=px(up,SPAN*i/6);
+    s += L(X,up.y,X,down.y+down.h,{stroke:'#ffffff',op:.07});
+    s += T(X,331,clock(SPAN*i/6),{fill:'#6a7079',size:9,mono:true,anchor:i===0?'start':(i===6?'end':'middle')});
+  }
+
+  /* 上半域：负载 */
+  s += PATH(areaFn(up,function(p){return p.cpu;},0,100),{fill:'url(#s4cpu)'});
+  s += PATH(seriesFn(up,nNet,0,100),{stroke:C.net,sw:1.0,op:.3});
+  s += PATH(series(up,'npu',0,100),{stroke:C.npu,sw:1.2,op:.8});
+  s += PATH(series(up,'mem',0,100),{stroke:C.mem,sw:1.3,op:.85});
+  s += PATH(series(up,'gpu',0,100),{stroke:C.gpu,sw:1.3,op:.9});
+  s += PATH(series(up,'cpu',0,100),{stroke:C.cpu,sw:1.9});
+  s += peakMark(up,PEAK.cpu.t,PEAK.cpu.v,C.cpu,'峰 '+Math.round(PEAK.cpu.v)+'% '+clock(PEAK.cpu.t));
+
+  /* 下半域：向下生长 = 消耗。温度越热越深，电量越少越深 */
+  s += PATH(areaFnD(down,nTemp,0,100),{fill:'url(#s4temp)'});
+  s += PATH(seriesFnD(down,nTemp,0,100),{stroke:C.temp,sw:1.8});
+  var bd='',cur=null,out='';
+  for(i=0;i<P.length;i++){
+    var dir=P[i].dir==='rise'?'rise':'fall';
+    X=px(down,P[i].t).toFixed(1); Y=pyD(down,100-P[i].batt,0,100).toFixed(1);
+    if(cur===null){ cur=dir; bd='M'+X+' '+Y+' '; }
+    else if(dir!==cur){ bd+='L'+X+' '+Y; out+=PATH(bd.trim(),{stroke:cur==='rise'?C.battUp:C.battDown,sw:2.0}); cur=dir; bd='M'+X+' '+Y+' '; }
+    else bd+='L'+X+' '+Y+' ';
+  }
+  if(bd) out+=PATH(bd.trim(),{stroke:cur==='rise'?C.battUp:C.battDown,sw:2.0});
+  s += out;
+  var tx=px(down,PEAK.temp.t), ty=pyD(down,nTemp(P[PEAK.temp.i]),0,100);
+  s += DOT(tx,ty,2.8,C.temp,{stroke:'#121316',sw:1.6});
+  s += T(tx+6,ty+10,'峰 '+PEAK.temp.v.toFixed(1)+'° '+SUM.zone,{fill:C.temp,size:9,mono:true});
+
+  /* 零线 = 状态带，两域共用的时间基准 */
+  s += stateRibbon(up,188,8,{op:.88,rx:0});
+  s += L(up.x,188,up.x+up.w,188,{stroke:'#000000',op:.5});
+  s += L(up.x,196,up.x+up.w,196,{stroke:'#000000',op:.5});
+
+  /* 两域图例合成一行，移出画框 */
+  var ly=350, lx=18, u=[['CPU',C.cpu,Math.round(LAST.cpu)+''],['GPU',C.gpu,Math.round(LAST.gpu)+''],
+      ['NPU',C.npu,Math.round(LAST.npu)+''],['MEM',C.mem,Math.round(LAST.mem)+''],['NET',C.net,mb(LAST.net)]];
+  s += T(lx,ly,'↑',{fill:'#6a7079',size:11,w:700});
+  lx+=12;
+  for(i=0;i<u.length;i++){
+    s += L(lx,ly,lx+10,ly,{stroke:u[i][1],sw:2.2});
+    s += T(lx+14,ly,u[i][0],{fill:'#8d939b',size:9.5});
+    s += T(lx+40,ly,u[i][2],{fill:u[i][1],size:10.5,w:700,mono:true});
+    lx += 66;
+  }
+  s += L(lx-6,ly-8,lx-6,ly+8,{stroke:'#ffffff',op:.12});
+  s += T(lx+4,ly,'↓',{fill:'#6a7079',size:11,w:700});
+  s += L(lx+16,ly,lx+26,ly,{stroke:C.temp,sw:2.2});
+  s += T(lx+30,ly,'温度',{fill:'#8d939b',size:9.5}) + T(lx+56,ly,LAST.temp.toFixed(1)+'°',{fill:C.temp,size:10.5,w:700,mono:true});
+  s += L(lx+94,ly,lx+104,ly,{stroke:C.battUp,sw:2.2});
+  s += T(lx+108,ly,'电量',{fill:'#8d939b',size:9.5}) + T(lx+134,ly,SUM.batt+'%',{fill:C.battUp,size:10.5,w:700,mono:true});
+  s += T(630,ly,'零线 = 状态带',{fill:'#5f656d',size:9.5,anchor:'end'});
+  s += footBar(362);
+  return shell(s,defs);
+}
+/* ================================================================
+   方案 5 · 极坐标日轮
+   一套 r–θ 极坐标：θ=时间，r=0–100%，外环=状态，圆心=当下摘要
+   ================================================================ */
+function polar(cx,cy,r,ang){ var a=ang*Math.PI/180; return [cx+r*Math.sin(a), cy-r*Math.cos(a)]; }
+function arcPath(cx,cy,r,a0,a1){
+  var p0=polar(cx,cy,r,a0), p1=polar(cx,cy,r,a1), lg=Math.abs(a1-a0)>180?1:0;
+  return 'M'+p0[0].toFixed(1)+' '+p0[1].toFixed(1)+' A'+r+' '+r+' 0 '+lg+' 1 '+p1[0].toFixed(1)+' '+p1[1].toFixed(1);
+}
+function ringBand(cx,cy,r0,r1,a0,a1){
+  var A=polar(cx,cy,r1,a0),B=polar(cx,cy,r1,a1),D=polar(cx,cy,r0,a1),E=polar(cx,cy,r0,a0),lg=Math.abs(a1-a0)>180?1:0;
+  return 'M'+A[0].toFixed(1)+' '+A[1].toFixed(1)
+    +' A'+r1+' '+r1+' 0 '+lg+' 1 '+B[0].toFixed(1)+' '+B[1].toFixed(1)
+    +' L'+D[0].toFixed(1)+' '+D[1].toFixed(1)
+    +' A'+r0+' '+r0+' 0 '+lg+' 0 '+E[0].toFixed(1)+' '+E[1].toFixed(1)+' Z';
+}
+function polarSeries(cx,cy,fn,min,max,rMin,rMax,a0,a1,close){
+  var d='',on=false;
+  for(var i=0;i<P.length;i++){
+    var v=(fn(P[i])-min)/(max-min); v=Math.max(0,Math.min(1,v));
+    var ang=a0+(a1-a0)*(P[i].t/SPAN), p=polar(cx,cy,rMin+(rMax-rMin)*v,ang);
+    d += (on?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)+' '; on=true;
+  }
+  if(close){
+    var e=polar(cx,cy,rMin,a1), s0=polar(cx,cy,rMin,a0);
+    d += 'L'+e[0].toFixed(1)+' '+e[1].toFixed(1)+' A'+rMin+' '+rMin+' 0 0 0 '+s0[0].toFixed(1)+' '+s0[1].toFixed(1)+' Z';
+  }
+  return d.trim();
+}
+function drawS5(){
+  var cx=248, cy=208, rMin=52, rMax=140, a0=-140, a1=140;
+  var defs = '<radialGradient id="s5cpu" gradientUnits="userSpaceOnUse" cx="'+cx+'" cy="'+cy+'" r="'+rMax+'">'
+    + '<stop offset="'+(rMin/rMax)+'" stop-color="'+C.cpu+'" stop-opacity="0"/>'
+    + '<stop offset="1" stop-color="'+C.cpu+'" stop-opacity="0.34"/></radialGradient>';
+  var s = headLine('极坐标日轮 · θ=时间 r=0–100%');
+  s += T(630,42,'一套 r–θ 坐标系承载全部指标',{fill:'#5f656d',size:9.5,anchor:'end'});
+
+  /* 量程环 + 径向时间格 */
+  var i,p;
+  for(i=0;i<=4;i++){
+    var v=i*25, r=rMin+(rMax-rMin)*v/100;
+    s += PATH(arcPath(cx,cy,r,a0,a1),{stroke:'#ffffff',sw:1,op:v===0?.2:.09,dash:v===0?null:'2 3'});
+    if(v>0) s += T(cx-3,cy-r,v+'',{fill:'#6a7079',size:8.5,mono:true,anchor:'end'});
+  }
+  for(i=0;i<7;i++){
+    var ang=a0+(a1-a0)*i/6, pa=polar(cx,cy,rMin,ang), pb=polar(cx,cy,rMax+10,ang), pl=polar(cx,cy,rMax+23,ang);
+    s += L(pa[0],pa[1],pb[0],pb[1],{stroke:'#ffffff',op:.09});
+    s += T(pl[0],pl[1],clock(SPAN*i/6),{fill:'#6a7079',size:9,mono:true,anchor:'middle'});
+  }
+  /* 外环 = 工作状态 */
+  for(i=0;i<SEG.length;i++){
+    s += PATH(ringBand(cx,cy,rMax+3,rMax+11,a0+(a1-a0)*SEG[i].a/SPAN,a0+(a1-a0)*SEG[i].b/SPAN),
+              {fill:stateColor(SEG[i].s),op:.82});
+  }
+  /* 同一极坐标里的全部指标 */
+  s += PATH(polarSeries(cx,cy,function(q){return q.cpu;},0,100,rMin,rMax,a0,a1,true),{fill:'url(#s5cpu)'});
+  s += PATH(polarSeries(cx,cy,nNet,0,100,rMin,rMax,a0,a1),{stroke:C.net,sw:1.0,op:.26});
+  s += PATH(polarSeries(cx,cy,function(q){return q.npu;},0,100,rMin,rMax,a0,a1),{stroke:C.npu,sw:1.1,op:.5});
+  s += PATH(polarSeries(cx,cy,function(q){return q.mem;},0,100,rMin,rMax,a0,a1),{stroke:C.mem,sw:1.2,op:.6});
+  s += PATH(polarSeries(cx,cy,function(q){return q.gpu;},0,100,rMin,rMax,a0,a1),{stroke:C.gpu,sw:1.2,op:.65});
+  s += PATH(polarSeries(cx,cy,function(q){return q.cpu;},0,100,rMin,rMax,a0,a1),{stroke:C.cpu,sw:1.8});
+  s += PATH(polarSeries(cx,cy,function(q){return q.batt;},0,100,rMin,rMax,a0,a1),{stroke:C.battUp,sw:2.0,op:.95});
+  s += PATH(polarSeries(cx,cy,nTemp,0,100,rMin,rMax,a0,a1),{stroke:C.temp,sw:1.8});
+  p = polar(cx,cy,rMin+(rMax-rMin)*nTemp(P[PEAK.temp.i])/100, a0+(a1-a0)*PEAK.temp.t/SPAN);
+  s += DOT(p[0],p[1],3,C.temp,{stroke:'#121316',sw:1.6});
+
+  /* 圆心 = 当下摘要，不再另立卡片 */
+  s += DOT(cx,cy,rMin-3,'#121316',{stroke:'rgba(226,117,49,.28)',sw:1});
+  s += T(cx,cy-30,'电量 / 功耗',{fill:'#5f656d',size:9,anchor:'middle'});
+  s += T(cx,cy-11,SUM.batt+'%',{fill:C.battUp,size:21,w:700,mono:true,anchor:'middle'});
+  s += T(cx,cy+9,'⚡ '+SUM.watts+'W',{fill:C.muted,size:10.5,mono:true,anchor:'middle'});
+  s += L(cx-30,cy+22,cx+30,cy+22,{stroke:'#ffffff',op:.12});
+  s += T(cx,cy+34,SUM.zone+' '+SUM.temp+'°',{fill:C.tempWarm,size:11,w:700,mono:true,anchor:'middle'});
+
+  /* 右栏图例：当前 / 峰值 */
+  var lx=432, ly=72, rows=[
+    ['CPU',C.cpu,Math.round(LAST.cpu)+'%',Math.round(PEAK.cpu.v)+'%'],
+    ['GPU',C.gpu,Math.round(LAST.gpu)+'%',Math.round(PEAK.gpu.v)+'%'],
+    ['NPU',C.npu,Math.round(LAST.npu)+'%',Math.round(PEAK.npu.v)+'%'],
+    ['MEM',C.mem,Math.round(LAST.mem)+'%',Math.round(PEAK.mem.v)+'%'],
+    ['NET',C.net,mb(LAST.net),mb(PEAK.net.v)],
+    ['电量',C.battUp,SUM.batt+'%','充电'],
+    ['温度',C.temp,LAST.temp.toFixed(0)+'°',PEAK.temp.v.toFixed(1)+'°']
+  ];
+  s += T(lx,ly-16,'当前',{fill:'#5f656d',size:9});
+  s += T(636,ly-16,'峰值',{fill:'#5f656d',size:9,anchor:'end'});
+  for(i=0;i<rows.length;i++){
+    var y=ly+i*23;
+    s += L(lx,y,lx+12,y,{stroke:rows[i][1],sw:2.4});
+    s += T(lx+17,y,rows[i][0],{fill:C.muted,size:10});
+    s += T(lx+108,y,rows[i][2],{fill:rows[i][1],size:11,w:700,mono:true,anchor:'end'});
+    s += T(636,y,rows[i][3],{fill:'#70767e',size:9.5,mono:true,anchor:'end'});
+  }
+  s += L(lx,246,636,246,{stroke:'#ffffff',op:.1});
+  s += stateLegend(lx,262);
+  var durs=[['记录',SUM.recorded,C.muted],['工作',SUM.active,C.active],['空闲',SUM.idle,C.idle],['睡眠',SUM.sleep,C.sleep]];
+  for(i=0;i<durs.length;i++){
+    s += T(lx+(i%2)*86, 288+Math.floor(i/2)*20, durs[i][0],{fill:'#5f656d',size:9.5});
+    s += T(lx+(i%2)*86+28, 288+Math.floor(i/2)*20, durs[i][1],{fill:durs[i][2],size:11,w:700,mono:true});
+  }
+  s += footBar(362);
+  return shell(s,defs);
+}
+
+/* ================================================================
+   方案 6 · 焦点单轴
+   同一坐标系内只让一条线"发声"：焦点线粗描 + 真实刻度，其余淡成参照
+   ================================================================ */
+var S6FOCUS='cpu';
+var S6META={
+  cpu:{n:'CPU',c:C.cpu,f:function(p){return p.cpu;},min:0,max:100,unit:'%',cur:function(){return Math.round(LAST.cpu)+'%';},pk:function(){return Math.round(PEAK.cpu.v)+'% · '+clock(PEAK.cpu.t);},ticks:['0','25','50','75','100']},
+  gpu:{n:'GPU',c:C.gpu,f:function(p){return p.gpu;},min:0,max:100,unit:'%',cur:function(){return Math.round(LAST.gpu)+'%';},pk:function(){return Math.round(PEAK.gpu.v)+'% · '+clock(PEAK.gpu.t);},ticks:['0','25','50','75','100']},
+  npu:{n:'NPU',c:C.npu,f:function(p){return p.npu;},min:0,max:100,unit:'%',cur:function(){return Math.round(LAST.npu)+'%';},pk:function(){return Math.round(PEAK.npu.v)+'% · '+clock(PEAK.npu.t);},ticks:['0','25','50','75','100']},
+  mem:{n:'MEM',c:C.mem,f:function(p){return p.mem;},min:0,max:100,unit:'%',cur:function(){return Math.round(LAST.mem)+'%';},pk:function(){return Math.round(PEAK.mem.v)+'% · '+clock(PEAK.mem.t);},ticks:['0','25','50','75','100']},
+  net:{n:'NET',c:C.net,f:nNet,min:0,max:100,unit:'',cur:function(){return mb(LAST.net);},pk:function(){return mb(PEAK.net.v)+' · '+clock(PEAK.net.t);},ticks:['0','44M','88M','132M','176M']},
+  batt:{n:'电量',c:C.battUp,f:function(p){return p.batt;},min:0,max:100,unit:'%',cur:function(){return SUM.batt+'%';},pk:function(){return '充电 '+SUM.watts+'W';},ticks:['0','25','50','75','100']},
+  temp:{n:'温度',c:C.temp,f:nTemp,min:0,max:100,unit:'',cur:function(){return LAST.temp.toFixed(1)+'°';},pk:function(){return PEAK.temp.v.toFixed(1)+'° '+SUM.zone;},ticks:['20','40','60','80','100']}
+};
+var S6ORDER=['cpu','gpu','npu','mem','net','batt','temp'];
+function drawS6(){
+  var box={x:52,y:86,w:546,h:234};
+  var m=S6META[S6FOCUS];
+  var defs=gradV('s6f',box.y,box.y+box.h,[[0,m.c,.30],[1,m.c,0]]);
+  var s=headLine('焦点单轴 · 点图例切换主指标');
+  s += summaryStrip(46);
+
+  /* 图例即选择器 */
+  var cx0=18;
+  for(var i=0;i<S6ORDER.length;i++){
+    var k=S6ORDER[i], mm=S6META[k], on=(k===S6FOCUS);
+    s += '<g class="fchip" data-k="'+k+'" style="cursor:pointer">';
+    s += R(cx0-4,60,80,17,{rx:4,fill:on?mm.c:'#ffffff',op:on?.16:.03,stroke:on?mm.c:'transparent'});
+    s += L(cx0+1,68.5,cx0+11,68.5,{stroke:mm.c,sw:on?2.8:2,op:on?1:.5});
+    s += T(cx0+16,68.5,mm.n,{fill:on?C.strong:'#767c85',size:10,w:on?600:400});
+    s += T(cx0+70,68.5,mm.cur(),{fill:on?mm.c:'#5f656d',size:10,mono:true,w:on?700:400,anchor:'end'});
+    s += '</g>';
+    cx0 += 80;
+  }
+  s += R(box.x-1,box.y-1,box.w+2,box.h+2,{fill:'#15181c',op:.55,rx:5,stroke:'rgba(226,117,49,.22)'});
+  for(var v=0;v<=4;v++){
+    var val=v*25, Y=py(box,val,0,100);
+    s += L(box.x,Y,box.x+box.w,Y,{stroke:'#ffffff',op:val===0?.16:.085,dash:val===0?null:'2 3'});
+    s += T(box.x-7,Y,m.ticks[v],{fill:m.c,size:9,mono:true,anchor:'end',op:.85});
+  }
+  s += timeAxis(box,343);
+
+  /* 非焦点指标：同一坐标系里的淡参照 */
+  for(var j=0;j<S6ORDER.length;j++){
+    var kk=S6ORDER[j]; if(kk===S6FOCUS) continue;
+    s += PATH(seriesFn(box,S6META[kk].f,0,100),{stroke:S6META[kk].c,sw:1,op:.22});
+  }
+  s += PATH(areaFn(box,m.f,0,100),{fill:'url(#s6f)'});
+  s += PATH(seriesFn(box,m.f,0,100),{stroke:m.c,sw:2.2});
+
+  var pk = (S6FOCUS==='batt') ? null : (S6FOCUS==='net'?PEAK.net:(S6FOCUS==='temp'?PEAK.temp:PEAK[S6FOCUS]));
+  if(pk){
+    var PX=px(box,pk.t), PY=py(box,m.f(P[pk.i]),0,100);
+    s += L(PX,PY,PX,box.y+box.h,{stroke:m.c,op:.3,dash:'2 3'});
+    s += DOT(PX,PY,3.2,m.c,{stroke:'#121316',sw:1.8});
+  }
+  /* 当前读数压在画框右上角，不挡曲线 */
+  s += R(box.x+box.w-136,box.y+8,128,44,{rx:5,fill:'#0f1114',op:.86,stroke:'rgba(255,255,255,.09)'});
+  s += T(box.x+box.w-126,box.y+20,m.n+' 当前',{fill:'#6a7079',size:9});
+  s += T(box.x+box.w-16,box.y+24,m.cur(),{fill:m.c,size:19,w:700,mono:true,anchor:'end'});
+  s += T(box.x+box.w-126,box.y+42,'峰 '+m.pk(),{fill:'#79808a',size:9,mono:true});
+
+  s += stateRibbon(box,324,9,{op:.85});
+  s += footBar(362);
+  return shell(s,defs);
+}
+
+/* ================================================================
+   方案 7 · 包络带 + 双主线
+   四个算力指标坍缩成一条 min–max 包络带 + 中位线；只留电量与温度两条实线
+   ================================================================ */
+function drawS7(){
+  var box={x:50,y:70,w:548,h:226};
+  var defs=gradV('s7band',box.y,box.y+box.h,[[0,C.cpu,.30],[1,C.cpu,.06]]);
+  function ext(p){
+    var a=[p.cpu,p.gpu,p.npu,p.mem].sort(function(x,y){return x-y;});
+    return {lo:a[0], hi:a[3], mid:(a[1]+a[2])/2};
+  }
+  var s=headLine('包络带 · 算力四指标坍缩为一条带');
+  s += summaryStrip(46);
+  s += R(box.x-1,box.y-1,box.w+2,box.h+2,{fill:'#15181c',op:.55,rx:5,stroke:'rgba(226,117,49,.22)'});
+  s += gridY(box,[0,25,50,75,100],{});
+  s += T(box.x-7,box.y-11,'%',{fill:'#6a7079',size:9,anchor:'end'});
+  s += timeAxis(box,322);
+
+  var up='',lo=[],i;
+  for(i=0;i<P.length;i++){
+    var e=ext(P[i]), X=px(box,P[i].t).toFixed(1);
+    up += (i?'L':'M')+X+' '+py(box,e.hi,0,100).toFixed(1)+' ';
+    lo.push(X+' '+py(box,e.lo,0,100).toFixed(1));
+  }
+  var rev=''; for(i=lo.length-1;i>=0;i--) rev+='L'+lo[i]+' ';
+  s += PATH(up+rev+'Z',{fill:'url(#s7band)'});
+  s += PATH(up.trim(),{stroke:C.cpu,sw:1.1,op:.55});
+  s += PATH(seriesFn(box,function(p){return ext(p).lo;},0,100),{stroke:C.cpu,sw:1.1,op:.35});
+  s += PATH(seriesFn(box,function(p){return ext(p).mid;},0,100),{stroke:'#cfe9f5',sw:1.6,op:.8});
+  s += battPath(box,0,100,2.2);
+  s += PATH(seriesFn(box,nTemp,0,100),{stroke:C.temp,sw:2.0});
+  s += rightAxis(box,box.x+box.w+7,[0,25,50,75,100],['20','40','60','80','100'],C.temp,'°C');
+  s += peakMark(box,PEAK.cpu.t,PEAK.cpu.v,C.cpu,'算力峰 '+Math.round(PEAK.cpu.v)+'% '+clock(PEAK.cpu.t));
+  s += peakMark(box,PEAK.temp.t,nTemp(P[PEAK.temp.i]),C.temp,'热峰 '+PEAK.temp.v.toFixed(1)+'° '+SUM.zone,true);
+
+  s += stateRibbon(box,300,9,{op:.85});
+
+  /* 被折叠的四个指标在同一行交回数值，信息不丢 */
+  var ly=346, lx=18;
+  s += R(lx-4,ly-10,236,20,{rx:5,fill:C.cpu,op:.07});
+  s += T(lx+2,ly,'算力带',{fill:'#9fd8ee',size:9.5,w:600});
+  var four=[['CPU',C.cpu,Math.round(LAST.cpu)],['GPU',C.gpu,Math.round(LAST.gpu)],
+            ['NPU',C.npu,Math.round(LAST.npu)],['MEM',C.mem,Math.round(LAST.mem)]];
+  var fx=lx+46;
+  for(i=0;i<four.length;i++){
+    s += T(fx,ly,four[i][0],{fill:'#767c85',size:9});
+    s += T(fx+26,ly,four[i][2]+'',{fill:four[i][1],size:10.5,w:700,mono:true});
+    fx += 48;
+  }
+  s += L(266,ly,278,ly,{stroke:C.temp,sw:2.4});
+  s += T(283,ly,'温度',{fill:C.muted,size:10}) + T(312,ly,LAST.temp.toFixed(1)+'°',{fill:C.temp,size:10.5,w:700,mono:true});
+  s += L(360,ly,372,ly,{stroke:C.battUp,sw:2.4});
+  s += T(377,ly,'电量',{fill:C.muted,size:10}) + T(406,ly,SUM.batt+'% ⚡',{fill:C.battUp,size:10.5,w:700,mono:true});
+  s += T(630,ly,'带宽 = 四项离散度',{fill:'#5f656d',size:9.5,anchor:'end'});
+  s += footBar(362);
+  return shell(s,defs);
+}
+
+/* ===================== 方案清单 ===================== */
+var SCHEMES=[
+ {id:'s1',tag:'方案 1',name:'统一百分比面板',sub:'一条 0–100% 主轴装下全部 8 项，温度走右副轴 °C',draw:drawS1,
+  axis:'坐标系数量：<em>1 套共享 X + 1 套共享 Y(0–100%) + 1 条右副轴(°C)</em> · 状态带并入画框底沿 · 峰值与当前值上移进图例，不再压曲线 · 摘要折进标题带',
+  pros:['改动面最小：现有 DrawMetricRow 的分行循环换成同一 box 叠画即可，风险最低','任意两条线可直接比高低，这是现状完全做不到的','纵向省出约 90px，图区从 250 涨到 228 且不再被 8 条分隔线切碎'],
+  cons:['7 条线同框，重叠区会有"意面感"，尤其 CPU/GPU 走势相近时','NET 按峰值归一后绝对值只能靠图例读','电量在 70–80% 长期贴着 MEM 走，需要靠线宽区分']},
+
+ {id:'s2',tag:'方案 2',name:'状态底色 + 综合占用堆叠',sub:'状态退成画布底色；算力四项按 1/4 权重堆叠，栈顶即综合负载',draw:drawS2,
+  axis:'坐标系数量：<em>1 套共享 X + 1 套共享 Y(0–100%) + 1 条右副轴(°C)</em> · 工作状态改为整列底色，省掉一整行 · 栈顶 = 综合负载，堆叠分层 = 各自贡献',
+  pros:['一眼能看出"忙不忙"以及是谁在忙，这是分行折线永远给不出的','状态变成底色后，睡眠/空闲时段与负载塌陷天然对齐，不用左右比对','填充面积在 OLED 上比细线更稳，也更耐看'],
+  cons:['堆叠读的是贡献值(实际值/4)，绝对值要看图例，对"CPU 到底多少"不如方案 1 直接','四层半透明叠色在深色底上要仔细调 alpha，否则会糊','底色染整列会让画面偏亮，夜间可能刺眼（可降到 5% alpha）']},
+
+ {id:'s3',tag:'方案 3',name:'时间 × 指标 热力矩阵',sub:'所有行共用同一条 0–100% 色标，数值独立成列',draw:drawS3,
+  axis:'坐标系数量：<em>1 套共享 X(时间分箱) + 1 条共享数值色标</em> · 没有任何 Y 基线，因此不存在"曲线漂浮"问题 · 当前/峰值单独成列，结构上不可能叠压',
+  pros:['彻底消灭现状的两个病根：浮动基线 和 标签叠压','切到"近一周"时优势最大——折线在 7 天尺度上必糊，色块不会','信息密度最高，648×400 里塞下 8 行 × 58 个时间箱还很空'],
+  cons:['读不出精确形状，只能读"强度与时段"，看趋势拐点不如折线','电量高=暖色在语义上别扭（高电量是好事），需要额外说明或单独反转','单色标要求所有行归一，温度/网速的换算关系必须写清楚']},
+
+ {id:'s4',tag:'方案 4',name:'镜像双域轴',sub:'零线居中：上=负载 ↑，下=热与电 ↓，零线本身就是状态带',draw:drawS4,
+  axis:'坐标系数量：<em>1 套共享 X + 1 条贯通 Y(上 0–100 负载 / 下 0–100 消耗)</em> · 零线兼任状态带与时间基准 · 下半域左轴 °C、右轴 电量%，同框不同侧',
+  pros:['"因"（负载）与"果"（发热掉电）上下正对，时间上完全对齐，因果关系一眼可见','每半域只剩 3–5 条线，比方案 1 的 7 条同框清爽得多','零线兼做状态带，一个像素不浪费，结构感最强'],
+  cons:['下半域"向下生长=消耗"需要一次学习成本，电量是 100 在上、0 在下','每半域只有 130px 高，动态范围比方案 1 小一半','左右两套下半域刻度（°C 与 %）容易被误读成同一把尺']},
+
+ {id:'s5',tag:'方案 5',name:'极坐标日轮',sub:'θ=时间，r=0–100%，外环=状态，圆心=当下摘要',draw:drawS5,
+  axis:'坐标系数量：<em>1 套 r–θ 极坐标</em>，全部指标共用 · 外环状态、径向时间格、同心量程环都在这一套里 · 圆心空洞收纳摘要，取代 6 个卡片',
+  pros:['与产品既有的 Radar / 表盘视觉语言同源，最不像"又一张折线图"','圆心天然是摘要位，摘要与图形共用一个中心，不再是两块无关的区域','"今天"范围下昼夜节律在角度上直观，周期性负载会显出花瓣形'],
+  cons:['同一半径处角分辨率随 r 变化，时间读数精度不均，这是极坐标的固有代价','7 条极线交叠比直角坐标更难分辨，实现上几乎必须配合方案 6 的焦点淡化','GDI+ 里要自己算弧线路径与环带，实现成本是这 7 案里最高的']},
+
+ {id:'s6',tag:'方案 6',name:'焦点单轴（可点击）',sub:'同一坐标系里只让一条线发声，其余淡成参照；左轴随焦点切换成真实刻度',draw:drawS6,
+  axis:'坐标系数量：<em>1 套共享 X + 1 套共享 Y</em>，但左轴刻度随焦点指标改写真实单位（NET→Mbps、温度→°C）· 非焦点线保留在同一坐标系内作为 22% 透明度的参照',
+  pros:['唯一能同时做到"有绝对刻度"和"不意面"的方案——左轴永远是焦点指标的真实单位','非焦点线不删除，仍在同一坐标系内提供对比，切换即可换视角','与现有交互一致：看板已有点击切范围，再加一层点击切焦点不突兀'],
+  cons:['引入状态：焦点选择要进 WidgetSettings 并覆盖默认值/克隆/加载/保存/归一化/迁移/--test-settings-bindings','一眼只能读准一个指标，"同时盯 CPU 和温度"要切两次','命中测试区域要新增 7 个 chip 的矩形判定，EdgeDockTab 的自动隐藏计时需一并刷新']},
+
+ {id:'s7',tag:'方案 7',name:'包络带 + 双主线',sub:'算力四项坍缩为 min–max 包络带 + 中位线，只留电量与温度两条实线',draw:drawS7,
+  axis:'坐标系数量：<em>1 套共享 X + 1 套共享 Y(0–100%) + 1 条右副轴(°C)</em> · 视觉对象从 8 个降到 4 个（带 / 中位线 / 电量 / 温度）· 被折叠的四项在底部一行交回数值',
+  pros:['墨迹最少、最安静，OLED 烧屏风险与功耗都最低，契合本机长期常驻的定位','"算力整体在 10–70% 之间波动"这种判断比看四条线更快','带的厚度自带信息量：带宽 = 四项离散度，窄带说明负载均衡，宽带说明某一项独走'],
+  cons:['牺牲了"是哪一项在跑"的可见性，只能从底部数值行回读','NPU 长期贴地会把包络带下沿永久压在 2% 附近，带宽信息被 NPU 单独支配','中位线是四项的中位数，不对应任何真实硬件，解释起来要小心']}
+];
+
+/* ===================== 挂载 ===================== */
+function cardHTML(sc){
+  return '<div class="card" id="'+sc.id+'">'
+    +'<header><span class="tag">'+sc.tag+'</span><h2>'+sc.name+'</h2><span class="sub">'+sc.sub+'</span></header>'
+    +'<div class="stage"><div class="board" data-board="'+sc.id+'"></div></div>'
+    +'<div class="axisnote">'+sc.axis+'</div>'
+    +'<div class="notes">'
+    +'<div><h3>优点</h3><ul class="pros"><li>'+sc.pros.join('</li><li>')+'</li></ul></div>'
+    +'<div><h3>代价</h3><ul class="cons"><li>'+sc.cons.join('</li><li>')+'</li></ul></div>'
+    +'</div></div>';
+}
+(function(){
+  var host=document.getElementById('mounts'), html='';
+  for(var i=0;i<SCHEMES.length;i++) html += cardHTML(SCHEMES[i]);
+  host.innerHTML = html;
+  for(var j=0;j<SCHEMES.length;j++){
+    host.querySelector('[data-board="'+SCHEMES[j].id+'"]').innerHTML = SCHEMES[j].draw();
+  }
+  /* 方案 6 的焦点切换 */
+  host.addEventListener('click', function(e){
+    var g = e.target.closest ? e.target.closest('.fchip') : null;
+    if(!g) return;
+    S6FOCUS = g.getAttribute('data-k');
+    host.querySelector('[data-board="s6"]').innerHTML = drawS6();
+  });
+  var bar=document.querySelector('.toolbar');
+  bar.addEventListener('click', function(e){
+    var b=e.target.closest('button'); if(!b) return;
+    if(b.dataset.scale){
+      document.body.classList.toggle('x15', b.dataset.scale==='1.5');
+      var list=bar.querySelectorAll('[data-scale]');
+      for(var k=0;k<list.length;k++) list[k].classList.toggle('on', list[k]===b);
+    }
+    if(b.dataset.jump){
+      var el=document.getElementById(b.dataset.jump);
+      if(el) el.scrollIntoView({behavior:'smooth',block:'start'});
+    }
+  });
+})();
+</script>
+</body>
+</html>
