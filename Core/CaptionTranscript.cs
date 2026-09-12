@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Text;
 
 // The running article: every sentence the translator finished, in order, as prose rather than as a
@@ -14,6 +15,11 @@ using System.Text;
 // moved on, which is the only paragraph signal available here (the recogniser gives sentences, never
 // sections). Each paragraph is indented with two full-width spaces, the Chinese convention, and the
 // original-language half is indented the same way so the two columns line up visually.
+//
+// Memory-only, on purpose. The article holds everything said in front of the machine, which is not
+// something this app should be accumulating on disk behind the user; the export button is the one
+// path that writes it out, and it writes only when pressed. RunSelfTest proves that rather than
+// merely claiming it -- "it quietly started persisting" is the regression this rule exists to stop.
 internal sealed class CaptionTranscript
 {
     // A pause this long reads as a break in the material rather than as the speaker drawing breath.
@@ -220,6 +226,11 @@ internal sealed class CaptionTranscript
 
     internal static void RunSelfTest()
     {
+        string exportDirectory = CaptionsBoardForm.ResolveArticleExportDirectory();
+        string[] filesBefore = Directory.Exists(exportDirectory)
+            ? Directory.GetFiles(exportDirectory)
+            : new string[0];
+
         CaptionTranscript transcript = new CaptionTranscript();
         DateTime start = new DateTime(2026, 9, 13, 1, 0, 0, DateTimeKind.Utc);
         transcript.Append("第一句。", "First sentence.", start);
@@ -260,7 +271,17 @@ internal sealed class CaptionTranscript
         transcript.Clear();
         AssertSelfTest(transcript.Count == 0 && transcript.BuildParagraphs(true).Count == 0, "clear empties the article");
 
-        Console.WriteLine("Caption transcript: PASS paragraph gap, indent, latin spacing, replace-latest, capped build, revision, export, clear");
+        // Everything above exercised append, rewrite, paragraph building, export-text building and
+        // clear. If any of them had a persistence side effect, it would have landed by now.
+        string[] filesAfter = Directory.Exists(exportDirectory)
+            ? Directory.GetFiles(exportDirectory)
+            : new string[0];
+        AssertSelfTest(
+            filesBefore.Length == filesAfter.Length,
+            "the article must stay in memory: only the export button may write it to disk, but " +
+                exportDirectory + " gained " + (filesAfter.Length - filesBefore.Length) + " file(s)");
+
+        Console.WriteLine("Caption transcript: PASS paragraph gap, indent, latin spacing, replace-latest, capped build, revision, export text, clear, memory-only (no disk write outside the export button)");
     }
 
     private static void AssertSelfTest(bool condition, string message)

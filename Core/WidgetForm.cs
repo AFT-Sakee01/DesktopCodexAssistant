@@ -129,7 +129,18 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     private bool liveCaptionsTidyRunning;
     private readonly TranslatorCaptionReader captionReader = new TranslatorCaptionReader();
     private CaptionOverlayForm captionOverlay;
-    private bool captionPollRunning;
+    // The caption strip is the one surface whose usefulness is measured in fractions of a second,
+    // so it gets the only refresh clock in this host that PerformanceMode does not slow down. It
+    // runs only while the translator is actually producing captions; when it is not, the main
+    // control tick keeps polling at its own pace, which is all that is needed to notice it come up.
+    private readonly System.Windows.Forms.Timer captionTimer = new System.Windows.Forms.Timer();
+    // Gates the fast clock across a display suspend. Without it an in-flight poll completing just
+    // after the suspend would restart the timer and leave it reading a blanked screen four times a
+    // second until resume.
+    private bool captionDisplaySuspended;
+    // Interlocked, not a plain bool: at four polls a second the UI thread and the pool thread race
+    // for this often enough to matter, and losing the race means two overlapping UIA reads.
+    private int captionPollRunning;
     private readonly Dictionary<int, string> registeredGlobalHotkeys = new Dictionary<int, string>();
     private readonly Dictionary<string, string> globalHotkeyRegistrationFailures =
         new Dictionary<string, string>(StringComparer.Ordinal);
@@ -210,6 +221,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.timer = new System.Windows.Forms.Timer();
         this.timer.Interval = WidgetSettings.GetWidgetSampleIntervalMs(this.CurrentSettings.PerformanceMode);
         this.timer.Tick += OnTimerTick;
+        this.captionTimer.Interval = TranslatorCaptionReader.RefreshIntervalMs;
+        this.captionTimer.Tick += OnCaptionTimerTick;
         this.interactionTimer = new System.Windows.Forms.Timer();
         this.interactionTimer.Interval = WidgetSettings.GetInteractionIdlePollingIntervalMs(this.CurrentSettings.PerformanceMode);
         this.interactionTimer.Tick += OnInteractionTimerTick;
@@ -891,6 +904,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         this.winDWatcher.Dispose();
         this.timer.Stop();
         this.timer.Tick -= OnTimerTick;
+        this.captionTimer.Stop();
+        this.captionTimer.Tick -= OnCaptionTimerTick;
+        this.captionTimer.Dispose();
         this.timer.Dispose();
         this.interactionTimer.Stop();
         this.interactionTimer.Tick -= OnInteractionTimerTick;
@@ -1232,6 +1248,16 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         RecoverMetricTilesAfterDisplayResume();
+        // The strip was missing from this pass entirely: PrepareForDisplaySuspend suspended it and
+        // nothing ever cleared that, so after one display sleep the caption strip stayed dark for
+        // the rest of the process lifetime (UpdateSnapshot returns early while suspended).
+        this.captionDisplaySuspended = false;
+        if (this.captionOverlay != null && !this.captionOverlay.IsDisposed)
+        {
+            this.captionOverlay.SetDisplaySuspended(false);
+        }
+
+        PresentCaptionSnapshot();
 
         Program.LogInfo(
             "Display recovery pass completed. Reason=" +
@@ -1263,6 +1289,9 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         SetMetricTileDisplaySuspended(true);
+        // Nothing can read the strip with the display off, so stop paying for the UIA reads too.
+        this.captionDisplaySuspended = true;
+        this.captionTimer.Stop();
         if (this.captionOverlay != null && !this.captionOverlay.IsDisposed)
         {
             this.captionOverlay.SetDisplaySuspended(true);
@@ -2243,12 +2272,13 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         });
     }
 
-    // Drives this app's own caption strip. The UIA read happens on a background thread (it crosses
-    // a process boundary); the surface itself is created, fed and hidden on the UI thread, which is
-    // where every other visible surface in this app lives.
+    // Lifetime and gating for this app's own caption strip, on the main control tick. The reads and
+    // the repaints do not happen here -- they happen on captionTimer, because this tick is as slow
+    // as PerformanceMode says (2500 ms in BatterySaver) and a caption that arrives 2.5 s late has
+    // already been spoken over.
     //
-    // No timer of its own either: the reader self-gates at TranslatorCaptionReader
-    // .RefreshIntervalMs and the main control tick is what asks it.
+    // This tick still kicks a poll: while the translator is down the fast clock is stopped, and
+    // this is what notices it come back up.
     private void MaintainCaptionOverlay()
     {
         if (this.CurrentSettings == null)
@@ -2258,6 +2288,7 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
         if (!this.CurrentSettings.CaptionOverlayEnabled)
         {
+            this.captionTimer.Stop();
             if (this.captionOverlay != null && !this.captionOverlay.IsDisposed)
             {
                 this.captionOverlay.UpdateSnapshot(TranslatorCaptionSnapshot.CreateEmpty());
@@ -2266,27 +2297,107 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             return;
         }
 
-        if (!this.captionPollRunning)
+        KickCaptionPoll();
+        PresentCaptionSnapshot();
+    }
+
+    private void OnCaptionTimerTick(object sender, EventArgs e)
+    {
+        // Only the read is started here. The repaint follows the read rather than the clock, so a
+        // slow UIA call delays the frame it belongs to instead of showing stale text on time.
+        KickCaptionPoll();
+    }
+
+    // The UIA read crosses a process boundary and can block, so it never runs on the UI thread.
+    // Single-flight: a read still in progress means the next tick has nothing useful to add.
+    private void KickCaptionPoll()
+    {
+        if (Interlocked.CompareExchange(ref this.captionPollRunning, 1, 0) != 0)
         {
-            this.captionPollRunning = true;
-            ThreadPool.QueueUserWorkItem(delegate
+            return;
+        }
+
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            try
             {
-                try
+                this.captionReader.RefreshIfDue();
+            }
+            catch (Exception ex)
+            {
+                Program.LogException(ex);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref this.captionPollRunning, 0);
+            }
+
+            RequestCaptionPresentation();
+        });
+    }
+
+    // Marshals the freshly read snapshot onto the UI thread as soon as it lands. The previous
+    // version presented whatever the last poll had left behind and then started a new read, so the
+    // strip was always showing one poll-interval-old text on top of the tick interval.
+    private void RequestCaptionPresentation()
+    {
+        try
+        {
+            if (this.IsDisposed || !this.IsHandleCreated)
+            {
+                return;
+            }
+
+            this.BeginInvoke((MethodInvoker)delegate
+            {
+                if (this.IsDisposed)
                 {
-                    this.captionReader.RefreshIfDue();
+                    return;
                 }
-                catch (Exception ex)
-                {
-                    Program.LogException(ex);
-                }
-                finally
-                {
-                    this.captionPollRunning = false;
-                }
+
+                PresentCaptionSnapshot();
             });
+        }
+        catch (ObjectDisposedException)
+        {
+            // ObjectDisposedException derives from InvalidOperationException, so it has to be
+            // caught first even though both mean the same thing here: the handle went away between
+            // the check and the call, and the next tick recovers.
+        }
+        catch (InvalidOperationException)
+        {
+        }
+    }
+
+    private void PresentCaptionSnapshot()
+    {
+        if (this.IsDisposed || this.CurrentSettings == null || !this.CurrentSettings.CaptionOverlayEnabled)
+        {
+            return;
+        }
+
+        if (this.captionDisplaySuspended)
+        {
+            this.captionTimer.Stop();
+            return;
         }
 
         TranslatorCaptionSnapshot snapshot = this.captionReader.GetSnapshot();
+        // The fast clock costs four cross-process reads a second, so it runs only while there is
+        // something to read. Stopping it when the translator goes away is what keeps that cost off
+        // an idle machine -- including a machine in BatterySaver that never runs the translator.
+        if (snapshot.TranslatorRunning)
+        {
+            if (!this.captionTimer.Enabled)
+            {
+                this.captionTimer.Start();
+            }
+        }
+        else if (this.captionTimer.Enabled)
+        {
+            this.captionTimer.Stop();
+        }
+
         if (this.captionOverlay == null || this.captionOverlay.IsDisposed)
         {
             // Created lazily: a user who never runs the translator never pays for the surface.
