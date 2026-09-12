@@ -295,7 +295,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 100;
+    private const int CurrentSettingsVersion = 101;
     private const int RetiredCanonicalSettingsCount = 113;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -485,6 +485,15 @@ internal sealed class WidgetSettings
     // Same program guard, applied to the two packaged AI desktop apps. Scoped to the apps and not
     // their CLIs on purpose -- see Core/ProgramKeepAliveGuard.cs.
     public bool CodexAppKeepAliveEnabled { get; set; }
+    // Presses LiveCaptionsTranslator's own overlay-mode button after this app starts the translator,
+    // because the translator has no persisted setting for it: MainWindow always constructs with
+    // OverlayWindow = null, so every relaunch -- including the ones the keep-alive guard performs --
+    // loses the transparent caption window until someone clicks the button again.
+    //
+    // Defaults on, unlike the keep-alive guards, because it starts nothing: it only reproduces one
+    // click inside a translator this app itself just launched, and it never re-opens an overlay the
+    // user closed on their own.
+    public bool TranslatorOverlayAutoOpenEnabled { get; set; }
     public bool ClaudeAppKeepAliveEnabled { get; set; }
     // Guard state. GuardSleepEnabled and the two deadline ticks are live runtime state rather than
     // preferences: they are persisted so a restart during a long unattended run does not silently
@@ -948,6 +957,7 @@ internal sealed class WidgetSettings
         this.TranslatorKeepAliveEnabled = defaults.TranslatorKeepAliveEnabled;
         this.CodexAppKeepAliveEnabled = defaults.CodexAppKeepAliveEnabled;
         this.ClaudeAppKeepAliveEnabled = defaults.ClaudeAppKeepAliveEnabled;
+        this.TranslatorOverlayAutoOpenEnabled = defaults.TranslatorOverlayAutoOpenEnabled;
         this.GuardSleepEnabled = defaults.GuardSleepEnabled;
         this.GuardSleepSinceUtcTicks = defaults.GuardSleepSinceUtcTicks;
         this.GuardDisplayMinutes = defaults.GuardDisplayMinutes;
@@ -1170,6 +1180,7 @@ internal sealed class WidgetSettings
         settings.TranslatorKeepAliveEnabled = false;
         settings.CodexAppKeepAliveEnabled = false;
         settings.ClaudeAppKeepAliveEnabled = false;
+        settings.TranslatorOverlayAutoOpenEnabled = true;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1394,6 +1405,7 @@ internal sealed class WidgetSettings
         settings.TranslatorKeepAliveEnabled = false;
         settings.CodexAppKeepAliveEnabled = false;
         settings.ClaudeAppKeepAliveEnabled = false;
+        settings.TranslatorOverlayAutoOpenEnabled = true;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1614,6 +1626,7 @@ internal sealed class WidgetSettings
             TranslatorKeepAliveEnabled = this.TranslatorKeepAliveEnabled,
             CodexAppKeepAliveEnabled = this.CodexAppKeepAliveEnabled,
             ClaudeAppKeepAliveEnabled = this.ClaudeAppKeepAliveEnabled,
+            TranslatorOverlayAutoOpenEnabled = this.TranslatorOverlayAutoOpenEnabled,
             GuardSleepEnabled = this.GuardSleepEnabled,
             GuardSleepSinceUtcTicks = this.GuardSleepSinceUtcTicks,
             GuardDisplayMinutes = this.GuardDisplayMinutes,
@@ -2588,6 +2601,16 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 101)
+        {
+            // Version 101 adds the translator overlay auto-open. It arrives ON for existing installs,
+            // unlike the keep-alive guards of 98/99: those launch external programs, while this only
+            // reproduces a click inside a translator this app itself started, and the whole point of
+            // the option is that the overlay is wanted by default.
+            settings.TranslatorOverlayAutoOpenEnabled = true;
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2820,6 +2843,7 @@ internal sealed class WidgetSettings
             "TranslatorKeepAliveEnabled=" + this.TranslatorKeepAliveEnabled,
             "CodexAppKeepAliveEnabled=" + this.CodexAppKeepAliveEnabled,
             "ClaudeAppKeepAliveEnabled=" + this.ClaudeAppKeepAliveEnabled,
+            "TranslatorOverlayAutoOpenEnabled=" + this.TranslatorOverlayAutoOpenEnabled,
             "GuardSleepEnabled=" + this.GuardSleepEnabled,
             "GuardSleepSinceUtcTicks=" + this.GuardSleepSinceUtcTicks.ToString(CultureInfo.InvariantCulture),
             "GuardDisplayMinutes=" + this.GuardDisplayMinutes.ToString(CultureInfo.InvariantCulture),
@@ -3456,6 +3480,12 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "CaptionsBoardAutoHideSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
         {
             settings.CaptionsBoardAutoHideSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "TranslatorOverlayAutoOpenEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.TranslatorOverlayAutoOpenEnabled = boolValue;
             return;
         }
 
@@ -6644,6 +6674,10 @@ internal sealed class WidgetSettings
             !keepAliveDefaults.CodexAppKeepAliveEnabled &&
             !keepAliveDefaults.ClaudeAppKeepAliveEnabled,
             "All three program keep-alive guards should default disarmed.");
+        // The overlay auto-open is the deliberate exception: it starts nothing, so it defaults on.
+        AssertLayout(
+            keepAliveDefaults.TranslatorOverlayAutoOpenEnabled,
+            "Translator overlay auto-open should default on.");
 
         string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-translator-keepalive-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -6682,13 +6716,27 @@ internal sealed class WidgetSettings
             AssertLayout(
                 !migrated99.CodexAppKeepAliveEnabled && !migrated99.ClaudeAppKeepAliveEnabled,
                 "Desktop-app keep-alive v98 to v99 migration should disarm.");
+
+            // The overlay option goes the other way on upgrade: an existing install gets it on,
+            // which is the whole point of the option, and an explicit False must still round-trip.
+            File.WriteAllLines(path, new string[] { "Version=100" }, SharedEncoding.Utf8NoBom);
+            AssertLayout(
+                LoadFromPath(path, false).TranslatorOverlayAutoOpenEnabled,
+                "Translator overlay auto-open v100 to v101 migration should arm.");
+            WidgetSettings overlayOff = CreateDefaults();
+            overlayOff.TranslatorOverlayAutoOpenEnabled = false;
+            overlayOff.SaveToPath(path, true);
+            AssertLayout(
+                !LoadFromPath(path, false).TranslatorOverlayAutoOpenEnabled &&
+                !overlayOff.Clone().TranslatorOverlayAutoOpenEnabled,
+                "Translator overlay auto-open should round-trip and clone when switched off.");
         }
         finally
         {
             try { Directory.Delete(root, true); } catch { }
         }
 
-        Console.WriteLine("Program keep-alive settings: PASS three guards default disarmed, save/load, clone, migrate(v97->v98, v98->v99)");
+        Console.WriteLine("Program keep-alive settings: PASS three guards default disarmed, overlay auto-open default on, save/load, clone, migrate(v97->v98, v98->v99, v100->v101)");
         ProgramKeepAliveGuard.RunSelfTest();
     }
 

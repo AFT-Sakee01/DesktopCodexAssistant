@@ -463,7 +463,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "!Codex 额度计划", "CodexQuotaPlanEnabled", "CodexQuotaPlanWeeklyComparison", "CodexQuotaPlanWeeklyThresholdPercent",
                            "CodexQuotaPlanFiveHourComparison", "CodexQuotaPlanFiveHourThresholdPercent", "CodexQuotaPlanResumeConditionMode",
                            "CodexQuotaPlanAutoResumePausedGoals", "CodexQuotaPlanPauseGoalIds", "CodexQuotaPlanResumeGoalIds" },
-            new string[] { "!恢复与保护", "SeelenDockForegroundPulseEnabled", "WinDRecoveryPulseEnabled", "PowerResumeRestartEnabled", "TranslatorKeepAliveEnabled", "CodexAppKeepAliveEnabled", "ClaudeAppKeepAliveEnabled" },
+            new string[] { "!恢复与保护", "SeelenDockForegroundPulseEnabled", "WinDRecoveryPulseEnabled", "PowerResumeRestartEnabled", "TranslatorKeepAliveEnabled", "CodexAppKeepAliveEnabled", "ClaudeAppKeepAliveEnabled", "TranslatorOverlayAutoOpenEnabled" },
             new string[] { "!调试", "ForceShowForegroundFpsEnabled" }
         });
 
@@ -4314,6 +4314,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "WinDRecoveryPulseEnabled", "Win+D 后延迟拉前" },
         { "PowerResumeRestartEnabled", "休眠唤醒后重启" },
         { "TranslatorKeepAliveEnabled", "字幕翻译保活" },
+        { "TranslatorOverlayAutoOpenEnabled", "自动打开覆盖字幕" },
         { "CodexAppKeepAliveEnabled", "Codex 应用保活" },
         { "ClaudeAppKeepAliveEnabled", "Claude 应用保活" },
         { "AiRequestProtectionAutoEnabled", "AI 自动阻断" },
@@ -4459,6 +4460,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "VisibilityOverlapIgnoresOperationPanelEnabled", "仅在“遮挡时不可见”生效；开启后左下角操作面板及其展开区域不会因为被其他应用窗口覆盖而隐藏。" },
         { "ForceShowForegroundFpsEnabled", "调试用，强制显示前台 FPS 信息。" },
         { "TranslatorKeepAliveEnabled", "每 30 秒检查 GenieX NPU 服务、清洗代理、Windows 实时辅助字幕和 LiveCaptionsTranslator，缺哪个补哪个。系统睡眠会一次性带走这几个进程，而只剩客户端活着时每句翻译都会失败，所以按整套拉起。也可在 GUARD 看板的程序守护区切换。" },
+        { "TranslatorOverlayAutoOpenEnabled", "本程序启动翻译器后，替你按一下它的覆盖字幕按钮，把那扇透明字幕窗开出来。翻译器自己不记这个状态：每次启动都是关着的，保活重启后也一样。只在本程序启动翻译器时触发，你自己关掉的覆盖窗不会被重新打开。" },
         { "CodexAppKeepAliveEnabled", "每 30 秒检查 ChatGPT 桌面应用（OpenAI.Codex 包），不在运行就拉起。只守护桌面应用，不碰 codex CLI——重开一个 CLI 只会得到空会话。" },
         { "ClaudeAppKeepAliveEnabled", "每 30 秒检查 Claude 桌面应用（Claude 包），不在运行就拉起。按可执行文件路径区分，Claude Code CLI 在跑不会被误判成应用还活着；同样不碰 CLI。" },
         { "AiRequestProtectionAutoEnabled", "网络监控判定为 GFW 明确阻断时，阻断本程序发往 OpenAI、ChatGPT、Claude 和 Anthropic 的请求。" },

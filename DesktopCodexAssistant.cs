@@ -1499,6 +1499,7 @@ internal static class Program
             ReportTranslatorStackLine("sanitize proxy running= " + TranslatorControlReader.IsSanitizeProxyRunning().ToString());
             ReportTranslatorStackLine("Live Captions running = " + TranslatorControlReader.IsLiveCaptionsRunning().ToString());
             ReportTranslatorStackLine("translator running    = " + TranslatorControlReader.IsLiveCaptionsTranslatorRunning().ToString());
+            ReportTranslatorStackLine("overlay window open   = " + TranslatorOverlayController.IsOverlayOpen().ToString());
 
             if (HasArg(args, "--diagnose-start"))
             {
@@ -1510,6 +1511,11 @@ internal static class Program
                     " proxy=" + TranslatorControlReader.IsSanitizeProxyRunning().ToString() +
                     " livecaptions=" + TranslatorControlReader.IsLiveCaptionsRunning().ToString() +
                     " translator=" + TranslatorControlReader.IsLiveCaptionsTranslatorRunning().ToString());
+
+                // The overlay is the one part of the chain the translator itself never restores.
+                string overlayDetail;
+                bool overlayOpened = TranslatorOverlayController.TryEnsureOverlayOpen(out overlayDetail);
+                ReportTranslatorStackLine("overlay ensure        = " + overlayOpened.ToString() + " detail=[" + overlayDetail + "]");
             }
 
             return 0;

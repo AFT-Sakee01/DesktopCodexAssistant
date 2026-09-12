@@ -1,6 +1,6 @@
 # 组件刷新规则
 
-适用版本：2.0.0.54
+适用版本：2.0.0.60
 
 本文是全项目刷新间隔、timer 所有权、手动刷新、网络事件、单飞、冷却和暂停恢复策略的唯一事实源。
 
@@ -147,7 +147,7 @@ DNS 检测：
 - `BuildStripSnapshot()` 只读缓存，不触发 WMI、注册表或 `powercfg`。
 - `WidgetForm.BuildMetricTilePowerProjection()` 不建立 timer；只在组装 `MetricTileFeed` 时按 `MetricTilePowerProjectionRefreshIntervalMs = 5000` 最多每 5 秒 clone 一次 System Day 的 `Last24Hours` owner-memory 投影，供 PWR 展开详情绘制趋势与 ETA。
 - `WidgetForm.RecordSystemDaySample()` 在既有主采样 tick 中、推送 tile feed 之前，将缓存电量交给 GUARD 检测向上跨越 80%；只在形成新暂停记录时保存设置，不改变历史样本节奏，不新增 timer。PWR 倒计时随既有 feed 刷新，以绝对 UTC 截止时间计算；GUARD 的既有维护 tick 清理到期记录。手动暂停/恢复成功后立即刷新 PWR；与新目标不符的旧历史 ETA 暂不使用。隐藏 tile 不停止检测；休眠期间不采样，恢复后只能用首次可见读数检测跨越，不能重建睡眠期间的精确起点。
-- `WidgetForm.MaintainProgramKeepAlive()` 不建立 timer；只在既有主控制 tick 中按 `TranslatorKeepAliveIntervalSeconds = 30` 自门控，且仅在三个保活开关（`TranslatorKeepAliveEnabled` / `CodexAppKeepAliveEnabled` / `ClaudeAppKeepAliveEnabled`）至少有一个打开时执行。命中后用 `ThreadPool.QueueUserWorkItem` 在后台线程依次处理已武装的项：字幕翻译链路走 `TranslatorControlReader.TryEnsureStackAlive()`（内含 WMI 查询与最多四次 `Process.Start`），两个打包桌面应用走 `ProgramKeepAliveGuard.TryEnsureRunning()`（进程/WMI 探测 + `shell:AppsFolder` 拉起）。`translatorKeepAliveRunning` 单飞标志覆盖整轮，保证上一轮未结束时不叠加下一轮。该守护**不受任何看板可见性门控**——它要修复的正是系统睡眠把这些进程带走、此时没有任何看板在场的情况，因此不能复用 `TranslatorControlReader.RefreshIfDue` 那条 2000 ms、看板可见才驱动的路径。桌面应用的存在性判定一律 fail-safe：查询失败按"在运行"处理，宁可守护静默失效，也不能因误判每 30 秒反复拉起一个本来活着的应用。
+- `WidgetForm.MaintainProgramKeepAlive()` 不建立 timer；只在既有主控制 tick 中按 `TranslatorKeepAliveIntervalSeconds = 30` 自门控，且仅在三个保活开关（`TranslatorKeepAliveEnabled` / `CodexAppKeepAliveEnabled` / `ClaudeAppKeepAliveEnabled`）至少有一个打开时执行。命中后用 `ThreadPool.QueueUserWorkItem` 在后台线程依次处理已武装的项：字幕翻译链路走 `TranslatorControlReader.TryEnsureStackAlive()`（内含 WMI 查询与最多四次 `Process.Start`），两个打包桌面应用走 `ProgramKeepAliveGuard.TryEnsureRunning()`（进程/WMI 探测 + `shell:AppsFolder` 拉起）。`translatorKeepAliveRunning` 单飞标志覆盖整轮，保证上一轮未结束时不叠加下一轮。该守护**不受任何看板可见性门控**——它要修复的正是系统睡眠把这些进程带走、此时没有任何看板在场的情况，因此不能复用 `TranslatorControlReader.RefreshIfDue` 那条 2000 ms、看板可见才驱动的路径。桌面应用的存在性判定一律 fail-safe：查询失败按"在运行"处理，宁可守护静默失效，也不能因误判每 30 秒反复拉起一个本来活着的应用。启动翻译器成功后（且 `TranslatorOverlayAutoOpenEnabled` 打开时）再同步调用一次 `TranslatorOverlayController.TryEnsureOverlayOpen()`：它等待翻译器主窗口出现（最多 12 秒）后按一次覆盖字幕按钮。这**不是**周期性动作——只在本程序刚把翻译器启动起来时发生一次，因为翻译器的覆盖窗是 toggle，周期性巡检会把用户自己关掉的窗口一次次重新打开。
 - 全屏标志不停止采样；显示器关闭、会话锁定或系统挂起停止，恢复后清空时间戳并立即采样。
 - `PowerThermalManualEnergySaverThresholdPercent` 只根据最近电池快照影响 `EnergySaverActive`，不新增轮询。
 - `PowerThermalIntegratedEnabled` 只兼容读取且 UI 隐藏，不控制 owner、采样或可见性。

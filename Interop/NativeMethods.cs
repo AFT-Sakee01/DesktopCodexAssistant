@@ -4510,6 +4510,45 @@ internal static class NativeMethods
                nativeName.IndexOf("香港", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
+    // First visible top-level window of `processId` whose title matches exactly. Used to detect
+    // LiveCaptionsTranslator's overlay window, whose title is fixed by upstream XAML and is the only
+    // reliable signal that overlay mode is on -- the toggle state itself lives in the other process.
+    internal static bool TryFindProcessWindowByTitle(int processId, string title, out IntPtr handle)
+    {
+        IntPtr found = IntPtr.Zero;
+        if (processId <= 0 || string.IsNullOrEmpty(title))
+        {
+            handle = IntPtr.Zero;
+            return false;
+        }
+
+        EnumWindows(delegate(IntPtr windowHandle, IntPtr lParam)
+        {
+            if (!IsWindowVisible(windowHandle))
+            {
+                return true;
+            }
+
+            uint windowProcessId;
+            GetWindowThreadProcessId(windowHandle, out windowProcessId);
+            if (windowProcessId != (uint)processId)
+            {
+                return true;
+            }
+
+            if (!string.Equals(GetWindowTitle(windowHandle), title, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            found = windowHandle;
+            return false;
+        }, IntPtr.Zero);
+
+        handle = found;
+        return found != IntPtr.Zero;
+    }
+
     private static string GetWindowTitle(IntPtr handle)
     {
         int length = GetWindowTextLength(handle);

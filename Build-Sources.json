@@ -102,6 +102,7 @@
     "Core/ProgramKeepAliveGuard.cs",
     "Core/SoftwareRuntimePresence.cs",
     "Core/TranslatorControlReader.cs",
+    "Core/TranslatorOverlayController.cs",
     "Core/TranslatorControlSnapshot.cs",
     "Core/SpecBoardForm.cs",
     "Core/SpecBoardLedgerStore.cs",

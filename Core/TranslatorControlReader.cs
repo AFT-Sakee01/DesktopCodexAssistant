@@ -554,7 +554,17 @@ internal sealed class TranslatorControlReader : IDisposable
     // translator keeps its own starter, because that is the launcher its own chip already uses.
     internal static bool TryEnsureStackAlive(out string detail)
     {
+        bool translatorStarted;
+        return TryEnsureStackAlive(out detail, out translatorStarted);
+    }
+
+    // translatorStarted is reported separately because one caller acts on it: the overlay window is
+    // only worth opening when this call actually launched the translator, never when it merely found
+    // it already running (the user may have closed the overlay deliberately).
+    internal static bool TryEnsureStackAlive(out string detail, out bool translatorStarted)
+    {
         detail = string.Empty;
+        translatorStarted = false;
         List<string> started = new List<string>();
         List<string> failed = new List<string>();
 
@@ -582,6 +592,7 @@ internal sealed class TranslatorControlReader : IDisposable
             if (TryStartTranslator(out translatorDetail))
             {
                 started.Add("LiveCaptionsTranslator");
+                translatorStarted = true;
             }
             else
             {

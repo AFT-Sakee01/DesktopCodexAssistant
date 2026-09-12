@@ -2159,7 +2159,18 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 if (translatorArmed)
                 {
                     string detail;
-                    bool started = TranslatorControlReader.TryEnsureStackAlive(out detail);
+                    bool translatorStarted;
+                    bool started = TranslatorControlReader.TryEnsureStackAlive(out detail, out translatorStarted);
+                    if (translatorStarted && this.CurrentSettings.TranslatorOverlayAutoOpenEnabled)
+                    {
+                        // The guard just put the translator back; without this the transparent caption
+                        // window -- the part the user actually watches -- is the one piece of the chain
+                        // that does not come back, because the translator has no setting for it.
+                        string overlayDetail;
+                        TranslatorOverlayController.TryEnsureOverlayOpen(out overlayDetail);
+                        Program.LogInfo("Translator overlay auto-open: " + overlayDetail);
+                    }
+
                     if (!string.IsNullOrEmpty(detail))
                     {
                         // Log every repair attempt, success or failure. The toast is gated on the

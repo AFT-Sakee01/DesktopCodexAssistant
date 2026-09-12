@@ -847,6 +847,13 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
             try
             {
                 success = reader.TryToggleTranslatorRunning(start, out detail);
+                if (success && start && this.CurrentSettings != null && this.CurrentSettings.TranslatorOverlayAutoOpenEnabled)
+                {
+                    // Same rule as the keep-alive guard: only when this app started the translator.
+                    string overlayDetail;
+                    TranslatorOverlayController.TryEnsureOverlayOpen(out overlayDetail);
+                    Program.LogInfo("Translator overlay auto-open: " + overlayDetail);
+                }
             }
             catch (Exception ex)
             {
