@@ -46,6 +46,7 @@
     "Core/GlobalLayoutEditorForm.cs",
     "Core/GlobalWinDWatcher.cs",
     "Core/GuardBoardForm.cs",
+    "Core/HoverPollPolicy.cs",
     "Core/GuardBoardForm.Layout.cs",
     "Core/GuardBoardForm.RenderSample.cs",
     "Core/GuardControlProtocol.cs",

@@ -10,8 +10,17 @@ internal abstract class LayeredWidgetFormBase : Form
     private Graphics renderGraphics;
     private bool renderBufferValid;
     private bool layeredUpdateFailureLogged;
+    private System.Windows.Forms.Timer hoverTimer;
+    private Func<Point> cursorPositionProvider;
+    private bool pointerInside;
+    private int pendingInside = -1;
+    private int pendingTicks;
     private long burnInShiftSlot = long.MinValue;
     private int lastPresentationLuminancePercent = -1;
+
+    // Hover polling for layered surfaces, on the numbers in HoverPollPolicy -- the same clock and the
+    // same debounce MetricTileForm and EdgeDockTabForm have always used, so a surface that opts in
+    // here behaves exactly like the right tiles and the left dock tabs.
 
     protected float LayerScale { get; private set; } = 1.0f;
 
@@ -30,6 +39,132 @@ internal abstract class LayeredWidgetFormBase : Form
     protected bool IsLayeredRenderBufferValid
     {
         get { return this.renderBufferValid; }
+    }
+
+    protected bool IsPointerInside
+    {
+        get { return this.pointerInside; }
+    }
+
+    protected bool IsHoverPollingActive
+    {
+        get { return this.hoverTimer != null && this.hoverTimer.Enabled; }
+    }
+
+    // Injectable so a self-test can put the pointer somewhere without moving the real one.
+    internal Func<Point> CursorPositionProvider
+    {
+        get { return this.cursorPositionProvider; }
+        set { this.cursorPositionProvider = value; }
+    }
+
+    // The rectangle the pointer is tested against. Override when a surface owns screen area beyond
+    // its own window -- MetricTileForm's expand panel is the case that needs it.
+    protected virtual Rectangle HoverPollBounds
+    {
+        get { return this.Bounds; }
+    }
+
+    // Opt-in: the timer does not exist until a surface asks for it, so the surfaces that do not
+    // poll pay nothing.
+    protected void StartHoverPolling()
+    {
+        if (this.IsDisposed)
+        {
+            return;
+        }
+
+        if (this.hoverTimer == null)
+        {
+            this.hoverTimer = new System.Windows.Forms.Timer();
+            this.hoverTimer.Interval = HoverPollPolicy.IntervalMs;
+            this.hoverTimer.Tick += OnHoverPollTick;
+        }
+
+        this.hoverTimer.Start();
+    }
+
+    // Clears the hover state as well as stopping the clock: a surface that comes back still marked
+    // "pointer inside" would keep whatever hover appearance it had until the pointer moved again.
+    protected void StopHoverPolling()
+    {
+        if (this.hoverTimer != null)
+        {
+            this.hoverTimer.Stop();
+        }
+
+        this.pendingInside = -1;
+        this.pendingTicks = 0;
+        if (this.pointerInside)
+        {
+            this.pointerInside = false;
+            OnPointerInsideChanged(false);
+        }
+    }
+
+    // Called on the UI thread when the debounced hover state flips. The base does nothing: what a
+    // hover means is the surface's business -- a tile redraws, the caption strip only re-blends.
+    protected virtual void OnPointerInsideChanged(bool inside)
+    {
+    }
+
+    // Whether this poll should be evaluated at all. A surface that is not on screen has no hover.
+    protected virtual bool CanPollHover()
+    {
+        return this.Visible && CanRenderLayeredWindow();
+    }
+
+    // One poll, synchronously. The debounce is counted in ticks, so a test that wants to prove it
+    // has to be able to produce ticks without waiting 120 ms for each one.
+    internal void PollHoverForSelfTest()
+    {
+        OnHoverPollTick(null, EventArgs.Empty);
+    }
+
+    private void OnHoverPollTick(object sender, EventArgs e)
+    {
+        if (this.IsDisposed || !CanPollHover())
+        {
+            return;
+        }
+
+        bool inside;
+        try
+        {
+            Func<Point> provider = this.cursorPositionProvider;
+            Point cursor = provider == null ? Cursor.Position : provider();
+            inside = HoverPollBounds.Contains(cursor);
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return;
+        }
+
+        if (inside == this.pointerInside)
+        {
+            this.pendingInside = -1;
+            this.pendingTicks = 0;
+            return;
+        }
+
+        int desired = inside ? 1 : 0;
+        if (desired != this.pendingInside)
+        {
+            this.pendingInside = desired;
+            this.pendingTicks = 0;
+        }
+
+        this.pendingTicks++;
+        if (this.pendingTicks < (inside ? HoverPollPolicy.EnterTicks : HoverPollPolicy.ExitTicks))
+        {
+            return;
+        }
+
+        this.pendingInside = -1;
+        this.pendingTicks = 0;
+        this.pointerInside = inside;
+        OnPointerInsideChanged(inside);
     }
 
     protected override CreateParams CreateParams
@@ -406,6 +541,14 @@ internal abstract class LayeredWidgetFormBase : Form
     {
         if (disposing)
         {
+            if (this.hoverTimer != null)
+            {
+                this.hoverTimer.Stop();
+                this.hoverTimer.Tick -= OnHoverPollTick;
+                this.hoverTimer.Dispose();
+                this.hoverTimer = null;
+            }
+
             DisposeRenderBuffer();
             this.layeredSurface.Dispose();
         }

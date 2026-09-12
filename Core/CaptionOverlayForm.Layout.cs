@@ -363,12 +363,14 @@ internal sealed partial class CaptionOverlayForm
             VerifyHoverFade();
         }
 
-        Console.WriteLine("Caption overlay layout: PASS fixed-height slots, settled-line count, optional original line, hidden when silent, hidden on request, hover fade");
+        Console.WriteLine("Caption overlay layout: PASS fixed-height slots, settled-line count, optional original line, hidden when silent, hidden on request, shared hover poll with enter/exit debounce");
     }
 
-    // Hover auto-hide, driven through the injected cursor provider. The strip is click-through, so
-    // this path has no mouse messages to test against -- the rectangle comparison is the whole
-    // mechanism, and the thing worth pinning down is which states suppress it.
+    // Hover auto-hide, driven through the shared poll in LayeredWidgetFormBase with an injected
+    // cursor. The strip is click-through, so there are no mouse messages to test against -- the
+    // polled rectangle comparison is the whole mechanism. What is worth pinning down is the shared
+    // enter/exit debounce (the right tiles and left dock tabs behave identically) and which states
+    // suppress the fade entirely.
     private static void VerifyHoverFade()
     {
         WidgetSettings hover = WidgetSettings.CreateDefaults();
@@ -378,26 +380,38 @@ internal sealed partial class CaptionOverlayForm
         {
             form.Bounds = new Rectangle(100, 200, 800, 120);
             form.snapshot = CreateFixtureSnapshot("Speaking.", "正在说。", new string[0]);
-            // Visible is false for an unshown form, and hover must not fade something that is not on
-            // screen; the test therefore drives UpdateHoverFade through a form it marks visible.
+            // A window that is not on screen has no hover, so the test needs a shown one.
             form.Show();
-
             form.CursorPositionProvider = delegate { return new Point(4000, 4000); };
-            form.UpdateHoverFade();
+            form.PollHoverForSelfTest();
             AssertSelfTest(
                 form.WindowTransparencyOverridePercent == -1,
                 "a pointer away from the strip must leave the window alpha alone");
 
+            // HoverEnterTicks = 1: the fade reacts on the first poll inside.
             form.CursorPositionProvider = delegate { return new Point(500, 260); };
-            AssertSelfTest(form.UpdateHoverFade(), "moving onto the strip must report a change");
+            form.PollHoverForSelfTest();
             AssertSelfTest(
                 form.WindowTransparencyOverridePercent == WidgetSettings.CaptionOverlayHoverTransparencyPercent,
                 "hovering must fade the strip to the hover transparency, got " + form.WindowTransparencyOverridePercent);
-            AssertSelfTest(!form.UpdateHoverFade(), "staying on the strip must not report a change every tick");
+
+            // HoverExitTicks = 3: a single poll outside must not restore it, or a pointer grazing
+            // the edge would make the strip flicker.
+            form.CursorPositionProvider = delegate { return new Point(4000, 4000); };
+            form.PollHoverForSelfTest();
+            AssertSelfTest(
+                form.WindowTransparencyOverridePercent == WidgetSettings.CaptionOverlayHoverTransparencyPercent,
+                "one poll outside must not undo the fade -- the exit debounce is three");
+            form.PollHoverForSelfTest();
+            form.PollHoverForSelfTest();
+            AssertSelfTest(
+                form.WindowTransparencyOverridePercent == -1,
+                "three polls outside must restore the strip");
 
             // Nothing to place if it fades out from under the pointer that is dragging it.
+            form.CursorPositionProvider = delegate { return new Point(500, 260); };
+            form.PollHoverForSelfTest();
             form.SetEditMode(true);
-            form.UpdateHoverFade();
             AssertSelfTest(
                 form.WindowTransparencyOverridePercent == -1,
                 "edit mode must suppress the hover fade");
@@ -406,10 +420,13 @@ internal sealed partial class CaptionOverlayForm
             WidgetSettings off = WidgetSettings.CreateDefaults();
             off.Normalize();
             form.ApplySettings(off);
-            form.UpdateHoverFade();
+            form.PollHoverForSelfTest();
             AssertSelfTest(
                 form.WindowTransparencyOverridePercent == -1,
                 "the fade must not happen at all while the setting is off");
+            AssertSelfTest(
+                !form.IsHoverPollingActive,
+                "turning the setting off must stop the poll rather than leave it spinning");
         }
     }
 

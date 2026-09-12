@@ -41,12 +41,10 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
     private Point dragStartScreen;
     private Rectangle dragStartBounds;
     private CaptionOverlayDragKind dragKind = CaptionOverlayDragKind.None;
-    // True while the pointer is over the strip and hover auto-hide is on. The strip is
-    // click-through, so it never receives a mouse message and cannot use OnMouseEnter/Leave: hover
-    // is decided by comparing the cursor position against the window rectangle on the caption
-    // clock. Injectable so the self-test can put the pointer somewhere without moving the real one.
+    // Whether the strip is currently faded out from under the pointer. Distinct from the base
+    // class's IsPointerInside: the pointer can be over the strip while the fade is suppressed
+    // (edit mode), and the two must not be confused when deciding what alpha to blend with.
     private bool hoverFaded;
-    internal Func<Point> CursorPositionProvider;
 
     internal CaptionOverlayForm(WidgetSettings settings)
     {
@@ -87,10 +85,64 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
 
     // Fading is done with the window's constant alpha rather than by redrawing the content dimmer:
     // it composes with everything else the layered pipeline already does, and a hover change then
-    // costs a re-blend instead of a re-render.
+    // costs a re-blend instead of a re-render. That is the one way this surface differs from the
+    // right tiles and the left dock tabs, which change what they draw on hover.
     protected override int WindowTransparencyOverridePercent
     {
         get { return this.hoverFaded ? WidgetSettings.CaptionOverlayHoverTransparencyPercent : -1; }
+    }
+
+    // Hover now runs on the shared 120 ms poll in LayeredWidgetFormBase -- the same clock and the
+    // same enter/exit debounce the right tiles and the left dock tabs use. It used to ride the
+    // 250 ms caption clock, which meant the fade only reacted while the translator was producing
+    // captions and lagged noticeably behind the pointer.
+    protected override void OnPointerInsideChanged(bool inside)
+    {
+        base.OnPointerInsideChanged(inside);
+        ApplyHoverFade(inside);
+    }
+
+    private void ApplyHoverFade(bool pointerInside)
+    {
+        bool faded = pointerInside &&
+            this.CurrentSettings != null &&
+            this.CurrentSettings.CaptionOverlayHoverAutoHideEnabled &&
+            // Nothing to place if it fades out from under the pointer that is dragging it.
+            !this.editMode &&
+            this.Visible;
+        if (this.hoverFaded == faded)
+        {
+            return;
+        }
+
+        this.hoverFaded = faded;
+        // Only the window alpha moved, so the bitmap is still good: re-blend it rather than
+        // redrawing every glyph.
+        RenderLayeredWindow(false);
+    }
+
+    // Polling costs nothing worth saving, but it is pointless while the strip is off screen or the
+    // setting is off, and leaving it running would keep a stale fade alive across a hide.
+    private void SyncHoverPolling()
+    {
+        bool wanted = this.Visible &&
+            !this.displaySuspended &&
+            this.CurrentSettings != null &&
+            this.CurrentSettings.CaptionOverlayHoverAutoHideEnabled;
+        if (wanted == this.IsHoverPollingActive)
+        {
+            return;
+        }
+
+        if (wanted)
+        {
+            StartHoverPolling();
+        }
+        else
+        {
+            StopHoverPolling();
+            ApplyHoverFade(false);
+        }
     }
 
     internal bool IsEditing
@@ -113,6 +165,7 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
         this.Cursor = enabled ? Cursors.SizeAll : Cursors.Default;
         this.lastRenderSignature = string.Empty;
         this.lastWorkArea = Rectangle.Empty;
+        ApplyHoverFade(this.IsPointerInside);
         if (enabled)
         {
             // Something has to be on screen to drag. An empty strip in edit mode shows its frame
@@ -156,6 +209,8 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
         // geometry, and the caption text alone may not have changed.
         this.lastRenderSignature = string.Empty;
         this.lastWorkArea = Rectangle.Empty;
+        SyncHoverPolling();
+        ApplyHoverFade(this.IsPointerInside);
     }
 
     internal void SetDisplaySuspended(bool suspended)
@@ -196,16 +251,8 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
         Rectangle workArea = ResolveWorkArea();
         string signature = this.snapshot.BuildRenderSignature();
         bool geometryChanged = workArea != this.lastWorkArea;
-        bool hoverChanged = UpdateHoverFade();
         if (!geometryChanged && string.Equals(signature, this.lastRenderSignature, StringComparison.Ordinal) && this.Visible)
         {
-            if (hoverChanged)
-            {
-                // Only the window alpha moved, so the bitmap is still good: re-blend it rather than
-                // redrawing every glyph four times a second while the pointer sits on the strip.
-                RenderLayeredWindow(false);
-            }
-
             return;
         }
 
@@ -218,38 +265,6 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
         }
 
         RenderLayeredWindow();
-    }
-
-    // Returns whether the fade state changed. Evaluated on the caption clock (250 ms while the
-    // translator is producing captions), which is also the only cadence available: with
-    // WS_EX_TRANSPARENT set there are no enter/leave messages to hook.
-    private bool UpdateHoverFade()
-    {
-        bool faded = false;
-        if (this.CurrentSettings != null &&
-            this.CurrentSettings.CaptionOverlayHoverAutoHideEnabled &&
-            !this.editMode &&
-            this.Visible)
-        {
-            try
-            {
-                Func<Point> provider = this.CursorPositionProvider;
-                Point cursor = provider == null ? Cursor.Position : provider();
-                faded = this.Bounds.Contains(cursor);
-            }
-            catch (Exception ex)
-            {
-                Program.LogException(ex);
-            }
-        }
-
-        if (this.hoverFaded == faded)
-        {
-            return false;
-        }
-
-        this.hoverFaded = faded;
-        return true;
     }
 
     private bool ShouldBeVisible()
@@ -464,6 +479,7 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
         // Seelen/Codex-aware one every other top-most surface here uses, so the strip lands above the
         // video but below the protected pet/dock stack.
         Show();
+        SyncHoverPolling();
         NativeMethods.SetWindowPos(
             this.Handle,
             GetLayeredWidgetInsertAfter(true, this.CurrentSettings.CodexPetZOrderProtectionEnabled),
@@ -477,12 +493,15 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
     private void HideOverlay()
     {
         this.lastRenderSignature = string.Empty;
-        // A strip that comes back still faded would look broken until the pointer moved again.
-        this.hoverFaded = false;
         if (this.Visible)
         {
             Hide();
         }
+
+        // StopHoverPolling clears the pointer state, and this clears the fade it produced: a strip
+        // that came back still faded would look broken until the pointer moved again.
+        StopHoverPolling();
+        ApplyHoverFade(false);
     }
 
     protected override void Dispose(bool disposing)
