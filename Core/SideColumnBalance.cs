@@ -20,6 +20,9 @@ internal static class SideColumnBalance
         public int RightOffsetY;
         public int TopEdgeErrorPixels;
         public int BottomEdgeErrorPixels;
+        // 解算出来的像素级空白，-1 表示该列按百分比走。
+        public int LeftWhitespaceOverride;
+        public int RightWhitespaceOverride;
     }
 
     // 视觉对齐容差：两列高度相差 1 像素以内就认为已经对齐，差值来自百分比换算的整数舍入。
@@ -69,7 +72,16 @@ internal static class SideColumnBalance
     // 「一份设置开始生效」的每一处。这四个键在这个模式下是派生值，设置界面里也相应置灰。
     internal static void ApplyUnifiedColumnSpacing(WidgetSettings settings)
     {
-        if (settings == null || !settings.UnifiedColumnSpacingEnabled)
+        if (settings == null)
+        {
+            return;
+        }
+
+        // 先清掉上一次的派生量。它是 internal 字段、会跟着 Clone 传下去，模式关掉之后留在那里
+        // 会继续悄悄覆盖百分比。
+        settings.UnifiedLeftDockWhitespaceOverride = -1;
+        settings.UnifiedRightTileWhitespaceOverride = -1;
+        if (!settings.UnifiedColumnSpacingEnabled)
         {
             return;
         }
@@ -96,6 +108,8 @@ internal static class SideColumnBalance
         settings.RightTileButtonGapPixels = result.RightSpacingPercent;
         settings.LeftDockGroupOffsetY = result.LeftOffsetY;
         settings.RightTileGroupOffsetY = result.RightOffsetY;
+        settings.UnifiedLeftDockWhitespaceOverride = result.LeftWhitespaceOverride;
+        settings.UnifiedRightTileWhitespaceOverride = result.RightWhitespaceOverride;
     }
 
     internal static bool TryResolveUnified(
@@ -121,6 +135,9 @@ internal static class SideColumnBalance
         working.UnifiedColumnSpacingEnabled = false;
         working.LeftDockAutoArrangeEnabled = true;
         working.RightTileAutoArrangeEnabled = true;
+        // 探测的是「纯百分比下该列有多高」，上一次的派生像素不能掺进来。
+        working.UnifiedLeftDockWhitespaceOverride = -1;
+        working.UnifiedRightTileWhitespaceOverride = -1;
 
         Rectangle currentLeftGroup = LeftDockLayout.ResolveAutoTabGroupBounds(working, leftWorkArea, scale);
         Rectangle currentRightGroup = MetricTileForm.ResolveAutoTileGroupBounds(working, rightWorkArea);
@@ -154,6 +171,23 @@ internal static class SideColumnBalance
 
         working.LeftDockButtonGapPixels = leftSpacing;
         working.RightTileButtonGapPixels = rightSpacing;
+
+        // 百分比只能把两列拉到相差半档以内（这块工作区上一档十几像素），剩下的残差没有任何偏移
+        // 能消掉。所以最后一步直接给较矮的那一列一个像素级的空白值：整列高度 = 各成员高度之和
+        // 加上摊开的空白，而各成员高度之和正是百分比为 0 时的整列高度，于是所需空白可以精确算出。
+        // 较高的一列仍然严格按统一百分比走，统一间距这个设置因此仍是它字面的意思。
+        int leftMemberHeight = leftHeights[0];
+        int rightMemberHeight = rightHeights[0];
+        int leftCapacity = Math.Max(0, leftHeights[valueCount - 1] - leftMemberHeight);
+        int rightCapacity = Math.Max(0, rightHeights[valueCount - 1] - rightMemberHeight);
+        int leftTargetHeight = leftHeights[leftSpacing - WidgetSettings.MinColumnButtonGapPixels];
+        int rightTargetHeight = rightHeights[rightSpacing - WidgetSettings.MinColumnButtonGapPixels];
+        int sharedHeight = Math.Max(leftTargetHeight, rightTargetHeight);
+        int leftOverride = Math.Max(0, Math.Min(leftCapacity, sharedHeight - leftMemberHeight));
+        int rightOverride = Math.Max(0, Math.Min(rightCapacity, sharedHeight - rightMemberHeight));
+        working.UnifiedLeftDockWhitespaceOverride = leftOverride;
+        working.UnifiedRightTileWhitespaceOverride = rightOverride;
+
         Rectangle leftBaseline = LeftDockLayout.ResolveAutoTabGroupBounds(working, leftWorkArea, scale);
         Rectangle rightBaseline = MetricTileForm.ResolveAutoTileGroupBounds(working, rightWorkArea);
 
@@ -192,6 +226,8 @@ internal static class SideColumnBalance
         Rectangle finalRight = MetricTileForm.ResolveAutoTileGroupBounds(working, rightWorkArea);
         result.LeftSpacingPercent = leftSpacing;
         result.RightSpacingPercent = rightSpacing;
+        result.LeftWhitespaceOverride = leftOverride;
+        result.RightWhitespaceOverride = rightOverride;
         result.LeftOffsetY = working.LeftDockGroupOffsetY;
         result.RightOffsetY = working.RightTileGroupOffsetY;
         result.TopEdgeErrorPixels = Math.Abs(finalLeft.Top - finalRight.Top);
@@ -266,6 +302,9 @@ internal static class SideColumnBalance
         working.UnifiedColumnSpacingEnabled = false;
         working.LeftDockAutoArrangeEnabled = true;
         working.RightTileAutoArrangeEnabled = true;
+        // 探测的是「纯百分比下该列有多高」，上一次的派生像素不能掺进来。
+        working.UnifiedLeftDockWhitespaceOverride = -1;
+        working.UnifiedRightTileWhitespaceOverride = -1;
         working.LeftDockGroupOffsetY = 0;
         working.RightTileGroupOffsetY = 0;
 
@@ -382,31 +421,34 @@ internal static class SideColumnBalance
                 throw new InvalidOperationException("Unified column spacing geometry failed to resolve.");
             }
 
-            // 残差来自间距只能取整数百分比，不是解算错误。允许它存在，但要求：
-            // 一、不大于「这个统一值下理论上能做到的最小高度差」，也就是没有选错档位；
-            // 二、上下两端分摊，任何一端都不得超过余量的一半（取整后再放一像素）。
-            int achievable = ResolveAchievableHeightDifferenceForSelfTest(settings, workArea, 1.0f);
-            int worstEdge = Math.Max(result.TopEdgeErrorPixels, result.BottomEdgeErrorPixels);
-            if (result.TopEdgeErrorPixels + result.BottomEdgeErrorPixels > achievable + 1 ||
-                worstEdge > achievable / 2 + 1)
+            // 像素级空白接管之后两端都必须精确对齐。1 像素的余地留给整列偏移的四舍五入，
+            // 不是留给间距量化——那一档十几像素的残差在这里已经不该存在了。
+            if (result.TopEdgeErrorPixels > 1 || result.BottomEdgeErrorPixels > 1)
             {
                 throw new InvalidOperationException(
-                    "Unified column spacing must split the quantization residual across both ends: top=" +
-                    result.TopEdgeErrorPixels + "px bottom=" + result.BottomEdgeErrorPixels +
-                    "px achievable=" + achievable + "px.");
+                    "Unified column spacing must align both ends: top=" + result.TopEdgeErrorPixels +
+                    "px bottom=" + result.BottomEdgeErrorPixels + "px.");
             }
+
+            // 若只按百分比对齐，这块工作区上会留下多少残差——记录下来，说明像素级空白解决的
+            // 正是这个量级的问题。
+            int percentOnlyResidual = ResolveAchievableHeightDifferenceForSelfTest(settings, workArea, 1.0f);
 
             // 求解必须是幂等的：把结果写回去再解一次，答案不能漂移，否则每次 Normalize 都会挪动界面。
             settings.LeftDockButtonGapPixels = result.LeftSpacingPercent;
             settings.RightTileButtonGapPixels = result.RightSpacingPercent;
             settings.LeftDockGroupOffsetY = result.LeftOffsetY;
             settings.RightTileGroupOffsetY = result.RightOffsetY;
+            settings.UnifiedLeftDockWhitespaceOverride = result.LeftWhitespaceOverride;
+            settings.UnifiedRightTileWhitespaceOverride = result.RightWhitespaceOverride;
             Result second;
             if (!TryResolveUnified(settings, workArea, workArea, 1.0f, out second) ||
                 second.LeftSpacingPercent != result.LeftSpacingPercent ||
                 second.RightSpacingPercent != result.RightSpacingPercent ||
                 second.LeftOffsetY != result.LeftOffsetY ||
-                second.RightOffsetY != result.RightOffsetY)
+                second.RightOffsetY != result.RightOffsetY ||
+                second.LeftWhitespaceOverride != result.LeftWhitespaceOverride ||
+                second.RightWhitespaceOverride != result.RightWhitespaceOverride)
             {
                 throw new InvalidOperationException("Unified column spacing must be idempotent across repeated resolves.");
             }
@@ -414,8 +456,10 @@ internal static class SideColumnBalance
             Console.WriteLine(
                 "Side column unified spacing: PASS geometry left=" + result.LeftSpacingPercent +
                 "% right=" + result.RightSpacingPercent +
-                "% topError=" + result.TopEdgeErrorPixels +
-                "px bottomError=" + result.BottomEdgeErrorPixels + "px");
+                "% whitespace=" + result.LeftWhitespaceOverride + "/" + result.RightWhitespaceOverride +
+                "px topError=" + result.TopEdgeErrorPixels +
+                "px bottomError=" + result.BottomEdgeErrorPixels +
+                "px (percent-only residual would be " + percentOnlyResidual + "px)");
         }
         finally
         {

@@ -475,6 +475,13 @@ internal sealed class WidgetSettings
     public int LeftDockGroupOffsetY { get; set; }
     public bool UnifiedColumnSpacingEnabled { get; set; }
     public int UnifiedColumnSpacingPercent { get; set; }
+    // 统一间距模式的派生量：该列应摊开的纵向空白（物理像素），-1 表示不覆盖、按百分比算。
+    // 刻意做成 internal 字段而不是公开属性——它不持久化、不进设置界面、不参与全量往返自检，
+    // 每次 SideColumnBalance.ApplyUnifiedColumnSpacing 重新算一遍。
+    // 存在的理由：间距只能取整数百分比，一档在常见工作区上就是十几个像素，较矮的一列永远落不到
+    // 和较高的一列刚好等高，只按百分比对齐必然留下几像素的残差。直接给像素才能真正做到上下一致。
+    internal int UnifiedLeftDockWhitespaceOverride = -1;
+    internal int UnifiedRightTileWhitespaceOverride = -1;
     public bool SpecBoardLeftDockEnabled { get; set; }
     public int SpecBoardLeftDockTabCenterY { get; set; }
     public bool CodexTaskBoardLeftDockEnabled { get; set; }
@@ -1702,6 +1709,8 @@ internal sealed class WidgetSettings
             LeftDockGroupOffsetY = this.LeftDockGroupOffsetY,
             UnifiedColumnSpacingEnabled = this.UnifiedColumnSpacingEnabled,
             UnifiedColumnSpacingPercent = this.UnifiedColumnSpacingPercent,
+            UnifiedLeftDockWhitespaceOverride = this.UnifiedLeftDockWhitespaceOverride,
+            UnifiedRightTileWhitespaceOverride = this.UnifiedRightTileWhitespaceOverride,
             SpecBoardLeftDockEnabled = this.SpecBoardLeftDockEnabled,
             SpecBoardLeftDockTabCenterY = this.SpecBoardLeftDockTabCenterY,
             CodexTaskBoardLeftDockEnabled = this.CodexTaskBoardLeftDockEnabled,

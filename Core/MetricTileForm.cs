@@ -212,9 +212,18 @@ internal sealed partial class MetricTileForm : LayeredWidgetFormBase
             int spacingPercent = Math.Max(
                 WidgetSettings.MinColumnButtonGapPixels,
                 Math.Min(WidgetSettings.MaxColumnButtonGapPixels, settings.RightTileButtonGapPixels));
+            int availableWhitespace = availableHeight - tilePixels * enabledCount;
             distributedWhitespace = EdgeColumnSpacing.ResolveDistributedWhitespacePixels(
                 spacingPercent,
-                availableHeight - tilePixels * enabledCount);
+                availableWhitespace);
+
+            // 同左列：统一间距模式解算出来的像素级空白优先于百分比。
+            if (settings.UnifiedRightTileWhitespaceOverride >= 0)
+            {
+                distributedWhitespace = Math.Max(
+                    0,
+                    Math.Min(settings.UnifiedRightTileWhitespaceOverride, availableWhitespace));
+            }
         }
 
         metrics.TilePixels = tilePixels;

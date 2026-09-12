@@ -589,6 +589,15 @@ internal static class LeftDockLayout
             distributedWhitespace = spacingUsesAvailableWhitespacePercent
                 ? EdgeColumnSpacing.ResolveDistributedWhitespacePixels(spacingValue, availableWhitespace)
                 : Math.Min(Math.Max(0, spacingValue), availableWhitespace / gapCount) * gapCount;
+
+            // 统一间距模式解算出来的像素级空白优先于百分比：百分比一档十几像素，落不到和对侧
+            // 刚好等高。只在百分比模式下生效，手动的「每个间隔多少像素」那条路不受影响。
+            if (spacingUsesAvailableWhitespacePercent &&
+                settings != null &&
+                settings.UnifiedLeftDockWhitespaceOverride >= 0)
+            {
+                distributedWhitespace = Math.Min(settings.UnifiedLeftDockWhitespaceOverride, availableWhitespace);
+            }
         }
 
         int totalHeight = memberHeight + distributedWhitespace;
