@@ -50,6 +50,7 @@
     "Core/GuardControlProtocol.cs",
     "Core/GuardRuntime.cs",
     "Core/IdleCpuDiagnostics.cs",
+    "Core/LiveCaptionsWindowTidy.cs",
     "Core/LayeredWidgetFormBase.cs",
     "Core/LeftDockLayout.cs",
     "Core/Logger.cs",

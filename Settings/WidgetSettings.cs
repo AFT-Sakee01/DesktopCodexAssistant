@@ -295,7 +295,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 101;
+    private const int CurrentSettingsVersion = 102;
     private const int RetiredCanonicalSettingsCount = 113;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -494,6 +494,12 @@ internal sealed class WidgetSettings
     // click inside a translator this app itself just launched, and it never re-opens an overlay the
     // user closed on their own.
     public bool TranslatorOverlayAutoOpenEnabled { get; set; }
+    // Minimises Windows' own Live Captions host once per instance while the translator is
+    // running. The translator hides it at its own startup but not when it relaunches the caption
+    // host mid-session, which is exactly when a topmost caption bar lands across whatever the
+    // user is watching. Never re-applied to a window the user restored -- see
+    // Core/LiveCaptionsWindowTidy.cs.
+    public bool LiveCaptionsAutoHideEnabled { get; set; }
     public bool ClaudeAppKeepAliveEnabled { get; set; }
     // Guard state. GuardSleepEnabled and the two deadline ticks are live runtime state rather than
     // preferences: they are persisted so a restart during a long unattended run does not silently
@@ -958,6 +964,7 @@ internal sealed class WidgetSettings
         this.CodexAppKeepAliveEnabled = defaults.CodexAppKeepAliveEnabled;
         this.ClaudeAppKeepAliveEnabled = defaults.ClaudeAppKeepAliveEnabled;
         this.TranslatorOverlayAutoOpenEnabled = defaults.TranslatorOverlayAutoOpenEnabled;
+        this.LiveCaptionsAutoHideEnabled = defaults.LiveCaptionsAutoHideEnabled;
         this.GuardSleepEnabled = defaults.GuardSleepEnabled;
         this.GuardSleepSinceUtcTicks = defaults.GuardSleepSinceUtcTicks;
         this.GuardDisplayMinutes = defaults.GuardDisplayMinutes;
@@ -1181,6 +1188,7 @@ internal sealed class WidgetSettings
         settings.CodexAppKeepAliveEnabled = false;
         settings.ClaudeAppKeepAliveEnabled = false;
         settings.TranslatorOverlayAutoOpenEnabled = true;
+        settings.LiveCaptionsAutoHideEnabled = true;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1406,6 +1414,7 @@ internal sealed class WidgetSettings
         settings.CodexAppKeepAliveEnabled = false;
         settings.ClaudeAppKeepAliveEnabled = false;
         settings.TranslatorOverlayAutoOpenEnabled = true;
+        settings.LiveCaptionsAutoHideEnabled = true;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1627,6 +1636,7 @@ internal sealed class WidgetSettings
             CodexAppKeepAliveEnabled = this.CodexAppKeepAliveEnabled,
             ClaudeAppKeepAliveEnabled = this.ClaudeAppKeepAliveEnabled,
             TranslatorOverlayAutoOpenEnabled = this.TranslatorOverlayAutoOpenEnabled,
+            LiveCaptionsAutoHideEnabled = this.LiveCaptionsAutoHideEnabled,
             GuardSleepEnabled = this.GuardSleepEnabled,
             GuardSleepSinceUtcTicks = this.GuardSleepSinceUtcTicks,
             GuardDisplayMinutes = this.GuardDisplayMinutes,
@@ -2611,6 +2621,15 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 102)
+        {
+            // Version 102 adds the Live Captions auto-hide, armed on upgrade for the same reason
+            // as 101: it changes one window's state, it starts nothing, and hidden is the state
+            // the translator itself puts that window in.
+            settings.LiveCaptionsAutoHideEnabled = true;
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -2844,6 +2863,7 @@ internal sealed class WidgetSettings
             "CodexAppKeepAliveEnabled=" + this.CodexAppKeepAliveEnabled,
             "ClaudeAppKeepAliveEnabled=" + this.ClaudeAppKeepAliveEnabled,
             "TranslatorOverlayAutoOpenEnabled=" + this.TranslatorOverlayAutoOpenEnabled,
+            "LiveCaptionsAutoHideEnabled=" + this.LiveCaptionsAutoHideEnabled,
             "GuardSleepEnabled=" + this.GuardSleepEnabled,
             "GuardSleepSinceUtcTicks=" + this.GuardSleepSinceUtcTicks.ToString(CultureInfo.InvariantCulture),
             "GuardDisplayMinutes=" + this.GuardDisplayMinutes.ToString(CultureInfo.InvariantCulture),
@@ -3486,6 +3506,12 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "TranslatorOverlayAutoOpenEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
         {
             settings.TranslatorOverlayAutoOpenEnabled = boolValue;
+            return;
+        }
+
+        if (string.Equals(key, "LiveCaptionsAutoHideEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.LiveCaptionsAutoHideEnabled = boolValue;
             return;
         }
 
@@ -6676,8 +6702,9 @@ internal sealed class WidgetSettings
             "All three program keep-alive guards should default disarmed.");
         // The overlay auto-open is the deliberate exception: it starts nothing, so it defaults on.
         AssertLayout(
-            keepAliveDefaults.TranslatorOverlayAutoOpenEnabled,
-            "Translator overlay auto-open should default on.");
+            keepAliveDefaults.TranslatorOverlayAutoOpenEnabled &&
+            keepAliveDefaults.LiveCaptionsAutoHideEnabled,
+            "Translator overlay auto-open and Live Captions auto-hide should default on.");
 
         string root = Path.Combine(Path.GetTempPath(), "DesktopCodexAssistant-translator-keepalive-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -6720,23 +6747,28 @@ internal sealed class WidgetSettings
             // The overlay option goes the other way on upgrade: an existing install gets it on,
             // which is the whole point of the option, and an explicit False must still round-trip.
             File.WriteAllLines(path, new string[] { "Version=100" }, SharedEncoding.Utf8NoBom);
+            WidgetSettings migrated101 = LoadFromPath(path, false);
             AssertLayout(
-                LoadFromPath(path, false).TranslatorOverlayAutoOpenEnabled,
-                "Translator overlay auto-open v100 to v101 migration should arm.");
+                migrated101.TranslatorOverlayAutoOpenEnabled && migrated101.LiveCaptionsAutoHideEnabled,
+                "Translator window options v100 to v102 migrations should arm.");
             WidgetSettings overlayOff = CreateDefaults();
             overlayOff.TranslatorOverlayAutoOpenEnabled = false;
+            overlayOff.LiveCaptionsAutoHideEnabled = false;
             overlayOff.SaveToPath(path, true);
+            WidgetSettings overlayOffReloaded = LoadFromPath(path, false);
             AssertLayout(
-                !LoadFromPath(path, false).TranslatorOverlayAutoOpenEnabled &&
-                !overlayOff.Clone().TranslatorOverlayAutoOpenEnabled,
-                "Translator overlay auto-open should round-trip and clone when switched off.");
+                !overlayOffReloaded.TranslatorOverlayAutoOpenEnabled &&
+                !overlayOffReloaded.LiveCaptionsAutoHideEnabled &&
+                !overlayOff.Clone().TranslatorOverlayAutoOpenEnabled &&
+                !overlayOff.Clone().LiveCaptionsAutoHideEnabled,
+                "Both translator window options should round-trip and clone when switched off.");
         }
         finally
         {
             try { Directory.Delete(root, true); } catch { }
         }
 
-        Console.WriteLine("Program keep-alive settings: PASS three guards default disarmed, overlay auto-open default on, save/load, clone, migrate(v97->v98, v98->v99, v100->v101)");
+        Console.WriteLine("Program keep-alive settings: PASS three guards default disarmed, overlay auto-open and caption auto-hide default on, save/load, clone, migrate(v97->v98, v98->v99, v100->v101, v101->v102)");
         ProgramKeepAliveGuard.RunSelfTest();
     }
 

@@ -25,6 +25,11 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     // video they want captioned, and slow enough that the WMI query behind the proxy check stays a
     // rounding error on the tick budget.
     private const int TranslatorKeepAliveIntervalSeconds = 30;
+    // Far shorter than the keep-alive sweep because this one is about something the user is
+    // looking at: a topmost caption bar sitting across the video. The work behind it is one
+    // EnumWindows pass and, at most, one ShowWindow -- cheap enough to ask this often, and only
+    // ever acted on once per caption-host instance.
+    private const int LiveCaptionsTidyIntervalSeconds = 5;
     private const int SeelenDockPulseFallbackIntervalMs = 30 * 60 * 1000;
     private const int WinDRecoveryDelayMs = 2000;
     private const int PowerResumeRestartGuardSeconds = 30;
@@ -120,6 +125,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
     // stacking further passes behind it while it is still running.
     private DateTime lastTranslatorKeepAliveUtc;
     private bool translatorKeepAliveRunning;
+    private DateTime lastLiveCaptionsTidyUtc;
+    private bool liveCaptionsTidyRunning;
     private readonly Dictionary<int, string> registeredGlobalHotkeys = new Dictionary<int, string>();
     private readonly Dictionary<string, string> globalHotkeyRegistrationFailures =
         new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1616,6 +1623,8 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
 
             UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:program_keep_alive");
             MaintainProgramKeepAlive();
+            UiHangWatchdog.MarkUiCheckpoint("widget.main_tick:live_captions_tidy");
+            MaintainLiveCaptionsWindow();
 
             if (this.hiddenForFullscreen &&
                 WidgetSettings.GetEffectivePerformanceMode(this.CurrentSettings.PerformanceMode) == WidgetPerformanceMode.BatterySaver)
@@ -2205,6 +2214,48 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
             finally
             {
                 this.translatorKeepAliveRunning = false;
+            }
+        });
+    }
+
+    // Keeps the Live Captions host minimised while the translator drives it. No timer of its own:
+    // it self-gates on the existing main control tick, the same way MaintainProgramKeepAlive does,
+    // and hands the actual window work to a background thread because it enumerates processes.
+    private void MaintainLiveCaptionsWindow()
+    {
+        if (this.CurrentSettings == null ||
+            !this.CurrentSettings.LiveCaptionsAutoHideEnabled ||
+            this.liveCaptionsTidyRunning)
+        {
+            return;
+        }
+
+        DateTime nowUtc = DateTime.UtcNow;
+        if (this.lastLiveCaptionsTidyUtc != DateTime.MinValue &&
+            (nowUtc - this.lastLiveCaptionsTidyUtc).TotalSeconds < LiveCaptionsTidyIntervalSeconds)
+        {
+            return;
+        }
+
+        this.lastLiveCaptionsTidyUtc = nowUtc;
+        this.liveCaptionsTidyRunning = true;
+        ThreadPool.QueueUserWorkItem(delegate
+        {
+            try
+            {
+                string detail;
+                if (LiveCaptionsWindowTidy.TryHideNewCaptionWindow(out detail))
+                {
+                    Program.LogInfo("Live captions window: " + detail);
+                }
+            }
+            catch (Exception ex)
+            {
+                Program.LogException(ex);
+            }
+            finally
+            {
+                this.liveCaptionsTidyRunning = false;
             }
         });
     }

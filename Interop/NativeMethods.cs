@@ -118,6 +118,7 @@ internal static class NativeMethods
     private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
     private const uint MOUSEEVENTF_RIGHTUP = 0x0010;
     private const int SW_SHOW = 5;
+    private const int SW_MINIMIZE = 6;
     private const int SW_RESTORE = 9;
     private const ushort IMAGE_FILE_MACHINE_UNKNOWN = 0x0000;
     private const ushort IMAGE_FILE_MACHINE_ARM64 = 0xAA64;
@@ -4513,6 +4514,70 @@ internal static class NativeMethods
     // First visible top-level window of `processId` whose title matches exactly. Used to detect
     // LiveCaptionsTranslator's overlay window, whose title is fixed by upstream XAML and is the only
     // reliable signal that overlay mode is on -- the toggle state itself lives in the other process.
+    // First visible top-level window with this class name. Windows Live Captions is addressed by
+    // class ("LiveCaptionsDesktopWindow") rather than title because the title is localised -- this
+    // machine shows 即時輔助字幕.
+    internal static bool TryFindWindowByClassName(string className, out IntPtr handle)
+    {
+        IntPtr found = IntPtr.Zero;
+        if (string.IsNullOrEmpty(className))
+        {
+            handle = IntPtr.Zero;
+            return false;
+        }
+
+        EnumWindows(delegate(IntPtr windowHandle, IntPtr lParam)
+        {
+            if (!IsWindowVisible(windowHandle) ||
+                !string.Equals(GetWindowClassName(windowHandle), className, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            found = windowHandle;
+            return false;
+        }, IntPtr.Zero);
+
+        handle = found;
+        return found != IntPtr.Zero;
+    }
+
+    internal static bool IsWindowMinimized(IntPtr handle)
+    {
+        return handle != IntPtr.Zero && IsIconic(handle);
+    }
+
+    // Minimise a window of another process and take it out of the taskbar/alt-tab. This is exactly
+    // what LiveCaptionsTranslator does to Windows Live Captions at its own startup
+    // (LiveCaptionsHandler.HideLiveCaptions: SW_MINIMIZE + WS_EX_TOOLWINDOW), reproduced here for
+    // the case upstream misses -- the caption host it relaunches mid-session is left in front.
+    // Matching its exact pair of calls keeps the window in a state the translator already expects,
+    // including its own RestoreLiveCaptions path on shutdown.
+    internal static bool TryMinimizeWindowAsToolWindow(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            ShowWindow(handle, SW_MINIMIZE);
+            int exStyle = GetWindowLong(handle, GWL_EXSTYLE);
+            if ((exStyle & WS_EX_TOOLWINDOW) == 0)
+            {
+                SetWindowLong(handle, GWL_EXSTYLE, exStyle | WS_EX_TOOLWINDOW);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return false;
+        }
+    }
+
     internal static bool TryFindProcessWindowByTitle(int processId, string title, out IntPtr handle)
     {
         IntPtr found = IntPtr.Zero;
