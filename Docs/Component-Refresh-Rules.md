@@ -154,6 +154,7 @@ DNS 检测：
 - **重绘跟着读取走，不跟着时钟走**：`KickCaptionPoll()` 在后台线程读完后 `BeginInvoke` 回 UI 线程调用 `PresentCaptionSnapshot()`。UIA 慢一次只推迟它自己那一帧，不会让屏幕按时显示过期文本。单飞用 `Interlocked.CompareExchange`（一秒四次时普通 bool 的竞争窗口已经不可忽略，输掉竞争意味着两次重叠的跨进程读）。
 - 快时钟**只在翻译器确实在产字幕且显示未挂起时运行**：`PresentCaptionSnapshot()` 按 `TranslatorRunning` 起停，`PrepareForDisplaySuspend` 停表并置 `captionDisplaySuspended`，后者专门用来挡住「挂起之后才完成的那次在途轮询」把时钟重新打开。从不运行翻译器的机器因此一次也不会付这四次/秒的跨进程读。
 - 隐藏字幕条（`CaptionOverlayDisplayEnabled = false`）**不停快时钟**：它只阻止绘制（`CaptionOverlayForm.ShouldBeVisible` 返回 false，且 `WidgetForm.PresentCaptionSnapshot` 不再懒创建那个表面），读取与记录照旧。这是刻意的：文章靠 reader 比较相邻两次轮询来闩住定稿句，降低采样率会让句子在两次轮询之间来去而漏掉——因此隐藏字幕条省不下轮询开销。要连读取一起停掉是另一个开关（`CaptionOverlayEnabled`）。
+- 悬停淡出（`CaptionOverlayHoverAutoHideEnabled`）也挂在同一个字幕时钟上，没有自己的 timer：字幕条全程 `WS_EX_TRANSPARENT`，永远收不到 enter/leave 消息，只能每 250 ms 把 `Cursor.Position` 与窗口矩形比一次。悬停态变化只调 `RenderLayeredWindow(false)` 重新混合，不重画内容——变的只是窗口 constant alpha。
 - `RecoverAfterDisplayResume` 必须给字幕条调用 `SetDisplaySuspended(false)` 并立刻呈现一帧。2.0.0.73 之前这一步根本不存在，而挂起路径是调用了 `(true)` 的——显示器睡一次之后字幕条在该进程剩余生命周期里永远不再出现（`UpdateSnapshot` 在 `displaySuspended` 时直接返回）。
 - 全屏标志不停止采样；显示器关闭、会话锁定或系统挂起停止，恢复后清空时间戳并立即采样。
 - `PowerThermalManualEnergySaverThresholdPercent` 只根据最近电池快照影响 `EnergySaverActive`，不新增轮询。

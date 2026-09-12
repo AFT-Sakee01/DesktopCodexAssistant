@@ -719,6 +719,7 @@ internal sealed partial class CaptionsBoardForm
         // where it has to stop.
         bool editing = IsCaptionOverlayEditing;
         bool shown = IsCaptionOverlayDisplayEnabled;
+        bool hoverAutoHide = IsCaptionOverlayHoverAutoHideEnabled;
         // The button says what pressing it does, not what the current state is.
         string displayLabel = shown ? "隐藏" : "显示";
         string editLabel = editing ? "完成" : "调整";
@@ -731,22 +732,78 @@ internal sealed partial class CaptionsBoardForm
 
         int stripLabelWidth = MeasureTextWidth(g, stripLabel, labelFont) + S(8);
         int displayWidth = MeasureTextWidth(g, displayLabel, bodyFont) + S(14);
+        int hoverWidth = MeasureTextWidth(g, "避让", bodyFont) + S(14);
         int editWidth = MeasureTextWidth(g, editLabel, bodyFont) + S(14);
         int resetWidth = MeasureTextWidth(g, "复位", bodyFont) + S(14);
         int linesLabelWidth = MeasureTextWidth(g, linesLabel, labelFont) + S(8);
         int stepperWidth = MeasureStepperWidth(g, settledText, monoFont, bounds.Height);
-        int stripGroupWidth = stripLabelWidth + gap + displayWidth + gap + editWidth + gap + resetWidth +
-            groupGap + linesLabelWidth + gap + stepperWidth;
+
+        // The article group, measured now so the row knows whether both groups fit before it commits
+        // to drawing either. The buttons are the controls; the two section labels only name them.
+        int articleLabelWidth = S(40) + gap;
+        int pageWidth = S(PageButtonLogicalWidth);
+        string pageText = (this.articleMaxPageBack - this.articlePageBack + 1).ToString(CultureInfo.InvariantCulture) +
+            "/" + (this.articleMaxPageBack + 1).ToString(CultureInfo.InvariantCulture);
+        int pageTextWidth = Math.Max(S(26), MeasureTextWidth(g, pageText, monoFont) + S(6));
+        int exportWidth = MeasureTextWidth(g, "导出", bodyFont) + S(14);
+        bool armed = IsClearArmed;
+        string clearLabel = armed ? "确认" : "清除";
+        int clearWidth = MeasureTextWidth(g, clearLabel, bodyFont) + S(14);
+
+        // Labels are given up before anything the user can press, and the article label goes first: the
+        // text it names is directly below it, while the strip group has no such context. A narrow board
+        // therefore loses words, never buttons -- an unreachable control would be a worse trade than an
+        // unlabelled group. Widths are measured rather than assumed because the labels are CJK and the
+        // font follows LayerScale.
+        bool showArticleLabel = true;
+        bool showStripLabel = true;
+        bool showLinesLabel = true;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            int articleGroup = (showArticleLabel ? articleLabelWidth : 0) + pageWidth + gap + pageWidth + gap +
+                pageTextWidth + groupGap + exportWidth + gap + clearWidth;
+            int stripGroup = (showStripLabel ? stripLabelWidth + gap : 0) + displayWidth + gap + hoverWidth +
+                gap + editWidth + gap + resetWidth + groupGap + (showLinesLabel ? linesLabelWidth + gap : 0) +
+                stepperWidth;
+            if (articleGroup + groupGap + stripGroup <= bounds.Width)
+            {
+                break;
+            }
+
+            if (showArticleLabel)
+            {
+                showArticleLabel = false;
+            }
+            else if (showLinesLabel)
+            {
+                showLinesLabel = false;
+            }
+            else
+            {
+                showStripLabel = false;
+            }
+        }
+
+        int stripGroupWidth = (showStripLabel ? stripLabelWidth + gap : 0) + displayWidth + gap + hoverWidth +
+            gap + editWidth + gap + resetWidth + groupGap + (showLinesLabel ? linesLabelWidth + gap : 0) +
+            stepperWidth;
         int stripLeft = bounds.Right - stripGroupWidth;
 
         using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
         using (StringFormat near = CreateFormat(StringAlignment.Near))
         {
-            g.DrawString("文 章", labelFont, labelBrush, new Rectangle(bounds.Left, bounds.Top, S(40), bounds.Height), near);
-            g.DrawString(stripLabel, labelFont, labelBrush, new Rectangle(stripLeft, bounds.Top, stripLabelWidth, bounds.Height), near);
+            if (showArticleLabel)
+            {
+                g.DrawString("文 章", labelFont, labelBrush, new Rectangle(bounds.Left, bounds.Top, S(40), bounds.Height), near);
+            }
+
+            if (showStripLabel)
+            {
+                g.DrawString(stripLabel, labelFont, labelBrush, new Rectangle(stripLeft, bounds.Top, stripLabelWidth, bounds.Height), near);
+            }
         }
 
-        int sx = stripLeft + stripLabelWidth + gap;
+        int sx = stripLeft + (showStripLabel ? stripLabelWidth + gap : 0);
         // Hiding only stops the drawing: the reader keeps polling and the article keeps recording,
         // which is why this is a button here and not the master switch in the settings window. Muted
         // while hidden, so a glance at the row says which state the strip is in.
@@ -764,6 +821,18 @@ internal sealed partial class CaptionsBoardForm
         }
 
         sx = displayBounds.Right + gap;
+        // 避让 is a standing preference, not an action, so it is drawn filled while on rather than
+        // changing its label -- the same shape the model and caption-source segments use for "this
+        // one is in effect". Pressing it toggles; it is never inert, including while hidden, because
+        // it is a setting for the next time the strip is on screen rather than a thing you do to it.
+        Rectangle hoverBounds = new Rectangle(sx, bounds.Top, hoverWidth, bounds.Height);
+        DrawStateButton(g, hoverBounds, "避让", hoverAutoHide, bodyFont);
+        if (recordHitTargets)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = hoverBounds, Action = CaptionsHitAction.OverlayHoverAutoHideToggle });
+        }
+
+        sx = hoverBounds.Right + gap;
         // Editing is a mode, so the button says what pressing it will do: 调整 to enter, 完成 to leave
         // and save. Green while editing, because that press is the one that commits the new rectangle.
         // Both placement buttons go dead while the strip is hidden -- there is nothing on screen to
@@ -789,15 +858,18 @@ internal sealed partial class CaptionsBoardForm
             this.hitTargets.Add(new CaptionsHitTarget { Bounds = resetBounds, Action = CaptionsHitAction.OverlayReset });
         }
 
-        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
-        using (StringFormat near = CreateFormat(StringAlignment.Near))
+        if (showLinesLabel)
         {
-            g.DrawString(
-                linesLabel,
-                labelFont,
-                labelBrush,
-                new Rectangle(resetBounds.Right + groupGap, bounds.Top, linesLabelWidth, bounds.Height),
-                near);
+            using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
+            using (StringFormat near = CreateFormat(StringAlignment.Near))
+            {
+                g.DrawString(
+                    linesLabel,
+                    labelFont,
+                    labelBrush,
+                    new Rectangle(resetBounds.Right + groupGap, bounds.Top, linesLabelWidth, bounds.Height),
+                    near);
+            }
         }
 
         DrawStepper(
@@ -819,8 +891,7 @@ internal sealed partial class CaptionsBoardForm
             g.DrawLine(separatorPen, separatorX, bounds.Top + S(2), separatorX, bounds.Bottom - S(2));
         }
 
-        int x = bounds.Left + S(40) + gap;
-        int pageWidth = S(PageButtonLogicalWidth);
+        int x = bounds.Left + (showArticleLabel ? articleLabelWidth : 0);
 
         // Up walks back through the article, down returns toward the live tail -- the same direction
         // the text itself scrolls, so the arrows mean what they look like.
@@ -842,9 +913,6 @@ internal sealed partial class CaptionsBoardForm
         }
 
         x = pageDownBounds.Right + gap;
-        string pageText = (this.articleMaxPageBack - this.articlePageBack + 1).ToString(CultureInfo.InvariantCulture) +
-            "/" + (this.articleMaxPageBack + 1).ToString(CultureInfo.InvariantCulture);
-        int pageTextWidth = Math.Max(S(26), MeasureTextWidth(g, pageText, monoFont) + S(6));
         using (SolidBrush pageBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
         using (StringFormat centered = CreateFormat(StringAlignment.Center, StringTrimming.None))
         {
@@ -852,7 +920,7 @@ internal sealed partial class CaptionsBoardForm
         }
 
         x += pageTextWidth + groupGap;
-        Rectangle exportBounds = new Rectangle(x, bounds.Top, MeasureTextWidth(g, "导出", bodyFont) + S(14), bounds.Height);
+        Rectangle exportBounds = new Rectangle(x, bounds.Top, exportWidth, bounds.Height);
         DrawToolbarButton(g, exportBounds, "导出", DesignTokens.Colors.Border, bodyFont, false);
         if (recordHitTargets)
         {
@@ -862,13 +930,33 @@ internal sealed partial class CaptionsBoardForm
         x = exportBounds.Right + gap;
         // An armed clear says so on the button itself, not only in the status strip: the button is
         // where the next click is going to land.
-        bool armed = IsClearArmed;
-        string clearLabel = armed ? "确认" : "清除";
-        Rectangle clearBounds = new Rectangle(x, bounds.Top, MeasureTextWidth(g, clearLabel, bodyFont) + S(14), bounds.Height);
+        Rectangle clearBounds = new Rectangle(x, bounds.Top, clearWidth, bounds.Height);
         DrawToolbarButton(g, clearBounds, clearLabel, DesignTokens.Colors.Danger, bodyFont, false);
         if (recordHitTargets)
         {
             this.hitTargets.Add(new CaptionsHitTarget { Bounds = clearBounds, Action = CaptionsHitAction.ArticleClear });
+        }
+    }
+
+    // A button whose label never changes because it shows a standing on/off preference: filled and
+    // accented while on, plain while off. DrawToolbarButton cannot express this -- its only variable
+    // is the border colour, which at a glance does not read as "switched on".
+    private void DrawStateButton(Graphics g, Rectangle bounds, string label, bool active, Font font)
+    {
+        Color accent = EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Captions);
+        using (GraphicsPath path = RoundedRectangle(RectangleF.Inflate(bounds, -1.0f, -1.0f), S(4)))
+        using (SolidBrush fill = new SolidBrush(active
+            ? DesignTokens.WithAlpha(accent, 46)
+            : DesignTokens.WithAlpha(DesignTokens.Colors.Control, 220)))
+        using (Pen border = new Pen(
+            DesignTokens.WithAlpha(active ? accent : DesignTokens.Colors.Border, active ? 205 : 130),
+            Math.Max(1.0f, this.LayerScale)))
+        using (SolidBrush textBrush = new SolidBrush(active ? accent : DesignTokens.Colors.TextMuted))
+        using (StringFormat centered = CreateFormat(StringAlignment.Center, StringTrimming.None))
+        {
+            g.FillPath(fill, path);
+            g.DrawPath(border, path);
+            g.DrawString(label, font, textBrush, bounds, centered);
         }
     }
 
@@ -1122,6 +1210,7 @@ internal sealed partial class CaptionsBoardForm
                 CaptionsHitAction.OverlayEditToggle,
                 CaptionsHitAction.OverlayReset,
                 CaptionsHitAction.OverlayDisplayToggle,
+                CaptionsHitAction.OverlayHoverAutoHideToggle,
                 CaptionsHitAction.ArticlePageUp,
                 CaptionsHitAction.ArticlePageDown
             };
@@ -1321,11 +1410,13 @@ internal sealed partial class CaptionsBoardForm
             }
 
             // The stepper is about what the strip keeps, not about placing it, and the article keeps
-            // recording either way -- so it stays live.
-            if (form.FindHitTarget(CaptionsHitAction.SettledLinesPlus) == Rectangle.Empty)
+            // recording either way -- so it stays live. 避让 likewise: it is a preference for the next
+            // time the strip is on screen, not an action performed on it now.
+            if (form.FindHitTarget(CaptionsHitAction.SettledLinesPlus) == Rectangle.Empty ||
+                form.FindHitTarget(CaptionsHitAction.OverlayHoverAutoHideToggle) == Rectangle.Empty)
             {
                 throw new InvalidOperationException(
-                    "Captions board layout self-test failed: the 句数 stepper must stay clickable while hidden.");
+                    "Captions board layout self-test failed: 句数 and 避让 must stay clickable while hidden.");
             }
         }
     }

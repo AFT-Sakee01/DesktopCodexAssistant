@@ -359,9 +359,58 @@ internal sealed partial class CaptionOverlayForm
 
             form.ApplySettings(settings);
             AssertSelfTest(form.ShouldBeVisible(), "showing it again must bring the strip back");
+
+            VerifyHoverFade();
         }
 
-        Console.WriteLine("Caption overlay layout: PASS fixed-height slots, settled-line count, optional original line, hidden when silent, hidden on request");
+        Console.WriteLine("Caption overlay layout: PASS fixed-height slots, settled-line count, optional original line, hidden when silent, hidden on request, hover fade");
+    }
+
+    // Hover auto-hide, driven through the injected cursor provider. The strip is click-through, so
+    // this path has no mouse messages to test against -- the rectangle comparison is the whole
+    // mechanism, and the thing worth pinning down is which states suppress it.
+    private static void VerifyHoverFade()
+    {
+        WidgetSettings hover = WidgetSettings.CreateDefaults();
+        hover.CaptionOverlayHoverAutoHideEnabled = true;
+        hover.Normalize();
+        using (CaptionOverlayForm form = new CaptionOverlayForm(hover))
+        {
+            form.Bounds = new Rectangle(100, 200, 800, 120);
+            form.snapshot = CreateFixtureSnapshot("Speaking.", "正在说。", new string[0]);
+            // Visible is false for an unshown form, and hover must not fade something that is not on
+            // screen; the test therefore drives UpdateHoverFade through a form it marks visible.
+            form.Show();
+
+            form.CursorPositionProvider = delegate { return new Point(4000, 4000); };
+            form.UpdateHoverFade();
+            AssertSelfTest(
+                form.WindowTransparencyOverridePercent == -1,
+                "a pointer away from the strip must leave the window alpha alone");
+
+            form.CursorPositionProvider = delegate { return new Point(500, 260); };
+            AssertSelfTest(form.UpdateHoverFade(), "moving onto the strip must report a change");
+            AssertSelfTest(
+                form.WindowTransparencyOverridePercent == WidgetSettings.CaptionOverlayHoverTransparencyPercent,
+                "hovering must fade the strip to the hover transparency, got " + form.WindowTransparencyOverridePercent);
+            AssertSelfTest(!form.UpdateHoverFade(), "staying on the strip must not report a change every tick");
+
+            // Nothing to place if it fades out from under the pointer that is dragging it.
+            form.SetEditMode(true);
+            form.UpdateHoverFade();
+            AssertSelfTest(
+                form.WindowTransparencyOverridePercent == -1,
+                "edit mode must suppress the hover fade");
+            form.SetEditMode(false);
+
+            WidgetSettings off = WidgetSettings.CreateDefaults();
+            off.Normalize();
+            form.ApplySettings(off);
+            form.UpdateHoverFade();
+            AssertSelfTest(
+                form.WindowTransparencyOverridePercent == -1,
+                "the fade must not happen at all while the setting is off");
+        }
     }
 
     private static TranslatorCaptionSnapshot CreateFixtureSnapshot(string original, string translated, string[] settled)

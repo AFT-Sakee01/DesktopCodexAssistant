@@ -160,6 +160,11 @@ internal sealed partial class CaptionsBoardForm
                 ToggleCaptionOverlayDisplay();
                 return true;
 
+            case CaptionsHitAction.OverlayHoverAutoHideToggle:
+                DisarmClear();
+                ToggleCaptionOverlayHoverAutoHide();
+                return true;
+
             default:
                 return false;
         }
@@ -286,6 +291,27 @@ internal sealed partial class CaptionsBoardForm
             settings.CaptionOverlayDisplayEnabled = next;
         });
         this.statusNotice = next ? string.Empty : "字幕条已隐藏，字幕仍在记录进文章";
+        RenderLayeredWindow();
+    }
+
+    private bool IsCaptionOverlayHoverAutoHideEnabled
+    {
+        get
+        {
+            return this.CurrentSettings != null && this.CurrentSettings.CaptionOverlayHoverAutoHideEnabled;
+        }
+    }
+
+    private void ToggleCaptionOverlayHoverAutoHide()
+    {
+        bool next = !IsCaptionOverlayHoverAutoHideEnabled;
+        PersistSettings(delegate(WidgetSettings settings)
+        {
+            settings.CaptionOverlayHoverAutoHideEnabled = next;
+        });
+        this.statusNotice = next
+            ? "鼠标移到字幕条上时它会淡到几乎看不见，移开恢复"
+            : string.Empty;
         RenderLayeredWindow();
     }
 

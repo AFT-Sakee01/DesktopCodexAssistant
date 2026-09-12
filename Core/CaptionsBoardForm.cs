@@ -932,7 +932,8 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
         SettledLinesPlus,
         OverlayEditToggle,
         OverlayReset,
-        OverlayDisplayToggle
+        OverlayDisplayToggle,
+        OverlayHoverAutoHideToggle
     }
 
     private struct CaptionsHitTarget
