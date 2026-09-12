@@ -12,11 +12,20 @@ internal sealed partial class OperationForm
     // ResetSpeedSnapshotProvider/CodexIqSnapshotProvider are wired.
     internal Func<TranslatorControlReader> TranslatorControlReaderProvider;
 
+    // The caption strip's two owners, wired the same way. The board needs the caption reader for the
+    // article it draws (the reader is where a sentence is first known to be finished) and the overlay
+    // itself for edit mode -- the strip is click-through, so its own move/resize controls have to live
+    // on a surface that accepts clicks.
+    internal Func<TranslatorCaptionReader> TranslatorCaptionReaderProvider;
+    internal Func<CaptionOverlayForm> CaptionOverlayProvider;
+
     internal CaptionsBoardForm EnsureCaptionsBoardForm()
     {
         if (this.captionsBoardForm == null || this.captionsBoardForm.IsDisposed)
         {
             this.captionsBoardForm = new CaptionsBoardForm(this, this.CurrentSettings, ResolveTranslatorControlReader);
+            this.captionsBoardForm.CaptionReaderProvider = ResolveTranslatorCaptionReader;
+            this.captionsBoardForm.CaptionOverlayProvider = ResolveCaptionOverlay;
             this.captionsBoardForm.CollapseOtherLeftDockOverlays = delegate
             {
                 HideNetworkDockedPanelIfVisible();
@@ -31,6 +40,18 @@ internal sealed partial class OperationForm
     private TranslatorControlReader ResolveTranslatorControlReader()
     {
         Func<TranslatorControlReader> provider = this.TranslatorControlReaderProvider;
+        return provider == null ? null : provider();
+    }
+
+    private TranslatorCaptionReader ResolveTranslatorCaptionReader()
+    {
+        Func<TranslatorCaptionReader> provider = this.TranslatorCaptionReaderProvider;
+        return provider == null ? null : provider();
+    }
+
+    private CaptionOverlayForm ResolveCaptionOverlay()
+    {
+        Func<CaptionOverlayForm> provider = this.CaptionOverlayProvider;
         return provider == null ? null : provider();
     }
 

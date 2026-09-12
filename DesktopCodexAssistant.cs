@@ -892,6 +892,7 @@ internal static class Program
             RunNamedSelfTest("TranslatorControlReader", TranslatorControlReader.RunSelfTest);
             RunNamedSelfTest("CaptionsBoardForm", CaptionsBoardForm.RunSelfTest);
             RunNamedSelfTest("CaptionOverlayForm", CaptionOverlayForm.RunSelfTest);
+            RunNamedSelfTest("CaptionTranscript", CaptionTranscript.RunSelfTest);
             RunNamedSelfTest("OperationForm.LeftDockMutualExclusion", OperationForm.RunLeftDockMutualExclusionSelfTest);
             RunNamedSelfTest("BurnInProtection", BurnInProtection.RunSelfTest);
             RunNamedSelfTest("MemoryPressureTracker", MemoryPressureTracker.RunSelfTest);

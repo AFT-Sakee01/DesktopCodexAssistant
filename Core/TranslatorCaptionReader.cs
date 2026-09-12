@@ -29,9 +29,10 @@ internal sealed class TranslatorCaptionReader
     // Re-resolving the automation elements is the expensive part (a descendant search). Once the
     // window is gone this backs off so a closed translator does not cost a tree walk every tick.
     private const int ResolveRetryIntervalMs = 2000;
-    // How many finished sentences the strip keeps. More than this and the panel starts covering
-    // the picture it is supposed to sit on top of.
-    internal const int SettledHistoryLimit = 3;
+    // How many finished sentences the reader keeps. The strip shows as many of them as
+    // CaptionOverlaySettledLines asks for; keeping the maximum means raising that setting shows
+    // real history immediately instead of starting from nothing.
+    internal const int SettledHistoryLimit = WidgetSettings.MaxCaptionOverlaySettledLines;
 
     private readonly object stateLock = new object();
 
@@ -42,6 +43,11 @@ internal sealed class TranslatorCaptionReader
     private DateTime lastResolveAttemptUtc = DateTime.MinValue;
     private TranslatorCaptionSnapshot snapshot = TranslatorCaptionSnapshot.CreateEmpty();
     private int refreshing;
+    // The running article. Owned here because this is where a sentence is known to be finished;
+    // the board and the export button only read it.
+    internal CaptionTranscript Transcript { get { return this.transcript; } }
+
+    private readonly CaptionTranscript transcript = new CaptionTranscript();
     private string lastLiveOriginal = string.Empty;
     private string lastLiveTranslation = string.Empty;
     // Settled sentences, oldest first, capped at SettledHistoryLimit.
@@ -107,6 +113,8 @@ internal sealed class TranslatorCaptionReader
             this.lastLiveOriginal = string.Empty;
             this.lastLiveTranslation = string.Empty;
             this.settledTranslations.Clear();
+            // The article deliberately survives: the translator restarting (or being restarted by
+            // the keep-alive guard) is not a reason to lose what was already said.
             Publish(next);
             return;
         }
@@ -181,7 +189,7 @@ internal sealed class TranslatorCaptionReader
             // the transition the translation on screen still IS the sentence being latched.
             if (this.lastLiveTranslation.Length > 0 && !IsStatusText(this.lastLiveTranslation))
             {
-                AppendSettled(this.lastLiveTranslation);
+                AppendSettled(this.lastLiveTranslation, this.lastLiveOriginal);
             }
         }
 
@@ -206,13 +214,16 @@ internal sealed class TranslatorCaptionReader
     // whole thing, and that can look like a new sentence starting. Upstream hits the same problem
     // and solves it the same way -- IsOverwrite deletes the last logged row and writes the new one.
     // Without this the history block shows the same thought twice in slightly different words.
-    private void AppendSettled(string sentence)
+    private void AppendSettled(string sentence, string spokenSentence)
     {
         int count = this.settledTranslations.Count;
         if (count > 0 && IsSameTranslation(this.settledTranslations[count - 1], sentence))
         {
             // Keep the newer text: it is the more complete translation of the same sentence.
             this.settledTranslations[count - 1] = sentence;
+            // The article has to follow the same collapse, or the reworded sentence lands in it
+            // twice.
+            this.transcript.ReplaceLatest(sentence, spokenSentence);
             return;
         }
 
@@ -221,6 +232,8 @@ internal sealed class TranslatorCaptionReader
         {
             this.settledTranslations.RemoveAt(0);
         }
+
+        this.transcript.Append(sentence, spokenSentence, DateTime.UtcNow);
     }
 
     // Two translations are the same sentence when one contains the other (a sentence that grew a

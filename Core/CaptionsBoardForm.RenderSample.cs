@@ -16,6 +16,9 @@ internal sealed partial class CaptionsBoardForm
         {
             form.Size = form.GetDesiredSize();
             form.snapshot = fixture;
+            // The article is half the board, so the sample has to carry one; without it every
+            // render would only ever show the empty state.
+            form.articleFixture = CreateArticleFixture(40);
             string path = Path.Combine(outputDir, "captions-board.png");
             RenderSampleSupport.SaveComposited(outputDir, Path.GetFileName(path), form.Width, form.Height, 255, form.DrawWindowContent);
             Console.WriteLine("Captions board -> " + path + " (" + form.Width + "x" + form.Height + ")");

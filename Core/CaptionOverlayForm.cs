@@ -14,6 +14,14 @@ using System.Windows.Forms;
 // Deliberately NOT one of the eleven tiles or seven dock boards: it is not part of the dock queue, it
 // takes no layout-editor slot, it never accepts a click (WS_EX_TRANSPARENT throughout), and its
 // position comes from two settings rather than from the layout editor. See AGENTS.md "Product Scope".
+internal enum CaptionOverlayDragKind
+{
+    None,
+    Move,
+    ResizeLeft,
+    ResizeRight,
+}
+
 internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
 {
     private readonly UiFontCache fontCache = new UiFontCache();
@@ -26,6 +34,13 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
     // lands in the left third. The layout therefore uses the width it was told to use.
     private int renderWidth;
     private bool displaySuspended;
+    // Edit mode: the strip stops being click-through so it can be dragged and resized, and draws
+    // a frame with edge handles. Entered and left from the captions board, because the strip has
+    // no chrome of its own and a mode you can only leave from the thing you are dragging is a trap.
+    private bool editMode;
+    private Point dragStartScreen;
+    private Rectangle dragStartBounds;
+    private CaptionOverlayDragKind dragKind = CaptionOverlayDragKind.None;
 
     internal CaptionOverlayForm(WidgetSettings settings)
     {
@@ -62,6 +77,60 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
     protected override int PresentationLuminancePercent
     {
         get { return 100; }
+    }
+
+    internal bool IsEditing
+    {
+        get { return this.editMode; }
+    }
+
+    internal void SetEditMode(bool enabled)
+    {
+        if (this.editMode == enabled || this.IsDisposed)
+        {
+            return;
+        }
+
+        this.editMode = enabled;
+        this.dragKind = CaptionOverlayDragKind.None;
+        // Click-through is what makes the strip safe to leave over a video; it is also what makes
+        // it impossible to grab, so it comes off for exactly as long as the user is placing it.
+        ApplyMouseClickThroughStyle(!enabled);
+        this.Cursor = enabled ? Cursors.SizeAll : Cursors.Default;
+        this.lastRenderSignature = string.Empty;
+        this.lastWorkArea = Rectangle.Empty;
+        if (enabled)
+        {
+            // Something has to be on screen to drag. An empty strip in edit mode shows its frame
+            // and nothing else, which is enough to place it before anyone has said a word.
+            if (!this.Visible)
+            {
+                ApplyGeometry(ResolveWorkArea());
+                ShowOverlay();
+            }
+
+            RenderLayeredWindow();
+            return;
+        }
+
+        if (!ShouldBeVisible())
+        {
+            HideOverlay();
+            return;
+        }
+
+        RenderLayeredWindow();
+    }
+
+    // Current bounds in logical pixels, for the board to persist when edit mode ends.
+    internal Rectangle GetLogicalBounds()
+    {
+        float scale = this.LayerScale <= 0 ? 1.0f : this.LayerScale;
+        return new Rectangle(
+            (int)Math.Round(this.Left / scale),
+            (int)Math.Round(this.Top / scale),
+            (int)Math.Round(this.Width / scale),
+            (int)Math.Round(this.Height / scale));
     }
 
     internal void ApplySettings(WidgetSettings settings)
@@ -136,6 +205,12 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
             return false;
         }
 
+        if (this.editMode)
+        {
+            // Placing the strip is impossible if it vanishes whenever the speaker pauses.
+            return true;
+        }
+
         // Nothing to say, nothing on screen. An empty strip parked over the video is worse than no
         // strip at all, and the translator legitimately goes quiet between sentences.
         return this.snapshot.TranslatorRunning && this.snapshot.HasText();
@@ -161,18 +236,157 @@ internal sealed partial class CaptionOverlayForm : LayeredWidgetFormBase
 
     private void ApplyGeometry(Rectangle workArea)
     {
-        int height = MeasureDesiredHeight(workArea.Width);
-        int top = workArea.Top + (int)Math.Round(workArea.Height * (this.CurrentSettings.CaptionOverlayTopPercent / 100.0));
-        // Never let the strip hang off the bottom of the work area, whatever the stored percentage
-        // says about a screen that has since changed size.
-        top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - height));
-        Rectangle bounds = new Rectangle(workArea.Left, top, workArea.Width, height);
+        // While the user is placing the strip their rectangle is the truth; recomputing it
+        // underneath them would fight the drag.
+        if (this.editMode)
+        {
+            this.renderWidth = this.Width;
+            return;
+        }
+
+        Rectangle bounds;
+        if (TryResolveSavedBounds(workArea, out bounds))
+        {
+            // A saved rectangle keeps the width and position the user chose but still follows the
+            // measured text height, so changing the font size or the history count does not leave
+            // the strip clipped or padded.
+            bounds.Height = MeasureDesiredHeight(bounds.Width);
+            bounds.Y = Math.Max(workArea.Top, Math.Min(bounds.Y, workArea.Bottom - bounds.Height));
+        }
+        else
+        {
+            int autoHeight = MeasureDesiredHeight(workArea.Width);
+            int top = workArea.Top + (int)Math.Round(workArea.Height * (this.CurrentSettings.CaptionOverlayTopPercent / 100.0));
+            // Never let the strip hang off the bottom of the work area, whatever the stored
+            // percentage says about a screen that has since changed size.
+            top = Math.Max(workArea.Top, Math.Min(top, workArea.Bottom - autoHeight));
+            bounds = new Rectangle(workArea.Left, top, workArea.Width, autoHeight);
+        }
+
         this.renderWidth = bounds.Width;
         if (this.Bounds != bounds)
         {
             this.Bounds = bounds;
             InvalidateLayeredRenderBuffer();
         }
+    }
+
+    // Saved bounds are logical pixels and all-or-nothing (Normalize enforces that), scaled here to
+    // the device pixels the window lives in. A rectangle that no longer touches the work area is
+    // ignored rather than clamped: falling back to the default band is easier to recover from than
+    // a strip squeezed against an edge of a screen that has since changed size.
+    private bool TryResolveSavedBounds(Rectangle workArea, out Rectangle bounds)
+    {
+        bounds = Rectangle.Empty;
+        if (this.CurrentSettings == null ||
+            this.CurrentSettings.CaptionOverlayWidth == WidgetSettings.AutoCaptionOverlayBounds)
+        {
+            return false;
+        }
+
+        float scale = this.LayerScale <= 0 ? 1.0f : this.LayerScale;
+        Rectangle candidate = new Rectangle(
+            (int)Math.Round(this.CurrentSettings.CaptionOverlayLeft * scale),
+            (int)Math.Round(this.CurrentSettings.CaptionOverlayTop * scale),
+            (int)Math.Round(this.CurrentSettings.CaptionOverlayWidth * scale),
+            (int)Math.Round(this.CurrentSettings.CaptionOverlayHeight * scale));
+        if (candidate.Width <= 0 || candidate.Height <= 0 || !workArea.IntersectsWith(candidate))
+        {
+            return false;
+        }
+
+        bounds = candidate;
+        return true;
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (!this.editMode || e.Button != MouseButtons.Left)
+        {
+            return;
+        }
+
+        this.dragKind = ResolveDragKind(e.Location);
+        this.dragStartScreen = Cursor.Position;
+        this.dragStartBounds = this.Bounds;
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (!this.editMode)
+        {
+            return;
+        }
+
+        if (this.dragKind == CaptionOverlayDragKind.None)
+        {
+            this.Cursor = ResolveDragKind(e.Location) == CaptionOverlayDragKind.Move
+                ? Cursors.SizeAll
+                : Cursors.SizeWE;
+            return;
+        }
+
+        // Deltas come from the screen cursor, not from e.Location: the window moves under the
+        // pointer while the drag runs, so client coordinates would feed the move back into itself.
+        Point now = Cursor.Position;
+        int dx = now.X - this.dragStartScreen.X;
+        int dy = now.Y - this.dragStartScreen.Y;
+        Rectangle start = this.dragStartBounds;
+        float scale = this.LayerScale <= 0 ? 1.0f : this.LayerScale;
+        int minWidth = Math.Max(1, (int)Math.Round(WidgetSettings.MinCaptionOverlayWidth * scale));
+        Rectangle next = start;
+        switch (this.dragKind)
+        {
+            case CaptionOverlayDragKind.Move:
+                next.X = start.X + dx;
+                next.Y = start.Y + dy;
+                break;
+
+            case CaptionOverlayDragKind.ResizeLeft:
+                // The right edge stays put while the left one moves, which is what grabbing a left
+                // edge means; moving both would read as dragging the whole strip.
+                next.X = Math.Min(start.X + dx, start.Right - minWidth);
+                next.Width = start.Right - next.X;
+                break;
+
+            case CaptionOverlayDragKind.ResizeRight:
+                next.Width = Math.Max(minWidth, start.Width + dx);
+                break;
+        }
+
+        if (next != this.Bounds)
+        {
+            this.Bounds = next;
+            this.renderWidth = next.Width;
+            InvalidateLayeredRenderBuffer();
+            RenderLayeredWindow();
+        }
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        this.dragKind = CaptionOverlayDragKind.None;
+    }
+
+    // Height is not draggable: it follows the measured text, so a dragged height would be
+    // overwritten by the next caption. Width and position are the parts the user owns.
+    private CaptionOverlayDragKind ResolveDragKind(Point location)
+    {
+        int grip = S(EditGripLogical);
+        if (location.X <= grip)
+        {
+            return CaptionOverlayDragKind.ResizeLeft;
+        }
+
+        if (location.X >= this.Width - grip)
+        {
+            return CaptionOverlayDragKind.ResizeRight;
+        }
+
+        return CaptionOverlayDragKind.Move;
     }
 
     private void ShowOverlay()

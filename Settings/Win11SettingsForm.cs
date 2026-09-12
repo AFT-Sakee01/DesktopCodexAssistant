@@ -463,7 +463,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "!Codex 额度计划", "CodexQuotaPlanEnabled", "CodexQuotaPlanWeeklyComparison", "CodexQuotaPlanWeeklyThresholdPercent",
                            "CodexQuotaPlanFiveHourComparison", "CodexQuotaPlanFiveHourThresholdPercent", "CodexQuotaPlanResumeConditionMode",
                            "CodexQuotaPlanAutoResumePausedGoals", "CodexQuotaPlanPauseGoalIds", "CodexQuotaPlanResumeGoalIds" },
-            new string[] { "!恢复与保护", "SeelenDockForegroundPulseEnabled", "WinDRecoveryPulseEnabled", "PowerResumeRestartEnabled", "TranslatorKeepAliveEnabled", "CodexAppKeepAliveEnabled", "ClaudeAppKeepAliveEnabled", "TranslatorOverlayAutoOpenEnabled", "LiveCaptionsAutoHideEnabled", "CaptionOverlayEnabled", "CaptionOverlayShowOriginal", "CaptionOverlayFontSize", "CaptionOverlayTopPercent" },
+            new string[] { "!恢复与保护", "SeelenDockForegroundPulseEnabled", "WinDRecoveryPulseEnabled", "PowerResumeRestartEnabled", "TranslatorKeepAliveEnabled", "CodexAppKeepAliveEnabled", "ClaudeAppKeepAliveEnabled", "TranslatorOverlayAutoOpenEnabled", "LiveCaptionsAutoHideEnabled", "CaptionOverlayEnabled", "CaptionOverlayShowOriginal", "CaptionOverlayFontSize", "CaptionOverlayTopPercent", "CaptionOverlaySettledLines" },
             new string[] { "!调试", "ForceShowForegroundFpsEnabled" }
         });
 
@@ -4024,6 +4024,10 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
     private static Dictionary<string, string> CreateSettingsUiBindingExemptions()
     {
         Dictionary<string, string> exemptions = new Dictionary<string, string>(StringComparer.Ordinal);
+        AddSettingsUiBindingExemptions(exemptions, "caption strip rectangle written by its own drag-to-place edit mode on the captions board; a number box for a rectangle the user drags would be a second, conflicting way to set the same thing", new string[]
+        {
+            "CaptionOverlayLeft", "CaptionOverlayTop", "CaptionOverlayWidth", "CaptionOverlayHeight"
+        });
         AddSettingsUiBindingExemptions(exemptions, "captured work-area cache; updated by display/layout adaptation, not edited directly", new string[]
         {
             "LayoutWorkAreaLeft", "LayoutWorkAreaTop", "LayoutWorkAreaWidth", "LayoutWorkAreaHeight",
@@ -4256,6 +4260,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "GuardBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinGuardBoardAutoHideSeconds, WidgetSettings.MaxGuardBoardAutoHideSeconds) },
         { "CaptionOverlayFontSize", new NumericRange(WidgetSettings.MinCaptionOverlayFontSize, WidgetSettings.MaxCaptionOverlayFontSize) },
         { "CaptionOverlayTopPercent", new NumericRange(WidgetSettings.MinCaptionOverlayTopPercent, WidgetSettings.MaxCaptionOverlayTopPercent) },
+        { "CaptionOverlaySettledLines", new NumericRange(WidgetSettings.MinCaptionOverlaySettledLines, WidgetSettings.MaxCaptionOverlaySettledLines) },
         { "CodexIqBoardLeftDockTabCenterY", new NumericRange(WidgetSettings.AutoLeftDockTabCenterY, 1000000) },
         { "CodexIqBoardAutoHideSeconds", new NumericRange(WidgetSettings.MinCodexIqBoardAutoHideSeconds, WidgetSettings.MaxCodexIqBoardAutoHideSeconds) },
         { "ResetSpeedBoardLeftDockTabCenterY", new NumericRange(WidgetSettings.AutoLeftDockTabCenterY, 1000000) },
@@ -4322,6 +4327,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CaptionOverlayShowOriginal", "字幕面板显示原文" },
         { "CaptionOverlayFontSize", "字幕面板译文字号" },
         { "CaptionOverlayTopPercent", "字幕面板距顶百分比" },
+        { "CaptionOverlaySettledLines", "字幕面板历史句数" },
         { "CodexAppKeepAliveEnabled", "Codex 应用保活" },
         { "ClaudeAppKeepAliveEnabled", "Claude 应用保活" },
         { "AiRequestProtectionAutoEnabled", "AI 自动阻断" },
@@ -4474,6 +4480,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "CaptionOverlayShowOriginal", "在译文下方以更小字号、更低不透明度显示原文，供漏听某个词时对照。关掉则只留译文。" },
         { "CaptionOverlayFontSize", "译文行的字号（逻辑磅值，范围 12-48）。原文行按固定比例跟随，不单独设置——两个尺寸各自可调最容易调出原文压过译文的组合。" },
         { "CaptionOverlayTopPercent", "面板顶边位于工作区高度的百分之几（0-80）。存百分比而不是像素行，换分辨率或外接屏时位置不会跑掉。" },
+        { "CaptionOverlaySettledLines", "正在说的那句上方保留几句已定稿的白字（0-5，默认 1）。留 0 只剩当前句。字幕看板里的「句数」按钮改的就是这一项，两处等价。行位是固定预留的，所以句数变化只改面板高度，不会让字在播放中途上下跳。" },
         { "CodexAppKeepAliveEnabled", "每 30 秒检查 ChatGPT 桌面应用（OpenAI.Codex 包），不在运行就拉起。只守护桌面应用，不碰 codex CLI——重开一个 CLI 只会得到空会话。" },
         { "ClaudeAppKeepAliveEnabled", "每 30 秒检查 Claude 桌面应用（Claude 包），不在运行就拉起。按可执行文件路径区分，Claude Code CLI 在跑不会被误判成应用还活着；同样不碰 CLI。" },
         { "AiRequestProtectionAutoEnabled", "网络监控判定为 GFW 明确阻断时，阻断本程序发往 OpenAI、ChatGPT、Claude 和 Anthropic 的请求。" },

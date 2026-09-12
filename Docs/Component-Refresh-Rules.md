@@ -267,7 +267,11 @@ DNS 检测：
 - 全部交互控件（上下文感知开关、轮数步进、模型切换、启动/停止按钮、四个服务芯片、字幕源芯片）走同一条异步链路：点击先同步置位 `operationRunning`/`pendingAction` 并立即重绘一次显示"…"过渡态，再用 `Task.Run` 在后台线程调用 `TranslatorControlReader` 的写入/启动方法，完成后通过 `BeginInvoke` 编组回 UI 线程清状态、刷新缓存快照并重绘；写入期间新点击一律忽略，不排队第二个写入。
 - 设置写入（`TryApplySettingChange`）只改写目标字段，其余字段（`ApiKey`、`Temperature`、`Prompt` 等）原样回写；写入成功后若 `LiveCaptionsTranslator.exe` 正在运行则 kill + 以其自身目录为 WorkingDirectory 重新启动（该外部应用只在启动时读一次配置）；未运行则只保存，不主动拉起。
 - 字幕源写入（`TryApplyCaptionLanguage`）是本 board 唯一的 HKCU 写入，只在用户点击字幕源芯片时发生，绝不由刷新触发。目标值由纯函数 `ResolveToggledCaptionLanguage` 决定：`en-US` ↔ `zh-CN`，未知/异常值一律解析为 `en-US`（原文英文才能让本地模型真正做 EN→ZH 翻译）。执行顺序固定为：先按点击瞬间采样的"翻译器是否在运行"决定路径 → 写注册表 → 若翻译器当时未运行则到此为止（不拉起任何进程）→ 否则 kill `LiveCaptions.exe`、kill `LiveCaptionsTranslator.exe`、等待 `ProcessRestartGraceMs` 后以其自身目录为 WorkingDirectory 重启翻译器（翻译器启动时会自行重新拉起 Live Captions）。
-- 最近字幕列表上限 `MaxHistoryEntries = 3`：可见条数仍先按实测字体行高计算可容纳量，再取该上限的较小值；剩余高度按 `count` 等分成整行、每条的两行文本在自己的行内垂直居中并以细分隔线分隔，不出现硬编码像素行距。
+- 文章区（2.0.0.72 起取代「最近字幕」列表）不参与上面这条 2000 ms 刷新链路：它画的是 `CaptionTranscript`，由 `TranslatorCaptionReader` 在闩住一句时写入，与 `translation_history.db` 无关。绘制路径不做 I/O，也不做换行以外的计算。
+- 换行结果按 `(CaptionTranscript.Revision, 文本宽度, LayerScale)` 缓存在 board 内，只有文章真的变了（或宽度/缩放变了）才重新换行；并且只换最新 `ArticleViewEntryLimit = 240` 句。整篇重新换行比整块看板其余部分加起来还贵，而看板每 500 ms 就重绘一次。
+- 文章工具条必须在文章之后绘制：页码与两个翻页按钮的可用性都来自只有文章绘制过程才能做的实测（每半区能放几行、总共几页），先画工具条会让它永远落后一帧。
+- 文章的全部控件（翻页、编辑、重置、导出、清除、句数）在 `ExecuteAction` 的 `operationRunning` 闸门与 reader 解析之前处理：它们不写 `setting.json`、不碰任何外部进程，没有理由在翻译器重启期间被挡住。「清除」需要两次点击（第一次上膛 6 秒），「句数」与编辑模式的位置保存走 `WidgetSettings.Load/Save`，由 `WidgetForm` 的设置文件监视器广播回其它表面。
+- 字幕条编辑模式期间 `CaptionOverlayForm.ApplyGeometry` 直接返回：主控制 tick 仍在按 250 ms 喂快照，若它继续把矩形算回去就会与用户的拖动打架。编辑模式下面板即使没有任何字幕也保持可见（否则说话人一停就没得拖了），退出编辑模式后才恢复「没有文字就不显示」以及按已保存矩形（或自动带位）重新布局。
 - 最近一次翻译失败的 toast 通知复用 `Core/ServiceAlertDebouncer.cs` 的 10 s 稳定窗口（`checking` 立即、新错误 10 s 稳定后触发、恢复立即清除），只在稳定态从"无失败"翻转为"有失败"的上升沿调用一次 `WidgetForm.ShowWindowsNotification`；看板内的失败提示条本身不防抖，直接反映 `translation_history.db` 最新一行是否以 `[ERROR]` 开头。
 - board 隐藏、全屏或显示挂起时停止展示刷新；`TranslatorControlReader` 自身在 `WidgetForm` 退出前才 `StopHeadlessDataOwner()` + `Dispose()`。
 

@@ -48,10 +48,10 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
     private string statusNotice = string.Empty;
     private bool operationRunning;
     private CaptionsHitAction pendingAction = CaptionsHitAction.None;
-    // How many history entries the last DrawHistoryList pass actually painted. Purely observational
-    // (never read by the draw path itself); it exists so the layout self-test can assert the
-    // measured-metrics entry budget against the MaxHistoryEntries cap without re-deriving it.
-    private int lastDrawnHistoryCount;
+    // How many article lines the last DrawArticle pass actually painted in the translated half.
+    // Purely observational (never read by the draw path itself); it exists so the layout self-test
+    // can assert the measured-metrics line budget and the paging maths without re-deriving them.
+    private int lastDrawnArticleLineCount;
 
     internal Action CollapseOtherLeftDockOverlays;
 
@@ -287,6 +287,16 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
     internal void HideBoard()
     {
         this.maintenanceTimer.Stop();
+        // Edit mode must not outlive the board that is the only way out of it: the caption strip
+        // takes clicks while editing, so a strip left in that state would silently eat clicks aimed
+        // at the video underneath until the user found their way back here. Closing counts as done,
+        // which also means the rectangle the user just dragged is kept rather than discarded.
+        if (IsCaptionOverlayEditing)
+        {
+            ToggleCaptionOverlayEditMode();
+        }
+
+        DisarmClear();
         if (this.Visible)
         {
             Hide();
@@ -607,6 +617,14 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
             return;
         }
 
+        // The article controls are local state and a settings file write; they never touch the
+        // translator, so they are handled ahead of both the busy gate and the reader lookup (which
+        // would abort them when no translator is configured at all).
+        if (TryExecuteArticleAction(action))
+        {
+            return;
+        }
+
         if (this.operationRunning)
         {
             // One targeted write/restart at a time -- a second click on any of the three settings
@@ -923,7 +941,17 @@ internal sealed partial class CaptionsBoardForm : LayeredWidgetFormBase
         SanitizeProxyStart,
         LiveCaptionsStart,
         TranslatorStart,
-        CaptionLanguageSet
+        CaptionLanguageSet,
+        // Article controls. None of these reaches the translator: they page the transcript, write
+        // it out, empty it, or change one of this app's own settings.
+        ArticlePageUp,
+        ArticlePageDown,
+        ArticleExport,
+        ArticleClear,
+        SettledLinesMinus,
+        SettledLinesPlus,
+        OverlayEditToggle,
+        OverlayReset
     }
 
     private struct CaptionsHitTarget

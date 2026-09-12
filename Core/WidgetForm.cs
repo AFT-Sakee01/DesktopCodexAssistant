@@ -353,6 +353,17 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         {
             return this.translatorControlReader;
         };
+        // The caption strip's reader (which owns the article) and the strip itself. The strip is
+        // created on demand here rather than only by MaintainCaptionOverlay: pressing 编辑 on the board
+        // has to produce something to drag even before the translator has said anything.
+        this.operationForm.TranslatorCaptionReaderProvider = delegate
+        {
+            return this.captionReader;
+        };
+        this.operationForm.CaptionOverlayProvider = delegate
+        {
+            return EnsureCaptionOverlaySurface();
+        };
         // ApplyRuntimeSettings runs before childWindowLifecycleStarted so the hidden host can
         // establish its own HWND safely. Build the canonical tile set only after every data owner
         // and board provider is connected; otherwise a cold start has no later creation path.
@@ -2288,6 +2299,25 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         }
 
         this.captionOverlay.UpdateSnapshot(snapshot);
+    }
+
+    // Same surface MaintainCaptionOverlay uses, created on demand. The captions board calls this when
+    // the user asks to place the strip, which can happen long before the first caption arrives;
+    // returns null while the feature is switched off, so the board can say so instead of handing back
+    // an edit mode that would never become visible.
+    private CaptionOverlayForm EnsureCaptionOverlaySurface()
+    {
+        if (this.CurrentSettings == null || !this.CurrentSettings.CaptionOverlayEnabled)
+        {
+            return null;
+        }
+
+        if (this.captionOverlay == null || this.captionOverlay.IsDisposed)
+        {
+            this.captionOverlay = new CaptionOverlayForm(this.CurrentSettings);
+        }
+
+        return this.captionOverlay;
     }
 
     // Keeps the Live Captions host minimised while the translator drives it. No timer of its own:

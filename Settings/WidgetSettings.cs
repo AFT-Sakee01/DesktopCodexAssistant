@@ -303,6 +303,13 @@ internal sealed class WidgetSettings
     internal const int MaxCaptionOverlayTopPercent = 80;
     // 12% of the work area: the band the user had already dragged the translator overlay to.
     internal const int DefaultCaptionOverlayTopPercent = 12;
+    internal const int MinCaptionOverlaySettledLines = 0;
+    internal const int MaxCaptionOverlaySettledLines = 5;
+    internal const int DefaultCaptionOverlaySettledLines = 1;
+    internal const int AutoCaptionOverlayBounds = -1;
+    // Below this the strip cannot show a line of text at any font size the settings allow.
+    internal const int MinCaptionOverlayWidth = 200;
+    internal const int MinCaptionOverlayHeight = 40;
     private const int RetiredCanonicalSettingsCount = 113;
     private const int RetiredSettingsAliasCount = 11;
     private static readonly HashSet<string> RetiredSettingsInputNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -517,6 +524,18 @@ internal sealed class WidgetSettings
     // Top edge as a percentage of the work area height, so the strip keeps its place across
     // resolution changes and external displays instead of storing a pixel row.
     public int CaptionOverlayTopPercent { get; set; }
+    // How many finished sentences the strip keeps above the live one. Adjustable from the
+    // captions board because it is a reading preference, not a setup decision: one line for a
+    // glance, more when the speaker is dense.
+    public int CaptionOverlaySettledLines { get; set; }
+    // Overlay geometry in logical pixels, written by the strip's own edit mode. All four are
+    // AutoCaptionOverlayBounds (-1) until the user drags it somewhere, which means "full work-area
+    // width at CaptionOverlayTopPercent" -- the shape that follows a resolution change instead of
+    // stranding the strip off-screen.
+    public int CaptionOverlayLeft { get; set; }
+    public int CaptionOverlayTop { get; set; }
+    public int CaptionOverlayWidth { get; set; }
+    public int CaptionOverlayHeight { get; set; }
     public bool ClaudeAppKeepAliveEnabled { get; set; }
     // Guard state. GuardSleepEnabled and the two deadline ticks are live runtime state rather than
     // preferences: they are persisted so a restart during a long unattended run does not silently
@@ -987,6 +1006,11 @@ internal sealed class WidgetSettings
         this.CaptionOverlayFontSize = defaults.CaptionOverlayFontSize;
         this.CaptionOverlayShowOriginal = defaults.CaptionOverlayShowOriginal;
         this.CaptionOverlayTopPercent = defaults.CaptionOverlayTopPercent;
+        this.CaptionOverlaySettledLines = defaults.CaptionOverlaySettledLines;
+        this.CaptionOverlayLeft = defaults.CaptionOverlayLeft;
+        this.CaptionOverlayTop = defaults.CaptionOverlayTop;
+        this.CaptionOverlayWidth = defaults.CaptionOverlayWidth;
+        this.CaptionOverlayHeight = defaults.CaptionOverlayHeight;
         this.GuardSleepEnabled = defaults.GuardSleepEnabled;
         this.GuardSleepSinceUtcTicks = defaults.GuardSleepSinceUtcTicks;
         this.GuardDisplayMinutes = defaults.GuardDisplayMinutes;
@@ -1216,6 +1240,11 @@ internal sealed class WidgetSettings
         settings.CaptionOverlayFontSize = DefaultCaptionOverlayFontSize;
         settings.CaptionOverlayShowOriginal = true;
         settings.CaptionOverlayTopPercent = DefaultCaptionOverlayTopPercent;
+        settings.CaptionOverlaySettledLines = DefaultCaptionOverlaySettledLines;
+        settings.CaptionOverlayLeft = AutoCaptionOverlayBounds;
+        settings.CaptionOverlayTop = AutoCaptionOverlayBounds;
+        settings.CaptionOverlayWidth = AutoCaptionOverlayBounds;
+        settings.CaptionOverlayHeight = AutoCaptionOverlayBounds;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1447,6 +1476,11 @@ internal sealed class WidgetSettings
         settings.CaptionOverlayFontSize = DefaultCaptionOverlayFontSize;
         settings.CaptionOverlayShowOriginal = true;
         settings.CaptionOverlayTopPercent = DefaultCaptionOverlayTopPercent;
+        settings.CaptionOverlaySettledLines = DefaultCaptionOverlaySettledLines;
+        settings.CaptionOverlayLeft = AutoCaptionOverlayBounds;
+        settings.CaptionOverlayTop = AutoCaptionOverlayBounds;
+        settings.CaptionOverlayWidth = AutoCaptionOverlayBounds;
+        settings.CaptionOverlayHeight = AutoCaptionOverlayBounds;
         settings.GuardSleepEnabled = false;
         settings.GuardSleepSinceUtcTicks = 0L;
         settings.GuardDisplayMinutes = DefaultGuardDisplayMinutes;
@@ -1674,6 +1708,11 @@ internal sealed class WidgetSettings
             CaptionOverlayFontSize = this.CaptionOverlayFontSize,
             CaptionOverlayShowOriginal = this.CaptionOverlayShowOriginal,
             CaptionOverlayTopPercent = this.CaptionOverlayTopPercent,
+            CaptionOverlaySettledLines = this.CaptionOverlaySettledLines,
+            CaptionOverlayLeft = this.CaptionOverlayLeft,
+            CaptionOverlayTop = this.CaptionOverlayTop,
+            CaptionOverlayWidth = this.CaptionOverlayWidth,
+            CaptionOverlayHeight = this.CaptionOverlayHeight,
             GuardSleepEnabled = this.GuardSleepEnabled,
             GuardSleepSinceUtcTicks = this.GuardSleepSinceUtcTicks,
             GuardDisplayMinutes = this.GuardDisplayMinutes,
@@ -1814,6 +1853,29 @@ internal sealed class WidgetSettings
     {
         this.CaptionOverlayFontSize = Clamp(this.CaptionOverlayFontSize, MinCaptionOverlayFontSize, MaxCaptionOverlayFontSize);
         this.CaptionOverlayTopPercent = Clamp(this.CaptionOverlayTopPercent, MinCaptionOverlayTopPercent, MaxCaptionOverlayTopPercent);
+        this.CaptionOverlaySettledLines = Clamp(this.CaptionOverlaySettledLines, MinCaptionOverlaySettledLines, MaxCaptionOverlaySettledLines);
+        // Geometry is all-or-nothing: a half-set rectangle is how a strip ends up one pixel tall
+        // or parked off-screen, so any incomplete or undersized set falls back to automatic.
+        if (this.CaptionOverlayWidth != AutoCaptionOverlayBounds && this.CaptionOverlayWidth < MinCaptionOverlayWidth)
+        {
+            this.CaptionOverlayWidth = MinCaptionOverlayWidth;
+        }
+
+        if (this.CaptionOverlayHeight != AutoCaptionOverlayBounds && this.CaptionOverlayHeight < MinCaptionOverlayHeight)
+        {
+            this.CaptionOverlayHeight = MinCaptionOverlayHeight;
+        }
+
+        if (this.CaptionOverlayLeft == AutoCaptionOverlayBounds ||
+            this.CaptionOverlayTop == AutoCaptionOverlayBounds ||
+            this.CaptionOverlayWidth == AutoCaptionOverlayBounds ||
+            this.CaptionOverlayHeight == AutoCaptionOverlayBounds)
+        {
+            this.CaptionOverlayLeft = AutoCaptionOverlayBounds;
+            this.CaptionOverlayTop = AutoCaptionOverlayBounds;
+            this.CaptionOverlayWidth = AutoCaptionOverlayBounds;
+            this.CaptionOverlayHeight = AutoCaptionOverlayBounds;
+        }
         this.ApplicationTransparencyPercent = Clamp(this.ApplicationTransparencyPercent, MinBackgroundTransparency, MaxBackgroundTransparency);
         this.MainWidgetTransparencyOverridePercent = Clamp(this.MainWidgetTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
         this.NetworkMonitorTransparencyOverridePercent = Clamp(this.NetworkMonitorTransparencyOverridePercent, MinWindowTransparencyOverridePercent, MaxWindowTransparencyOverridePercent);
@@ -2678,6 +2740,13 @@ internal sealed class WidgetSettings
             settings.CaptionOverlayFontSize = DefaultCaptionOverlayFontSize;
             settings.CaptionOverlayShowOriginal = true;
             settings.CaptionOverlayTopPercent = DefaultCaptionOverlayTopPercent;
+            settings.CaptionOverlaySettledLines = DefaultCaptionOverlaySettledLines;
+            // The strip starts at its automatic full-width band; a saved rectangle only ever comes
+            // from the user dragging it in the board's edit mode.
+            settings.CaptionOverlayLeft = AutoCaptionOverlayBounds;
+            settings.CaptionOverlayTop = AutoCaptionOverlayBounds;
+            settings.CaptionOverlayWidth = AutoCaptionOverlayBounds;
+            settings.CaptionOverlayHeight = AutoCaptionOverlayBounds;
             saveAfterMigration = true;
         }
 
@@ -2930,6 +2999,11 @@ internal sealed class WidgetSettings
             "CaptionOverlayFontSize=" + this.CaptionOverlayFontSize.ToString(CultureInfo.InvariantCulture),
             "CaptionOverlayShowOriginal=" + this.CaptionOverlayShowOriginal,
             "CaptionOverlayTopPercent=" + this.CaptionOverlayTopPercent.ToString(CultureInfo.InvariantCulture),
+            "CaptionOverlaySettledLines=" + this.CaptionOverlaySettledLines.ToString(CultureInfo.InvariantCulture),
+            "CaptionOverlayLeft=" + this.CaptionOverlayLeft.ToString(CultureInfo.InvariantCulture),
+            "CaptionOverlayTop=" + this.CaptionOverlayTop.ToString(CultureInfo.InvariantCulture),
+            "CaptionOverlayWidth=" + this.CaptionOverlayWidth.ToString(CultureInfo.InvariantCulture),
+            "CaptionOverlayHeight=" + this.CaptionOverlayHeight.ToString(CultureInfo.InvariantCulture),
             "GuardSleepEnabled=" + this.GuardSleepEnabled,
             "GuardSleepSinceUtcTicks=" + this.GuardSleepSinceUtcTicks.ToString(CultureInfo.InvariantCulture),
             "GuardDisplayMinutes=" + this.GuardDisplayMinutes.ToString(CultureInfo.InvariantCulture),
@@ -3608,6 +3682,36 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "CaptionOverlayTopPercent", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
         {
             settings.CaptionOverlayTopPercent = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionOverlaySettledLines", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CaptionOverlaySettledLines = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionOverlayLeft", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CaptionOverlayLeft = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionOverlayTop", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CaptionOverlayTop = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionOverlayWidth", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CaptionOverlayWidth = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "CaptionOverlayHeight", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
+        {
+            settings.CaptionOverlayHeight = intValue;
             return;
         }
 

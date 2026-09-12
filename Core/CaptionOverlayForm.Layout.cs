@@ -24,15 +24,27 @@ internal sealed partial class CaptionOverlayForm
     private const float LiveFontScale = 0.88f;
     private const float OriginalFontScale = 0.58f;
     private const int ShadowOffsetLogical = 2;
-    // Matches what the reader keeps. Slots are reserved for all of them from the first frame, so the
-    // block does not grow as the first few sentences arrive.
-    private const int SettledLineCount = TranslatorCaptionReader.SettledHistoryLimit;
+    // Width of the draggable edge zones in edit mode, and of the frame drawn around the strip.
+    internal const int EditGripLogical = 14;
     // Long enough for at least one sentence to finish while the current-state renderer is watching.
     private const int WatchSeconds = 20;
 
     private int ResolveRenderWidth()
     {
         return this.renderWidth > 0 ? this.renderWidth : this.Width;
+    }
+
+    // How many settled slots to reserve. The reader always keeps the maximum, so raising this from
+    // the board shows real history immediately instead of starting from an empty block. Slots are
+    // reserved whether or not they have text, which is what keeps the strip a fixed height.
+    private int SettledLineCount
+    {
+        get
+        {
+            return this.CurrentSettings == null
+                ? WidgetSettings.DefaultCaptionOverlaySettledLines
+                : this.CurrentSettings.CaptionOverlaySettledLines;
+        }
     }
 
     private int MeasureDesiredHeight(int width)
@@ -52,7 +64,8 @@ internal sealed partial class CaptionOverlayForm
         int padY = S(10);
         int settledLine = MeasureLineHeight(g, ResolveSettledFont());
         int liveLine = MeasureLineHeight(g, ResolveLiveFont());
-        int height = padY * 2 + settledLine * SettledLineCount + S(3) + liveLine;
+        int slots = SettledLineCount;
+        int height = padY * 2 + settledLine * slots + (slots > 0 ? S(3) : 0) + liveLine;
         if (this.CurrentSettings != null && this.CurrentSettings.CaptionOverlayShowOriginal)
         {
             height += S(2) + MeasureLineHeight(g, ResolveOriginalFont());
@@ -126,20 +139,24 @@ internal sealed partial class CaptionOverlayForm
         // Oldest at the top, newest directly above the live line, so the eye travels down the same
         // path the speaker took.
         string[] settled = this.snapshot.SettledTranslations ?? new string[0];
+        int slots = SettledLineCount;
         int y = padY;
-        for (int slot = 0; slot < SettledLineCount; slot++)
+        for (int slot = 0; slot < slots; slot++)
         {
-            // Bottom-aligned into the slots: with fewer than three settled sentences the empty slots
-            // are the top ones, so the newest line keeps its place instead of climbing as history
+            // Bottom-aligned into the slots: with fewer settled sentences than slots the empty ones
+            // are at the top, so the newest line keeps its place instead of climbing as history
             // fills in.
-            int index = settled.Length - SettledLineCount + slot;
+            int index = settled.Length - slots + slot;
             string text = index >= 0 && index < settled.Length ? settled[index] : string.Empty;
             DrawCaptionLine(g, text, settledFont, new Rectangle(padX, y, textWidth, settledLine),
                 DesignTokens.Colors.TextStrong, 215);
             y += settledLine;
         }
 
-        y += S(3);
+        if (slots > 0)
+        {
+            y += S(3);
+        }
         DrawCaptionLine(g, this.snapshot.TranslatedCaption, liveFont, new Rectangle(padX, y, textWidth, liveLine),
             ResolveUnsettledColor(DesignTokens.Colors.TextStrong), 255);
         y += liveLine;
@@ -151,6 +168,55 @@ internal sealed partial class CaptionOverlayForm
             y += S(2);
             DrawCaptionLine(g, this.snapshot.OriginalCaption, originalFont,
                 new Rectangle(padX, y, textWidth, originalLine), DesignTokens.Colors.TextMuted, 150);
+        }
+
+        if (this.editMode)
+        {
+            DrawEditChrome(g, width);
+        }
+    }
+
+    // Edit mode has to look unmistakably different from the normal strip, because in this state the
+    // strip swallows clicks meant for the video underneath. A full accent frame plus solid grab
+    // bars on the two resizable edges says both "this is movable" and "this is not the usual mode".
+    private void DrawEditChrome(Graphics g, int width)
+    {
+        int height = Math.Max(1, this.Height);
+        int grip = S(EditGripLogical);
+        using (SolidBrush wash = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.CaptionsAccent, 26)))
+        {
+            g.FillRectangle(wash, 0, 0, width, height);
+        }
+
+        using (Pen frame = new Pen(DesignTokens.WithAlpha(DesignTokens.Colors.CaptionsAccent, 230), Math.Max(1, S(2))))
+        {
+            int inset = (int)Math.Ceiling(frame.Width / 2.0);
+            g.DrawRectangle(frame, inset, inset, Math.Max(1, width - inset * 2 - 1), Math.Max(1, height - inset * 2 - 1));
+        }
+
+        using (SolidBrush handle = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.CaptionsAccent, 150)))
+        {
+            g.FillRectangle(handle, 0, 0, grip, height);
+            g.FillRectangle(handle, width - grip, 0, grip, height);
+        }
+
+        if (this.snapshot.HasText())
+        {
+            // Real captions are the better placement guide; the hint would only overprint them.
+            return;
+        }
+
+        // Owned by the font cache, so it is not disposed here.
+        Font hintFont = ResolveLiveFont();
+        using (StringFormat format = CreateCaptionFormat())
+        using (SolidBrush shadow = new SolidBrush(Color.FromArgb(190, 0, 0, 0)))
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(DesignTokens.Colors.CaptionsAccent, 255)))
+        {
+            Rectangle bounds = new Rectangle(grip, 0, Math.Max(1, width - grip * 2), height);
+            int offset = Math.Max(1, S(ShadowOffsetLogical));
+            const string Hint = "编辑模式：拖动移动，拖两端改宽度，在字幕面板按「完成」保存";
+            g.DrawString(Hint, hintFont, shadow, new Rectangle(bounds.Left + offset, bounds.Top + offset, bounds.Width, bounds.Height), format);
+            g.DrawString(Hint, hintFont, brush, bounds, format);
         }
     }
 
@@ -251,6 +317,26 @@ internal sealed partial class CaptionOverlayForm
                 form.MeasureDesiredHeight(g, 1440) < fullHistoryHeight,
                 "hiding the original line must reduce the strip height");
 
+            // The history count is a board control, so it has to move the strip height both ways --
+            // including all the way to zero settled lines, which must still leave a usable strip.
+            WidgetSettings threeLines = WidgetSettings.CreateDefaults();
+            threeLines.CaptionOverlaySettledLines = 3;
+            threeLines.Normalize();
+            form.ApplySettings(threeLines);
+            int threeLineHeight = form.MeasureDesiredHeight(g, 1440);
+            AssertSelfTest(
+                threeLineHeight > fullHistoryHeight,
+                "more settled lines must make the strip taller: " + threeLineHeight + " vs " + fullHistoryHeight);
+
+            WidgetSettings noHistory = WidgetSettings.CreateDefaults();
+            noHistory.CaptionOverlaySettledLines = 0;
+            noHistory.Normalize();
+            form.ApplySettings(noHistory);
+            int noHistoryHeight = form.MeasureDesiredHeight(g, 1440);
+            AssertSelfTest(
+                noHistoryHeight > 0 && noHistoryHeight < fullHistoryHeight,
+                "zero settled lines must still leave the live and original lines: " + noHistoryHeight);
+
             form.ApplySettings(settings);
             form.snapshot = CreateFixtureSnapshot(string.Empty, string.Empty, new string[0]);
             AssertSelfTest(!form.ShouldBeVisible(), "an empty caption must not show the strip");
@@ -260,7 +346,7 @@ internal sealed partial class CaptionOverlayForm
             AssertSelfTest(!form.ShouldBeVisible(), "no translator means no strip");
         }
 
-        Console.WriteLine("Caption overlay layout: PASS fixed-height slots, optional original line, hidden when silent");
+        Console.WriteLine("Caption overlay layout: PASS fixed-height slots, settled-line count, optional original line, hidden when silent");
     }
 
     private static TranslatorCaptionSnapshot CreateFixtureSnapshot(string original, string translated, string[] settled)
@@ -325,6 +411,9 @@ internal sealed partial class CaptionOverlayForm
     {
         Directory.CreateDirectory(outputDir);
         WidgetSettings settings = WidgetSettings.CreateDefaults();
+        // The samples exist to show the shape, so they ask for the three-line history rather than the
+        // one-line default a first run gets.
+        settings.CaptionOverlaySettledLines = 3;
         settings.Normalize();
 
         RenderSnapshot(outputDir, "caption-overlay-full.png", settings, CreateFixtureSnapshot(
@@ -344,7 +433,25 @@ internal sealed partial class CaptionOverlayForm
             "所以你要做的第一件事是拿到恢复药水。",
             new string[] { "我们先把这段讲完。" }));
 
+        // The shipped default: one settled line above the sentence being spoken.
+        WidgetSettings defaults = WidgetSettings.CreateDefaults();
+        defaults.Normalize();
+        RenderSnapshot(outputDir, "caption-overlay-default.png", defaults, CreateFixtureSnapshot(
+            "So the first thing you want to do is grab the health potion.",
+            "所以你要做的第一件事是拿到恢复药水。",
+            new string[] { "我们先把这段讲完。" }));
+
+        // Edit mode with nothing to say: the frame, the two grab bars and the hint, which is what
+        // the user sees when they press 编辑 before the translator has produced a caption.
+        RenderSnapshot(
+            outputDir,
+            "caption-overlay-edit.png",
+            defaults,
+            CreateFixtureSnapshot(string.Empty, string.Empty, new string[0]),
+            true);
+
         WidgetSettings noOriginal = WidgetSettings.CreateDefaults();
+        noOriginal.CaptionOverlaySettledLines = 3;
         noOriginal.CaptionOverlayShowOriginal = false;
         noOriginal.Normalize();
         RenderSnapshot(outputDir, "caption-overlay-translation-only.png", noOriginal, CreateFixtureSnapshot(
@@ -360,10 +467,23 @@ internal sealed partial class CaptionOverlayForm
 
     private static void RenderSnapshot(string outputDir, string fileName, WidgetSettings settings, TranslatorCaptionSnapshot snapshot)
     {
+        RenderSnapshot(outputDir, fileName, settings, snapshot, false);
+    }
+
+    private static void RenderSnapshot(
+        string outputDir,
+        string fileName,
+        WidgetSettings settings,
+        TranslatorCaptionSnapshot snapshot,
+        bool editing)
+    {
         using (CaptionOverlayForm form = new CaptionOverlayForm(settings))
         {
             form.SetLayerScale(2.0f);
             form.snapshot = snapshot;
+            // Set directly rather than through SetEditMode: that call also changes window styles and
+            // shows the window, neither of which a bitmap render has or wants.
+            form.editMode = editing;
             // Device pixels of a 1440-wide screen at LayerScale 2. Set on the layout, not through
             // Form.Size, which Windows would clamp to the real screen.
             int width = 1440 * 2;

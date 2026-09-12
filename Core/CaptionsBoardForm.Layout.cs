@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -8,23 +9,26 @@ using System.Windows.Forms;
 // Board content finalized across design-review rounds (see this board's originating brief): header
 // (title + running dot + time-since-last-success), a divider, a single-row toolbar (context-aware
 // toggle, rounds stepper, model chip, separator, start/stop, close, attribution), a failure alert
-// strip that takes zero height when there is no recent failure, a section label, and a flex-filled
-// history list capped by measured row height (the same MaximumVisibleRows-style budgeting
-// CodexTaskBoard uses, not a hardcoded entry count). No shared "OledVariantPainting" drawing-helper
-// file exists in this codebase (checked before writing this): every board keeps its own small
-// RoundedRectangle-based drawing helpers in its own .Layout.cs, matching ResetSpeedBoardForm.Layout.cs
-// and GuardBoardForm.Layout.cs, which this file's DrawToggle/DrawStepper/toolbar-button shapes copy.
+// strip that takes zero height when there is no recent failure, an article toolbar, and the article
+// itself -- translation on top, source language below -- filling whatever height is left.
+//
+// The article replaced a list of recent rows from the translator's own history database. That list
+// showed the same sentences this app already renders on its caption strip, in a worse form: the DB
+// carries no reliable order for rewritten rows, so the list would visibly reshuffle. The article is
+// built instead from the settled sentences this app latched itself (see CaptionTranscript), which
+// is the only ordering that matches what the user actually read.
+//
+// No shared "OledVariantPainting" drawing-helper file exists in this codebase (checked before
+// writing this): every board keeps its own small RoundedRectangle-based drawing helpers in its own
+// .Layout.cs, matching ResetSpeedBoardForm.Layout.cs and GuardBoardForm.Layout.cs, which this
+// file's DrawToggle/DrawStepper/toolbar-button shapes copy.
 internal sealed partial class CaptionsBoardForm
 {
     private const string AttributionText = "GenieX · NPU";
 
-    // The caption transcript is the lowest-value content on this board (the controls above it are
-    // what the user actually comes here for), so it is capped well below what the canvas could fit
-    // and the reclaimed height goes to the service status strip and to overall breathing room.
-    // Upper bound only. What actually shows is whatever fits the measured area, which is the point:
-    // the reader hands over at most eight rows, so this cap exists to stop a future larger board
-    // from turning the panel into a transcript window, not to keep the list short.
-    private const int MaxHistoryEntries = 8;
+    // Width of the two square paging buttons. Glyph-only because the article toolbar has to carry
+    // eight controls plus a stepper at the narrowest board width this layout supports.
+    private const int PageButtonLogicalWidth = 22;
 
     protected override void DrawWindowContent(Graphics g)
     {
@@ -104,11 +108,11 @@ internal sealed partial class CaptionsBoardForm
         DrawDivider(g, content.Left, y, content.Width);
         y += S(8);
 
-        int sectionLabelHeight = S(13);
-        Rectangle sectionLabel = new Rectangle(content.Left, y, content.Width, sectionLabelHeight);
-        y = sectionLabel.Bottom + S(5);
+        int articleToolbarHeight = S(21);
+        Rectangle articleToolbar = new Rectangle(content.Left, y, content.Width, articleToolbarHeight);
+        y = articleToolbar.Bottom + S(6);
 
-        Rectangle historyArea = new Rectangle(content.Left, y, content.Width, Math.Max(1, content.Bottom - y));
+        Rectangle articleArea = new Rectangle(content.Left, y, content.Width, Math.Max(1, content.Bottom - y));
 
         DrawHeader(g, header, titleFont, bodyFont, monoFont);
         DrawServiceStatusRow(g, statusRow, labelFont, recordHitTargets);
@@ -119,8 +123,11 @@ internal sealed partial class CaptionsBoardForm
             DrawFailureAlert(g, alert, smallFont, monoSmallFont);
         }
 
-        DrawSectionLabel(g, sectionLabel, smallFont);
-        DrawHistoryList(g, historyArea, smallFont, strongFont, monoSmallFont);
+        // The article is drawn before the toolbar that sits above it: the page indicator and the
+        // enabled state of the two paging buttons come from measurements only the article pass can
+        // make, and drawing the toolbar first would leave both one frame behind.
+        DrawArticle(g, articleArea, strongFont, smallFont, monoSmallFont);
+        DrawArticleToolbar(g, articleToolbar, smallFont, smallFont, monoSmallFont, glyphFont, recordHitTargets);
 
         EdgeDockTabForm.DrawBoardAccentBorder(g, this.Size, EdgeDockTabRole.Captions, this.LayerScale);
     }
@@ -406,7 +413,18 @@ internal sealed partial class CaptionsBoardForm
             string stepperValue = numContextsPending
                 ? "…"
                 : (this.snapshot.NumContextsKnown ? this.snapshot.NumContexts.ToString(CultureInfo.InvariantCulture) : "--");
-            Rectangle stepperBounds = DrawStepper(g, x, bounds.Top, bounds.Height, stepperValue, monoFont, glyphFont, busy, recordHitTargets);
+            Rectangle stepperBounds = DrawStepper(
+                g,
+                x,
+                bounds.Top,
+                bounds.Height,
+                stepperValue,
+                monoFont,
+                glyphFont,
+                busy,
+                recordHitTargets,
+                CaptionsHitAction.NumContextsMinus,
+                CaptionsHitAction.NumContextsPlus);
             x = stepperBounds.Right + groupGap;
 
             string modelLabel = "模型";
@@ -498,7 +516,18 @@ internal sealed partial class CaptionsBoardForm
         }
     }
 
-    private Rectangle DrawStepper(Graphics g, int left, int top, int height, string value, Font valueFont, Font glyphFont, bool busy, bool recordHitTargets)
+    private Rectangle DrawStepper(
+        Graphics g,
+        int left,
+        int top,
+        int height,
+        string value,
+        Font valueFont,
+        Font glyphFont,
+        bool busy,
+        bool recordHitTargets,
+        CaptionsHitAction minusAction,
+        CaptionsHitAction plusAction)
     {
         int stepWidth = Math.Max(S(14), height);
         int valueWidth = Math.Max(S(28), MeasureTextWidth(g, value, valueFont) + S(6));
@@ -529,8 +558,8 @@ internal sealed partial class CaptionsBoardForm
 
         if (recordHitTargets && !busy)
         {
-            this.hitTargets.Add(new CaptionsHitTarget { Bounds = minusBounds, Action = CaptionsHitAction.NumContextsMinus });
-            this.hitTargets.Add(new CaptionsHitTarget { Bounds = plusBounds, Action = CaptionsHitAction.NumContextsPlus });
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = minusBounds, Action = minusAction });
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = plusBounds, Action = plusAction });
         }
 
         return bounds;
@@ -624,94 +653,235 @@ internal sealed partial class CaptionsBoardForm
         }
     }
 
-    private void DrawSectionLabel(Graphics g, Rectangle bounds, Font font)
+    // One row, eight controls: paging, the page indicator, overlay edit/reset, export/clear, and the
+    // strip's history-line stepper. Everything the caption strip needs is here because the strip is
+    // click-through and cannot carry a button of its own.
+    private void DrawArticleToolbar(Graphics g, Rectangle bounds, Font labelFont, Font bodyFont, Font monoFont, Font glyphFont, bool recordHitTargets)
     {
-        using (SolidBrush mutedBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
+        int gap = S(4);
+        int groupGap = S(9);
+
+        // Right-aligned first so the left-to-right run below knows where it has to stop.
+        string linesLabel = "句数";
+        int linesLabelWidth = MeasureTextWidth(g, linesLabel, labelFont) + S(8);
+        int settledLines = this.CurrentSettings == null
+            ? WidgetSettings.DefaultCaptionOverlaySettledLines
+            : this.CurrentSettings.CaptionOverlaySettledLines;
+        int stepperWidth = MeasureStepperWidth(g, settledLines.ToString(CultureInfo.InvariantCulture), monoFont, bounds.Height);
+        int stepperLeft = bounds.Right - stepperWidth;
+        int linesLabelLeft = stepperLeft - gap - linesLabelWidth;
+
+        using (SolidBrush labelBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
         using (StringFormat near = CreateFormat(StringAlignment.Near))
         {
-            g.DrawString("最 近 字 幕", font, mutedBrush, bounds, near);
+            g.DrawString("文 章", labelFont, labelBrush, new Rectangle(bounds.Left, bounds.Top, S(40), bounds.Height), near);
+            g.DrawString(linesLabel, labelFont, labelBrush, new Rectangle(linesLabelLeft, bounds.Top, linesLabelWidth, bounds.Height), near);
+        }
+
+        DrawStepper(
+            g,
+            stepperLeft,
+            bounds.Top,
+            bounds.Height,
+            settledLines.ToString(CultureInfo.InvariantCulture),
+            monoFont,
+            glyphFont,
+            false,
+            recordHitTargets,
+            CaptionsHitAction.SettledLinesMinus,
+            CaptionsHitAction.SettledLinesPlus);
+
+        int x = bounds.Left + S(40) + gap;
+        int pageWidth = S(PageButtonLogicalWidth);
+
+        // Up walks back through the article, down returns toward the live tail -- the same direction
+        // the text itself scrolls, so the arrows mean what they look like.
+        Rectangle pageUpBounds = new Rectangle(x, bounds.Top, pageWidth, bounds.Height);
+        bool canPageUp = this.articlePageBack < this.articleMaxPageBack;
+        DrawToolbarButton(g, pageUpBounds, "▲", DesignTokens.Colors.Border, bodyFont, !canPageUp);
+        if (recordHitTargets && canPageUp)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = pageUpBounds, Action = CaptionsHitAction.ArticlePageUp });
+        }
+
+        x = pageUpBounds.Right + gap;
+        Rectangle pageDownBounds = new Rectangle(x, bounds.Top, pageWidth, bounds.Height);
+        bool canPageDown = this.articlePageBack > 0;
+        DrawToolbarButton(g, pageDownBounds, "▼", DesignTokens.Colors.Border, bodyFont, !canPageDown);
+        if (recordHitTargets && canPageDown)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = pageDownBounds, Action = CaptionsHitAction.ArticlePageDown });
+        }
+
+        x = pageDownBounds.Right + gap;
+        string pageText = (this.articleMaxPageBack - this.articlePageBack + 1).ToString(CultureInfo.InvariantCulture) +
+            "/" + (this.articleMaxPageBack + 1).ToString(CultureInfo.InvariantCulture);
+        int pageTextWidth = Math.Max(S(26), MeasureTextWidth(g, pageText, monoFont) + S(6));
+        using (SolidBrush pageBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
+        using (StringFormat centered = CreateFormat(StringAlignment.Center, StringTrimming.None))
+        {
+            g.DrawString(pageText, monoFont, pageBrush, new Rectangle(x, bounds.Top, pageTextWidth, bounds.Height), centered);
+        }
+
+        x += pageTextWidth + groupGap;
+
+        bool editing = IsCaptionOverlayEditing;
+        string editLabel = editing ? "完成" : "编辑";
+        Color editColor = editing
+            ? DesignTokens.Colors.Success
+            : EdgeDockTabForm.ResolveQueueAccent(EdgeDockTabRole.Captions);
+        Rectangle editBounds = new Rectangle(x, bounds.Top, MeasureTextWidth(g, editLabel, bodyFont) + S(14), bounds.Height);
+        DrawToolbarButton(g, editBounds, editLabel, editColor, bodyFont, false);
+        if (recordHitTargets)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = editBounds, Action = CaptionsHitAction.OverlayEditToggle });
+        }
+
+        x = editBounds.Right + gap;
+        Rectangle resetBounds = new Rectangle(x, bounds.Top, MeasureTextWidth(g, "重置", bodyFont) + S(14), bounds.Height);
+        DrawToolbarButton(g, resetBounds, "重置", DesignTokens.Colors.Border, bodyFont, false);
+        if (recordHitTargets)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = resetBounds, Action = CaptionsHitAction.OverlayReset });
+        }
+
+        x = resetBounds.Right + groupGap;
+        Rectangle exportBounds = new Rectangle(x, bounds.Top, MeasureTextWidth(g, "导出", bodyFont) + S(14), bounds.Height);
+        DrawToolbarButton(g, exportBounds, "导出", DesignTokens.Colors.Border, bodyFont, false);
+        if (recordHitTargets)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = exportBounds, Action = CaptionsHitAction.ArticleExport });
+        }
+
+        x = exportBounds.Right + gap;
+        // An armed clear says so on the button itself, not only in the status strip: the button is
+        // where the next click is going to land.
+        bool armed = IsClearArmed;
+        string clearLabel = armed ? "确认" : "清除";
+        Rectangle clearBounds = new Rectangle(x, bounds.Top, MeasureTextWidth(g, clearLabel, bodyFont) + S(14), bounds.Height);
+        DrawToolbarButton(g, clearBounds, clearLabel, DesignTokens.Colors.Danger, bodyFont, false);
+        if (recordHitTargets)
+        {
+            this.hitTargets.Add(new CaptionsHitTarget { Bounds = clearBounds, Action = CaptionsHitAction.ArticleClear });
         }
     }
 
-    private void DrawHistoryList(Graphics g, Rectangle bounds, Font smallFont, Font strongFont, Font monoSmallFont)
+    // The stepper's own width, needed before it is drawn so the row can be right-aligned against it.
+    private int MeasureStepperWidth(Graphics g, string value, Font valueFont, int height)
     {
-        this.lastDrawnHistoryCount = 0;
-        if (this.snapshot.RecentHistory.Count == 0)
+        int stepWidth = Math.Max(S(14), height);
+        int valueWidth = Math.Max(S(28), MeasureTextWidth(g, value, valueFont) + S(6));
+        return stepWidth * 2 + valueWidth;
+    }
+
+    // The article: translation above, source language below, split down the middle. Both halves page
+    // together on one page index -- they carry the same sentences, so paging them separately would
+    // just be two ways to lose the correspondence between them.
+    private void DrawArticle(Graphics g, Rectangle bounds, Font translatedFont, Font originalFont, Font monoFont)
+    {
+        this.lastDrawnArticleLineCount = 0;
+        CaptionTranscript transcript = ResolveTranscript();
+        if (transcript == null || transcript.Count == 0)
         {
+            this.articleMaxPageBack = 0;
+            this.articlePageBack = 0;
             using (SolidBrush mutedBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
             using (StringFormat center = CreateFormat(StringAlignment.Center))
             {
-                string message = this.snapshot.HistoryDatabaseFound ? "暂无字幕记录" : "等待翻译历史数据库";
-                g.DrawString(message, smallFont, mutedBrush, bounds, center);
+                g.DrawString("暂无文章 · 定稿的字幕会累积到这里", originalFont, mutedBrush, bounds, center);
             }
 
             return;
         }
 
-        int firstLineHeight = MeasureLineHeight(g, smallFont, S(2));
-        int secondLineHeight = MeasureLineHeight(g, strongFont, S(2));
-        int entryGap = S(6);
-        int perEntry = firstLineHeight + secondLineHeight + entryGap;
-        // Compute how many whole entries actually fit against the measured font metrics at this
-        // canvas size, the same way CodexTaskBoard.MaximumVisibleRows() does, rather than assuming a
-        // fixed count -- a different LayerScale/DPI changes the measured line heights. The measured
-        // budget is then capped at MaxHistoryEntries: on this board the controls matter more than
-        // the transcript, so the list deliberately shows less than it could fit.
-        int maxEntries = perEntry > 0 ? Math.Max(1, (bounds.Height + entryGap) / perEntry) : 1;
-        int count = Math.Min(Math.Min(MaxHistoryEntries, maxEntries), this.snapshot.RecentHistory.Count);
+        int gap = S(8);
+        int topHeight = Math.Max(1, (bounds.Height - gap) / 2);
+        Rectangle topHalf = new Rectangle(bounds.Left, bounds.Top, bounds.Width, topHeight);
+        Rectangle bottomHalf = new Rectangle(
+            bounds.Left,
+            topHalf.Bottom + gap,
+            bounds.Width,
+            Math.Max(1, bounds.Bottom - topHalf.Bottom - gap));
+        DrawDivider(g, bounds.Left, topHalf.Bottom + gap / 2, bounds.Width);
 
-        // Rows keep their measured height and the list stays top-aligned. An earlier version spread
-        // a three-entry cap across the whole area instead, which made every row roughly twice its
-        // own content and turned the transcript into three stranded paragraphs separated by voids.
-        // Spare height is better spent on more entries -- which is what raising the cap does -- than
-        // on padding three of them apart.
-        int rowHeight = firstLineHeight + secondLineHeight + entryGap;
-        int blockHeight = firstLineHeight + secondLineHeight;
+        // Wrapped and drawn against the same width, with a small margin: GenericTypographic
+        // measurement runs tighter than the draw path, so a line wrapped to the full box width
+        // loses its last glyph to the right edge (see the FitFontSize width-must-match-draw-width
+        // rule).
+        int textWidth = Math.Max(S(60), bounds.Width - S(8));
+        List<string> translatedLines = ResolveArticleLines(g, true, translatedFont, textWidth);
+        List<string> originalLines = ResolveArticleLines(g, false, originalFont, textWidth);
+        int translatedLineHeight = MeasureLineHeight(g, translatedFont, S(1));
+        int originalLineHeight = MeasureLineHeight(g, originalFont, S(1));
+        int translatedVisible = Math.Max(1, topHalf.Height / translatedLineHeight);
+        int originalVisible = Math.Max(1, bottomHalf.Height / originalLineHeight);
 
-        this.lastDrawnHistoryCount = count;
-        for (int i = 0; i < count; i++)
+        // The page count is whichever half needs more pages: the two wrap differently, and clamping
+        // to the shorter one would make the tail of the longer half unreachable.
+        int maxPageBack = Math.Max(
+            ResolveMaxPageBack(translatedLines.Count, translatedVisible),
+            ResolveMaxPageBack(originalLines.Count, originalVisible));
+        this.articleMaxPageBack = maxPageBack;
+        if (this.articlePageBack > maxPageBack)
         {
-            TranslatorHistoryEntry entry = this.snapshot.RecentHistory[i];
-            int rowTop = bounds.Top + i * rowHeight;
-            if (i > 0)
+            this.articlePageBack = maxPageBack;
+        }
+
+        topHalf.Width = textWidth;
+        bottomHalf.Width = textWidth;
+        this.lastDrawnArticleLineCount = DrawArticleHalf(
+            g, topHalf, translatedLines, translatedFont, translatedLineHeight, translatedVisible, DesignTokens.Colors.TextStrong, 255);
+        DrawArticleHalf(
+            g, bottomHalf, originalLines, originalFont, originalLineHeight, originalVisible, DesignTokens.Colors.TextMuted, 185);
+    }
+
+    private static int ResolveMaxPageBack(int lineCount, int visibleLines)
+    {
+        if (lineCount <= visibleLines || visibleLines <= 0)
+        {
+            return 0;
+        }
+
+        return (lineCount - 1) / visibleLines;
+    }
+
+    // Page 0 is the tail, so the window is measured back from the end of the text rather than forward
+    // from its start: new sentences must not shift what page anything is on.
+    private int DrawArticleHalf(
+        Graphics g,
+        Rectangle bounds,
+        List<string> lines,
+        Font font,
+        int lineHeight,
+        int visibleLines,
+        Color color,
+        int alpha)
+    {
+        int start = Math.Max(0, lines.Count - visibleLines * (this.articlePageBack + 1));
+        int count = Math.Min(visibleLines, lines.Count - start);
+        if (count <= 0)
+        {
+            return 0;
+        }
+
+        // Drawn through the same GenericTypographic format the lines were wrapped with. The board's
+        // usual CreateFormat is GenericDefault, which pads roughly a sixth of an em onto each end of
+        // every string -- enough to push the last glyph of an exactly-fitting line off the edge.
+        using (SolidBrush brush = new SolidBrush(DesignTokens.WithAlpha(color, alpha)))
+        using (StringFormat near = new StringFormat(StringFormat.GenericTypographic))
+        {
+            near.Alignment = StringAlignment.Near;
+            near.LineAlignment = StringAlignment.Center;
+            near.Trimming = StringTrimming.None;
+            near.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces;
+            for (int i = 0; i < count; i++)
             {
-                // Hairline between rows: with rows this tall, a separator is what makes the spacing
-                // read as a deliberate list rather than as three stranded paragraphs.
-                DrawDivider(g, bounds.Left, rowTop, bounds.Width);
-            }
-
-            int y = rowTop + Math.Max(0, (rowHeight - blockHeight));
-            Rectangle firstLine = new Rectangle(bounds.Left, y, bounds.Width, firstLineHeight);
-            Rectangle secondLine = new Rectangle(bounds.Left, firstLine.Bottom, bounds.Width, secondLineHeight);
-
-            string badge = "→" + (string.IsNullOrWhiteSpace(entry.TargetLanguage) ? "--" : entry.TargetLanguage.Trim());
-            int badgeWidth = MeasureTextWidth(g, badge, monoSmallFont) + S(6);
-            int timestampWidth = S(50);
-
-            using (SolidBrush badgeBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
-            using (SolidBrush sourceBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
-            using (SolidBrush timestampBrush = new SolidBrush(DesignTokens.Colors.GlyphMuted))
-            using (SolidBrush translatedBrush = new SolidBrush(DesignTokens.Colors.TextStrong))
-            using (StringFormat near = CreateFormat(StringAlignment.Near))
-            using (StringFormat far = CreateFormat(StringAlignment.Far))
-            {
-                g.DrawString(badge, monoSmallFont, badgeBrush, new Rectangle(firstLine.Left, firstLine.Top, badgeWidth, firstLine.Height), near);
-                int sourceLeft = firstLine.Left + badgeWidth + S(4);
-                int sourceWidth = Math.Max(1, firstLine.Width - badgeWidth - S(4) - timestampWidth - S(4));
-                g.DrawString(entry.SourceText, smallFont, sourceBrush, new Rectangle(sourceLeft, firstLine.Top, sourceWidth, firstLine.Height), near);
-                if (entry.TimestampKnown)
-                {
-                    g.DrawString(
-                        entry.TimestampLocal.ToString("HH:mm:ss", CultureInfo.InvariantCulture),
-                        monoSmallFont,
-                        timestampBrush,
-                        new Rectangle(firstLine.Right - timestampWidth, firstLine.Top, timestampWidth, firstLine.Height),
-                        far);
-                }
-
-                g.DrawString(entry.TranslatedText, strongFont, translatedBrush, secondLine, near);
+                Rectangle line = new Rectangle(bounds.Left, bounds.Top + i * lineHeight, bounds.Width, lineHeight);
+                g.DrawString(lines[start + i], font, brush, line, near);
             }
         }
+
+        return count;
     }
 
     private static int ScaleAlpha(int baseAlpha, int scale)
@@ -814,8 +984,8 @@ internal sealed partial class CaptionsBoardForm
         // overlap would appear first.
         VerifyHitTargets(460, 400);
         VerifyServiceChipHitTargetsFollowServiceState(648, 400);
-        VerifyHistoryEntryCap(648, 400);
-        Console.WriteLine("Captions board layout: PASS hit targets, no overlap, zero-height alert strip when no failure, status-strip targets follow service state, history capped at " + MaxHistoryEntries);
+        VerifyArticlePaging(648, 400);
+        Console.WriteLine("Captions board layout: PASS hit targets, no overlap, zero-height alert strip when no failure, status-strip targets follow service state, article paging and empty state");
     }
 
     private static void VerifyHitTargets(int logicalWidth, int logicalHeight)
@@ -834,6 +1004,11 @@ internal sealed partial class CaptionsBoardForm
             // frame: that is the only state in which the full interactive surface of this board is
             // drawn at once, and therefore the only state that can prove nothing overlaps.
             form.snapshot = CreateAllServicesDownFixtureSnapshot();
+            // A seeded article is part of the densest frame: with nothing to page through, the two
+            // paging buttons are inert and would not be checked for overlap at all.
+            form.articleFixture = CreateArticleFixture(40);
+            form.DrawBoard(g, true);
+            form.articlePageBack = 1;
             form.DrawBoard(g, true);
 
             CaptionsHitAction[] required =
@@ -848,7 +1023,15 @@ internal sealed partial class CaptionsBoardForm
                 CaptionsHitAction.SanitizeProxyStart,
                 CaptionsHitAction.LiveCaptionsStart,
                 CaptionsHitAction.TranslatorStart,
-                CaptionsHitAction.CaptionLanguageSet
+                CaptionsHitAction.CaptionLanguageSet,
+                CaptionsHitAction.ArticleExport,
+                CaptionsHitAction.ArticleClear,
+                CaptionsHitAction.SettledLinesMinus,
+                CaptionsHitAction.SettledLinesPlus,
+                CaptionsHitAction.OverlayEditToggle,
+                CaptionsHitAction.OverlayReset,
+                CaptionsHitAction.ArticlePageUp,
+                CaptionsHitAction.ArticlePageDown
             };
 
             for (int i = 0; i < required.Length; i++)
@@ -983,7 +1166,11 @@ internal sealed partial class CaptionsBoardForm
         return Rectangle.Empty;
     }
 
-    private static void VerifyHistoryEntryCap(int logicalWidth, int logicalHeight)
+    // The article is the only scrollable surface in this app, so its paging maths has no precedent to
+    // borrow from: this proves the page window is anchored at the tail (page 1 of N is the newest
+    // text, not the oldest), that paging back moves it, and that a board with no article at all still
+    // draws and reports a single page.
+    private static void VerifyArticlePaging(int logicalWidth, int logicalHeight)
     {
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.SpecBoardWidth = logicalWidth;
@@ -995,47 +1182,96 @@ internal sealed partial class CaptionsBoardForm
         using (Graphics g = Graphics.FromImage(bitmap))
         {
             form.Size = new Size(logicalWidth, logicalHeight);
-            TranslatorControlSnapshot crowded = CreateFixtureSnapshot();
-            while (crowded.RecentHistory.Count < 8)
-            {
-                crowded.RecentHistory.Add(crowded.RecentHistory[crowded.RecentHistory.Count - 1].Clone());
-            }
+            form.snapshot = CreateFixtureSnapshot();
 
-            form.snapshot = crowded;
             form.DrawBoard(g, true);
-            if (form.lastDrawnHistoryCount > MaxHistoryEntries || form.lastDrawnHistoryCount < 1)
+            if (form.lastDrawnArticleLineCount != 0 || form.articleMaxPageBack != 0)
             {
                 throw new InvalidOperationException(
-                    "Captions board layout self-test failed: history must stay within the " + MaxHistoryEntries +
-                    " entry cap, drew " + form.lastDrawnHistoryCount);
+                    "Captions board layout self-test failed: an empty article must draw no lines and report one page, drew " +
+                    form.lastDrawnArticleLineCount);
             }
 
-            // The point of the rework: with rows at their measured height the list fills the area
-            // instead of spreading three entries across it. Four is a floor this board clears at its
-            // default size with room to spare; asserting the exact count would just re-encode the
-            // font metrics.
-            if (form.lastDrawnHistoryCount < 4)
-            {
-                throw new InvalidOperationException(
-                    "Captions board layout self-test failed: the history area must fill with entries, drew " +
-                    form.lastDrawnHistoryCount);
-            }
-
-            // Fewer available entries than the cap must not be padded out to the cap.
-            TranslatorControlSnapshot sparse = CreateFixtureSnapshot();
-            while (sparse.RecentHistory.Count > 2)
-            {
-                sparse.RecentHistory.RemoveAt(sparse.RecentHistory.Count - 1);
-            }
-
-            form.snapshot = sparse;
+            form.articleFixture = CreateArticleFixture(60);
             form.DrawBoard(g, true);
-            if (form.lastDrawnHistoryCount != 2)
+            int firstPageLines = form.lastDrawnArticleLineCount;
+            if (firstPageLines < 2)
             {
                 throw new InvalidOperationException(
-                    "Captions board layout self-test failed: expected 2 history entries, drew " + form.lastDrawnHistoryCount);
+                    "Captions board layout self-test failed: the article half must fill with lines, drew " + firstPageLines);
+            }
+
+            if (form.articleMaxPageBack < 1)
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: sixty sentences must not fit on one page.");
+            }
+
+            // The newest sentence belongs on the first page shown, which is what makes the article
+            // usable while someone is still speaking.
+            string tail = form.articleCache.TranslatedLines[form.articleCache.TranslatedLines.Count - 1];
+            if (!HalfContainsLine(form, true, tail))
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: page 1 must show the tail of the article.");
+            }
+
+            int maxPage = form.articleMaxPageBack;
+            form.articlePageBack = maxPage;
+            form.DrawBoard(g, true);
+            if (HalfContainsLine(form, true, tail))
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: paging to the oldest page still showed the newest line.");
+            }
+
+            // Paging past the end must clamp rather than strand the view on a blank page.
+            form.articlePageBack = maxPage + 5;
+            form.DrawBoard(g, true);
+            if (form.articlePageBack != maxPage || form.lastDrawnArticleLineCount <= 0)
+            {
+                throw new InvalidOperationException(
+                    "Captions board layout self-test failed: the page index must clamp to the oldest page, got " +
+                    form.articlePageBack);
             }
         }
+    }
+
+    // Recomputes the window the last draw painted and reports whether it covered a given line. Reading
+    // the drawn pixels back would prove the same thing far less legibly.
+    private static bool HalfContainsLine(CaptionsBoardForm form, bool translated, string line)
+    {
+        List<string> lines = translated ? form.articleCache.TranslatedLines : form.articleCache.OriginalLines;
+        int visible = form.lastDrawnArticleLineCount;
+        int start = Math.Max(0, lines.Count - visible * (form.articlePageBack + 1));
+        for (int i = start; i < Math.Min(lines.Count, start + visible); i++)
+        {
+            if (string.Equals(lines[i], line, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static CaptionTranscript CreateArticleFixture(int sentences)
+    {
+        CaptionTranscript transcript = new CaptionTranscript();
+        DateTime start = new DateTime(2026, 9, 12, 2, 0, 0, DateTimeKind.Utc);
+        for (int i = 0; i < sentences; i++)
+        {
+            // Every eighth sentence lands past the paragraph gap, so the fixture exercises the indent
+            // and the paragraph break as well as the wrapping.
+            double offset = i * 3.0 + (i / 8) * CaptionTranscript.ParagraphGapSeconds;
+            transcript.Append(
+                "第 " + (i + 1).ToString(CultureInfo.InvariantCulture) + " 句译文，这一句写得足够长，可以把它折成不止一行。",
+                "Sentence " + (i + 1).ToString(CultureInfo.InvariantCulture) +
+                    " in the source language, long enough to wrap across more than a single line.",
+                start.AddSeconds(offset));
+        }
+
+        return transcript;
     }
 
     private Rectangle FindHitTarget(CaptionsHitAction action)
