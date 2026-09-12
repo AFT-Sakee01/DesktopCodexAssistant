@@ -295,7 +295,7 @@ internal sealed class WidgetSettings
     public const int DefaultNightDimLuminancePercent = 60;
     public const int MinWindowScaleOverridePercent = -1;
     public const int MaxWindowScaleOverridePercent = 200;
-    private const int CurrentSettingsVersion = 104;
+    private const int CurrentSettingsVersion = 105;
     internal const int MinCaptionOverlayFontSize = 12;
     internal const int MaxCaptionOverlayFontSize = 48;
     internal const int DefaultCaptionOverlayFontSize = 22;
@@ -493,6 +493,7 @@ internal sealed class WidgetSettings
     public int SystemDayBoardLeftDockTabCenterY { get; set; }
     public int SystemDayBoardAutoHideSeconds { get; set; }
     public bool SystemDayBoardSmoothingEnabled { get; set; }
+    public bool StartupIntroAnimationEnabled { get; set; }
     public bool CaptionsBoardLeftDockEnabled { get; set; }
     public int CaptionsBoardLeftDockTabCenterY { get; set; }
     public int CaptionsBoardAutoHideSeconds { get; set; }
@@ -1006,6 +1007,7 @@ internal sealed class WidgetSettings
         this.SystemDayBoardLeftDockTabCenterY = defaults.SystemDayBoardLeftDockTabCenterY;
         this.SystemDayBoardAutoHideSeconds = defaults.SystemDayBoardAutoHideSeconds;
         this.SystemDayBoardSmoothingEnabled = defaults.SystemDayBoardSmoothingEnabled;
+        this.StartupIntroAnimationEnabled = defaults.StartupIntroAnimationEnabled;
         this.CaptionsBoardLeftDockEnabled = defaults.CaptionsBoardLeftDockEnabled;
         this.CaptionsBoardLeftDockTabCenterY = defaults.CaptionsBoardLeftDockTabCenterY;
         this.CaptionsBoardAutoHideSeconds = defaults.CaptionsBoardAutoHideSeconds;
@@ -1242,6 +1244,7 @@ internal sealed class WidgetSettings
         settings.SystemDayBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.SystemDayBoardAutoHideSeconds = DefaultSystemDayBoardAutoHideSeconds;
         settings.SystemDayBoardSmoothingEnabled = false;
+        settings.StartupIntroAnimationEnabled = true;
         settings.CaptionsBoardLeftDockEnabled = true;
         settings.CaptionsBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CaptionsBoardAutoHideSeconds = DefaultCaptionsBoardAutoHideSeconds;
@@ -1480,6 +1483,7 @@ internal sealed class WidgetSettings
         settings.SystemDayBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.SystemDayBoardAutoHideSeconds = DefaultSystemDayBoardAutoHideSeconds;
         settings.SystemDayBoardSmoothingEnabled = false;
+        settings.StartupIntroAnimationEnabled = true;
         settings.CaptionsBoardLeftDockEnabled = true;
         settings.CaptionsBoardLeftDockTabCenterY = AutoLeftDockTabCenterY;
         settings.CaptionsBoardAutoHideSeconds = DefaultCaptionsBoardAutoHideSeconds;
@@ -1714,6 +1718,7 @@ internal sealed class WidgetSettings
             SystemDayBoardLeftDockTabCenterY = this.SystemDayBoardLeftDockTabCenterY,
             SystemDayBoardAutoHideSeconds = this.SystemDayBoardAutoHideSeconds,
             SystemDayBoardSmoothingEnabled = this.SystemDayBoardSmoothingEnabled,
+            StartupIntroAnimationEnabled = this.StartupIntroAnimationEnabled,
             CaptionsBoardLeftDockEnabled = this.CaptionsBoardLeftDockEnabled,
             CaptionsBoardLeftDockTabCenterY = this.CaptionsBoardLeftDockTabCenterY,
             CaptionsBoardAutoHideSeconds = this.CaptionsBoardAutoHideSeconds,
@@ -2782,6 +2787,15 @@ internal sealed class WidgetSettings
             saveAfterMigration = true;
         }
 
+        if (sourceFileExists && settingsVersion < 105)
+        {
+            // Version 105 adds the startup entrance. It arrives ON for existing installs: it neither
+            // starts anything nor changes any state, it only animates surfaces that were about to be
+            // drawn anyway, and it is the kind of thing an upgrade is expected to bring with it.
+            settings.StartupIntroAnimationEnabled = true;
+            saveAfterMigration = true;
+        }
+
         settings.AdaptToCurrentWorkArea();
         settings.StartupEnabled = Program.IsStartupEnabled();
         settings.Normalize();
@@ -3009,6 +3023,7 @@ internal sealed class WidgetSettings
             "SystemDayBoardLeftDockTabCenterY=" + this.SystemDayBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
             "SystemDayBoardAutoHideSeconds=" + this.SystemDayBoardAutoHideSeconds.ToString(CultureInfo.InvariantCulture),
             "SystemDayBoardSmoothingEnabled=" + this.SystemDayBoardSmoothingEnabled,
+            "StartupIntroAnimationEnabled=" + this.StartupIntroAnimationEnabled,
             "CaptionsBoardLeftDockEnabled=" + this.CaptionsBoardLeftDockEnabled,
             "CaptionsBoardLeftDockTabCenterY=" + this.CaptionsBoardLeftDockTabCenterY.ToString(CultureInfo.InvariantCulture),
             "CaptionsBoardAutoHideSeconds=" + this.CaptionsBoardAutoHideSeconds.ToString(CultureInfo.InvariantCulture),
@@ -3628,6 +3643,12 @@ internal sealed class WidgetSettings
         if (string.Equals(key, "ResetSpeedBoardAutoHideSeconds", StringComparison.OrdinalIgnoreCase) && int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out intValue))
         {
             settings.ResetSpeedBoardAutoHideSeconds = intValue;
+            return;
+        }
+
+        if (string.Equals(key, "StartupIntroAnimationEnabled", StringComparison.OrdinalIgnoreCase) && bool.TryParse(value, out boolValue))
+        {
+            settings.StartupIntroAnimationEnabled = boolValue;
             return;
         }
 
@@ -6837,6 +6858,7 @@ internal sealed class WidgetSettings
             defaults.SystemDayBoardTransparencyOverridePercent == MinWindowTransparencyOverridePercent &&
             defaults.SystemDayBoardScaleOverridePercent == MinWindowScaleOverridePercent &&
             !defaults.SystemDayBoardSmoothingEnabled &&
+            defaults.StartupIntroAnimationEnabled &&
             Array.IndexOf(defaults.LeftDockButtonOrder, "SystemDay") == defaults.LeftDockButtonOrder.Length - 2,
             "System Day board defaults should enable an independent seventh dock slot with raw (unsmoothed) curves.");
 

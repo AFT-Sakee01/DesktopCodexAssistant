@@ -247,6 +247,36 @@ internal abstract class LayeredWidgetFormBase : Form
         InvalidateLayeredRenderBuffer();
     }
 
+    // 启动入场：偏移与 alpha 系数只作用于呈现，不动 WinForms 的 Location，
+    // 动画结束后两者自然重合。非启动期恒为 (0,0) 与 1.0，等于完全不参与。
+    private Point introOffset;
+    private float introAlphaScale = 1.0f;
+
+    internal void ApplyIntroFrame(Point offset, float alphaScale)
+    {
+        this.introOffset = offset;
+        this.introAlphaScale = alphaScale < 0.0f ? 0.0f : (alphaScale > 1.0f ? 1.0f : alphaScale);
+        RenderLayeredWindow(false);
+    }
+
+    // 入场位移按缩放走，否则高 DPI 下那段位移会显得过短。
+    internal float IntroTravelScale
+    {
+        get { return this.LayerScale; }
+    }
+
+    internal void ClearIntroFrame()
+    {
+        if (this.introOffset == Point.Empty && this.introAlphaScale >= 1.0f)
+        {
+            return;
+        }
+
+        this.introOffset = Point.Empty;
+        this.introAlphaScale = 1.0f;
+        RenderLayeredWindow(false);
+    }
+
     protected void RenderLayeredWindow()
     {
         RenderLayeredWindow(true);
@@ -283,11 +313,19 @@ internal abstract class LayeredWidgetFormBase : Form
                 this.renderBufferValid = true;
             }
 
+            // 启动动画只改这里的落点与整窗 alpha：refreshNativeBitmap 为 false 时
+            // 每帧就是一次 UpdateLayeredWindow，内容位图原样复用，所以逐帧代价极低。
+            Point presentationLocation = new Point(
+                this.Location.X + this.introOffset.X,
+                this.Location.Y + this.introOffset.Y);
+            byte presentationAlpha = this.introAlphaScale >= 1.0f
+                ? GetApplicationOpacityAlpha()
+                : (byte)Math.Max(0, Math.Min(255, (int)Math.Round(GetApplicationOpacityAlpha() * this.introAlphaScale)));
             if (!this.layeredSurface.Update(
                 this.Handle,
-                this.Location,
+                presentationLocation,
                 this.renderBitmap,
-                GetApplicationOpacityAlpha(),
+                presentationAlpha,
                 refreshNativeBitmap))
             {
                 if (!this.layeredUpdateFailureLogged)

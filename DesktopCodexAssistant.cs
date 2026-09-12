@@ -935,6 +935,7 @@ internal static class Program
             RunNamedSelfTest("MetricTileModel", MetricTileModel.RunSelfTest);
             RunNamedSelfTest("MetricTileForm", MetricTileForm.RunSelfTest);
             RunNamedSelfTest("MetricTileExpandForm", MetricTileExpandForm.RunSelfTest);
+            RunNamedSelfTest("WidgetForm.StartupIntro", WidgetForm.RunStartupIntroSelfTest);
             RunNamedSelfTest("WidgetForm.TileColumnRuntime", WidgetForm.RunTileColumnRuntimeSelfTest);
             RunNamedSelfTest("TimingStats", TimingStats.RunSelfTest);
             return 0;

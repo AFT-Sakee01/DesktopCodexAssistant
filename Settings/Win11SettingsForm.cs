@@ -463,7 +463,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
             new string[] { "!Codex 额度计划", "CodexQuotaPlanEnabled", "CodexQuotaPlanWeeklyComparison", "CodexQuotaPlanWeeklyThresholdPercent",
                            "CodexQuotaPlanFiveHourComparison", "CodexQuotaPlanFiveHourThresholdPercent", "CodexQuotaPlanResumeConditionMode",
                            "CodexQuotaPlanAutoResumePausedGoals", "CodexQuotaPlanPauseGoalIds", "CodexQuotaPlanResumeGoalIds" },
-            new string[] { "!恢复与保护", "SeelenDockForegroundPulseEnabled", "WinDRecoveryPulseEnabled", "PowerResumeRestartEnabled", "TranslatorKeepAliveEnabled", "CodexAppKeepAliveEnabled", "ClaudeAppKeepAliveEnabled", "TranslatorOverlayAutoOpenEnabled", "LiveCaptionsAutoHideEnabled", "CaptionOverlayEnabled", "CaptionOverlayShowOriginal", "CaptionOverlayFontSize", "CaptionOverlayTopPercent", "CaptionOverlaySettledLines", "CaptionOverlayDisplayEnabled", "CaptionOverlayHoverAutoHideEnabled" },
+            new string[] { "!恢复与保护", "StartupIntroAnimationEnabled", "SeelenDockForegroundPulseEnabled", "WinDRecoveryPulseEnabled", "PowerResumeRestartEnabled", "TranslatorKeepAliveEnabled", "CodexAppKeepAliveEnabled", "ClaudeAppKeepAliveEnabled", "TranslatorOverlayAutoOpenEnabled", "LiveCaptionsAutoHideEnabled", "CaptionOverlayEnabled", "CaptionOverlayShowOriginal", "CaptionOverlayFontSize", "CaptionOverlayTopPercent", "CaptionOverlaySettledLines", "CaptionOverlayDisplayEnabled", "CaptionOverlayHoverAutoHideEnabled" },
             new string[] { "!调试", "ForceShowForegroundFpsEnabled" }
         });
 
@@ -4393,6 +4393,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "SystemDayBoardLeftDockTabCenterY", "系统日记标签中心 Y" },
         { "SystemDayBoardAutoHideSeconds", "系统日记自动收回秒数" },
         { "SystemDayBoardSmoothingEnabled", "系统日记曲线平滑" },
+        { "StartupIntroAnimationEnabled", "启动入场动画" },
         { "CaptionsBoardLeftDockTabCenterY", "字幕标签中心 Y" },
         { "CaptionsBoardAutoHideSeconds", "字幕自动收回秒数" },
         { "LeftDockOutsideClickCollapseEnabled", "点击看板外部时收回" },
@@ -4591,6 +4592,7 @@ internal sealed class Win11SettingsForm : Form, IMessageFilter, ISettingsWindow
         { "ResetSpeedBoardLeftDockTabCenterY", "自动模式按七看板队列计算位置；手动模式填写屏幕坐标 Y。" },
         { "ResetSpeedBoardAutoHideSeconds", "范围 0-600 秒；0 表示展开后不自动收回。" },
         { "SystemDayBoardLeftDockTabCenterY", "自动模式按七看板队列计算位置；手动模式填写屏幕坐标 Y。" },
+        { "StartupIntroAnimationEnabled", "启动时右侧十一枚磁贴自屏幕外缘依次滑入并淡入，操作面板随后自下浮起，约 640 毫秒收尾。动画只改分层窗口的呈现落点与整窗透明度，不重绘任何内容，因此不额外增加启动耗时；关掉就是所有表面同时出现。" },
         { "SystemDayBoardSmoothingEnabled", "把系统日记看板里的曲线改成滑动平均后再画，噪声小、趋势更好读，代价是真实尖峰会被压平。只影响画线：摘要、图例里的当前值和峰值读数始终来自原始采样。看板底部的「平滑」按钮切换的就是这一项。" },
         { "SystemDayBoardAutoHideSeconds", "范围 0-600 秒；0 表示展开后不自动收回。" },
         { "CaptionsBoardLeftDockTabCenterY", "自动模式按八看板队列计算位置；手动模式填写屏幕坐标 Y。" },

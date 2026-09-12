@@ -130,6 +130,7 @@
     "Core/WidgetForm.TileColumn.cs",
     "Core/WidgetForm.TileColumn.SelfTest.cs",
     "Core/WidgetForm.SystemDay.cs",
+    "Core/WidgetForm.StartupIntro.cs",
     "Interop/NativeMethods.cs",
     "Performance/CleanIpConnectionReader.cs",
     "Performance/CloudEndpointProbe.cs",

@@ -394,6 +394,22 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         // establish its own HWND safely. Build the canonical tile set only after every data owner
         // and board provider is connected; otherwise a cold start has no later creation path.
         ApplyMetricTilePresentation();
+        // 入场必须在磁贴与操作面板都已显示之后起步：此时它们已定位、已渲染，
+        // 动画只需要改呈现落点与 alpha，不会再触发内容重绘。
+        StartStartupIntro();
+    }
+
+    // 入场期间这条线程必须让出来。主采样定时器一旦启动，它每一拍都要采样并重绘全部表面，
+    // 16ms 的入场帧根本抢不到，动画会被饿死在起始帧上。这几步因此推迟到入场收尾后执行；
+    // 反正 PDH 计数器要到几秒后才就绪，首次采样早跑也只是拿到空快照。
+    private void CompleteStartupAfterIntro()
+    {
+        if (this.startupCompleted || this.formClosing || this.IsDisposed)
+        {
+            return;
+        }
+
+        this.startupCompleted = true;
         StartGuardControlServer();
         this.timer.Start();
         UpdateSeelenDockPulseTimer();
