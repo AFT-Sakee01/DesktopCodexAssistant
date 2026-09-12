@@ -29,11 +29,17 @@ internal sealed class TranslatorCaptionReader
     // Re-resolving the automation elements is the expensive part (a descendant search). Once the
     // window is gone this backs off so a closed translator does not cost a tree walk every tick.
     private const int ResolveRetryIntervalMs = 2000;
-    // The confirmed sentence comes from the translator's history database, which is the only
-    // place it exists once the overlay window is closed: the in-progress text lives in the main
-    // window, but the sentence before it has already left that window and been logged. Rows only
-    // appear there for finished translations, which is exactly the definition of "confirmed".
+    // The settled sentence comes from the translator's history database, the only place it exists
+    // once the overlay window is closed.
+    //
+    // Note what the main window actually shows: DisplayTranslatedCaption is set when a translation
+    // *completes*, so the live line is the newest finished sentence -- and therefore also the
+    // newest database row. Verified 2026-09-12 against the running stack: live line and row 10442
+    // were the same text, and the sentence a reader wants as context was row 10440. So the lookup
+    // walks back from the newest row and takes the first one that is not the line already on
+    // screen; taking the newest row and de-duplicating it left nothing to show at all.
     private const int HistoryRefreshIntervalMs = 1500;
+    private const int HistoryLookbackRows = 4;
     private const string HistoryDatabaseFileName = "translation_history.db";
     private const string HistoryTableName = "TranslationHistory";
 
@@ -47,7 +53,10 @@ internal sealed class TranslatorCaptionReader
     private TranslatorCaptionSnapshot snapshot = TranslatorCaptionSnapshot.CreateEmpty();
     private int refreshing;
     private DateTime lastHistoryReadUtc = DateTime.MinValue;
-    private string lastConfirmedTranslation = string.Empty;
+    // Rows, not a resolved string: the live line changes several times a second while this list is
+    // refreshed once a second and a half, so the "which of these is not on screen" decision has to
+    // be made per read, against the current line.
+    private string[] recentTranslations = new string[0];
 
     // Latest published state. Cache-only: never touches UIA, so the UI thread may call it.
     internal TranslatorCaptionSnapshot GetSnapshot()
@@ -142,56 +151,89 @@ internal sealed class TranslatorCaptionReader
             (nowUtc - this.lastHistoryReadUtc).TotalMilliseconds >= HistoryRefreshIntervalMs)
         {
             this.lastHistoryReadUtc = nowUtc;
-            this.lastConfirmedTranslation = ReadNewestTranslation();
+            this.recentTranslations = ReadRecentTranslations();
         }
 
-        string confirmed = this.lastConfirmedTranslation ?? string.Empty;
-        if (confirmed.Length == 0)
+        string live = (currentTranslation ?? string.Empty).Trim();
+        string[] rows = this.recentTranslations;
+        for (int i = 0; i < rows.Length; i++)
         {
-            return string.Empty;
+            string candidate = rows[i];
+            if (candidate.Length == 0 || IsSameSentence(candidate, live))
+            {
+                continue;
+            }
+
+            return candidate;
         }
 
-        if (string.Equals(confirmed, (currentTranslation ?? string.Empty).Trim(), StringComparison.Ordinal))
-        {
-            return string.Empty;
-        }
-
-        return confirmed;
+        return string.Empty;
     }
 
-    private static string ReadNewestTranslation()
+    // The live line can be a shortened form of the logged sentence (the translator runs long
+    // sentences through ShortenDisplaySentence before showing them), so exact equality is not
+    // enough to recognise "this row is the line already on screen".
+    private static bool IsSameSentence(string candidate, string live)
+    {
+        if (live.Length == 0)
+        {
+            return false;
+        }
+
+        if (string.Equals(candidate, live, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        // Guarded by a length floor: without it a short candidate like "好的。" would match any
+        // line that happens to contain those characters.
+        int shorter = Math.Min(candidate.Length, live.Length);
+        return shorter >= 8 &&
+            (candidate.IndexOf(live, StringComparison.Ordinal) >= 0 ||
+             live.IndexOf(candidate, StringComparison.Ordinal) >= 0);
+    }
+
+    private static string[] ReadRecentTranslations()
     {
         try
         {
             string path = System.IO.Path.Combine(TranslatorControlReader.TranslatorDirectory, HistoryDatabaseFileName);
             if (!System.IO.File.Exists(path))
             {
-                return string.Empty;
+                return new string[0];
             }
 
             System.Collections.Generic.List<MinimalSqliteReader.Row> rows =
-                MinimalSqliteReader.ReadLastRowsByRowIdDescending(path, HistoryTableName, 1);
-            if (rows.Count == 0 || rows[0].Values == null || rows[0].Values.Length < 4)
+                MinimalSqliteReader.ReadLastRowsByRowIdDescending(path, HistoryTableName, HistoryLookbackRows);
+            System.Collections.Generic.List<string> translations =
+                new System.Collections.Generic.List<string>(rows.Count);
+            for (int i = 0; i < rows.Count; i++)
             {
-                return string.Empty;
+                if (rows[i].Values == null || rows[i].Values.Length < 4)
+                {
+                    continue;
+                }
+
+                // Column order matches TranslatorControlReader.ReadHistory: [3] = TranslatedText.
+                string translated = (rows[i].Values[3] ?? string.Empty).Trim();
+                // Errors and warnings are shown by the live line already; repeating a failed
+                // sentence as settled context would be worse than showing nothing.
+                if (translated.Length == 0 ||
+                    translated.StartsWith("[ERROR]", StringComparison.Ordinal) ||
+                    translated.StartsWith("[WARNING]", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                translations.Add(translated);
             }
 
-            // Column order matches TranslatorControlReader.ReadHistory: [3] = TranslatedText.
-            string translated = (rows[0].Values[3] ?? string.Empty).Trim();
-            // Errors and warnings are shown by the live line already; repeating a failed sentence
-            // as settled context would be worse than showing nothing.
-            if (translated.StartsWith("[ERROR]", StringComparison.Ordinal) ||
-                translated.StartsWith("[WARNING]", StringComparison.Ordinal))
-            {
-                return string.Empty;
-            }
-
-            return translated;
+            return translations.ToArray();
         }
         catch (Exception ex)
         {
             Program.LogException(ex);
-            return string.Empty;
+            return new string[0];
         }
     }
 
