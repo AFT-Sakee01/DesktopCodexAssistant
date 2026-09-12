@@ -29,6 +29,13 @@ internal sealed class TranslatorCaptionReader
     // Re-resolving the automation elements is the expensive part (a descendant search). Once the
     // window is gone this backs off so a closed translator does not cost a tree walk every tick.
     private const int ResolveRetryIntervalMs = 2000;
+    // The confirmed sentence comes from the translator's history database, which is the only
+    // place it exists once the overlay window is closed: the in-progress text lives in the main
+    // window, but the sentence before it has already left that window and been logged. Rows only
+    // appear there for finished translations, which is exactly the definition of "confirmed".
+    private const int HistoryRefreshIntervalMs = 1500;
+    private const string HistoryDatabaseFileName = "translation_history.db";
+    private const string HistoryTableName = "TranslationHistory";
 
     private readonly object stateLock = new object();
 
@@ -39,6 +46,8 @@ internal sealed class TranslatorCaptionReader
     private DateTime lastResolveAttemptUtc = DateTime.MinValue;
     private TranslatorCaptionSnapshot snapshot = TranslatorCaptionSnapshot.CreateEmpty();
     private int refreshing;
+    private DateTime lastHistoryReadUtc = DateTime.MinValue;
+    private string lastConfirmedTranslation = string.Empty;
 
     // Latest published state. Cache-only: never touches UIA, so the UI thread may call it.
     internal TranslatorCaptionSnapshot GetSnapshot()
@@ -119,7 +128,71 @@ internal sealed class TranslatorCaptionReader
         next.CaptionElementsResolved = true;
         next.OriginalCaption = original;
         next.TranslatedCaption = translated;
+        next.PreviousTranslation = ResolveConfirmedTranslation(nowUtc, translated);
         Publish(next);
+    }
+
+    // Newest logged translation, minus the one still on screen. The database write happens when a
+    // sentence finishes, so for a moment the newest row IS the sentence the main window is still
+    // showing; returning it then would print the same words twice, once as settled and once as
+    // in-progress.
+    private string ResolveConfirmedTranslation(DateTime nowUtc, string currentTranslation)
+    {
+        if (this.lastHistoryReadUtc == DateTime.MinValue ||
+            (nowUtc - this.lastHistoryReadUtc).TotalMilliseconds >= HistoryRefreshIntervalMs)
+        {
+            this.lastHistoryReadUtc = nowUtc;
+            this.lastConfirmedTranslation = ReadNewestTranslation();
+        }
+
+        string confirmed = this.lastConfirmedTranslation ?? string.Empty;
+        if (confirmed.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (string.Equals(confirmed, (currentTranslation ?? string.Empty).Trim(), StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+
+        return confirmed;
+    }
+
+    private static string ReadNewestTranslation()
+    {
+        try
+        {
+            string path = System.IO.Path.Combine(TranslatorControlReader.TranslatorDirectory, HistoryDatabaseFileName);
+            if (!System.IO.File.Exists(path))
+            {
+                return string.Empty;
+            }
+
+            System.Collections.Generic.List<MinimalSqliteReader.Row> rows =
+                MinimalSqliteReader.ReadLastRowsByRowIdDescending(path, HistoryTableName, 1);
+            if (rows.Count == 0 || rows[0].Values == null || rows[0].Values.Length < 4)
+            {
+                return string.Empty;
+            }
+
+            // Column order matches TranslatorControlReader.ReadHistory: [3] = TranslatedText.
+            string translated = (rows[0].Values[3] ?? string.Empty).Trim();
+            // Errors and warnings are shown by the live line already; repeating a failed sentence
+            // as settled context would be worse than showing nothing.
+            if (translated.StartsWith("[ERROR]", StringComparison.Ordinal) ||
+                translated.StartsWith("[WARNING]", StringComparison.Ordinal))
+            {
+                return string.Empty;
+            }
+
+            return translated;
+        }
+        catch (Exception ex)
+        {
+            Program.LogException(ex);
+            return string.Empty;
+        }
     }
 
     private void Publish(TranslatorCaptionSnapshot next)

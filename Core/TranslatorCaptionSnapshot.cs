@@ -16,12 +16,19 @@ internal sealed class TranslatorCaptionSnapshot
 
     internal string TranslatedCaption { get; set; }
 
+    // The sentence before the one still being translated. The translator draws exactly this
+    // split in its own overlay (OverlayPreviousTranslation + OverlayCurrentTranslation, the latter
+    // in a shifted colour), and it is what tells the reader which words are settled and which are
+    // still moving.
+    internal string PreviousTranslation { get; set; }
+
     internal DateTime UpdatedUtc { get; set; }
 
     internal TranslatorCaptionSnapshot()
     {
         this.OriginalCaption = string.Empty;
         this.TranslatedCaption = string.Empty;
+        this.PreviousTranslation = string.Empty;
         this.UpdatedUtc = DateTime.MinValue;
     }
 
@@ -38,6 +45,7 @@ internal sealed class TranslatorCaptionSnapshot
             CaptionElementsResolved = this.CaptionElementsResolved,
             OriginalCaption = this.OriginalCaption ?? string.Empty,
             TranslatedCaption = this.TranslatedCaption ?? string.Empty,
+            PreviousTranslation = this.PreviousTranslation ?? string.Empty,
             UpdatedUtc = this.UpdatedUtc,
         };
     }
@@ -49,6 +57,7 @@ internal sealed class TranslatorCaptionSnapshot
     {
         return (this.TranslatorRunning ? "1" : "0") +
             (this.CaptionElementsResolved ? "1" : "0") + "|" +
+            (this.PreviousTranslation ?? string.Empty) + "|" +
             (this.TranslatedCaption ?? string.Empty) + "|" +
             (this.OriginalCaption ?? string.Empty);
     }
@@ -56,6 +65,7 @@ internal sealed class TranslatorCaptionSnapshot
     internal bool HasText()
     {
         return !string.IsNullOrWhiteSpace(this.TranslatedCaption) ||
+            !string.IsNullOrWhiteSpace(this.PreviousTranslation) ||
             !string.IsNullOrWhiteSpace(this.OriginalCaption);
     }
 }

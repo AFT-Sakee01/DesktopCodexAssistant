@@ -31,7 +31,7 @@ internal sealed class TranslatorControlReader : IDisposable
     // WidgetSettings entry: the brief that introduced this board describes a fixed, already-deployed
     // location on this machine, not a user-configurable one -- keeping it a constant avoids adding
     // settings-UI surface area nothing asked for.
-    private const string TranslatorDirectory = @"D:\E_Drive_Files\Codexproject\LiveCaptions-Translator";
+    internal const string TranslatorDirectory = @"D:\E_Drive_Files\Codexproject\LiveCaptions-Translator";
     private const string SettingsFileName = "setting.json";
     private const string HistoryDatabaseFileName = "translation_history.db";
     private const string HistoryTableName = "TranslationHistory";

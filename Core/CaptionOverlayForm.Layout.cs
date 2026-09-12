@@ -41,13 +41,112 @@ internal sealed partial class CaptionOverlayForm
 
         Font translationFont = ResolveTranslationFont();
         Font originalFont = ResolveOriginalFont();
-        int height = padY * 2 + MeasureBlockHeight(g, this.snapshot.TranslatedCaption, translationFont, textWidth, MaxTranslationLines);
+        int height = padY * 2 + MeasureBlockHeight(g, BuildTranslationText(), translationFont, textWidth, MaxTranslationLines);
         if (ShouldDrawOriginal())
         {
             height += S(4) + MeasureBlockHeight(g, this.snapshot.OriginalCaption, originalFont, textWidth, 1);
         }
 
         return Math.Max(S(36), height);
+    }
+
+    // Settled sentence and in-progress sentence, in that order, as one string. Measuring and
+    // drawing both from the same string is what keeps the two colours on one wrapped paragraph
+    // instead of two separately-centred blocks.
+    private string BuildTranslationText()
+    {
+        string previous = (this.snapshot.PreviousTranslation ?? string.Empty).Trim();
+        string current = (this.snapshot.TranslatedCaption ?? string.Empty).Trim();
+        if (previous.Length == 0)
+        {
+            return current;
+        }
+
+        if (current.Length == 0)
+        {
+            return previous;
+        }
+
+        return previous + " " + current;
+    }
+
+    // The in-progress sentence is tinted the same way the translator tints it in its own overlay
+    // (OverlayWindow.UpdateTranslationColor): push each channel toward the opposite luminance by
+    // 30/40/30 percent. Weighting green hardest is what turns near-white into the mauve the user
+    // reads as "not settled yet" -- reproducing the formula rather than hard-coding that colour
+    // keeps it correct if this app's text colour ever changes.
+    private static Color ResolveUnsettledColor(Color settled)
+    {
+        double target = 0.299 * settled.R + 0.587 * settled.G + 0.114 * settled.B > 127 ? 0 : 255;
+        int r = DesignTokens.ClampByte((int)Math.Round(settled.R + (target - settled.R) * 0.3));
+        int g = DesignTokens.ClampByte((int)Math.Round(settled.G + (target - settled.G) * 0.4));
+        int b = DesignTokens.ClampByte((int)Math.Round(settled.B + (target - settled.B) * 0.3));
+        return Color.FromArgb(settled.A, r, g, b);
+    }
+
+    // Draws the paragraph twice with opposite clips: once with the settled run visible and once
+    // with the in-progress run visible. GDI+ has no rich-text run model, and measuring each run
+    // separately would break the wrap -- a sentence that flows across the boundary has to be laid
+    // out as one string or the two halves stop lining up.
+    private void DrawTranslationRuns(Graphics g, Font font, Rectangle bounds)
+    {
+        string previous = (this.snapshot.PreviousTranslation ?? string.Empty).Trim();
+        string current = (this.snapshot.TranslatedCaption ?? string.Empty).Trim();
+        string full = BuildTranslationText();
+        if (full.Length == 0)
+        {
+            return;
+        }
+
+        Color settled = DesignTokens.Colors.TextStrong;
+        if (previous.Length == 0 || current.Length == 0)
+        {
+            // Only one run exists: the settled colour for a settled-only line, the tinted colour
+            // when everything on screen is still moving.
+            Color single = previous.Length == 0 ? ResolveUnsettledColor(settled) : settled;
+            DrawCaptionText(g, full, font, bounds, single, 255, MaxTranslationLines);
+            return;
+        }
+
+        using (StringFormat format = CreateCaptionFormat(MaxTranslationLines))
+        {
+            RegionAndRanges(g, font, bounds, full, previous.Length, format);
+        }
+    }
+
+    private void RegionAndRanges(Graphics g, Font font, Rectangle bounds, string full, int splitIndex, StringFormat format)
+    {
+        // CharacterRange -> Region is the only way GDI+ exposes "where did this substring land
+        // after wrapping". Clipping to it lets one measured layout carry two colours.
+        format.SetMeasurableCharacterRanges(new CharacterRange[]
+        {
+            new CharacterRange(0, splitIndex),
+            new CharacterRange(splitIndex, full.Length - splitIndex),
+        });
+
+        Region[] regions = g.MeasureCharacterRanges(full, font, bounds, format);
+        try
+        {
+            Region previousClip = g.Clip;
+            try
+            {
+                g.Clip = regions[0];
+                DrawCaptionText(g, full, font, bounds, DesignTokens.Colors.TextStrong, 255, MaxTranslationLines);
+                g.Clip = regions[1];
+                DrawCaptionText(g, full, font, bounds, ResolveUnsettledColor(DesignTokens.Colors.TextStrong), 255, MaxTranslationLines);
+            }
+            finally
+            {
+                g.Clip = previousClip;
+            }
+        }
+        finally
+        {
+            for (int i = 0; i < regions.Length; i++)
+            {
+                regions[i].Dispose();
+            }
+        }
     }
 
     private bool ShouldDrawOriginal()
@@ -132,15 +231,8 @@ internal sealed partial class CaptionOverlayForm
 
         Font translationFont = ResolveTranslationFont();
         int y = padY;
-        int translationHeight = MeasureBlockHeight(g, this.snapshot.TranslatedCaption, translationFont, textWidth, MaxTranslationLines);
-        DrawCaptionText(
-            g,
-            string.IsNullOrWhiteSpace(this.snapshot.TranslatedCaption) ? string.Empty : this.snapshot.TranslatedCaption,
-            translationFont,
-            new Rectangle(padX, y, textWidth, translationHeight),
-            DesignTokens.Colors.TextStrong,
-            255,
-            MaxTranslationLines);
+        int translationHeight = MeasureBlockHeight(g, BuildTranslationText(), translationFont, textWidth, MaxTranslationLines);
+        DrawTranslationRuns(g, translationFont, new Rectangle(padX, y, textWidth, translationHeight));
         y += translationHeight;
 
         if (ShouldDrawOriginal())
@@ -224,6 +316,18 @@ internal sealed partial class CaptionOverlayForm
             AssertSelfTest(withoutOriginal < twoLineHeight, "hiding the original line must reduce the strip height");
 
             // Empty captions keep the window hidden rather than parking an empty band on screen.
+            // A settled sentence plus an in-progress one is one paragraph, so it must measure at
+            // least as tall as the in-progress sentence alone -- never shorter, which would clip.
+            form.ApplySettings(settings);
+            TranslatorCaptionSnapshot split = CreateFixtureSnapshot("Short line.", "短句。");
+            split.PreviousTranslation = "这是上一句已经确定下来的译文。";
+            form.snapshot = split;
+            int splitHeight = form.MeasureDesiredHeight(g, 1440);
+            form.snapshot = CreateFixtureSnapshot("Short line.", "短句。");
+            AssertSelfTest(
+                splitHeight >= form.MeasureDesiredHeight(g, 1440),
+                "a settled sentence plus an in-progress one must not measure shorter than the in-progress one alone");
+
             form.snapshot = CreateFixtureSnapshot(string.Empty, string.Empty);
             AssertSelfTest(!form.ShouldBeVisible(), "an empty caption must not show the strip");
             form.snapshot = CreateFixtureSnapshot("x", "y");
@@ -273,6 +377,13 @@ internal sealed partial class CaptionOverlayForm
             true);
         RenderSample(
             outputDir,
+            "caption-overlay-settled-and-live.png",
+            "and that is why the handshake matters here.",
+            "所以握手过程在这里才重要。",
+            true,
+            "这些都是传输层协议，负责数据在机器之间的移动。");
+        RenderSample(
+            outputDir,
             "caption-overlay-translation-only.png",
             "So the first thing you want to do is grab the health potion.",
             "所以你要做的第一件事是拿到恢复药水。",
@@ -281,6 +392,11 @@ internal sealed partial class CaptionOverlayForm
 
     private static void RenderSample(string outputDir, string fileName, string original, string translated, bool showOriginal)
     {
+        RenderSample(outputDir, fileName, original, translated, showOriginal, string.Empty);
+    }
+
+    private static void RenderSample(string outputDir, string fileName, string original, string translated, bool showOriginal, string previousTranslation)
+    {
         WidgetSettings settings = WidgetSettings.CreateDefaults();
         settings.CaptionOverlayShowOriginal = showOriginal;
         settings.Normalize();
@@ -288,6 +404,7 @@ internal sealed partial class CaptionOverlayForm
         {
             form.SetLayerScale(2.0f);
             form.snapshot = CreateFixtureSnapshot(original, translated);
+            form.snapshot.PreviousTranslation = previousTranslation;
             // Device pixels of a 1440-wide screen at LayerScale 2. Set on the layout, not through
             // Form.Size, which Windows would clamp to the real screen.
             int width = 1440 * 2;
