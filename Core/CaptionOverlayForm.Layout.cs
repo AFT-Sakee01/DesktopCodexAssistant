@@ -360,6 +360,44 @@ internal sealed partial class CaptionOverlayForm
 
     // Render harness for --render-captionoverlay: the strip is drawn over a mid-grey backdrop so the
     // scrim and the shadow are both visible in the sample, which is the point of looking at it.
+    // Renders whatever the strip would be showing this second, from the live reader. The fixtures
+    // above prove the layout; this proves the whole chain -- reader, settled/live split, colours --
+    // against the translator that is actually running, which is the only way to check the split
+    // without photographing the screen.
+    internal static void RenderCurrent(string outputDir)
+    {
+        Directory.CreateDirectory(outputDir);
+        TranslatorCaptionReader reader = new TranslatorCaptionReader();
+        reader.RefreshIfDue();
+        System.Threading.Thread.Sleep(TranslatorCaptionReader.RefreshIntervalMs + 120);
+        reader.RefreshIfDue();
+        TranslatorCaptionSnapshot live = reader.GetSnapshot();
+        Console.WriteLine("translator running = " + live.TranslatorRunning.ToString());
+        Console.WriteLine("settled            = [" + live.PreviousTranslation + "]");
+        Console.WriteLine("in progress        = [" + live.TranslatedCaption + "]");
+        Console.WriteLine("original           = [" + live.OriginalCaption + "]");
+
+        WidgetSettings settings = WidgetSettings.Load();
+        settings.Normalize();
+        using (CaptionOverlayForm form = new CaptionOverlayForm(settings))
+        {
+            form.SetLayerScale(2.0f);
+            form.snapshot = live;
+            int width = 1440 * 2;
+            form.renderWidth = width;
+            int height = form.MeasureDesiredHeight(width);
+            using (Bitmap bitmap = new Bitmap(width, Math.Max(1, height), PixelFormat.Format32bppPArgb))
+            using (Graphics g = Graphics.FromImage(bitmap))
+            {
+                g.Clear(Color.FromArgb(255, 96, 104, 112));
+                form.DrawWindowContent(g);
+                string path = Path.Combine(outputDir, "caption-overlay-current.png");
+                bitmap.Save(path, ImageFormat.Png);
+                Console.WriteLine("caption-overlay-current.png -> " + path + " (" + width + "x" + height + ")");
+            }
+        }
+    }
+
     internal static void RenderSamples(string outputDir)
     {
         Directory.CreateDirectory(outputDir);

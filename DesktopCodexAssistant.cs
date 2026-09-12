@@ -1545,8 +1545,16 @@ internal static class Program
                 outputDir = Path.Combine(Environment.CurrentDirectory, "_render-captionoverlay");
             }
 
-            CaptionOverlayForm.RenderSamples(outputDir);
-            Console.WriteLine("Rendered caption overlay samples to " + Path.GetFullPath(outputDir));
+            if (HasArg(args, "current"))
+            {
+                CaptionOverlayForm.RenderCurrent(outputDir);
+            }
+            else
+            {
+                CaptionOverlayForm.RenderSamples(outputDir);
+            }
+
+            Console.WriteLine("Rendered caption overlay to " + Path.GetFullPath(outputDir));
             return 0;
         }
         catch (Exception ex)
