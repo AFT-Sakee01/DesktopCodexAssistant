@@ -219,6 +219,11 @@ internal static class Program
             return RunRadarRuntimeDiagnosisCommand(args);
         }
 
+        if (HasArg(args, "--diagnose-translator-stack"))
+        {
+            return RunTranslatorStackDiagnosisCommand(args);
+        }
+
         // Stop pre-rename processes before acquiring the new product mutex.
         SignalLegacyStops();
 
@@ -1470,6 +1475,57 @@ internal static class Program
             LogException(ex);
             return 1;
         }
+    }
+
+    // Reports what the translation keep-alive guard sees and, with --diagnose-start, runs the very
+    // same repair it performs on its 30s tick. The guard surfaces its result only through a toast,
+    // so a stack member that silently fails to come back has no other way to be investigated.
+    private static int RunTranslatorStackDiagnosisCommand(string[] args)
+    {
+        NativeMethods.AttachToParentConsole();
+        try
+        {
+            // Every line goes to the log as well as the console: this command is most useful when
+            // run the way the resident app itself is launched (detached through WMI), and such a
+            // process has no console to print to.
+            string geniexPath = Path.Combine(
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GenieX CLI"),
+                "geniex.exe");
+            ReportTranslatorStackLine("LocalApplicationData  = " +
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+            ReportTranslatorStackLine("geniex.exe            = " + geniexPath +
+                " (visible=" + File.Exists(geniexPath).ToString() + ")");
+            ReportTranslatorStackLine("GenieX running        = " + TranslatorControlReader.IsGenieXRunning().ToString());
+            ReportTranslatorStackLine("sanitize proxy running= " + TranslatorControlReader.IsSanitizeProxyRunning().ToString());
+            ReportTranslatorStackLine("Live Captions running = " + TranslatorControlReader.IsLiveCaptionsRunning().ToString());
+            ReportTranslatorStackLine("translator running    = " + TranslatorControlReader.IsLiveCaptionsTranslatorRunning().ToString());
+
+            if (HasArg(args, "--diagnose-start"))
+            {
+                string detail;
+                bool started = TranslatorControlReader.TryEnsureStackAlive(out detail);
+                ReportTranslatorStackLine("TryEnsureStackAlive   = " + started.ToString() + " detail=[" + detail + "]");
+                Thread.Sleep(4000);
+                ReportTranslatorStackLine("after 4s: geniex=" + TranslatorControlReader.IsGenieXRunning().ToString() +
+                    " proxy=" + TranslatorControlReader.IsSanitizeProxyRunning().ToString() +
+                    " livecaptions=" + TranslatorControlReader.IsLiveCaptionsRunning().ToString() +
+                    " translator=" + TranslatorControlReader.IsLiveCaptionsTranslatorRunning().ToString());
+            }
+
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.ToString());
+            LogException(ex);
+            return 1;
+        }
+    }
+
+    private static void ReportTranslatorStackLine(string line)
+    {
+        Console.WriteLine(line);
+        LogInfo("Translator stack diagnosis: " + line);
     }
 
     private static int TestDisplayRecoveryPolicy()

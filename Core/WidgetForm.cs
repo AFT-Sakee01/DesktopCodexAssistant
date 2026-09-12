@@ -2159,7 +2159,18 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
                 if (translatorArmed)
                 {
                     string detail;
-                    if (TranslatorControlReader.TryEnsureStackAlive(out detail) && announce)
+                    bool started = TranslatorControlReader.TryEnsureStackAlive(out detail);
+                    if (!string.IsNullOrEmpty(detail))
+                    {
+                        // Log every repair attempt, success or failure. The toast is gated on the
+                        // service-health alert policy and only fires when something actually came
+                        // up, so a member that keeps failing to start (2026-09-12: GenieX, whose
+                        // install directory the resident process could not see) left no trace at
+                        // all -- the guard looked like it had never run.
+                        Program.LogInfo("Translation keep-alive: " + detail);
+                    }
+
+                    if (started && announce)
                     {
                         // ShowWindowsNotification marshals itself back to the UI thread.
                         ShowWindowsNotification("翻译保活", detail, ToolTipIcon.Info);
@@ -2193,14 +2204,21 @@ internal sealed partial class WidgetForm : LayeredWidgetFormBase
         string name = ProgramKeepAliveGuard.DescribeTarget(target);
         if (ProgramKeepAliveGuard.TryEnsureRunning(target, out detail))
         {
+            Program.LogInfo(name + " keep-alive: relaunched");
             if (announce)
             {
                 ShowWindowsNotification(name + "保活", "已拉起 " + name, ToolTipIcon.Info);
             }
         }
-        else if (!string.IsNullOrEmpty(detail) && announce)
+        else if (!string.IsNullOrEmpty(detail))
         {
-            ShowWindowsNotification(name + "保活", "拉起失败：" + detail, ToolTipIcon.Warning);
+            // Same reason as the translation stack above: a repeatedly failing relaunch must leave
+            // evidence even when alerts are muted.
+            Program.LogInfo(name + " keep-alive failed: " + detail);
+            if (announce)
+            {
+                ShowWindowsNotification(name + "保活", "拉起失败：" + detail, ToolTipIcon.Warning);
+            }
         }
     }
 
